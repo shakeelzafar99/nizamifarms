@@ -303,8 +303,30 @@ Route::middleware(['auth'])->group(function () {
 
     // Qurbani Web Pages (orders, dashboard)
     Route::prefix('qurbani')->group(function () {
+        // -----------------------------------------------------------
+        // QURBANI ORDERS — region-wise item-level dispatch view
+        // (May-2026). The page that mirrors the mobile app's
+        // QurbaniOpenOrdersScreen and drives the box-label printer.
+        // -----------------------------------------------------------
         Route::get('/orders', [\App\Http\Controllers\CRM\QurbaniWebController::class, 'orders'])->name('qurbani.orders');
-        Route::get('/api/orders', [\App\Http\Controllers\CRM\QurbaniWebController::class, 'getOrders'])->name('qurbani.api.orders');
+        Route::get('/api/orders-items', [\App\Http\Controllers\CRM\QurbaniWebController::class, 'getOrderItems'])->name('qurbani.api.orders-items');
+        Route::get('/api/box-labels', [\App\Http\Controllers\CRM\QurbaniWebController::class, 'getBoxLabels'])->name('qurbani.api.box-labels');
+        Route::post('/api/box-print/mark', [\App\Http\Controllers\CRM\QurbaniWebController::class, 'markBoxesPrinted'])->name('qurbani.api.box-print.mark');
+        Route::post('/api/box-print/unmark', [\App\Http\Controllers\CRM\QurbaniWebController::class, 'unmarkBoxesPrinted'])->name('qurbani.api.box-print.unmark');
+        // Inline per-row actions on the new orders dispatch page.
+        Route::post('/api/items/{id}/status', [\App\Http\Controllers\CRM\QurbaniWebController::class, 'updateItemStatus'])->name('qurbani.api.items.status');
+        Route::post('/api/items/{id}/rider', [\App\Http\Controllers\CRM\QurbaniWebController::class, 'assignItemRider'])->name('qurbani.api.items.rider');
+
+        // -----------------------------------------------------------
+        // QURBANI INVOICES — invoice-level page (formerly /qurbani/orders).
+        // Renamed in May-2026 so /orders can host the new dispatch view.
+        // -----------------------------------------------------------
+        Route::get('/invoices', [\App\Http\Controllers\CRM\QurbaniWebController::class, 'invoices'])->name('qurbani.invoices');
+        Route::get('/api/invoices', [\App\Http\Controllers\CRM\QurbaniWebController::class, 'getInvoices'])->name('qurbani.api.invoices');
+        // Back-compat alias: the previous URL still works for any
+        // bookmarks / reports that point at /qurbani/api/orders.
+        Route::get('/api/orders', [\App\Http\Controllers\CRM\QurbaniWebController::class, 'getInvoices'])->name('qurbani.api.orders');
+
         Route::get('/api/dashboard', [\App\Http\Controllers\CRM\QurbaniWebController::class, 'getDashboardData'])->name('qurbani.api.dashboard');
         Route::get('/api/payment-summary', [\App\Http\Controllers\CRM\QurbaniWebController::class, 'getPaymentAccountSummary'])->name('qurbani.api.payment-summary');
         Route::get('/api/payment-details', [\App\Http\Controllers\CRM\QurbaniWebController::class, 'getPaymentAccountDetails'])->name('qurbani.api.payment-details');

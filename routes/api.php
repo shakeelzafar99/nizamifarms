@@ -273,6 +273,18 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/qurbani/my-deliveries', [\App\Http\Controllers\API\RiderController::class, 'getQurbaniRiderDeliveries']);
     Route::post('/qurbani/line-items/bulk-mark-delivered', [\App\Http\Controllers\API\RiderController::class, 'bulkMarkQurbaniItemsDelivered']);
     Route::post('/qurbani/line-items/{lineItemId}/mark-delivered', [\App\Http\Controllers\API\RiderController::class, 'markQurbaniItemDelivered']);
+    // May-2026: Qurbani route / dispatch / ETA system (per-rider planner).
+    // Mirrors the regular-orders updateDeliveryPriorities + calculate-etas +
+    // lock/unlock flow but operates at the BUNDLE level (one stop per
+    // smart-box bundle). Routes lock with mode='qurbani' so the same rider
+    // can simultaneously have a regular-orders lock and a qurbani lock.
+    Route::get('/qurbani/riders', [\App\Http\Controllers\API\RiderController::class, 'getQurbaniRidersSummary']);
+    Route::get('/qurbani/riders/{riderId}/route', [\App\Http\Controllers\API\RiderController::class, 'getQurbaniRiderRoute']);
+    Route::post('/qurbani/riders/{riderId}/optimize-route', [\App\Http\Controllers\API\RiderController::class, 'optimizeQurbaniRoute']);
+    Route::post('/qurbani/riders/{riderId}/save-route', [\App\Http\Controllers\API\RiderController::class, 'saveQurbaniRoute']);
+    Route::post('/qurbani/riders/{riderId}/dispatch', [\App\Http\Controllers\API\RiderController::class, 'dispatchQurbaniRoute']);
+    Route::post('/qurbani/riders/{riderId}/lock-route', [\App\Http\Controllers\API\RiderController::class, 'lockQurbaniRoute']);
+    Route::delete('/qurbani/riders/{riderId}/lock-route', [\App\Http\Controllers\API\RiderController::class, 'unlockQurbaniRoute']);
     Route::put('/orders/{orderId}/line-items/{lineItemId}/instructions', [\App\Http\Controllers\API\RiderController::class, 'updateLineItemInstructions']);
     Route::get('/orders/{id}/payments', [\App\Http\Controllers\API\RiderController::class, 'getOrderPayments']);
     Route::post('/orders/{id}/payments', [\App\Http\Controllers\API\RiderController::class, 'addOrderPayment']);

@@ -885,8 +885,55 @@ class CustomerController extends Controller
         
         try {
             $customer = CustomerModel::findOrFail($id);
-            $customer->update($request->all());
-            
+            $payload = $request->all();
+
+            // Phone is stored across THREE columns: phone (legacy, holds the
+            // normalized 10-digit form), phone_normalized (used for dedup
+            // lookups), and phone_original (the display value used by mobile
+            // and search). The edit form only sends the user-facing 'phone'
+            // input, so if we don't fan it out here the mobile app and most
+            // search paths keep showing the old number even though the form
+            // appeared to save successfully.
+            if ($request->filled('phone')) {
+                $phoneData = CustomerModel::normalizePhone($request->input('phone'));
+                $newNormalized = $phoneData['normalized'];
+                $newOriginal = $phoneData['original'];
+
+                if ($newNormalized !== $customer->phone_normalized) {
+                    // Dedup guard: prevent edit from colliding with another
+                    // customer's normalized phone (which is the dedup key).
+                    // Excludes self and any merged-away duplicates.
+                    $duplicate = CustomerModel::where('phone_normalized', $newNormalized)
+                        ->where('id', '!=', $customer->id)
+                        ->whereNull('merged_into_customer_id')
+                        ->first();
+                    if ($duplicate) {
+                        $dupName = trim(($duplicate->first_name ?? '') . ' ' . ($duplicate->last_name ?? ''));
+                        $msg = "Phone number already belongs to another customer: {$dupName}";
+                        if ($request->expectsJson()) {
+                            return response()->json([
+                                'success' => false,
+                                'message' => $msg,
+                                'existing_customer' => [
+                                    'id' => $duplicate->id,
+                                    'name' => $dupName,
+                                    'phone' => $duplicate->phone_original ?? $duplicate->phone,
+                                ],
+                            ], 409);
+                        }
+                        return redirect()->back()->with('error', $msg);
+                    }
+                }
+
+                // Override the request payload with all three columns so the
+                // mass-assign update() below writes them in one go.
+                $payload['phone'] = $newNormalized;
+                $payload['phone_normalized'] = $newNormalized;
+                $payload['phone_original'] = $newOriginal;
+            }
+
+            $customer->update($payload);
+
             // Handle both AJAX and regular form submissions
             if ($request->expectsJson()) {
                 return response()->json([

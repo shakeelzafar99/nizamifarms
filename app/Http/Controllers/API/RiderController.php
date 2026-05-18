@@ -17511,6 +17511,9 @@ class RiderController extends Controller
                         // (order-level rider) so the two systems don't bleed into each other.
                         'qurbani_item_status', 'qurbani_assigned_rider_user_id',
                         'qurbani_status_updated_at', 'qurbani_status_updated_by',
+                        // May-17-2026: per-state transition timestamps for the
+                        // mobile region-view's status timeline mini section.
+                        'qurbani_slaughtered_at', 'qurbani_out_for_delivery_at', 'qurbani_delivered_at',
                         'instructions'
                     );
                 }])
@@ -17695,7 +17698,11 @@ class RiderController extends Controller
                     'discounts' => $order->discounts ? $order->discounts->map(function($d) {
                         return ['discount_amount' => $d->discount_amount, 'discount_type' => $d->discount_type];
                     })->toArray() : [],
-                    'line_items' => $order->lineItems->map(function($item) use ($perItemRiderMap, $bundleMap) {
+                    'has_verified_location' => ($order->customer && (
+                        (!empty($order->customer->latitude) && !empty($order->customer->longitude))
+                        || !empty($order->customer->verified_location_url)
+                    )),
+                    'line_items' => $order->lineItems->map(function($item) use ($order, $perItemRiderMap, $bundleMap) {
                         $riderId = $item->qurbani_assigned_rider_user_id;
                         $bundle = $bundleMap[$item->id] ?? null;
                         return [
@@ -17725,8 +17732,18 @@ class RiderController extends Controller
                             'qurbani_status_updated_at' => $item->qurbani_status_updated_at
                                 ? (string) $item->qurbani_status_updated_at
                                 : null,
+                            'qurbani_slaughtered_at' => $item->qurbani_slaughtered_at ? (string) $item->qurbani_slaughtered_at : null,
+                            'qurbani_out_for_delivery_at' => $item->qurbani_out_for_delivery_at ? (string) $item->qurbani_out_for_delivery_at : null,
+                            'qurbani_delivered_at' => $item->qurbani_delivered_at ? (string) $item->qurbani_delivered_at : null,
                             'category_level_2' => $item->product->attribute_2 ?? null,
                             'instructions' => $item->instructions,
+                            'has_verified_location' => ($order->customer && (
+                                (!empty($order->customer->latitude) && !empty($order->customer->longitude))
+                                || !empty($order->customer->verified_location_url)
+                            )),
+                            'verified_location_url' => $order->customer->verified_location_url ?? null,
+                            'cust_lat' => $order->customer->latitude ?? null,
+                            'cust_lng' => $order->customer->longitude ?? null,
                             // Smart-box bundle metadata (May-2026). Mobile uses
                             // bundle_position_end / bundle_size to render the
                             // "3/5" chip on each row, and bundle_key for the
@@ -17913,13 +17930,26 @@ class RiderController extends Controller
             }
 
             $now = now();
+            $update = [
+                'qurbani_item_status' => $newStatus,
+                'qurbani_status_updated_at' => $now,
+                'qurbani_status_updated_by' => $user->id,
+                'updated_by' => $user->id,
+            ];
+            // May-17-2026: stamp the per-state transition column when a line
+            // item enters that state. We don't overwrite if the column is
+            // already set (transitions in/out of a state shouldn't lose the
+            // FIRST-entered timestamp), so the update is conditional via raw
+            // expressions. NULL stays NULL until the state is first entered.
+            if ($newStatus === 'slaughtered') {
+                $update['qurbani_slaughtered_at'] = \DB::raw('COALESCE(qurbani_slaughtered_at, NOW())');
+            } elseif ($newStatus === 'out_for_delivery') {
+                $update['qurbani_out_for_delivery_at'] = \DB::raw('COALESCE(qurbani_out_for_delivery_at, NOW())');
+            } elseif ($newStatus === 'delivered') {
+                $update['qurbani_delivered_at'] = \DB::raw('COALESCE(qurbani_delivered_at, NOW())');
+            }
             $updated = \App\Models\CRM\OrderLineItemModel::whereIn('id', $validated['line_item_ids'])
-                ->update([
-                    'qurbani_item_status' => $newStatus,
-                    'qurbani_status_updated_at' => $now,
-                    'qurbani_status_updated_by' => $user->id,
-                    'updated_by' => $user->id,
-                ]);
+                ->update($update);
 
             return response()->json([
                 'success' => true,
@@ -18082,7 +18112,12 @@ class RiderController extends Controller
                         'qurbani_day', 'qurbani_slot', 'qurbani_region', 'qurbani_sub_region',
                         'qurbani_delivery_type', 'qurbani_type', 'qurbani_paya',
                         'qurbani_item_status', 'qurbani_assigned_rider_user_id',
-                        'qurbani_status_updated_at', 'instructions'
+                        'qurbani_status_updated_at',
+                        'qurbani_slaughtered_at', 'qurbani_out_for_delivery_at', 'qurbani_delivered_at',
+                        'qurbani_delivery_priority', 'qurbani_estimated_delivery_at',
+                        'qurbani_eta_calculated_at', 'qurbani_dispatched_at', 'qurbani_dispatched_by',
+                        'qurbani_started_delivery_at',
+                        'instructions'
                     );
                 }, 'lineItems.product' => function($q) {
                     $q->select('id', 'attribute_2');
@@ -18142,10 +18177,36 @@ class RiderController extends Controller
                             'items' => [],
                             'my_qty_in_bundle' => 0,
                             'all_delivered' => true,
+                            // Route metadata — every line item in the
+                            // bundle stores the same priority/ETA so we
+                            // can read them off the first item.
+                            'qurbani_delivery_priority'      => $li->qurbani_delivery_priority,
+                            'qurbani_estimated_delivery_at'  => $li->qurbani_estimated_delivery_at
+                                ? (string) $li->qurbani_estimated_delivery_at : null,
+                            'qurbani_eta_calculated_at'      => $li->qurbani_eta_calculated_at
+                                ? (string) $li->qurbani_eta_calculated_at : null,
+                            'qurbani_dispatched_at'          => $li->qurbani_dispatched_at
+                                ? (string) $li->qurbani_dispatched_at : null,
+                            'qurbani_dispatched_by'          => $li->qurbani_dispatched_by,
+                            'qurbani_started_delivery_at'    => $li->qurbani_started_delivery_at
+                                ? (string) $li->qurbani_started_delivery_at : null,
+                            'qurbani_delivered_at'           => null,
+                            // Dispatch lifecycle: drives the rider /
+                            // manager UI grouping (Pending vs Dispatched
+                            // batch). 'delivered' takes precedence and
+                            // is set after the items loop below.
+                            'bundle_dispatch_status'         => $li->qurbani_dispatched_at
+                                ? 'dispatched' : 'pending',
                         ];
                     }
                     $isDelivered = $li->qurbani_item_status === 'delivered';
                     if (!$isDelivered) $bundles[$bk]['all_delivered'] = false;
+                    if ($li->qurbani_delivered_at) {
+                        $existing = $bundles[$bk]['qurbani_delivered_at'];
+                        if (!$existing || strtotime((string) $li->qurbani_delivered_at) > strtotime($existing)) {
+                            $bundles[$bk]['qurbani_delivered_at'] = (string) $li->qurbani_delivered_at;
+                        }
+                    }
                     $bundles[$bk]['my_qty_in_bundle'] += max(1, (int) $li->quantity);
                     $bundles[$bk]['items'][] = [
                         'id' => $li->id,
@@ -18181,6 +18242,11 @@ class RiderController extends Controller
                         $bp = $b['bundle_position_start'] ?? PHP_INT_MAX;
                         return $ap <=> $bp;
                     });
+                    // bundle_dispatch_status finalization: 'delivered'
+                    // only when EVERY rider-owned item is delivered.
+                    if ($bRef['all_delivered']) {
+                        $bRef['bundle_dispatch_status'] = 'delivered';
+                    }
                 }
                 unset($bRef);
 
@@ -18190,6 +18256,25 @@ class RiderController extends Controller
                 }
                 if (!$customerName && $order->customer) {
                     $customerName = trim(($order->customer->first_name ?? '') . ' ' . ($order->customer->last_name ?? '')) ?: null;
+                }
+
+                // Verified-location info — surfaced so the rider can see
+                // who saved the pin BEFORE tapping the address.
+                $cust = $order->customer;
+                $hasCoords = $cust && !empty($cust->latitude) && !empty($cust->longitude);
+                $custLat = $hasCoords ? (float) $cust->latitude : null;
+                $custLng = $hasCoords ? (float) $cust->longitude : null;
+
+                // The order's "route position" = the min priority across
+                // its bundles (a customer with priority-1 stop comes
+                // first in the rider's screen even if their second
+                // bundle is at priority 7).
+                $minPriority = null;
+                foreach ($bundles as $b) {
+                    if ($b['qurbani_delivery_priority'] !== null) {
+                        $p = (int) $b['qurbani_delivery_priority'];
+                        if ($minPriority === null || $p < $minPriority) $minPriority = $p;
+                    }
                 }
 
                 $payload[] = [
@@ -18206,7 +18291,76 @@ class RiderController extends Controller
                     'bundles' => array_values($bundles),
                     'my_item_count' => $myItems->count(),
                     'my_total_qty'  => $myItems->sum(fn($li) => max(1, (int) $li->quantity)),
+                    'route_priority' => $minPriority,
+                    // Verified-location fields. cust_lat/lng take
+                    // precedence over verified_location_url when the
+                    // rider taps the address — they're a deterministic
+                    // pin, not a free-text URL.
+                    'has_verified_location' => $hasCoords || ($cust && !empty($cust->verified_location_url)),
+                    'cust_lat' => $custLat,
+                    'cust_lng' => $custLng,
+                    'verified_location_url' => $cust->verified_location_url ?? null,
+                    'verified_location_saved_by' => $cust->verified_location_saved_by ?? null,
+                    'verified_location_saved_at' => $cust && $cust->verified_location_saved_at
+                        ? (string) $cust->verified_location_saved_at : null,
                 ];
+            }
+
+            // Sort: orders with a priority come first (in priority asc),
+            // then the rest by order_date desc (existing behaviour).
+            usort($payload, function ($a, $b) {
+                $pa = $a['route_priority'];
+                $pb = $b['route_priority'];
+                if ($pa !== null && $pb !== null) return $pa <=> $pb;
+                if ($pa !== null) return -1;
+                if ($pb !== null) return 1;
+                return 0;
+            });
+
+            // Compute fleet-level dispatch + lock summary so the rider
+            // can show "Route set by X at HH:MM" banner without an extra
+            // round-trip.
+            $latestDispatchedAt = null;
+            $latestDispatchedBy = null;
+            $latestStartedAt = null;
+            foreach ($payload as $p) {
+                foreach ($p['bundles'] as $b) {
+                    if (!empty($b['qurbani_dispatched_at'])) {
+                        if (!$latestDispatchedAt || strtotime($b['qurbani_dispatched_at']) > strtotime($latestDispatchedAt)) {
+                            $latestDispatchedAt = $b['qurbani_dispatched_at'];
+                            $latestDispatchedBy = $b['qurbani_dispatched_by'] ?? null;
+                        }
+                    }
+                    if (!empty($b['qurbani_started_delivery_at'])) {
+                        if (!$latestStartedAt || strtotime($b['qurbani_started_delivery_at']) > strtotime($latestStartedAt)) {
+                            $latestStartedAt = $b['qurbani_started_delivery_at'];
+                        }
+                    }
+                }
+            }
+            $dispatchedByName = null;
+            if ($latestDispatchedBy) {
+                $dispatchedByName = \DB::table('t_sys_user')->where('id', $latestDispatchedBy)->value('fullname');
+            }
+
+            // Resolve verifier user IDs to names in a single query.
+            $verifierIds = [];
+            foreach ($payload as $p) {
+                if (!empty($p['verified_location_saved_by'])) $verifierIds[] = $p['verified_location_saved_by'];
+            }
+            if (!empty($verifierIds)) {
+                $names = \DB::table('t_sys_user')
+                    ->whereIn('id', array_unique($verifierIds))
+                    ->pluck('fullname', 'id')
+                    ->toArray();
+                foreach ($payload as &$p) {
+                    $vid = $p['verified_location_saved_by'] ?? null;
+                    $p['verified_location_saved_by_name'] = ($vid && isset($names[$vid])) ? $names[$vid] : null;
+                }
+                unset($p);
+            } else {
+                foreach ($payload as &$p) { $p['verified_location_saved_by_name'] = null; }
+                unset($p);
             }
 
             return response()->json([
@@ -18216,6 +18370,13 @@ class RiderController extends Controller
                     'total' => count($payload),
                     'open_items' => $totalOpen,
                     'delivered_items' => $totalDelivered,
+                ],
+                'route_lock' => $this->getQurbaniRouteLockInfo($user->id),
+                'dispatch' => [
+                    'dispatched_at' => $latestDispatchedAt,
+                    'dispatched_by' => $latestDispatchedBy ? (int) $latestDispatchedBy : null,
+                    'dispatched_by_name' => $dispatchedByName,
+                    'started_delivery_at' => $latestStartedAt,
                 ],
             ]);
         } catch (\Exception $e) {
@@ -18291,6 +18452,9 @@ class RiderController extends Controller
                     'qurbani_status_updated_at' => $now,
                     'qurbani_status_updated_by' => $user->id,
                     'updated_by' => $user->id,
+                    // Stamp first-time-delivered timestamp (preserve original
+                    // if somehow re-delivered after being undone).
+                    'qurbani_delivered_at' => \DB::raw('COALESCE(qurbani_delivered_at, NOW())'),
                 ]);
 
             // Auto-promote: if ALL line items in any of the affected orders
@@ -18454,6 +18618,9 @@ class RiderController extends Controller
                     'li.qurbani_item_status',
                     'li.qurbani_assigned_rider_user_id',
                     'li.qurbani_status_updated_at',
+                    'li.qurbani_slaughtered_at',
+                    'li.qurbani_out_for_delivery_at',
+                    'li.qurbani_delivered_at',
                     'li.instructions',
                     'p.attribute_2 as category_level_2',
                     'p.attribute_1 as attribute_1',
@@ -18473,6 +18640,7 @@ class RiderController extends Controller
                     'c.phone_original as cust_phone',
                     'c.latitude as cust_lat',
                     'c.longitude as cust_lng',
+                    'c.verified_location_url',
                 ]);
 
             // Filter line items to only qurbani-flagged rows. An order can
@@ -18573,7 +18741,16 @@ class RiderController extends Controller
                     'qurbani_assigned_rider_user_id' => $r->qurbani_assigned_rider_user_id,
                     'qurbani_assigned_rider_name' => $riderMap[$r->qurbani_assigned_rider_user_id] ?? null,
                     'qurbani_status_updated_at' => $r->qurbani_status_updated_at,
+                    'qurbani_slaughtered_at' => $r->qurbani_slaughtered_at,
+                    'qurbani_out_for_delivery_at' => $r->qurbani_out_for_delivery_at,
+                    'qurbani_delivered_at' => $r->qurbani_delivered_at,
                     'instructions' => $r->instructions,
+                    'has_verified_location' => !empty($r->cust_lat) && !empty($r->cust_lng) || !empty($r->verified_location_url),
+                    // Forward the verified-location coords/url for the
+                    // mobile detail modal's "View Location" button.
+                    'verified_location_url' => $r->verified_location_url ?? null,
+                    'cust_lat' => $r->cust_lat ?? null,
+                    'cust_lng' => $r->cust_lng ?? null,
                     'bundle_key' => $b['bundle_key'] ?? null,
                     'bundle_size' => $b['bundle_size'] ?? null,
                     'bundle_position_start' => $b['bundle_position_start'] ?? null,
@@ -18582,9 +18759,9 @@ class RiderController extends Controller
                 ];
             })->values();
 
-            // Summary counts
+            // Summary counts — 'slaughtered' is treated as part of 'open' group
             $total = $items->count();
-            $open = $items->filter(fn($i) => !$i['qurbani_item_status'] || $i['qurbani_item_status'] === 'open')->count();
+            $open = $items->filter(fn($i) => !$i['qurbani_item_status'] || in_array($i['qurbani_item_status'], ['open', 'slaughtered']))->count();
             $delivered = $items->filter(fn($i) => $i['qurbani_item_status'] === 'delivered')->count();
 
             return response()->json([
@@ -19301,6 +19478,1104 @@ class RiderController extends Controller
         } catch (\Exception $e) {
             \Log::error('Failed to update paid stamp (mobile)', ['order_id' => $id, 'error' => $e->getMessage()]);
             return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
+        }
+    }
+
+    // ============================================================
+    // QURBANI ROUTE / DISPATCH / ETA  (May 2026)
+    // ============================================================
+    //
+    // Mirrors the regular-orders flow (lockRoute / updateDeliveryPriorities /
+    // calculateDeliveryEtas / optimizeRoute) but operates at the BUNDLE
+    // level inside Qurbani Mode:
+    //   - One stop per smart-box bundle (same customer + day + slot +
+    //     delivery_type), NOT per individual line item, because a rider
+    //     dropping a bundle off makes a single delivery stop even if the
+    //     bundle contains 3 hissas + 1 bakra.
+    //   - Lock state lives in t_crm_route_lock with mode='qurbani' so it
+    //     coexists with the regular-orders lock for the same rider.
+    //   - Priorities + ETAs are stored on every line item in the bundle
+    //     (qurbani_delivery_priority / qurbani_estimated_delivery_at) so
+    //     queries against line_item don't have to join a bundle table.
+    //
+    // The rider's "Set Route" button calls saveQurbaniRoute(); the rider's
+    // "Dispatch" button (and the manager's) calls dispatchQurbaniRoute(),
+    // which is the only place that touches Google Directions and writes
+    // qurbani_dispatched_at.
+
+    /**
+     * Helper: load and shape the rider's qurbani delivery list as bundles
+     * with route metadata (priority, ETA, status, dispatched_at, etc.) so
+     * the manager planner and the rider's app render from the same shape.
+     *
+     * @param int    $riderId  rider whose route we want
+     * @param string $show     open|delivered|all  (open also includes
+     *                         out_for_delivery / slaughtered etc.)
+     */
+    private function buildQurbaniRiderRoute($riderId, string $show = 'open'): array
+    {
+        $assignedQuery = \DB::table('t_crm_prod_order_line_item')
+            ->where('qurbani_assigned_rider_user_id', $riderId);
+        if ($show === 'open') {
+            $assignedQuery->where(function ($q) {
+                $q->whereNull('qurbani_item_status')
+                  ->orWhere('qurbani_item_status', '!=', 'delivered');
+            });
+        } elseif ($show === 'delivered') {
+            $assignedQuery->where('qurbani_item_status', 'delivered');
+        }
+        $orderIds = $assignedQuery->pluck('order_id')->unique()->values();
+        if ($orderIds->isEmpty()) {
+            return ['bundles' => [], 'orders' => []];
+        }
+
+        $orders = \App\Models\CRM\OrderModel::with(['customer', 'lineItems' => function ($q) {
+                $q->select(
+                    'id', 'order_id', 'product_id', 'name', 'sku', 'quantity', 'unit_price', 'line_total',
+                    'qurbani_day', 'qurbani_slot', 'qurbani_region', 'qurbani_sub_region',
+                    'qurbani_delivery_type', 'qurbani_type', 'qurbani_paya',
+                    'qurbani_item_status', 'qurbani_assigned_rider_user_id',
+                    'qurbani_status_updated_at',
+                    'qurbani_slaughtered_at', 'qurbani_out_for_delivery_at', 'qurbani_delivered_at',
+                    'qurbani_delivery_priority', 'qurbani_estimated_delivery_at',
+                    'qurbani_eta_calculated_at', 'qurbani_dispatched_at', 'qurbani_dispatched_by',
+                    'qurbani_started_delivery_at',
+                    'instructions'
+                );
+            }, 'lineItems.product' => function ($q) {
+                $q->select('id', 'attribute_2');
+            }])
+            ->whereIn('id', $orderIds)
+            ->get();
+
+        // Compute bundles across ALL line items in each order so the
+        // bundle position chips match what the dispatch screen shows.
+        $bundleInputs = [];
+        foreach ($orders as $o) {
+            foreach ($o->lineItems as $li) {
+                $bundleInputs[] = [
+                    'id'                    => $li->id,
+                    'order_id'              => $li->order_id,
+                    'quantity'              => $li->quantity,
+                    'qurbani_day'           => $li->qurbani_day,
+                    'qurbani_slot'          => $li->qurbani_slot,
+                    'qurbani_delivery_type' => $li->qurbani_delivery_type,
+                    'category_level_2'      => $li->product->attribute_2 ?? null,
+                    'product_id'            => $li->product_id,
+                ];
+            }
+        }
+        $bundleMap = (new \App\Services\QurbaniBundleService())->computeBundles($bundleInputs);
+
+        $bundles = [];
+        $orderShells = [];
+        foreach ($orders as $order) {
+            $myItems = $order->lineItems->filter(function ($li) use ($riderId, $show) {
+                if ((int) $li->qurbani_assigned_rider_user_id !== (int) $riderId) return false;
+                $isDelivered = $li->qurbani_item_status === 'delivered';
+                if ($show === 'open') return !$isDelivered;
+                if ($show === 'delivered') return $isDelivered;
+                return true;
+            })->values();
+            if ($myItems->isEmpty()) continue;
+
+            $customerName = $order->name ?: trim(($order->address_first_name ?? '') . ' ' . ($order->address_last_name ?? ''));
+            if (!$customerName && $order->customer) {
+                $customerName = trim(($order->customer->first_name ?? '') . ' ' . ($order->customer->last_name ?? '')) ?: null;
+            }
+
+            $cust = $order->customer;
+            $hasCoords = $cust && !empty($cust->latitude) && !empty($cust->longitude);
+            $custLat = $hasCoords ? (float) $cust->latitude : null;
+            $custLng = $hasCoords ? (float) $cust->longitude : null;
+            // Verified-location metadata: who saved/last-updated the
+            // pin and when. Surfaced so the rider knows whose pin
+            // they're trusting before they tap an address.
+            $verifiedBy = $cust ? ($cust->verified_location_saved_by ?? null) : null;
+            $verifiedAt = $cust ? ($cust->verified_location_saved_at ?? null) : null;
+
+            $orderShells[$order->id] = [
+                'id' => $order->id,
+                'order_number' => $order->order_number,
+                'customer_id' => $order->customer_id,
+                'customer_name' => $customerName ?: 'Unknown',
+                'customer_phone' => $order->address_phone ?? ($cust->phone_original ?? ($cust->phone ?? null)),
+                'customer_address' => trim(implode(', ', array_filter([
+                    $order->address_line1, $order->address_line2, $order->address_city,
+                ]))),
+                'qurbani_region' => $order->qurbani_region,
+                'has_verified_location' => $hasCoords || ($cust && !empty($cust->verified_location_url)),
+                'cust_lat' => $custLat,
+                'cust_lng' => $custLng,
+                'verified_location_url' => $cust->verified_location_url ?? null,
+                'verified_location_saved_by' => $verifiedBy,
+                'verified_location_saved_at' => $verifiedAt ? (string) $verifiedAt : null,
+            ];
+
+            foreach ($myItems as $li) {
+                $b = $bundleMap[$li->id] ?? null;
+                $bk = $b['bundle_key'] ?? "no-bundle:{$li->id}";
+                if (!isset($bundles[$bk])) {
+                    $bundles[$bk] = [
+                        'bundle_key'              => $bk,
+                        'order_id'                => $order->id,
+                        'order_number'            => $order->order_number,
+                        'customer_id'             => $order->customer_id,
+                        'customer_name'           => $orderShells[$order->id]['customer_name'],
+                        'customer_phone'          => $orderShells[$order->id]['customer_phone'],
+                        'customer_address'        => $orderShells[$order->id]['customer_address'],
+                        'has_verified_location'   => $orderShells[$order->id]['has_verified_location'],
+                        'cust_lat'                => $custLat,
+                        'cust_lng'                => $custLng,
+                        'verified_location_url'   => $orderShells[$order->id]['verified_location_url'],
+                        'verified_location_saved_by' => $orderShells[$order->id]['verified_location_saved_by'],
+                        'verified_location_saved_at' => $orderShells[$order->id]['verified_location_saved_at'],
+                        'qurbani_day'             => $li->qurbani_day,
+                        'qurbani_slot'            => $li->qurbani_slot,
+                        'qurbani_delivery_type'   => $li->qurbani_delivery_type,
+                        'qurbani_region'          => $li->qurbani_region,
+                        'qurbani_sub_region'      => $li->qurbani_sub_region,
+                        'bundle_size'             => $b['bundle_size'] ?? null,
+                        'items'                   => [],
+                        'all_delivered'           => true,
+                        'any_ofd'                 => false,
+                        // Route metadata — pulled off the line item but
+                        // shared across the bundle (every line item in a
+                        // bundle stores the same priority / ETA).
+                        'qurbani_delivery_priority'      => $li->qurbani_delivery_priority,
+                        'qurbani_estimated_delivery_at'  => $li->qurbani_estimated_delivery_at
+                            ? (string) $li->qurbani_estimated_delivery_at : null,
+                        'qurbani_eta_calculated_at'      => $li->qurbani_eta_calculated_at
+                            ? (string) $li->qurbani_eta_calculated_at : null,
+                        'qurbani_dispatched_at'          => $li->qurbani_dispatched_at
+                            ? (string) $li->qurbani_dispatched_at : null,
+                        'qurbani_dispatched_by'          => $li->qurbani_dispatched_by,
+                        'qurbani_started_delivery_at'    => $li->qurbani_started_delivery_at
+                            ? (string) $li->qurbani_started_delivery_at : null,
+                        'qurbani_delivered_at'           => null,
+                    ];
+                }
+                $isDelivered = $li->qurbani_item_status === 'delivered';
+                if (!$isDelivered) $bundles[$bk]['all_delivered'] = false;
+                if (in_array($li->qurbani_item_status, ['out_for_delivery'], true)) $bundles[$bk]['any_ofd'] = true;
+                // Track the latest delivered_at for the bundle so we can
+                // surface "Actual Delivery Time" in the manager's review
+                // tab. Use latest because multiple items may have
+                // staggered delivery_at timestamps if the rider delivered
+                // them in pieces somehow.
+                if ($li->qurbani_delivered_at) {
+                    $existing = $bundles[$bk]['qurbani_delivered_at'];
+                    if (!$existing || strtotime((string) $li->qurbani_delivered_at) > strtotime($existing)) {
+                        $bundles[$bk]['qurbani_delivered_at'] = (string) $li->qurbani_delivered_at;
+                    }
+                }
+                $bundles[$bk]['items'][] = [
+                    'id' => $li->id,
+                    'name' => $li->name,
+                    'quantity' => (float) $li->quantity,
+                    'category_level_2' => $li->product->attribute_2 ?? null,
+                    'qurbani_type' => $li->qurbani_type,
+                    'qurbani_paya' => $li->qurbani_paya,
+                    'qurbani_item_status' => $li->qurbani_item_status,
+                    'qurbani_status_updated_at' => $li->qurbani_status_updated_at
+                        ? (string) $li->qurbani_status_updated_at : null,
+                    'instructions' => $li->instructions,
+                    'bundle_position_start' => $b['bundle_position_start'] ?? null,
+                    'bundle_position_end'   => $b['bundle_position_end'] ?? null,
+                    'bundle_size'           => $b['bundle_size'] ?? null,
+                    'bundle_item_count'     => $b['bundle_item_count'] ?? null,
+                ];
+            }
+        }
+
+        // Resolve verified_location_saved_by user IDs to names in one
+        // batch query — avoids N+1 when many bundles share the same
+        // verified-by user.
+        $verifierIds = [];
+        foreach ($bundles as $b) {
+            if (!empty($b['verified_location_saved_by'])) $verifierIds[] = $b['verified_location_saved_by'];
+        }
+        $verifierNames = [];
+        if (!empty($verifierIds)) {
+            $verifierNames = \DB::table('t_sys_user')
+                ->whereIn('id', array_unique($verifierIds))
+                ->pluck('fullname', 'id')
+                ->toArray();
+        }
+
+        // Sort items inside each bundle by packet position + finalize
+        // status fields used by the manager planner.
+        foreach ($bundles as &$bRef) {
+            usort($bRef['items'], function ($a, $b) {
+                $ap = $a['bundle_position_start'] ?? PHP_INT_MAX;
+                $bp = $b['bundle_position_start'] ?? PHP_INT_MAX;
+                return $ap <=> $bp;
+            });
+            // bundle_status surface: drives the rider/manager card chip.
+            if ($bRef['all_delivered']) {
+                $bRef['bundle_status'] = 'delivered';
+            } elseif ($bRef['any_ofd']) {
+                $bRef['bundle_status'] = 'out_for_delivery';
+            } else {
+                $bRef['bundle_status'] = 'pending';
+            }
+            // bundle_dispatch_status: orthogonal to delivery status —
+            // tells the manager planner whether this bundle is part of
+            // a frozen Dispatched batch (sequence locked, ETA set) or
+            // still Pending (can be optimised / re-sequenced).
+            //   delivered     all items delivered (terminal)
+            //   dispatched    has dispatched_at AND not all delivered
+            //   pending       no dispatched_at yet
+            if ($bRef['all_delivered']) {
+                $bRef['bundle_dispatch_status'] = 'delivered';
+            } elseif (!empty($bRef['qurbani_dispatched_at'])) {
+                $bRef['bundle_dispatch_status'] = 'dispatched';
+            } else {
+                $bRef['bundle_dispatch_status'] = 'pending';
+            }
+            // Resolve verifier name.
+            $vid = $bRef['verified_location_saved_by'] ?? null;
+            $bRef['verified_location_saved_by_name'] = ($vid && isset($verifierNames[$vid]))
+                ? $verifierNames[$vid] : null;
+        }
+        unset($bRef);
+
+        // Sort bundles globally by priority asc, NULL last; stable on
+        // (priority, customer_name, bundle_key).
+        $bundleList = array_values($bundles);
+        usort($bundleList, function ($a, $b) {
+            $pa = $a['qurbani_delivery_priority'] ?? null;
+            $pb = $b['qurbani_delivery_priority'] ?? null;
+            if ($pa === null && $pb === null) {
+                return strcmp($a['customer_name'] ?? '', $b['customer_name'] ?? '');
+            }
+            if ($pa === null) return 1;
+            if ($pb === null) return -1;
+            if ($pa === $pb) return strcmp($a['bundle_key'], $b['bundle_key']);
+            return $pa <=> $pb;
+        });
+
+        return ['bundles' => $bundleList, 'orders' => array_values($orderShells)];
+    }
+
+    /**
+     * Helper: route lock info for (rider_id, mode='qurbani').
+     */
+    private function getQurbaniRouteLockInfo($riderId): ?array
+    {
+        $lock = \DB::table('t_crm_route_lock as rl')
+            ->leftJoin('t_sys_user as u', 'u.id', '=', 'rl.locked_by')
+            ->where('rl.rider_id', $riderId)
+            ->where('rl.mode', 'qurbani')
+            ->select('rl.locked_by', 'u.fullname as locked_by_name', 'rl.locked_at')
+            ->first();
+
+        if (!$lock) return null;
+        return [
+            'locked_by' => (int) $lock->locked_by,
+            'locked_by_name' => $lock->locked_by_name,
+            'locked_at' => $lock->locked_at,
+        ];
+    }
+
+    /**
+     * Helper: enrich each bundle with ETA comparison (early/late/on time)
+     * once it has BOTH an estimated_delivery_at and a delivered_at.
+     */
+    private function enrichBundleEtaComparison(array &$bundles): void
+    {
+        foreach ($bundles as &$bundle) {
+            $bundle['eta_comparison'] = null;
+            $est = $bundle['qurbani_estimated_delivery_at'] ?? null;
+            $act = $bundle['qurbani_delivered_at'] ?? null;
+            if (!$est) continue;
+            $estTime = \Carbon\Carbon::parse($est);
+            if ($act) {
+                $actTime = \Carbon\Carbon::parse($act);
+                $diff = (int) round($actTime->diffInMinutes($estTime, false));
+                $bundle['eta_comparison'] = [
+                    'estimated_at_display' => $estTime->format('h:i A'),
+                    'actual_at_display' => $actTime->format('h:i A'),
+                    'diff_minutes' => $diff,
+                    'status' => $diff >= 0 ? 'early' : 'late',
+                    'on_time' => abs($diff) <= 5,
+                    'status_text' => $diff >= 0
+                        ? ($diff == 0 ? 'On time' : "{$diff} min early")
+                        : (abs($diff) . ' min late'),
+                ];
+            } else {
+                $bundle['eta_comparison'] = [
+                    'estimated_at_display' => $estTime->format('h:i A'),
+                    'actual_at_display' => null,
+                    'diff_minutes' => null,
+                    'status' => 'pending',
+                    'on_time' => null,
+                    'status_text' => 'ETA ' . $estTime->format('h:i A'),
+                ];
+            }
+        }
+        unset($bundle);
+    }
+
+    /**
+     * GET /rider/qurbani/riders
+     *
+     * Manager view: list every rider that currently has at least one
+     * Qurbani line item assigned to them. For each rider returns a small
+     * summary so the sidebar list can show counts without us round-
+     * tripping for each rider.
+     */
+    public function getQurbaniRidersSummary(Request $request)
+    {
+        try {
+            $user = Auth::user();
+            if (!$user->hasMobilePermission('access_qurbani_mode')) {
+                return response()->json(['success' => false, 'message' => 'Permission denied'], 403);
+            }
+
+            $rows = \DB::table('t_crm_prod_order_line_item as li')
+                ->join('t_sys_user as u', 'u.id', '=', 'li.qurbani_assigned_rider_user_id')
+                ->whereNotNull('li.qurbani_assigned_rider_user_id')
+                ->select([
+                    'u.id as rider_id',
+                    'u.fullname as rider_name',
+                    \DB::raw("SUM(CASE WHEN li.qurbani_item_status='out_for_delivery' THEN 1 ELSE 0 END) as ofd_items"),
+                    \DB::raw("SUM(CASE WHEN li.qurbani_item_status='delivered' THEN 1 ELSE 0 END) as delivered_items"),
+                    \DB::raw("SUM(CASE WHEN li.qurbani_item_status IS NULL OR li.qurbani_item_status NOT IN ('delivered','out_for_delivery') THEN 1 ELSE 0 END) as pending_items"),
+                    \DB::raw("MAX(li.qurbani_dispatched_at) as last_dispatched_at"),
+                ])
+                ->groupBy('u.id', 'u.fullname')
+                ->orderBy('u.fullname', 'asc')
+                ->get();
+
+            // Pull qurbani route locks in one shot.
+            $locks = \DB::table('t_crm_route_lock as rl')
+                ->leftJoin('t_sys_user as u', 'u.id', '=', 'rl.locked_by')
+                ->where('rl.mode', 'qurbani')
+                ->select('rl.rider_id', 'rl.locked_by', 'u.fullname as locked_by_name', 'rl.locked_at')
+                ->get()
+                ->keyBy('rider_id');
+
+            $payload = [];
+            foreach ($rows as $r) {
+                $lock = $locks[$r->rider_id] ?? null;
+                $payload[] = [
+                    'rider_id' => (int) $r->rider_id,
+                    'rider_name' => $r->rider_name,
+                    'pending_items' => (int) $r->pending_items,
+                    'ofd_items' => (int) $r->ofd_items,
+                    'delivered_items' => (int) $r->delivered_items,
+                    'last_dispatched_at' => $r->last_dispatched_at ? (string) $r->last_dispatched_at : null,
+                    'route_locked' => (bool) $lock,
+                    'route_lock' => $lock ? [
+                        'locked_by' => (int) $lock->locked_by,
+                        'locked_by_name' => $lock->locked_by_name,
+                        'locked_at' => $lock->locked_at,
+                    ] : null,
+                ];
+            }
+
+            return response()->json(['success' => true, 'riders' => $payload]);
+        } catch (\Exception $e) {
+            \Log::error('Failed to load qurbani riders summary', ['error' => $e->getMessage()]);
+            return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
+        }
+    }
+
+    /**
+     * GET /rider/qurbani/riders/{riderId}/route?show=ofd|delivered|all
+     *
+     * Returns the rider's bundle-grouped route with route metadata and
+     * lock state. Caller can be the manager (any auth'd user with
+     * access_qurbani_mode) or the rider themselves (so they see what was
+     * dispatched to them in the Qurbani delivery view).
+     */
+    public function getQurbaniRiderRoute(Request $request, $riderId)
+    {
+        try {
+            $user = Auth::user();
+            $isOwnRoute = ((int) $user->id === (int) $riderId);
+            // Riders can always see their own route (no qurbani-mode
+            // permission gate). Managers viewing someone else's route
+            // need the qurbani-mode permission.
+            if (!$isOwnRoute && !$user->hasMobilePermission('access_qurbani_mode')) {
+                return response()->json(['success' => false, 'message' => 'Permission denied'], 403);
+            }
+
+            $show = strtolower((string) $request->get('show', 'ofd'));
+            // Accept 'ofd' as alias for 'open' but restrict to OFD-only
+            // when the manager wants to see the active dispatch list.
+            $filter = $show;
+            if ($show === 'ofd') {
+                $filter = 'open';
+            }
+            if (!in_array($filter, ['open', 'delivered', 'all'], true)) {
+                $filter = 'open';
+            }
+            $route = $this->buildQurbaniRiderRoute($riderId, $filter);
+            $bundles = $route['bundles'];
+
+            // If the caller asked specifically for "ofd" we further trim
+            // to bundles whose status is out_for_delivery (skips bundles
+            // still in pending / slaughtered for the manager planner).
+            if ($show === 'ofd') {
+                $bundles = array_values(array_filter($bundles, function ($b) {
+                    return ($b['bundle_status'] ?? '') === 'out_for_delivery';
+                }));
+            }
+
+            $this->enrichBundleEtaComparison($bundles);
+
+            $rider = \DB::table('t_sys_user')
+                ->where('id', $riderId)
+                ->select('id', 'fullname')
+                ->first();
+
+            // Aggregate dispatch metadata from the bundles (use latest
+            // dispatched_at across all bundles since the route is
+            // dispatched as one unit).
+            $latestDispatchedAt = null;
+            $latestDispatchedBy = null;
+            $latestStartedAt = null;
+            foreach ($bundles as $b) {
+                if (!empty($b['qurbani_dispatched_at'])) {
+                    if (!$latestDispatchedAt || strtotime($b['qurbani_dispatched_at']) > strtotime($latestDispatchedAt)) {
+                        $latestDispatchedAt = $b['qurbani_dispatched_at'];
+                        $latestDispatchedBy = $b['qurbani_dispatched_by'] ?? null;
+                    }
+                }
+                if (!empty($b['qurbani_started_delivery_at'])) {
+                    if (!$latestStartedAt || strtotime($b['qurbani_started_delivery_at']) > strtotime($latestStartedAt)) {
+                        $latestStartedAt = $b['qurbani_started_delivery_at'];
+                    }
+                }
+            }
+            $dispatchedByName = null;
+            if ($latestDispatchedBy) {
+                $dispatchedByName = \DB::table('t_sys_user')->where('id', $latestDispatchedBy)->value('fullname');
+            }
+
+            return response()->json([
+                'success' => true,
+                'rider' => $rider ? ['id' => (int) $rider->id, 'name' => $rider->fullname] : null,
+                'bundles' => $bundles,
+                'route_lock' => $this->getQurbaniRouteLockInfo($riderId),
+                'dispatch' => [
+                    'dispatched_at' => $latestDispatchedAt,
+                    'dispatched_by' => $latestDispatchedBy ? (int) $latestDispatchedBy : null,
+                    'dispatched_by_name' => $dispatchedByName,
+                    'started_delivery_at' => $latestStartedAt,
+                ],
+            ]);
+        } catch (\Exception $e) {
+            \Log::error('Failed to load qurbani rider route', [
+                'rider_id' => $riderId,
+                'error' => $e->getMessage(),
+            ]);
+            return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
+        }
+    }
+
+    /**
+     * POST /rider/qurbani/riders/{riderId}/optimize-route
+     *
+     * Dry-run: returns a suggested bundle ordering based on Google
+     * nearest-neighbour. Does NOT persist anything — the manager
+     * confirms by pressing Set Route which calls saveQurbaniRoute().
+     *
+     * Note: works on BUNDLES (one stop per bundle) — multiple items
+     * inside the same bundle collapse to a single waypoint because the
+     * rider drops them all off in one stop.
+     */
+    public function optimizeQurbaniRoute(Request $request, $riderId)
+    {
+        try {
+            $user = Auth::user();
+            if (!$user->hasMobilePermission('access_qurbani_mode')) {
+                return response()->json(['success' => false, 'message' => 'Permission denied'], 403);
+            }
+
+            $rider = \DB::table('t_sys_user')
+                ->where('id', $riderId)
+                ->where('is_active', 1)
+                ->select('id', 'fullname')
+                ->first();
+            if (!$rider) {
+                return response()->json(['success' => false, 'message' => 'Rider not found'], 404);
+            }
+
+            // Origin = rider's recent GPS, fallback to assigned base location.
+            $riderLocation = \DB::table('t_ops_rider_location')
+                ->where('user_id', $riderId)
+                ->where('captured_at', '>=', now()->subMinutes(30))
+                ->orderBy('captured_at', 'desc')
+                ->first();
+
+            $usedShopLocation = false;
+            if (!$riderLocation) {
+                $baseLocation = \App\Services\LocationService::getUserAssignedLocation($riderId)
+                    ?? \App\Services\LocationService::getPrimaryBaseLocation();
+                if (!$baseLocation || !$baseLocation->latitude || !$baseLocation->longitude) {
+                    return response()->json([
+                        'success' => false,
+                        'message' => "Rider GPS not active and no shop location configured.",
+                    ], 400);
+                }
+                $riderLocation = (object) [
+                    'latitude' => $baseLocation->latitude,
+                    'longitude' => $baseLocation->longitude,
+                ];
+                $usedShopLocation = true;
+            }
+
+            // Optimise PENDING out-for-delivery bundles only — the
+            // already-dispatched batch is frozen by design (the manager
+            // wants to plan around it without disrupting a running
+            // delivery run). Already-dispatched bundles keep their
+            // priority and ETA untouched here.
+            $route = $this->buildQurbaniRiderRoute($riderId, 'open');
+            $bundles = array_values(array_filter($route['bundles'], function ($b) {
+                return ($b['bundle_status'] ?? '') === 'out_for_delivery'
+                    && ($b['bundle_dispatch_status'] ?? '') === 'pending';
+            }));
+
+            if (empty($bundles)) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'No pending out-for-delivery bundles to optimize. Already-dispatched bundles are frozen.',
+                ], 400);
+            }
+
+            // Continue priority numbering AFTER the existing dispatched
+            // batch so saved priorities don't collide.
+            $maxDispatchedPriority = 0;
+            foreach ($route['bundles'] as $b) {
+                if (($b['bundle_dispatch_status'] ?? '') === 'dispatched'
+                    && $b['qurbani_delivery_priority'] !== null
+                    && (int) $b['qurbani_delivery_priority'] > $maxDispatchedPriority) {
+                    $maxDispatchedPriority = (int) $b['qurbani_delivery_priority'];
+                }
+            }
+
+            $waypoints = [['lat' => (float) $riderLocation->latitude, 'lng' => (float) $riderLocation->longitude]];
+            $bundlesWithLoc = [];
+            $unverified = [];
+            $noLocation = [];
+            foreach ($bundles as $b) {
+                if ($b['cust_lat'] && $b['cust_lng']) {
+                    $waypoints[] = ['lat' => (float) $b['cust_lat'], 'lng' => (float) $b['cust_lng']];
+                    $bundlesWithLoc[] = $b;
+                } else {
+                    $noLocation[] = $b['order_number'] . ' (' . $b['customer_name'] . ')';
+                }
+            }
+            if (count($bundlesWithLoc) === 0) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'No bundles have GPS coordinates — verify customer locations first.',
+                ], 400);
+            }
+
+            $result = $this->getOptimizedRouteFromGoogle($waypoints);
+            if (!$result) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Failed to optimize route (Google API error or limit reached).',
+                ], 500);
+            }
+
+            // Build optimised sequence with cumulative travel + 5 min
+            // buffer between stops (per user spec — different from
+            // regular orders' 10 min). ETA is clock time of arrival.
+            $stopBufferMinutes = 5;
+            $now = now();
+            $cumulative = 0;
+            $optimised = [];
+            foreach ($result['waypoint_order'] as $idx => $originalIndex) {
+                $b = $bundlesWithLoc[$originalIndex];
+                $legDuration = $result['legs'][$idx] ?? 0;
+                $cumulative += $legDuration;
+                $estAt = $now->copy()->addMinutes(round($cumulative));
+                $optimised[] = [
+                    'bundle_key' => $b['bundle_key'],
+                    'order_id' => $b['order_id'],
+                    'order_number' => $b['order_number'],
+                    'customer_name' => $b['customer_name'],
+                    // Priorities continue AFTER the dispatched batch's
+                    // max so saving doesn't reshuffle dispatched stops.
+                    'priority' => $maxDispatchedPriority + $idx + 1,
+                    'travel_minutes' => round($legDuration),
+                    'cumulative_minutes' => round($cumulative),
+                    'estimated_at' => $estAt->format('h:i A'),
+                ];
+                $cumulative += $stopBufferMinutes;
+            }
+
+            $response = [
+                'success' => true,
+                'optimized_sequence' => $optimised,
+                'total_time_minutes' => round($cumulative - $stopBufferMinutes),
+                'total_distance_km' => $result['total_distance_km'] ?? null,
+                'bundles_count' => count($optimised),
+                'no_location_bundles' => $noLocation,
+            ];
+            if ($usedShopLocation) {
+                $response['gps_warning'] = "Rider GPS not active — route optimized from shop location.";
+            }
+            return response()->json($response);
+        } catch (\Exception $e) {
+            \Log::error('Qurbani optimize route failed', [
+                'rider_id' => $riderId,
+                'error' => $e->getMessage(),
+            ]);
+            return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
+        }
+    }
+
+    /**
+     * POST /rider/qurbani/riders/{riderId}/save-route
+     * Body: { sequence: [{ bundle_key, priority }, ...] }
+     *
+     * Persists qurbani_delivery_priority to every line item in each
+     * named bundle. Rejects if the route is locked by someone else.
+     *
+     * Caller can be the manager (any user with access_qurbani_mode) or
+     * the rider themselves — if locked by the manager, the rider can't
+     * resequence, but can still call dispatch.
+     */
+    public function saveQurbaniRoute(Request $request, $riderId)
+    {
+        try {
+            $user = Auth::user();
+            $isOwnRoute = ((int) $user->id === (int) $riderId);
+            if (!$isOwnRoute && !$user->hasMobilePermission('access_qurbani_mode')) {
+                return response()->json(['success' => false, 'message' => 'Permission denied'], 403);
+            }
+
+            $validated = $request->validate([
+                'sequence' => 'required|array|min:1',
+                'sequence.*.bundle_key' => 'required|string',
+                'sequence.*.priority' => 'required|integer|min:1',
+            ]);
+
+            // Lock check (mode='qurbani').
+            $lock = $this->getQurbaniRouteLockInfo($riderId);
+            if ($lock && (int) $lock['locked_by'] !== (int) $user->id) {
+                return response()->json([
+                    'success' => false,
+                    'message' => "Route is locked by {$lock['locked_by_name']}. Unlock it first to change the sequence.",
+                    'route_locked' => true,
+                    'locked_by_name' => $lock['locked_by_name'],
+                ], 423);
+            }
+
+            // Re-compute bundles for THIS rider so we can resolve
+            // bundle_key -> set of line_item ids server-side. Don't
+            // trust client-provided line_item ids — bundle_key is
+            // deterministic but the client should never enumerate item
+            // ids for an assignment update.
+            $route = $this->buildQurbaniRiderRoute($riderId, 'all');
+            $bundles = $route['bundles'];
+            $byKey = [];
+            foreach ($bundles as $b) {
+                $byKey[$b['bundle_key']] = $b;
+            }
+
+            \DB::beginTransaction();
+            $updatedBundles = 0;
+            $updatedItems = 0;
+            $skippedDispatched = 0;
+            foreach ($validated['sequence'] as $entry) {
+                $b = $byKey[$entry['bundle_key']] ?? null;
+                if (!$b) continue; // bundle no longer exists — skip silently
+                // Dispatched bundles are frozen — skip silently. The
+                // client SHOULD only send pending bundles, but we
+                // enforce here defensively so a stale UI can't kick
+                // the dispatched batch out of sequence.
+                if (($b['bundle_dispatch_status'] ?? '') === 'dispatched') {
+                    $skippedDispatched++;
+                    continue;
+                }
+                $itemIds = array_map(fn($it) => $it['id'], $b['items']);
+                if (empty($itemIds)) continue;
+                $rows = \DB::table('t_crm_prod_order_line_item')
+                    ->whereIn('id', $itemIds)
+                    ->where('qurbani_assigned_rider_user_id', $riderId)
+                    ->whereNull('qurbani_dispatched_at') // belt + suspenders
+                    ->update([
+                        'qurbani_delivery_priority' => $entry['priority'],
+                        'updated_at' => now(),
+                    ]);
+                if ($rows > 0) {
+                    $updatedBundles++;
+                    $updatedItems += $rows;
+                }
+            }
+            \DB::commit();
+
+            $msg = "Route saved ({$updatedBundles} bundles, {$updatedItems} items).";
+            if ($skippedDispatched > 0) {
+                $msg .= " {$skippedDispatched} already-dispatched bundle(s) kept frozen.";
+            }
+            return response()->json([
+                'success' => true,
+                'message' => $msg,
+                'updated_bundles' => $updatedBundles,
+                'updated_items' => $updatedItems,
+                'skipped_dispatched' => $skippedDispatched,
+            ]);
+        } catch (\Illuminate\Validation\ValidationException $e) {
+            return response()->json(['success' => false, 'message' => 'Validation failed', 'errors' => $e->errors()], 422);
+        } catch (\Exception $e) {
+            \DB::rollBack();
+            \Log::error('Qurbani save route failed', [
+                'rider_id' => $riderId,
+                'error' => $e->getMessage(),
+            ]);
+            return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
+        }
+    }
+
+    /**
+     * POST /rider/qurbani/riders/{riderId}/dispatch
+     * Body (optional):
+     *   target:   'pending' (default)  | 'refresh'
+     *   sequence: [{ bundle_key, priority }, ...]   — only honoured for
+     *             target='pending' on unlocked / self-locked routes.
+     *
+     * target='pending' — manager Dispatch button + rider Start Delivery:
+     *   - Operates ONLY on bundles with qurbani_dispatched_at IS NULL
+     *     (the "Pending" batch — what the user wants to commit).
+     *   - Stamps qurbani_dispatched_at/by + ETAs + (rider only) the
+     *     first qurbani_started_delivery_at.
+     *   - Already-dispatched bundles are NOT touched. Their ETA stays
+     *     fixed and their priority stays where it was. This is the
+     *     "freeze the dispatched batch" behaviour — managers can keep
+     *     planning new bundles without disrupting an in-flight run.
+     *
+     * target='refresh' — manager-only Refresh ETA button:
+     *   - Operates ONLY on bundles with qurbani_dispatched_at IS NOT NULL
+     *     AND not delivered (the "Dispatched" batch).
+     *   - Recomputes and updates qurbani_estimated_delivery_at +
+     *     qurbani_eta_calculated_at. Sequence is preserved (we walk
+     *     bundles in current priority order). Does NOT change
+     *     qurbani_dispatched_at/by — the original dispatch is still
+     *     the same dispatch event.
+     *   - Riders cannot call this. They get one shot at ETA refresh
+     *     by pressing Start Delivery; after that, any traffic-driven
+     *     ETA update is the manager's responsibility.
+     */
+    public function dispatchQurbaniRoute(Request $request, $riderId)
+    {
+        try {
+            $user = Auth::user();
+            $isOwnRoute = ((int) $user->id === (int) $riderId);
+            if (!$isOwnRoute && !$user->hasMobilePermission('access_qurbani_mode')) {
+                return response()->json(['success' => false, 'message' => 'Permission denied'], 403);
+            }
+
+            // 'pending' (default) | 'refresh'
+            $target = strtolower((string) $request->input('target', 'pending'));
+            if (!in_array($target, ['pending', 'refresh'], true)) $target = 'pending';
+            // Only managers can hit the refresh path. Riders pressing
+            // their Start Delivery button always go through 'pending'.
+            if ($target === 'refresh' && $isOwnRoute && !$user->hasMobilePermission('access_qurbani_mode')) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'ETA refresh is manager-only.',
+                ], 403);
+            }
+
+            $rider = \DB::table('t_sys_user')
+                ->where('id', $riderId)
+                ->where('is_active', 1)
+                ->select('id', 'fullname')
+                ->first();
+            if (!$rider) {
+                return response()->json(['success' => false, 'message' => 'Rider not found'], 404);
+            }
+
+            // Origin = rider GPS, fallback to base location.
+            $riderLocation = \DB::table('t_ops_rider_location')
+                ->where('user_id', $riderId)
+                ->where('captured_at', '>=', now()->subMinutes(30))
+                ->orderBy('captured_at', 'desc')
+                ->first();
+            $usedShopLocation = false;
+            if (!$riderLocation) {
+                $baseLocation = \App\Services\LocationService::getUserAssignedLocation($riderId)
+                    ?? \App\Services\LocationService::getPrimaryBaseLocation();
+                if (!$baseLocation || !$baseLocation->latitude || !$baseLocation->longitude) {
+                    return response()->json([
+                        'success' => false,
+                        'message' => 'Rider GPS not active and no shop location configured.',
+                    ], 400);
+                }
+                $riderLocation = (object) [
+                    'latitude' => $baseLocation->latitude,
+                    'longitude' => $baseLocation->longitude,
+                ];
+                $usedShopLocation = true;
+            }
+
+            $sequence = $request->input('sequence', []);
+
+            \DB::beginTransaction();
+
+            // Optionally persist priorities if caller supplied a sequence
+            // AND the route is not locked by someone else AND we're in
+            // 'pending' mode (refreshing dispatched ETAs never touches
+            // the sequence).
+            if ($target === 'pending' && !empty($sequence)) {
+                $lock = $this->getQurbaniRouteLockInfo($riderId);
+                if (!$lock || (int) $lock['locked_by'] === (int) $user->id) {
+                    $route = $this->buildQurbaniRiderRoute($riderId, 'all');
+                    $byKey = [];
+                    foreach ($route['bundles'] as $b) {
+                        $byKey[$b['bundle_key']] = $b;
+                    }
+                    foreach ($sequence as $entry) {
+                        $b = $byKey[$entry['bundle_key']] ?? null;
+                        if (!$b) continue;
+                        // Don't reshuffle the dispatched batch even if a
+                        // stale client sends those keys.
+                        if (($b['bundle_dispatch_status'] ?? '') === 'dispatched') continue;
+                        $itemIds = array_map(fn($it) => $it['id'], $b['items']);
+                        if (empty($itemIds)) continue;
+                        \DB::table('t_crm_prod_order_line_item')
+                            ->whereIn('id', $itemIds)
+                            ->where('qurbani_assigned_rider_user_id', $riderId)
+                            ->whereNull('qurbani_dispatched_at')
+                            ->update([
+                                'qurbani_delivery_priority' => $entry['priority'],
+                                'updated_at' => now(),
+                            ]);
+                    }
+                }
+                // If route IS locked by someone else, ignore the
+                // sequence silently — rider can still get a fresh ETA on
+                // the existing locked route.
+            }
+
+            // Choose the bundle set to dispatch based on target.
+            //   pending  → only never-dispatched OFD bundles
+            //   refresh  → only already-dispatched (not delivered) bundles
+            $route = $this->buildQurbaniRiderRoute($riderId, 'open');
+            $ofdBundles = array_values(array_filter($route['bundles'], function ($b) use ($target) {
+                if (($b['bundle_status'] ?? '') !== 'out_for_delivery') return false;
+                $ds = $b['bundle_dispatch_status'] ?? 'pending';
+                return $target === 'refresh' ? ($ds === 'dispatched') : ($ds === 'pending');
+            }));
+
+            if (empty($ofdBundles)) {
+                \DB::rollBack();
+                return response()->json([
+                    'success' => false,
+                    'message' => $target === 'refresh'
+                        ? 'No dispatched bundles to refresh.'
+                        : 'No pending out-for-delivery bundles to dispatch.',
+                ], 400);
+            }
+
+            // Build waypoints in order. Skip bundles without coords; we
+            // still dispatch them but their ETA stays NULL.
+            $waypoints = [['lat' => (float) $riderLocation->latitude, 'lng' => (float) $riderLocation->longitude]];
+            $bundlesWithLoc = [];
+            $bundlesNoLoc = [];
+            foreach ($ofdBundles as $b) {
+                if ($b['cust_lat'] && $b['cust_lng']) {
+                    $waypoints[] = ['lat' => (float) $b['cust_lat'], 'lng' => (float) $b['cust_lng']];
+                    $bundlesWithLoc[] = $b;
+                } else {
+                    $bundlesNoLoc[] = $b;
+                }
+            }
+
+            $estimatedAtByBundle = [];
+            $totalDuration = 0;
+            if (count($bundlesWithLoc) > 0) {
+                $etaResult = $this->getMultiStopEtaFromGoogle($waypoints);
+                if (!$etaResult) {
+                    \DB::rollBack();
+                    return response()->json([
+                        'success' => false,
+                        'message' => 'Failed to compute ETAs (Google API error or limit reached).',
+                    ], 500);
+                }
+                $stopBufferMinutes = 5;
+                $cumulative = 0;
+                $now = now();
+                foreach ($bundlesWithLoc as $idx => $b) {
+                    $legDuration = $etaResult['legs'][$idx] ?? 0;
+                    $cumulative += $legDuration;
+                    $estAt = $now->copy()->addMinutes(round($cumulative));
+                    $estimatedAtByBundle[$b['bundle_key']] = $estAt;
+                    $cumulative += $stopBufferMinutes;
+                }
+                $totalDuration = round($cumulative);
+            }
+
+            // Persist ETAs (and on 'pending' also dispatched_at) on every
+            // line item in each OFD bundle. Already-delivered items are
+            // filtered out above.
+            $dispatchedAt = now();
+            // Rider's Start Delivery is always 'pending' target — that
+            // first press is what stamps started_delivery_at.
+            $startedAt = ($target === 'pending' && $isOwnRoute) ? $dispatchedAt : null;
+            $itemsTouched = 0;
+            foreach ($ofdBundles as $b) {
+                $itemIds = array_map(fn($it) => $it['id'], $b['items']);
+                if (empty($itemIds)) continue;
+                $estAt = $estimatedAtByBundle[$b['bundle_key']] ?? null;
+
+                $update = [
+                    'updated_at' => now(),
+                ];
+                // Only stamp dispatched_at on a fresh dispatch — refresh
+                // preserves the original dispatch event.
+                if ($target === 'pending') {
+                    $update['qurbani_dispatched_at'] = $dispatchedAt;
+                    $update['qurbani_dispatched_by'] = $user->id;
+                }
+                if ($estAt) {
+                    $update['qurbani_estimated_delivery_at'] = $estAt;
+                    $update['qurbani_eta_calculated_at'] = $dispatchedAt;
+                }
+                if ($startedAt) {
+                    // COALESCE so we record only the FIRST time the
+                    // rider started — repeat-presses don't reset it.
+                    $update['qurbani_started_delivery_at'] = \DB::raw(
+                        "COALESCE(qurbani_started_delivery_at, '" . $startedAt->toDateTimeString() . "')"
+                    );
+                }
+
+                $itemsTouched += \DB::table('t_crm_prod_order_line_item')
+                    ->whereIn('id', $itemIds)
+                    ->where('qurbani_assigned_rider_user_id', $riderId)
+                    ->update($update);
+            }
+
+            \DB::commit();
+
+            \Log::info('Qurbani route ' . ($target === 'refresh' ? 'ETAs refreshed' : 'dispatched'), [
+                'rider_id' => $riderId,
+                'target' => $target,
+                'dispatched_by' => $user->id,
+                'is_own_route' => $isOwnRoute,
+                'bundles' => count($ofdBundles),
+                'items_touched' => $itemsTouched,
+                'total_duration_minutes' => $totalDuration,
+            ]);
+
+            if ($target === 'refresh') {
+                $msg = "ETAs refreshed for " . count($ofdBundles) . ' dispatched bundle(s).';
+            } elseif ($isOwnRoute) {
+                $msg = 'Delivery started — ETAs computed.';
+            } else {
+                $msg = "Dispatched {$itemsTouched} items across " . count($ofdBundles) . ' bundles.';
+            }
+
+            $response = [
+                'success' => true,
+                'target' => $target,
+                'message' => $msg,
+                'bundles_count' => count($ofdBundles),
+                'items_touched' => $itemsTouched,
+                'total_duration_minutes' => $totalDuration,
+                'dispatched_at' => $target === 'pending' ? $dispatchedAt->toIso8601String() : null,
+                'dispatched_by' => $target === 'pending' ? $user->id : null,
+                'dispatched_by_name' => $target === 'pending' ? $user->fullname : null,
+                'is_own_route' => $isOwnRoute,
+                'started_delivery_at' => $startedAt ? $startedAt->toIso8601String() : null,
+                'no_location_bundles' => array_map(function ($b) {
+                    return $b['order_number'] . ' (' . $b['customer_name'] . ')';
+                }, $bundlesNoLoc),
+            ];
+            if ($usedShopLocation) {
+                $response['gps_warning'] = 'Rider GPS not active — ETAs computed from shop location.';
+            }
+            return response()->json($response);
+        } catch (\Exception $e) {
+            \DB::rollBack();
+            \Log::error('Qurbani dispatch failed', [
+                'rider_id' => $riderId,
+                'error' => $e->getMessage(),
+            ]);
+            return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
+        }
+    }
+
+    /**
+     * POST /rider/qurbani/riders/{riderId}/lock-route
+     * Locks the qurbani-mode route for this rider so other users can't
+     * resequence. Coexists with regular-orders lock via mode='qurbani'.
+     */
+    public function lockQurbaniRoute(Request $request, $riderId)
+    {
+        try {
+            $user = Auth::user();
+            if (!$user->hasMobilePermission('access_qurbani_mode')) {
+                return response()->json(['success' => false, 'message' => 'Permission denied'], 403);
+            }
+
+            $existing = \DB::table('t_crm_route_lock')
+                ->where('rider_id', $riderId)
+                ->where('mode', 'qurbani')
+                ->first();
+            if ($existing) {
+                if ($existing->locked_by == $user->id) {
+                    return response()->json(['success' => true, 'message' => 'Route already locked by you']);
+                }
+                $lockerName = \DB::table('t_sys_user')->where('id', $existing->locked_by)->value('fullname');
+                return response()->json([
+                    'success' => false,
+                    'message' => "Route is already locked by {$lockerName}",
+                    'locked_by_name' => $lockerName,
+                ], 409);
+            }
+
+            \DB::table('t_crm_route_lock')->insert([
+                'rider_id' => $riderId,
+                'locked_by' => $user->id,
+                'locked_at' => now(),
+                'mode' => 'qurbani',
+            ]);
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Route locked',
+                'route_lock' => [
+                    'locked_by' => $user->id,
+                    'locked_by_name' => $user->fullname,
+                    'locked_at' => now()->toIso8601String(),
+                ],
+            ]);
+        } catch (\Exception $e) {
+            \Log::error('Qurbani lock route error: ' . $e->getMessage());
+            return response()->json(['success' => false, 'message' => 'Failed to lock route'], 500);
+        }
+    }
+
+    /**
+     * DELETE /rider/qurbani/riders/{riderId}/lock-route
+     * Unlocks the qurbani-mode route. Anyone with qurbani-mode
+     * permission can unlock — matches the regular-orders behaviour.
+     */
+    public function unlockQurbaniRoute(Request $request, $riderId)
+    {
+        try {
+            $user = Auth::user();
+            if (!$user->hasMobilePermission('access_qurbani_mode')) {
+                return response()->json(['success' => false, 'message' => 'Permission denied'], 403);
+            }
+            \DB::table('t_crm_route_lock')
+                ->where('rider_id', $riderId)
+                ->where('mode', 'qurbani')
+                ->delete();
+            return response()->json(['success' => true, 'message' => 'Route unlocked']);
+        } catch (\Exception $e) {
+            \Log::error('Qurbani unlock route error: ' . $e->getMessage());
+            return response()->json(['success' => false, 'message' => 'Failed to unlock route'], 500);
         }
     }
 }

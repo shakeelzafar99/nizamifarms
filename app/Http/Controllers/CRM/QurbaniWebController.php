@@ -4,12 +4,23 @@ namespace App\Http\Controllers\CRM;
 
 use App\Http\Controllers\Controller;
 use App\Models\FIN\ConfigModel;
+use App\Services\QurbaniBundleService;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
 
 class QurbaniWebController extends Controller
 {
-    public function orders()
+    /**
+     * /qurbani/invoices  (formerly /qurbani/orders).
+     *
+     * The invoice-level Qurbani page — one row per order, with payment /
+     * stamp / WhatsApp / Invoice action buttons. Renamed in May-2026 to
+     * make room for the new region-wise item-level Qurbani Orders page
+     * (see orders() below) which mirrors the mobile dispatch layout and
+     * drives the Box Label printer.
+     */
+    public function invoices()
     {
         $fieldOptions = DB::table('t_crm_qurbani_field_options')
             ->where('is_active', 1)
@@ -75,7 +86,7 @@ class QurbaniWebController extends Controller
             $defaultPaymentMethod = 'cash';
         }
 
-        return view('pages.qurbani.orders', compact(
+        return view('pages.qurbani.invoices', compact(
             'regions', 'subRegions', 'days', 'slots', 'deliveryTypes',
             'qurbaniTypes', 'payaOptions',
             'categories', 'riders', 'fieldOptions', 'isTaimur',
@@ -83,7 +94,10 @@ class QurbaniWebController extends Controller
         ));
     }
 
-    public function getOrders(Request $request)
+    /**
+     * JSON feed for the invoices page (formerly getOrders).
+     */
+    public function getInvoices(Request $request)
     {
         $query = DB::table('t_crm_prod_order as o')
             ->leftJoin('t_crm_prod_customer as c', 'o.customer_id', '=', 'c.id')
@@ -1054,5 +1068,748 @@ class QurbaniWebController extends Controller
             \Log::error("Failed to delete qurbani order", ['order_id' => $id, 'error' => $e->getMessage()]);
             return response()->json(['success' => false, 'message' => 'Failed to delete order: ' . $e->getMessage()], 500);
         }
+    }
+
+    // =========================================================================
+    // QURBANI ORDERS — region-wise item-level page (May-2026)
+    // =========================================================================
+    //
+    // The new Qurbani Orders page mirrors the mobile QurbaniOpenOrdersScreen
+    // dispatch view: each row is a LINE ITEM (not an invoice), grouped on
+    // the client by Status > Region > Sub-region. The smart-box bundle
+    // position is computed via the SAME QurbaniBundleService the mobile app
+    // uses, so the X/Y on a row matches the mobile pixel-for-pixel.
+    //
+    // The page also drives the Box Label printer:
+    //   - getBoxLabels()        expands line items into per-packet labels
+    //   - markBoxesPrinted()    flags packets as printed in t_crm_qurbani_box_print
+    //   - unmarkBoxesPrinted()  rolls back a misprint
+    //
+    // Critical bundle math:
+    //   When the user filters by Category=Bakra (or qurbani_type / paya),
+    //   the X/Y on the labels MUST reflect the FULL bundle, not the filtered
+    //   subset. So a Bakra-only filter on a 2 Bakra + 2 Hissa same-slot
+    //   bundle prints "1/4" and "2/4" — never "1/2" and "2/2".
+    //
+    //   We achieve this by:
+    //     1. Running the qualifying-orders query WITHOUT the per-item
+    //        filters that could split a bundle (category / qurbani_type /
+    //        qurbani_paya) — that gives us every line item in every
+    //        affected bundle.
+    //     2. Computing bundles via QurbaniBundleService → bundle_size.
+    //     3. Expanding to one row per packet (line_item.quantity rows).
+    //     4. THEN filtering the expanded list to the user's category /
+    //        qurbani_type / qurbani_paya. Position numbers stay frozen.
+
+    public function orders()
+    {
+        $fieldOptions = DB::table('t_crm_qurbani_field_options')
+            ->where('is_active', 1)
+            ->orderBy('field_name')
+            ->orderBy('display_order')
+            ->get()
+            ->groupBy('field_name');
+
+        $regions       = ($fieldOptions['qurbani_region'] ?? collect())->pluck('option_value');
+        $subRegions    = ($fieldOptions['qurbani_sub_region'] ?? collect())->pluck('option_value');
+        $days          = ($fieldOptions['qurbani_day'] ?? collect())->pluck('option_value');
+        $slots         = ($fieldOptions['qurbani_slot'] ?? collect())->pluck('option_value');
+        $deliveryTypes = ($fieldOptions['qurbani_delivery_type'] ?? collect())->pluck('option_value');
+        $qurbaniTypes  = ($fieldOptions['qurbani_type'] ?? collect())->pluck('option_value');
+        $payaOptions   = ($fieldOptions['qurbani_paya'] ?? collect())->pluck('option_value');
+
+        $categories = DB::table('t_crm_prod_product')
+            ->whereRaw("LOWER(attribute_1) = 'qurbani'")
+            ->whereNotNull('attribute_2')
+            ->where('attribute_2', '!=', '')
+            ->distinct()
+            ->orderBy('attribute_2')
+            ->pluck('attribute_2');
+
+        // Configurable Qurbani item statuses — same source the mobile uses.
+        // Falls back to the canonical 4 if no overrides are configured so
+        // the page never renders an empty status filter.
+        $statusOptions = DB::table('t_crm_qurbani_field_options')
+            ->where('field_name', 'qurbani_item_status')
+            ->where('is_active', 1)
+            ->orderBy('display_order')
+            ->pluck('option_value');
+        if ($statusOptions->isEmpty()) {
+            $statusOptions = collect(['open', 'slaughtered', 'out_for_delivery', 'delivered']);
+        }
+
+        $riders = DB::table('t_sys_user as u')
+            ->leftJoin('t_ops_rider_profile as p', 'p.user_id', '=', 'u.id')
+            ->where(function ($q) {
+                $q->whereNull('p.user_id')->orWhere('p.active', 1);
+            })
+            ->where('u.is_active', 1)
+            ->orderBy('u.fullname')
+            ->select('u.id', 'u.fullname')
+            ->get();
+
+        return view('pages.qurbani.orders', compact(
+            'regions', 'subRegions', 'days', 'slots', 'deliveryTypes',
+            'qurbaniTypes', 'payaOptions', 'categories', 'statusOptions',
+            'riders',
+            // Full field-option rows (with id/parent_id/delivery_type_parent_id)
+            // so the view can drive cascading filters: Slot ⊂ Day×DeliveryType,
+            // Sub-Region ⊂ Region. Same source the invoices page uses, so
+            // behaviour is consistent across both pages.
+            'fieldOptions'
+        ));
+    }
+
+    /**
+     * GET /qurbani/api/orders-items
+     *
+     * Returns the flat line-item list with bundle positions, status,
+     * rider, and ETA. The client groups by Status > Region > Sub-region.
+     */
+    public function getOrderItems(Request $request)
+    {
+        // Step 1: collect candidate orders. We start at the order level so
+        // we can apply order-level filters cheaply, then narrow to line
+        // items in step 2. Same shape as getInvoices() so behaviour stays
+        // consistent.
+        $orderQuery = DB::table('t_crm_prod_order as o')
+            ->where(function ($q) {
+                $q->where(function ($inner) {
+                    $inner->whereNotNull('o.qurbani_day')
+                          ->orWhereNotNull('o.qurbani_slot')
+                          ->orWhereNotNull('o.qurbani_region')
+                          ->orWhereNotNull('o.qurbani_delivery_type');
+                })
+                ->orWhereExists(function ($sub) {
+                    $sub->select(DB::raw(1))
+                        ->from('t_crm_prod_order_line_item as li')
+                        ->join('t_crm_prod_product as p', 'li.product_id', '=', 'p.id')
+                        ->whereColumn('li.order_id', 'o.id')
+                        ->whereRaw("LOWER(p.attribute_1) = 'qurbani'");
+                });
+            })
+            // Cancelled orders never appear in the dispatch view.
+            ->where(function ($q) {
+                $q->whereNull('o.order_status')
+                  ->orWhereRaw("LOWER(o.order_status) <> 'cancelled'");
+            });
+
+        if ($request->filled('customer')) {
+            $orderQuery->leftJoin('t_crm_prod_customer as c', 'o.customer_id', '=', 'c.id');
+            $customerSearch = $request->customer;
+            $orderQuery->where(function ($q) use ($customerSearch) {
+                $q->whereRaw("CONCAT(COALESCE(c.first_name,''), ' ', COALESCE(c.last_name,'')) LIKE ?", ["%{$customerSearch}%"])
+                  ->orWhere('c.phone', 'LIKE', "%{$customerSearch}%")
+                  ->orWhere('o.order_number', 'LIKE', "%{$customerSearch}%");
+            });
+        }
+
+        $orderIds = $orderQuery->pluck('o.id');
+        if ($orderIds->isEmpty()) {
+            return response()->json(['success' => true, 'items' => [], 'summary' => $this->emptyItemsSummary()]);
+        }
+
+        // Step 2: pull every Qurbani line item in those orders + customer +
+        // product + assigned rider. Apply the geographic / scheduling
+        // filters at the LINE-ITEM level so a bundle that has both an in-
+        // scope and out-of-scope line item still surfaces only the in-scope
+        // line items to the user.
+        $itemsQuery = DB::table('t_crm_prod_order_line_item as li')
+            ->join('t_crm_prod_order as o', 'o.id', '=', 'li.order_id')
+            ->leftJoin('t_crm_prod_product as p', 'p.id', '=', 'li.product_id')
+            ->leftJoin('t_crm_prod_customer as c', 'c.id', '=', 'o.customer_id')
+            ->leftJoin('t_sys_user as r', 'r.id', '=', 'li.qurbani_assigned_rider_user_id')
+            ->whereIn('li.order_id', $orderIds)
+            // Qualify as Qurbani: either the product is tagged or the line
+            // item itself has any qurbani_* metadata.
+            ->where(function ($q) {
+                $q->whereRaw("LOWER(COALESCE(p.attribute_1, '')) = 'qurbani'")
+                  ->orWhereNotNull('li.qurbani_day')
+                  ->orWhereNotNull('li.qurbani_slot')
+                  ->orWhereNotNull('li.qurbani_region')
+                  ->orWhereNotNull('li.qurbani_delivery_type');
+            });
+
+        // Helper: scalar-equals + __unassigned__ shorthand. Same convention
+        // as getInvoices() so the two pages share a mental model.
+        $applyEq = function ($query, string $col, $value) {
+            if ($value === '__unassigned__') {
+                $query->where(function ($q) use ($col) {
+                    $q->whereNull($col)->orWhere($col, '');
+                });
+            } else {
+                $query->where($col, $value);
+            }
+        };
+
+        if ($request->filled('day'))            $applyEq($itemsQuery, 'li.qurbani_day', $request->day);
+        if ($request->filled('slot'))           $applyEq($itemsQuery, 'li.qurbani_slot', $request->slot);
+        if ($request->filled('region'))         $applyEq($itemsQuery, 'li.qurbani_region', $request->region);
+        if ($request->filled('sub_region'))     $applyEq($itemsQuery, 'li.qurbani_sub_region', $request->sub_region);
+        if ($request->filled('delivery_type'))  $applyEq($itemsQuery, 'li.qurbani_delivery_type', $request->delivery_type);
+        if ($request->filled('qurbani_type'))   $applyEq($itemsQuery, 'li.qurbani_type', $request->qurbani_type);
+        if ($request->filled('qurbani_paya'))   $applyEq($itemsQuery, 'li.qurbani_paya', $request->qurbani_paya);
+        if ($request->filled('category'))       $applyEq($itemsQuery, 'p.attribute_2', $request->category);
+        if ($request->filled('rider_id')) {
+            $itemsQuery->where('li.qurbani_assigned_rider_user_id', (int) $request->rider_id);
+        }
+        if ($request->filled('status')) {
+            $applyEq($itemsQuery, 'li.qurbani_item_status', $request->status);
+        }
+
+        $rows = $itemsQuery->select([
+                'li.id as line_item_id',
+                'li.order_id',
+                'o.order_number',
+                'o.order_status',
+                'o.order_date',
+                DB::raw("CONCAT(COALESCE(c.first_name,''), ' ', COALESCE(c.last_name,'')) as customer_name"),
+                'c.phone as customer_phone',
+                'c.latitude as cust_lat',
+                'c.longitude as cust_lng',
+                'c.verified_location_url',
+                'c.verified_location_saved_by',
+                'c.verified_location_saved_at',
+                'li.product_id',
+                'li.name as product_name',
+                'p.attribute_2 as category_level_2',
+                'li.quantity',
+                'li.qurbani_day',
+                'li.qurbani_slot',
+                'li.qurbani_region',
+                'li.qurbani_sub_region',
+                'li.qurbani_delivery_type',
+                'li.qurbani_type',
+                'li.qurbani_paya',
+                'li.qurbani_item_status',
+                'li.qurbani_status_updated_at',
+                'li.qurbani_slaughtered_at',
+                'li.qurbani_out_for_delivery_at',
+                'li.qurbani_delivered_at',
+                'li.qurbani_assigned_rider_user_id',
+                'r.fullname as rider_name',
+                'li.qurbani_delivery_priority',
+                'li.qurbani_estimated_delivery_at',
+                'li.qurbani_dispatched_at',
+                'li.qurbani_started_delivery_at',
+                'li.instructions',
+            ])
+            ->orderByDesc('o.order_date')
+            ->orderBy('li.id')
+            ->get();
+
+        if ($rows->isEmpty()) {
+            return response()->json(['success' => true, 'items' => [], 'summary' => $this->emptyItemsSummary()]);
+        }
+
+        // Step 3: compute bundles. Critical: pass the FULL set of line
+        // items in each affected order so bundle_size is computed against
+        // every sibling — even ones the filter excluded (Hissa siblings of
+        // a Bakra-only filter still count toward bundle_size).
+        $affectedOrderIds = $rows->pluck('order_id')->unique()->values();
+        $bundleInputs = DB::table('t_crm_prod_order_line_item as li')
+            ->leftJoin('t_crm_prod_product as p', 'p.id', '=', 'li.product_id')
+            ->whereIn('li.order_id', $affectedOrderIds)
+            ->where(function ($q) {
+                $q->whereRaw("LOWER(COALESCE(p.attribute_1, '')) = 'qurbani'")
+                  ->orWhereNotNull('li.qurbani_day')
+                  ->orWhereNotNull('li.qurbani_slot')
+                  ->orWhereNotNull('li.qurbani_region')
+                  ->orWhereNotNull('li.qurbani_delivery_type');
+            })
+            ->select(
+                'li.id', 'li.order_id', 'li.quantity', 'li.product_id',
+                'li.qurbani_day', 'li.qurbani_slot', 'li.qurbani_delivery_type',
+                'p.attribute_2 as category_level_2'
+            )
+            ->get()
+            ->map(function ($r) {
+                return (array) $r;
+            })
+            ->all();
+
+        $bundleMap = (new QurbaniBundleService())->computeBundles($bundleInputs);
+
+        // Step 4: print log lookup for the whole filtered set so the page
+        // can show "1 of 2 boxes printed" against each line item.
+        $lineItemIds = $rows->pluck('line_item_id')->all();
+        $printLogs = DB::table('t_crm_qurbani_box_print as bp')
+            ->leftJoin('t_sys_user as u', 'u.id', '=', 'bp.printed_by')
+            ->whereIn('bp.line_item_id', $lineItemIds)
+            ->select('bp.line_item_id', 'bp.position', 'bp.bundle_size as printed_bundle_size',
+                     'bp.printed_at', 'bp.printed_by', 'u.fullname as printed_by_name')
+            ->get()
+            ->groupBy('line_item_id');
+
+        // Resolve verifier user ids in one go.
+        $verifierIds = $rows->pluck('verified_location_saved_by')->filter()->unique()->all();
+        $verifierNames = $verifierIds
+            ? DB::table('t_sys_user')->whereIn('id', $verifierIds)->pluck('fullname', 'id')->toArray()
+            : [];
+
+        // Build the response items.
+        $items = [];
+        foreach ($rows as $r) {
+            $b = $bundleMap[$r->line_item_id] ?? null;
+            $printedRows = $printLogs->get($r->line_item_id, collect());
+            $printedPositions = $printedRows->pluck('position')->all();
+            $qty = max(1, (int) $r->quantity);
+            $start = $b['bundle_position_start'] ?? null;
+            $end = $b['bundle_position_end'] ?? null;
+            $thisLineItemPositions = ($start !== null && $end !== null)
+                ? range($start, $end)
+                : range(1, $qty);
+            $thisLineItemPrinted = array_values(array_intersect($thisLineItemPositions, $printedPositions));
+
+            $items[] = [
+                'line_item_id'       => (int) $r->line_item_id,
+                'order_id'           => (int) $r->order_id,
+                'order_number'       => $r->order_number,
+                'order_status'       => $r->order_status,
+                'customer_name'      => trim($r->customer_name) ?: 'Unknown',
+                'customer_phone'     => $r->customer_phone,
+                'product_id'         => $r->product_id,
+                'product_name'       => $r->product_name,
+                'category_level_2'   => $r->category_level_2,
+                'quantity'           => (float) $r->quantity,
+
+                'qurbani_day'           => $r->qurbani_day,
+                'qurbani_slot'          => $r->qurbani_slot,
+                'qurbani_region'        => $r->qurbani_region,
+                'qurbani_sub_region'    => $r->qurbani_sub_region,
+                'qurbani_delivery_type' => $r->qurbani_delivery_type,
+                'qurbani_type'          => $r->qurbani_type,
+                'qurbani_paya'          => $r->qurbani_paya,
+
+                'qurbani_item_status'         => $r->qurbani_item_status,
+                'qurbani_status_updated_at'   => $r->qurbani_status_updated_at,
+                'qurbani_slaughtered_at'      => $r->qurbani_slaughtered_at,
+                'qurbani_out_for_delivery_at' => $r->qurbani_out_for_delivery_at,
+                'qurbani_delivered_at'        => $r->qurbani_delivered_at,
+
+                'assigned_rider_user_id'      => $r->qurbani_assigned_rider_user_id,
+                'assigned_rider_name'         => $r->rider_name,
+                'qurbani_delivery_priority'   => $r->qurbani_delivery_priority,
+                'qurbani_estimated_delivery_at' => $r->qurbani_estimated_delivery_at,
+                'qurbani_dispatched_at'         => $r->qurbani_dispatched_at,
+                'qurbani_started_delivery_at'   => $r->qurbani_started_delivery_at,
+
+                'instructions' => $r->instructions,
+
+                // Bundle math (same as mobile).
+                'bundle_key'             => $b['bundle_key'] ?? null,
+                'bundle_size'            => $b['bundle_size'] ?? $qty,
+                'bundle_position_start'  => $start,
+                'bundle_position_end'    => $end,
+                'bundle_item_count'      => $b['bundle_item_count'] ?? null,
+
+                // Verified-location info (lets the team see who pinned and when).
+                'has_verified_location'      => !empty($r->cust_lat) && !empty($r->cust_lng),
+                'cust_lat'                   => $r->cust_lat ? (float) $r->cust_lat : null,
+                'cust_lng'                   => $r->cust_lng ? (float) $r->cust_lng : null,
+                'verified_location_url'      => $r->verified_location_url,
+                'verified_location_saved_by' => $r->verified_location_saved_by,
+                'verified_location_saved_by_name' => $r->verified_location_saved_by
+                    ? ($verifierNames[$r->verified_location_saved_by] ?? null) : null,
+                'verified_location_saved_at' => $r->verified_location_saved_at,
+
+                // Print state on this line item.
+                'printed_positions' => $thisLineItemPrinted,
+                'print_count'       => count($thisLineItemPrinted),
+                'box_count'         => count($thisLineItemPositions),
+            ];
+        }
+
+        // Aggregate counters for the UI header.
+        $summary = [
+            'total_line_items' => count($items),
+            'total_boxes'      => array_sum(array_map(fn($i) => $i['box_count'], $items)),
+            'total_printed'    => array_sum(array_map(fn($i) => $i['print_count'], $items)),
+            'by_status'        => [],
+        ];
+        foreach ($items as $i) {
+            $s = $i['qurbani_item_status'] ?: 'open';
+            $summary['by_status'][$s] = ($summary['by_status'][$s] ?? 0) + 1;
+        }
+
+        return response()->json([
+            'success' => true,
+            'items'   => $items,
+            'summary' => $summary,
+        ]);
+    }
+
+    private function emptyItemsSummary(): array
+    {
+        return [
+            'total_line_items' => 0,
+            'total_boxes'      => 0,
+            'total_printed'    => 0,
+            'by_status'        => [],
+        ];
+    }
+
+    /**
+     * GET /qurbani/api/box-labels
+     *
+     * Returns ONE entry per packet (line_item.quantity rows each), with
+     * X/Y reflecting the FULL bundle even when the user filtered narrow.
+     *
+     * Filtering strategy:
+     *   1. Order-level filters (region / day / slot / delivery_type /
+     *      sub_region / customer) drop bundles entirely — fine, they
+     *      can be applied at SQL level for performance.
+     *   2. Item-narrowing filters (category / qurbani_type / qurbani_paya
+     *      / status) are applied on the EXPANDED list AFTER bundle math
+     *      so the surviving labels still carry the full-bundle X/Y.
+     */
+    public function getBoxLabels(Request $request)
+    {
+        // Reuse getOrderItems to get bundle metadata, but call a flat
+        // helper that DOESN'T narrow on category / type / paya at the
+        // SQL level — we need siblings present in memory.
+        $rawItems = $this->collectBoxLabelItems($request);
+
+        // Now apply the narrowing filters in memory (post-bundle).
+        $filtered = collect($rawItems)->filter(function ($it) use ($request) {
+            if ($request->filled('category') && $request->category !== '__unassigned__') {
+                if (($it['category_level_2'] ?? null) !== $request->category) return false;
+            } elseif ($request->category === '__unassigned__') {
+                if (!empty($it['category_level_2'])) return false;
+            }
+            if ($request->filled('qurbani_type') && $request->qurbani_type !== '__unassigned__') {
+                if (($it['qurbani_type'] ?? null) !== $request->qurbani_type) return false;
+            }
+            if ($request->filled('qurbani_paya') && $request->qurbani_paya !== '__unassigned__') {
+                if (($it['qurbani_paya'] ?? null) !== $request->qurbani_paya) return false;
+            }
+            if ($request->filled('status') && $request->status !== '__unassigned__') {
+                $st = $it['qurbani_item_status'] ?? null;
+                if ($st !== $request->status) return false;
+            }
+            // Default: never print delivered items (they're already
+            // delivered, no label needed).
+            $includeDelivered = $request->boolean('include_delivered', false);
+            if (!$includeDelivered && ($it['qurbani_item_status'] ?? null) === 'delivered') {
+                return false;
+            }
+            return true;
+        })->values()->all();
+
+        // Step: expand to per-packet labels, attaching print-log state.
+        $lineItemIds = collect($filtered)->pluck('line_item_id')->unique()->all();
+        $printLogs = $lineItemIds
+            ? DB::table('t_crm_qurbani_box_print as bp')
+                ->leftJoin('t_sys_user as u', 'u.id', '=', 'bp.printed_by')
+                ->whereIn('bp.line_item_id', $lineItemIds)
+                ->select('bp.line_item_id', 'bp.position', 'bp.bundle_size as printed_bundle_size',
+                         'bp.printed_at', 'bp.printed_by', 'u.fullname as printed_by_name')
+                ->get()
+                ->groupBy('line_item_id')
+            : collect();
+
+        $labels = [];
+        foreach ($filtered as $it) {
+            $start = $it['bundle_position_start'];
+            $end   = $it['bundle_position_end'];
+            $size  = $it['bundle_size'];
+            $printedByPos = [];
+            foreach ($printLogs->get($it['line_item_id'], collect()) as $row) {
+                $printedByPos[(int) $row->position] = [
+                    'printed_at'      => (string) $row->printed_at,
+                    'printed_by'      => (int) $row->printed_by,
+                    'printed_by_name' => $row->printed_by_name,
+                    'stale'           => ((int) $row->printed_bundle_size !== (int) $size),
+                ];
+            }
+            for ($pos = $start; $pos <= $end; $pos++) {
+                $printed = $printedByPos[$pos] ?? null;
+                $labels[] = array_merge($it, [
+                    'label_id'    => "{$it['line_item_id']}-{$pos}",
+                    'position'    => $pos,
+                    'bundle_size' => $size,
+                    'label_text'  => "{$pos} / {$size}",
+                    'is_printed'  => !is_null($printed),
+                    'printed_at'  => $printed['printed_at'] ?? null,
+                    'printed_by_name' => $printed['printed_by_name'] ?? null,
+                    'is_stale_print'  => $printed['stale'] ?? false,
+                ]);
+            }
+        }
+
+        // Sort labels into a sensible print order:
+        //   region → sub_region → customer_name → order_number → bundle_key → position
+        usort($labels, function ($a, $b) {
+            return [
+                $a['qurbani_region'] ?? '',
+                $a['qurbani_sub_region'] ?? '',
+                $a['qurbani_day'] ?? '',
+                $a['qurbani_slot'] ?? '',
+                $a['customer_name'] ?? '',
+                $a['order_number'] ?? '',
+                $a['bundle_key'] ?? '',
+                $a['position'] ?? 0,
+            ] <=> [
+                $b['qurbani_region'] ?? '',
+                $b['qurbani_sub_region'] ?? '',
+                $b['qurbani_day'] ?? '',
+                $b['qurbani_slot'] ?? '',
+                $b['customer_name'] ?? '',
+                $b['order_number'] ?? '',
+                $b['bundle_key'] ?? '',
+                $b['position'] ?? 0,
+            ];
+        });
+
+        $totalPrinted = 0;
+        foreach ($labels as $l) if ($l['is_printed']) $totalPrinted++;
+
+        return response()->json([
+            'success' => true,
+            'labels'  => $labels,
+            'summary' => [
+                'total'   => count($labels),
+                'printed' => $totalPrinted,
+                'pending' => count($labels) - $totalPrinted,
+            ],
+        ]);
+    }
+
+    /**
+     * Helper used by getBoxLabels(). Returns line items with bundle
+     * metadata BUT does NOT apply the narrowing filters (category /
+     * qurbani_type / qurbani_paya / status / include_delivered).
+     */
+    private function collectBoxLabelItems(Request $request): array
+    {
+        // Reuse getOrderItems by stripping the narrowing filters out of
+        // the request copy. Cleanest way to keep one source of truth.
+        $copy = $request->duplicate();
+        $copy->query->remove('category');
+        $copy->query->remove('qurbani_type');
+        $copy->query->remove('qurbani_paya');
+        $copy->query->remove('status');
+        $copy->request->remove('category');
+        $copy->request->remove('qurbani_type');
+        $copy->request->remove('qurbani_paya');
+        $copy->request->remove('status');
+        $resp = $this->getOrderItems($copy);
+        $payload = json_decode($resp->getContent(), true);
+        return $payload['items'] ?? [];
+    }
+
+    /**
+     * POST /qurbani/api/box-print/mark
+     * Body: { boxes: [{ line_item_id, position, bundle_size, bundle_key }, ...] }
+     *
+     * Records each (line_item_id, position) as printed. Idempotent: if
+     * the same packet was already printed, the row is updated with the
+     * new printed_at / printed_by (re-print scenario).
+     */
+    public function markBoxesPrinted(Request $request)
+    {
+        $user = Auth::user();
+        if (!$user) return response()->json(['success' => false, 'message' => 'Unauthenticated'], 401);
+
+        $validated = $request->validate([
+            'boxes' => 'required|array|min:1',
+            'boxes.*.line_item_id' => 'required|integer|exists:t_crm_prod_order_line_item,id',
+            'boxes.*.position'     => 'required|integer|min:1',
+            'boxes.*.bundle_size'  => 'required|integer|min:1',
+            'boxes.*.bundle_key'   => 'required|string',
+        ]);
+
+        // Resolve order_id for each line item in one query (defensive — we
+        // could trust client but cheap to verify).
+        $lineItemIds = collect($validated['boxes'])->pluck('line_item_id')->unique()->all();
+        $orderMap = DB::table('t_crm_prod_order_line_item')
+            ->whereIn('id', $lineItemIds)
+            ->pluck('order_id', 'id')
+            ->toArray();
+
+        $now = now();
+        $marked = 0;
+        DB::beginTransaction();
+        try {
+            foreach ($validated['boxes'] as $b) {
+                $orderId = $orderMap[$b['line_item_id']] ?? null;
+                if (!$orderId) continue;
+                // INSERT ... ON DUPLICATE KEY UPDATE: re-prints overwrite
+                // the timestamp + bundle_size (in case the bundle grew).
+                DB::statement(
+                    "INSERT INTO t_crm_qurbani_box_print
+                        (order_id, line_item_id, position, bundle_size, bundle_key, printed_at, printed_by, created_at, updated_at)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     ON DUPLICATE KEY UPDATE
+                        bundle_size = VALUES(bundle_size),
+                        bundle_key  = VALUES(bundle_key),
+                        printed_at  = VALUES(printed_at),
+                        printed_by  = VALUES(printed_by),
+                        updated_at  = VALUES(updated_at)",
+                    [
+                        $orderId, $b['line_item_id'], $b['position'],
+                        $b['bundle_size'], $b['bundle_key'],
+                        $now, $user->id, $now, $now,
+                    ]
+                );
+                $marked++;
+            }
+            DB::commit();
+        } catch (\Exception $e) {
+            DB::rollBack();
+            \Log::error('Failed to mark boxes printed', [
+                'user_id' => $user->id,
+                'count' => count($validated['boxes']),
+                'error' => $e->getMessage(),
+            ]);
+            return response()->json(['success' => false, 'message' => 'Failed: ' . $e->getMessage()], 500);
+        }
+
+        return response()->json([
+            'success' => true,
+            'marked'  => $marked,
+            'message' => "Marked {$marked} box(es) as printed.",
+        ]);
+    }
+
+    /**
+     * POST /qurbani/api/items/{id}/status
+     * Body: { status: 'open'|'slaughtered'|'out_for_delivery'|'delivered'|null }
+     *
+     * Web-side wrapper around the same logic as the mobile API's
+     * bulkUpdateQurbaniItemStatus. Stamps the per-state timeline column
+     * the FIRST time the item enters a state (COALESCE keeps the
+     * original timestamp on re-entry so audit trail is preserved).
+     */
+    public function updateItemStatus(Request $request, $id)
+    {
+        $user = Auth::user();
+        if (!$user) return response()->json(['success' => false, 'message' => 'Unauthenticated'], 401);
+
+        $validated = $request->validate([
+            'status' => 'nullable|string|max:50',
+        ]);
+
+        $newStatus = $validated['status'] ?? null;
+        if ($newStatus === '') $newStatus = null;
+
+        // Validate against configured statuses (matches mobile behavior).
+        if ($newStatus !== null) {
+            $exists = DB::table('t_crm_qurbani_field_options')
+                ->where('field_name', 'qurbani_item_status')
+                ->where('option_value', $newStatus)
+                ->where('is_active', 1)
+                ->exists();
+            if (!$exists) {
+                return response()->json([
+                    'success' => false,
+                    'message' => "Unknown qurbani item status: {$newStatus}",
+                ], 422);
+            }
+        }
+
+        $exists = DB::table('t_crm_prod_order_line_item')->where('id', $id)->exists();
+        if (!$exists) return response()->json(['success' => false, 'message' => 'Line item not found'], 404);
+
+        $now = now();
+        $update = [
+            'qurbani_item_status' => $newStatus,
+            'qurbani_status_updated_at' => $now,
+            'qurbani_status_updated_by' => $user->id,
+            'updated_by' => $user->id,
+        ];
+        // Stamp transition column the FIRST time the item enters that state.
+        if ($newStatus === 'slaughtered') {
+            $update['qurbani_slaughtered_at'] = DB::raw('COALESCE(qurbani_slaughtered_at, NOW())');
+        } elseif ($newStatus === 'out_for_delivery') {
+            $update['qurbani_out_for_delivery_at'] = DB::raw('COALESCE(qurbani_out_for_delivery_at, NOW())');
+        } elseif ($newStatus === 'delivered') {
+            $update['qurbani_delivered_at'] = DB::raw('COALESCE(qurbani_delivered_at, NOW())');
+        }
+
+        DB::table('t_crm_prod_order_line_item')->where('id', $id)->update($update);
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Status updated',
+            'status'  => $newStatus,
+        ]);
+    }
+
+    /**
+     * POST /qurbani/api/items/{id}/rider
+     * Body: { rider_id: int|null }
+     *
+     * Web-side single-item rider assignment. Mirrors mobile's
+     * bulkAssignQurbaniRider but for one line item.
+     */
+    public function assignItemRider(Request $request, $id)
+    {
+        $user = Auth::user();
+        if (!$user) return response()->json(['success' => false, 'message' => 'Unauthenticated'], 401);
+
+        $validated = $request->validate([
+            'rider_id' => 'nullable|integer|exists:t_sys_user,id',
+        ]);
+
+        $riderId = $validated['rider_id'] ?? null;
+
+        $exists = DB::table('t_crm_prod_order_line_item')->where('id', $id)->exists();
+        if (!$exists) return response()->json(['success' => false, 'message' => 'Line item not found'], 404);
+
+        DB::table('t_crm_prod_order_line_item')->where('id', $id)->update([
+            'qurbani_assigned_rider_user_id' => $riderId,
+            'updated_by' => $user->id,
+        ]);
+
+        $riderName = null;
+        if ($riderId) {
+            $riderName = DB::table('t_sys_user')->where('id', $riderId)->value('fullname');
+        }
+
+        return response()->json([
+            'success' => true,
+            'message' => $riderId ? "Assigned to {$riderName}" : 'Rider cleared',
+            'rider_id' => $riderId,
+            'rider_name' => $riderName,
+        ]);
+    }
+
+    /**
+     * POST /qurbani/api/box-print/unmark
+     * Body: { boxes: [{ line_item_id, position }, ...] }
+     *
+     * Removes "printed" status from packets — for misprints or reprints
+     * the team wants to redo from scratch.
+     */
+    public function unmarkBoxesPrinted(Request $request)
+    {
+        $user = Auth::user();
+        if (!$user) return response()->json(['success' => false, 'message' => 'Unauthenticated'], 401);
+
+        $validated = $request->validate([
+            'boxes' => 'required|array|min:1',
+            'boxes.*.line_item_id' => 'required|integer',
+            'boxes.*.position'     => 'required|integer|min:1',
+        ]);
+
+        $unmarked = 0;
+        foreach ($validated['boxes'] as $b) {
+            $unmarked += DB::table('t_crm_qurbani_box_print')
+                ->where('line_item_id', $b['line_item_id'])
+                ->where('position', $b['position'])
+                ->delete();
+        }
+
+        \Log::info('Qurbani box prints unmarked', [
+            'user_id' => $user->id,
+            'count'   => $unmarked,
+        ]);
+
+        return response()->json([
+            'success'  => true,
+            'unmarked' => $unmarked,
+            'message'  => "Removed printed status from {$unmarked} box(es).",
+        ]);
     }
 }
