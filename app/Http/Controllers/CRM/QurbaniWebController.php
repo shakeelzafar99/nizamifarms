@@ -263,7 +263,16 @@ class QurbaniWebController extends Controller
                 DB::raw("COALESCE(r.fullname,'') as rider_name")
             )
             ->orderByDesc('o.order_date')
-            ->limit(500)
+            // May-2026: raised from 500 → 1200. The previous cap was being
+            // hit in production (Qurbani 2026 crossed 500 orders), which
+            // silently truncated the orders feeding the per-category
+            // filter chips above the table — so e.g. "Cow Share (Hissa)"
+            // showed 573 in the chip but 583 in the booked-summary cards
+            // (which run the same data via getOrderStats with no limit).
+            // Bumping the cap to 1200 covers projected Qurbani 2027 volume
+            // with headroom; if we ever hit this again we should switch
+            // the chips to read totals from getOrderStats instead.
+            ->limit(1200)
             ->get();
 
         // Attach line items (product names + qty + qurbani fields) for each order

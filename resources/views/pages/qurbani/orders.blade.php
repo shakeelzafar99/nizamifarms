@@ -509,17 +509,31 @@ window.QURBANI_ORDERS_BOOT = {!! json_encode($qurbaniOrdersBoot, JSON_HEX_TAG | 
 
     // Delegated handler for group / sub-group "Print" buttons. Re-bound
     // every render is fine because we check the _delegationBound flag.
+    //
+    // May-2026 bugfix: bound on the CAPTURE phase (third arg = true).
+    // The Print buttons live inside `<div onclick="event.stopPropagation()">`
+    // wrappers (intentional — they keep the parent group header's
+    // accordion-toggle handler from firing on a button click). On the
+    // bubble phase the wrapper's stopPropagation halts the event before
+    // it reaches #itemsContainer, so a bubble-phase delegation listener
+    // here would never see the click. Capture phase fires outermost →
+    // innermost BEFORE the bubble phase, so this listener runs first
+    // (handles the print intent) and the wrapper's stopPropagation still
+    // does its job afterwards (suppresses the accordion toggle). Both
+    // behaviours preserved.
     function bindGroupPrintDelegation() {
         const wrap = document.getElementById('itemsContainer');
         if (!wrap || wrap._delegationBound) return;
         wrap.addEventListener('click', function(e) {
             const btn = e.target.closest('[data-print-status]');
             if (!btn) return;
-            e.stopPropagation(); // don't toggle the group accordion
+            // No stopPropagation here — the wrapper div's inline
+            // onclick handles that during the bubble phase. Doing it
+            // again here on capture would be redundant.
             const status = btn.dataset.printStatus;
             const sub = btn.dataset.printSub || null;
             printGroup(status, sub);
-        });
+        }, true);
         wrap._delegationBound = true;
     }
 
@@ -1522,6 +1536,13 @@ window.QURBANI_ORDERS_BOOT = {!! json_encode($qurbaniOrdersBoot, JSON_HEX_TAG | 
     window.updatePrintCount = updatePrintCount;
     window.openRidersMap = openRidersMap;
     window.closeRidersMap = closeRidersMap;
+    // Phase 2 (May-2026) — Timeline modal. Inline onclick handlers
+    // on the per-card "🕒 Timeline" button + modal backdrop / close
+    // need these reachable on window.*; otherwise the browser
+    // throws "openTimeline is not defined" the first time it's
+    // pressed. Same pattern as the other delegations above.
+    window.openTimeline = openTimeline;
+    window.closeTimeline = closeTimeline;
 
     // ===== Phase C2 (May-2026) — Riders Map modal =====================
     // Lazy-loads the Google Maps JS API on first open. Same key as
@@ -1727,6 +1748,20 @@ window.QURBANI_ORDERS_BOOT = {!! json_encode($qurbaniOrdersBoot, JSON_HEX_TAG | 
                 html += '<div style="font-size:11px;color:#1d4ed8;margin-top:4px;">' + esc(d.current_eta.note) + '</div>';
             } else if (d.current_eta.is_initial && d.current_eta.calculated_at) {
                 html += '<div style="font-size:11px;color:#1d4ed8;margin-top:4px;">Initial estimate from dispatch.</div>';
+            }
+            // Phase 4 (May-2026): show the live route position next to
+            // the ETA. The number self-corrects on every refresh as
+            // earlier stops get delivered (their qurbani_delivered_at
+            // gets stamped and they drop out of the ahead count).
+            if (d.route_position && d.route_position.is_in_dispatch) {
+                const rp = d.route_position;
+                const totalLine = (rp.total_remaining > 0)
+                    ? rp.total_remaining + ' total stop' + (rp.total_remaining === 1 ? '' : 's') + ' still pending in this dispatch'
+                    : '';
+                html += '<div style="margin-top:10px;padding-top:10px;border-top:1px dashed #bfdbfe;display:flex;align-items:center;gap:8px;">'
+                    + '<span style="background:#1e40af;color:#fff;border-radius:6px;padding:3px 8px;font-size:12px;font-weight:700;">🚚 ' + esc(rp.label) + '</span>'
+                    + (totalLine ? '<span style="font-size:11px;color:#1d4ed8;">' + esc(totalLine) + '</span>' : '')
+                    + '</div>';
             }
             html += '</div>';
         } else if (d.dispatch) {

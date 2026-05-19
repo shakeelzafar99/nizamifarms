@@ -1469,6 +1469,15 @@ select.wa-mgr-input { background: #fff; cursor: pointer; }
              templates sent to this customer in the last N days (see
              add_marketing_dedup_apr2026.sql). Hidden when empty via CSS. -->
         <div class="wa-chat-hdr-marketing" id="waChatHdrMarketing"></div>
+        {{-- Phase 4 (May-2026) — Active Delivery Banner.
+             Surfaces a one-line summary when this customer has any
+             order currently OUT FOR DELIVERY (regular OR qurbani),
+             with the live ETA and how many stops are ahead in the
+             rider's route. Refreshed on every loadOrdersPanel() call
+             (i.e. piggybacks on the existing customer-orders poll —
+             no extra HTTP traffic). Hidden when empty by default via
+             inline display:none. --}}
+        <div id="waActiveDeliveryBanner" style="display:none;background:linear-gradient(135deg,#dbeafe,#eff6ff);border-bottom:1px solid #bfdbfe;padding:8px 14px;font-size:12.5px;color:#1e3a8a;cursor:pointer;" title="Click for details"></div>
         <div class="wa-chat-msgs" id="waChatMessages">
             <div class="wa-loading">Loading messages...</div>
         </div>
@@ -2627,6 +2636,12 @@ select.wa-mgr-input { background: #fff; cursor: pointer; }
         document.getElementById('waChat').classList.add('visible');
         document.getElementById('waEmptyState').style.display = 'none';
         document.getElementById('waChatMessages').innerHTML = '<div class="wa-loading">Loading...</div>';
+        // Phase 4 (May-2026): clear any stale active-delivery banner
+        // from the previously-open conversation. loadOrdersPanel()
+        // below will repopulate it for the new customer.
+        if (typeof renderActiveDeliveryBanner === 'function') {
+            renderActiveDeliveryBanner(null);
+        }
 
         document.querySelectorAll('.wa-conv-item').forEach(el => {
             el.classList.toggle('active', parseInt(el.dataset.id) === id);
@@ -3154,6 +3169,30 @@ select.wa-mgr-input { background: #fff; cursor: pointer; }
                     const labelsStrip = document.getElementById('waChatHdrLabels');
                     if (labelsStrip) labelsStrip.innerHTML = '';
                 } catch (_) {}
+
+                // May-2026 bugfix: wire up the right-rail Customer Orders
+                // panel for new-chat conversations too. Previously only
+                // openConv() (existing conversation path) revealed the
+                // orders toggle and loaded the linked orders, which meant
+                // when a manager opened a brand-new chat with a customer
+                // who hadn't messaged yet (e.g. to send Send Invoice or
+                // the Qurbani 🕒 Timeline button), the orders rail stayed
+                // empty even though customer_id was already known. Mirror
+                // the openConv() wiring here. Hide the toggle when there
+                // is no linked customer (search-by-phone with no match).
+                try {
+                    const toggleBtn = document.getElementById('waOrdersToggle');
+                    if (toggleBtn) {
+                        if (customerId) {
+                            toggleBtn.style.display = 'inline-block';
+                            loadOrdersPanel(customerId);
+                        } else {
+                            toggleBtn.style.display = 'none';
+                            const list = document.getElementById('waOrdersList');
+                            if (list) list.innerHTML = '<div style="padding:20px;text-align:center;color:#9ca3af;font-size:13px;">No linked customer</div>';
+                        }
+                    }
+                } catch (_) {}
             }
         });
     };
@@ -3437,6 +3476,13 @@ select.wa-mgr-input { background: #fff; cursor: pointer; }
         list.innerHTML = '<div style="padding:20px;text-align:center;"><div style="width:20px;height:20px;border:2px solid #e5e7eb;border-top-color:#16a34a;border-radius:50%;animation:spin 0.6s linear infinite;margin:0 auto;"></div></div>';
 
         apiFetch('/messages/customer-orders/' + customerId).then(d => {
+            // Phase 4 (May-2026) — refresh the chat-header active
+            // delivery banner from this same response so we don't add
+            // an extra HTTP poll. The backend pre-computes
+            // active_delivery (soonest-ETA OFD entity) so the front
+            // end just renders.
+            renderActiveDeliveryBanner(d && d.active_delivery ? d.active_delivery : null);
+
             if (!d.success || !d.orders || !d.orders.length) {
                 list.innerHTML = '<div style="padding:20px;text-align:center;color:#9ca3af;font-size:13px;">No orders found</div>';
                 return;
@@ -3472,6 +3518,109 @@ select.wa-mgr-input { background: #fff; cursor: pointer; }
             document.getElementById('waOrdersPanel').classList.add('open');
         }
     }
+
+    // ─── Phase 4 (May-2026) — Active Delivery Banner ─────────────
+    // The banner sits between the chat header and the message list
+    // and surfaces a one-line summary when the active customer has
+    // ANY order (regular or qurbani) that's currently out for
+    // delivery — ETA, rider, and how many stops are ahead in the
+    // rider's route. Self-updating via the existing poll cadence
+    // (loadOrdersPanel + convPollTimer below).
+    //
+    // For qurbani entries, clicking the banner opens the timeline
+    // modal for that line item. For regular entries it just shows
+    // a tooltip — there's no per-order timeline yet.
+    function renderActiveDeliveryBanner(ad) {
+        const el = document.getElementById('waActiveDeliveryBanner');
+        if (!el) return;
+        if (!ad) {
+            el.style.display = 'none';
+            el.innerHTML = '';
+            el.onclick = null;
+            return;
+        }
+
+        // Friendly bits ---------------------------------------------
+        const etaTxt = ad.eta_human ? '⏱ ETA ' + esc(ad.eta_human) : '⏱ ETA pending';
+        let aheadTxt;
+        if (ad.ahead_count === 0) {
+            aheadTxt = '🛵 Next stop on the route';
+        } else if (ad.ahead_count === 1) {
+            aheadTxt = '🛵 1 stop ahead';
+        } else {
+            aheadTxt = '🛵 ' + ad.ahead_count + ' stops ahead';
+        }
+        const riderTxt = ad.rider_name ? esc(ad.rider_name) : '—';
+        const orderTag = ad.type === 'qurbani' ? 'Qurbani' : 'Order';
+        const moreHint = (ad.more_count && ad.more_count > 0)
+            ? ' &nbsp;<span style="background:#1e40af;color:#fff;border-radius:4px;padding:1px 6px;font-size:10px;font-weight:700;">+' + ad.more_count + ' more</span>'
+            : '';
+        const clickable = (ad.type === 'qurbani' && ad.line_item_id);
+
+        el.style.display = 'block';
+        el.style.cursor = clickable ? 'pointer' : 'default';
+        el.title = clickable ? 'Click to open the order timeline' : '';
+
+        el.innerHTML =
+            '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">' +
+                '<span style="background:#1e40af;color:#fff;border-radius:6px;padding:2px 7px;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;">Out for Delivery</span>' +
+                '<span style="font-weight:700;">#' + esc(ad.order_number || '') + '</span>' +
+                '<span style="font-size:11px;color:#1d4ed8;">' + esc(orderTag) + ' · Rider: ' + riderTxt + '</span>' +
+                '<span style="margin-left:auto;display:flex;gap:8px;align-items:center;">' +
+                    '<span style="background:#fff;border:1px solid #bfdbfe;border-radius:6px;padding:2px 8px;font-weight:700;color:#1e3a8a;">' + aheadTxt + '</span>' +
+                    '<span style="background:#fff;border:1px solid #bfdbfe;border-radius:6px;padding:2px 8px;font-weight:700;color:#1e3a8a;">' + etaTxt + '</span>' +
+                    moreHint +
+                '</span>' +
+            '</div>';
+
+        if (clickable) {
+            el.onclick = () => {
+                // Reuse the same timeline modal that the right-rail
+                // Timeline button opens. We synthesize the minimal
+                // payload it expects.
+                openMessagesTimeline({
+                    order_id: ad.order_id,
+                    order_number: ad.order_number,
+                    items: [{
+                        line_item_id: ad.line_item_id,
+                        name: ad.line_item_name || '',
+                        qurbani_day: ad.qurbani_day || '',
+                        qurbani_slot: ad.qurbani_slot || '',
+                        qurbani_delivery_type: ad.qurbani_delivery_type || '',
+                    }],
+                });
+            };
+        } else {
+            el.onclick = null;
+        }
+    }
+
+    // Refresh banner on the existing convPollTimer cadence — keeps
+    // ETA / ahead-count current as the rider delivers earlier stops
+    // without adding a new HTTP loop.
+    function refreshActiveDeliveryBanner() {
+        if (!activeConv || !activeConv.customer_id) {
+            renderActiveDeliveryBanner(null);
+            return;
+        }
+        apiFetch('/messages/customer-orders/' + activeConv.customer_id)
+            .then(d => {
+                if (!activeConv) return; // user changed convs while in flight
+                renderActiveDeliveryBanner(d && d.active_delivery ? d.active_delivery : null);
+            })
+            .catch(() => {});
+    }
+    setInterval(() => {
+        // Only fetch when there's an open chat AND the banner is
+        // currently visible OR could become visible — but since we
+        // need the response to know that, we just always poll when
+        // a chat is open. One small request per POLL_INTERVAL. The
+        // backend response is cheap (eager-loaded fields, batched
+        // ahead-count queries).
+        if (activeConvId && activeConv && activeConv.customer_id) {
+            refreshActiveDeliveryBanner();
+        }
+    }, POLL_INTERVAL);
 
     // ─── Phase 3 (May-2026) — Qurbani Timeline modal ──────────────
     // Opens a slide-in panel showing the timeline for one Qurbani
@@ -3635,6 +3784,20 @@ select.wa-mgr-input { background: #fff; cursor: pointer; }
                 html += '<div style="font-size:11px;color:#1d4ed8;margin-top:4px;">' + esc(currentEta.note) + '</div>';
             } else if (currentEta.is_initial && currentEta.calculated_at) {
                 html += '<div style="font-size:11px;color:#1d4ed8;margin-top:4px;">Initial estimate from dispatch.</div>';
+            }
+            // Phase 4 (May-2026): mirror the route-position block
+            // from the qurbani/orders timeline modal so customer
+            // service can answer "how many stops away is my order?"
+            // straight from the chat.
+            const rp = d.route_position || null;
+            if (rp && rp.is_in_dispatch) {
+                const totalLine = (rp.total_remaining > 0)
+                    ? rp.total_remaining + ' total stop' + (rp.total_remaining === 1 ? '' : 's') + ' still pending in this dispatch'
+                    : '';
+                html += '<div style="margin-top:10px;padding-top:10px;border-top:1px dashed #bfdbfe;display:flex;align-items:center;gap:8px;flex-wrap:wrap;">'
+                    + '<span style="background:#1e40af;color:#fff;border-radius:6px;padding:3px 8px;font-size:12px;font-weight:700;">🚚 ' + esc(rp.label) + '</span>'
+                    + (totalLine ? '<span style="font-size:11px;color:#1d4ed8;">' + esc(totalLine) + '</span>' : '')
+                    + '</div>';
             }
             html += '</div>';
         }

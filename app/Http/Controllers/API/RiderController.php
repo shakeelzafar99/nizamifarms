@@ -21641,6 +21641,50 @@ class RiderController extends Controller
                 }
             }
 
+            // Step 7b (May-2026): route position — how many stops are
+            // ahead of THIS line item in the rider's currently-running
+            // dispatch. Auto-derived from the live row data (no extra
+            // table needed): an "ahead" stop is any line item with the
+            // same rider, dispatched, undelivered, and a strictly
+            // smaller qurbani_delivery_priority. As the rider delivers
+            // each prior stop the row gets stamped with
+            // qurbani_delivered_at and drops out of this count, so the
+            // number stays self-correcting on every refresh — no extra
+            // background job needed (matches the user's "use existing
+            // sync" requirement).
+            $routePosition = null;
+            if ($li->qurbani_assigned_rider_user_id
+                && $li->qurbani_dispatched_at
+                && $li->qurbani_delivery_priority !== null
+                && $currentStatus !== 'delivered'
+                && $currentStatus !== 'cancelled') {
+                $aheadCount = (int) \DB::table('t_crm_prod_order_line_item')
+                    ->where('qurbani_assigned_rider_user_id', $li->qurbani_assigned_rider_user_id)
+                    ->whereNotNull('qurbani_dispatched_at')
+                    ->whereNull('qurbani_delivered_at')
+                    ->where('qurbani_delivery_priority', '<', $li->qurbani_delivery_priority)
+                    ->where('id', '!=', $li->id)
+                    ->count();
+                $totalRemaining = (int) \DB::table('t_crm_prod_order_line_item')
+                    ->where('qurbani_assigned_rider_user_id', $li->qurbani_assigned_rider_user_id)
+                    ->whereNotNull('qurbani_dispatched_at')
+                    ->whereNull('qurbani_delivered_at')
+                    ->count();
+                if ($aheadCount === 0) {
+                    $label = 'Next stop on the route';
+                } else {
+                    $label = $aheadCount . ' stop' . ($aheadCount === 1 ? '' : 's')
+                        . ' ahead in the route';
+                }
+                $routePosition = [
+                    'is_in_dispatch'  => true,
+                    'ahead_count'     => $aheadCount,
+                    'total_remaining' => $totalRemaining,
+                    'priority'        => (int) $li->qurbani_delivery_priority,
+                    'label'           => $label,
+                ];
+            }
+
             // Step 8: payload. Customer name uses the same fallback
             // chain as the rest of the Qurbani views.
             $customerName = $li->order_name
@@ -21677,6 +21721,7 @@ class RiderController extends Controller
                 'rider'          => $rider,
                 'dispatch'       => $dispatch,
                 'current_eta'    => $currentEta,
+                'route_position' => $routePosition,
                 'delay_alert'    => $delayAlert,
                 'whatsapp_today' => $whatsappToday,
             ]);

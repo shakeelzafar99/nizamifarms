@@ -1940,72 +1940,245 @@ class WhatsAppWebController extends Controller
         // line-item-level granularity). The eager-loaded lineItems
         // selection is widened to include the qurbani_* fields used
         // by the timeline tab switcher.
+        //
+        // Phase 4 (May-2026): we also surface an "active_delivery"
+        // top-level summary used by the chat-header banner on the
+        // messages page so customer-service can see where the
+        // customer's currently-OFD order sits in the rider's route
+        // (ETA + how many stops are ahead) without leaving the chat.
+        // Works for BOTH qurbani bundles and regular orders. Computed
+        // here on the same fetch so we don't add a new HTTP poll —
+        // the existing loadOrdersPanel() / convPollTimer reuses this
+        // endpoint.
         $orders = OrderModel::where('customer_id', $customerId)
             ->with([
-                'lineItems:id,order_id,name,quantity,unit_price,line_total,qurbani_day,qurbani_slot,qurbani_region,qurbani_delivery_type,qurbani_item_status',
+                'lineItems:id,order_id,name,quantity,unit_price,line_total,qurbani_day,qurbani_slot,qurbani_region,qurbani_delivery_type,qurbani_item_status,qurbani_assigned_rider_user_id,qurbani_dispatched_at,qurbani_delivered_at,qurbani_delivery_priority,qurbani_estimated_delivery_at,qurbani_eta_calculated_at',
                 'assignedRider:id,fullname',
             ])
             ->orderBy('order_date', 'desc')
             ->limit(20)
-            ->get(['id', 'order_number', 'order_date', 'order_status', 'total_price', 'customer_id', 'assigned_rider_user_id', 'estimated_delivery_at']);
+            ->get(['id', 'order_number', 'order_date', 'order_status', 'total_price', 'customer_id', 'assigned_rider_user_id', 'estimated_delivery_at', 'eta_calculated_at', 'delivery_priority']);
+
+        // Pre-compute "ahead count" lookups in batches so we don't
+        // do N+1 queries. We collect (rider_id, current_priority) for
+        // each candidate OFD entity and run a single grouped query
+        // for each bucket (regular orders / qurbani line items).
+        $regularOfdIds = [];
+        $qurbaniOfdLineItems = []; // line_item_id => [rider_id, priority]
+        foreach ($orders as $o) {
+            if (strtolower((string) $o->order_status) === 'out_for_delivery'
+                && $o->assigned_rider_user_id
+                && $o->delivery_priority !== null) {
+                $regularOfdIds[] = (int) $o->id;
+            }
+            foreach ($o->lineItems as $li) {
+                if ($li->qurbani_dispatched_at
+                    && !$li->qurbani_delivered_at
+                    && $li->qurbani_assigned_rider_user_id
+                    && $li->qurbani_delivery_priority !== null
+                    && strtolower((string) ($li->qurbani_item_status ?? '')) !== 'cancelled') {
+                    $qurbaniOfdLineItems[(int) $li->id] = [
+                        'rider_id' => (int) $li->qurbani_assigned_rider_user_id,
+                        'priority' => (int) $li->qurbani_delivery_priority,
+                    ];
+                }
+            }
+        }
+
+        // Build the ahead-count map for regular orders. We fetch the
+        // route once per rider so we can compute both the ahead count
+        // and the total-remaining (sibling stops still pending) for
+        // each focal order in O(1) per order.
+        $regularAheadMap = []; // [order_id => [ahead, total_remaining]]
+        if (!empty($regularOfdIds)) {
+            $focal = OrderModel::whereIn('id', $regularOfdIds)
+                ->get(['id', 'assigned_rider_user_id', 'delivery_priority']);
+            $ridersToLoad = $focal->pluck('assigned_rider_user_id')->filter()->unique()->all();
+            $routesByRider = [];
+            if (!empty($ridersToLoad)) {
+                $routesByRider = OrderModel::whereIn('assigned_rider_user_id', $ridersToLoad)
+                    ->where('order_status', 'out_for_delivery')
+                    ->whereNotNull('delivery_priority')
+                    ->get(['id', 'assigned_rider_user_id', 'delivery_priority'])
+                    ->groupBy('assigned_rider_user_id');
+            }
+            foreach ($focal as $fo) {
+                $route = $routesByRider[$fo->assigned_rider_user_id] ?? collect();
+                $ahead = $route->filter(function ($r) use ($fo) {
+                    return $r->delivery_priority < $fo->delivery_priority && $r->id !== $fo->id;
+                })->count();
+                $regularAheadMap[(int) $fo->id] = [
+                    'ahead_count'     => (int) $ahead,
+                    'total_remaining' => (int) $route->count(),
+                ];
+            }
+        }
+
+        // Same logic for qurbani line items — siblings on the same
+        // rider that are dispatched but not yet delivered.
+        $qurbaniAheadMap = []; // [line_item_id => [ahead, total_remaining]]
+        if (!empty($qurbaniOfdLineItems)) {
+            $ridersToLoadQ = array_unique(array_column($qurbaniOfdLineItems, 'rider_id'));
+            $qurbaniRoutesByRider = [];
+            if (!empty($ridersToLoadQ)) {
+                $qurbaniRoutesByRider = \DB::table('t_crm_prod_order_line_item')
+                    ->whereIn('qurbani_assigned_rider_user_id', $ridersToLoadQ)
+                    ->whereNotNull('qurbani_dispatched_at')
+                    ->whereNull('qurbani_delivered_at')
+                    ->whereNotNull('qurbani_delivery_priority')
+                    ->select('id', 'qurbani_assigned_rider_user_id', 'qurbani_delivery_priority')
+                    ->get()
+                    ->groupBy('qurbani_assigned_rider_user_id');
+            }
+            foreach ($qurbaniOfdLineItems as $liId => $info) {
+                $route = $qurbaniRoutesByRider[$info['rider_id']] ?? collect();
+                $ahead = $route->filter(function ($r) use ($info, $liId) {
+                    return (int) $r->qurbani_delivery_priority < $info['priority']
+                        && (int) $r->id !== $liId;
+                })->count();
+                $qurbaniAheadMap[$liId] = [
+                    'ahead_count'     => (int) $ahead,
+                    'total_remaining' => (int) $route->count(),
+                ];
+            }
+        }
+
+        $activeDelivery = null; // sorted by soonest ETA across all OFD entities
+        $activeCandidates = [];
+
+        $mapped = $orders->map(function($o) use ($regularAheadMap, $qurbaniAheadMap, &$activeCandidates) {
+            $eta = null;
+            $etaIso = null;
+            if ($o->estimated_delivery_at && strtolower((string) $o->order_status) === 'out_for_delivery') {
+                try {
+                    $eta = \Carbon\Carbon::parse($o->estimated_delivery_at)->format('h:i A');
+                    $etaIso = (string) $o->estimated_delivery_at;
+                } catch (\Exception $e) {}
+            }
+
+            // QUR orders are detected by either their order_number
+            // prefix (Qurbani orders typically start with QUR) OR
+            // by ANY line item carrying qurbani_* metadata. The
+            // second test catches manual-entry orders that may not
+            // follow the QUR-prefix convention.
+            $orderNum = (string) ($o->order_number ?? '');
+            $hasQurbaniMeta = $o->lineItems->contains(function ($li) {
+                return !empty($li->qurbani_day) || !empty($li->qurbani_slot)
+                    || !empty($li->qurbani_region) || !empty($li->qurbani_delivery_type);
+            });
+            $isQurbani = (str_starts_with(strtoupper($orderNum), 'QUR') || $hasQurbaniMeta);
+
+            // Build qurbani_items only for qurbani orders to keep
+            // the payload small for regular orders. Each item
+            // carries just enough info to power the timeline-tab
+            // labels client-side.
+            $qurbaniItems = [];
+            if ($isQurbani) {
+                foreach ($o->lineItems as $li) {
+                    if (empty($li->qurbani_day) && empty($li->qurbani_slot)
+                        && empty($li->qurbani_region) && empty($li->qurbani_delivery_type)) {
+                        continue;
+                    }
+                    $qurbaniItems[] = [
+                        'line_item_id' => (int) $li->id,
+                        'name'         => (string) $li->name,
+                        'qurbani_day'  => $li->qurbani_day,
+                        'qurbani_slot' => $li->qurbani_slot,
+                        'qurbani_region' => $li->qurbani_region,
+                        'qurbani_delivery_type' => $li->qurbani_delivery_type,
+                        'status'       => $li->qurbani_item_status,
+                    ];
+                }
+
+                // Each qurbani line item that's currently OFD becomes
+                // a candidate for the chat-header banner.
+                foreach ($o->lineItems as $li) {
+                    if (!isset($qurbaniAheadMap[(int) $li->id])) continue;
+                    $liEta = $li->qurbani_estimated_delivery_at;
+                    $liEtaHuman = null;
+                    $liEtaTs = null;
+                    if ($liEta) {
+                        try {
+                            $liEtaHuman = \Carbon\Carbon::parse($liEta)->format('h:i A');
+                            $liEtaTs = \Carbon\Carbon::parse($liEta)->getTimestamp();
+                        } catch (\Exception $e) {}
+                    }
+                    $activeCandidates[] = [
+                        'sort_ts'         => $liEtaTs ?: PHP_INT_MAX,
+                        'type'            => 'qurbani',
+                        'order_id'        => (int) $o->id,
+                        'order_number'    => $o->order_number,
+                        'line_item_id'    => (int) $li->id,
+                        'line_item_name'  => (string) $li->name,
+                        'rider_name'      => $o->assignedRider?->fullname,
+                        'eta_at'          => $liEta ? (string) $liEta : null,
+                        'eta_human'       => $liEtaHuman,
+                        'ahead_count'     => $qurbaniAheadMap[(int) $li->id]['ahead_count'],
+                        'total_remaining' => $qurbaniAheadMap[(int) $li->id]['total_remaining'],
+                        'qurbani_day'     => $li->qurbani_day,
+                        'qurbani_slot'    => $li->qurbani_slot,
+                        'qurbani_delivery_type' => $li->qurbani_delivery_type,
+                    ];
+                }
+            }
+
+            // Regular OFD orders also go into the candidate pool.
+            $ofdPosition = null;
+            if (isset($regularAheadMap[(int) $o->id])) {
+                $ofdPosition = [
+                    'ahead_count'     => $regularAheadMap[(int) $o->id]['ahead_count'],
+                    'total_remaining' => $regularAheadMap[(int) $o->id]['total_remaining'],
+                ];
+                $activeCandidates[] = [
+                    'sort_ts'         => $etaIso
+                        ? \Carbon\Carbon::parse($etaIso)->getTimestamp()
+                        : PHP_INT_MAX,
+                    'type'            => 'regular',
+                    'order_id'        => (int) $o->id,
+                    'order_number'    => $o->order_number,
+                    'line_item_id'    => null,
+                    'line_item_name'  => null,
+                    'rider_name'      => $o->assignedRider?->fullname,
+                    'eta_at'          => $etaIso,
+                    'eta_human'       => $eta,
+                    'ahead_count'     => $regularAheadMap[(int) $o->id]['ahead_count'],
+                    'total_remaining' => $regularAheadMap[(int) $o->id]['total_remaining'],
+                ];
+            }
+
+            return [
+                'id' => $o->id,
+                'order_number' => $o->order_number,
+                'order_date' => $o->order_date,
+                'status' => $o->order_status,
+                'total' => $o->total_price,
+                'items_count' => $o->lineItems->count(),
+                'items_summary' => $o->lineItems->take(3)->pluck('name')->join(', '),
+                'rider_name' => $o->assignedRider?->fullname,
+                'eta' => $eta,
+                'is_qurbani' => $isQurbani,
+                'qurbani_items' => $qurbaniItems,
+                'ofd_position' => $ofdPosition,
+            ];
+        });
+
+        // Pick the soonest-ETA candidate as the banner's primary
+        // entry. If multiple, the others come along as `more_count`
+        // so the banner can hint that the customer has more in flight.
+        if (!empty($activeCandidates)) {
+            usort($activeCandidates, function ($a, $b) {
+                return $a['sort_ts'] <=> $b['sort_ts'];
+            });
+            $primary = $activeCandidates[0];
+            unset($primary['sort_ts']);
+            $primary['more_count'] = max(0, count($activeCandidates) - 1);
+            $activeDelivery = $primary;
+        }
 
         return response()->json([
             'success' => true,
-            'orders' => $orders->map(function($o) {
-                $eta = null;
-                if ($o->estimated_delivery_at && strtolower($o->order_status) === 'out_for_delivery') {
-                    $eta = \Carbon\Carbon::parse($o->estimated_delivery_at)->format('h:i A');
-                }
-
-                // QUR orders are detected by either their order_number
-                // prefix (Qurbani orders typically start with QUR) OR
-                // by ANY line item carrying qurbani_* metadata. The
-                // second test catches manual-entry orders that may not
-                // follow the QUR-prefix convention.
-                $orderNum = (string) ($o->order_number ?? '');
-                $hasQurbaniMeta = $o->lineItems->contains(function ($li) {
-                    return !empty($li->qurbani_day) || !empty($li->qurbani_slot)
-                        || !empty($li->qurbani_region) || !empty($li->qurbani_delivery_type);
-                });
-                $isQurbani = (str_starts_with(strtoupper($orderNum), 'QUR') || $hasQurbaniMeta);
-
-                // Build qurbani_items only for qurbani orders to keep
-                // the payload small for regular orders. Each item
-                // carries just enough info to power the timeline-tab
-                // labels client-side.
-                $qurbaniItems = [];
-                if ($isQurbani) {
-                    foreach ($o->lineItems as $li) {
-                        if (empty($li->qurbani_day) && empty($li->qurbani_slot)
-                            && empty($li->qurbani_region) && empty($li->qurbani_delivery_type)) {
-                            continue;
-                        }
-                        $qurbaniItems[] = [
-                            'line_item_id' => (int) $li->id,
-                            'name'         => (string) $li->name,
-                            'qurbani_day'  => $li->qurbani_day,
-                            'qurbani_slot' => $li->qurbani_slot,
-                            'qurbani_region' => $li->qurbani_region,
-                            'qurbani_delivery_type' => $li->qurbani_delivery_type,
-                            'status'       => $li->qurbani_item_status,
-                        ];
-                    }
-                }
-
-                return [
-                    'id' => $o->id,
-                    'order_number' => $o->order_number,
-                    'order_date' => $o->order_date,
-                    'status' => $o->order_status,
-                    'total' => $o->total_price,
-                    'items_count' => $o->lineItems->count(),
-                    'items_summary' => $o->lineItems->take(3)->pluck('name')->join(', '),
-                    'rider_name' => $o->assignedRider?->fullname,
-                    'eta' => $eta,
-                    'is_qurbani' => $isQurbani,
-                    'qurbani_items' => $qurbaniItems,
-                ];
-            }),
+            'orders' => $mapped,
+            'active_delivery' => $activeDelivery,
         ]);
     }
 

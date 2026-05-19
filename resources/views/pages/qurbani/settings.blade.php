@@ -364,7 +364,7 @@
                     </div>
                 </div>
                 <div style="margin-top: 8px; font-size: 11px; color: #6b7280; line-height: 1.5;">
-                    <b>Template params (in order):</b> <code>{{ '{{1}}' }}</code> = customer first name · <code>{{ '{{2}}' }}</code> = order number
+                    <b>Template params (in order):</b> <code>@{{1}}</code> = customer first name · <code>@{{2}}</code> = order number
                 </div>
             </div>
 
@@ -444,8 +444,8 @@
                 </div>
 
                 <div style="font-size: 11px; color: #6b7280; line-height: 1.55; padding: 8px 10px; background: #f9fafb; border-radius: 6px;">
-                    <b>Template params (in order):</b> <code>{{ '{{1}}' }}</code> = customer first name · <code>{{ '{{2}}' }}</code> = order number · <code>{{ '{{3}}' }}</code> = delivery time text<br>
-                    <b>Smart delivery time:</b> when the rider's GPS is fresh AND no earlier stop in their route slipped late, <code>{{ '{{3}}' }}</code> uses a window like <i>"7pm-8pm"</i> built from (Google ETA + buffer). Otherwise it falls back to the slot string (e.g. <i>"Afternoon 11 AM to 3 PM"</i>) so customers get a value either way.
+                    <b>Template params (in order):</b> <code>@{{1}}</code> = customer first name · <code>@{{2}}</code> = order number · <code>@{{3}}</code> = delivery time text<br>
+                    <b>Smart delivery time:</b> when the rider's GPS is fresh AND no earlier stop in their route slipped late, <code>@{{3}}</code> uses a window like <i>"7pm-8pm"</i> built from (Google ETA + buffer). Otherwise it falls back to the slot string (e.g. <i>"Afternoon 11 AM to 3 PM"</i>) so customers get a value either way.
                 </div>
             </div>
         </div>

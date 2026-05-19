@@ -20,8 +20,8 @@ class AppController extends Controller
         return response()->json([
             'success' => true,
             'version' => [
-                'code' => 980,                  // Current versionCode (increment this when releasing new version)
-                'name' => '9.8.0',              // Current versionName (user-facing version)
+                'code' => 990,                  // Current versionCode (increment this when releasing new version)
+                'name' => '9.9.0',              // Current versionName (user-facing version)
                 'download_url' => url('/apk/latest'),  // Serves APK directly with proper headers
                 'release_notes' => 'Bug fixes and improvements.',
                 'force_update' => true,        // Set to true to force users to update
@@ -48,8 +48,8 @@ class AppController extends Controller
         return response()->json([
             'success' => true,
             'version' => [
-                'code' => 980,                                    // Qurbani versionCode - bumped by build script
-                'name' => '9.8.0-qurbani',                        // Qurbani versionName (suffixed by gradle)
+                'code' => 990,                                    // Qurbani versionCode - bumped by build script
+                'name' => '9.9.0-qurbani',                        // Qurbani versionName (suffixed by gradle)
                 'download_url' => url('/apk/qurbani-latest'),     // Serves com.nizamifarmsmobile.qurbani APK
                 'release_notes' => 'Qurbani companion app updates.',
                 'force_update' => false,                          // Soft prompt - user can postpone
