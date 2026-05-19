@@ -308,6 +308,11 @@ Route::middleware(['auth'])->group(function () {
         // Phase 3 (May-2026) — Qurbani auto-WhatsApp settings.
         Route::get('/api/wa-auto',  [\App\Http\Controllers\CRM\QurbaniSettingsController::class, 'getWaAuto'])->name('qurbani-settings.api.wa-auto.get');
         Route::post('/api/wa-auto', [\App\Http\Controllers\CRM\QurbaniSettingsController::class, 'updateWaAuto'])->name('qurbani-settings.api.wa-auto');
+        // Phase 4 (May-2026) — slot start/end minute editing + bulk
+        // auto-detect button on the slots section of the settings page.
+        // Cascades writes down to t_crm_prod_order_line_item.
+        Route::post('/api/slots/{id}/minutes',     [\App\Http\Controllers\CRM\QurbaniSettingsController::class, 'updateSlotMinutes'])->name('qurbani-settings.api.slot-minutes');
+        Route::post('/api/slots/auto-detect-all',  [\App\Http\Controllers\CRM\QurbaniSettingsController::class, 'bulkAutoDetectSlotMinutes'])->name('qurbani-settings.api.slots-auto-detect-all');
     });
 
     // Qurbani Web Pages (orders, dashboard)
@@ -344,6 +349,16 @@ Route::middleware(['auth'])->group(function () {
         // Back-compat alias: the previous URL still works for any
         // bookmarks / reports that point at /qurbani/api/orders.
         Route::get('/api/orders', [\App\Http\Controllers\CRM\QurbaniWebController::class, 'getInvoices'])->name('qurbani.api.orders');
+
+        // -----------------------------------------------------------
+        // QURBANI PERFORMANCE — Phase 5 (May-2026). Web-only
+        // operational snapshot dashboard with day-state machine and
+        // clickable KPI drilldowns. Lives under /qurbani/performance.
+        // -----------------------------------------------------------
+        Route::get('/performance', [\App\Http\Controllers\CRM\QurbaniPerformanceController::class, 'index'])->name('qurbani.performance');
+        Route::get('/api/performance/summary',  [\App\Http\Controllers\CRM\QurbaniPerformanceController::class, 'summary'])->name('qurbani.api.performance.summary');
+        Route::get('/api/performance/drill',    [\App\Http\Controllers\CRM\QurbaniPerformanceController::class, 'drill'])->name('qurbani.api.performance.drill');
+        Route::post('/api/performance/day-state', [\App\Http\Controllers\CRM\QurbaniPerformanceController::class, 'setDayState'])->name('qurbani.api.performance.day-state');
 
         Route::get('/api/dashboard', [\App\Http\Controllers\CRM\QurbaniWebController::class, 'getDashboardData'])->name('qurbani.api.dashboard');
         Route::get('/api/payment-summary', [\App\Http\Controllers\CRM\QurbaniWebController::class, 'getPaymentAccountSummary'])->name('qurbani.api.payment-summary');

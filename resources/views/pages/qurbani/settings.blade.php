@@ -1300,6 +1300,13 @@ function renderSlotSection(dayOptions, deliveryTypeOptions) {
     const inactiveSlots = allSlots.filter(o => !o.is_active);
     const showInInvoice = activeSlots.length > 0 ? (activeSlots[0].show_in_invoice ? true : false) : false;
 
+    // Phase 4 (May-2026) — coverage hint for the slot timings card.
+    // Shows how many slots have explicit start/end minutes set (from
+    // either the parser auto-fill or manual edit) so the user knows
+    // whether the dashboard's at-risk math will work for everything.
+    const slotsWithTime = activeSlots.filter(s => s.slot_end_minute != null).length;
+    const slotsWithoutTime = activeSlots.length - slotsWithTime;
+
     let html = `<div class="field-section">
         <div class="field-header">
             <div>
@@ -1310,6 +1317,22 @@ function renderSlotSection(dayOptions, deliveryTypeOptions) {
                 <input type="checkbox" ${showInInvoice ? 'checked' : ''} onchange="toggleInvoiceVisibility('qurbani_slot', this.checked)" style="accent-color:#b45309;">
                 Show in Invoice
             </label>
+        </div>
+        <div style="padding: 10px 12px; background: #fffbeb; border-bottom: 1px solid #fde68a; display: flex; align-items: center; gap: 12px; flex-wrap: wrap;">
+            <div style="font-size: 12px; color: #78350f; flex: 1; min-width: 220px;">
+                <strong>Slot times</strong> — used by the operations dashboard to detect late / at-risk orders.<br>
+                <span style="color: ${slotsWithoutTime > 0 ? '#b91c1c' : '#15803d'}; font-weight: 600;">
+                    ${slotsWithTime} of ${activeSlots.length} slot${activeSlots.length !== 1 ? 's' : ''} have times set${slotsWithoutTime > 0 ? ` · ${slotsWithoutTime} missing` : ' ✓'}
+                </span>
+            </div>
+            <div style="display: flex; gap: 6px; flex-wrap: wrap;">
+                <button class="btn-sm" style="background:#1e40af;color:#fff;font-size:11px;font-weight:600;padding:6px 10px;border-radius:6px;border:none;cursor:pointer;" onclick="autoDetectSlotMinutes(true)" title="Run the parser on all slots that don't have times yet — won't overwrite manual edits">
+                    ✨ Auto-detect missing
+                </button>
+                <button class="btn-sm" style="background:#fff;color:#92400e;font-size:11px;font-weight:600;padding:6px 10px;border-radius:6px;border:1px solid #f59e0b;cursor:pointer;" onclick="autoDetectSlotMinutes(false)" title="Re-run the parser on EVERY slot, including those with manual edits. Use this if you renamed lots of slots.">
+                    🔁 Re-detect all
+                </button>
+            </div>
         </div>
         <div class="field-body">`;
 
@@ -1405,10 +1428,18 @@ function renderSlotGroupForParent(slots, dayId, dtId, dtLabel, dayLabel, groupKe
 
     slots.forEach((slot, idx) => {
         const isDefault = slot.is_default ? true : false;
+        // Phase 4 (May-2026): show the slot's resolved start/end
+        // times right next to the slot text. Green chip = times set,
+        // grey chip = missing (parser will be used as fallback).
+        const timeChip = formatSlotTimeChip(slot);
         html += `<div class="option-row" data-id="${slot.id}" style="margin-bottom: 4px;">
             <span class="option-order">${idx + 1}</span>
-            <span class="option-value">${escapeHtml(slot.option_value)}</span>
+            <span class="option-value">
+                ${escapeHtml(slot.option_value)}
+                ${timeChip}
+            </span>
             <div class="option-actions">
+                <button class="btn-sm" style="background:#fef3c7;color:#92400e;font-size:11px;font-weight:600;" onclick='openSlotTimeEditor(${JSON.stringify(slot).replace(/'/g, "&#39;")})' title="Edit slot start/end time">⏱ Time</button>
                 <button class="btn-sm" style="background:${isDefault ? '#d1fae5' : '#f3f4f6'}; color:${isDefault ? '#065f46' : '#6b7280'}; font-size:11px;" onclick="toggleDefault(${slot.id}, ${isDefault ? 'false' : 'true'})">${isDefault ? '★ Default' : '☆ Set Default'}</button>
                 <button class="btn-sm btn-edit" onclick="editOption(${slot.id}, '${escapeAttr(slot.option_value)}')">Edit</button>
                 <button class="btn-sm btn-delete" onclick="deleteOption(${slot.id}, '${escapeAttr(slot.option_value)}')">Remove</button>
@@ -1418,17 +1449,100 @@ function renderSlotGroupForParent(slots, dayId, dtId, dtLabel, dayLabel, groupKe
 
     const inputId = dtId ? `add-slot-${dayId}-${dtId}` : `add-slot-${dayId}`;
     const placeholderSuffix = dtLabel ? ` for ${escapeAttr(dayLabel)} / ${escapeAttr(dtLabel)}` : ` for ${escapeAttr(dayLabel)}`;
+    const previewId = dtId ? `slot-preview-${dayId}-${dtId}` : `slot-preview-${dayId}`;
     html += `<div class="add-form" style="margin-top: 6px;">
-            <input type="text" class="add-input" id="${inputId}" placeholder="New slot${placeholderSuffix}..." onkeydown="if(event.key==='Enter')addSlotForDayAndType(${dayId}, ${dtId || 'null'})">
+            <input type="text" class="add-input" id="${inputId}" placeholder="New slot${placeholderSuffix}..." oninput="previewSlotParse('${inputId}', '${previewId}')" onkeydown="if(event.key==='Enter')addSlotForDayAndType(${dayId}, ${dtId || 'null'})">
             <button class="btn-add" onclick="addSlotForDayAndType(${dayId}, ${dtId || 'null'})" style="padding: 6px 12px; font-size: 12px;">+ Add</button>
-        </div>`;
+        </div>
+        <div id="${previewId}" style="font-size: 11px; color: #16a34a; margin-top: 3px; min-height: 14px;"></div>`;
 
     html += `</div>`;
     return html;
 }
 
+// Phase 4 (May-2026) — small chip rendered next to the slot text in
+// the slots list so the resolved start/end is visible at a glance.
+function formatSlotTimeChip(slot) {
+    if (slot.slot_end_minute == null) {
+        return `<span title="No explicit times set — line items will use parser auto-detect" style="display:inline-block;margin-left:8px;font-size:10px;background:#f3f4f6;color:#6b7280;border-radius:4px;padding:1px 6px;">⏱ no times</span>`;
+    }
+    const startTxt = slot.slot_start_minute != null ? minutesToHuman(slot.slot_start_minute) : '?';
+    const endTxt   = minutesToHuman(slot.slot_end_minute);
+    return `<span title="Slot times set in settings (used by dashboard at-risk math)" style="display:inline-block;margin-left:8px;font-size:10px;background:#dcfce7;color:#15803d;border-radius:4px;padding:1px 6px;font-weight:600;">⏱ ${startTxt} → ${endTxt}</span>`;
+}
+
+// Convert minutes-since-midnight to a 12-hour clock label.
+// Mirror of App\Services\QurbaniSlotParser::formatMinutes() so the
+// UI can format times client-side.
+function minutesToHuman(min) {
+    if (min == null || min < 0 || min > 1440) return '—';
+    const h = Math.floor(min / 60);
+    const m = min % 60;
+    const ampm = h >= 12 ? 'PM' : 'AM';
+    const h12 = (h % 12) || 12;
+    return m === 0 ? `${h12} ${ampm}` : `${h12}:${String(m).padStart(2, '0')} ${ampm}`;
+}
+
+// Pure JS reflection of the PHP QurbaniSlotParser. Used by the
+// "preview while typing" hint AND by the auto-fill button inside
+// the time editor modal. Kept simple — same regexes as the PHP side
+// so the preview never disagrees with what gets stored.
+function parseSlotClient(slot) {
+    if (!slot) return [null, null];
+    let norm = slot.trim().toUpperCase().replace(/\s+/g, ' ');
+    norm = norm.replace(/^(MORNING|AFTERNOON|EVENING)\s+/, '');
+    const range = norm.match(/^(\d{1,2}(?::\d{2})?)\s*(AM|PM)\s+TO\s+(\d{1,2}(?::\d{2})?)\s*(AM|PM)$/);
+    if (range) {
+        const s = clientTimeToMin(range[1], range[2]);
+        const e = clientTimeToMin(range[3], range[4]);
+        if (s == null || e == null || e < s) return [null, null];
+        return [s, e];
+    }
+    const single = norm.match(/^(\d{1,2}(?::\d{2})?)\s*(AM|PM)$/);
+    if (single) {
+        const s = clientTimeToMin(single[1], single[2]);
+        if (s == null) return [null, null];
+        let e = s + 60;
+        if (e > 1439) e = 1439;
+        return [s, e];
+    }
+    return [null, null];
+}
+function clientTimeToMin(time, ampm) {
+    const m = time.match(/^(\d{1,2})(?::(\d{2}))?$/);
+    if (!m) return null;
+    let h = parseInt(m[1], 10);
+    const mm = m[2] ? parseInt(m[2], 10) : 0;
+    if (h < 1 || h > 12 || mm < 0 || mm > 59) return null;
+    if (h === 12) h = 0;
+    if (ampm === 'PM') h += 12;
+    return h * 60 + mm;
+}
+
+// Live preview while typing a new slot in the add-slot input. Tells
+// the user up front whether the parser will recognise it before they
+// press Add, so they can fix typos like "Afternoon 2pm to 4pm"
+// (lowercase still parses fine here, but a typo like "Afternoon 2PM"
+// without the space won't).
+function previewSlotParse(inputId, previewId) {
+    const input = document.getElementById(inputId);
+    const preview = document.getElementById(previewId);
+    if (!input || !preview) return;
+    const val = input.value.trim();
+    if (!val) { preview.textContent = ''; preview.style.color = '#6b7280'; return; }
+    const [s, e] = parseSlotClient(val);
+    if (e == null) {
+        preview.textContent = "✗ Couldn't auto-detect times — you'll need to set them manually after saving.";
+        preview.style.color = '#b91c1c';
+    } else {
+        preview.textContent = `✓ Auto-detected: ${minutesToHuman(s)} → ${minutesToHuman(e)} (you can edit after save)`;
+        preview.style.color = '#15803d';
+    }
+}
+
 async function addSlotForDayAndType(dayId, dtId) {
     const inputId = dtId ? `add-slot-${dayId}-${dtId}` : `add-slot-${dayId}`;
+    const previewId = dtId ? `slot-preview-${dayId}-${dtId}` : `slot-preview-${dayId}`;
     const input = document.getElementById(inputId);
     const value = input.value.trim();
     if (!value) return;
@@ -1441,10 +1555,186 @@ async function addSlotForDayAndType(dayId, dtId) {
             body: JSON.stringify(body),
         });
         const data = await response.json();
-        if (data.success) { showToast(data.message); input.value = ''; loadOptions(); }
+        if (data.success) {
+            // Phase 4 (May-2026): if the parser couldn't auto-detect
+            // times, nudge the user to set them manually now (rather
+            // than silently letting the slot exist without times,
+            // which would then get flagged on the dashboard).
+            let msg = data.message;
+            if (data.slot_end_minute == null) {
+                msg += ' — couldn\'t auto-detect times, please set them manually.';
+            } else {
+                msg += ` (auto-detected ${minutesToHuman(data.slot_start_minute)} → ${minutesToHuman(data.slot_end_minute)})`;
+            }
+            showToast(msg);
+            input.value = '';
+            const preview = document.getElementById(previewId);
+            if (preview) preview.textContent = '';
+            loadOptions();
+        }
         else { showToast(data.message || 'Failed', 'error'); }
     } catch (e) { showToast('Network error', 'error'); }
 }
+
+// Phase 4 (May-2026) — slot time editor modal. Opens a small popup
+// that lets the user view/edit the start/end time of one slot. The
+// user can pick times via two HH:MM <input type="time">, run the
+// parser to auto-fill them, or clear them entirely. Saves cascade
+// down to all line items using the same slot text.
+window.openSlotTimeEditor = function(slot) {
+    const existing = document.getElementById('slotTimeModal');
+    if (existing) existing.remove();
+
+    const startStr = slot.slot_start_minute != null ? minutesTo24h(slot.slot_start_minute) : '';
+    const endStr   = slot.slot_end_minute   != null ? minutesTo24h(slot.slot_end_minute)   : '';
+
+    const modal = document.createElement('div');
+    modal.id = 'slotTimeModal';
+    modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.55);z-index:10000;display:flex;align-items:center;justify-content:center;padding:20px;';
+    modal.onclick = (e) => { if (e.target === modal) modal.remove(); };
+    modal.innerHTML = `
+        <div style="background:#fff;border-radius:12px;width:480px;max-width:96vw;box-shadow:0 25px 60px rgba(0,0,0,0.3);overflow:hidden;">
+            <div style="padding:14px 18px;background:linear-gradient(135deg,#fef3c7,#fde68a);border-bottom:1px solid #fbbf24;">
+                <div style="font-size:11px;color:#92400e;font-weight:700;text-transform:uppercase;letter-spacing:.5px;">Edit slot times</div>
+                <div style="font-size:16px;font-weight:700;color:#1f2937;margin-top:2px;">${escapeHtml(slot.option_value)}</div>
+            </div>
+            <div style="padding:18px;">
+                <p style="font-size:12px;color:#6b7280;margin:0 0 14px 0;line-height:1.5;">
+                    These times are used by the operations dashboard to detect <strong>late</strong> and <strong>at-risk</strong> orders.
+                    Saving here also updates every existing order using this slot text.
+                </p>
+                <div style="display:flex;gap:14px;align-items:flex-end;margin-bottom:10px;">
+                    <div style="flex:1;">
+                        <label style="font-size:11px;font-weight:600;color:#374151;display:block;margin-bottom:4px;">Start time</label>
+                        <input type="time" id="slotTimeStart" value="${startStr}" style="width:100%;padding:7px 10px;border:1px solid #d1d5db;border-radius:6px;font-size:13px;">
+                    </div>
+                    <div style="font-size:18px;color:#9ca3af;padding-bottom:8px;">→</div>
+                    <div style="flex:1;">
+                        <label style="font-size:11px;font-weight:600;color:#374151;display:block;margin-bottom:4px;">End time</label>
+                        <input type="time" id="slotTimeEnd" value="${endStr}" style="width:100%;padding:7px 10px;border:1px solid #d1d5db;border-radius:6px;font-size:13px;">
+                    </div>
+                </div>
+                <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px;">
+                    <button onclick="slotTimeAutoFromText(${slot.id}, '${escapeAttr(slot.option_value)}')" style="padding:5px 10px;font-size:11px;background:#dbeafe;color:#1e40af;border:1px solid #93c5fd;border-radius:6px;cursor:pointer;font-weight:600;" title="Re-run the regex parser on the slot text to fill these inputs">✨ Auto from text</button>
+                    <button onclick="slotTimeClear()" style="padding:5px 10px;font-size:11px;background:#f3f4f6;color:#6b7280;border:1px solid #d1d5db;border-radius:6px;cursor:pointer;" title="Clear the inputs (line items will fall back to parser auto-detect)">✗ Clear</button>
+                </div>
+                <div id="slotTimeMsg" style="font-size:11px;color:#16a34a;min-height:14px;margin-bottom:12px;"></div>
+                <div style="display:flex;gap:8px;justify-content:flex-end;">
+                    <button onclick="document.getElementById('slotTimeModal').remove()" style="padding:7px 14px;font-size:12px;background:#fff;color:#6b7280;border:1px solid #d1d5db;border-radius:6px;cursor:pointer;">Cancel</button>
+                    <button onclick="saveSlotTime(${slot.id})" style="padding:7px 14px;font-size:12px;background:#16a34a;color:#fff;border:none;border-radius:6px;cursor:pointer;font-weight:600;">Save</button>
+                </div>
+            </div>
+        </div>`;
+    document.body.appendChild(modal);
+};
+
+// HH:MM (24h) ←→ minutes-since-midnight helpers — used by the
+// modal's time inputs. <input type="time"> uses 24-hour HH:MM.
+function minutesTo24h(min) {
+    if (min == null) return '';
+    const h = Math.floor(min / 60);
+    const m = min % 60;
+    return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+}
+function timeStr24hToMinutes(s) {
+    if (!s) return null;
+    const m = s.match(/^(\d{2}):(\d{2})$/);
+    if (!m) return null;
+    return parseInt(m[1], 10) * 60 + parseInt(m[2], 10);
+}
+
+window.slotTimeAutoFromText = function(slotId, optValue) {
+    const [s, e] = parseSlotClient(optValue);
+    const startEl = document.getElementById('slotTimeStart');
+    const endEl   = document.getElementById('slotTimeEnd');
+    const msg     = document.getElementById('slotTimeMsg');
+    if (e == null) {
+        msg.textContent = '✗ Could not auto-detect from this slot text. Please pick times manually.';
+        msg.style.color = '#b91c1c';
+        return;
+    }
+    startEl.value = minutesTo24h(s);
+    endEl.value   = minutesTo24h(e);
+    msg.textContent = `✓ Filled from parser: ${minutesToHuman(s)} → ${minutesToHuman(e)}`;
+    msg.style.color = '#15803d';
+};
+window.slotTimeClear = function() {
+    document.getElementById('slotTimeStart').value = '';
+    document.getElementById('slotTimeEnd').value = '';
+    const msg = document.getElementById('slotTimeMsg');
+    msg.textContent = 'Cleared. Save to remove the explicit times — line items will fall back to parser auto-detect.';
+    msg.style.color = '#6b7280';
+};
+window.saveSlotTime = async function(slotId) {
+    const startMin = timeStr24hToMinutes(document.getElementById('slotTimeStart').value);
+    const endMin   = timeStr24hToMinutes(document.getElementById('slotTimeEnd').value);
+    let body;
+    if (startMin == null && endMin == null) {
+        body = { action: 'clear' };
+    } else if (startMin != null && endMin != null) {
+        if (endMin < startMin) {
+            const msg = document.getElementById('slotTimeMsg');
+            msg.textContent = '✗ End time must be after start time.';
+            msg.style.color = '#b91c1c';
+            return;
+        }
+        body = { action: 'set', start_minute: startMin, end_minute: endMin };
+    } else {
+        const msg = document.getElementById('slotTimeMsg');
+        msg.textContent = '✗ Both start and end times are required (or clear both to remove).';
+        msg.style.color = '#b91c1c';
+        return;
+    }
+    try {
+        const resp = await fetch(`{{ url("qurbani-settings/api/slots") }}/${slotId}/minutes`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': '{{ csrf_token() }}' },
+            body: JSON.stringify(body),
+        });
+        const data = await resp.json();
+        if (data.success) {
+            showToast(data.message);
+            document.getElementById('slotTimeModal').remove();
+            loadOptions();
+        } else {
+            const msg = document.getElementById('slotTimeMsg');
+            msg.textContent = '✗ ' + (data.message || 'Failed to save');
+            msg.style.color = '#b91c1c';
+        }
+    } catch (e) {
+        showToast('Network error', 'error');
+    }
+};
+
+// Phase 4 (May-2026) — bulk button at the top of the slots section.
+// onlyMissing=true: skip slots that already have explicit times (default; safe).
+// onlyMissing=false: re-run parser on EVERY slot (overwrites manual edits — confirm first).
+window.autoDetectSlotMinutes = async function(onlyMissing) {
+    if (!onlyMissing) {
+        if (!confirm('Re-detect times for ALL slots? This will OVERWRITE any manual edits you\'ve made. Use this if you renamed slot text and want fresh parser values everywhere.')) {
+            return;
+        }
+    }
+    try {
+        const resp = await fetch(`{{ route("qurbani-settings.api.slots-auto-detect-all") }}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': '{{ csrf_token() }}' },
+            body: JSON.stringify({ only_missing: !!onlyMissing }),
+        });
+        const data = await resp.json();
+        if (data.success) {
+            showToast(data.message);
+            if (data.unparseable && data.unparseable.length) {
+                console.warn('Unparseable slots:', data.unparseable);
+            }
+            loadOptions();
+        } else {
+            showToast(data.message || 'Auto-detect failed', 'error');
+        }
+    } catch (e) {
+        showToast('Network error', 'error');
+    }
+};
 
 async function reassignSlotDeliveryType(slotId, deliveryTypeId) {
     if (!deliveryTypeId) return;

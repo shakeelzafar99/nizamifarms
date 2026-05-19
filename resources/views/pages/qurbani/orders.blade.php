@@ -829,6 +829,20 @@ window.QURBANI_ORDERS_BOOT = {!! json_encode($qurbaniOrdersBoot, JSON_HEX_TAG | 
             const eta = new Date(it.qurbani_estimated_delivery_at);
             html += '<span class="qo-eta-chip">ETA ' + eta.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'}) + '</span>';
         }
+        // Phase 4 (May-2026) — slot vs ETA / delivered chip. Server
+        // pre-computes this per row (QurbaniSlotParser::compareEventToSlot
+        // — settings override > parser auto-detect for slot end). Green
+        // when ETA / delivered_at lands inside the promised slot,
+        // amber/red when it's past slot end.
+        if (it.slot_compare && it.slot_compare.label) {
+            const sc = it.slot_compare;
+            const isWithin = sc.state === 'within';
+            const isDeliveredCmp = !!it.qurbani_delivered_at;
+            const bg = isWithin ? '#d1fae5' : (isDeliveredCmp ? '#fee2e2' : '#fef3c7');
+            const fg = isWithin ? '#065f46' : (isDeliveredCmp ? '#991b1b' : '#92400e');
+            const bd = isWithin ? '#10b981' : (isDeliveredCmp ? '#ef4444' : '#f59e0b');
+            html += '<span class="qo-slot-chip" style="background:' + bg + ';color:' + fg + ';border:1px solid ' + bd + ';padding:2px 6px;border-radius:4px;font-size:11px;font-weight:700;">' + esc(sc.label) + '</span>';
+        }
         html += '</div>';
 
         // Row 3: actions — status dropdown, rider dropdown, print
@@ -1763,9 +1777,49 @@ window.QURBANI_ORDERS_BOOT = {!! json_encode($qurbaniOrdersBoot, JSON_HEX_TAG | 
                     + (totalLine ? '<span style="font-size:11px;color:#1d4ed8;">' + esc(totalLine) + '</span>' : '')
                     + '</div>';
             }
+            // Phase 4 (May-2026): slot vs ETA / delivered chip. Server
+            // pre-computes this from qurbani_slot_end_minute (settings
+            // override > parser auto-detect) and the relevant
+            // timestamp (delivered_at when delivered, ETA otherwise).
+            // Lives next to the route-position pill so on-time
+            // status reads at a glance.
+            if (d.slot_compare && d.slot_compare.label) {
+                const sc = d.slot_compare;
+                const isWithin = sc.state === 'within';
+                const isDeliveredCmp = !!(d.line_item && d.line_item.qurbani_item_status === 'delivered');
+                const bg = isWithin ? '#d1fae5' : (isDeliveredCmp ? '#fee2e2' : '#fef3c7');
+                const fg = isWithin ? '#065f46' : (isDeliveredCmp ? '#991b1b' : '#92400e');
+                const bd = isWithin ? '#10b981' : (isDeliveredCmp ? '#ef4444' : '#f59e0b');
+                html += '<div style="margin-top:8px;padding:6px 8px;background:' + bg + ';color:' + fg + ';border:1px solid ' + bd + ';border-radius:6px;font-size:12px;font-weight:700;display:inline-block;">'
+                    + esc(sc.label) + '</div>';
+            }
             html += '</div>';
         } else if (d.dispatch) {
             html += '<div style="background:#f3f4f6;border:1px solid #d1d5db;border-radius:8px;padding:10px 12px;margin-bottom:14px;font-size:13px;color:#6b7280;">⏱ ETA not yet calculated for this stop.</div>';
+            // Phase 4 (May-2026) — even without a calculated ETA, if
+            // the row was delivered we still want to show the vs-slot
+            // result so the user knows the order met / missed the
+            // promised slot.
+            if (d.slot_compare && d.slot_compare.label) {
+                const sc = d.slot_compare;
+                const isWithin = sc.state === 'within';
+                const bg = isWithin ? '#d1fae5' : '#fee2e2';
+                const fg = isWithin ? '#065f46' : '#991b1b';
+                const bd = isWithin ? '#10b981' : '#ef4444';
+                html += '<div style="margin-top:-8px;margin-bottom:14px;padding:6px 8px;background:' + bg + ';color:' + fg + ';border:1px solid ' + bd + ';border-radius:6px;font-size:12px;font-weight:700;display:inline-block;">'
+                    + esc(sc.label) + '</div>';
+            }
+        } else if (d.slot_compare && d.slot_compare.label) {
+            // Item never went through dispatch but is delivered (e.g.
+            // self-collection): still useful to know if it was within
+            // the slot. Render a stand-alone chip block.
+            const sc = d.slot_compare;
+            const isWithin = sc.state === 'within';
+            const bg = isWithin ? '#d1fae5' : '#fee2e2';
+            const fg = isWithin ? '#065f46' : '#991b1b';
+            const bd = isWithin ? '#10b981' : '#ef4444';
+            html += '<div style="margin-bottom:14px;padding:6px 8px;background:' + bg + ';color:' + fg + ';border:1px solid ' + bd + ';border-radius:6px;font-size:12px;font-weight:700;display:inline-block;">'
+                + esc(sc.label) + '</div>';
         }
 
         // ── Status events timeline (most recent at the bottom; we

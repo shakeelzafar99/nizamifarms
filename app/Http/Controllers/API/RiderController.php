@@ -19611,7 +19611,9 @@ class RiderController extends Controller
         $orders = \App\Models\CRM\OrderModel::with(['customer', 'lineItems' => function ($q) {
                 $q->select(
                     'id', 'order_id', 'product_id', 'name', 'sku', 'quantity', 'unit_price', 'line_total',
-                    'qurbani_day', 'qurbani_slot', 'qurbani_region', 'qurbani_sub_region',
+                    'qurbani_day', 'qurbani_slot',
+                    'qurbani_slot_start_minute', 'qurbani_slot_end_minute',
+                    'qurbani_region', 'qurbani_sub_region',
                     'qurbani_delivery_type', 'qurbani_type', 'qurbani_paya',
                     'qurbani_item_status', 'qurbani_assigned_rider_user_id',
                     'qurbani_status_updated_at',
@@ -19712,6 +19714,8 @@ class RiderController extends Controller
                         'verified_location_saved_at' => $orderShells[$order->id]['verified_location_saved_at'],
                         'qurbani_day'             => $li->qurbani_day,
                         'qurbani_slot'            => $li->qurbani_slot,
+                        'qurbani_slot_start_minute' => $li->qurbani_slot_start_minute !== null ? (int) $li->qurbani_slot_start_minute : null,
+                        'qurbani_slot_end_minute'   => $li->qurbani_slot_end_minute   !== null ? (int) $li->qurbani_slot_end_minute   : null,
                         'qurbani_delivery_type'   => $li->qurbani_delivery_type,
                         'qurbani_region'          => $li->qurbani_region,
                         'qurbani_sub_region'      => $li->qurbani_sub_region,
@@ -19898,6 +19902,46 @@ class RiderController extends Controller
                     'on_time' => null,
                     'status_text' => 'ETA ' . $estTime->format('h:i A'),
                 ];
+            }
+        }
+        unset($bundle);
+    }
+
+    /**
+     * Helper: enrich each bundle with slot_compare — telling us
+     * whether the ETA (for OFD bundles) or the actual delivered_at
+     * (for delivered bundles) lands inside the promised slot end.
+     *
+     * Phase 4 (May-2026) — driven by qurbani_slot_end_minute on the
+     * line item (settings override > parser auto-detect).
+     */
+    private function enrichBundleSlotCompare(array &$bundles): void
+    {
+        $grace = (int) \App\Models\FIN\ConfigModel::get('qurbani_late_grace_minutes', '10');
+        if ($grace < 0) $grace = 0;
+        foreach ($bundles as &$bundle) {
+            $bundle['slot_compare'] = null;
+            $slotEnd = $bundle['qurbani_slot_end_minute'] ?? null;
+            if ($slotEnd === null) continue;
+            // Delivered bundle: compare actual delivery time to slot end.
+            if (!empty($bundle['qurbani_delivered_at'])) {
+                $bundle['slot_compare'] = \App\Services\QurbaniSlotParser::compareEventToSlot(
+                    $bundle['qurbani_delivered_at'],
+                    (int) $slotEnd,
+                    $grace,
+                    'delivered'
+                );
+                continue;
+            }
+            // OFD bundle with stored ETA: compare ETA to slot end.
+            $eta = $bundle['qurbani_estimated_delivery_at'] ?? null;
+            if ($eta) {
+                $bundle['slot_compare'] = \App\Services\QurbaniSlotParser::compareEventToSlot(
+                    $eta,
+                    (int) $slotEnd,
+                    $grace,
+                    'eta'
+                );
             }
         }
         unset($bundle);
@@ -20151,6 +20195,7 @@ class RiderController extends Controller
             }
 
             $this->enrichBundleEtaComparison($bundles);
+            $this->enrichBundleSlotCompare($bundles);
 
             $rider = \DB::table('t_sys_user')
                 ->where('id', $riderId)
@@ -21385,7 +21430,9 @@ class RiderController extends Controller
                 ->where('li.id', $lineItemId)
                 ->select(
                     'li.id', 'li.order_id', 'li.name as item_name', 'li.quantity',
-                    'li.qurbani_day', 'li.qurbani_slot', 'li.qurbani_region',
+                    'li.qurbani_day', 'li.qurbani_slot',
+                    'li.qurbani_slot_start_minute', 'li.qurbani_slot_end_minute',
+                    'li.qurbani_region',
                     'li.qurbani_sub_region', 'li.qurbani_delivery_type',
                     'li.qurbani_type', 'li.qurbani_paya', 'li.qurbani_item_status',
                     'li.qurbani_status_updated_at', 'li.qurbani_status_updated_by',
@@ -21685,6 +21732,31 @@ class RiderController extends Controller
                 ];
             }
 
+            // Step 7c (May-2026) — slot vs ETA / delivered-at compare.
+            // Same shape as the cards on /qurbani/orders so the
+            // timeline modal can render the same chip without
+            // repeating the math client-side.
+            $slotCompare = null;
+            if ($li->qurbani_slot_end_minute !== null) {
+                $grace = (int) \App\Models\FIN\ConfigModel::get('qurbani_late_grace_minutes', '10');
+                if ($grace < 0) $grace = 0;
+                if ($li->qurbani_delivered_at) {
+                    $slotCompare = \App\Services\QurbaniSlotParser::compareEventToSlot(
+                        (string) $li->qurbani_delivered_at,
+                        (int) $li->qurbani_slot_end_minute,
+                        $grace,
+                        'delivered'
+                    );
+                } elseif ($li->qurbani_estimated_delivery_at) {
+                    $slotCompare = \App\Services\QurbaniSlotParser::compareEventToSlot(
+                        (string) $li->qurbani_estimated_delivery_at,
+                        (int) $li->qurbani_slot_end_minute,
+                        $grace,
+                        'eta'
+                    );
+                }
+            }
+
             // Step 8: payload. Customer name uses the same fallback
             // chain as the rest of the Qurbani views.
             $customerName = $li->order_name
@@ -21708,6 +21780,8 @@ class RiderController extends Controller
                     'quantity'                 => (float) $li->quantity,
                     'qurbani_day'              => $li->qurbani_day,
                     'qurbani_slot'             => $li->qurbani_slot,
+                    'qurbani_slot_start_minute'=> $li->qurbani_slot_start_minute !== null ? (int) $li->qurbani_slot_start_minute : null,
+                    'qurbani_slot_end_minute'  => $li->qurbani_slot_end_minute   !== null ? (int) $li->qurbani_slot_end_minute   : null,
                     'qurbani_region'           => $li->qurbani_region,
                     'qurbani_sub_region'       => $li->qurbani_sub_region,
                     'qurbani_delivery_type'    => $li->qurbani_delivery_type,
@@ -21721,6 +21795,7 @@ class RiderController extends Controller
                 'rider'          => $rider,
                 'dispatch'       => $dispatch,
                 'current_eta'    => $currentEta,
+                'slot_compare'   => $slotCompare,
                 'route_position' => $routePosition,
                 'delay_alert'    => $delayAlert,
                 'whatsapp_today' => $whatsappToday,

@@ -1285,6 +1285,8 @@ class QurbaniWebController extends Controller
                 'li.quantity',
                 'li.qurbani_day',
                 'li.qurbani_slot',
+                'li.qurbani_slot_start_minute',
+                'li.qurbani_slot_end_minute',
                 'li.qurbani_region',
                 'li.qurbani_sub_region',
                 'li.qurbani_delivery_type',
@@ -1390,6 +1392,12 @@ class QurbaniWebController extends Controller
             }
         }
 
+        // Phase 4 (May-2026) — slot vs ETA / delivered-at compare.
+        // Read grace once for all rows; the actual math lives in
+        // QurbaniSlotParser::compareEventToSlot().
+        $slotCompareGrace = (int) \App\Models\FIN\ConfigModel::get('qurbani_late_grace_minutes', '10');
+        if ($slotCompareGrace < 0) $slotCompareGrace = 0;
+
         // Build the response items.
         $items = [];
         foreach ($rows as $r) {
@@ -1418,6 +1426,8 @@ class QurbaniWebController extends Controller
 
                 'qurbani_day'           => $r->qurbani_day,
                 'qurbani_slot'          => $r->qurbani_slot,
+                'qurbani_slot_start_minute' => $r->qurbani_slot_start_minute !== null ? (int) $r->qurbani_slot_start_minute : null,
+                'qurbani_slot_end_minute'   => $r->qurbani_slot_end_minute   !== null ? (int) $r->qurbani_slot_end_minute   : null,
                 'qurbani_region'        => $r->qurbani_region,
                 'qurbani_sub_region'    => $r->qurbani_sub_region,
                 'qurbani_delivery_type' => $r->qurbani_delivery_type,
@@ -1465,6 +1475,32 @@ class QurbaniWebController extends Controller
                 'printed_positions' => $thisLineItemPrinted,
                 'print_count'       => count($thisLineItemPrinted),
                 'box_count'         => count($thisLineItemPositions),
+
+                // Phase 4 (May-2026) — slot vs ETA / delivered-at.
+                // For delivered items: compares actual delivered_at to
+                // slot end. For not-yet-delivered items with an ETA:
+                // compares ETA to slot end. NULL when there is no slot
+                // end on file or no event timestamp to compare against.
+                'slot_compare' => (function () use ($r, $slotCompareGrace) {
+                    if ($r->qurbani_slot_end_minute === null) return null;
+                    if ($r->qurbani_delivered_at) {
+                        return \App\Services\QurbaniSlotParser::compareEventToSlot(
+                            (string) $r->qurbani_delivered_at,
+                            (int) $r->qurbani_slot_end_minute,
+                            $slotCompareGrace,
+                            'delivered'
+                        );
+                    }
+                    if ($r->qurbani_estimated_delivery_at) {
+                        return \App\Services\QurbaniSlotParser::compareEventToSlot(
+                            (string) $r->qurbani_estimated_delivery_at,
+                            (int) $r->qurbani_slot_end_minute,
+                            $slotCompareGrace,
+                            'eta'
+                        );
+                    }
+                    return null;
+                })(),
             ];
         }
 

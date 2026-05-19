@@ -87,7 +87,12 @@ class QurbaniSettingsController extends Controller
             return response()->json(['success' => false, 'message' => 'This option already exists'], 422);
         }
 
-        $id = DB::table('t_crm_qurbani_field_options')->insertGetId([
+        // Phase 4 (May-2026): when adding a NEW slot, auto-detect
+        // start/end minutes from the slot text using the parser, so
+        // the user doesn't have to type them in. They can still edit
+        // them after the row exists. For non-slot fields (Day, Region,
+        // etc) the columns stay NULL.
+        $insert = [
             'field_name' => $validated['field_name'],
             'option_value' => $validated['option_value'],
             'parent_id' => $validated['parent_id'] ?? null,
@@ -97,9 +102,201 @@ class QurbaniSettingsController extends Controller
             'is_default' => 0,
             'created_at' => now(),
             'updated_at' => now(),
+        ];
+        if ($validated['field_name'] === 'qurbani_slot') {
+            [$startMin, $endMin] = \App\Services\QurbaniSlotParser::parse($validated['option_value']);
+            $insert['slot_start_minute'] = $startMin;
+            $insert['slot_end_minute']   = $endMin;
+        }
+
+        $id = DB::table('t_crm_qurbani_field_options')->insertGetId($insert);
+
+        // Cascade the auto-detected times to any line items that
+        // already use this exact slot text (rare for a brand-new
+        // slot, but harmless and keeps the dashboard accurate).
+        if ($validated['field_name'] === 'qurbani_slot' && isset($endMin) && $endMin !== null) {
+            DB::table('t_crm_prod_order_line_item')
+                ->where('qurbani_slot', $validated['option_value'])
+                ->update([
+                    'qurbani_slot_start_minute' => $startMin,
+                    'qurbani_slot_end_minute'   => $endMin,
+                ]);
+        }
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Option added',
+            'id' => $id,
+            'slot_start_minute' => $insert['slot_start_minute'] ?? null,
+            'slot_end_minute'   => $insert['slot_end_minute']   ?? null,
+        ]);
+    }
+
+    /**
+     * POST /qurbani-settings/api/slots/{id}/minutes
+     *
+     * Phase 4 (May-2026) — UI hook for editing the slot timings on
+     * the Qurbani Settings page. Three modes:
+     *   action=set    — write the supplied start/end minutes
+     *   action=clear  — null both columns (line items will fall back
+     *                   to parser auto-detect on next save)
+     *   action=auto   — re-run QurbaniSlotParser against the slot
+     *                   text and store its result
+     *
+     * Always cascades the resulting values down to every line item
+     * with this exact slot string so dashboard queries pick the
+     * change up immediately. Returns the new state + the count of
+     * line items updated for the toast.
+     */
+    public function updateSlotMinutes(Request $request, $id)
+    {
+        $validated = $request->validate([
+            'action'       => 'required|in:set,clear,auto',
+            'start_minute' => 'nullable|integer|min:0|max:1440',
+            'end_minute'   => 'nullable|integer|min:0|max:1440',
         ]);
 
-        return response()->json(['success' => true, 'message' => 'Option added', 'id' => $id]);
+        $option = DB::table('t_crm_qurbani_field_options')->where('id', $id)->first();
+        if (!$option) {
+            return response()->json(['success' => false, 'message' => 'Option not found'], 404);
+        }
+        if ($option->field_name !== 'qurbani_slot') {
+            return response()->json([
+                'success' => false,
+                'message' => 'Slot timings are only valid for slot options.',
+            ], 422);
+        }
+
+        $start = null; $end = null;
+        switch ($validated['action']) {
+            case 'set':
+                $start = $validated['start_minute'] ?? null;
+                $end   = $validated['end_minute']   ?? null;
+                if ($start === null || $end === null) {
+                    return response()->json([
+                        'success' => false,
+                        'message' => 'Both start_minute and end_minute are required for action=set',
+                    ], 422);
+                }
+                if ($end < $start) {
+                    return response()->json([
+                        'success' => false,
+                        'message' => 'End time must be after start time.',
+                    ], 422);
+                }
+                break;
+            case 'clear':
+                // null/null intentionally
+                break;
+            case 'auto':
+                [$start, $end] = \App\Services\QurbaniSlotParser::parse($option->option_value);
+                if ($end === null) {
+                    return response()->json([
+                        'success' => false,
+                        'message' => 'Auto-detect failed for this slot text. Please set the times manually.',
+                    ], 422);
+                }
+                break;
+        }
+
+        DB::table('t_crm_qurbani_field_options')
+            ->where('id', $id)
+            ->update([
+                'slot_start_minute' => $start,
+                'slot_end_minute'   => $end,
+                'updated_at'        => now(),
+            ]);
+
+        // Cascade to line items using this exact slot text. We only
+        // update rows whose slot text matches — this is fast because
+        // qurbani_slot is short and the index on qurbani_slot_end_minute
+        // doesn't matter here (we're filtering on a non-indexed
+        // string, but the table is small and the operation is rare).
+        $affected = DB::table('t_crm_prod_order_line_item')
+            ->where('qurbani_slot', $option->option_value)
+            ->update([
+                'qurbani_slot_start_minute' => $start,
+                'qurbani_slot_end_minute'   => $end,
+            ]);
+
+        return response()->json([
+            'success' => true,
+            'message' => $validated['action'] === 'clear'
+                ? "Cleared slot times. {$affected} line item(s) reset."
+                : "Slot times saved. {$affected} line item(s) updated.",
+            'slot_start_minute'  => $start,
+            'slot_end_minute'    => $end,
+            'line_items_updated' => $affected,
+        ]);
+    }
+
+    /**
+     * POST /qurbani-settings/api/slots/auto-detect-all
+     *
+     * Phase 4 (May-2026) — bulk "Auto-detect minutes for all slots"
+     * button. Walks every active qurbani_slot row, runs the parser,
+     * and writes start/end minutes plus cascades to line items.
+     *
+     * Modes:
+     *   only_missing=true   — only update rows where slot_end_minute is NULL
+     *                         (default — won't overwrite manual edits)
+     *   only_missing=false  — overwrite ALL rows with parser output (use
+     *                         when you want to reset everything)
+     *
+     * Returns counts so the UI can render a "Updated 17 of 20 slots"
+     * toast.
+     */
+    public function bulkAutoDetectSlotMinutes(Request $request)
+    {
+        $validated = $request->validate([
+            'only_missing' => 'nullable|boolean',
+        ]);
+        $onlyMissing = (bool) ($validated['only_missing'] ?? true);
+
+        $query = DB::table('t_crm_qurbani_field_options')
+            ->where('field_name', 'qurbani_slot')
+            ->where('is_active', 1);
+        if ($onlyMissing) {
+            $query->whereNull('slot_end_minute');
+        }
+
+        $rows = $query->get(['id', 'option_value']);
+        $updated = 0;
+        $unparseable = [];
+        $totalLineItemsCascade = 0;
+
+        foreach ($rows as $r) {
+            [$start, $end] = \App\Services\QurbaniSlotParser::parse($r->option_value);
+            if ($end === null) {
+                $unparseable[] = $r->option_value;
+                continue;
+            }
+            DB::table('t_crm_qurbani_field_options')
+                ->where('id', $r->id)
+                ->update([
+                    'slot_start_minute' => $start,
+                    'slot_end_minute'   => $end,
+                    'updated_at'        => now(),
+                ]);
+            $cascadeCount = DB::table('t_crm_prod_order_line_item')
+                ->where('qurbani_slot', $r->option_value)
+                ->update([
+                    'qurbani_slot_start_minute' => $start,
+                    'qurbani_slot_end_minute'   => $end,
+                ]);
+            $totalLineItemsCascade += $cascadeCount;
+            $updated++;
+        }
+
+        return response()->json([
+            'success' => true,
+            'message' => "Auto-detected {$updated} slot(s)."
+                . (count($unparseable) ? ' ' . count($unparseable) . ' unparseable.' : '')
+                . " {$totalLineItemsCascade} line item(s) updated.",
+            'updated'              => $updated,
+            'unparseable'          => $unparseable,
+            'line_items_updated'   => $totalLineItemsCascade,
+        ]);
     }
 
     public function updateOption(Request $request, $id)

@@ -34,6 +34,8 @@ class OrderLineItemModel extends BaseModel
         'is_free',
         'qurbani_day',
         'qurbani_slot',
+        'qurbani_slot_start_minute',
+        'qurbani_slot_end_minute',
         'qurbani_region',
         'qurbani_sub_region',
         'qurbani_delivery_type',
@@ -231,6 +233,52 @@ class OrderLineItemModel extends BaseModel
         static::updating(function ($lineItem) {
             if (is_null($lineItem->line_total)) {
                 $lineItem->line_total = $lineItem->getCalculatedTotalAttribute();
+            }
+        });
+
+        // Phase 4 (May-2026) — keep qurbani_slot_start_minute /
+        // qurbani_slot_end_minute in sync with qurbani_slot. Fires
+        // on both create and update so any time the slot string
+        // changes the derived integers re-derive themselves and
+        // dashboards never read stale values.
+        //
+        // Resolution priority:
+        //   1. Explicit override in t_crm_qurbani_field_options
+        //      (set via the Qurbani Settings UI)
+        //   2. QurbaniSlotParser auto-detect from the slot string
+        //
+        // We only re-parse when qurbani_slot is dirty (or on
+        // creation when it was set explicitly) — saves a
+        // micro-cycle when other fields update.
+        //
+        // For raw DB::table()->update() paths that bypass Eloquent
+        // (we still have a few in qurbani controllers), the
+        // backfill artisan command can be re-run any time.
+        static::saving(function ($lineItem) {
+            if (!$lineItem->exists || $lineItem->isDirty('qurbani_slot')) {
+                $slot = $lineItem->qurbani_slot;
+                if ($slot === null || trim((string) $slot) === '') {
+                    $lineItem->qurbani_slot_start_minute = null;
+                    $lineItem->qurbani_slot_end_minute = null;
+                } else {
+                    // 1) try the settings override first
+                    $override = \Illuminate\Support\Facades\DB::table('t_crm_qurbani_field_options')
+                        ->where('field_name', 'qurbani_slot')
+                        ->where('option_value', $slot)
+                        ->where('is_active', 1)
+                        ->whereNotNull('slot_end_minute')
+                        ->select('slot_start_minute', 'slot_end_minute')
+                        ->first();
+                    if ($override) {
+                        $lineItem->qurbani_slot_start_minute = $override->slot_start_minute;
+                        $lineItem->qurbani_slot_end_minute   = $override->slot_end_minute;
+                    } else {
+                        // 2) parser fallback
+                        [$start, $end] = \App\Services\QurbaniSlotParser::parse($slot);
+                        $lineItem->qurbani_slot_start_minute = $start;
+                        $lineItem->qurbani_slot_end_minute   = $end;
+                    }
+                }
             }
         });
     }

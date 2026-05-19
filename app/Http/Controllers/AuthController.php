@@ -275,6 +275,11 @@ class AuthController extends Controller
         $hasStoreAccess = in_array('access_store_mode', $mobilePermissions);
         $hasKhaasAccess = in_array('access_khaas_mode', $mobilePermissions);
         $hasQurbaniAccess = in_array('access_qurbani_mode', $mobilePermissions);
+        // May-2026: granular gate for the All Invoices view inside
+        // Qurbani mode. Useful when ops staff need general qurbani
+        // access (orders, riders, summary) but the invoice screen
+        // shows payment data that should stay with management.
+        $canViewQurbaniInvoices = in_array('view_qurbani_invoices', $mobilePermissions);
         
         // Determine default view based on available modes
         // Priority: store > khaas > rider (store always wins; qurbani is explicit switch only)
@@ -318,6 +323,7 @@ class AuthController extends Controller
             'has_khaas_access' => $hasKhaasAccess, // ⭐ Quick check for khaas access
             'khaas_business_unit' => $khaasBusinessUnit, // ⭐ Khaas BU details (id, name, color)
             'has_qurbani_access' => $hasQurbaniAccess,
+            'can_view_qurbani_invoices' => $canViewQurbaniInvoices, // May-2026: granular gate for All Invoices view
             'default_view' => $defaultView, // Default starting view for mobile app
             'expense_backdate_days' => (int)$expenseBackdateDays, // ⭐ Expense backdate days allowed
         ];

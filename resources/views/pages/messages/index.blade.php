@@ -3799,6 +3799,20 @@ select.wa-mgr-input { background: #fff; cursor: pointer; }
                     + (totalLine ? '<span style="font-size:11px;color:#1d4ed8;">' + esc(totalLine) + '</span>' : '')
                     + '</div>';
             }
+            // Phase 4 (May-2026) — slot vs ETA / delivered chip.
+            // Mirrors the qurbani/orders timeline modal so the
+            // customer-service rep replying from messages sees the
+            // same "🟢 Within slot" / "🟡 ETA past slot" verdict.
+            if (d.slot_compare && d.slot_compare.label) {
+                const sc = d.slot_compare;
+                const isWithin = sc.state === 'within';
+                const isDeliveredCmp = !!(d.line_item && d.line_item.qurbani_item_status === 'delivered');
+                const bg = isWithin ? '#d1fae5' : (isDeliveredCmp ? '#fee2e2' : '#fef3c7');
+                const fg = isWithin ? '#065f46' : (isDeliveredCmp ? '#991b1b' : '#92400e');
+                const bd = isWithin ? '#10b981' : (isDeliveredCmp ? '#ef4444' : '#f59e0b');
+                html += '<div style="margin-top:8px;padding:6px 8px;background:' + bg + ';color:' + fg + ';border:1px solid ' + bd + ';border-radius:6px;font-size:12px;font-weight:700;display:inline-block;">'
+                    + esc(sc.label) + '</div>';
+            }
             html += '</div>';
         }
 
