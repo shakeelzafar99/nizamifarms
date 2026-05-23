@@ -134,16 +134,34 @@ class EmployeeCashController extends Controller
         }
         
         // === KPI 1: INVOICES DELIVERED (Enhanced with detailed settlement tracking) ===
-        // Main value: Total invoices delivered (by delivery date)
-        $invoicesQuery = \DB::table('t_crm_order_status_history')
-            ->where('status_code', 'delivered')
-            ->where('is_current', 1);
-        
+        // Main value: Total invoices delivered (by delivery date).
+        //
+        // Phase 6 — Qurbani is excluded because the Qurbani delivery
+        // flow deliberately skips posting an INVOICE ledger row
+        // (see OrderModel:1465 — `hasPreReceivedPayments()` guard).
+        // Qurbani payments are collected separately and posted to
+        // the dedicated Qurbani Cash / Qurbani Online accounts, not
+        // NF cash/online. So including Qurbani delivered orders
+        // here would inflate `$invoicesCash` (which queries
+        // `t_crm_prod_order` directly) without a matching ledger
+        // settlement row, producing phantom "Cash Pending With
+        // Rider". The Qurbani-segregated view lives on the
+        // dedicated Qurbani Expenses screen + Monthly Reports tab.
+        $invoicesQuery = \DB::table('t_crm_order_status_history as h')
+            ->leftJoin('t_crm_prod_order as o', 'o.id', '=', 'h.order_id')
+            ->where('h.status_code', 'delivered')
+            ->where('h.is_current', 1)
+            ->tap(function ($q) {
+                \App\Services\QurbaniFinanceFilter::applyToOrderQuery(
+                    $q, 'o', \App\Services\QurbaniFinanceFilter::MODE_EXCLUDE
+                );
+            });
+
         if ($startDate && $endDate) {
-            $invoicesQuery->whereBetween('changed_at', [$startDate, $endDate]);
+            $invoicesQuery->whereBetween('h.changed_at', [$startDate, $endDate]);
         }
-        
-        $deliveredOrderIds = $invoicesQuery->pluck('order_id');
+
+        $deliveredOrderIds = $invoicesQuery->pluck('h.order_id');
         
         $totalInvoices = \DB::table('t_crm_prod_order')
             ->whereIn('id', $deliveredOrderIds)
@@ -275,14 +293,19 @@ class EmployeeCashController extends Controller
         $onlinePending = $onlinePendingL1 + $onlinePendingL2;
         
         // === KPI 2: ALL EXPENSES (from ledger, excluding vendor payments, including salaries) ===
-        // Main value: ALL expenses from any account (ledger-based)
+        // Phase 6 — Qurbani-tagged ledger rows excluded.
         $expensesQuery = LedgerModel::where('transaction_type', LedgerModel::TYPE_EXPENSE)
-            ->where('approval_status', LedgerModel::STATUS_APPROVED);
-        
+            ->where('approval_status', LedgerModel::STATUS_APPROVED)
+            ->tap(function ($q) {
+                \App\Services\QurbaniFinanceFilter::applyToLedgerQuery(
+                    $q, 't_fin_ledger', \App\Services\QurbaniFinanceFilter::MODE_EXCLUDE
+                );
+            });
+
         if ($startDate && $endDate) {
             $expensesQuery->whereBetween('transaction_date', [$startDate, $endDate]);
         }
-        
+
         $ledgerExpenses = (clone $expensesQuery)->sum('amount') ?? 0;
         
         // Add salary payments (these are also expenses but tracked separately)
@@ -319,24 +342,33 @@ class EmployeeCashController extends Controller
         $expensesNeedingSettlement = $expensesNeedingSettlement->sum('amount') ?? 0;
         
         // === KPI 3: VENDOR PAYMENTS (purchases + payments) ===
-        // Sub-value 1: Vendor Purchases
+        // Phase 6 — Qurbani vendor activity excluded.
         $vendorPurchasesQuery = LedgerModel::where('transaction_type', LedgerModel::TYPE_VENDOR_PURCHASE)
-            ->where('approval_status', LedgerModel::STATUS_APPROVED);
-        
+            ->where('approval_status', LedgerModel::STATUS_APPROVED)
+            ->tap(function ($q) {
+                \App\Services\QurbaniFinanceFilter::applyToLedgerQuery(
+                    $q, 't_fin_ledger', \App\Services\QurbaniFinanceFilter::MODE_EXCLUDE
+                );
+            });
+
         if ($startDate && $endDate) {
             $vendorPurchasesQuery->whereBetween('transaction_date', [$startDate, $endDate]);
         }
-        
+
         $vendorPurchases = $vendorPurchasesQuery->sum('amount') ?? 0;
-        
-        // Sub-value 2: Vendor Payments
+
         $vendorPaymentsQuery = LedgerModel::where('transaction_type', LedgerModel::TYPE_VENDOR_PAYMENT)
-            ->where('approval_status', LedgerModel::STATUS_APPROVED);
-        
+            ->where('approval_status', LedgerModel::STATUS_APPROVED)
+            ->tap(function ($q) {
+                \App\Services\QurbaniFinanceFilter::applyToLedgerQuery(
+                    $q, 't_fin_ledger', \App\Services\QurbaniFinanceFilter::MODE_EXCLUDE
+                );
+            });
+
         if ($startDate && $endDate) {
             $vendorPaymentsQuery->whereBetween('transaction_date', [$startDate, $endDate]);
         }
-        
+
         $vendorPayments = $vendorPaymentsQuery->sum('amount') ?? 0;
         
         // Main value: Vendor Balance (what we owe vendors)

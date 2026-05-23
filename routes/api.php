@@ -231,6 +231,8 @@ Route::middleware('auth:sanctum')->group(function () {
     
     // Expense Management (Store Mode)
     Route::get('/expenses', [\App\Http\Controllers\API\RiderController::class, 'getExpenses']);
+    // May-2026 — Qurbani Expenses screen summary card data.
+    Route::get('/qurbani/expense-summary', [\App\Http\Controllers\API\RiderController::class, 'getQurbaniExpenseSummary']);
     Route::get('/expenses/fund-transfers', [\App\Http\Controllers\API\RiderController::class, 'getFundTransfers']);
     Route::get('/expenses/payment-sources', [\App\Http\Controllers\API\RiderController::class, 'getPaymentSources']);
     Route::post('/expenses/set-default-account', [\App\Http\Controllers\API\RiderController::class, 'setBuDefaultExpenseAccount']); // ⭐ Set default expense account for a BU
@@ -273,6 +275,12 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/qurbani/my-deliveries', [\App\Http\Controllers\API\RiderController::class, 'getQurbaniRiderDeliveries']);
     Route::post('/qurbani/line-items/bulk-mark-delivered', [\App\Http\Controllers\API\RiderController::class, 'bulkMarkQurbaniItemsDelivered']);
     Route::post('/qurbani/line-items/{lineItemId}/mark-delivered', [\App\Http\Controllers\API\RiderController::class, 'markQurbaniItemDelivered']);
+    // Phase 6 (May-2026) — Mobile: queue + send one WhatsApp
+    // qurbani_location template for a line-item's customer. Used by
+    // the per-card "Request Location" button on QurbaniOpenOrdersScreen.
+    // Bulk send is web-only on purpose — staff drives the mass campaign
+    // from the desktop dashboard where the review drawer also lives.
+    Route::post('/qurbani/loc-request/send-one', [\App\Http\Controllers\CRM\QurbaniLocationRequestController::class, 'sendOne']);
     // May-2026: Qurbani route / dispatch / ETA system (per-rider planner).
     // Mirrors the regular-orders updateDeliveryPriorities + calculate-etas +
     // lock/unlock flow but operates at the BUNDLE level (one stop per

@@ -1222,6 +1222,14 @@ class OrderModel extends BaseModel
     // Status Management Methods
     public function changeStatus(string $statusCode, ?string $notes = null, ?int $changedBy = null): bool
     {
+        // Phase 1 (May-2026) — capture the prior NF status BEFORE the
+        // transaction mutates $this->order_status, so the customer-app
+        // webhook emitter (called post-commit below) can include it as
+        // payload.data.previous_status. Using getOriginal() reads the
+        // Eloquent-cached value, which is the status as it was loaded
+        // from the DB regardless of any intermediate in-memory edits.
+        $previousNfStatus = $this->getOriginal('order_status');
+
         try {
             // Validate status exists
             $newStatus = OrderStatusMaster::getByCode($statusCode);
@@ -1233,7 +1241,7 @@ class OrderModel extends BaseModel
             // This supports API/webhook updates and flexible status management
 
             // Handle everything at application level (no triggers needed)
-            return \DB::transaction(function () use ($statusCode, $notes, $changedBy, $newStatus) {
+            $result = \DB::transaction(function () use ($statusCode, $notes, $changedBy, $newStatus) {
                 \Log::info("OrderModel::changeStatus - Starting transaction", [
                     'order_id' => $this->id,
                     'status_code' => $statusCode,
@@ -1502,6 +1510,28 @@ class OrderModel extends BaseModel
                 $this->refresh();
                 return true;
             });
+
+            // Phase 1 (May-2026) — Customer-app outbound webhook.
+            // Runs AFTER the transaction has committed, so a successful
+            // status change is persisted before we queue the event. The
+            // emitter is wrapped in its own try/catch and only writes to
+            // an outbox table (no HTTP), so it cannot block the caller
+            // or break this method's contract. Filtered to SH- orders
+            // inside the emitter — non-SH orders are silent no-ops.
+            if ($result === true) {
+                try {
+                    app(\App\Services\CustomerAppWebhookEmitter::class)
+                        ->emitStatusChange($this, $previousNfStatus);
+                } catch (\Throwable $emitException) {
+                    \Log::error('CustomerAppWebhookEmitter call failed (non-fatal)', [
+                        'order_id'   => $this->id,
+                        'status_code' => $statusCode,
+                        'error'      => $emitException->getMessage(),
+                    ]);
+                }
+            }
+
+            return $result;
         } catch (\Exception $e) {
             \Log::error("Failed to change order status: " . $e->getMessage(), [
                 'order_id' => $this->id,

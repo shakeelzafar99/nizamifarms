@@ -607,6 +607,11 @@
     let monthDetailView = 'daily'; // 'daily' (default) or 'category'
     let expandedDailyDays = {};
     let showTipsModal = false;
+    // Phase 5 — Qurbani-segregation + NF/Khaas split state
+    let monthsLoaded = 12;          // window the API returned
+    let canViewKhaas = false;       // surfaced from API; gates Khaas rows
+    let qurbaniYearly = [];         // [{year, revenue, expenses, vendor_purchases, net}]
+    let loadingMoreMonths = false;
     
     const csrfToken = document.querySelector('meta[name="csrf-token"]')?.content || '';
     
@@ -654,67 +659,176 @@
     }
     
     // ========== MONTHLY ==========
-    async function loadMonthlySummary() {
-        document.getElementById('contentArea').innerHTML = '<div class="loading-container"><div class="spinner"></div><p style="margin-top:12px">Loading monthly summary...</p></div>';
+    async function loadMonthlySummary(months) {
+        const win = months || 12;
+        if (months && months > monthsLoaded) {
+            // "Load more years" — keep existing render visible, swap
+            // a small inline spinner button. Otherwise show full
+            // loader for the initial load.
+            loadingMoreMonths = true;
+            const btn = document.getElementById('loadMoreYearsBtn');
+            if (btn) { btn.disabled = true; btn.textContent = 'Loading…'; }
+        } else {
+            document.getElementById('contentArea').innerHTML = '<div class="loading-container"><div class="spinner"></div><p style="margin-top:12px">Loading monthly summary...</p></div>';
+        }
         try {
-            const data = await apiGet('/reports/api/monthly-summary');
+            const data = await apiGet(`/reports/api/monthly-summary?months=${win}`);
             if (data.success) {
                 monthlyData = data.data || [];
+                monthsLoaded = data.months_returned || win;
+                canViewKhaas = !!data.can_view_khaas;
+                qurbaniYearly = data.qurbani_yearly || [];
                 renderMonthlySummary();
             }
         } catch (e) {
             document.getElementById('contentArea').innerHTML = '<div class="loading-container">Failed to load monthly summary</div>';
+        } finally {
+            loadingMoreMonths = false;
         }
     }
-    
+
+    // Phase 5 — group months by calendar year so each year section
+    // can be prefixed with its own "Qurbani YYYY" infographic and
+    // the NF/Khaas split lives on each month card.
+    function groupMonthsByYear(months) {
+        const byYear = {};
+        months.forEach(m => {
+            const y = m.year || (m.month_key || '').slice(0, 4);
+            if (!byYear[y]) byYear[y] = [];
+            byYear[y].push(m);
+        });
+        return Object.keys(byYear)
+            .sort((a, b) => Number(b) - Number(a))
+            .map(y => ({year: Number(y), months: byYear[y]}));
+    }
+
+    // Card fragment for the "Qurbani YYYY" headline above a year's
+    // month list. Driven entirely by the qurbani_yearly payload.
+    // May-2026 — switched from "delivered revenue" to "booked
+    // revenue" with a Paid/Pending split + progress bar so the
+    // numbers reconcile 1-to-1 with the dedicated Qurbani Expenses
+    // tab. Layout: top row = Booked headline + Paid/Pending +
+    // progress bar; bottom row = Expenses + Vendor Purchases.
+    function renderQurbaniYearCard(year) {
+        const q = (qurbaniYearly || []).find(x => Number(x.year) === Number(year));
+        if (!q) return '';
+        const net = Number(q.net || 0);
+        const netClass = net >= 0 ? 'profit-positive' : 'profit-negative';
+        const booked  = Number(q.booked  ?? q.revenue ?? 0);
+        const paid    = Number(q.paid    ?? 0);
+        const pending = Number(q.pending ?? Math.max(0, booked - paid));
+        const paidPct = q.paid_pct != null ? Number(q.paid_pct) : (booked > 0 ? Math.round((paid / booked) * 100) : 0);
+        return `
+            <div class="qurbani-year-card" style="background:linear-gradient(135deg,#fef3c7 0%,#fed7aa 100%);border:1px solid #fbbf24;border-radius:10px;padding:14px 16px;margin-bottom:12px">
+                <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
+                    <div style="font-size:14px;font-weight:800;color:#7c2d12;letter-spacing:0.3px">🐐 Qurbani ${year}</div>
+                    <span class="profit-badge ${netClass}" style="font-size:12px">${net >= 0 ? '📈' : '📉'} Net ${formatCurrency(net)}</span>
+                </div>
+                <div style="background:rgba(255,255,255,0.55);border-radius:8px;padding:10px 12px;margin-bottom:10px">
+                    <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:4px">
+                        <div style="color:#92400e;font-weight:700;font-size:11px;text-transform:uppercase;letter-spacing:0.5px">🧾 Booked Revenue</div>
+                        <div style="color:#065f46;font-weight:800;font-size:16px">${formatCurrency(booked)}</div>
+                    </div>
+                    <div style="display:flex;justify-content:space-between;font-size:12px;margin-top:6px">
+                        <span style="color:#047857;font-weight:700">✅ Paid ${formatCurrency(paid)}</span>
+                        <span style="color:#b45309;font-weight:700">⏳ Pending ${formatCurrency(pending)}</span>
+                    </div>
+                    <div style="margin-top:6px;height:5px;background:#fde68a;border-radius:3px;overflow:hidden">
+                        <div style="height:100%;width:${paidPct}%;background:#047857"></div>
+                    </div>
+                    <div style="font-size:10px;color:#047857;margin-top:4px;font-weight:600">${paidPct}% collected · non-cancelled orders</div>
+                </div>
+                <div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;font-size:12px">
+                    <div><div style="color:#92400e;font-weight:600">💸 Expenses</div><div style="font-size:14px;font-weight:800;color:#991b1b">${formatCurrency(q.expenses)}</div></div>
+                    <div><div style="color:#92400e;font-weight:600">🛒 Vendor Purchases</div><div style="font-size:14px;font-weight:800;color:#9a3412">${formatCurrency(q.vendor_purchases)}</div></div>
+                </div>
+                <div style="font-size:10px;color:#78350f;margin-top:8px;font-style:italic">Excluded from monthly NF totals · reconciles with the Qurbani Expenses tab</div>
+            </div>`;
+    }
+
+    // Returns the sub-rows that show NF / Khaas split for expenses
+    // and vendor purchases, only when the user has Khaas access AND
+    // there's actually a Khaas number to show. Falls back to a
+    // single-line display otherwise.
+    function renderBuSplitRows(item) {
+        if (!canViewKhaas || ((item.expenses_khaas || 0) === 0 && (item.vendor_purchases_khaas || 0) === 0)) {
+            return '';
+        }
+        return `
+            <div style="margin-top:8px;padding-top:8px;border-top:1px dashed #e5e7eb;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px;font-size:11px">
+                <div><span style="color:#6b7280">NF Exp:</span> <strong style="color:#dc2626">${formatCurrency(item.expenses_nf || 0)}</strong></div>
+                <div><span style="color:#6b7280">Khaas Exp:</span> <strong style="color:#7c2d12">${formatCurrency(item.expenses_khaas || 0)}</strong></div>
+                <div><span style="color:#6b7280">NF Vendor:</span> <strong style="color:#ea580c">${formatCurrency(item.vendor_purchases_nf || 0)}</strong></div>
+                <div><span style="color:#6b7280">Khaas Vendor:</span> <strong style="color:#9a3412">${formatCurrency(item.vendor_purchases_khaas || 0)}</strong></div>
+            </div>`;
+    }
+
     function renderMonthlySummary() {
         if (selectedMonth && monthDetails) {
             renderMonthDetails();
             return;
         }
-        
+
         if (monthlyData.length === 0) {
             document.getElementById('contentArea').innerHTML = '<div class="loading-container">No data available</div>';
             return;
         }
-        
+
+        const grouped = groupMonthsByYear(monthlyData);
         let html = '';
-        monthlyData.forEach(item => {
-            const profitClass = item.profit >= 0 ? 'profit-positive' : 'profit-negative';
-            const profitEmoji = item.profit >= 0 ? '📈' : '📉';
-            html += `
-                <div class="month-card" onclick="loadMonthDetails('${item.month_key}')">
-                    <div class="month-header">
-                        <span class="month-name">${escapeHtml(item.month_name)}</span>
-                        <span class="profit-badge ${profitClass}">${profitEmoji} ${formatCurrency(item.profit)}</span>
-                    </div>
-                    <div class="month-summary">
-                        <div class="month-summary-item">
-                            <div class="month-summary-label">Invoices</div>
-                            <div class="month-summary-value val-green">${formatCurrency(item.invoices)}</div>
+        grouped.forEach(group => {
+            html += `<div class="year-section" style="margin-bottom:16px">
+                        <div style="font-size:18px;font-weight:800;color:#374151;margin:6px 0 10px;letter-spacing:-0.3px">${group.year}</div>`;
+            html += renderQurbaniYearCard(group.year);
+            group.months.forEach(item => {
+                const profitClass = item.profit >= 0 ? 'profit-positive' : 'profit-negative';
+                const profitEmoji = item.profit >= 0 ? '📈' : '📉';
+                html += `
+                    <div class="month-card" onclick="loadMonthDetails('${item.month_key}')">
+                        <div class="month-header">
+                            <span class="month-name">${escapeHtml(item.month_name)}</span>
+                            <span class="profit-badge ${profitClass}">${profitEmoji} ${formatCurrency(item.profit)}</span>
                         </div>
-                        <div class="month-summary-item">
-                            <div class="month-summary-label">Expenses</div>
-                            <div class="month-summary-value val-red">${formatCurrency(item.expenses)}</div>
+                        <div class="month-summary">
+                            <div class="month-summary-item">
+                                <div class="month-summary-label">Invoices</div>
+                                <div class="month-summary-value val-green">${formatCurrency(item.invoices)}</div>
+                            </div>
+                            <div class="month-summary-item">
+                                <div class="month-summary-label">Expenses</div>
+                                <div class="month-summary-value val-red">${formatCurrency(item.expenses)}</div>
+                            </div>
+                            <div class="month-summary-item">
+                                <div class="month-summary-label">Purchases</div>
+                                <div class="month-summary-value val-orange">${formatCurrency(item.vendor_purchases)}</div>
+                            </div>
+                            ${item.asset_purchases > 0 ? `
+                            <div class="month-summary-item">
+                                <div class="month-summary-label">Assets</div>
+                                <div class="month-summary-value val-purple">${formatCurrency(item.asset_purchases)}</div>
+                            </div>` : ''}
+                            ${item.tips > 0 ? `
+                            <div class="month-summary-item">
+                                <div class="month-summary-label">Tips</div>
+                                <div class="month-summary-value" style="color:#F59E0B">${formatCurrency(item.tips)}</div>
+                            </div>` : ''}
                         </div>
-                        <div class="month-summary-item">
-                            <div class="month-summary-label">Purchases</div>
-                            <div class="month-summary-value val-orange">${formatCurrency(item.vendor_purchases)}</div>
-                        </div>
-                        ${item.asset_purchases > 0 ? `
-                        <div class="month-summary-item">
-                            <div class="month-summary-label">Assets</div>
-                            <div class="month-summary-value val-purple">${formatCurrency(item.asset_purchases)}</div>
-                        </div>` : ''}
-                        ${item.tips > 0 ? `
-                        <div class="month-summary-item">
-                            <div class="month-summary-label">Tips</div>
-                            <div class="month-summary-value" style="color:#F59E0B">${formatCurrency(item.tips)}</div>
-                        </div>` : ''}
-                    </div>
-                    <div class="tap-hint">Click for details →</div>
-                </div>`;
+                        ${renderBuSplitRows(item)}
+                        <div class="tap-hint">Click for details →</div>
+                    </div>`;
+            });
+            html += `</div>`;
         });
+
+        // "Load more years" — fetches another 12 months on each click
+        // up to the controller's hard cap of 60.
+        if (monthsLoaded < 60) {
+            html += `
+                <div style="text-align:center;margin:16px 0 8px">
+                    <button id="loadMoreYearsBtn" class="back-button" style="background:#374151;color:#fff" onclick="loadMonthlySummary(${Math.min(monthsLoaded + 12, 60)})">⬇ Load 12 more months</button>
+                </div>`;
+        }
+
         document.getElementById('contentArea').innerHTML = html;
     }
     

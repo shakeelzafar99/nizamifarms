@@ -108,6 +108,80 @@
 .qo-toast.success { background: #d1fae5; color: #065f46; }
 .qo-toast.error { background: #fee2e2; color: #991b1b; }
 .qo-toast.info { background: #dbeafe; color: #1e40af; }
+
+/* ===== Phase 6 (May-2026) — Qurbani Location Request feature ====== */
+
+/* Toolbar badge — small "12 ready" pill that sits on top of the
+   Request Locations toolbar button when there are replies waiting
+   for staff to review. */
+.qo-loc-badge { position: absolute; top: -6px; right: -6px; background: #dc2626; color: #fff;
+                font-size: 10px; font-weight: 800; padding: 2px 6px; border-radius: 10px;
+                box-shadow: 0 2px 4px rgba(0,0,0,.15); min-width: 18px; text-align: center; }
+.qo-toolbar-btn { position: relative; } /* lets the badge anchor */
+
+/* Per-card "📍 Request location" button — same shape as the other
+   qo-action-btn rows but tinted amber so the eye is drawn to it. */
+.qo-action-btn.loc-req { background: #fffbeb; border-color: #fcd34d; color: #92400e; }
+.qo-action-btn.loc-req:hover { background: #fef3c7; border-color: #f59e0b; }
+.qo-action-btn.loc-req.is-sent { background: #ecfeff; border-color: #67e8f9; color: #155e75; }
+.qo-action-btn.loc-req.is-replied { background: #f0fdf4; border-color: #86efac; color: #166534; }
+.qo-action-btn.loc-req:disabled { opacity: 0.6; cursor: not-allowed; }
+
+/* Per-card "no-location" muted chip — when a customer has no
+   verified pin we replace the 📍 with this so the row still shows
+   something on the verified column. */
+.qo-no-verified { color: #d97706; font-size: 13px; cursor: help; }
+
+/* Bulk-send modal — wider than the print modal because the
+   customer-picker table needs room. */
+.qo-locreq-modal { max-width: 980px !important; }
+.qo-locreq-modal table.qo-locreq-tbl { width: 100%; border-collapse: collapse; font-size: 12px; }
+.qo-locreq-modal .qo-locreq-tbl th { text-align: left; padding: 6px 8px; background: #f9fafb;
+                                     border-bottom: 1px solid #e5e7eb; color: #374151;
+                                     font-weight: 600; font-size: 11px; text-transform: uppercase;
+                                     letter-spacing: 0.03em; position: sticky; top: 0; z-index: 1; }
+.qo-locreq-modal .qo-locreq-tbl td { padding: 6px 8px; border-bottom: 1px solid #f3f4f6; color: #374151; }
+.qo-locreq-modal .qo-locreq-tbl tbody tr:hover { background: #fffbeb; }
+.qo-locreq-modal .qo-locreq-tbl tbody tr.is-disabled { opacity: 0.55; }
+.qo-locreq-list-wrap { max-height: 360px; overflow: auto; border: 1px solid #e5e7eb;
+                       border-radius: 8px; background: #fff; }
+.qo-locreq-status-pill { display: inline-block; padding: 1px 7px; border-radius: 9999px;
+                         font-size: 10px; font-weight: 700; text-transform: uppercase; }
+.qo-locreq-status-pill.s-never  { background: #f3f4f6; color: #6b7280; }
+.qo-locreq-status-pill.s-sent   { background: #cffafe; color: #155e75; }
+.qo-locreq-status-pill.s-reply  { background: #dcfce7; color: #166534; }
+.qo-locreq-status-pill.s-saved  { background: #e0e7ff; color: #3730a3; }
+.qo-locreq-status-pill.s-failed { background: #fee2e2; color: #991b1b; }
+
+/* Reviewer drawer — right-side panel that slides in over the table.
+   Lives at fixed-right with its own scroll so the staff can sort
+   through replies without losing the underlying orders page. */
+.qo-locreview-overlay { position: fixed; inset: 0; background: rgba(0,0,0,.25);
+                        z-index: 9996; display: none; }
+.qo-locreview-drawer { position: fixed; top: 0; right: 0; height: 100vh; width: 480px;
+                       max-width: 95vw; background: #fff; box-shadow: -8px 0 24px rgba(0,0,0,.15);
+                       z-index: 9997; display: none; flex-direction: column; }
+.qo-locreview-hdr { padding: 14px 16px; border-bottom: 1px solid #e5e7eb;
+                    display: flex; align-items: center; justify-content: space-between; }
+.qo-locreview-hdr h2 { font-size: 16px; font-weight: 700; margin: 0; color: #111827; }
+.qo-locreview-body { flex: 1; overflow-y: auto; padding: 8px 12px; }
+.qo-locreview-foot { padding: 10px 16px; border-top: 1px solid #e5e7eb;
+                     display: flex; gap: 8px; justify-content: space-between;
+                     align-items: center; background: #f9fafb; }
+
+.qo-locreview-row { border: 1px solid #e5e7eb; border-radius: 8px; padding: 10px 12px;
+                    margin-bottom: 8px; background: #fff; }
+.qo-locreview-row.is-warn { border-color: #f59e0b; background: #fffbeb; }
+.qo-locreview-row.is-done { opacity: 0.6; }
+.qo-locreview-row .row-top { display: flex; align-items: center; gap: 8px;
+                             margin-bottom: 4px; }
+.qo-locreview-row .row-cust { font-weight: 700; color: #111827; flex: 1; }
+.qo-locreview-row .row-meta { font-size: 11px; color: #6b7280;
+                              margin-bottom: 6px; line-height: 1.5; }
+.qo-locreview-row .row-actions { display: flex; gap: 6px; }
+.qo-locreview-row .row-warn { font-size: 11px; color: #92400e; background: #fef3c7;
+                              border: 1px solid #fcd34d; border-radius: 4px;
+                              padding: 4px 6px; margin-bottom: 6px; }
 </style>
 @endpush
 
@@ -125,6 +199,30 @@
             </button>
             <button class="qo-toolbar-btn secondary" onclick="openPrintModal()" title="Open print picker (filtered)">
                 Print Box Labels
+            </button>
+            {{-- A4 manual-backup sheet print (May-2026). Opens its own
+                 filter modal so the user can scope by Category × Day ×
+                 Region × Sub-Region × Slot independently of the page
+                 filters. Bulk-prints one print window per (Category ×
+                 Day × Region × Sub-Region × Slot) section using the
+                 same batched print pipeline as box labels. --}}
+            <button class="qo-toolbar-btn secondary" onclick="openPrintSheetModal()" title="Open A4 sheet printer (manual paper backup, per-category)">
+                🖨️ Print Sheets
+            </button>
+            {{-- Phase 6 (May-2026) — Qurbani Location Request.
+                 The badge floats top-right showing count of replies
+                 waiting for staff review (auto-refreshes every 30s).
+                 Clicking the button opens the BULK SEND modal; the
+                 badge itself is a separate click target that opens
+                 the REVIEWER drawer directly. --}}
+            <button class="qo-toolbar-btn secondary" id="locReqToolbarBtn"
+                    onclick="openLocReqSendModal()"
+                    title="Send WhatsApp template to customers without verified pin / review replies">
+                📍 Request Locations
+                <span id="locReqBadge" class="qo-loc-badge"
+                      style="display:none;cursor:pointer;"
+                      onclick="event.stopPropagation(); openLocReqReviewDrawer();"
+                      title="Click to open the Reviewer drawer">0</span>
             </button>
         </div>
     </div>
@@ -270,6 +368,301 @@
             <button class="qo-toolbar-btn secondary" onclick="selectAllLabels()" style="padding:5px 10px;font-size:12px;">Select All</button>
             <button class="qo-toolbar-btn secondary" onclick="deselectAllLabels()" style="padding:5px 10px;font-size:12px;">Deselect All</button>
             <button class="qo-toolbar-btn primary" id="printSelectedBtn" onclick="printFromModal()" style="padding:6px 14px;font-size:12px;">Print Selected (0)</button>
+        </div>
+    </div>
+</div>
+
+{{-- ===== A4 Print Sheets modal (May-2026) ==========================
+     Manual paper backup of orders, grouped into sheets per
+     (Category × Day × Region × Sub-Region × Slot). Quantity column
+     uses CATEGORY-SCOPED bundle math: a customer with 2 hissa +
+     2 goats sees "1/2, 2/2" on each category's sheet — NOT
+     "1/4...4/4" across categories like box labels do.
+
+     Reuses the existing batched-print pipeline (progress banner,
+     cancel button, 1.5s pause between batches, popup-blocker
+     handling) — one "batch" here = one section's print window. --}}
+<div class="qo-modal-overlay" id="sheetOverlay" onclick="closeSheetModal()"></div>
+<div class="qo-modal" id="sheetModal" style="max-width: 720px;">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+        <h2 style="margin:0;">🖨️ Print A4 Sheets</h2>
+        <button onclick="closeSheetModal()" style="background:none;border:none;font-size:20px;color:#6b7280;cursor:pointer;">&times;</button>
+    </div>
+    <p style="font-size:12px;color:#6b7280;margin:0 0 14px;line-height:1.5;">
+        Manager-facing paper backup. <b>One A4 sheet per
+        (Category &times; Day &times; Region &times; Sub-Region &times; Slot)</b>
+        with Region &amp; Sub Region shown at the top of each sheet
+        (not as columns &mdash; keeps the rows readable). <b>One row
+        per animal</b>: a customer with 2 hissas gets two rows
+        showing <code>1/2</code>, <code>2/2</code>; a customer with
+        1 hissa gets one row showing <code>1/1</code>. Quantity is
+        scoped per&nbsp;customer per&nbsp;category, so other
+        customers on the same sheet don&rsquo;t affect a customer&rsquo;s
+        denominator. (Box-label numbering is unaffected.) All sheets
+        open in <b>one print preview</b> so you can scroll through
+        them all and only print when you&rsquo;re satisfied.
+    </p>
+    <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px 12px;margin-bottom:14px;">
+        <div>
+            <label style="font-size:11px;font-weight:600;color:#6b7280;display:block;margin-bottom:3px;">Category</label>
+            <select id="sheetCategory" class="qo-filter" style="width:100%;" onchange="loadSheetPreview()">
+                <option value="">All Categories</option>
+                @foreach($categories as $cat)
+                <option value="{{ $cat }}">{{ $cat }}</option>
+                @endforeach
+            </select>
+        </div>
+        <div>
+            <label style="font-size:11px;font-weight:600;color:#6b7280;display:block;margin-bottom:3px;">Day</label>
+            <select id="sheetDay" class="qo-filter" style="width:100%;" onchange="loadSheetPreview()">
+                <option value="">All Days</option>
+                @foreach($days as $d)
+                <option value="{{ $d }}">{{ $d }}</option>
+                @endforeach
+            </select>
+        </div>
+        <div>
+            <label style="font-size:11px;font-weight:600;color:#6b7280;display:block;margin-bottom:3px;">Delivery Type</label>
+            <select id="sheetDeliveryType" class="qo-filter" style="width:100%;" onchange="loadSheetPreview()">
+                <option value="">All Types</option>
+                @foreach($deliveryTypes as $dt)
+                <option value="{{ $dt }}">{{ $dt }}</option>
+                @endforeach
+            </select>
+        </div>
+        <div>
+            <label style="font-size:11px;font-weight:600;color:#6b7280;display:block;margin-bottom:3px;">Region</label>
+            <select id="sheetRegion" class="qo-filter" style="width:100%;" onchange="loadSheetPreview()">
+                <option value="">All Regions</option>
+                @foreach($regions as $r)
+                <option value="{{ $r }}">{{ $r }}</option>
+                @endforeach
+            </select>
+        </div>
+        <div>
+            <label style="font-size:11px;font-weight:600;color:#6b7280;display:block;margin-bottom:3px;">Sub Region</label>
+            <select id="sheetSubRegion" class="qo-filter" style="width:100%;" onchange="loadSheetPreview()">
+                <option value="">All Sub Regions</option>
+                @foreach($subRegions as $sr)
+                <option value="{{ $sr }}">{{ $sr }}</option>
+                @endforeach
+            </select>
+        </div>
+        <div>
+            <label style="font-size:11px;font-weight:600;color:#6b7280;display:block;margin-bottom:3px;">Slot</label>
+            <select id="sheetSlot" class="qo-filter" style="width:100%;" onchange="loadSheetPreview()">
+                <option value="">All Slots</option>
+                @foreach($slots as $s)
+                <option value="{{ $s }}">{{ $s }}</option>
+                @endforeach
+            </select>
+        </div>
+    </div>
+    <div style="display:flex;align-items:center;gap:10px;padding:8px 12px;background:#fafafa;border:1px solid #e5e7eb;border-radius:6px;margin-bottom:14px;">
+        <label style="font-size:12px;color:#374151;display:flex;align-items:center;gap:6px;cursor:pointer;">
+            <input type="checkbox" id="sheetIncludeDelivered" onchange="loadSheetPreview()">
+            Include delivered orders
+        </label>
+        <span style="font-size:11px;color:#9ca3af;">(default: exclude — these are dispatch backups)</span>
+    </div>
+    <div id="sheetPreviewSummary" style="font-size:13px;color:#374151;padding:10px 12px;background:#f0f9ff;border:1px solid #bae6fd;border-radius:6px;margin-bottom:14px;">
+        <span style="color:#9ca3af;">Loading preview…</span>
+    </div>
+    <div style="display:flex;justify-content:flex-end;gap:8px;">
+        <button class="qo-toolbar-btn secondary" onclick="closeSheetModal()" style="padding:6px 14px;font-size:12px;">Cancel</button>
+        <button class="qo-toolbar-btn primary" id="sheetPrintBtn" onclick="runSheetPrintFromModal()" style="padding:6px 14px;font-size:12px;" disabled>Preview &amp; Print (—)</button>
+    </div>
+</div>
+
+{{-- ===== Bulk Location-Request modal (May-2026, Phase 6) ============
+     Lists every customer matching the filter that does NOT have a
+     verified pin. Staff ticks the ones to message → Send → the
+     browser polls /bulk/{batchId}/start in 100-row chunks while a
+     progress bar fills in. Each row also shows "last request status"
+     (Never / Sent X ago, no reply / Replied — pending review) so
+     staff knows whether they're re-sending to a non-replier or
+     pinging someone fresh. --}}
+<div class="qo-modal-overlay" id="locReqSendOverlay" onclick="closeLocReqSendModal()"></div>
+<div class="qo-modal qo-locreq-modal" id="locReqSendModal">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+        <h2 style="margin:0;">📍 Request Location via WhatsApp</h2>
+        <button onclick="closeLocReqSendModal()" style="background:none;border:none;font-size:20px;color:#6b7280;cursor:pointer;">&times;</button>
+    </div>
+    <p style="font-size:12px;color:#6b7280;margin:0 0 12px;line-height:1.5;">
+        Sends the <code>qurbani_location</code> template
+        <b>once per customer</b> — a customer with multiple hissas,
+        goats or orders only gets <b>one</b> WhatsApp. Paced to ~5/sec
+        on Meta's Cloud API. The verified-pin check is at the
+        <b>customer</b> level (shared with regular orders), so anyone
+        who already pinned through any other channel is automatically
+        excluded.
+    </p>
+
+    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px 10px;margin-bottom:10px;">
+        <div>
+            <label style="font-size:11px;font-weight:600;color:#6b7280;display:block;margin-bottom:3px;">Day</label>
+            <select id="locReqDay" class="qo-filter" style="width:100%;" onchange="loadLocReqEligible()">
+                <option value="">All Days</option>
+                @foreach($days as $d)<option value="{{ $d }}">{{ $d }}</option>@endforeach
+            </select>
+        </div>
+        <div>
+            <label style="font-size:11px;font-weight:600;color:#6b7280;display:block;margin-bottom:3px;">Slot</label>
+            <select id="locReqSlot" class="qo-filter" style="width:100%;" onchange="loadLocReqEligible()">
+                <option value="">All Slots</option>
+                @foreach($slots as $s)<option value="{{ $s }}">{{ $s }}</option>@endforeach
+            </select>
+        </div>
+        <div>
+            <label style="font-size:11px;font-weight:600;color:#6b7280;display:block;margin-bottom:3px;">Region</label>
+            <select id="locReqRegion" class="qo-filter" style="width:100%;" onchange="loadLocReqEligible()">
+                <option value="">All Regions</option>
+                @foreach($regions as $r)<option value="{{ $r }}">{{ $r }}</option>@endforeach
+            </select>
+        </div>
+        <div>
+            <label style="font-size:11px;font-weight:600;color:#6b7280;display:block;margin-bottom:3px;">Sub Region</label>
+            <select id="locReqSubRegion" class="qo-filter" style="width:100%;" onchange="loadLocReqEligible()">
+                <option value="">All Sub Regions</option>
+                @foreach($subRegions as $sr)<option value="{{ $sr }}">{{ $sr }}</option>@endforeach
+            </select>
+        </div>
+        <div>
+            <label style="font-size:11px;font-weight:600;color:#6b7280;display:block;margin-bottom:3px;">Delivery Type</label>
+            <select id="locReqDeliveryType" class="qo-filter" style="width:100%;" onchange="loadLocReqEligible()">
+                <option value="">All Types</option>
+                @foreach($deliveryTypes as $dt)<option value="{{ $dt }}">{{ $dt }}</option>@endforeach
+            </select>
+        </div>
+        <div>
+            <label style="font-size:11px;font-weight:600;color:#6b7280;display:block;margin-bottom:3px;">Category</label>
+            <select id="locReqCategory" class="qo-filter" style="width:100%;" onchange="loadLocReqEligible()">
+                <option value="">All Categories</option>
+                @foreach($categories as $cat)<option value="{{ $cat }}">{{ $cat }}</option>@endforeach
+            </select>
+        </div>
+        <div style="grid-column: span 2;display:flex;align-items:end;gap:10px;font-size:11px;">
+            <label style="display:flex;align-items:center;gap:6px;cursor:pointer;">
+                <input type="checkbox" id="locReqIncludeDelivered" onchange="loadLocReqEligible()">
+                Include delivered
+            </label>
+            <label style="display:flex;align-items:center;gap:6px;cursor:pointer;color:#6b7280;">
+                <input type="checkbox" id="locReqHideRecentlySent" checked onchange="renderLocReqList()">
+                Hide customers messaged in last 24h
+            </label>
+        </div>
+    </div>
+
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;font-size:12px;color:#374151;">
+        <button class="qo-toolbar-btn secondary" type="button" onclick="locReqSelectAll(true)" style="padding:3px 8px;font-size:11px;">Select All</button>
+        <button class="qo-toolbar-btn secondary" type="button" onclick="locReqSelectAll(false)" style="padding:3px 8px;font-size:11px;">Deselect</button>
+        <button class="qo-toolbar-btn secondary" type="button" onclick="locReqSelectNeverRequested()" style="padding:3px 8px;font-size:11px;">Select Never-Requested</button>
+        <span id="locReqSelectionSummary" style="margin-left:auto;color:#6b7280;font-size:12px;">— selected</span>
+    </div>
+
+    <div class="qo-locreq-list-wrap">
+        <table class="qo-locreq-tbl">
+            <thead>
+                <tr>
+                    <th style="width:32px;"><input type="checkbox" id="locReqSelectHeader" onchange="locReqSelectAll(this.checked)"></th>
+                    <th>Customer</th>
+                    <th>Orders</th>
+                    <th>Region(s)</th>
+                    <th>Day · Slot</th>
+                    <th>Last Request</th>
+                </tr>
+            </thead>
+            <tbody id="locReqListBody">
+                <tr><td colspan="6" style="text-align:center;color:#9ca3af;padding:20px;">
+                    Open filters above &mdash; eligible customers will appear here.
+                </td></tr>
+            </tbody>
+        </table>
+    </div>
+
+    {{-- Inline progress bar shown while a batch is sending, then
+         re-purposed into a live batch dashboard once sending finishes
+         so staff can watch replies arrive without leaving the modal.
+         Refreshes every 15s while the modal is open by polling
+         /batch/{id}. Each tile is clickable to drill into the
+         Reviewer drawer scoped to this batch. --}}
+    <div id="locReqProgress" style="display:none;margin-top:12px;padding:10px 12px;background:#f0f9ff;border:1px solid #bae6fd;border-radius:6px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+            <span style="font-size:12px;font-weight:600;color:#1e40af;" id="locReqProgressLabel">Sending…</span>
+            <span style="font-size:11px;color:#6b7280;" id="locReqProgressCount">0 / 0</span>
+        </div>
+        <div style="height:6px;background:#dbeafe;border-radius:3px;overflow:hidden;">
+            <div id="locReqProgressBar" style="height:100%;background:#2563eb;width:0%;transition:width .3s;"></div>
+        </div>
+        <div style="font-size:11px;color:#6b7280;margin-top:4px;" id="locReqProgressDetail"></div>
+
+        {{-- Post-send batch dashboard — only rendered once sending
+             has fully drained. Auto-refreshes so the staff sees the
+             reply count tick up while they're still on this screen. --}}
+        <div id="locReqBatchDashboard" style="display:none;margin-top:10px;padding-top:10px;border-top:1px dashed #bae6fd;">
+            <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;font-size:12px;">
+                <div style="background:#fff;border:1px solid #e5e7eb;border-radius:6px;padding:8px 10px;text-align:center;">
+                    <div style="font-size:18px;font-weight:800;color:#1f2937;" id="locReqDashSent">0</div>
+                    <div style="font-size:10px;color:#6b7280;text-transform:uppercase;letter-spacing:.03em;">Sent</div>
+                </div>
+                <div style="background:#fff;border:1px solid #e5e7eb;border-radius:6px;padding:8px 10px;text-align:center;">
+                    <div style="font-size:18px;font-weight:800;color:#059669;" id="locReqDashReplied">0</div>
+                    <div style="font-size:10px;color:#6b7280;text-transform:uppercase;letter-spacing:.03em;">Replied</div>
+                </div>
+                <div style="background:#fffbeb;border:1px solid #fcd34d;border-radius:6px;padding:8px 10px;text-align:center;cursor:pointer;"
+                     id="locReqDashReviewCard"
+                     onclick="openLocReqReviewDrawerForBatch()"
+                     title="Open the Reviewer drawer scoped to this batch">
+                    <div style="font-size:18px;font-weight:800;color:#92400e;" id="locReqDashReview">0</div>
+                    <div style="font-size:10px;color:#92400e;text-transform:uppercase;letter-spacing:.03em;">Awaiting save</div>
+                </div>
+                <div style="background:#fff;border:1px solid #e5e7eb;border-radius:6px;padding:8px 10px;text-align:center;">
+                    <div style="font-size:18px;font-weight:800;color:#2563eb;" id="locReqDashSaved">0</div>
+                    <div style="font-size:10px;color:#6b7280;text-transform:uppercase;letter-spacing:.03em;">Saved</div>
+                </div>
+            </div>
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-top:10px;gap:8px;flex-wrap:wrap;">
+                <span style="font-size:11px;color:#6b7280;" id="locReqDashUpdated">Updated just now · auto-refreshes every 15s</span>
+                <button class="qo-toolbar-btn primary" type="button" onclick="openLocReqReviewDrawerForBatch()"
+                        id="locReqDashReviewBtn" style="padding:6px 14px;font-size:12px;">
+                    📋 Review &amp; Save Replies (0)
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:14px;">
+        <button class="qo-toolbar-btn secondary" onclick="closeLocReqSendModal()" style="padding:6px 14px;font-size:12px;">Close</button>
+        <button class="qo-toolbar-btn secondary" onclick="openLocReqReviewDrawer()" style="padding:6px 14px;font-size:12px;">📋 Review All Replies</button>
+        <button class="qo-toolbar-btn primary" id="locReqSendBtn" onclick="runLocReqSend()" style="padding:6px 14px;font-size:12px;" disabled>Send to Selected (0)</button>
+    </div>
+</div>
+
+{{-- ===== Reviewer drawer (May-2026, Phase 6) ============
+     Right-side drawer that lists every replied-but-not-yet-saved
+     row, with one-click Save / Save-All / Dismiss controls. Strict
+     safety: rows where the customer already has a NEWER manual pin
+     are flagged with an amber warning + a "Force-save" prompt — so
+     bulk Save All only writes the safe rows. --}}
+<div class="qo-locreview-overlay" id="locReviewOverlay" onclick="closeLocReqReviewDrawer()"></div>
+<div class="qo-locreview-drawer" id="locReviewDrawer">
+    <div class="qo-locreview-hdr">
+        <h2 id="locReviewTitle">📋 Location Replies — Pending Review</h2>
+        <button onclick="closeLocReqReviewDrawer()" style="background:none;border:none;font-size:20px;color:#6b7280;cursor:pointer;">&times;</button>
+    </div>
+    <div style="padding:10px 12px;border-bottom:1px solid #e5e7eb;display:flex;gap:6px;align-items:center;font-size:11px;">
+        <button class="qo-toolbar-btn secondary" type="button" onclick="loadLocReviewQueue()" style="padding:3px 8px;font-size:11px;">🔄 Refresh</button>
+        <span id="locReviewSummary" style="color:#6b7280;flex:1;">Loading…</span>
+    </div>
+    <div class="qo-locreview-body" id="locReviewBody">
+        <div style="text-align:center;color:#9ca3af;padding:20px;font-size:12px;">Loading…</div>
+    </div>
+    <div class="qo-locreview-foot">
+        <span style="font-size:11px;color:#6b7280;" id="locReviewFootHint">
+            One click saves every reply that isn&rsquo;t flagged (amber rows are skipped to protect newer manual pins).
+        </span>
+        <div style="display:flex;gap:6px;">
+            <button class="qo-toolbar-btn secondary" type="button" onclick="locReviewSaveAll(false)" style="padding:5px 12px;font-size:12px;">💾 Save All Safe (0)</button>
         </div>
     </div>
 </div>
@@ -440,6 +833,13 @@ window.QURBANI_ORDERS_BOOT = {!! json_encode($qurbaniOrdersBoot, JSON_HEX_TAG | 
                 renderRegionChips();
                 renderSummary(data.summary);
                 renderItems();
+                // Phase 6 (May-2026) — after items render, hydrate the
+                // per-customer location-request status into the cards.
+                // Async / non-blocking: the cards render with a generic
+                // "Request Location" label first, then we patch them
+                // with the actual "Sent / Replied / etc." state once
+                // the /statuses round-trip lands.
+                try { hydrateLocReqStatuses(); } catch (e) {}
             })
             .catch(err => {
                 document.getElementById('itemsContainer').innerHTML = '<div class="text-center py-8 text-red-500">' + esc(err.message) + '</div>';
@@ -669,6 +1069,39 @@ window.QURBANI_ORDERS_BOOT = {!! json_encode($qurbaniOrdersBoot, JSON_HEX_TAG | 
         html += '<span><b>' + summary.total_boxes + '</b> boxes</span>';
         html += '<span style="color:#059669;"><b>' + summary.total_printed + '</b> printed</span>';
         html += '<span style="color:#d97706;"><b>' + (summary.total_boxes - summary.total_printed) + '</b> pending print</span>';
+
+        // Phase 6 (May-2026) — Customer-level rollup for the current
+        // filtered set. Computed CLIENT-SIDE from allItems so it
+        // stays in sync with the on-screen list (server summary is
+        // line-item based and would lie when a customer appears on
+        // multiple rows). has_verified_location is the same
+        // customer-level flag the per-card 📍 badge uses, so what
+        // the badge shows and what the rollup counts are guaranteed
+        // to agree.
+        try {
+            const orderIds = new Set();
+            const verifiedC = new Set();
+            const allC = new Set();
+            (allItems || []).forEach(it => {
+                if (it.order_id)     orderIds.add(it.order_id);
+                if (it.customer_id)  {
+                    allC.add(it.customer_id);
+                    if (it.has_verified_location) verifiedC.add(it.customer_id);
+                }
+            });
+            const ordersN    = orderIds.size;
+            const customersN = allC.size;
+            const verifiedN  = verifiedC.size;
+            const missingN   = customersN - verifiedN;
+            html += '<span style="border-left:1px solid #e5e7eb;padding-left:14px;margin-left:6px;">'
+                  + '<b>' + ordersN + '</b> orders</span>';
+            html += '<span><b>' + customersN + '</b> unique customers</span>';
+            html += '<span style="color:#059669;" title="Customers with a verified lat/lng pin (shared across regular + Qurbani — won\'t be sent again)">'
+                  + '<b>' + verifiedN + '</b> 📍 verified</span>';
+            html += '<span style="color:#dc2626;" title="Customers without a verified pin — these are the candidates for the bulk location-request">'
+                  + '<b>' + missingN + '</b> 📍? need pin</span>';
+        } catch (e) { /* non-fatal */ }
+
         if (summary.by_status) {
             for (const [st, cnt] of Object.entries(summary.by_status)) {
                 html += '<span class="qo-badge qo-status-' + esc(st) + '">' + esc(st.replace(/_/g, ' ')) + ': ' + cnt + '</span>';
@@ -785,6 +1218,12 @@ window.QURBANI_ORDERS_BOOT = {!! json_encode($qurbaniOrdersBoot, JSON_HEX_TAG | 
         if (it.has_verified_location) {
             const vBy = it.verified_location_saved_by_name ? ('Verified by ' + it.verified_location_saved_by_name) : 'Verified location';
             html += '<span class="qo-verified" title="' + esc(vBy) + '">📍</span>';
+        } else {
+            // Phase 6 (May-2026) — render a muted "no pin" indicator so
+            // staff can quickly spot which customers still need their
+            // location. The actual Send button sits in row 3 next to
+            // the other per-row actions.
+            html += '<span class="qo-no-verified" title="No verified location on file">📍?</span>';
         }
         html += '<div style="flex:1;min-width:160px;">';
         html += '<div class="qo-customer">' + esc(it.customer_name) + '</div>';
@@ -871,6 +1310,38 @@ window.QURBANI_ORDERS_BOOT = {!! json_encode($qurbaniOrdersBoot, JSON_HEX_TAG | 
         }
         if (it.has_verified_location && it.cust_lat && it.cust_lng) {
             html += '<a href="https://www.google.com/maps/search/?api=1&query=' + it.cust_lat + ',' + it.cust_lng + '" target="_blank" class="qo-action-btn">📍 Map</a>';
+        } else {
+            // Phase 6 (May-2026) — per-row Request Location button. Only
+            // shown when the customer has no pin. The button reflects
+            // the latest request status for THIS customer (read from
+            // window._qoLocReqStatuses, populated by hydrateLocReqStatuses()
+            // after items load) so staff can see at a glance whether they
+            // already pinged this customer and what came back.
+            const st = (window._qoLocReqStatuses || {})[it.customer_id] || null;
+            let lblTxt = '📨 Request Location';
+            let cls = 'loc-req';
+            let title = 'Send qurbani_location WhatsApp template to this customer';
+            if (st) {
+                if (st.display === 'replied_pending') {
+                    lblTxt = '📥 Reply pending review';
+                    cls += ' is-replied';
+                    title = 'Customer sent a location pin — open the Reviewer drawer to save it.';
+                } else if (st.display === 'sent_no_reply') {
+                    lblTxt = '⏳ Resend';
+                    cls += ' is-sent';
+                    title = 'Sent on ' + (st.sent_at || '—') + ' — no reply yet. Click to resend.';
+                } else if (st.display === 'sending' || st.display === 'queued') {
+                    lblTxt = '⏳ Queued';
+                    cls += ' is-sent';
+                } else if (st.display === 'failed') {
+                    lblTxt = '⚠️ Retry send';
+                    title = 'Last send failed. Click to retry.';
+                }
+            }
+            html += '<button class="qo-action-btn ' + cls + '" '
+                  + 'onclick="sendLocReqForLineItem(' + it.line_item_id + ',' + it.customer_id
+                  + ',' + (it.order_id || 'null') + ', this)" '
+                  + 'title="' + esc(title) + '">' + lblTxt + '</button>';
         }
         // Phase 2 (May-2026) — Timeline button. Always visible since
         // the timeline data exists from order placement onwards (even
@@ -1128,70 +1599,107 @@ window.QURBANI_ORDERS_BOOT = {!! json_encode($qurbaniOrdersBoot, JSON_HEX_TAG | 
         batch.forEach(l => { pages += buildLabelHTML(l); });
 
         // ────────────────────────────────────────────────────────────
-        // Sizing budget for an A4 portrait sheet (297mm tall).
-        // We learned the hard way that 200pt+48pt with generous padding
-        // pushed the footer off the bottom — re-tuned values are below
-        // and the budget is verified to fit:
+        // Sizing budget for an A4 LANDSCAPE sheet (297mm × 210mm).
+        // (May-2026) — flipped from portrait at user request. Landscape
+        // gives us extra horizontal width, so we now place the big box
+        // number BESIDE the info grid (instead of stacked on top of
+        // it) — that uses every inch of the page rather than wasting
+        // 60mm of vertical real-estate the portrait layout dedicated
+        // to the box-block alone.
+        //
+        // Vertical budget (210mm tall):
         //   • Padding 8mm + 8mm                    = 16mm
-        //   • Brand strip (5mm pad + 24pt)         ≈ 18mm
-        //   • Margin → box block                   =  2mm
-        //   • Box block (170pt × 0.85 line-h)      ≈ 60mm
-        //   • Margin → grid                        =  2mm
-        //   • Info grid (4 std rows + xl banner)   ≈ 130mm
-        //   • Spacer (margin: auto on footer)      ≈ ~50mm flex slack
-        //   • Footer (5mm + 18pt)                  ≈ 13mm
-        //   • Total content                        ≈ 241mm  ✓
-        // The flex spacer absorbs any height variation from long customer
-        // names / instructions, so the footer always sits at the bottom.
+        //   • Brand strip (4mm pad + 22pt)         ≈ 14mm
+        //   • Body row (flex: 1)                   ≈ 167mm
+        //       └─ Box block (left, ~95mm wide):
+        //            box-num 250pt × 0.85 line-h   ≈ 75mm tall, vertically centred
+        //       └─ Info grid (right, ~177mm wide):
+        //            5 rows (banner + 4 std) × ~33mm avg ≈ 165mm — fills column
+        //   • Footer (3mm + 16pt)                  ≈ 13mm
+        //   • Total content                        ≈ 210mm ✓
+        //
+        // The body row's flex: 1 means box-block and info-grid both
+        // stretch to fill all space between brand and footer, so the
+        // sheet stays edge-to-edge regardless of how long the
+        // customer name / instructions are.
+        // ────────────────────────────────────────────────────────────
+        // ────────────────────────────────────────────────────────────
+        // Polish pass — May-2026 (post-landscape).
+        // User feedback: "currently its uneven... make text for each
+        // item as big as possible inside each square boundary, bold
+        // and thick, easily readable from far". Three changes:
+        //   1. Tightened the auto-fit tiers from 4-tier (14/24/32/44pt
+        //      = 3.1× spread) to 3-tier (17/22/30pt = 1.8× spread) so
+        //      every cell reads as the same "weight class" regardless
+        //      of value length.
+        //   2. Pulled font-weight up to 900 (black) for short/medium
+        //      and 800 (extrabold) for long values — gives the page
+        //      that crisp, far-readable look.
+        //   3. Heavier table borders (3pt outer / 1.5pt inner) +
+        //      hero-cell upgrades (Customer Name banner 38pt, No. of
+        //      Boxes 36pt) so the data hierarchy is visually clear.
+        // Footer unified to a single colour scale (black phone, mid
+        // order #, soft-grey print stamp) with consistent letter
+        // spacing instead of three random sizes.
         // ────────────────────────────────────────────────────────────
         const css =
-            '@page { size: A4 portrait; margin: 0; }' +
+            '@page { size: A4 landscape; margin: 0; }' +
             'html, body { margin: 0; padding: 0; font-family: Arial, Helvetica, sans-serif; background: #fff; color: #111; }' +
             '* { box-sizing: border-box; }' +
-            // Tighter padding (8mm vs 12mm) — pulls the brand strip up
-            // toward the top edge as user requested.
-            '.label-page { width: 210mm; height: 297mm; padding: 8mm 10mm; page-break-after: always; page-break-inside: avoid; overflow: hidden; display: flex; flex-direction: column; position: relative; }' +
+            // 297mm × 210mm landscape page.
+            // May-2026 polish #2 — pulled the label-page padding from
+            // 7mm/9mm down to 3mm/8mm so brand strip + footer hug the
+            // paper edges and the body row gets ~8mm extra vertical
+            // space to grow the data cells. Browser-injected print
+            // header/footer (about:blank, page number) live OUTSIDE
+            // this .label-page box so we can\'t reclaim that space
+            // from CSS — the user has to disable "Headers and
+            // footers" in the print dialog\'s More settings to get a
+            // truly edge-to-edge print.
+            '.label-page { width: 297mm; height: 210mm; padding: 3mm 8mm; page-break-after: always; page-break-inside: avoid; overflow: hidden; display: flex; flex-direction: column; position: relative; }' +
             '.label-page:last-child { page-break-after: auto; }' +
-            // Brand strip — slimmer vertical padding so it doesn\'t eat
-            // into the data area.
-            '.brand-strip { background: #d97706; color: #fff; padding: 5mm 9mm; display: flex; align-items: center; justify-content: space-between; border-radius: 3mm; }' +
+            '.brand-strip { background: #d97706; color: #fff; padding: 4mm 9mm; display: flex; align-items: center; justify-content: space-between; border-radius: 3mm; flex: 0 0 auto; }' +
             '.brand-name { font-size: 24pt; font-weight: 900; letter-spacing: 1.5pt; }' +
-            '.brand-tag  { font-size: 12pt; font-weight: 600; letter-spacing: 1pt; text-transform: uppercase; opacity: 0.92; }' +
-            // Box block — closer to the brand strip, slightly smaller
-            // numbers so the info grid + footer have room.
-            '.box-block { display: flex; align-items: baseline; justify-content: center; margin-top: 2mm; margin-bottom: 2mm; gap: 6mm; }' +
-            '.box-num   { font-size: 170pt; font-weight: 900; line-height: 0.85; color: #111; }' +
-            '.box-of    { font-size: 42pt; font-weight: 700; color: #555; }' +
-            // Information grid.
-            // flex: 1 makes the table grow to fill the empty space between
-            // the box-block and the footer (which is pinned to the bottom
-            // via margin-top: auto). Browsers distribute the extra height
-            // proportionally across <tr> rows, so every cell gets bigger
-            // and the table reaches all the way down to the footer.
-            // vertical-align: middle keeps the labels/values centred
-            // inside the now-taller cells (instead of stuck to the top).
-            '.info-grid { width: 100%; border-collapse: collapse; margin-top: 2mm; border: 2.5pt solid #111; flex: 1 1 auto; }' +
-            '.info-grid td { border: 1pt solid #444; padding: 5mm 6mm; vertical-align: middle; }' +
-            '.cell-label { font-size: 10pt; font-weight: 700; color: #555; text-transform: uppercase; letter-spacing: 0.5pt; margin-bottom: 1.5mm; }' +
-            '.cell-value { font-size: 20pt; font-weight: 700; color: #111; line-height: 1.2; word-wrap: break-word; }' +
-            // Auto-fit tiers — applied per-cell by the JS helper fitClass()
-            // based on text length. Short text (Day 3, Washed) gets a much
-            // bigger font so the cell space is actually used; long text
-            // stays smaller so it doesn't wrap into 4 lines and overflow
-            // the cell. Tiers were bumped one notch up (vs original) so
-            // "Day 3" feels edge-to-edge instead of floating in the cell.
-            // The "lg" + "xl" classes are explicit overrides for the two
-            // visual hero values (No. of Boxes, Customer Name).
-            '.cell-value.cv-tiny  { font-size: 48pt; line-height: 1.05; }' +
-            '.cell-value.cv-short { font-size: 34pt; line-height: 1.1; }' +
-            '.cell-value.cv-mid   { font-size: 26pt; line-height: 1.15; }' +
-            '.cell-value.cv-long  { font-size: 15pt; line-height: 1.25; }' +
-            '.cell-value.lg { font-size: 30pt; font-weight: 800; letter-spacing: -0.5pt; }' +
-            '.cell-value.xl { font-size: 34pt; font-weight: 800; }' +
-            // Footer — pinned to bottom by margin-top:auto on the flex column.
-            '.label-footer { margin-top: auto; border-top: 2pt solid #111; padding-top: 3mm; display: flex; justify-content: space-between; align-items: center; font-size: 12pt; color: #555; }' +
-            '.label-footer .phone { font-size: 16pt; font-weight: 800; color: #111; }' +
-            '.label-footer .stamp { font-size: 10pt; color: #888; }' +
+            '.brand-tag  { font-size: 12pt; font-weight: 700; letter-spacing: 1pt; text-transform: uppercase; opacity: 0.95; }' +
+            // Body row — left big-box / right info-grid. Tightened
+            // top/bottom margins from 3mm to 2mm so the row stretches
+            // further into the reclaimed vertical space.
+            '.body-row { flex: 1 1 auto; display: flex; flex-direction: row; align-items: stretch; gap: 5mm; margin-top: 2mm; margin-bottom: 2mm; min-height: 0; }' +
+            // Left hero block — bumped border (3pt) and caption sizes
+            // for a more confident, professional feel.
+            '.box-block { flex: 0 0 95mm; display: flex; flex-direction: column; align-items: center; justify-content: center; border: 3pt solid #000; border-radius: 3mm; background: #fffbeb; padding: 4mm; }' +
+            '.box-num   { font-size: 260pt; font-weight: 900; line-height: 0.85; color: #000; letter-spacing: -4pt; font-feature-settings: "tnum"; }' +
+            '.box-of    { font-size: 40pt; font-weight: 800; color: #444; margin-top: 4mm; letter-spacing: -0.5pt; }' +
+            '.box-caption { font-size: 13pt; font-weight: 800; color: #555; text-transform: uppercase; letter-spacing: 1.2pt; margin-top: 6mm; }' +
+            // Right info grid — heavier borders, slightly more padding
+            // so each value sits comfortably inside its frame.
+            '.info-grid { flex: 1 1 auto; width: auto; border-collapse: collapse; border: 3pt solid #000; }' +
+            '.info-grid td { border: 1.5pt solid #333; padding: 4mm 5mm; vertical-align: middle; }' +
+            // Cell label = the small ALL-CAPS line above each value.
+            // Bumped weight + letter-spacing for a tighter look.
+            '.cell-label { font-size: 10pt; font-weight: 800; color: #555; text-transform: uppercase; letter-spacing: 1pt; margin-bottom: 2mm; }' +
+            // Default cell-value baseline — most sells will fall on a
+            // narrower tier below; this is the medium fallback.
+            '.cell-value { font-size: 22pt; font-weight: 900; color: #000; line-height: 1.15; word-wrap: break-word; letter-spacing: -0.2pt; }' +
+            // Auto-fit tiers — 3-step ladder for visual uniformity.
+            //   ≤8 chars   → 30pt (Day 3, Washed, Delivery, 5/5)
+            //   9-22 chars → 22pt (QUR26-169, Goat (Bakra), Adyala…)
+            //   23-45 chars → 17pt (Standard: All Boti cut, 1 Leg…)
+            //   >45 chars   → 13pt (extra long instructions)
+            '.cell-value.cv-short  { font-size: 30pt; line-height: 1.05; }' +
+            '.cell-value.cv-medium { font-size: 22pt; line-height: 1.15; }' +
+            '.cell-value.cv-long   { font-size: 17pt; font-weight: 800; line-height: 1.2; }' +
+            '.cell-value.cv-xlong  { font-size: 13pt; font-weight: 800; line-height: 1.3; }' +
+            // Hero overrides — Customer Name banner + No. of Boxes.
+            // These are intentionally bigger than the auto-fit tiers
+            // so the most important values scan at a glance.
+            '.cell-value.lg { font-size: 36pt; font-weight: 900; letter-spacing: -1pt; line-height: 1.05; font-feature-settings: "tnum"; }' +
+            '.cell-value.xl { font-size: 38pt; font-weight: 900; letter-spacing: -0.5pt; line-height: 1.05; }' +
+            // Footer — single weighted scale, no random sizes.
+            '.label-footer { flex: 0 0 auto; border-top: 2.5pt solid #000; padding-top: 4mm; padding-bottom: 1mm; display: flex; justify-content: space-between; align-items: center; font-size: 11pt; color: #555; font-weight: 700; }' +
+            '.label-footer .phone { font-size: 14pt; font-weight: 900; color: #000; letter-spacing: 0.4pt; }' +
+            '.label-footer .order { font-size: 12pt; font-weight: 800; color: #333; letter-spacing: 0.3pt; }' +
+            '.label-footer .stamp { font-size: 9pt; color: #888; font-weight: 700; text-transform: uppercase; letter-spacing: 0.8pt; }' +
             // Screen preview backdrop.
             '@media screen { body { background: #f3f4f6; padding: 20px; } .label-page { background: #fff; box-shadow: 0 4px 12px rgba(0,0,0,.1); margin-bottom: 20px; } }';
 
@@ -1209,25 +1717,23 @@ window.QURBANI_ORDERS_BOOT = {!! json_encode($qurbaniOrdersBoot, JSON_HEX_TAG | 
     //   • 3-column info grid: Order/Day/Region, Qurbani/Slot/Sub-Region,
     //     Delivery-Type/Trotters/No.-of-Boxes, Qurbani-Type + Instructions
     //   • Footer with phone + order number + print stamp
-    // Auto-fit helper — picks a font-size class based on text length so
-    // each cell value visually fills its cell. Tuned against the actual
-    // cell width (~60mm at 3-col layout) — sizes were bumped one tier
-    // higher across the board on user request so "Day 3" and similar
-    // short values feel edge-to-edge instead of floating in the cell:
-    //   ≤5   ("Day 3", "Yes")              → 48pt
-    //   ≤12  ("QUR26-169", "Delivery")     → 34pt
-    //   ≤22  ("Bahria Phase 8")            → 26pt
-    //   23-45                               → 20pt (default)
-    //   >45   (long instructions)          → 15pt
+    // Auto-fit helper — picks a font-size class based on text length
+    // so cells read uniformly. Tuned to a 3-step ladder (May-2026
+    // polish pass): the spread between shortest and longest values
+    // is now ~1.8× instead of 3.1× so the page no longer looks like
+    // mismatched font sizes scattered across cells.
+    //   ≤8  chars  ("Day 3", "Washed", "Delivery", "5/5") → 30pt
+    //   9-22 chars ("QUR26-169", "Goat (Bakra)")          → 22pt
+    //   23-45 chars (mid-length instructions)             → 17pt
+    //   >45 chars  (extra long instructions)              → 13pt
     function fitClass(text) {
         const t = String(text == null ? '' : text);
-        if (!t || t === '—') return 'cell-value';
-        const len = t.length;
-        if (len <= 5)  return 'cell-value cv-tiny';
-        if (len <= 12) return 'cell-value cv-short';
-        if (len <= 22) return 'cell-value cv-mid';
-        if (len > 45)  return 'cell-value cv-long';
-        return 'cell-value';
+        if (!t || t === '—') return 'cell-value cv-short';
+        const len = t.trim().length;
+        if (len <= 8)  return 'cell-value cv-short';
+        if (len <= 22) return 'cell-value cv-medium';
+        if (len <= 45) return 'cell-value cv-long';
+        return 'cell-value cv-xlong';
     }
 
     // Strips noise from the product name so the cell shows just the
@@ -1292,13 +1798,23 @@ window.QURBANI_ORDERS_BOOT = {!! json_encode($qurbaniOrdersBoot, JSON_HEX_TAG | 
                 '<div class="brand-tag">Qurbani \'26 · Box Label</div>' +
                 '</div>';
 
-        // Big box number
+        // Body row — landscape split: big box-number on the LEFT,
+        // info grid on the RIGHT. The two columns share the vertical
+        // space between brand strip and footer via flex.
+        html += '<div class="body-row">';
+
+        // Big box number (left column). The "Box" caption ties the
+        // huge number back to its meaning since it sits alone in
+        // its own framed cell.
         html += '<div class="box-block">' +
-                '<span class="box-num">' + l.position + '</span>' +
-                '<span class="box-of">of ' + l.bundle_size + '</span>' +
+                '<div class="box-num">' + l.position + '</div>' +
+                '<div class="box-of">of ' + l.bundle_size + '</div>' +
+                '<div class="box-caption">Box</div>' +
                 '</div>';
 
-        // Customer Name banner (full-width row)
+        // Info grid (right column).
+        // Customer Name banner (full-width row) is the visual hero
+        // of the right column.
         html += '<table class="info-grid">';
         html += '<tr><td colspan="3" style="background:#fffbeb;">' +
                 '<div class="cell-label">Customer Name</div>' +
@@ -1334,19 +1850,36 @@ window.QURBANI_ORDERS_BOOT = {!! json_encode($qurbaniOrdersBoot, JSON_HEX_TAG | 
                 '</tr>';
 
         // Row: Qurbani Type | Instructions (spans 2 cols).
-        // Instructions stay capped at 14pt because they can be a long
-        // sentence; bumping higher risks overflow on multi-line text.
-        html += '<tr>' +
-                '<td><div class="cell-label">Qurbani Type</div><div class="' + fitClass(l.qurbani_type) + '">' + qurbaniType + '</div></td>' +
-                '<td colspan="2"><div class="cell-label">Instructions</div><div class="cell-value" style="font-size:14pt;font-weight:600;line-height:1.3;">' + (instructions || '—') + '</div></td>' +
-                '</tr>';
+        // When there's no instructions to show, we collapse the row
+        // into a single colspan=3 Qurbani Type cell so the value
+        // fills the full row instead of leaving "—" in dead space.
+        // When instructions ARE present, both cells render with the
+        // same auto-fit ladder as everywhere else for consistency.
+        const rawInstr = (instructions || '').trim();
+        const hasInstr = rawInstr !== '' && rawInstr !== '—';
+        if (hasInstr) {
+            html += '<tr>' +
+                    '<td><div class="cell-label">Qurbani Type</div><div class="' + fitClass(l.qurbani_type) + '">' + qurbaniType + '</div></td>' +
+                    '<td colspan="2"><div class="cell-label">Instructions</div><div class="' + fitClass(rawInstr) + '">' + instructions + '</div></td>' +
+                    '</tr>';
+        } else {
+            html += '<tr>' +
+                    '<td colspan="3"><div class="cell-label">Qurbani Type</div><div class="' + fitClass(l.qurbani_type) + '">' + qurbaniType + '</div></td>' +
+                    '</tr>';
+        }
 
         html += '</table>';
 
-        // Footer: phone + order # + print stamp
+        // Close body-row (box-block + info-grid).
+        html += '</div>';
+
+        // Footer — three slots on a single weight scale (black phone,
+        // mid order #, soft-grey print stamp). Spacing is enforced by
+        // flex space-between so the row stays tidy regardless of
+        // phone length.
         html += '<div class="label-footer">';
         html += '<span class="phone">' + (phone ? '☎ ' + phone : '') + '</span>';
-        html += '<span>Order #' + orderNo + '</span>';
+        html += '<span class="order">Order #' + orderNo + '</span>';
         html += '<span class="stamp">Printed ' + printStamp + '</span>';
         html += '</div>';
 
@@ -1527,6 +2060,1214 @@ window.QURBANI_ORDERS_BOOT = {!! json_encode($qurbaniOrdersBoot, JSON_HEX_TAG | 
         loadItems();
     }
 
+    // ===== A4 Print Sheets (May-2026) ==============================
+    // Manual paper-backup print pipeline. Reuses the existing batched
+    // print primitives (openPrintWindow analogue, showPrintProgress /
+    // updatePrintProgress / hidePrintProgress, _printRunCancelled,
+    // cancelPrintRun()) so the user sees the SAME progress banner +
+    // Cancel button behaviour they already know from box labels.
+    //
+    // Key difference from box-label bundle math:
+    //   QurbaniBundleService bundles ALL line items in a (order, day,
+    //   slot, delivery_type) tuple — so a customer with 2 hissa + 2
+    //   goats gets one bundle of size 4 (positions 1-4) for box labels.
+    //   For SHEETS the user wants category-scoped bundles: that same
+    //   customer gets TWO bundles of size 2 each, so the hissa sheet
+    //   reads "1/2, 2/2" and the goat sheet reads "1/2, 2/2"
+    //   independently. Computed client-side so we don't have to add a
+    //   server endpoint or touch the QurbaniBundleService (which would
+    //   risk breaking box-label math).
+
+    // Parses the trailing numeric suffix of an order number ("QUR26-289"
+    // → 289) so sorting is numeric instead of lexicographic (otherwise
+    // QUR26-1000 would sort BEFORE QUR26-289).
+    function _sheetOrderNumberKey(orderNum) {
+        if (!orderNum) return 0;
+        const m = String(orderNum).match(/(\d+)\s*$/);
+        return m ? parseInt(m[1], 10) : 0;
+    }
+
+    // Groups items into one section per
+    // (Category × Day × Region × Sub-Region × Slot), matching the
+    // user's original Google-Sheets reference layout (Region + Sub
+    // Region appear at the TOP of each sheet, not as columns).
+    //
+    // QUANTITY BUNDLE SCOPE — per CUSTOMER, per CATEGORY:
+    //   Inside each section we further group by order_id (= one
+    //   customer) and sum the quantities of that customer's line
+    //   items. Each line item then gets a (start, end) range inside
+    //   that customer's 1..bundle_size space. So:
+    //     • Customer with qty=2 hissas in one line item
+    //         → 2 rows showing "1/2" and "2/2"
+    //     • Customer with qty=1 hissa
+    //         → 1 row showing "1/1"
+    //     • Customer with line item A qty=2 + line item B qty=1
+    //       (both hissa, same slot/day/region)
+    //         → 3 rows showing "1/3", "2/3", "3/3"
+    //
+    //   This is DIFFERENT from QurbaniBundleService (box labels),
+    //   which bundles ACROSS categories: a customer with 2 hissa +
+    //   2 goats gets one bundle of 4 for box-label numbering. For
+    //   sheets, that same customer would see "1/2, 2/2" on the
+    //   hissa sheet and "1/2, 2/2" on the goat sheet.
+    //
+    //   The original `bundle_size` / `bundle_position_*` fields from
+    //   the server stay UNTOUCHED — box-label printing reads them as
+    //   before. We only attach our own `_sheet_*` fields so the two
+    //   features are fully decoupled.
+    //
+    // section_total is still tracked for preview-summary stats
+    // ("X animal row(s) total" / page count estimates) but is NOT
+    // used as the per-row denominator anymore.
+    //
+    // No items are dropped: items with NULL day / slot / region /
+    // sub-region still land in their own labelled section (e.g.
+    // "— No Region —") so they're never silently lost.
+    function _groupItemsIntoSheetSections(items) {
+        const map = new Map();
+        items.forEach(it => {
+            const cat = it.category_level_2 || '— Uncategorized —';
+            const day = it.qurbani_day || '— No Day —';
+            const reg = it.qurbani_region || '— No Region —';
+            const sub = it.qurbani_sub_region || '— No Sub-Region —';
+            const slt = it.qurbani_slot || '— No Slot —';
+            const key = [cat, day, reg, sub, slt].join('||');
+            if (!map.has(key)) {
+                map.set(key, {
+                    category: cat, day: day, region: reg, sub_region: sub, slot: slt,
+                    items: [], section_total: 0,
+                });
+            }
+            map.get(key).items.push(it);
+        });
+
+        const sections = Array.from(map.values());
+        sections.forEach(sec => {
+            // Row sort inside a section: Order Number ascending
+            // (numeric, smallest first), then line_item_id for
+            // stability when one customer has multiple line items
+            // in the same section.
+            sec.items.sort((a, b) => {
+                const oa = _sheetOrderNumberKey(a.order_number);
+                const ob = _sheetOrderNumberKey(b.order_number);
+                if (oa !== ob) return oa - ob;
+                return (parseInt(a.line_item_id) || 0) - (parseInt(b.line_item_id) || 0);
+            });
+
+            // Per-customer bundle math inside the section. Sort
+            // above guarantees a customer's line items are
+            // contiguous, so we can iterate once and emit ranges
+            // per customer.
+            let total = 0;
+            const byOrder = new Map();
+            sec.items.forEach(it => {
+                const qty = Math.max(1, parseInt(it.quantity) || 0);
+                total += qty;
+                if (!byOrder.has(it.order_id)) byOrder.set(it.order_id, []);
+                byOrder.get(it.order_id).push(it);
+            });
+            sec.section_total = total;
+
+            byOrder.forEach(customerLis => {
+                let bundleSize = 0;
+                customerLis.forEach(it => { bundleSize += Math.max(1, parseInt(it.quantity) || 0); });
+                let cursor = 1;
+                customerLis.forEach(it => {
+                    const qty = Math.max(1, parseInt(it.quantity) || 0);
+                    it._sheet_pos_start = cursor;
+                    it._sheet_pos_end = cursor + qty - 1;
+                    it._sheet_bundle_total = bundleSize;
+                    cursor += qty;
+                });
+            });
+        });
+
+        // Section ordering — Category → Day → Region → Sub-Region →
+        // Slot. Keeps a single category's sheets adjacent in the
+        // preview so the manager can scroll through them as a block.
+        sections.sort((a, b) => {
+            if (a.category !== b.category) return String(a.category).localeCompare(String(b.category));
+            if (a.day !== b.day) return String(a.day).localeCompare(String(b.day));
+            if (a.region !== b.region) return String(a.region).localeCompare(String(b.region));
+            if (a.sub_region !== b.sub_region) return String(a.sub_region).localeCompare(String(b.sub_region));
+            return String(a.slot).localeCompare(String(b.slot));
+        });
+        return sections;
+    }
+
+    // Modal state — kept narrowly scoped (not exposed) so it can't
+    // accidentally collide with the box-label modal state.
+    let _sheetSectionsCache = [];
+
+    function openPrintSheetModal() {
+        // Prefill the modal from the page's current filters so the
+        // first thing the user sees matches what they're already
+        // looking at. They can change anything before printing.
+        const cur = collectFilterParams();
+        const setVal = (id, val) => { const el = document.getElementById(id); if (el) el.value = val || ''; };
+        setVal('sheetCategory', cur.get('category'));
+        setVal('sheetDay', cur.get('day'));
+        setVal('sheetRegion', cur.get('region'));
+        setVal('sheetSubRegion', cur.get('sub_region'));
+        setVal('sheetSlot', cur.get('slot'));
+        setVal('sheetDeliveryType', cur.get('delivery_type'));
+        const incEl = document.getElementById('sheetIncludeDelivered');
+        if (incEl) incEl.checked = false;
+
+        document.getElementById('sheetOverlay').style.display = 'block';
+        document.getElementById('sheetModal').style.display = 'block';
+        loadSheetPreview();
+    }
+
+    function closeSheetModal() {
+        document.getElementById('sheetOverlay').style.display = 'none';
+        document.getElementById('sheetModal').style.display = 'none';
+    }
+
+    function _collectSheetParams() {
+        const params = new URLSearchParams();
+        const map = {
+            category: 'sheetCategory', day: 'sheetDay', region: 'sheetRegion',
+            sub_region: 'sheetSubRegion', slot: 'sheetSlot', delivery_type: 'sheetDeliveryType',
+        };
+        for (const key of Object.keys(map)) {
+            const el = document.getElementById(map[key]);
+            if (el && el.value) params.set(key, el.value);
+        }
+        return params;
+    }
+
+    // Hits the existing /qurbani/api/orders-items endpoint with the
+    // modal's filters, attaches category-scoped bundle math, groups
+    // into sections, and updates the preview summary + enables the
+    // Print button. No server-side changes required.
+    function loadSheetPreview() {
+        const summaryEl = document.getElementById('sheetPreviewSummary');
+        const btnEl = document.getElementById('sheetPrintBtn');
+        if (!summaryEl || !btnEl) return;
+        summaryEl.innerHTML = '<span style="color:#9ca3af;">Loading preview…</span>';
+        btnEl.disabled = true;
+        btnEl.textContent = 'Preview & Print (—)';
+
+        const params = _collectSheetParams();
+        fetch('/qurbani/api/orders-items?' + params.toString(), { headers: { 'Accept': 'application/json' } })
+            .then(r => r.json())
+            .then(data => {
+                if (!data.success) throw new Error(data.message || 'Failed');
+                let items = data.items || [];
+
+                // Filter out delivered unless explicitly included —
+                // these sheets are dispatch backups, delivered items
+                // are already done.
+                const includeDelivered = (document.getElementById('sheetIncludeDelivered') || {}).checked;
+                if (!includeDelivered) {
+                    items = items.filter(it => (it.qurbani_item_status || 'open') !== 'delivered');
+                }
+
+                // Group + assign section-wide positions in one pass.
+                // No more per-customer bundle attach (that helper was
+                // removed when sheet qty switched to section-wide
+                // numbering — see _groupItemsIntoSheetSections).
+                _sheetSectionsCache = _groupItemsIntoSheetSections(items);
+
+                const totalLineItems = items.length;
+                const totalOrders = new Set(items.map(it => it.order_id)).size;
+                const totalSections = _sheetSectionsCache.length;
+                // Total printed rows = sum of section_total across
+                // sections, because each unit (qty=1) emits one row.
+                const totalPrintedRows = _sheetSectionsCache.reduce(
+                    (acc, s) => acc + s.section_total, 0
+                );
+                // Rough page estimate — ~10 rows fit comfortably on
+                // landscape A4 at the new, larger row height. Each
+                // section starts on a fresh A4 page (page-break-before)
+                // so we always get ≥1 page per section.
+                const ROWS_PER_PAGE = 10;
+                const totalPages = _sheetSectionsCache.reduce(
+                    (acc, s) => acc + Math.max(1, Math.ceil(s.section_total / ROWS_PER_PAGE)),
+                    0
+                );
+
+                if (totalSections === 0) {
+                    summaryEl.innerHTML = '<span style="color:#dc2626;font-weight:600;">0 orders match these filters. Adjust above.</span>';
+                    btnEl.disabled = true;
+                    btnEl.textContent = 'Preview & Print (0)';
+                } else {
+                    summaryEl.innerHTML =
+                        '<b>' + totalSections + '</b> sheet(s) &middot; ' +
+                        '<b>' + totalPrintedRows + '</b> animal row(s) &middot; ' +
+                        totalLineItems + ' line item(s) &middot; ' +
+                        totalOrders + ' customer(s) &middot; ' +
+                        '~<b>' + totalPages + '</b> A4 page(s) &middot; ' +
+                        '<span style="color:#059669;">opens in one preview window</span>';
+                    btnEl.disabled = false;
+                    btnEl.textContent = 'Preview & Print (' + totalSections + ' sheet' + (totalSections === 1 ? '' : 's') + ')';
+                }
+            })
+            .catch(err => {
+                summaryEl.innerHTML = '<span style="color:#dc2626;">' + esc(err.message) + '</span>';
+                btnEl.disabled = true;
+                btnEl.textContent = 'Preview & Print (—)';
+            });
+    }
+
+    // Print runner — opens ONE window containing ALL sections stacked
+    // (page-break-before separates them on the printer) so the user
+    // gets a single browser print-preview that shows every sheet.
+    //
+    // Why one window instead of the box-label-style batched runner:
+    //   • The manager needs to REVIEW everything before sending to
+    //     the printer — that's only possible if the browser preview
+    //     contains every sheet at once.
+    //   • Sheets are list-style (~12 rows per A4 page) so even a full
+    //     season print is ~30-100 pages total — well within what the
+    //     OS spooler handles as one job.
+    //   • A "Print All Sheets" button inside the preview window
+    //     replaces the auto-fire so the user can scroll through the
+    //     preview first and only print when they're satisfied.
+    function runSheetPrintFromModal() {
+        const sections = _sheetSectionsCache;
+        if (!sections || !sections.length) { toast('Nothing to print', 'info'); return; }
+
+        closeSheetModal();
+
+        const html = _buildSheetDocument(sections);
+        const w = window.open('', '_blank', 'width=1180,height=820');
+        if (!w) {
+            alert('Popup blocked! Please allow popups for this site to preview / print sheets.');
+            return;
+        }
+        w.document.open();
+        w.document.write(html);
+        w.document.close();
+
+        const totalAnimals = sections.reduce((acc, s) => acc + s.section_total, 0);
+        toast(
+            sections.length + ' sheet(s) ready · ' + totalAnimals + ' animal row(s) total. Review the preview and click "Print All Sheets".',
+            'success',
+            4000
+        );
+    }
+
+    // Self-contained A4 landscape document containing ALL sections.
+    // CSS is inlined so the preview window can't inherit the main
+    // page's styles (same safety stance as buildPrintDocument).
+    //
+    // Layout (per section) — matches the user's original Google-Sheets
+    // reference image:
+    //   • Brand-orange title (CATEGORY in caps) + 2pt underline
+    //   • Stacked meta block at the TOP of the sheet:
+    //       Region:     <region>
+    //       Sub Region: <sub_region>
+    //       Day:        <day>
+    //       Slot:       <slot>
+    //   • 6-column table: Order# / Customer / Qurbani Type / Quantity
+    //     / Paaye / Weight   (Region + Sub Region intentionally NOT
+    //     columns — they're in the header above)
+    //   • Each line item is expanded to ONE row per animal so qty
+    //     reads as `pos/section_total` (e.g. 1/8, 2/8, ... 8/8).
+    //   • Footer: brand line + print timestamp + sheet X of Y
+    //
+    // Sections are separated by page-break-before so each section
+    // starts on a fresh A4 page.
+    function _buildSheetDocument(sections) {
+        // Landscape A4: 297mm × 210mm; 10mm margins → 277mm × 190mm usable.
+        // 6 columns (down from 8) means each cell is meaningfully wider
+        // → larger, bolder body text without crowding.
+        // Fixed widths: 32+62+30+40+38 = 202mm. Qurbani Type flexes
+        // into the remaining ~75mm.
+        const css =
+            '@page { size: A4 landscape; margin: 10mm; }' +
+            'html, body { margin: 0; padding: 0; font-family: Arial, Helvetica, sans-serif; color: #111; background: #fff; }' +
+            '* { box-sizing: border-box; }' +
+            // Screen-only floating toolbar at the top of the preview
+            // window. Has the "Print All Sheets" + "Close" buttons so
+            // the user can review the preview and only print when
+            // they\'re satisfied. Hidden in @media print so it never
+            // appears on the actual paper.
+            '.screen-toolbar { position: sticky; top: 0; z-index: 1000; background: #1f2937; color: #fff; padding: 12px 20px; display: flex; gap: 10px; align-items: center; box-shadow: 0 2px 8px rgba(0,0,0,.2); }' +
+            '.screen-toolbar .lbl { font-weight: 700; margin-right: 8px; }' +
+            '.screen-toolbar .meta { color: #fcd34d; font-size: 13px; margin-right: auto; }' +
+            '.screen-toolbar button { padding: 8px 16px; border: none; border-radius: 6px; font-weight: 700; font-size: 13px; cursor: pointer; }' +
+            '.screen-toolbar .btn-print { background: #d97706; color: #fff; }' +
+            '.screen-toolbar .btn-print:hover { background: #b45309; }' +
+            '.screen-toolbar .btn-close { background: #374151; color: #fff; }' +
+            '.screen-toolbar .btn-close:hover { background: #4b5563; }' +
+            '@media print { .screen-toolbar { display: none !important; } }' +
+            '.sheet-page { width: 100%; }' +
+            // Page-break controls — every section after the first one
+            // starts on a fresh A4 page; long sections still flow onto
+            // additional pages naturally.
+            '.sheet-page + .sheet-page { page-break-before: always; }' +
+            // Header — bigger title, stacked meta block at the TOP of
+            // the sheet (Region / Sub Region / Day / Slot) matching the
+            // user\'s original Google-Sheets reference.
+            '.sheet-header { margin-bottom: 5mm; padding-bottom: 4mm; border-bottom: 2.5pt solid #d97706; }' +
+            '.sheet-title { font-size: 32pt; font-weight: 900; color: #d97706; margin: 0 0 5mm; letter-spacing: 1.5pt; text-transform: uppercase; line-height: 1; }' +
+            '.sheet-meta { display: grid; grid-template-columns: max-content auto; gap: 2.5mm 8mm; font-size: 15pt; color: #111; align-items: baseline; }' +
+            '.sheet-meta .lbl { font-weight: 700; color: #4b5563; }' +
+            '.sheet-meta .val { font-weight: 900; color: #000; }' +
+            // Table — bolder borders, bigger row height (≥14mm), and
+            // larger body font so each row reads cleanly from arm\'s
+            // length and there\'s comfortable space to hand-write
+            // the weight value in the last column.
+            '.sheet-table { width: 100%; border-collapse: collapse; font-size: 14pt; margin-top: 4mm; table-layout: fixed; }' +
+            '.sheet-table thead { display: table-header-group; }' +  // repeat thead on each printed page
+            '.sheet-table th { background: #f3f4f6; border: 1.2pt solid #4b5563; padding: 3mm 3mm; text-align: left; font-weight: 900; text-transform: uppercase; font-size: 11pt; letter-spacing: 0.5pt; color: #1f2937; }' +
+            '.sheet-table td { border: 1.2pt solid #6b7280; padding: 3mm 3mm; vertical-align: middle; height: 14mm; word-wrap: break-word; overflow-wrap: break-word; font-weight: 700; color: #111; }' +
+            '.sheet-table tr { page-break-inside: avoid; }' +
+            // Column sizing — 6 columns (no Region / Sub Region — both
+            // live in the section header above).
+            '.sheet-table .col-order   { width: 32mm; font-weight: 800; font-family: \'Courier New\', monospace; font-size: 13pt; white-space: nowrap; }' +
+            '.sheet-table .col-name    { width: 62mm; font-weight: 800; }' +
+            '.sheet-table .col-type    { width: auto; font-weight: 700; line-height: 1.3; }' +
+            '.sheet-table .col-qty     { width: 30mm; text-align: center; font-weight: 900; font-size: 18pt; font-family: \'Courier New\', monospace; color: #000; }' +
+            '.sheet-table .col-paya    { width: 40mm; font-weight: 700; }' +
+            '.sheet-table .col-weight  { width: 38mm; background: #fffbeb; }' + // amber tint so hand-fill cell stands out
+            '.sheet-footer { margin-top: 4mm; padding-top: 3mm; border-top: 1pt solid #d1d5db; font-size: 9pt; color: #6b7280; display: flex; justify-content: space-between; }' +
+            // Screen preview — each page rendered on its own card with
+            // a drop shadow so the user can visually scroll through all
+            // sheets before clicking Print.
+            '@media screen { body { background: #f3f4f6; } .sheet-pages-wrap { padding: 20px; } .sheet-page { background: #fff; padding: 10mm; box-shadow: 0 4px 12px rgba(0,0,0,.1); margin: 0 auto 20px; max-width: 297mm; min-height: 210mm; } .sheet-page + .sheet-page { page-break-before: always; } }';
+
+        const stamp = new Date().toLocaleString([], { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+        const totalAnimals = sections.reduce((acc, s) => acc + s.section_total, 0);
+
+        // Screen-only toolbar at the top of the preview window. The
+        // "Print All Sheets" button calls window.print() so the user
+        // can review the full preview first and only then send to the
+        // printer. NO auto-print — user explicitly asked for a
+        // "preview before print" flow.
+        let body = '<div class="screen-toolbar">' +
+            '<span class="lbl">🖨️ Qurbani Sheets — Print Preview</span>' +
+            '<span class="meta">' + sections.length + ' sheet(s) · ' + totalAnimals + ' animal row(s) total</span>' +
+            '<button class="btn-print" onclick="window.print()">🖨️ Print All Sheets</button>' +
+            '<button class="btn-close" onclick="window.close()">Close</button>' +
+            '</div>';
+
+        body += '<div class="sheet-pages-wrap">';
+
+        sections.forEach((section, idx) => {
+            body += '<div class="sheet-page">';
+
+            // Stacked header — Region / Sub Region / Day / Slot
+            // mirror the user's original Google-Sheets reference.
+            body += '<div class="sheet-header">';
+            body += '<h1 class="sheet-title">' + esc(String(section.category).toUpperCase()) + '</h1>';
+            body += '<div class="sheet-meta">' +
+                    '<span class="lbl">Region:</span><span class="val">' + esc(section.region) + '</span>' +
+                    '<span class="lbl">Sub Region:</span><span class="val">' + esc(section.sub_region) + '</span>' +
+                    '<span class="lbl">Day:</span><span class="val">' + esc(section.day) + '</span>' +
+                    '<span class="lbl">Slot:</span><span class="val">' + esc(section.slot) + '</span>' +
+                    '</div>';
+            body += '</div>';
+
+            body += '<table class="sheet-table"><thead><tr>' +
+                    '<th class="col-order">Order Number</th>' +
+                    '<th class="col-name">Customer Name</th>' +
+                    '<th class="col-type">Qurbani Type</th>' +
+                    '<th class="col-qty">Quantity</th>' +
+                    '<th class="col-paya">Paaye</th>' +
+                    '<th class="col-weight">Weight</th>' +
+                    '</tr></thead><tbody>';
+
+            // Expand each line item into one row PER ANIMAL UNIT.
+            // Quantity denominator = the CUSTOMER's bundle inside
+            // this section (their total hissas / goats etc. for
+            // this Cat × Day × Slot × Region × SubRegion). So a
+            // customer with qty=2 gets "1/2, 2/2"; a customer with
+            // qty=1 in the same section gets just "1/1". Other
+            // customers in the same section don't affect their
+            // denominators.
+            section.items.forEach(it => {
+                const start = it._sheet_pos_start;
+                const end   = it._sheet_pos_end;
+                const total = it._sheet_bundle_total;
+                for (let pos = start; pos <= end; pos++) {
+                    body += '<tr>' +
+                            '<td class="col-order">' + esc(it.order_number || '—') + '</td>' +
+                            '<td class="col-name">' + esc(it.customer_name || '—') + '</td>' +
+                            '<td class="col-type">' + esc(it.qurbani_type || '—') + '</td>' +
+                            '<td class="col-qty">' + pos + '/' + total + '</td>' +
+                            '<td class="col-paya">' + esc(it.qurbani_paya || '—') + '</td>' +
+                            '<td class="col-weight"></td>' +
+                            '</tr>';
+                }
+            });
+
+            body += '</tbody></table>';
+
+            body += '<div class="sheet-footer">' +
+                    '<span>Nizami Farms &middot; Qurbani \'26 &middot; Manual Sheet (' + esc(section.category) + ')</span>' +
+                    '<span>Printed ' + esc(stamp) + ' &middot; ' + section.section_total + ' animal(s) &middot; Sheet ' + (idx + 1) + ' of ' + sections.length + '</span>' +
+                    '</div>';
+            body += '</div>';
+        });
+
+        body += '</div>'; // .sheet-pages-wrap
+
+        return '<!DOCTYPE html><html><head><meta charset="utf-8"><title>Qurbani Sheets &mdash; ' + sections.length + ' sheet(s)</title>' +
+            '<style>' + css + '</style></head><body>' + body +
+            '</body></html>';
+    }
+
+    // ===== Phase 6 (May-2026) — Qurbani Location Request =============
+    // Backs the toolbar "Request Locations" button (bulk send modal +
+    // reviewer drawer) and the per-card "Request Location" button on
+    // every order row without a verified pin.
+    //
+    // Three independent UI surfaces, kept synchronized:
+    //   1. Toolbar badge       → poll /summary every 30s.
+    //   2. Bulk send modal     → /eligible → tick-select → /send-bulk →
+    //                            poll /bulk/{id}/start in chunks.
+    //   3. Reviewer drawer     → /pending-review → Save / Save-All /
+    //                            Dismiss → /save, /save-all, /dismiss.
+    // Per-card status pills come from /statuses (bulk-keyed by
+    // customer_id) populated into window._qoLocReqStatuses, looked up
+    // synchronously inside renderItems() so we never block render on
+    // network.
+    //
+    // SAFETY (matches what the service enforces server-side):
+    //   - The save endpoint refuses to overwrite when the customer
+    //     already has a NEWER verified_location_saved_at. The Reviewer
+    //     drawer surfaces this with an amber warning + a separate
+    //     "Force overwrite" button per row so it can only happen
+    //     deliberately.
+
+    window._qoLocReqStatuses = {};       // customer_id -> latest request status object
+    let _qoLocReqEligibleRows = [];      // current Bulk modal candidate list
+    let _qoLocReqSelected = new Set();   // customer_ids ticked in the Bulk modal
+    let _qoLocReqActiveBatchId = null;   // batch_id while a send is in progress
+    let _qoLocReqBatchPolling = false;   // re-entrancy guard for the chunked send loop
+    let _qoLocReqSummaryTimer = null;    // setInterval handle for the badge refresh
+    let _qoLocReviewRows = [];           // current Reviewer drawer items
+
+    function _locReqCsrf() {
+        const m = document.querySelector('meta[name="csrf-token"]');
+        return m ? m.getAttribute('content') : '';
+    }
+
+    function _locReqFmtRelTime(stamp) {
+        if (!stamp) return '';
+        const t = new Date(stamp.replace(' ', 'T'));
+        if (isNaN(t.getTime())) return stamp;
+        const diff = Date.now() - t.getTime();
+        const m = Math.round(diff / 60000);
+        if (m < 1) return 'just now';
+        if (m < 60) return m + 'm ago';
+        const h = Math.round(m / 60);
+        if (h < 48) return h + 'h ago';
+        return Math.round(h / 24) + 'd ago';
+    }
+
+    // ── Status hydration for per-card buttons ──────────────────────
+    function hydrateLocReqStatuses() {
+        const ids = [...new Set(allItems.map(it => it.customer_id).filter(Boolean))];
+        if (!ids.length) return;
+        fetch('/qurbani/api/loc-request/statuses', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-CSRF-TOKEN': _locReqCsrf(),
+                'Accept': 'application/json',
+            },
+            body: JSON.stringify({ customer_ids: ids }),
+        })
+        .then(r => r.json())
+        .then(data => {
+            if (!data.success) return;
+            window._qoLocReqStatuses = data.data || {};
+            // Only re-render the cards if there's at least one
+            // customer with a known status — otherwise we'd thrash
+            // the DOM on every load for nothing.
+            if (Object.keys(window._qoLocReqStatuses).length > 0) {
+                renderItems();
+            }
+        })
+        .catch(() => {});
+    }
+
+    // ── Toolbar badge ──────────────────────────────────────────────
+    function refreshLocReqSummaryBadge() {
+        fetch('/qurbani/api/loc-request/summary?days=30', {
+            headers: { 'Accept': 'application/json' }
+        })
+        .then(r => r.json())
+        .then(data => {
+            if (!data.success) return;
+            const pending = data.data.pending_review || 0;
+            const badge = document.getElementById('locReqBadge');
+            if (!badge) return;
+            if (pending > 0) {
+                badge.textContent = pending > 99 ? '99+' : pending;
+                badge.style.display = 'inline-block';
+                badge.title = pending + ' reply' + (pending === 1 ? '' : 'ies') + ' pending review — click to open the Reviewer drawer';
+            } else {
+                badge.style.display = 'none';
+            }
+        })
+        .catch(() => {});
+    }
+
+    // ── Per-card single send ───────────────────────────────────────
+    async function sendLocReqForLineItem(lineItemId, customerId, orderId, btn) {
+        if (!customerId) {
+            toast('No customer id on this row — cannot send.', 'error');
+            return;
+        }
+        if (btn) { btn.disabled = true; btn.textContent = '⏳ Sending…'; }
+        try {
+            const res = await fetch('/qurbani/api/loc-request/send-one', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-CSRF-TOKEN': _locReqCsrf(),
+                    'Accept': 'application/json',
+                },
+                body: JSON.stringify({
+                    customer_id: customerId,
+                    order_id: orderId,
+                    line_item_id: lineItemId,
+                }),
+            });
+            const data = await res.json();
+            if (data.success) {
+                toast('Location request sent ✓', 'success');
+                window._qoLocReqStatuses[customerId] = {
+                    display: 'sent_no_reply',
+                    sent_at: new Date().toISOString(),
+                    saved: false,
+                };
+                renderItems();
+                refreshLocReqSummaryBadge();
+            } else {
+                toast('Send failed: ' + (data.error_message || data.message || data.status || 'unknown'), 'error');
+                if (btn) { btn.disabled = false; btn.textContent = '⚠️ Retry send'; }
+            }
+        } catch (e) {
+            toast('Send failed: ' + e.message, 'error');
+            if (btn) { btn.disabled = false; btn.textContent = '⚠️ Retry send'; }
+        }
+    }
+
+    // ── Bulk send modal ────────────────────────────────────────────
+    function openLocReqSendModal() {
+        document.getElementById('locReqSendOverlay').style.display = 'block';
+        document.getElementById('locReqSendModal').style.display = 'block';
+        // Seed filters from the main page so the user lands on the
+        // same scope they were just looking at.
+        const get = id => document.getElementById(id);
+        const seed = (target, src) => {
+            const t = get(target), s = get(src);
+            if (t && s) t.value = (s.value && s.value !== '__unassigned__') ? s.value : '';
+        };
+        seed('locReqDay',          'filterDay');
+        seed('locReqSlot',         'filterSlot');
+        seed('locReqRegion',       'currentRegionRef');   // may not exist — safe no-op
+        seed('locReqSubRegion',    'filterSubRegion');
+        seed('locReqDeliveryType', 'filterDeliveryType');
+        seed('locReqCategory',     'filterCategory');
+        // Region: read from the active chip if present.
+        const activeChip = document.querySelector('.qo-region-chip.active');
+        if (activeChip && activeChip.dataset.region) {
+            const rSel = get('locReqRegion');
+            // Skip the "All Regions" chip (empty data-region) and the
+            // __unassigned__ marker — neither maps to a select option.
+            if (rSel && activeChip.dataset.region
+                && activeChip.dataset.region !== '__unassigned__') {
+                rSel.value = activeChip.dataset.region;
+            }
+        }
+        _qoLocReqSelected = new Set();
+        loadLocReqEligible();
+    }
+
+    function closeLocReqSendModal() {
+        document.getElementById('locReqSendOverlay').style.display = 'none';
+        document.getElementById('locReqSendModal').style.display = 'none';
+    }
+
+    function _locReqCollectFilters() {
+        const get = id => (document.getElementById(id) || {}).value || '';
+        return {
+            day: get('locReqDay'),
+            slot: get('locReqSlot'),
+            region: get('locReqRegion'),
+            sub_region: get('locReqSubRegion'),
+            delivery_type: get('locReqDeliveryType'),
+            category: get('locReqCategory'),
+            include_delivered: document.getElementById('locReqIncludeDelivered')?.checked ? 1 : 0,
+        };
+    }
+
+    function loadLocReqEligible() {
+        const f = _locReqCollectFilters();
+        const tbody = document.getElementById('locReqListBody');
+        tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:#9ca3af;padding:20px;">Loading…</td></tr>';
+        const qs = new URLSearchParams(f).toString();
+        fetch('/qurbani/api/loc-request/eligible?' + qs, { headers: { 'Accept': 'application/json' } })
+            .then(r => r.json())
+            .then(data => {
+                if (!data.success) throw new Error(data.message || 'Failed to load eligible customers');
+                _qoLocReqEligibleRows = data.items || [];
+                // Default: pre-tick everyone except customers we
+                // messaged in the last 24h (matches the "Hide
+                // recently sent" checkbox default).
+                _qoLocReqSelected = new Set();
+                _qoLocReqEligibleRows.forEach(r => {
+                    if (_locReqIsRecentlySent(r)) return;
+                    _qoLocReqSelected.add(r.customer_id);
+                });
+                renderLocReqList();
+            })
+            .catch(err => {
+                tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:#dc2626;padding:20px;">'
+                    + esc(err.message) + '</td></tr>';
+            });
+    }
+
+    function _locReqIsRecentlySent(row) {
+        const st = row.last_request;
+        if (!st || !st.sent_at) return false;
+        const t = new Date(st.sent_at.replace(' ', 'T')).getTime();
+        if (isNaN(t)) return false;
+        return (Date.now() - t) < (24 * 60 * 60 * 1000);
+    }
+
+    function renderLocReqList() {
+        const tbody = document.getElementById('locReqListBody');
+        const hideRecent = document.getElementById('locReqHideRecentlySent')?.checked;
+        const visible = _qoLocReqEligibleRows.filter(r => !(hideRecent && _locReqIsRecentlySent(r)));
+
+        if (visible.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:#9ca3af;padding:20px;">'
+                + 'No customers match these filters. (Already-verified customers are auto-excluded.)</td></tr>';
+            document.getElementById('locReqSendBtn').disabled = true;
+            _updateLocReqSelectionSummary();
+            return;
+        }
+
+        // Rows are now PER-CUSTOMER (collapsed server-side). A customer
+        // with multiple qualifying line items / orders / regions shows
+        // as ONE row with aggregated context so the count on the
+        // "Send to Selected" button always matches the number of
+        // WhatsApps that will go out.
+        let html = '';
+        visible.forEach(r => {
+            const checked = _qoLocReqSelected.has(r.customer_id) ? 'checked' : '';
+            const st = r.last_request;
+            let pill;
+            if (!st) {
+                pill = '<span class="qo-locreq-status-pill s-never">Never sent</span>';
+            } else if (st.display === 'replied_pending') {
+                pill = '<span class="qo-locreq-status-pill s-reply">Replied · review pending</span>';
+            } else if (st.saved) {
+                pill = '<span class="qo-locreq-status-pill s-saved">Saved</span>';
+            } else if (st.display === 'sent_no_reply') {
+                pill = '<span class="qo-locreq-status-pill s-sent">Sent ' + esc(_locReqFmtRelTime(st.sent_at)) + ', no reply</span>';
+            } else if (st.display === 'failed') {
+                pill = '<span class="qo-locreq-status-pill s-failed">Last send failed</span>';
+            } else {
+                pill = '<span class="qo-locreq-status-pill s-sent">' + esc(st.display) + '</span>';
+            }
+
+            // Orders cell: show first order # with a +N tag if more.
+            const orderNums = r.order_numbers || [];
+            const orderIds  = r.order_ids || [];
+            let ordersCell = '<span style="color:#9ca3af;">—</span>';
+            if (orderNums.length > 0) {
+                const head = '<a href="/crm/orders/' + orderIds[0] + '" target="_blank" style="color:#2563eb;">#'
+                           + esc(orderNums[0]) + '</a>';
+                const tail = orderNums.length > 1
+                    ? ' <span title="' + esc(orderNums.slice(1).join(', ')) + '" style="color:#9ca3af;">+'
+                      + (orderNums.length - 1) + '</span>'
+                    : '';
+                ordersCell = head + tail;
+            }
+
+            // Region(s): show distinct regions; if many, truncate with title.
+            const regions = (r.regions || []).filter(Boolean);
+            const subs    = (r.sub_regions || []).filter(Boolean);
+            const regBits = [];
+            if (regions.length) {
+                regBits.push(regions.length <= 2 ? regions.join(' / ')
+                    : (regions.slice(0, 2).join(' / ') + ' …'));
+            }
+            if (subs.length) {
+                regBits.push('<span style="color:#9ca3af;">' +
+                    esc(subs.length <= 2 ? subs.join(' / ')
+                        : (subs.slice(0, 2).join(' / ') + ' …')) + '</span>');
+            }
+            const regionsCell = regBits.length
+                ? '<span title="' + esc([...regions, ...subs].join(', ')) + '">'
+                  + regBits.join('<br>') + '</span>'
+                : '—';
+
+            // Day · Slot: distinct values, truncated.
+            const days  = (r.days  || []).filter(Boolean);
+            const slots = (r.slots || []).filter(Boolean);
+            const daySlotBits = [];
+            if (days.length)  daySlotBits.push(days.length  <= 2 ? days.join(', ')  : (days.slice(0,2).join(', ')  + ' +' + (days.length  - 2)));
+            if (slots.length) daySlotBits.push(slots.length <= 1 ? slots.join(', ') : (slots[0] + ' +' + (slots.length - 1)));
+            const daySlotCell = daySlotBits.length
+                ? '<span title="' + esc('Days: ' + days.join(', ') + (slots.length ? ' · Slots: ' + slots.join(', ') : '')) + '">'
+                  + esc(daySlotBits.join(' · ')) + '</span>'
+                : '—';
+
+            html += '<tr data-cid="' + r.customer_id + '">'
+                + '<td><input type="checkbox" ' + checked + ' onchange="locReqToggleRow(' + r.customer_id + ', this.checked)"></td>'
+                + '<td><div style="font-weight:600;color:#111827;">' + esc(r.customer_name || '—') + '</div>'
+                +     '<div style="color:#9ca3af;font-size:11px;">' + esc(r.phone || '')
+                +       (r.line_items_count > 1 ? ' · <span title="Has ' + r.line_items_count + ' line item(s)">' + r.line_items_count + ' item(s)</span>' : '')
+                +     '</div></td>'
+                + '<td>' + ordersCell + '</td>'
+                + '<td>' + regionsCell + '</td>'
+                + '<td>' + daySlotCell + '</td>'
+                + '<td>' + pill + '</td>'
+                + '</tr>';
+        });
+        tbody.innerHTML = html;
+        _updateLocReqSelectionSummary();
+    }
+
+    function _updateLocReqSelectionSummary() {
+        const total = _qoLocReqEligibleRows.length;
+        const sel = _qoLocReqSelected.size;
+        document.getElementById('locReqSelectionSummary').textContent =
+            sel + ' of ' + total + ' eligible selected';
+        const btn = document.getElementById('locReqSendBtn');
+        btn.disabled = (sel === 0);
+        btn.textContent = 'Send to Selected (' + sel + ')';
+        document.getElementById('locReqSelectHeader').checked = (sel > 0 && sel === total);
+    }
+
+    function locReqToggleRow(cid, on) {
+        if (on) _qoLocReqSelected.add(cid);
+        else _qoLocReqSelected.delete(cid);
+        _updateLocReqSelectionSummary();
+    }
+
+    function locReqSelectAll(on) {
+        const hideRecent = document.getElementById('locReqHideRecentlySent')?.checked;
+        const visible = _qoLocReqEligibleRows.filter(r => !(hideRecent && _locReqIsRecentlySent(r)));
+        _qoLocReqSelected = new Set();
+        if (on) visible.forEach(r => _qoLocReqSelected.add(r.customer_id));
+        renderLocReqList();
+    }
+
+    function locReqSelectNeverRequested() {
+        _qoLocReqSelected = new Set();
+        _qoLocReqEligibleRows.forEach(r => {
+            if (!r.last_request) _qoLocReqSelected.add(r.customer_id);
+        });
+        renderLocReqList();
+    }
+
+    // ── Bulk send execution (chunked polling) ──────────────────────
+    async function runLocReqSend() {
+        if (_qoLocReqSelected.size === 0) return;
+        if (!confirm('Send the qurbani_location WhatsApp template to ' + _qoLocReqSelected.size + ' customer(s)?')) return;
+
+        const sendBtn = document.getElementById('locReqSendBtn');
+        sendBtn.disabled = true;
+        sendBtn.textContent = 'Queueing…';
+
+        try {
+            const filters = _locReqCollectFilters();
+            const res = await fetch('/qurbani/api/loc-request/send-bulk', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-CSRF-TOKEN': _locReqCsrf(),
+                    'Accept': 'application/json',
+                },
+                body: JSON.stringify({
+                    customer_ids: [..._qoLocReqSelected],
+                    ...filters,
+                }),
+            });
+            const data = await res.json();
+            if (!data.success) {
+                toast('Queue failed: ' + (data.message || 'unknown'), 'error');
+                sendBtn.disabled = false;
+                sendBtn.textContent = 'Send to Selected (' + _qoLocReqSelected.size + ')';
+                return;
+            }
+            _qoLocReqActiveBatchId = data.batch_id;
+            const queued = data.queued;
+            const skippedNoPhone = data.skipped_no_phone || 0;
+            const skippedDup = data.skipped_duplicate || 0;
+            toast('Batch queued: ' + queued + ' messages'
+                  + (skippedNoPhone ? ' (' + skippedNoPhone + ' skipped — no phone)' : ''),
+                  'info');
+
+            document.getElementById('locReqProgress').style.display = 'block';
+            document.getElementById('locReqProgressLabel').textContent = 'Sending…';
+            document.getElementById('locReqProgressCount').textContent = '0 / ' + queued;
+            document.getElementById('locReqProgressBar').style.width = '0%';
+            document.getElementById('locReqProgressDetail').textContent = 'Polling Meta…';
+
+            await _runLocReqBatchPoll(_qoLocReqActiveBatchId, queued);
+
+            sendBtn.disabled = false;
+            sendBtn.textContent = 'Send to Selected (' + _qoLocReqSelected.size + ')';
+            refreshLocReqSummaryBadge();
+        } catch (e) {
+            toast('Bulk send error: ' + e.message, 'error');
+            sendBtn.disabled = false;
+            sendBtn.textContent = 'Send to Selected (' + _qoLocReqSelected.size + ')';
+        }
+    }
+
+    async function _runLocReqBatchPoll(batchId, expected) {
+        if (_qoLocReqBatchPolling) return;  // re-entrancy guard
+        _qoLocReqBatchPolling = true;
+        const startedAt = Date.now();
+        try {
+            let safety = 200;   // 200 chunks * ~100 rows = 20k row hard ceiling
+            while (safety-- > 0) {
+                const res = await fetch('/qurbani/api/loc-request/bulk/' + batchId + '/start', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'X-CSRF-TOKEN': _locReqCsrf(),
+                        'Accept': 'application/json',
+                    },
+                    body: JSON.stringify({}),
+                });
+                const data = await res.json();
+                if (!data.success) {
+                    document.getElementById('locReqProgressDetail').textContent = 'Error: ' + (data.message || 'unknown');
+                    break;
+                }
+                const b = data.batch || {};
+                const total = b.total || expected || 0;
+                const done = (b.sent || 0) + (b.failed || 0) + (b.skipped || 0);
+                const pct = total > 0 ? Math.round((done / total) * 100) : 100;
+                document.getElementById('locReqProgressCount').textContent = done + ' / ' + total;
+                document.getElementById('locReqProgressBar').style.width = pct + '%';
+                document.getElementById('locReqProgressDetail').textContent =
+                    'Sent ' + (b.sent || 0) + ' · Failed ' + (b.failed || 0)
+                    + ' · Skipped ' + (b.skipped || 0)
+                    + ' · Replied ' + (b.replied || 0);
+                if (data.done) {
+                    document.getElementById('locReqProgressLabel').textContent = '✓ Batch complete — watching for replies…';
+                    const elapsedS = Math.round((Date.now() - startedAt) / 1000);
+                    toast('Bulk send complete: ' + (b.sent || 0) + ' sent in ' + elapsedS + 's', 'success');
+                    // Flip to live dashboard mode so the user can
+                    // watch replies tick in without leaving the modal.
+                    _showLocReqBatchDashboard(batchId, b);
+                    _startLocReqBatchAutoRefresh(batchId);
+                    break;
+                }
+                // Tiny gap between chunks — server already paces inside
+                // each chunk via the QurbaniLocationRequestService.
+                await new Promise(r => setTimeout(r, 400));
+            }
+        } finally {
+            _qoLocReqBatchPolling = false;
+        }
+    }
+
+    // ── Post-send live dashboard ───────────────────────────────────
+    // After a batch finishes sending we keep polling /batch/{id} so
+    // the user sees replies arrive in real time and can jump straight
+    // to the Reviewer drawer (scoped to this batch) to bulk-save
+    // them. Auto-refresh stops when the modal is closed.
+    let _qoLocReqDashTimer = null;
+
+    function _showLocReqBatchDashboard(batchId, batchObj) {
+        document.getElementById('locReqBatchDashboard').style.display = 'block';
+        _renderLocReqBatchDashboard(batchObj);
+    }
+
+    function _renderLocReqBatchDashboard(b) {
+        if (!b) return;
+        document.getElementById('locReqDashSent').textContent    = b.sent || 0;
+        document.getElementById('locReqDashReplied').textContent = b.replied || 0;
+        document.getElementById('locReqDashReview').textContent  = b.reviewable || 0;
+        document.getElementById('locReqDashSaved').textContent   = b.saved || 0;
+        const reviewBtn = document.getElementById('locReqDashReviewBtn');
+        reviewBtn.textContent = '📋 Review & Save Replies (' + (b.reviewable || 0) + ')';
+        reviewBtn.disabled = !((b.reviewable || 0) > 0);
+        // Soften the "Awaiting save" tile when there's nothing to do.
+        const card = document.getElementById('locReqDashReviewCard');
+        if ((b.reviewable || 0) > 0) {
+            card.style.background = '#fffbeb';
+            card.style.borderColor = '#fcd34d';
+        } else {
+            card.style.background = '#f9fafb';
+            card.style.borderColor = '#e5e7eb';
+        }
+        document.getElementById('locReqDashUpdated').textContent =
+            'Updated ' + new Date().toLocaleTimeString([], {hour:'2-digit', minute:'2-digit', second:'2-digit'})
+            + ' · auto-refreshes every 15s';
+    }
+
+    function _startLocReqBatchAutoRefresh(batchId) {
+        if (_qoLocReqDashTimer) clearInterval(_qoLocReqDashTimer);
+        _qoLocReqDashTimer = setInterval(() => {
+            // Stop polling if the modal got closed (user navigated away).
+            const modal = document.getElementById('locReqSendModal');
+            if (!modal || modal.style.display !== 'block') {
+                clearInterval(_qoLocReqDashTimer);
+                _qoLocReqDashTimer = null;
+                return;
+            }
+            fetch('/qurbani/api/loc-request/batch/' + batchId, {
+                headers: { 'Accept': 'application/json' }
+            })
+            .then(r => r.json())
+            .then(data => {
+                if (data.success) _renderLocReqBatchDashboard(data.data);
+            })
+            .catch(() => {});
+        }, 15000);
+    }
+
+    function openLocReqReviewDrawerForBatch() {
+        // Open the reviewer drawer scoped to the most-recently-sent
+        // batch so the user sees ONLY this batch's replies. Falls
+        // back to the global "all replies" view if no batch in flight.
+        const batchId = _qoLocReqActiveBatchId;
+        if (batchId) {
+            openLocReqReviewDrawer(batchId);
+        } else {
+            openLocReqReviewDrawer();
+        }
+    }
+
+    // ── Reviewer drawer ────────────────────────────────────────────
+    let _qoLocReviewScopedBatchId = null;
+
+    function openLocReqReviewDrawer(scopedBatchId) {
+        _qoLocReviewScopedBatchId = scopedBatchId || null;
+        document.getElementById('locReviewOverlay').style.display = 'block';
+        document.getElementById('locReviewDrawer').style.display = 'flex';
+        // Update the title to make the scope obvious.
+        const titleEl = document.getElementById('locReviewTitle');
+        if (titleEl) {
+            titleEl.textContent = _qoLocReviewScopedBatchId
+                ? '📋 Location Replies — This Batch'
+                : '📋 Location Replies — Pending Review';
+        }
+        loadLocReviewQueue();
+    }
+
+    function closeLocReqReviewDrawer() {
+        document.getElementById('locReviewOverlay').style.display = 'none';
+        document.getElementById('locReviewDrawer').style.display = 'none';
+        _qoLocReviewScopedBatchId = null;
+    }
+
+    function loadLocReviewQueue() {
+        const body = document.getElementById('locReviewBody');
+        body.innerHTML = '<div style="text-align:center;color:#9ca3af;padding:20px;font-size:12px;">Loading…</div>';
+        document.getElementById('locReviewSummary').textContent = 'Loading…';
+        let url = '/qurbani/api/loc-request/pending-review?days=30';
+        if (_qoLocReviewScopedBatchId) {
+            url += '&batch_id=' + encodeURIComponent(_qoLocReviewScopedBatchId);
+        }
+        fetch(url, { headers: { 'Accept': 'application/json' } })
+        .then(r => r.json())
+        .then(data => {
+            if (!data.success) throw new Error(data.message || 'Failed to load review queue');
+            _qoLocReviewRows = data.items || [];
+            renderLocReviewQueue();
+        })
+        .catch(err => {
+            body.innerHTML = '<div style="text-align:center;color:#dc2626;padding:20px;font-size:12px;">'
+                + esc(err.message) + '</div>';
+            document.getElementById('locReviewSummary').textContent = 'Error';
+        });
+    }
+
+    function renderLocReviewQueue() {
+        const body = document.getElementById('locReviewBody');
+        const saveAllBtn = document.querySelector('.qo-locreview-foot .qo-toolbar-btn.secondary');
+        if (_qoLocReviewRows.length === 0) {
+            body.innerHTML = '<div style="text-align:center;color:#9ca3af;padding:24px;font-size:12px;">'
+                + 'No replies waiting. Send some templates from the bulk modal, then come back here.</div>';
+            document.getElementById('locReviewSummary').textContent = 'Nothing to review.';
+            if (saveAllBtn) {
+                saveAllBtn.disabled = true;
+                saveAllBtn.textContent = '💾 Save All (safe)';
+            }
+            return;
+        }
+        const warnCount = _qoLocReviewRows.filter(r => r.has_newer_pin).length;
+        const safeCount = _qoLocReviewRows.length - warnCount;
+        document.getElementById('locReviewSummary').textContent =
+            _qoLocReviewRows.length + ' reply' + (_qoLocReviewRows.length === 1 ? '' : 'ies') + ' to review'
+            + (warnCount ? ' · ' + warnCount + ' would overwrite a newer pin (skipped by Save All)' : '');
+        // Surface the safe-save count on the bulk button so the user
+        // knows up-front exactly how many will be written.
+        if (saveAllBtn) {
+            saveAllBtn.disabled = (safeCount === 0);
+            saveAllBtn.textContent = '💾 Save All Safe (' + safeCount + ')';
+        }
+
+        let html = '';
+        _qoLocReviewRows.forEach(r => {
+            const ctxBits = [];
+            if (r.context.region)     ctxBits.push(r.context.region);
+            if (r.context.sub_region) ctxBits.push(r.context.sub_region);
+            if (r.context.day)        ctxBits.push(r.context.day);
+            if (r.context.slot)       ctxBits.push(r.context.slot);
+            const ctxStr = ctxBits.join(' · ');
+            html += '<div class="qo-locreview-row ' + (r.has_newer_pin ? 'is-warn' : '') + '" data-rid="' + r.id + '">';
+            html += '<div class="row-top">';
+            html +=   '<span class="row-cust">' + esc(r.customer_name || ('Customer #' + r.customer_id)) + '</span>';
+            html +=   '<span style="font-size:11px;color:#9ca3af;">' + esc(_locReqFmtRelTime(r.replied_at)) + '</span>';
+            html += '</div>';
+            html += '<div class="row-meta">';
+            html +=   '📞 ' + esc(r.wa_phone || '—');
+            if (ctxStr) html += ' · ' + esc(ctxStr);
+            if (r.reply_address) html += '<br>🏠 ' + esc(r.reply_address);
+            html += '<br>📍 <a href="https://www.google.com/maps/search/?api=1&query='
+                  + r.lat + ',' + r.lng + '" target="_blank" style="color:#2563eb;">'
+                  + r.lat.toFixed(5) + ', ' + r.lng.toFixed(5) + ' (open in maps)</a>';
+            html += '</div>';
+            if (r.has_newer_pin && r.existing_pin) {
+                html += '<div class="row-warn">⚠️ This customer already has a NEWER manual pin '
+                     + 'set on ' + esc(r.existing_pin.pinned_at || '—') + '. '
+                     + 'Plain "Save" will SKIP this row to protect the existing pin. '
+                     + 'Use "Force overwrite" only if you\'re sure.</div>';
+            }
+            html += '<div class="row-actions">';
+            html += '<button class="qo-toolbar-btn primary" style="padding:4px 10px;font-size:11px;" '
+                  + 'onclick="locReviewSaveOne(' + r.id + ', false, this)">💾 Save</button>';
+            if (r.has_newer_pin) {
+                html += '<button class="qo-toolbar-btn secondary" style="padding:4px 10px;font-size:11px;border-color:#dc2626;color:#dc2626;" '
+                      + 'onclick="locReviewSaveOne(' + r.id + ', true, this)">⚠️ Force overwrite</button>';
+            }
+            html += '<button class="qo-toolbar-btn secondary" style="padding:4px 10px;font-size:11px;" '
+                  + 'onclick="locReviewDismissOne(' + r.id + ', this)">🗑 Dismiss</button>';
+            html += '</div>';
+            html += '</div>';
+        });
+        body.innerHTML = html;
+    }
+
+    async function locReviewSaveOne(id, force, btn) {
+        if (btn) { btn.disabled = true; btn.textContent = 'Saving…'; }
+        try {
+            const res = await fetch('/qurbani/api/loc-request/save/' + id, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-CSRF-TOKEN': _locReqCsrf(),
+                    'Accept': 'application/json',
+                },
+                body: JSON.stringify({ force: !!force }),
+            });
+            const data = await res.json();
+            if (data.success) {
+                toast('Location saved to customer ✓', 'success');
+                _markReviewRowDone(id);
+            } else if (data.skipped_reason) {
+                toast('Skipped: ' + data.skipped_reason, 'info');
+                _markReviewRowDone(id);
+            } else {
+                toast('Save failed: ' + (data.message || 'unknown'), 'error');
+                if (btn) { btn.disabled = false; btn.textContent = '💾 Save'; }
+            }
+            refreshLocReqSummaryBadge();
+            // Also re-hydrate per-card status so the affected customer's
+            // button on the Orders page flips back to "📍" (verified).
+            hydrateLocReqStatuses();
+        } catch (e) {
+            toast('Save failed: ' + e.message, 'error');
+            if (btn) { btn.disabled = false; btn.textContent = '💾 Save'; }
+        }
+    }
+
+    async function locReviewDismissOne(id, btn) {
+        if (!confirm('Dismiss this reply? (It won\'t be saved to the customer.)')) return;
+        if (btn) { btn.disabled = true; btn.textContent = 'Dismissing…'; }
+        try {
+            const res = await fetch('/qurbani/api/loc-request/dismiss/' + id, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-CSRF-TOKEN': _locReqCsrf(),
+                    'Accept': 'application/json',
+                },
+                body: JSON.stringify({}),
+            });
+            const data = await res.json();
+            if (data.success) {
+                toast('Reply dismissed.', 'info');
+                _markReviewRowDone(id);
+                refreshLocReqSummaryBadge();
+            } else {
+                toast('Dismiss failed.', 'error');
+                if (btn) { btn.disabled = false; btn.textContent = '🗑 Dismiss'; }
+            }
+        } catch (e) {
+            toast('Dismiss failed: ' + e.message, 'error');
+            if (btn) { btn.disabled = false; btn.textContent = '🗑 Dismiss'; }
+        }
+    }
+
+    function _markReviewRowDone(id) {
+        const el = document.querySelector('.qo-locreview-row[data-rid="' + id + '"]');
+        if (!el) return;
+        el.classList.add('is-done');
+        el.querySelectorAll('button').forEach(b => { b.disabled = true; });
+        // Remove from local cache so summary count stays accurate.
+        _qoLocReviewRows = _qoLocReviewRows.filter(r => r.id !== id);
+        const remaining = _qoLocReviewRows.length;
+        const warnCount = _qoLocReviewRows.filter(r => r.has_newer_pin).length;
+        document.getElementById('locReviewSummary').textContent =
+            remaining + ' reply' + (remaining === 1 ? '' : 'ies') + ' to review'
+            + (warnCount ? ' · ' + warnCount + ' would overwrite a newer pin' : '');
+    }
+
+    async function locReviewSaveAll(force) {
+        // "Safe" Save All deliberately omits force, so the server
+        // skips rows where the customer already has a newer pin.
+        // Those rows stay in the list, flagged for explicit action.
+        const safeRows = _qoLocReviewRows.filter(r => force || !r.has_newer_pin);
+        if (safeRows.length === 0) {
+            toast('No safely-savable replies — every remaining row would overwrite a newer pin.', 'info');
+            return;
+        }
+        if (!confirm('Save ' + safeRows.length + ' location reply' + (safeRows.length === 1 ? '' : 'ies') + ' to their customer records?')) return;
+        try {
+            const res = await fetch('/qurbani/api/loc-request/save-all', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-CSRF-TOKEN': _locReqCsrf(),
+                    'Accept': 'application/json',
+                },
+                body: JSON.stringify({
+                    ids: safeRows.map(r => r.id),
+                    force: !!force,
+                }),
+            });
+            const data = await res.json();
+            if (data.success) {
+                toast('Saved ' + data.saved + ' · skipped ' + data.skipped, 'success');
+                loadLocReviewQueue();
+                refreshLocReqSummaryBadge();
+                hydrateLocReqStatuses();
+            } else {
+                toast('Save All failed: ' + (data.message || 'unknown'), 'error');
+            }
+        } catch (e) {
+            toast('Save All failed: ' + e.message, 'error');
+        }
+    }
+
+    // ── Bootstrap: kick off the summary badge poller on first
+    // load. Also fires immediately so the badge shows whatever state
+    // there was when the staff opens the page.
+    refreshLocReqSummaryBadge();
+    if (_qoLocReqSummaryTimer) clearInterval(_qoLocReqSummaryTimer);
+    _qoLocReqSummaryTimer = setInterval(refreshLocReqSummaryBadge, 30000);
+
     // Expose globals
     window.loadItems = loadItems;
     window.debouncedLoad = debouncedLoad;
@@ -1543,6 +3284,15 @@ window.QURBANI_ORDERS_BOOT = {!! json_encode($qurbaniOrdersBoot, JSON_HEX_TAG | 
     window.cancelPrintRun = cancelPrintRun;
     window.openPrintModal = openPrintModal;
     window.closePrintModal = closePrintModal;
+    // A4 print-sheet modal (May-2026) — inline onclick on the toolbar
+    // button, the modal backdrop, the close (×) button, the filter
+    // <select>s, the Include-Delivered checkbox, and the Print button
+    // all reach into window.* so they must be exported the same way
+    // every other modal handler is on this page.
+    window.openPrintSheetModal = openPrintSheetModal;
+    window.closeSheetModal = closeSheetModal;
+    window.loadSheetPreview = loadSheetPreview;
+    window.runSheetPrintFromModal = runSheetPrintFromModal;
     window.setPrintFilter = setPrintFilter;
     window.toggleAllCb = toggleAllCb;
     window.selectAllLabels = selectAllLabels;
@@ -1557,6 +3307,28 @@ window.QURBANI_ORDERS_BOOT = {!! json_encode($qurbaniOrdersBoot, JSON_HEX_TAG | 
     // pressed. Same pattern as the other delegations above.
     window.openTimeline = openTimeline;
     window.closeTimeline = closeTimeline;
+
+    // Phase 6 (May-2026) — Qurbani Location Request feature. All
+    // inline-onclick handlers from the toolbar button, the bulk-send
+    // modal, the reviewer drawer, and the per-card "Request Location"
+    // button need their handlers reachable on window.* so the browser
+    // doesn't throw "is not defined" the first time they're pressed.
+    window.openLocReqSendModal = openLocReqSendModal;
+    window.closeLocReqSendModal = closeLocReqSendModal;
+    window.loadLocReqEligible = loadLocReqEligible;
+    window.renderLocReqList = renderLocReqList;
+    window.locReqToggleRow = locReqToggleRow;
+    window.locReqSelectAll = locReqSelectAll;
+    window.locReqSelectNeverRequested = locReqSelectNeverRequested;
+    window.runLocReqSend = runLocReqSend;
+    window.openLocReqReviewDrawer = openLocReqReviewDrawer;
+    window.closeLocReqReviewDrawer = closeLocReqReviewDrawer;
+    window.loadLocReviewQueue = loadLocReviewQueue;
+    window.locReviewSaveOne = locReviewSaveOne;
+    window.locReviewDismissOne = locReviewDismissOne;
+    window.locReviewSaveAll = locReviewSaveAll;
+    window.sendLocReqForLineItem = sendLocReqForLineItem;
+    window.openLocReqReviewDrawerForBatch = openLocReqReviewDrawerForBatch;
 
     // ===== Phase C2 (May-2026) — Riders Map modal =====================
     // Lazy-loads the Google Maps JS API on first open. Same key as

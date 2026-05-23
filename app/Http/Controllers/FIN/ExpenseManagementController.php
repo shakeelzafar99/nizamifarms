@@ -11,6 +11,7 @@ use App\Models\FIN\ConfigModel;
 use App\Models\FIN\BusinessUnitModel;
 use App\Models\HR\SalarySlipModel;
 use App\Services\FIN\ExpenseSettlementService;
+use App\Services\QurbaniFinanceFilter;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
@@ -28,24 +29,72 @@ class ExpenseManagementController extends Controller
      */
     public function index(Request $request)
     {
-        // Get filter parameters with "This Month" as default
-        // Only apply default if no date filters are explicitly provided
+        // May-2026 (Phase 3) — `qurbani=1` flips this controller into
+        // "Qurbani Expenses" mode. Same view, same code path, but:
+        //   - Qurbani-only filter on all three request queries
+        //     (instead of the regular Qurbani-EXCLUDE filter).
+        //   - Date range defaults to the *current calendar year*
+        //     (instead of the current month). User can switch years
+        //     via the year picker rendered in the view.
+        //   - View renders an extra "Qurbani Revenue" card pulling
+        //     from t_crm_prod_order with the canonical OR-rule.
+        //   - Salary slips are skipped — Qurbani staff costs are
+        //     entered as request-based qurbani sub-categories.
+        $qurbaniMode = filter_var($request->input('qurbani', false), FILTER_VALIDATE_BOOLEAN);
+
         $hasDateFilter = $request->has('date_from') || $request->has('date_to');
-        
-        if (!$hasDateFilter) {
+        if ($qurbaniMode) {
+            // Year-accumulating window. The view's year picker posts
+            // a `year` query param; default to the current calendar
+            // year if none provided.
+            $year = (int) ($request->input('year', date('Y')));
+            if ($year < 2024 || $year > 2099) { $year = (int) date('Y'); }
+            $dateFrom = $year . '-01-01';
+            $dateTo   = $year . '-12-31';
+        } elseif (!$hasDateFilter) {
             // Default to "This Month"
-            $dateFrom = date('Y-m-01'); // First day of current month
-            $dateTo = date('Y-m-t'); // Last day of current month
+            $dateFrom = date('Y-m-01');
+            $dateTo = date('Y-m-t');
         } else {
             $dateFrom = $request->input('date_from');
             $dateTo = $request->input('date_to');
         }
-        
+
         $category = $request->input('category');
         $paymentSource = $request->input('payment_source');
         $settlementStatus = $request->input('settlement_status');
         $employeeFilter = $request->input('employee');
         $requestType = $request->input('request_type');
+        // May-2026 (Phase 4) — `bu` drill: NF or KHAAS code on the
+        // business unit table. Filters the entire page (KPIs, list,
+        // pending approvals) when set. Empty = both BUs combined.
+        $buFilter = $request->input('bu');
+        if ($buFilter !== null && $buFilter !== '' && !in_array($buFilter, ['NF', 'KHAAS'], true)) {
+            $buFilter = null;
+        }
+        // Whoever lacks `access_khaas_mode` shouldn't see any Khaas
+        // numbers (per the user's permissions rule). Force-strip the
+        // Khaas filter and the Khaas split row in that case.
+        $canViewKhaas = false;
+        try {
+            if (\Auth::check()) {
+                $u = \Auth::user();
+                $u->load(['roles.mobilePermissions']);
+                $perms = method_exists($u, 'getMobilePermissions')
+                    ? $u->getMobilePermissions()
+                    : [];
+                $canViewKhaas = in_array('access_khaas_mode', $perms, true);
+            }
+        } catch (\Throwable $e) {
+            $canViewKhaas = false;
+        }
+        if (!$canViewKhaas && $buFilter === 'KHAAS') {
+            $buFilter = null;
+        }
+        // Resolve BU ids once per request so the BU-split block doesn't
+        // re-query the BU table per row.
+        $nfBuId    = (int) (BusinessUnitModel::where('code', 'NF')->value('id') ?? 0);
+        $khaasBuId = (int) (BusinessUnitModel::where('code', 'KHAAS')->value('id') ?? 0);
         
         // Dynamically get all category codes that are enabled for expense management
         try {
@@ -60,17 +109,44 @@ class ExpenseManagementController extends Controller
             $expenseCategoryCodes = ['expense', 'salary_advance', 'khaas_expense'];
         }
         
-        // Build base query for all expense-type requests
-        $expensesQuery = RequestModel::whereHas('category', function($q) use ($expenseCategoryCodes, $requestType) {
+        // Build base query for all expense-type requests.
+        // May-2026 (Phase 2/3) — Qurbani requests are silo'd into a
+        // dedicated tab. The same controller serves both pages; the
+        // `qurbaniMode` flag toggles which side of the silo we
+        // return. Qurbani requests are still entered from the same
+        // quick-add modal regardless of which tab the user is on.
+        $expensesQuery = RequestModel::whereHas('category', function($q) use ($expenseCategoryCodes, $requestType, $qurbaniMode) {
                 if ($requestType) {
                     $q->where('category_code', $requestType);
                 } else {
                     $q->whereIn('category_code', $expenseCategoryCodes);
                 }
+                if ($qurbaniMode) {
+                    $q->where('category_code', 'qurbani');
+                } else {
+                    $q->where('category_code', '!=', 'qurbani');
+                }
             })
             ->whereNotNull('ledger_transaction_id')
             ->where('status', RequestModel::STATUS_APPROVED) // Only approved expenses
             ->with(['requester', 'paymentSourceAccount', 'category', 'settledBy', 'settlementDestinationAccount']);
+        // BU drill — restrict the whole page when user clicks NF/Khaas.
+        if ($buFilter === 'NF' && $nfBuId) {
+            $expensesQuery->where(function ($q) use ($nfBuId) {
+                $q->where('business_unit_id', $nfBuId)
+                  ->orWhereNull('business_unit_id');
+            });
+        } elseif ($buFilter === 'KHAAS' && $khaasBuId) {
+            $expensesQuery->where('business_unit_id', $khaasBuId);
+        }
+        // If the user can't view Khaas, force-hide Khaas rows even
+        // without an explicit filter.
+        if (!$canViewKhaas && $khaasBuId) {
+            $expensesQuery->where(function ($q) use ($khaasBuId) {
+                $q->where('business_unit_id', '!=', $khaasBuId)
+                  ->orWhereNull('business_unit_id');
+            });
+        }
         
         // Apply filters
         // ⭐ Use expense_date for filtering (falls back to created_at for old records)
@@ -133,7 +209,18 @@ class ExpenseManagementController extends Controller
         
         // If category filter is "Salary", include salary slips; otherwise exclude them
         $includeSalarySlips = !$category || strtolower($category) === 'salary';
-        
+        // Qurbani Expenses tab never wants salary — qurbani staff
+        // are paid via the request-based qurbani sub-categories.
+        if ($qurbaniMode) {
+            $includeSalarySlips = false;
+        }
+        // Salary slips don't carry a business_unit_id — when the
+        // page is drilled into KHAAS, hide them so the Khaas total
+        // isn't inflated by all-staff salaries.
+        if ($buFilter === 'KHAAS') {
+            $includeSalarySlips = false;
+        }
+
         $salarySlips = $includeSalarySlips ? $salarySlipsQuery->orderBy('created_at', 'desc')->get() : collect([]);
         $totalSalaryExpenses = $salarySlips->sum('net_salary');
         
@@ -188,8 +275,14 @@ class ExpenseManagementController extends Controller
         })->sortByDesc('settled_at')->take(20);
         
         // Get expense categories for filter - dynamically from actual expenses
-        $categoriesFromExpenses = RequestModel::whereHas('category', function($q) use ($expenseCategoryCodes) {
+        // (Qurbani sub-categories appear ONLY on the Qurbani tab.)
+        $categoriesFromExpenses = RequestModel::whereHas('category', function($q) use ($expenseCategoryCodes, $qurbaniMode) {
                 $q->whereIn('category_code', $expenseCategoryCodes);
+                if ($qurbaniMode) {
+                    $q->where('category_code', 'qurbani');
+                } else {
+                    $q->where('category_code', '!=', 'qurbani');
+                }
             })
             ->whereNotNull('ledger_transaction_id')
             ->where('status', RequestModel::STATUS_APPROVED)
@@ -224,14 +317,36 @@ class ExpenseManagementController extends Controller
             ->where('is_active', 1)
             ->get();
         
-        // Get pending approvals (real-time, not filtered by date)
-        $pendingApprovals = RequestModel::whereHas('category', function($q) use ($expenseCategoryCodes) {
+        // Get pending approvals (real-time, not filtered by date).
+        // Pending approvals follow the same Qurbani silo as the rest
+        // of the page — Qurbani-only on the Qurbani tab, none on the
+        // regular tab.
+        $pendingApprovalsQuery = RequestModel::whereHas('category', function($q) use ($expenseCategoryCodes, $qurbaniMode) {
                 $q->whereIn('category_code', $expenseCategoryCodes);
+                if ($qurbaniMode) {
+                    $q->where('category_code', 'qurbani');
+                } else {
+                    $q->where('category_code', '!=', 'qurbani');
+                }
             })
             ->where('status', RequestModel::STATUS_PENDING)
             ->with(['requester', 'paymentSourceAccount', 'category'])
-            ->orderBy('created_at', 'asc')
-            ->get();
+            ->orderBy('created_at', 'asc');
+        if ($buFilter === 'NF' && $nfBuId) {
+            $pendingApprovalsQuery->where(function ($q) use ($nfBuId) {
+                $q->where('business_unit_id', $nfBuId)
+                  ->orWhereNull('business_unit_id');
+            });
+        } elseif ($buFilter === 'KHAAS' && $khaasBuId) {
+            $pendingApprovalsQuery->where('business_unit_id', $khaasBuId);
+        }
+        if (!$canViewKhaas && $khaasBuId) {
+            $pendingApprovalsQuery->where(function ($q) use ($khaasBuId) {
+                $q->where('business_unit_id', '!=', $khaasBuId)
+                  ->orWhereNull('business_unit_id');
+            });
+        }
+        $pendingApprovals = $pendingApprovalsQuery->get();
         
         // Calculate expense categories with user breakdown (matches mobile format)
         $expensesByCategory = [];
@@ -311,6 +426,80 @@ class ExpenseManagementController extends Controller
             ];
         }
         
+        // ── Phase 4: NF vs Khaas split for the Top Categories card ─
+        // Bucket every expense by business unit, and within each
+        // bucket re-build the same category → user drilldown
+        // structure so the existing card UI can render BU-first
+        // without any per-row server logic.
+        $buBreakdown = [
+            'NF'    => ['total' => 0.0, 'categories' => []],
+            'KHAAS' => ['total' => 0.0, 'categories' => []],
+        ];
+        $buUserMap = [
+            'NF'    => [],
+            'KHAAS' => [],
+        ];
+        foreach ($allExpenses as $expense) {
+            $expenseBuId = (int) ($expense->business_unit_id ?? 0);
+            $bu = ($khaasBuId && $expenseBuId === $khaasBuId) ? 'KHAAS' : 'NF';
+            // If user can't see Khaas, fold those rows away entirely
+            // (they were already filtered out of the listing query
+            // above, but we double-check here so the right-hand panel
+            // never leaks a Khaas row through aggregation).
+            if ($bu === 'KHAAS' && !$canViewKhaas) continue;
+
+            $catName = $expense->expense_category;
+            if (empty($catName) && $expense->category && $expense->category->category_code === 'salary_advance') {
+                $catName = 'Salary Advance';
+            } elseif (empty($catName)) {
+                $catName = 'Uncategorized';
+            }
+            $buBreakdown[$bu]['total'] += (float) $expense->amount;
+            if (!isset($buBreakdown[$bu]['categories'][$catName])) {
+                $buBreakdown[$bu]['categories'][$catName] = 0.0;
+            }
+            $buBreakdown[$bu]['categories'][$catName] += (float) $expense->amount;
+
+            $userName = $expense->requester ? $expense->requester->fullname : 'Unknown';
+            if (!isset($buUserMap[$bu][$catName])) $buUserMap[$bu][$catName] = [];
+            if (!isset($buUserMap[$bu][$catName][$userName])) $buUserMap[$bu][$catName][$userName] = 0.0;
+            $buUserMap[$bu][$catName][$userName] += (float) $expense->amount;
+        }
+        // Salary slips → always count under NF (no BU concept).
+        if ($totalSalaryExpenses > 0) {
+            $buBreakdown['NF']['total'] += (float) $totalSalaryExpenses;
+            if (!isset($buBreakdown['NF']['categories']['Salary'])) {
+                $buBreakdown['NF']['categories']['Salary'] = 0.0;
+            }
+            $buBreakdown['NF']['categories']['Salary'] += (float) $totalSalaryExpenses;
+            if (!isset($buUserMap['NF']['Salary'])) $buUserMap['NF']['Salary'] = [];
+            foreach ($salarySlips as $slip) {
+                $empName = $slip->employee ? $slip->employee->fullname : 'Unknown';
+                if (!isset($buUserMap['NF']['Salary'][$empName])) $buUserMap['NF']['Salary'][$empName] = 0.0;
+                $buUserMap['NF']['Salary'][$empName] += (float) $slip->net_salary;
+            }
+        }
+        // Sort each BU's categories desc + flatten to a [cat → ['total'=>x, 'users'=>...]]
+        // structure that the Blade template can render with the
+        // existing nested drill-down UI.
+        foreach ($buBreakdown as $bu => &$payload) {
+            arsort($payload['categories']);
+            $shaped = [];
+            foreach ($payload['categories'] as $catName => $catTotal) {
+                $usersInCat = $buUserMap[$bu][$catName] ?? [];
+                arsort($usersInCat);
+                $shaped[$catName] = [
+                    'total' => $catTotal,
+                    'users' => $usersInCat,
+                ];
+            }
+            $payload['categories'] = $shaped;
+        }
+        unset($payload);
+        if (!$canViewKhaas) {
+            unset($buBreakdown['KHAAS']);
+        }
+
         $kpis = [
             'total_expenses' => $totalExpenses,
             'from_expense_fund' => $fromExpenseFund,
@@ -322,7 +511,8 @@ class ExpenseManagementController extends Controller
             'pending_approvals_count' => $pendingApprovals->count(),
             'total_salary_expenses' => $totalSalaryExpenses, // For debugging/display
             'salary_slips_count' => $salarySlips->count(),
-            'top_categories' => $topCategories // Top 10 categories + others
+            'top_categories' => $topCategories, // Top 10 categories + others
+            'bu_breakdown' => $buBreakdown,     // Phase 4 — NF vs Khaas
         ];
         
         // ⭐ Get business units for expense form dropdown - filtered by user's access
@@ -358,7 +548,88 @@ class ExpenseManagementController extends Controller
         } catch (\Exception $e) {
             $requestTypes = collect([]);
         }
-        
+
+        // ── Qurbani-tab-only payload ───────────────────────────────
+        // Computed only when on the Qurbani tab so the regular tab
+        // pays no extra DB cost.
+        //
+        // May-2026 — switched from "delivered revenue" (status
+        // history dependent) to "booked revenue" (every non-cancelled
+        // qurbani order placed this year). Booked is then split into
+        // Paid / Pending using the order-level `total_paid` column
+        // that QurbaniWebController already trusts on the invoices
+        // page. This way the operator can plan around what the season
+        // is *committing* to bring in, not just what's already been
+        // delivered.
+        $qurbaniBooked = null;
+        $qurbaniPaid = null;
+        $qurbaniPending = null;
+        $qurbaniVendorPurchases = null;
+        $availableYears = null;
+        $currentYear = null;
+        if ($qurbaniMode) {
+            $currentYear = (int) date('Y', strtotime($dateFrom));
+
+            // Booked revenue base query — every non-cancelled qurbani
+            // order created this year, excluding shopify mirrors.
+            $bookedQuery = \DB::table('t_crm_prod_order as o')
+                ->whereRaw('YEAR(o.created_at) = ?', [$currentYear])
+                ->whereRaw("LOWER(COALESCE(o.order_status, '')) <> 'cancelled'")
+                ->where(function ($q) {
+                    $q->whereNull('o.external_source')
+                      ->orWhere('o.external_source', '!=', 'shopify');
+                });
+            QurbaniFinanceFilter::applyToOrderQuery($bookedQuery, 'o', QurbaniFinanceFilter::MODE_INCLUDE);
+            // Pull totals + paid in a single trip so the two numbers
+            // are guaranteed to come from the same row set.
+            $bookedTotals = $bookedQuery
+                ->selectRaw('COALESCE(SUM(o.total_price), 0) as booked, COALESCE(SUM(o.total_paid), 0) as paid')
+                ->first();
+            $qurbaniBooked  = (float) ($bookedTotals->booked ?? 0);
+            $qurbaniPaid    = (float) ($bookedTotals->paid ?? 0);
+            $qurbaniPending = max(0.0, $qurbaniBooked - $qurbaniPaid);
+
+            // Qurbani vendor purchases (per user's q1 — qurbani
+            // vendors are separated). Tied to a Qurbani request OR a
+            // Qurbani order via the canonical ledger filter.
+            $vendorQuery = \DB::table('t_fin_ledger as l')
+                ->where('l.transaction_type', 'vendor_purchase')
+                ->where('l.approval_status', 'approved')
+                ->whereRaw('DATE(l.transaction_date) >= ?', [$dateFrom])
+                ->whereRaw('DATE(l.transaction_date) <= ?', [$dateTo]);
+            QurbaniFinanceFilter::applyToLedgerQuery($vendorQuery, 'l', QurbaniFinanceFilter::MODE_INCLUDE);
+            $qurbaniVendorPurchases = (float) $vendorQuery->sum('l.amount');
+
+            // Year picker — list every year that has at least one
+            // qurbani-tagged order or request, plus the current
+            // year as a baseline.
+            $orderYears = \DB::table('t_crm_prod_order as o')
+                ->where(function ($q) {
+                    $q->whereNull('o.external_source')
+                      ->orWhere('o.external_source', '!=', 'shopify');
+                })
+                ->whereRaw("LOWER(COALESCE(o.order_status, '')) <> 'cancelled'");
+            QurbaniFinanceFilter::applyToOrderQuery($orderYears, 'o', QurbaniFinanceFilter::MODE_INCLUDE);
+            $orderYears = $orderYears
+                ->selectRaw('DISTINCT YEAR(o.created_at) as y')
+                ->pluck('y')
+                ->all();
+            $reqYears = \DB::table('t_req_master as r')
+                ->join('t_req_category as c', 'c.id', '=', 'r.category_id')
+                ->where('c.category_code', 'qurbani')
+                ->whereNotNull('r.ledger_transaction_id')
+                ->selectRaw('DISTINCT YEAR(COALESCE(r.expense_date, r.created_at)) as y')
+                ->pluck('y')
+                ->all();
+            $availableYears = collect(array_merge([(int) date('Y')], $orderYears, $reqYears))
+                ->filter(fn ($y) => is_numeric($y) && $y >= 2024 && $y <= 2099)
+                ->map(fn ($y) => (int) $y)
+                ->unique()
+                ->sortDesc()
+                ->values()
+                ->all();
+        }
+
         return view('fin.expense.index', compact(
             'allExpensesForDisplay',
             'allExpenses',
@@ -380,7 +651,16 @@ class ExpenseManagementController extends Controller
             'userDefaultBuId',
             'isTaimurRole',
             'requestTypes',
-            'requestType'
+            'requestType',
+            'qurbaniMode',
+            'qurbaniBooked',
+            'qurbaniPaid',
+            'qurbaniPending',
+            'qurbaniVendorPurchases',
+            'availableYears',
+            'currentYear',
+            'canViewKhaas',
+            'buFilter'
         ));
     }
     

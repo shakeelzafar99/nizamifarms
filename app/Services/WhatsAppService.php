@@ -478,6 +478,33 @@ class WhatsAppService
                 Log::debug('WhatsApp: Qurbani classify failed (non-fatal)', ['error' => $classifyErr->getMessage()]);
             }
 
+            // Phase 6 (May-2026) — Qurbani location-request reply linking.
+            // If this inbound message is a location pin, try to match it
+            // to an outstanding t_crm_qurbani_loc_request row so it shows
+            // up in the Reviewer drawer on the Orders page. We pass the
+            // conversation's customer_id as a SAFETY cross-check — the
+            // service refuses to link if it disagrees with the request's
+            // stored customer_id (prevents Customer B's pin landing on
+            // Customer A). Non-fatal on any error.
+            if ($type === 'location') {
+                try {
+                    app(\App\Services\QurbaniLocationRequestService::class)->recordReply(
+                        $msg['context']['id'] ?? null,
+                        $from,
+                        (float) ($msg['location']['latitude'] ?? 0),
+                        (float) ($msg['location']['longitude'] ?? 0),
+                        (string) ($msg['location']['name'] ?? ''),
+                        (string) ($msg['location']['address'] ?? ''),
+                        $conversation->customer_id ? (int) $conversation->customer_id : null,
+                        $waMessageId
+                    );
+                } catch (\Exception $locReqErr) {
+                    Log::debug('WhatsApp: QurbaniLocReq link failed (non-fatal)', [
+                        'error' => $locReqErr->getMessage(),
+                    ]);
+                }
+            }
+
             // NOTE: Read receipts are NO LONGER sent automatically on webhook
             // receipt. They are sent only when a team member actually reads the
             // message in the UI (web or mobile). This prevents customers from

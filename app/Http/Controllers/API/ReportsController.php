@@ -12,107 +12,324 @@ use Illuminate\Support\Facades\Log;
 class ReportsController extends Controller
 {
     /**
-     * Get Monthly Summary for the last 12 months
-     * Returns profit, invoices, expenses, vendor_purchases for each month
+     * Returns the SQL fragment that identifies a Qurbani order for
+     * use inside raw queries against `t_crm_prod_order`. Mirrors
+     * `QurbaniFinanceFilter::applyToOrderQuery` exactly so the
+     * Reports page reconciles with the Qurbani Expenses tab.
+     *
+     * @param string $alias Alias of the orders table, e.g. 'o'.
+     */
+    private function qurbaniOrderSqlClause(string $alias = 'o'): string
+    {
+        return "(
+            ($alias.qurbani_day IS NOT NULL OR $alias.qurbani_slot IS NOT NULL OR $alias.qurbani_region IS NOT NULL OR $alias.qurbani_delivery_type IS NOT NULL)
+            OR EXISTS (
+                SELECT 1 FROM t_crm_prod_order_line_item li
+                INNER JOIN t_crm_prod_product p ON p.id = li.product_id
+                WHERE li.order_id = $alias.id
+                  AND LOWER(COALESCE(p.attribute_1, '')) = 'qurbani'
+            )
+        )";
+    }
+
+    /**
+     * SQL fragment for Qurbani-tagged ledger rows. A row is Qurbani
+     * if its `request_id` resolves to a request whose category is
+     * 'qurbani' OR its `order_id` resolves to a Qurbani order.
+     */
+    private function qurbaniLedgerSqlClause(string $alias = ''): string
+    {
+        $a = $alias === '' ? '' : ($alias . '.');
+        $orderClause = $this->qurbaniOrderSqlClause('qord');
+        return "(
+            EXISTS (
+                SELECT 1 FROM t_req_master qr
+                INNER JOIN t_req_category qc ON qc.id = qr.category_id
+                WHERE qr.id = {$a}request_id AND qc.category_code = 'qurbani'
+            )
+            OR EXISTS (
+                SELECT 1 FROM t_crm_prod_order qord
+                WHERE qord.id = {$a}order_id AND $orderClause
+            )
+        )";
+    }
+
+    /**
+     * True if the current user can see Khaas figures in the report.
+     */
+    private function canViewKhaas(): bool
+    {
+        try {
+            $u = \Auth::user();
+            if (!$u) return false;
+            $u->load(['roles.mobilePermissions']);
+            $perms = method_exists($u, 'getMobilePermissions') ? $u->getMobilePermissions() : [];
+            return in_array('access_khaas_mode', $perms, true);
+        } catch (\Throwable $e) {
+            return false;
+        }
+    }
+
+    /**
+     * Resolve NF / Khaas business unit ids once per request. Returns
+     * `[nfBuId, khaasBuId]`. NULL business_unit_id is treated as NF
+     * downstream (legacy ledger rows pre-date the Khaas split).
+     *
+     * @return array{0:int,1:int}
+     */
+    private function buIds(): array
+    {
+        static $cached = null;
+        if ($cached !== null) return $cached;
+        $nf    = (int) (\App\Models\FIN\BusinessUnitModel::where('code', 'NF')->value('id') ?? 0);
+        $khaas = (int) (\App\Models\FIN\BusinessUnitModel::where('code', 'KHAAS')->value('id') ?? 0);
+        $cached = [$nf, $khaas];
+        return $cached;
+    }
+
+    /**
+     * Get Monthly Summary for the last N months.
+     *
+     * May-2026 (Phase 5) — the Monthly Reports payload now segregates
+     * Qurbani activity from the rest of the business and splits NF
+     * vs Khaas on both expenses and vendor purchases:
+     *
+     *   - `invoices` excludes Qurbani delivered orders (Qurbani is
+     *     an annual event with its own dedicated screen and rolling
+     *     it into a single month would distort the operating P&L).
+     *   - `expenses_nf` / `expenses_khaas` and
+     *     `vendor_purchases_nf` / `vendor_purchases_khaas` split by
+     *     `t_fin_ledger.business_unit_id` (NULL = NF).
+     *   - Khaas figures are zeroed out for users without
+     *     `access_khaas_mode`.
+     *   - `profit` = invoices − (NF+Khaas expenses) − (NF+Khaas
+     *     vendor purchases). Qurbani is intentionally NOT included.
+     *   - Per-year Qurbani totals are returned in `qurbani_yearly`
+     *     for the view to render a "Qurbani YYYY" header above
+     *     each year's months.
+     *
+     * Query param `months` controls the window length (default 12,
+     * max 60). Used by the "Load more years" button.
      */
     public function getMonthlySummary(Request $request)
     {
         try {
-            $months = [];
-            $date = Carbon::now()->startOfMonth();
-            
-            for ($i = 0; $i < 12; $i++) {
+            $months  = [];
+            $date    = Carbon::now()->startOfMonth();
+            $window  = (int) $request->input('months', 12);
+            if ($window < 1) $window = 12;
+            if ($window > 60) $window = 60;
+
+            $canViewKhaas         = $this->canViewKhaas();
+            [$nfBuId, $khaasBuId] = $this->buIds();
+            $qurbaniOrder         = $this->qurbaniOrderSqlClause('o');
+            $qurbaniLedger        = $this->qurbaniLedgerSqlClause();
+
+            // Track years that appear in the window — used after
+            // the loop to build the per-year Qurbani section. We
+            // do NOT compute Qurbani revenue/expense per-month here
+            // because Qurbani revenue is "booked" (based on order
+            // creation date) and Qurbani expenses are reported
+            // year-wide, not month-wide. Building from per-month
+            // buckets would also undercount if the user's window
+            // doesn't span a full year.
+            $yearsInWindow = [];
+
+            for ($i = 0; $i < $window; $i++) {
                 $startDate = $date->copy()->format('Y-m-d');
-                $endDate = $date->copy()->endOfMonth()->format('Y-m-d');
-                $monthKey = $date->format('Y-m');
+                $endDate   = $date->copy()->endOfMonth()->format('Y-m-d');
+                $monthKey  = $date->format('Y-m');
                 $monthName = $date->format('F Y');
-                
-            // Get delivered invoices for this month (using MIN delivery date like dashboard)
-            $invoiceData = DB::selectOne("
-                SELECT 
-                    COALESCE(SUM(o.total_price), 0) as total,
-                    COUNT(DISTINCT o.id) as count,
-                    COALESCE(SUM(CASE WHEN o.tip_amount > 0 THEN o.tip_amount ELSE 0 END), 0) as tips_total,
-                    COUNT(DISTINCT CASE WHEN o.tip_amount > 0 THEN o.id END) as tips_count
-                FROM t_crm_prod_order o
-                INNER JOIN (
-                    SELECT order_id, MIN(changed_at) as delivered_at 
-                    FROM t_crm_order_status_history 
-                    WHERE status_code = 'delivered' 
-                    GROUP BY order_id
-                ) h ON o.id = h.order_id
-                WHERE h.delivered_at >= ? AND h.delivered_at <= ?
-                AND (o.external_source IS NULL OR o.external_source != 'shopify')
-            ", [$startDate . ' 00:00:00', $endDate . ' 23:59:59']);
-                
-                // Get approved expenses for this month
+                $year      = (int) $date->format('Y');
+
+                // Invoices — non-Qurbani delivered orders this month.
+                // Qurbani delivered orders are aggregated separately
+                // into the "Qurbani YYYY" yearly section.
+                $invoiceData = DB::selectOne("
+                    SELECT
+                        COALESCE(SUM(o.total_price), 0) as total,
+                        COUNT(DISTINCT o.id) as count,
+                        COALESCE(SUM(CASE WHEN o.tip_amount > 0 THEN o.tip_amount ELSE 0 END), 0) as tips_total,
+                        COUNT(DISTINCT CASE WHEN o.tip_amount > 0 THEN o.id END) as tips_count
+                    FROM t_crm_prod_order o
+                    INNER JOIN (
+                        SELECT order_id, MIN(changed_at) as delivered_at
+                        FROM t_crm_order_status_history
+                        WHERE status_code = 'delivered'
+                        GROUP BY order_id
+                    ) h ON o.id = h.order_id
+                    WHERE h.delivered_at >= ? AND h.delivered_at <= ?
+                      AND (o.external_source IS NULL OR o.external_source != 'shopify')
+                      AND NOT $qurbaniOrder
+                ", [$startDate . ' 00:00:00', $endDate . ' 23:59:59']);
+
+                // Approved expenses, segregated into NF and Khaas
+                // (Qurbani is excluded entirely from the per-month
+                // bucket; it's computed separately per year after
+                // the loop). NULL business_unit_id counts as NF.
                 $expenseData = DB::selectOne("
-                    SELECT 
-                        COALESCE(SUM(amount), 0) as total,
-                        COUNT(*) as count
+                    SELECT
+                        COALESCE(SUM(CASE WHEN NOT $qurbaniLedger AND (business_unit_id IS NULL OR business_unit_id = ?) THEN amount ELSE 0 END), 0) as nf_total,
+                        COALESCE(SUM(CASE WHEN NOT $qurbaniLedger AND business_unit_id = ? THEN amount ELSE 0 END), 0) as khaas_total,
+                        SUM(CASE WHEN NOT $qurbaniLedger AND (business_unit_id IS NULL OR business_unit_id = ?) THEN 1 ELSE 0 END) as nf_count,
+                        SUM(CASE WHEN NOT $qurbaniLedger AND business_unit_id = ? THEN 1 ELSE 0 END) as khaas_count
                     FROM t_fin_ledger
                     WHERE transaction_date >= ? AND transaction_date <= ?
-                    AND transaction_type = ?
-                    AND approval_status = ?
-                ", [$startDate, $endDate, LedgerModel::TYPE_EXPENSE, LedgerModel::STATUS_APPROVED]);
-                
-                // Get approved vendor purchases for this month
+                      AND transaction_type = ?
+                      AND approval_status = ?
+                ", [$nfBuId, $khaasBuId, $nfBuId, $khaasBuId, $startDate, $endDate, LedgerModel::TYPE_EXPENSE, LedgerModel::STATUS_APPROVED]);
+
                 $purchaseData = DB::selectOne("
-                    SELECT 
-                        COALESCE(SUM(amount), 0) as total,
-                        COUNT(*) as count
+                    SELECT
+                        COALESCE(SUM(CASE WHEN NOT $qurbaniLedger AND (business_unit_id IS NULL OR business_unit_id = ?) THEN amount ELSE 0 END), 0) as nf_total,
+                        COALESCE(SUM(CASE WHEN NOT $qurbaniLedger AND business_unit_id = ? THEN amount ELSE 0 END), 0) as khaas_total,
+                        SUM(CASE WHEN NOT $qurbaniLedger AND (business_unit_id IS NULL OR business_unit_id = ?) THEN 1 ELSE 0 END) as nf_count,
+                        SUM(CASE WHEN NOT $qurbaniLedger AND business_unit_id = ? THEN 1 ELSE 0 END) as khaas_count
                     FROM t_fin_ledger
                     WHERE transaction_date >= ? AND transaction_date <= ?
-                    AND transaction_type = ?
-                    AND approval_status = ?
-                ", [$startDate, $endDate, LedgerModel::TYPE_VENDOR_PURCHASE, LedgerModel::STATUS_APPROVED]);
-                
-                // Get approved asset purchases for this month
+                      AND transaction_type = ?
+                      AND approval_status = ?
+                ", [$nfBuId, $khaasBuId, $nfBuId, $khaasBuId, $startDate, $endDate, LedgerModel::TYPE_VENDOR_PURCHASE, LedgerModel::STATUS_APPROVED]);
+
                 $assetData = DB::selectOne("
-                    SELECT 
+                    SELECT
                         COALESCE(SUM(amount), 0) as total,
                         COUNT(*) as count
                     FROM t_fin_ledger
                     WHERE transaction_date >= ? AND transaction_date <= ?
-                    AND transaction_type = 'asset_purchase'
-                    AND approval_status = ?
+                      AND transaction_type = 'asset_purchase'
+                      AND approval_status = ?
                 ", [$startDate, $endDate, LedgerModel::STATUS_APPROVED]);
-                
-                $invoices = round($invoiceData->total ?? 0, 2);
-                $expenses = round($expenseData->total ?? 0, 2);
-                $vendorPurchases = round($purchaseData->total ?? 0, 2);
+
+                $invoices       = round($invoiceData->total ?? 0, 2);
+                $expensesNf     = round($expenseData->nf_total ?? 0, 2);
+                $expensesKhaas  = $canViewKhaas ? round($expenseData->khaas_total ?? 0, 2) : 0.0;
+                $vendorNf       = round($purchaseData->nf_total ?? 0, 2);
+                $vendorKhaas    = $canViewKhaas ? round($purchaseData->khaas_total ?? 0, 2) : 0.0;
                 $assetPurchases = round($assetData->total ?? 0, 2);
-                // Note: Assets are capital expenditure, not deducted from operating profit
-                $profit = round($invoices - $expenses - $vendorPurchases, 2);
-                
+
+                $expensesTotal = $expensesNf + $expensesKhaas;
+                $vendorTotal   = $vendorNf + $vendorKhaas;
+                // Profit excludes Qurbani entirely on both legs so a
+                // single big Qurbani delivery month doesn't distort
+                // the operating-business P&L curve.
+                $profit = round($invoices - $expensesTotal - $vendorTotal, 2);
+
+                // Track which years appear in the window so we can
+                // build the Qurbani per-year section after the loop.
+                $yearsInWindow[$year] = true;
+
                 $months[] = [
-                    'month_key' => $monthKey,
-                    'month_name' => $monthName,
-                    'invoices' => $invoices,
-                    'invoice_count' => (int) ($invoiceData->count ?? 0),
-                    'tips' => round($invoiceData->tips_total ?? 0, 2),
-                    'tips_count' => (int) ($invoiceData->tips_count ?? 0),
-                    'expenses' => $expenses,
-                    'expense_count' => (int) ($expenseData->count ?? 0),
-                    'vendor_purchases' => $vendorPurchases,
-                    'vendor_purchase_count' => (int) ($purchaseData->count ?? 0),
-                    'asset_purchases' => $assetPurchases,
-                    'asset_purchase_count' => (int) ($assetData->count ?? 0),
-                    'profit' => $profit,
+                    'month_key'              => $monthKey,
+                    'month_name'             => $monthName,
+                    'year'                   => $year,
+                    'invoices'               => $invoices,
+                    'invoice_count'          => (int) ($invoiceData->count ?? 0),
+                    'tips'                   => round($invoiceData->tips_total ?? 0, 2),
+                    'tips_count'             => (int) ($invoiceData->tips_count ?? 0),
+                    // Phase 5 — split fields. `expenses` / `vendor_purchases` kept
+                    // for backward compatibility with old mobile clients.
+                    'expenses'               => round($expensesTotal, 2),
+                    'expense_count'          => (int) ($expenseData->nf_count ?? 0) + (int) ($expenseData->khaas_count ?? 0),
+                    'expenses_nf'            => $expensesNf,
+                    'expenses_khaas'         => $expensesKhaas,
+                    'expense_count_nf'       => (int) ($expenseData->nf_count ?? 0),
+                    'expense_count_khaas'    => (int) ($expenseData->khaas_count ?? 0),
+                    'vendor_purchases'       => round($vendorTotal, 2),
+                    'vendor_purchase_count'  => (int) ($purchaseData->nf_count ?? 0) + (int) ($purchaseData->khaas_count ?? 0),
+                    'vendor_purchases_nf'    => $vendorNf,
+                    'vendor_purchases_khaas' => $vendorKhaas,
+                    'asset_purchases'        => $assetPurchases,
+                    'asset_purchase_count'   => (int) ($assetData->count ?? 0),
+                    'profit'                 => $profit,
                 ];
-                
+
                 $date->subMonth();
             }
-            
+
+            // Build the Qurbani per-year section using direct
+            // year-scoped queries so the numbers reconcile 1-to-1
+            // with the dedicated Qurbani Expenses tab:
+            //   - Revenue = "booked" (every non-cancelled qurbani
+            //     order placed in the year), with a Paid / Pending
+            //     split from `t_crm_prod_order.total_paid`.
+            //   - Expenses & Vendor Purchases = full-year ledger
+            //     totals (regardless of whether the months window
+            //     covers the whole year).
+            $qurbaniYearly = [];
+            foreach (array_keys($yearsInWindow) as $year) {
+                $year      = (int) $year;
+                $yearStart = sprintf('%04d-01-01', $year);
+                $yearEnd   = sprintf('%04d-12-31', $year);
+
+                // Booked revenue + collection split.
+                $bookedQuery = DB::table('t_crm_prod_order as o')
+                    ->whereRaw('YEAR(o.created_at) = ?', [$year])
+                    ->whereRaw("LOWER(COALESCE(o.order_status, '')) <> 'cancelled'")
+                    ->where(function ($q) {
+                        $q->whereNull('o.external_source')
+                          ->orWhere('o.external_source', '!=', 'shopify');
+                    });
+                \App\Services\QurbaniFinanceFilter::applyToOrderQuery(
+                    $bookedQuery, 'o', \App\Services\QurbaniFinanceFilter::MODE_INCLUDE
+                );
+                $totals = $bookedQuery->selectRaw('COALESCE(SUM(o.total_price), 0) as booked, COALESCE(SUM(o.total_paid), 0) as paid')->first();
+                $booked  = (float) ($totals->booked ?? 0);
+                $paid    = (float) ($totals->paid ?? 0);
+                $pending = max(0.0, $booked - $paid);
+
+                // Full-year Qurbani expenses (ledger).
+                $expQuery = DB::table('t_fin_ledger as l')
+                    ->where('l.transaction_type', LedgerModel::TYPE_EXPENSE)
+                    ->where('l.approval_status', LedgerModel::STATUS_APPROVED)
+                    ->whereBetween('l.transaction_date', [$yearStart, $yearEnd]);
+                \App\Services\QurbaniFinanceFilter::applyToLedgerQuery(
+                    $expQuery, 'l', \App\Services\QurbaniFinanceFilter::MODE_INCLUDE
+                );
+                $qurbaniExp = (float) $expQuery->sum('l.amount');
+
+                // Full-year Qurbani vendor purchases (ledger).
+                $vQuery = DB::table('t_fin_ledger as l')
+                    ->where('l.transaction_type', LedgerModel::TYPE_VENDOR_PURCHASE)
+                    ->where('l.approval_status', LedgerModel::STATUS_APPROVED)
+                    ->whereBetween('l.transaction_date', [$yearStart, $yearEnd]);
+                \App\Services\QurbaniFinanceFilter::applyToLedgerQuery(
+                    $vQuery, 'l', \App\Services\QurbaniFinanceFilter::MODE_INCLUDE
+                );
+                $qurbaniVendor = (float) $vQuery->sum('l.amount');
+
+                $qurbaniYearly[] = [
+                    'year'             => $year,
+                    // `revenue` kept as alias for any consumer still
+                    // reading the legacy field; mirrors `booked`.
+                    'revenue'          => round($booked, 2),
+                    'booked'           => round($booked, 2),
+                    'paid'             => round($paid, 2),
+                    'pending'          => round($pending, 2),
+                    'paid_pct'         => $booked > 0 ? (int) round(($paid / $booked) * 100) : 0,
+                    'expenses'         => round($qurbaniExp, 2),
+                    'vendor_purchases' => round($qurbaniVendor, 2),
+                    // Net is computed off Booked (committed revenue
+                    // for the season) so the headline matches the
+                    // Qurbani Expenses tab Net.
+                    'net'              => round($booked - $qurbaniExp - $qurbaniVendor, 2),
+                ];
+            }
+            // Newest year first.
+            usort($qurbaniYearly, fn ($a, $b) => $b['year'] <=> $a['year']);
+
             return response()->json([
-                'success' => true,
-                'data' => $months,
+                'success'         => true,
+                'data'            => $months,
+                'months_returned' => $window,
+                'can_view_khaas'  => $canViewKhaas,
+                'qurbani_yearly'  => $qurbaniYearly,
             ]);
         } catch (\Exception $e) {
             Log::error('Monthly summary error: ' . $e->getMessage());
             return response()->json([
                 'success' => false,
-                'error' => $e->getMessage(),
+                'error'   => $e->getMessage(),
             ], 500);
         }
     }
@@ -127,24 +344,32 @@ class ReportsController extends Controller
             $monthKey = $request->get('month', Carbon::now()->format('Y-m'));
             $startDate = Carbon::parse($monthKey . '-01')->startOfMonth();
             $endDate = $startDate->copy()->endOfMonth();
-            
-            // Get invoices grouped by delivery date (using MIN delivery date like dashboard)
+
+            // Phase 5 — drill-down also excludes Qurbani so it
+            // reconciles 1-to-1 with the monthly summary card.
+            $qurbaniOrder  = $this->qurbaniOrderSqlClause('o');
+            $qurbaniLedger = $this->qurbaniLedgerSqlClause('l');
+            $canViewKhaas         = $this->canViewKhaas();
+            [$nfBuId, $khaasBuId] = $this->buIds();
+
+            // Get invoices grouped by delivery date (excluding Qurbani).
             $invoicesRaw = DB::select("
-                SELECT 
+                SELECT
                     DATE(h.delivered_at) as delivery_date,
                     o.order_number,
                     CONCAT(c.first_name, ' ', c.last_name) as customer_name,
                     o.total_price as amount
                 FROM t_crm_prod_order o
                 INNER JOIN (
-                    SELECT order_id, MIN(changed_at) as delivered_at 
-                    FROM t_crm_order_status_history 
-                    WHERE status_code = 'delivered' 
+                    SELECT order_id, MIN(changed_at) as delivered_at
+                    FROM t_crm_order_status_history
+                    WHERE status_code = 'delivered'
                     GROUP BY order_id
                 ) h ON o.id = h.order_id
                 LEFT JOIN t_crm_prod_customer c ON o.customer_id = c.id
                 WHERE h.delivered_at >= ? AND h.delivered_at <= ?
-                AND (o.external_source IS NULL OR o.external_source != 'shopify')
+                  AND (o.external_source IS NULL OR o.external_source != 'shopify')
+                  AND NOT $qurbaniOrder
                 ORDER BY h.delivered_at DESC
             ", [$startDate->format('Y-m-d 00:00:00'), $endDate->format('Y-m-d 23:59:59')]);
             
@@ -167,9 +392,9 @@ class ReportsController extends Controller
                 $invoiceCount++;
             }
             
-            // Get tips from delivered invoices (only orders with tip_amount > 0)
+            // Get tips from delivered invoices (excluding Qurbani).
             $tipsRaw = DB::select("
-                SELECT 
+                SELECT
                     DATE(h.delivered_at) as delivery_date,
                     o.order_number,
                     o.tip_amount,
@@ -178,16 +403,17 @@ class ReportsController extends Controller
                     r.fullname as rider_name
                 FROM t_crm_prod_order o
                 INNER JOIN (
-                    SELECT order_id, MIN(changed_at) as delivered_at 
-                    FROM t_crm_order_status_history 
-                    WHERE status_code = 'delivered' 
+                    SELECT order_id, MIN(changed_at) as delivered_at
+                    FROM t_crm_order_status_history
+                    WHERE status_code = 'delivered'
                     GROUP BY order_id
                 ) h ON o.id = h.order_id
                 LEFT JOIN t_crm_prod_customer c ON o.customer_id = c.id
                 LEFT JOIN t_sys_user r ON o.assigned_rider_user_id = r.id
                 WHERE h.delivered_at >= ? AND h.delivered_at <= ?
-                AND (o.external_source IS NULL OR o.external_source != 'shopify')
-                AND o.tip_amount > 0
+                  AND (o.external_source IS NULL OR o.external_source != 'shopify')
+                  AND o.tip_amount > 0
+                  AND NOT $qurbaniOrder
                 ORDER BY h.delivered_at DESC
             ", [$startDate->format('Y-m-d 00:00:00'), $endDate->format('Y-m-d 23:59:59')]);
             
@@ -207,34 +433,45 @@ class ReportsController extends Controller
                 $tipsCount++;
             }
             
-            // Get expenses grouped by transaction date with user and category
+            // Get expenses grouped by transaction date with user, category and BU.
+            // Phase 5 — excludes Qurbani; tags each row with `bu_code`
+            // (NF / KHAAS) so the drill-down can show the split too.
             $expensesRaw = DB::select("
-                SELECT 
+                SELECT
                     l.transaction_date,
                     l.description,
                     l.amount,
                     u.fullname as created_by,
                     a.account_name as category,
-                    DATE(l.created_at) as entry_date
+                    DATE(l.created_at) as entry_date,
+                    COALESCE(bu.code, 'NF') as bu_code,
+                    l.business_unit_id
                 FROM t_fin_ledger l
                 LEFT JOIN t_sys_user u ON l.created_by = u.id
                 LEFT JOIN t_fin_accounts a ON l.to_account_id = a.id
+                LEFT JOIN t_fin_business_units bu ON l.business_unit_id = bu.id
                 WHERE l.transaction_date >= ? AND l.transaction_date <= ?
-                AND l.transaction_type = ?
-                AND l.approval_status = ?
+                  AND l.transaction_type = ?
+                  AND l.approval_status = ?
+                  AND NOT $qurbaniLedger
                 ORDER BY l.transaction_date DESC
             ", [$startDate->format('Y-m-d'), $endDate->format('Y-m-d'), LedgerModel::TYPE_EXPENSE, LedgerModel::STATUS_APPROVED]);
-            
-            // Group expenses by date
+
+            // Group expenses by date with NF/Khaas split per day.
             $expensesByDate = [];
             $expenseTotal = 0;
             $expenseCount = 0;
+            $expensesNfTotal    = 0;
+            $expensesKhaasTotal = 0;
             foreach ($expensesRaw as $exp) {
+                $isKhaas = ((int) ($exp->business_unit_id ?? 0)) === $khaasBuId;
+                if ($isKhaas && !$canViewKhaas) {
+                    continue; // hide Khaas rows for users without access
+                }
                 $date = $exp->transaction_date;
                 if (!isset($expensesByDate[$date])) {
-                    $expensesByDate[$date] = ['date' => $date, 'items' => [], 'total' => 0];
+                    $expensesByDate[$date] = ['date' => $date, 'items' => [], 'total' => 0, 'total_nf' => 0, 'total_khaas' => 0];
                 }
-                // Extract category from account name (e.g., "Expense - Fuel" -> "Fuel")
                 $category = $exp->category;
                 if ($category && strpos($category, 'Expense - ') === 0) {
                     $category = substr($category, 10);
@@ -245,40 +482,57 @@ class ReportsController extends Controller
                     'user' => $exp->created_by ?? 'Unknown',
                     'category' => $category ?? 'Uncategorized',
                     'entry_date' => $exp->entry_date,
+                    'bu_code' => $exp->bu_code,
                 ];
                 $expensesByDate[$date]['total'] += $exp->amount;
+                if ($isKhaas) {
+                    $expensesByDate[$date]['total_khaas'] += $exp->amount;
+                    $expensesKhaasTotal += $exp->amount;
+                } else {
+                    $expensesByDate[$date]['total_nf'] += $exp->amount;
+                    $expensesNfTotal += $exp->amount;
+                }
                 $expenseTotal += $exp->amount;
                 $expenseCount++;
             }
             
-            // Get vendor purchases grouped by transaction date with vendor name
+            // Get vendor purchases grouped by date (excluding Qurbani),
+            // tagged with NF/KHAAS bu_code for the drill-down split.
             $purchasesRaw = DB::select("
-                SELECT 
+                SELECT
                     l.transaction_date,
                     l.description,
                     l.amount,
                     u.fullname as created_by,
                     a.account_name as vendor_name,
-                    DATE(l.created_at) as entry_date
+                    DATE(l.created_at) as entry_date,
+                    COALESCE(bu.code, 'NF') as bu_code,
+                    l.business_unit_id
                 FROM t_fin_ledger l
                 LEFT JOIN t_sys_user u ON l.created_by = u.id
                 LEFT JOIN t_fin_accounts a ON l.to_account_id = a.id
+                LEFT JOIN t_fin_business_units bu ON l.business_unit_id = bu.id
                 WHERE l.transaction_date >= ? AND l.transaction_date <= ?
-                AND l.transaction_type = ?
-                AND l.approval_status = ?
+                  AND l.transaction_type = ?
+                  AND l.approval_status = ?
+                  AND NOT $qurbaniLedger
                 ORDER BY l.transaction_date DESC
             ", [$startDate->format('Y-m-d'), $endDate->format('Y-m-d'), LedgerModel::TYPE_VENDOR_PURCHASE, LedgerModel::STATUS_APPROVED]);
-            
-            // Group vendor purchases by date
+
             $purchasesByDate = [];
             $purchaseTotal = 0;
             $purchaseCount = 0;
+            $vendorNfTotal    = 0;
+            $vendorKhaasTotal = 0;
             foreach ($purchasesRaw as $vp) {
+                $isKhaas = ((int) ($vp->business_unit_id ?? 0)) === $khaasBuId;
+                if ($isKhaas && !$canViewKhaas) {
+                    continue;
+                }
                 $date = $vp->transaction_date;
                 if (!isset($purchasesByDate[$date])) {
-                    $purchasesByDate[$date] = ['date' => $date, 'items' => [], 'total' => 0];
+                    $purchasesByDate[$date] = ['date' => $date, 'items' => [], 'total' => 0, 'total_nf' => 0, 'total_khaas' => 0];
                 }
-                // Extract vendor name (e.g., "Vendor - ABC Farms" -> "ABC Farms")
                 $vendorName = $vp->vendor_name;
                 if ($vendorName && strpos($vendorName, 'Vendor - ') === 0) {
                     $vendorName = substr($vendorName, 9);
@@ -289,8 +543,16 @@ class ReportsController extends Controller
                     'user' => $vp->created_by ?? 'Unknown',
                     'vendor_name' => $vendorName ?? 'Unknown Vendor',
                     'entry_date' => $vp->entry_date,
+                    'bu_code' => $vp->bu_code,
                 ];
                 $purchasesByDate[$date]['total'] += $vp->amount;
+                if ($isKhaas) {
+                    $purchasesByDate[$date]['total_khaas'] += $vp->amount;
+                    $vendorKhaasTotal += $vp->amount;
+                } else {
+                    $purchasesByDate[$date]['total_nf'] += $vp->amount;
+                    $vendorNfTotal += $vp->amount;
+                }
                 $purchaseTotal += $vp->amount;
                 $purchaseCount++;
             }
@@ -344,6 +606,7 @@ class ReportsController extends Controller
                 'data' => [
                     'month_name' => $startDate->format('F Y'),
                     'profit' => round($invoiceTotal - $expenseTotal - $purchaseTotal, 2),
+                    'can_view_khaas' => $canViewKhaas,
                     'invoices' => [
                         'total' => round($invoiceTotal, 2),
                         'count' => $invoiceCount,
@@ -356,11 +619,15 @@ class ReportsController extends Controller
                     ],
                     'expenses' => [
                         'total' => round($expenseTotal, 2),
+                        'total_nf' => round($expensesNfTotal, 2),
+                        'total_khaas' => round($expensesKhaasTotal, 2),
                         'count' => $expenseCount,
                         'by_date' => array_values($expensesByDate),
                     ],
                     'vendor_purchases' => [
                         'total' => round($purchaseTotal, 2),
+                        'total_nf' => round($vendorNfTotal, 2),
+                        'total_khaas' => round($vendorKhaasTotal, 2),
                         'count' => $purchaseCount,
                         'by_date' => array_values($purchasesByDate),
                     ],

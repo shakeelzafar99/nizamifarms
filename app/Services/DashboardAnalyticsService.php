@@ -404,17 +404,28 @@ class DashboardAnalyticsService
      */
     public function getMonthlyLedgerAnalytics($months = 12)
     {
-        $cacheKey = "monthly_delivered_orders_v7_{$months}";
-        
+        // v8 — May-2026 Phase 6: monthly chart now excludes Qurbani
+        // orders + Qurbani-tagged ledger rows so it agrees with the
+        // Monthly Reports tab. Bumping the cache key version forces
+        // a fresh recompute everywhere this is consumed.
+        $cacheKey = "monthly_delivered_orders_v8_{$months}";
+
         return Cache::remember($cacheKey, 600, function () use ($months) {
             $endDate = Carbon::now()->endOfMonth();
             $startDate = $endDate->copy()->subMonths($months)->startOfMonth();
-            
-            // PRIMARY SOURCE: Delivered orders grouped by delivery date
-            // Payment method from order, customer type from customer table
+
+            // PRIMARY SOURCE: Delivered orders grouped by delivery date.
+            // Qurbani orders are stripped here (and from the ledger
+            // query below) so the dashboard P&L curve doesn't get a
+            // once-a-year "spike" that drowns the regular months.
             $data = DB::table('t_crm_prod_order as o')
                 ->join(DB::raw('(SELECT order_id, MIN(changed_at) as delivered_at FROM t_crm_order_status_history WHERE status_code = "delivered" GROUP BY order_id) as h'), 'o.id', '=', 'h.order_id')
                 ->leftJoin('t_crm_prod_customer as c', 'o.customer_id', '=', 'c.id')
+                ->tap(function ($q) {
+                    \App\Services\QurbaniFinanceFilter::applyToOrderQuery(
+                        $q, 'o', \App\Services\QurbaniFinanceFilter::MODE_EXCLUDE
+                    );
+                })
                 ->select(
                     DB::raw("DATE_FORMAT(h.delivered_at, '%Y-%m') as month_key"),
                     DB::raw("DATE_FORMAT(h.delivered_at, '%b %Y') as month_name"),
@@ -449,8 +460,15 @@ class DashboardAnalyticsService
                 ->orderBy('month_key')
                 ->get();
             
-            // Get expenses, vendor purchases, and vendor payments (these use transaction_date)
+            // Get expenses, vendor purchases, and vendor payments (these use transaction_date).
+            // Phase 6 — Qurbani-tagged rows excluded so the chart's
+            // expense/vendor curves drop Qurbani too.
             $financialData = DB::table('t_fin_ledger')
+                ->tap(function ($q) {
+                    \App\Services\QurbaniFinanceFilter::applyToLedgerQuery(
+                        $q, 't_fin_ledger', \App\Services\QurbaniFinanceFilter::MODE_EXCLUDE
+                    );
+                })
                 ->select(
                     DB::raw("DATE_FORMAT(transaction_date, '%Y-%m') as month_key"),
                     DB::raw("SUM(CASE WHEN transaction_type = 'expense' AND approval_status = 'approved' THEN amount ELSE 0 END) as expense_total"),
@@ -1128,6 +1146,8 @@ class DashboardAnalyticsService
         // Get ALL delivered invoices DIRECTLY from orders (not ledger to avoid duplications)
         // USES DELIVERY DATE from order status history
         // Payment method comes from ORDER's payment_method field
+        // Phase 6 — Qurbani orders excluded so dashboard "monthly
+        // profit" matches the Reports tab definition exactly.
         $invoiceData = DB::table('t_crm_prod_order as o')
             ->join(DB::raw('(SELECT order_id, MIN(changed_at) as delivered_at FROM t_crm_order_status_history WHERE status_code = "delivered" GROUP BY order_id) as h'), 'o.id', '=', 'h.order_id')
             ->leftJoin('t_fin_ledger as l', function($join) {
@@ -1140,6 +1160,11 @@ class DashboardAnalyticsService
                   ->orWhereNull('o.external_source');
             })
             ->whereBetween('h.delivered_at', [$startDate->format('Y-m-d 00:00:00'), $endDate->format('Y-m-d 23:59:59')])
+            ->tap(function ($q) {
+                \App\Services\QurbaniFinanceFilter::applyToOrderQuery(
+                    $q, 'o', \App\Services\QurbaniFinanceFilter::MODE_EXCLUDE
+                );
+            })
             ->selectRaw("
                 o.payment_method,
                 COALESCE(l.approval_status, 'pending') as approval_status,
@@ -1214,27 +1239,44 @@ class DashboardAnalyticsService
             }
         }
         
-        // Expenses - only approved (use whereDate for DATE column comparison)
+        // Phase 6 — operational expenses/vendor purchases shown on
+        // dashboard top cards exclude Qurbani so the dashboard
+        // profit reconciles 1-to-1 with the Reports tab. Vendor
+        // payments are also Qurbani-stripped for the same reason
+        // (cash-flow widget elsewhere).
         $expenses = LedgerModel::whereDate('transaction_date', '>=', $startDate->format('Y-m-d'))
             ->whereDate('transaction_date', '<=', $endDate->format('Y-m-d'))
             ->where('transaction_type', LedgerModel::TYPE_EXPENSE)
             ->where('approval_status', LedgerModel::STATUS_APPROVED)
+            ->tap(function ($q) {
+                \App\Services\QurbaniFinanceFilter::applyToLedgerQuery(
+                    $q, 't_fin_ledger', \App\Services\QurbaniFinanceFilter::MODE_EXCLUDE
+                );
+            })
             ->selectRaw('SUM(amount) as total, COUNT(*) as count')
             ->first();
-        
-        // Vendor Payments - only approved (use whereDate for DATE column comparison)
+
         $vendorPayments = LedgerModel::whereDate('transaction_date', '>=', $startDate->format('Y-m-d'))
             ->whereDate('transaction_date', '<=', $endDate->format('Y-m-d'))
             ->where('transaction_type', LedgerModel::TYPE_VENDOR_PAYMENT)
             ->where('approval_status', LedgerModel::STATUS_APPROVED)
+            ->tap(function ($q) {
+                \App\Services\QurbaniFinanceFilter::applyToLedgerQuery(
+                    $q, 't_fin_ledger', \App\Services\QurbaniFinanceFilter::MODE_EXCLUDE
+                );
+            })
             ->selectRaw('SUM(amount) as total, COUNT(*) as count')
             ->first();
-        
-        // Vendor Purchases - only approved (use whereDate for DATE column comparison)
+
         $vendorPurchases = LedgerModel::whereDate('transaction_date', '>=', $startDate->format('Y-m-d'))
             ->whereDate('transaction_date', '<=', $endDate->format('Y-m-d'))
             ->where('transaction_type', LedgerModel::TYPE_VENDOR_PURCHASE)
             ->where('approval_status', LedgerModel::STATUS_APPROVED)
+            ->tap(function ($q) {
+                \App\Services\QurbaniFinanceFilter::applyToLedgerQuery(
+                    $q, 't_fin_ledger', \App\Services\QurbaniFinanceFilter::MODE_EXCLUDE
+                );
+            })
             ->selectRaw('SUM(amount) as total, COUNT(*) as count')
             ->first();
         

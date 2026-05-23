@@ -1269,6 +1269,11 @@ class QurbaniWebController extends Controller
         $rows = $itemsQuery->select([
                 'li.id as line_item_id',
                 'li.order_id',
+                // Phase 6 (May-2026) — surfaced so the Orders page JS can
+                // index per-customer state (currently used by the
+                // location-request per-card button to look up the latest
+                // request status without an extra round-trip).
+                'c.id as customer_id',
                 'o.order_number',
                 'o.order_status',
                 'o.order_date',
@@ -1415,6 +1420,10 @@ class QurbaniWebController extends Controller
             $items[] = [
                 'line_item_id'       => (int) $r->line_item_id,
                 'order_id'           => (int) $r->order_id,
+                // Phase 6 (May-2026) — passed through so the page JS
+                // can wire per-customer state (location-request status
+                // pill on the per-card Request Location button).
+                'customer_id'        => $r->customer_id ? (int) $r->customer_id : null,
                 'order_number'       => $r->order_number,
                 'order_status'       => $r->order_status,
                 'customer_name'      => trim($r->customer_name) ?: 'Unknown',

@@ -194,10 +194,27 @@ document.addEventListener('DOMContentLoaded', function() {
             $hasQurbaniRequestType = false;
         }
     @endphp
-    <div class="flex items-center justify-between mb-6">
+    @php
+        $qurbaniMode    = isset($qurbaniMode) ? (bool) $qurbaniMode : false;
+        $availableYears = $availableYears ?? null;
+        $currentYear    = $currentYear ?? null;
+    @endphp
+    <div class="flex items-center justify-between mb-3">
         <div>
-            <h1 class="text-2xl font-bold text-gray-900">💰 Expense Management</h1>
-            <p class="text-sm text-gray-600 mt-1">Track all expenses and manage requests</p>
+            <h1 class="text-2xl font-bold text-gray-900">
+                @if($qurbaniMode)
+                    🐐 Qurbani Expenses
+                @else
+                    💰 Expense Management
+                @endif
+            </h1>
+            <p class="text-sm text-gray-600 mt-1">
+                @if($qurbaniMode)
+                    Year-accumulating view of Qurbani spend &amp; revenue · regular expenses live on the other tab
+                @else
+                    Track all expenses and manage requests
+                @endif
+            </p>
         </div>
         <div class="flex items-center gap-2">
             @if($hasQurbaniRequestType)
@@ -215,6 +232,88 @@ document.addEventListener('DOMContentLoaded', function() {
             </button>
         </div>
     </div>
+
+    {{-- May-2026 (Phase 3) — Regular vs Qurbani tabs. Both routes
+         render this same view; the controller flips $qurbaniMode and
+         narrows the data accordingly. --}}
+    <div class="flex items-center gap-1 border-b border-gray-200 mb-4">
+        <a href="{{ route('fin.expenses.index') }}"
+           class="px-4 py-2 text-sm font-semibold rounded-t-md border-b-2 -mb-[2px] {{ $qurbaniMode ? 'text-gray-500 border-transparent hover:text-gray-700 hover:border-gray-300' : 'text-blue-700 border-blue-600 bg-blue-50' }}">
+            📊 Regular Expenses
+        </a>
+        <a href="{{ route('fin.expenses.qurbani') }}"
+           class="px-4 py-2 text-sm font-semibold rounded-t-md border-b-2 -mb-[2px] {{ $qurbaniMode ? 'text-amber-800 border-amber-600 bg-amber-50' : 'text-gray-500 border-transparent hover:text-gray-700 hover:border-gray-300' }}">
+            🐐 Qurbani Expenses
+        </a>
+    </div>
+
+    @if($qurbaniMode)
+        @php
+            $qBooked  = $qurbaniBooked  ?? 0;
+            $qPaid    = $qurbaniPaid    ?? 0;
+            $qPending = $qurbaniPending ?? 0;
+            $paidPct  = $qBooked > 0 ? round(($qPaid / $qBooked) * 100) : 0;
+        @endphp
+        <div class="grid grid-cols-1 lg:grid-cols-4 gap-3 mb-4">
+            <div class="bg-white border border-gray-200 rounded-lg p-3">
+                <div class="text-xs text-gray-500 uppercase font-medium">📅 Year</div>
+                <form method="get" action="{{ route('fin.expenses.qurbani') }}" class="mt-1">
+                    <select name="year" onchange="this.form.submit()"
+                            class="w-full border border-gray-300 rounded-md px-2 py-1.5 text-sm font-semibold focus:outline-none focus:ring-2 focus:ring-amber-500">
+                        @foreach(($availableYears ?: [(int) date('Y')]) as $y)
+                            <option value="{{ $y }}" {{ ($currentYear ?? (int) date('Y')) === (int) $y ? 'selected' : '' }}>
+                                {{ $y }}
+                            </option>
+                        @endforeach
+                    </select>
+                </form>
+                <div class="text-xs text-gray-500 mt-1">All Qurbani activity for selected year</div>
+            </div>
+            {{-- Booked revenue card — every non-cancelled qurbani
+                 order placed this year, with a Paid / Pending split
+                 driven by `t_crm_prod_order.total_paid`. The thin
+                 progress bar at the bottom mirrors the same ratio so
+                 the operator can scan collection health at a glance. --}}
+            <div class="bg-emerald-50 border border-emerald-300 rounded-lg p-3">
+                <div class="text-xs text-emerald-700 uppercase font-medium">🧾 Booked Revenue</div>
+                <div class="text-lg font-bold text-emerald-900 mt-1">Rs. {{ number_format($qBooked, 2) }}</div>
+                <div class="flex items-center justify-between text-xs mt-1">
+                    <span class="text-emerald-700 font-semibold">✅ Paid Rs. {{ number_format($qPaid, 0) }}</span>
+                    <span class="text-amber-700 font-semibold">⏳ Pending Rs. {{ number_format($qPending, 0) }}</span>
+                </div>
+                <div class="mt-1.5 h-1.5 w-full bg-emerald-200 rounded-full overflow-hidden">
+                    <div class="h-full bg-emerald-600" style="width: {{ $paidPct }}%"></div>
+                </div>
+                <div class="text-[10px] text-emerald-700 mt-1">{{ $paidPct }}% collected · non-cancelled orders</div>
+            </div>
+            <div class="bg-rose-50 border border-rose-300 rounded-lg p-3">
+                <div class="text-xs text-rose-700 uppercase font-medium">💸 Qurbani Expenses</div>
+                <div class="text-lg font-bold text-rose-900 mt-1">
+                    Rs. {{ number_format($kpis['total_expenses'] ?? 0, 2) }}
+                </div>
+                <div class="text-xs text-rose-600 mt-1">{{ $allExpenses->count() }} approved request(s)</div>
+            </div>
+            <div class="bg-amber-50 border border-amber-300 rounded-lg p-3">
+                <div class="text-xs text-amber-700 uppercase font-medium">🛒 Vendor Purchases</div>
+                <div class="text-lg font-bold text-amber-900 mt-1">
+                    Rs. {{ number_format(($qurbaniVendorPurchases ?? 0), 2) }}
+                </div>
+                <div class="text-xs text-amber-600 mt-1">Tied to Qurbani orders / requests</div>
+            </div>
+        </div>
+        @php
+            $qurbaniNet = $qBooked - ($kpis['total_expenses'] ?? 0) - ($qurbaniVendorPurchases ?? 0);
+        @endphp
+        <div class="bg-gradient-to-r from-amber-100 to-orange-100 border border-amber-300 rounded-lg p-3 mb-4 flex items-center justify-between">
+            <div>
+                <div class="text-xs text-amber-800 uppercase font-semibold">📈 Qurbani Net (Booked − Expenses − Vendor)</div>
+                <div class="text-xs text-amber-700">Headline for Qurbani {{ $currentYear }} · Pending Rs. {{ number_format($qPending, 0) }} still to collect</div>
+            </div>
+            <div class="text-2xl font-extrabold {{ $qurbaniNet >= 0 ? 'text-emerald-700' : 'text-rose-700' }}">
+                Rs. {{ number_format($qurbaniNet, 2) }}
+            </div>
+        </div>
+    @endif
 
     <!-- KPI Cards - Redesigned Layout: 4 cards (2x2) on left, 1 large card on right -->
     @php
@@ -281,44 +380,139 @@ document.addEventListener('DOMContentLoaded', function() {
                 <span class="text-xs text-purple-600">Click to filter · ▶ to expand</span>
             </div>
             <div class="space-y-1 max-h-[260px] overflow-y-auto" id="categoriesList">
-                @foreach($kpis['top_categories'] ?? [] as $cat => $catData)
-                    @php
-                        $catTotal = is_array($catData) ? ($catData['total'] ?? 0) : $catData;
-                        $catUsers = is_array($catData) ? ($catData['users'] ?? []) : [];
-                        $hasUsers = count($catUsers) > 0;
-                        $catId = 'cat_' . md5($cat);
-                    @endphp
-                    <div>
-                        <div class="flex items-center p-2 bg-white rounded hover:bg-purple-100 transition-colors border border-transparent hover:border-purple-300 group">
-                            @if($hasUsers)
-                                <button type="button" onclick="toggleCategory('{{ $catId }}')" class="w-5 h-5 flex items-center justify-center text-gray-400 hover:text-purple-600 mr-1 flex-shrink-0 transition-transform" id="toggle_{{ $catId }}">
-                                    ▶
+                @php
+                    // Phase 4 — when both BUs are present, render a
+                    // BU-first drill (NF / Khaas) above the legacy
+                    // category list. The legacy list is hidden inside
+                    // each BU group so behaviour is identical: click
+                    // BU → expand → see categories → click cat → see
+                    // users. The Khaas group disappears entirely if
+                    // the user lacks access_khaas_mode (controller
+                    // already strips it from $kpis['bu_breakdown']).
+                    $buBreakdown = $kpis['bu_breakdown'] ?? [];
+                    $buMeta = [
+                        'NF'    => ['label' => 'NF Expenses',    'emoji' => '📦', 'tint' => 'blue'],
+                        'KHAAS' => ['label' => 'Khaas Expenses', 'emoji' => '🌿', 'tint' => 'emerald'],
+                    ];
+                    $hasBuSplit = count(array_filter($buBreakdown, fn($p) => ($p['total'] ?? 0) > 0)) >= 1;
+                    $activeBu = $buFilter ?? null;
+                @endphp
+
+                @if($hasBuSplit)
+                    @foreach($buBreakdown as $buCode => $buPayload)
+                        @if(($buPayload['total'] ?? 0) <= 0 && empty($buPayload['categories']))
+                            @continue
+                        @endif
+                        @php
+                            $meta = $buMeta[$buCode] ?? ['label' => $buCode, 'emoji' => '•', 'tint' => 'gray'];
+                            $buId = 'bu_' . $buCode;
+                            // Default-expand the active drilled BU so the
+                            // user lands on it after clicking. Otherwise
+                            // collapsed.
+                            $expanded = $activeBu === $buCode;
+                        @endphp
+                        <div class="mb-1 border border-{{ $meta['tint'] }}-200 rounded">
+                            <div class="flex items-center p-2 bg-{{ $meta['tint'] }}-50 hover:bg-{{ $meta['tint'] }}-100 transition-colors">
+                                <button type="button" onclick="toggleCategory('{{ $buId }}')" class="w-5 h-5 flex items-center justify-center text-{{ $meta['tint'] }}-700 mr-1 flex-shrink-0" id="toggle_{{ $buId }}">
+                                    {{ $expanded ? '▼' : '▶' }}
                                 </button>
-                            @else
-                                <span class="w-5 mr-1 flex-shrink-0"></span>
-                            @endif
-                            <span class="text-xs font-medium text-gray-700 truncate mr-2 flex-1 cursor-pointer" onclick="filterByCategory('{{ $cat }}')">{{ $cat }}</span>
-                            <span class="text-xs font-bold text-purple-900 whitespace-nowrap">Rs. {{ number_format($catTotal, 0) }}</span>
-                        </div>
-                        @if($hasUsers)
-                            <div id="{{ $catId }}" class="hidden ml-6 mb-1 pl-2 border-l-2 border-purple-200">
-                                @foreach($catUsers as $userName => $userAmount)
-                                    <div class="flex items-center justify-between py-1 px-2 hover:bg-purple-50 rounded cursor-pointer" onclick="filterByEmployee('{{ $userName }}')">
-                                        <span class="text-xs text-blue-600 hover:text-blue-800 truncate mr-2">↳ {{ $userName }}</span>
-                                        <span class="text-xs font-medium text-purple-700 whitespace-nowrap">Rs. {{ number_format($userAmount, 0) }}</span>
+                                <span class="text-sm font-bold text-{{ $meta['tint'] }}-900 mr-2 flex-1 cursor-pointer" onclick="filterByBu('{{ $buCode }}')">
+                                    {{ $meta['emoji'] }} {{ $meta['label'] }}
+                                </span>
+                                <span class="text-sm font-extrabold text-{{ $meta['tint'] }}-900 whitespace-nowrap">Rs. {{ number_format($buPayload['total'] ?? 0, 0) }}</span>
+                            </div>
+                            <div id="{{ $buId }}" class="{{ $expanded ? '' : 'hidden' }} pl-2 pr-2 py-1 bg-white">
+                                @if(empty($buPayload['categories']))
+                                    <div class="text-xs text-gray-400 px-2 py-1 italic">No expenses for this period.</div>
+                                @endif
+                                @foreach(($buPayload['categories'] ?? []) as $cat => $catData)
+                                    @php
+                                        $catTotal = is_array($catData) ? ($catData['total'] ?? 0) : $catData;
+                                        $catUsers = is_array($catData) ? ($catData['users'] ?? []) : [];
+                                        $hasUsers = count($catUsers) > 0;
+                                        $catId = 'cat_' . $buCode . '_' . md5($cat);
+                                    @endphp
+                                    <div>
+                                        <div class="flex items-center p-1.5 hover:bg-purple-50 rounded transition-colors">
+                                            @if($hasUsers)
+                                                <button type="button" onclick="toggleCategory('{{ $catId }}')" class="w-5 h-5 flex items-center justify-center text-gray-400 hover:text-purple-600 mr-1 flex-shrink-0" id="toggle_{{ $catId }}">▶</button>
+                                            @else
+                                                <span class="w-5 mr-1 flex-shrink-0"></span>
+                                            @endif
+                                            <span class="text-xs font-medium text-gray-700 truncate mr-2 flex-1 cursor-pointer" onclick="filterByCategory('{{ $cat }}')">{{ $cat }}</span>
+                                            <span class="text-xs font-bold text-purple-900 whitespace-nowrap">Rs. {{ number_format($catTotal, 0) }}</span>
+                                        </div>
+                                        @if($hasUsers)
+                                            <div id="{{ $catId }}" class="hidden ml-6 mb-1 pl-2 border-l-2 border-purple-200">
+                                                @foreach($catUsers as $userName => $userAmount)
+                                                    <div class="flex items-center justify-between py-1 px-2 hover:bg-purple-50 rounded cursor-pointer" onclick="filterByEmployee('{{ $userName }}')">
+                                                        <span class="text-xs text-blue-600 hover:text-blue-800 truncate mr-2">↳ {{ $userName }}</span>
+                                                        <span class="text-xs font-medium text-purple-700 whitespace-nowrap">Rs. {{ number_format($userAmount, 0) }}</span>
+                                                    </div>
+                                                @endforeach
+                                            </div>
+                                        @endif
                                     </div>
                                 @endforeach
                             </div>
-                        @endif
-                    </div>
-                @endforeach
+                        </div>
+                    @endforeach
+                @else
+                    {{-- Fallback to the legacy flat layout when neither
+                         BU has any spend (covers fresh installs / empty
+                         filter ranges). --}}
+                    @foreach($kpis['top_categories'] ?? [] as $cat => $catData)
+                        @php
+                            $catTotal = is_array($catData) ? ($catData['total'] ?? 0) : $catData;
+                            $catUsers = is_array($catData) ? ($catData['users'] ?? []) : [];
+                            $hasUsers = count($catUsers) > 0;
+                            $catId = 'cat_' . md5($cat);
+                        @endphp
+                        <div>
+                            <div class="flex items-center p-2 bg-white rounded hover:bg-purple-100 transition-colors border border-transparent hover:border-purple-300 group">
+                                @if($hasUsers)
+                                    <button type="button" onclick="toggleCategory('{{ $catId }}')" class="w-5 h-5 flex items-center justify-center text-gray-400 hover:text-purple-600 mr-1 flex-shrink-0 transition-transform" id="toggle_{{ $catId }}">▶</button>
+                                @else
+                                    <span class="w-5 mr-1 flex-shrink-0"></span>
+                                @endif
+                                <span class="text-xs font-medium text-gray-700 truncate mr-2 flex-1 cursor-pointer" onclick="filterByCategory('{{ $cat }}')">{{ $cat }}</span>
+                                <span class="text-xs font-bold text-purple-900 whitespace-nowrap">Rs. {{ number_format($catTotal, 0) }}</span>
+                            </div>
+                            @if($hasUsers)
+                                <div id="{{ $catId }}" class="hidden ml-6 mb-1 pl-2 border-l-2 border-purple-200">
+                                    @foreach($catUsers as $userName => $userAmount)
+                                        <div class="flex items-center justify-between py-1 px-2 hover:bg-purple-50 rounded cursor-pointer" onclick="filterByEmployee('{{ $userName }}')">
+                                            <span class="text-xs text-blue-600 hover:text-blue-800 truncate mr-2">↳ {{ $userName }}</span>
+                                            <span class="text-xs font-medium text-purple-700 whitespace-nowrap">Rs. {{ number_format($userAmount, 0) }}</span>
+                                        </div>
+                                    @endforeach
+                                </div>
+                            @endif
+                        </div>
+                    @endforeach
+                @endif
             </div>
         </div>
     </div>
 
     <!-- Filter Bar - Redesigned Simple & Effective -->
+    @if(!$qurbaniMode && !empty($buFilter))
+        {{-- Phase 4 — active BU drill chip. Lets the user see which
+             half of the page they're scoped into and click out. --}}
+        <div class="flex items-center gap-2 mb-3">
+            <span class="text-xs text-gray-500">Drilled into:</span>
+            <span class="inline-flex items-center gap-2 px-3 py-1 bg-{{ $buFilter === 'KHAAS' ? 'emerald' : 'blue' }}-100 border border-{{ $buFilter === 'KHAAS' ? 'emerald' : 'blue' }}-300 text-{{ $buFilter === 'KHAAS' ? 'emerald' : 'blue' }}-800 rounded-full text-xs font-semibold">
+                {{ $buFilter === 'KHAAS' ? '🌿 Khaas Expenses' : '📦 NF Expenses' }}
+                <button type="button" onclick="clearBuFilter()" class="text-{{ $buFilter === 'KHAAS' ? 'emerald' : 'blue' }}-600 hover:text-{{ $buFilter === 'KHAAS' ? 'emerald' : 'blue' }}-900">✕</button>
+            </span>
+        </div>
+    @endif
+
     <div class="bg-white border border-gray-200 rounded-lg p-4 mb-4">
         <form method="GET" action="{{ route('fin.expenses.index') }}" id="filterForm">
+            {{-- Persist the active BU drill across other filter
+                 changes (date / category / status / payment source). --}}
+            <input type="hidden" name="bu" value="{{ $buFilter ?? '' }}">
             <div class="flex flex-wrap items-end gap-3">
                 <!-- Quick Month Selector -->
                 <div class="flex-shrink-0">
@@ -486,7 +680,33 @@ document.addEventListener('DOMContentLoaded', function() {
         document.getElementById('employeeFilter').value = name;
         form.submit();
     }
-    
+
+    // Phase 4 — BU drill (NF / KHAAS). Adds a hidden `bu` field to
+    // the filter form so the controller scopes every query to that
+    // business unit. Reusing the same filterForm preserves date /
+    // category / status / payment-source state through the drill.
+    function filterByBu(buCode) {
+        const form = document.getElementById('filterForm');
+        let buInput = form.querySelector('input[name="bu"]');
+        if (!buInput) {
+            buInput = document.createElement('input');
+            buInput.type = 'hidden';
+            buInput.name = 'bu';
+            form.appendChild(buInput);
+        }
+        // Toggle behaviour — clicking the same BU again clears the
+        // drill so users have a quick way back to the combined view.
+        const current = new URLSearchParams(window.location.search).get('bu');
+        buInput.value = current === buCode ? '' : buCode;
+        form.submit();
+    }
+    function clearBuFilter() {
+        const form = document.getElementById('filterForm');
+        let buInput = form.querySelector('input[name="bu"]');
+        if (buInput) buInput.value = '';
+        form.submit();
+    }
+
     function clearEmployeeFilter() {
         const form = document.getElementById('filterForm');
         document.getElementById('employeeFilter').value = '';

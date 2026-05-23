@@ -371,6 +371,28 @@ Route::middleware(['auth'])->group(function () {
         Route::post('/api/toggle-rider-delivered', [\App\Http\Controllers\CRM\QurbaniWebController::class, 'toggleRiderDelivered'])->name('qurbani.api.toggle-rider-delivered');
         Route::post('/api/toggle-delete', [\App\Http\Controllers\CRM\QurbaniWebController::class, 'toggleDeleteEnabled'])->name('qurbani.api.toggle-delete');
         Route::delete('/api/orders/{id}', [\App\Http\Controllers\CRM\QurbaniWebController::class, 'deleteOrder'])->name('qurbani.api.delete-order');
+
+        // -----------------------------------------------------------
+        // QURBANI LOCATION REQUEST — Phase 6 (May-2026).
+        // WhatsApp template-driven location collection. Backs the
+        // "Request Location" toolbar button + per-card button on the
+        // Orders page, the Reviewer drawer (right sidebar), and the
+        // mobile per-card request button. See
+        // QurbaniLocationRequestController for the endpoint map.
+        // -----------------------------------------------------------
+        Route::prefix('api/loc-request')->name('qurbani.api.loc-request.')->group(function () {
+            Route::get('/eligible',              [\App\Http\Controllers\CRM\QurbaniLocationRequestController::class, 'eligible'])->name('eligible');
+            Route::post('/send-bulk',            [\App\Http\Controllers\CRM\QurbaniLocationRequestController::class, 'sendBulk'])->name('send-bulk');
+            Route::post('/bulk/{batchId}/start', [\App\Http\Controllers\CRM\QurbaniLocationRequestController::class, 'startBatch'])->name('bulk-start');
+            Route::post('/send-one',             [\App\Http\Controllers\CRM\QurbaniLocationRequestController::class, 'sendOne'])->name('send-one');
+            Route::get('/summary',               [\App\Http\Controllers\CRM\QurbaniLocationRequestController::class, 'summary'])->name('summary');
+            Route::get('/batch/{batchId}',       [\App\Http\Controllers\CRM\QurbaniLocationRequestController::class, 'batchDetail'])->name('batch-detail');
+            Route::get('/pending-review',        [\App\Http\Controllers\CRM\QurbaniLocationRequestController::class, 'pendingReview'])->name('pending-review');
+            Route::post('/statuses',             [\App\Http\Controllers\CRM\QurbaniLocationRequestController::class, 'statuses'])->name('statuses');
+            Route::post('/save/{id}',            [\App\Http\Controllers\CRM\QurbaniLocationRequestController::class, 'save'])->name('save');
+            Route::post('/save-all',             [\App\Http\Controllers\CRM\QurbaniLocationRequestController::class, 'saveAll'])->name('save-all');
+            Route::post('/dismiss/{id}',         [\App\Http\Controllers\CRM\QurbaniLocationRequestController::class, 'dismiss'])->name('dismiss');
+        });
     });
 
     // Bulk Status Update Routes (Admin only)
@@ -830,6 +852,13 @@ Route::middleware(['auth'])->group(function () {
         // Expense Management & Settlement Routes
         Route::prefix('expenses')->name('expenses.')->group(function () {
             Route::get('/', [\App\Http\Controllers\FIN\ExpenseManagementController::class, 'index'])->name('index');
+            // May-2026 (Phase 3) — dedicated Qurbani Expenses tab.
+            // Same controller method, qurbani=1 flag flips it into
+            // year-scoped Qurbani-only mode with revenue card etc.
+            Route::get('/qurbani', function (\Illuminate\Http\Request $request) {
+                $request->merge(['qurbani' => '1']);
+                return app(\App\Http\Controllers\FIN\ExpenseManagementController::class)->index($request);
+            })->name('qurbani');
             Route::post('/{id}/settle', [\App\Http\Controllers\FIN\ExpenseManagementController::class, 'settle'])->name('settle');
             Route::post('/bulk-settle', [\App\Http\Controllers\FIN\ExpenseManagementController::class, 'bulkSettle'])->name('bulk-settle');
             Route::get('/{id}/settlement-details', [\App\Http\Controllers\FIN\ExpenseManagementController::class, 'getSettlementDetails'])->name('settlement-details');

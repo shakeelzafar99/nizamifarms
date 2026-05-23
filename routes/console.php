@@ -35,3 +35,32 @@ Schedule::command('qurbani:wa-process')
     ->everyMinute()
     ->withoutOverlapping(2)
     ->runInBackground();
+
+// Phase 6 (May-2026) — Qurbani location-request safety-net worker.
+// The bulk-send UI normally drives the queue inline (the browser
+// polls /bulk/{batchId}/start in chunks while staff watches the
+// progress bar). This cron is the safety net: it picks up
+// orphaned queued rows when staff close the tab mid-send, and
+// recovers stuck "sending" rows that have been in-flight longer
+// than 5 minutes. Uses a 55s Cache lock so the cron + any
+// concurrent HTTP-driven drain never double-fire on the same row.
+Schedule::command('qurbani:loc-request-process')
+    ->everyMinute()
+    ->withoutOverlapping(2)
+    ->runInBackground();
+
+// Phase 1 (May-2026) — Customer-app order-status webhook dispatcher.
+// Drains rows from t_app_webhook_events (the outbox written by
+// CustomerAppWebhookEmitter inside OrderModel::changeStatus). Each
+// pending or due-for-retry row is signed with HMAC-SHA256 and POSTed
+// to config('customer_app.url'). On 2xx the row is marked sent; on
+// any other outcome the row is rescheduled with exponential backoff,
+// or flipped to status='dead' once retries are exhausted.
+//
+// Self-throttles to a no-op when the master switch is off (or when
+// URL/secret are missing), so it costs only a tiny config lookup
+// before the integration is configured in production.
+Schedule::command('app:dispatch-customer-webhooks')
+    ->everyMinute()
+    ->withoutOverlapping(5)
+    ->runInBackground();

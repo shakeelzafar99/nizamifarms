@@ -1992,6 +1992,121 @@ class RiderController extends Controller
      * Same data source as the web expense form
      * ⭐ Supports business_unit_id filter for Khaas mode
      */
+    /**
+     * Qurbani Expense screen summary (mobile).
+     *
+     * Powers the four KPI cards on the new mobile QurbaniExpensesScreen:
+     *   - Revenue (delivered Qurbani orders this year, by canonical
+     *     OR-rule that matches /qurbani/invoices)
+     *   - Vendor Purchases (ledger rows linked to a Qurbani request
+     *     or order, transaction_type = vendor_purchase, approved)
+     *   - Available years (years that have at least one qurbani
+     *     order or request — feeds the year picker)
+     *
+     * Auth: any user with `view_expenses` mobile permission. The
+     * regular Qurbani-mode permission gates the screen visibility on
+     * the client side; this endpoint only validates the underlying
+     * expense permission.
+     *
+     * Why a separate endpoint instead of bolting onto /expenses?
+     * Keeps the existing endpoint focused on listing rows. Revenue +
+     * vendor purchases are a different shape (single scalar each)
+     * and are only ever needed when on the Qurbani tab.
+     */
+    public function getQurbaniExpenseSummary(Request $request)
+    {
+        try {
+            $user = \Illuminate\Support\Facades\Auth::user();
+            if (!$user || !$user->hasMobilePermission('view_expenses')) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'You do not have permission to view expenses',
+                ], 403);
+            }
+
+            $year = (int) $request->input('year', date('Y'));
+            if ($year < 2024 || $year > 2099) { $year = (int) date('Y'); }
+            $dateFrom = $year . '-01-01';
+            $dateTo   = $year . '-12-31';
+
+            // Booked revenue — every non-cancelled qurbani order
+            // created this year. May-2026 — replaces the old
+            // "delivered revenue" definition so the operator sees
+            // what the season is *committed* to bring in, with a
+            // Paid / Pending split coming from order.total_paid.
+            $bookedQuery = \DB::table('t_crm_prod_order as o')
+                ->whereRaw('YEAR(o.created_at) = ?', [$year])
+                ->whereRaw("LOWER(COALESCE(o.order_status, '')) <> 'cancelled'")
+                ->where(function ($q) {
+                    $q->whereNull('o.external_source')
+                      ->orWhere('o.external_source', '!=', 'shopify');
+                });
+            \App\Services\QurbaniFinanceFilter::applyToOrderQuery($bookedQuery, 'o', \App\Services\QurbaniFinanceFilter::MODE_INCLUDE);
+            $bookedTotals = $bookedQuery
+                ->selectRaw('COALESCE(SUM(o.total_price), 0) as booked, COALESCE(SUM(o.total_paid), 0) as paid')
+                ->first();
+            $booked = (float) ($bookedTotals->booked ?? 0);
+            $paid   = (float) ($bookedTotals->paid ?? 0);
+            $pending = max(0.0, $booked - $paid);
+
+            // Vendor purchases — ledger leg.
+            $vendorQuery = \DB::table('t_fin_ledger as l')
+                ->where('l.transaction_type', 'vendor_purchase')
+                ->where('l.approval_status', 'approved')
+                ->whereRaw('DATE(l.transaction_date) >= ?', [$dateFrom])
+                ->whereRaw('DATE(l.transaction_date) <= ?', [$dateTo]);
+            \App\Services\QurbaniFinanceFilter::applyToLedgerQuery($vendorQuery, 'l', \App\Services\QurbaniFinanceFilter::MODE_INCLUDE);
+            $vendorPurchases = (float) $vendorQuery->sum('l.amount');
+
+            // Year picker source — orders and requests.
+            $orderYears = \DB::table('t_crm_prod_order as o')
+                ->where(function ($q) {
+                    $q->whereNull('o.external_source')
+                      ->orWhere('o.external_source', '!=', 'shopify');
+                })
+                ->whereRaw("LOWER(COALESCE(o.order_status, '')) <> 'cancelled'");
+            \App\Services\QurbaniFinanceFilter::applyToOrderQuery($orderYears, 'o', \App\Services\QurbaniFinanceFilter::MODE_INCLUDE);
+            $orderYears = $orderYears
+                ->selectRaw('DISTINCT YEAR(o.created_at) as y')
+                ->pluck('y')
+                ->all();
+            $reqYears = \DB::table('t_req_master as r')
+                ->join('t_req_category as c', 'c.id', '=', 'r.category_id')
+                ->where('c.category_code', 'qurbani')
+                ->whereNotNull('r.ledger_transaction_id')
+                ->selectRaw('DISTINCT YEAR(COALESCE(r.expense_date, r.created_at)) as y')
+                ->pluck('y')
+                ->all();
+            $availableYears = collect(array_merge([(int) date('Y')], $orderYears, $reqYears))
+                ->filter(fn ($y) => is_numeric($y) && $y >= 2024 && $y <= 2099)
+                ->map(fn ($y) => (int) $y)
+                ->unique()
+                ->sortDesc()
+                ->values()
+                ->all();
+
+            return response()->json([
+                'success' => true,
+                'year' => $year,
+                // Legacy field kept as alias to avoid breaking any
+                // already-deployed mobile build that still reads
+                // `revenue` — now mirrors `booked`.
+                'revenue' => $booked,
+                'booked' => $booked,
+                'paid' => $paid,
+                'pending' => $pending,
+                'vendor_purchases' => $vendorPurchases,
+                'available_years' => $availableYears,
+            ]);
+        } catch (\Throwable $e) {
+            \Log::error('getQurbaniExpenseSummary failed: ' . $e->getMessage());
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to load Qurbani summary',
+            ], 500);
+        }
+    }
+
     public function getExpenseCategoriesFromConfig(Request $request)
     {
         try {
@@ -10275,6 +10390,17 @@ class RiderController extends Controller
             $settlementStatus = $request->input('settlement_status');
             $paymentSourceFilter = $request->input('payment_source'); // New filter: account_id or 'all'
             $businessUnitId = $request->input('business_unit_id'); // ⭐ Filter by business unit (for Khaas mode)
+            // May-2026 (Phase 2/3) — Qurbani requests are silo'd into
+            // a dedicated screen inside Qurbani mode. The flag below
+            // toggles which side of the silo this endpoint serves:
+            //   qurbani=1 → only Qurbani requests (powers the new
+            //               mobile QurbaniExpensesScreen)
+            //   qurbani=0 (default) → everything EXCEPT Qurbani
+            //               (the regular Expense screen).
+            // Default of "exclude" matches the web behaviour and
+            // keeps existing mobile callers (no flag) showing
+            // regular spend.
+            $qurbaniMode = filter_var($request->input('qurbani', false), FILTER_VALIDATE_BOOLEAN);
             
             // ⭐ Check if user can see ALL payment sources (EXP_FUND, NF_CASH, ONLINE)
             // Without this permission, user only sees EXP_FUND expenses
@@ -10309,8 +10435,13 @@ class RiderController extends Controller
                 $expenseCategoryCodes = $businessUnitId ? ['expense', 'khaas_expense'] : ['expense', 'salary_advance'];
             }
             
-            $expensesQuery = \App\Models\Request\RequestModel::whereHas('category', function($q) use ($expenseCategoryCodes) {
+            $expensesQuery = \App\Models\Request\RequestModel::whereHas('category', function($q) use ($expenseCategoryCodes, $qurbaniMode) {
                     $q->whereIn('category_code', $expenseCategoryCodes);
+                    if ($qurbaniMode) {
+                        $q->where('category_code', 'qurbani');
+                    } else {
+                        $q->where('category_code', '!=', 'qurbani');
+                    }
                 })
                 ->whereNotNull('ledger_transaction_id')
                 ->where('status', \App\Models\Request\RequestModel::STATUS_APPROVED)
@@ -10327,17 +10458,33 @@ class RiderController extends Controller
                 $expensesQuery->where('payment_source_account_id', $paymentSourceFilter);
             }
             
-            // Apply date filter only if month is provided AND is valid format
-            if ($month && preg_match('/^\d{4}-\d{2}$/', $month)) {
+            // Apply date filter — Qurbani mode uses year-scope, regular
+            // mode uses month-scope. The Qurbani Expenses screen never
+            // needs month granularity (it's an annual event), so we
+            // honor a `year=YYYY` param when qurbaniMode is on and
+            // ignore `month` in that case.
+            $year = $request->input('year');
+            if ($qurbaniMode && $year && preg_match('/^\d{4}$/', (string) $year)) {
+                $dateFrom = $year . '-01-01';
+                $dateTo   = $year . '-12-31';
+                $expensesQuery->whereRaw('DATE(COALESCE(expense_date, created_at)) >= ?', [$dateFrom])
+                              ->whereRaw('DATE(COALESCE(expense_date, created_at)) <= ?', [$dateTo]);
+            } elseif ($qurbaniMode) {
+                // Default Qurbani window = current calendar year.
+                $dateFrom = date('Y') . '-01-01';
+                $dateTo   = date('Y') . '-12-31';
+                $expensesQuery->whereRaw('DATE(COALESCE(expense_date, created_at)) >= ?', [$dateFrom])
+                              ->whereRaw('DATE(COALESCE(expense_date, created_at)) <= ?', [$dateTo]);
+            } elseif ($month && preg_match('/^\d{4}-\d{2}$/', $month)) {
                 $dateFrom = $month . '-01';
                 $dateTo = date('Y-m-t', strtotime($dateFrom)); // Last day of month
-                
+
                 \Log::debug('Expense date filter applied', [
                     'month' => $month,
                     'date_from' => $dateFrom,
                     'date_to' => $dateTo
                 ]);
-                
+
                 // ⭐ Filter by expense_date (falls back to created_at for old records)
                 $expensesQuery->whereRaw('DATE(COALESCE(expense_date, created_at)) >= ?', [$dateFrom])
                               ->whereRaw('DATE(COALESCE(expense_date, created_at)) <= ?', [$dateTo]);
@@ -10388,8 +10535,14 @@ class RiderController extends Controller
                 ->whereIn('slip_status', ['approved', 'paid'])
                 ->whereNotNull('ledger_transaction_id');
             
-            // Apply date filter to salary slips if month is provided
-            if ($month && preg_match('/^\d{4}-\d{2}$/', $month)) {
+            // Apply date filter to salary slips if month is provided.
+            // (Qurbani mode skips salary slips entirely; the date is
+            // still applied here for consistency in case the include
+            // flag flips above.)
+            if ($qurbaniMode) {
+                $yr = $year && preg_match('/^\d{4}$/', (string) $year) ? (int) $year : (int) date('Y');
+                $salarySlipsQuery->whereRaw('YEAR(created_at) = ?', [$yr]);
+            } elseif ($month && preg_match('/^\d{4}-\d{2}$/', $month)) {
                 $dateFrom = $month . '-01';
                 $dateTo = date('Y-m-t', strtotime($dateFrom));
                 $salarySlipsQuery->whereRaw('DATE(created_at) >= ?', [$dateFrom])
@@ -10410,6 +10563,13 @@ class RiderController extends Controller
             // ⭐ If filtering by business unit (Khaas mode), exclude salary slips
             // Salary slips don't belong to a business unit
             if ($businessUnitId) {
+                $includeSalarySlips = false;
+            }
+            // May-2026 — Qurbani Expenses screen never wants salary
+            // slips. The qurbani event has its own short-term staff
+            // costed via the request-based qurbani sub-categories,
+            // not via the regular salary slip pipeline.
+            if ($qurbaniMode) {
                 $includeSalarySlips = false;
             }
             
@@ -10441,6 +10601,8 @@ class RiderController extends Controller
                     'date' => ($expense->expense_date ?? $expense->created_at)->format('Y-m-d'),
                     'employee' => $expense->requester ? $expense->requester->fullname : 'Unknown',
                     'category' => $expense->expense_category ?? ($expense->category ? $expense->category->category_name : 'Uncategorized'),
+                    'notes' => $expense->description,
+                    'description' => $expense->description,
                     'request_type' => $expense->category ? $expense->category->category_name : 'Expense',
                     'request_type_code' => $expense->category ? $expense->category->category_code : 'expense',
                     'amount' => $expense->amount,
@@ -10511,8 +10673,13 @@ class RiderController extends Controller
             }
             
             // Get pending approvals (real-time, not filtered by month)
-            $pendingApprovalsQuery = \App\Models\Request\RequestModel::whereHas('category', function($q) use ($expenseCategoryCodes) {
+            $pendingApprovalsQuery = \App\Models\Request\RequestModel::whereHas('category', function($q) use ($expenseCategoryCodes, $qurbaniMode) {
                     $q->whereIn('category_code', $expenseCategoryCodes);
+                    if ($qurbaniMode) {
+                        $q->where('category_code', 'qurbani');
+                    } else {
+                        $q->where('category_code', '!=', 'qurbani');
+                    }
                 })
                 ->where('status', \App\Models\Request\RequestModel::STATUS_PENDING)
                 ->with(['requester', 'paymentSourceAccount', 'category', 'approvals.approver'])
@@ -10543,6 +10710,8 @@ class RiderController extends Controller
                     'date' => $request->created_at->format('Y-m-d'),
                     'employee' => $request->requester ? $request->requester->fullname : 'Unknown',
                     'category' => $request->expense_category ?? ($request->category ? $request->category->category_name : 'Uncategorized'),
+                    'notes' => $request->description,
+                    'description' => $request->description,
                     'amount' => $request->amount,
                     'payment_source' => $request->paymentSourceAccount ? $request->paymentSourceAccount->account_name : 'Unknown',
                     'status' => $request->status,
@@ -10647,11 +10816,81 @@ class RiderController extends Controller
                     'users' => $othersUsers
                 ];
             }
-            
+
+            // ── Phase 4 (mobile): NF vs Khaas split for the top
+            // categories card. Only populated when the request did
+            // NOT pin a specific business_unit_id (i.e. user is on
+            // the regular NF expense screen, not deep-linked Khaas
+            // mode). Mirrors the web payload at $kpis['bu_breakdown'].
+            $buBreakdown = null;
+            if (!$businessUnitId && !$qurbaniMode) {
+                $nfBuId = (int) (\App\Models\FIN\BusinessUnitModel::where('code', 'NF')->value('id') ?? 0);
+                $khaasBuId = (int) (\App\Models\FIN\BusinessUnitModel::where('code', 'KHAAS')->value('id') ?? 0);
+                $userPerms = method_exists($user, 'getMobilePermissions') ? $user->getMobilePermissions() : [];
+                $canViewKhaas = in_array('access_khaas_mode', $userPerms, true);
+
+                $buBreakdown = [
+                    'NF'    => ['total' => 0.0, 'categories' => []],
+                    'KHAAS' => ['total' => 0.0, 'categories' => []],
+                ];
+                $buUserMap = ['NF' => [], 'KHAAS' => []];
+                foreach ($allExpenses as $exp) {
+                    $bu = ($khaasBuId && (int) ($exp->business_unit_id ?? 0) === $khaasBuId) ? 'KHAAS' : 'NF';
+                    if ($bu === 'KHAAS' && !$canViewKhaas) continue;
+                    $cat = $exp->expense_category;
+                    if (empty($cat) && $exp->category && $exp->category->category_code === 'salary_advance') {
+                        $cat = 'Salary Advance';
+                    } elseif (empty($cat)) {
+                        $cat = 'Uncategorized';
+                    }
+                    $buBreakdown[$bu]['total'] += (float) $exp->amount;
+                    if (!isset($buBreakdown[$bu]['categories'][$cat])) {
+                        $buBreakdown[$bu]['categories'][$cat] = 0.0;
+                    }
+                    $buBreakdown[$bu]['categories'][$cat] += (float) $exp->amount;
+                    $userName = $exp->requester ? $exp->requester->fullname : 'Unknown';
+                    if (!isset($buUserMap[$bu][$cat])) $buUserMap[$bu][$cat] = [];
+                    if (!isset($buUserMap[$bu][$cat][$userName])) $buUserMap[$bu][$cat][$userName] = 0.0;
+                    $buUserMap[$bu][$cat][$userName] += (float) $exp->amount;
+                }
+                if ($totalSalaryExpenses > 0) {
+                    $buBreakdown['NF']['total'] += (float) $totalSalaryExpenses;
+                    if (!isset($buBreakdown['NF']['categories']['Salary'])) {
+                        $buBreakdown['NF']['categories']['Salary'] = 0.0;
+                    }
+                    $buBreakdown['NF']['categories']['Salary'] += (float) $totalSalaryExpenses;
+                    if (!isset($buUserMap['NF']['Salary'])) $buUserMap['NF']['Salary'] = [];
+                    foreach ($salarySlips as $slip) {
+                        $empName = $slip->employee ? $slip->employee->fullname : 'Unknown';
+                        if (!isset($buUserMap['NF']['Salary'][$empName])) $buUserMap['NF']['Salary'][$empName] = 0.0;
+                        $buUserMap['NF']['Salary'][$empName] += (float) $slip->net_salary;
+                    }
+                }
+                foreach ($buBreakdown as $bc => &$payload) {
+                    arsort($payload['categories']);
+                    $shaped = [];
+                    foreach ($payload['categories'] as $cName => $cTotal) {
+                        $usersInCat = $buUserMap[$bc][$cName] ?? [];
+                        arsort($usersInCat);
+                        $shaped[$cName] = ['total' => $cTotal, 'users' => $usersInCat];
+                    }
+                    $payload['categories'] = $shaped;
+                }
+                unset($payload);
+                if (!$canViewKhaas) {
+                    unset($buBreakdown['KHAAS']);
+                }
+            }
+
             // Get all unique categories for filter
             // ⭐ Use same category codes as for the main expenses query (includes khaas_expense for Khaas mode)
-            $categoriesFilterQuery = \App\Models\Request\RequestModel::whereHas('category', function($q) use ($expenseCategoryCodes) {
+            $categoriesFilterQuery = \App\Models\Request\RequestModel::whereHas('category', function($q) use ($expenseCategoryCodes, $qurbaniMode) {
                     $q->whereIn('category_code', $expenseCategoryCodes);
+                    if ($qurbaniMode) {
+                        $q->where('category_code', 'qurbani');
+                    } else {
+                        $q->where('category_code', '!=', 'qurbani');
+                    }
                 })
                 ->whereNotNull('ledger_transaction_id')
                 ->where('status', \App\Models\Request\RequestModel::STATUS_APPROVED)
@@ -10789,6 +11028,10 @@ class RiderController extends Controller
                         'pending_l2_count' => $pendingL2->count(),
                         'pending_l2_amount' => $pendingL2->sum('amount'),
                         'top_categories' => $topCategories,
+                        // Phase 4 — NF vs Khaas split (null when caller
+                        // already pinned a business_unit_id, e.g. Khaas
+                        // mode, or when on the Qurbani tab).
+                        'bu_breakdown' => $buBreakdown,
                         // ⭐ Expenses breakdown by source
                         'expenses_by_source' => $expensesBySourceArray
                     ],
@@ -13232,20 +13475,36 @@ class RiderController extends Controller
     }
     
     /**
-     * Calculate Overall Ledger KPIs (reuses LedgerController logic)
+     * Calculate Overall Ledger KPIs (reuses LedgerController logic).
+     *
+     * This is the store-mode operational settlement view on mobile.
+     * Phase 6 — Qurbani is excluded across the board because the
+     * Qurbani delivery flow deliberately skips posting an INVOICE
+     * ledger row (see OrderModel:1465 — `hasPreReceivedPayments()`
+     * guard). Qurbani payments are collected via the rider/manager
+     * add-payment flow and post their own ledger rows against the
+     * dedicated Qurbani Cash / Qurbani Online accounts. Including
+     * Qurbani delivered orders here would create phantom
+     * "Cash Pending With Rider" because there's no ledger
+     * settlement row to offset them.
      */
     private function calculateOverallLedgerKPIs($startDate, $endDate)
     {
-        // Get delivered order IDs for the period (using status history table)
-        $invoicesQuery = \DB::table('t_crm_order_status_history')
-            ->where('status_code', 'delivered')
-            ->where('is_current', 1);
-        
+        $invoicesQuery = \DB::table('t_crm_order_status_history as h')
+            ->leftJoin('t_crm_prod_order as o', 'o.id', '=', 'h.order_id')
+            ->where('h.status_code', 'delivered')
+            ->where('h.is_current', 1)
+            ->tap(function ($q) {
+                \App\Services\QurbaniFinanceFilter::applyToOrderQuery(
+                    $q, 'o', \App\Services\QurbaniFinanceFilter::MODE_EXCLUDE
+                );
+            });
+
         if ($startDate && $endDate) {
-            $invoicesQuery->whereBetween('changed_at', [$startDate, $endDate]);
+            $invoicesQuery->whereBetween('h.changed_at', [$startDate, $endDate]);
         }
-        
-        $deliveredOrderIds = $invoicesQuery->pluck('order_id');
+
+        $deliveredOrderIds = $invoicesQuery->pluck('h.order_id');
         
         // === KPI 1: INVOICES ===
         $totalInvoices = \DB::table('t_crm_prod_order')
@@ -13319,9 +13578,15 @@ class RiderController extends Controller
         $onlinePending = $onlinePendingL1 + $onlinePendingL2;
         
         // === KPI 2: EXPENSES ===
+        // Phase 6 — Qurbani-tagged ledger rows excluded.
         $ledgerExpenses = \App\Models\FIN\LedgerModel::where('transaction_type', \App\Models\FIN\LedgerModel::TYPE_EXPENSE)
             ->where('approval_status', \App\Models\FIN\LedgerModel::STATUS_APPROVED)
             ->whereBetween('transaction_date', [$startDate, $endDate])
+            ->tap(function ($q) {
+                \App\Services\QurbaniFinanceFilter::applyToLedgerQuery(
+                    $q, 't_fin_ledger', \App\Services\QurbaniFinanceFilter::MODE_EXCLUDE
+                );
+            })
             ->sum('amount') ?? 0;
         
         $salaryExpenses = \App\Models\HR\SalarySlipModel::whereIn('slip_status', ['approved', 'paid'])
@@ -13340,14 +13605,25 @@ class RiderController extends Controller
             ->sum('amount') ?? 0;
         
         // === KPI 3: VENDOR BALANCE ===
+        // Phase 6 — Qurbani vendor activity excluded.
         $vendorPurchases = \App\Models\FIN\LedgerModel::where('transaction_type', \App\Models\FIN\LedgerModel::TYPE_VENDOR_PURCHASE)
             ->where('approval_status', \App\Models\FIN\LedgerModel::STATUS_APPROVED)
             ->whereBetween('transaction_date', [$startDate, $endDate])
+            ->tap(function ($q) {
+                \App\Services\QurbaniFinanceFilter::applyToLedgerQuery(
+                    $q, 't_fin_ledger', \App\Services\QurbaniFinanceFilter::MODE_EXCLUDE
+                );
+            })
             ->sum('amount') ?? 0;
-        
+
         $vendorPayments = \App\Models\FIN\LedgerModel::where('transaction_type', \App\Models\FIN\LedgerModel::TYPE_VENDOR_PAYMENT)
             ->where('approval_status', \App\Models\FIN\LedgerModel::STATUS_APPROVED)
             ->whereBetween('transaction_date', [$startDate, $endDate])
+            ->tap(function ($q) {
+                \App\Services\QurbaniFinanceFilter::applyToLedgerQuery(
+                    $q, 't_fin_ledger', \App\Services\QurbaniFinanceFilter::MODE_EXCLUDE
+                );
+            })
             ->sum('amount') ?? 0;
         
         $vendorBalance = $vendorPurchases - $vendorPayments;
