@@ -145,11 +145,34 @@ class QurbaniLocationRequestController extends Controller
                 return strcmp($la, $lb); // older sent_at first
             });
 
+            // May-2026 — stats block alongside the eligible list so the
+            // bulk modal can show "X verified / Y unverified / Z awaiting
+            // reply" without a second round-trip. Only the verified-vs-
+            // unverified split needs server work (eligible is already
+            // unverified-only); the awaiting/never-asked/replied
+            // breakdown is computed client-side from the items array
+            // (each item carries its last_request status).
+            //
+            // We re-run the eligibility query WITHOUT the
+            // "missing-pin" predicate to count the verified customers
+            // in the same filter set. Cheaper than a separate
+            // join-and-aggregate because the same filters are applied.
+            $totalCustomers = (int) $this->buildEligibleQuery($filters, includeVerified: true)
+                ->distinct()
+                ->count(DB::raw('cust.id'));
+            $unverifiedCustomers = count($items);
+            $verifiedCustomers = max(0, $totalCustomers - $unverifiedCustomers);
+
             return response()->json([
                 'success' => true,
                 'count'   => count($items),
                 'items'   => $items,
                 'filters' => $filters,
+                'stats'   => [
+                    'total_customers'      => $totalCustomers,
+                    'verified_customers'   => $verifiedCustomers,
+                    'unverified_customers' => $unverifiedCustomers,
+                ],
             ]);
         } catch (\Throwable $e) {
             Log::error('QurbaniLocReq: eligible failed', [
@@ -506,7 +529,7 @@ class QurbaniLocationRequestController extends Controller
      * the existing Orders-page filtering (line 1256 of
      * QurbaniWebController::getOrderItems).
      */
-    protected function buildEligibleQuery(array $filters)
+    protected function buildEligibleQuery(array $filters, bool $includeVerified = false)
     {
         // category_level_2 lives on t_crm_prod_product.attribute_2 —
         // the existing Orders page joins through product to filter by
@@ -520,14 +543,22 @@ class QurbaniLocationRequestController extends Controller
                 $w->whereNull('o.order_status')
                   ->orWhereRaw("LOWER(o.order_status) <> 'cancelled'");
             })
-            ->where(function ($w) {
+            ->whereNotNull('cust.phone')
+            ->where('cust.phone', '<>', '');
+
+        // The unverified-only predicate is the difference between the
+        // "send candidate" set (the modal's table) and the "total in
+        // filter" set used to compute the verified/unverified split for
+        // the stats strip. Toggled off when stats() asks for the
+        // unscoped totals.
+        if (!$includeVerified) {
+            $q->where(function ($w) {
                 $w->whereNull('cust.latitude')
                   ->orWhereNull('cust.longitude')
                   ->orWhere('cust.latitude', '=', 0)
                   ->orWhere('cust.longitude', '=', 0);
-            })
-            ->whereNotNull('cust.phone')
-            ->where('cust.phone', '<>', '');
+            });
+        }
 
         if (empty($filters['include_delivered'])) {
             $q->where(function ($w) {

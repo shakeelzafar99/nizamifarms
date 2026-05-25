@@ -55,6 +55,26 @@
         if (!in_array($defaultPaymentMethod, ['cash','online'], true)) { $defaultPaymentMethod = 'cash'; }
         $hiddenCategoriesJson = \App\Models\FIN\ConfigModel::get('qurbani_hidden_stats_categories', '[]');
         $hiddenCategories = json_decode($hiddenCategoriesJson, true) ?: [];
+        // May-2026 — Qurbani rider whitelist. Empty / unset means
+        // "show every active rider" (back-compat with installs that
+        // haven't visited this section yet). When non-empty, both the
+        // individual order detail picker and the bulk-rider modal in
+        // the mobile Qurbani screen will only show riders whose user
+        // id is in this list. Stored as a JSON array of integer IDs
+        // in t_fin_config.
+        $qurbaniRiderIdsJson = \App\Models\FIN\ConfigModel::get('qurbani_rider_ids', '[]');
+        $qurbaniRiderIds = json_decode($qurbaniRiderIdsJson, true);
+        if (!is_array($qurbaniRiderIds)) { $qurbaniRiderIds = []; }
+        $qurbaniRiderIds = array_values(array_filter(array_map('intval', $qurbaniRiderIds), fn($v) => $v > 0));
+        // Same query as RiderController::getActiveRiders so the
+        // Settings UI can offer EXACTLY the riders the mobile picker
+        // would otherwise show by default.
+        $allActiveRiders = \DB::table('t_sys_user as u')
+            ->leftJoin('t_ops_rider_profile as p', 'p.user_id', '=', 'u.id')
+            ->where(function ($q) { $q->whereNull('p.user_id')->orWhere('p.active', 1); })
+            ->where('u.is_active', 1)
+            ->orderBy('u.fullname')
+            ->get(['u.id', 'u.fullname']);
         // Qurbani Operations Base — origin fallback + return-to-base
         // ETA. Stored as 3 ConfigModel keys; empty values mean "fall
         // back to the regular office location chain".
@@ -83,6 +103,10 @@
         $waOfdSelfCollectionTemplate  = (string) \App\Models\FIN\ConfigModel::get('qurbani_wa_ofd_self_collection_template', '');
         $waOfdRequireDispatched       = \App\Models\FIN\ConfigModel::get('qurbani_wa_ofd_require_dispatched', '1') === '1';
         $waOfdTimingMode              = (string) \App\Models\FIN\ConfigModel::get('qurbani_wa_ofd_timing_mode', 'before_eta_with_buffer');
+        // May-2026 rev2 — new ETA-window rule + delay-update knobs.
+        $waOfdEtaWindowMinutes        = (int) \App\Models\FIN\ConfigModel::get('qurbani_wa_ofd_eta_window_minutes', '120');
+        $waOfdDelayThresholdMinutes   = (int) \App\Models\FIN\ConfigModel::get('qurbani_wa_ofd_delay_threshold_minutes', '30');
+        $waOfdDelayCooldownMinutes    = (int) \App\Models\FIN\ConfigModel::get('qurbani_wa_ofd_delay_resend_cooldown_minutes', '15');
         if (!in_array($waOfdTimingMode, ['after_status', 'after_dispatch', 'before_eta_with_buffer'], true)) {
             $waOfdTimingMode = 'before_eta_with_buffer';
         }
@@ -403,49 +427,51 @@
                     </div>
                 </div>
 
-                {{-- Require dispatched gate --}}
-                <div style="margin-bottom: 12px;">
-                    <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
-                        <input type="checkbox" id="waOfdRequireDispatched" {{ $waOfdRequireDispatched ? 'checked' : '' }} onchange="saveWaTriggerToggle('ofd_require_dispatched', this.checked)" style="width: 16px; height: 16px; cursor: pointer;">
-                        <span style="font-size: 13px; color: #374151;"><b>Require dispatched</b> — only fire after the rider's route is dispatched (recommended)</span>
-                    </label>
+                {{-- May-2026 rev2 — New trigger rule. Replaces the old
+                     timing-mode radio (after_status / after_dispatch /
+                     before_eta_with_buffer). Now driven by:
+                       1. Dispatch event (qurbani_dispatched_at set).
+                       2. For delivery items WITH a Google ETA: hold
+                          until eta is within N min of now. Default 120.
+                       3. For delivery items WITHOUT an ETA (missing
+                          coords case): fire immediately with the slot
+                          string as the time variable.
+                       4. For self-collection items: fire immediately
+                          (no time variable — Meta template should only
+                          have {{1}} and {{2}}).
+                     Old config keys are kept in t_fin_config (unread)
+                     so a future revert is a one-line change.       --}}
+                <div style="margin-bottom: 12px; padding: 10px 12px; background: #eff6ff; border: 1px solid #bfdbfe; border-radius: 6px; font-size: 12px; color: #1e3a8a; line-height: 1.55;">
+                    <b>How it fires (May-2026 rev2):</b>
+                    Triggered by <b>Dispatch</b> (manager qurbani mode <i>or</i> rider Start press — same event).
+                    Delivery items hold until their Google ETA is within the window below.
+                    Self-collection items fire immediately on dispatch (template must use only <code>@{{1}}</code> + <code>@{{2}}</code>).
+                    Items with no ETA (missing coords) fire immediately with the booking slot as the time variable.
                 </div>
 
-                {{-- Timing mode radio + sub-fields --}}
-                <div style="font-size: 13px; font-weight: 700; color: #374151; margin-bottom: 6px;">When to send:</div>
-                <div style="display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px;">
-                    <label style="display: flex; align-items: center; gap: 8px; padding: 8px 10px; background: #f9fafb; border-radius: 6px; cursor: pointer;">
-                        <input type="radio" name="waOfdTimingMode" value="after_status" {{ $waOfdTimingMode === 'after_status' ? 'checked' : '' }} onchange="onWaOfdTimingModeChange()">
-                        <span style="font-size: 13px; color: #374151; flex: 1;"><b>After OFD status set</b> — fire X min after the item is marked Out for Delivery</span>
-                        <input type="number" id="waOfdMinutesAfterStatus" value="{{ $waOfdMinutesAfterStatus }}" min="0" max="240" style="width: 70px; padding: 5px 6px; border: 1px solid #d1d5db; border-radius: 6px; text-align: center;" onchange="saveWaTriggerField('ofd_minutes_after_status', parseInt(this.value, 10))">
-                        <span style="font-size: 12px; color: #6b7280;">min</span>
-                    </label>
-                    <label style="display: flex; align-items: center; gap: 8px; padding: 8px 10px; background: #f9fafb; border-radius: 6px; cursor: pointer;">
-                        <input type="radio" name="waOfdTimingMode" value="after_dispatch" {{ $waOfdTimingMode === 'after_dispatch' ? 'checked' : '' }} onchange="onWaOfdTimingModeChange()">
-                        <span style="font-size: 13px; color: #374151; flex: 1;"><b>After dispatch</b> — fire X min after the dispatch button is pressed</span>
-                        <input type="number" id="waOfdMinutesAfterDispatch" value="{{ $waOfdMinutesAfterDispatch }}" min="0" max="240" style="width: 70px; padding: 5px 6px; border: 1px solid #d1d5db; border-radius: 6px; text-align: center;" onchange="saveWaTriggerField('ofd_minutes_after_dispatch', parseInt(this.value, 10))">
-                        <span style="font-size: 12px; color: #6b7280;">min</span>
-                    </label>
-                    <label style="display: flex; align-items: flex-start; gap: 8px; padding: 8px 10px; background: #f9fafb; border-radius: 6px; cursor: pointer;">
-                        <input type="radio" name="waOfdTimingMode" value="before_eta_with_buffer" {{ $waOfdTimingMode === 'before_eta_with_buffer' ? 'checked' : '' }} onchange="onWaOfdTimingModeChange()" style="margin-top: 4px;">
-                        <div style="flex: 1;">
-                            <div style="font-size: 13px; color: #374151;"><b>Before delivery time</b> — fire X min before (Google ETA + buffer)</div>
-                            <div style="margin-top: 6px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
-                                <span style="font-size: 12px; color: #6b7280;">Send</span>
-                                <input type="number" id="waOfdMinutesBefore" value="{{ $waOfdMinutesBefore }}" min="0" max="120" style="width: 60px; padding: 5px 6px; border: 1px solid #d1d5db; border-radius: 6px; text-align: center;" onchange="saveWaTriggerField('ofd_minutes_before', parseInt(this.value, 10))">
-                                <span style="font-size: 12px; color: #6b7280;">min before</span>
-                                <span style="font-size: 12px; color: #6b7280;">·</span>
-                                <span style="font-size: 12px; color: #6b7280;">ETA buffer:</span>
-                                <input type="number" id="waOfdEtaBufferMinutes" value="{{ $waOfdEtaBufferMinutes }}" min="0" max="120" style="width: 60px; padding: 5px 6px; border: 1px solid #d1d5db; border-radius: 6px; text-align: center;" onchange="saveWaTriggerField('ofd_eta_buffer_minutes', parseInt(this.value, 10))">
-                                <span style="font-size: 12px; color: #6b7280;">min added on top of Google ETA</span>
-                            </div>
-                        </div>
-                    </label>
+                {{-- ETA window + delay-update settings --}}
+                <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; margin-bottom: 12px;">
+                    <div style="padding: 10px 12px; background: #f9fafb; border-radius: 6px;">
+                        <label style="font-size: 12px; font-weight: 700; color: #374151; display: block; margin-bottom: 4px;">ETA window (min)</label>
+                        <input type="number" id="waOfdEtaWindowMinutes" value="{{ $waOfdEtaWindowMinutes }}" min="15" max="480" style="width: 100%; padding: 6px 8px; border: 1px solid #d1d5db; border-radius: 6px; text-align: center; font-weight: 700;" onchange="saveWaTriggerField('ofd_eta_window_minutes', parseInt(this.value, 10))">
+                        <div style="font-size: 11px; color: #6b7280; margin-top: 4px; line-height: 1.45;">Send to customers whose ETA is within this many minutes. <b>120</b> = "2 hours away".</div>
+                    </div>
+                    <div style="padding: 10px 12px; background: #f9fafb; border-radius: 6px;">
+                        <label style="font-size: 12px; font-weight: 700; color: #374151; display: block; margin-bottom: 4px;">Delay threshold (min)</label>
+                        <input type="number" id="waOfdDelayThresholdMinutes" value="{{ $waOfdDelayThresholdMinutes }}" min="5" max="180" style="width: 100%; padding: 6px 8px; border: 1px solid #d1d5db; border-radius: 6px; text-align: center; font-weight: 700;" onchange="saveWaTriggerField('ofd_delay_threshold_minutes', parseInt(this.value, 10))">
+                        <div style="font-size: 11px; color: #6b7280; margin-top: 4px; line-height: 1.45;">"Send updated times" button on the rider's planner appears once any stop's ETA slips by this many minutes vs the time we last messaged the customer.</div>
+                    </div>
+                    <div style="padding: 10px 12px; background: #f9fafb; border-radius: 6px;">
+                        <label style="font-size: 12px; font-weight: 700; color: #374151; display: block; margin-bottom: 4px;">Delay-update cooldown (min)</label>
+                        <input type="number" id="waOfdDelayCooldownMinutes" value="{{ $waOfdDelayCooldownMinutes }}" min="0" max="240" style="width: 100%; padding: 6px 8px; border: 1px solid #d1d5db; border-radius: 6px; text-align: center; font-weight: 700;" onchange="saveWaTriggerField('ofd_delay_resend_cooldown_minutes', parseInt(this.value, 10))">
+                        <div style="font-size: 11px; color: #6b7280; margin-top: 4px; line-height: 1.45;">Per-stop debounce — stops that received a delay-update in the last N minutes are skipped on the next manager press.</div>
+                    </div>
                 </div>
 
                 <div style="font-size: 11px; color: #6b7280; line-height: 1.55; padding: 8px 10px; background: #f9fafb; border-radius: 6px;">
-                    <b>Template params (in order):</b> <code>@{{1}}</code> = customer first name · <code>@{{2}}</code> = order number · <code>@{{3}}</code> = delivery time text<br>
-                    <b>Smart delivery time:</b> when the rider's GPS is fresh AND no earlier stop in their route slipped late, <code>@{{3}}</code> uses a window like <i>"7pm-8pm"</i> built from (Google ETA + buffer). Otherwise it falls back to the slot string (e.g. <i>"Afternoon 11 AM to 3 PM"</i>) so customers get a value either way.
+                    <b>Delivery template params (in order):</b> <code>@{{1}}</code> = customer first name · <code>@{{2}}</code> = order number · <code>@{{3}}</code> = delivery time text<br>
+                    <b>Self-collection template params:</b> <code>@{{1}}</code> = customer first name · <code>@{{2}}</code> = order number (no time variable)<br>
+                    <b>Delivery time text format:</b> ETA rounded DOWN to nearest 10 min, + 30 min for end of range. Example: ETA 7:32 PM → <i>"7:30 PM - 8:00 PM"</i>. Fallback for missing coords: the booking slot string (e.g. <i>"Afternoon 11 AM to 3 PM"</i>).
                 </div>
             </div>
         </div>
@@ -473,6 +499,104 @@
                         {{ $riderDeliveredEnabled ? 'Disable' : 'Enable' }}
                     </button>
                 </div>
+            </div>
+        </div>
+    </div>
+
+    {{-- Verified-Coords Backfill (May-2026) --}}
+    <div class="field-section" style="margin-bottom: 20px;">
+        <div class="field-header">
+            <div>
+                <div class="field-title">📍 Verified Pin · Coords Backfill</div>
+                <div class="field-subtitle">
+                    Fixes customers whose Verified Pin badge shows but the bundle loader can't pull
+                    lat/lng — usually because the pin was saved as a Google Maps short link
+                    (<code>maps.app.goo.gl/&hellip;</code>) that the server-side parser can't decode without
+                    following the redirect. <b>Run this once</b> on production after deploying the May-2026
+                    fix to clean up historical rows. Safe to re-run — only touches rows still missing coords.
+                </div>
+            </div>
+        </div>
+        <div class="field-body">
+            <div style="display: flex; flex-wrap: wrap; gap: 10px; align-items: center; padding: 12px 16px; background: #f9fafb; border-radius: 8px;">
+                <label style="font-size: 12px; color: #6b7280; display: flex; align-items: center; gap: 6px;">
+                    Batch size:
+                    <input id="vcBackfillLimit" type="number" min="10" max="1000" value="200"
+                           style="width: 80px; padding: 5px 8px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 13px; text-align: right;">
+                </label>
+                <button id="vcBackfillDryBtn" type="button" onclick="runVerifiedCoordsBackfill(true)"
+                        class="btn-sm btn-edit" style="padding: 7px 14px;">
+                    🔍 Dry Run (preview)
+                </button>
+                <button id="vcBackfillBtn" type="button" onclick="runVerifiedCoordsBackfill(false)"
+                        class="btn-add" style="padding: 7px 14px;">
+                    ▶️ Run Backfill
+                </button>
+                <span id="vcBackfillStatus" style="font-size: 12px; color: #6b7280; min-width: 0;"></span>
+            </div>
+            <div id="vcBackfillResult" style="display:none; margin-top: 10px; padding: 12px 16px; background: #f0f9ff; border: 1px solid #bae6fd; border-radius: 8px;">
+                <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; font-size: 12px;">
+                    <div style="text-align: center;">
+                        <div id="vcResFixed" style="font-size: 18px; font-weight: 800; color: #059669;">0</div>
+                        <div style="font-size: 10px; color: #6b7280; text-transform: uppercase; letter-spacing: .03em;">Fixed</div>
+                    </div>
+                    <div style="text-align: center;">
+                        <div id="vcResRemaining" style="font-size: 18px; font-weight: 800; color: #b45309;">0</div>
+                        <div style="font-size: 10px; color: #6b7280; text-transform: uppercase; letter-spacing: .03em;">Candidates Total</div>
+                    </div>
+                    <div style="text-align: center;">
+                        <div id="vcResProcessed" style="font-size: 18px; font-weight: 800; color: #1f2937;">0</div>
+                        <div style="font-size: 10px; color: #6b7280; text-transform: uppercase; letter-spacing: .03em;">Processed (this run)</div>
+                    </div>
+                    <div style="text-align: center;">
+                        <div id="vcResNeedAttn" style="font-size: 18px; font-weight: 800; color: #dc2626;">0</div>
+                        <div style="font-size: 10px; color: #6b7280; text-transform: uppercase; letter-spacing: .03em;">Need re-share</div>
+                    </div>
+                </div>
+                <div id="vcResUnresolvedBlock" style="display:none; margin-top: 10px;">
+                    <div style="font-size: 12px; font-weight: 700; color: #991b1b; margin-bottom: 4px;">
+                        Couldn't extract a pin — ask these customers to re-share their location:
+                    </div>
+                    <div id="vcResUnresolvedList" style="display: flex; flex-direction: column; gap: 3px; font-size: 12px; color: #374151; max-height: 200px; overflow-y: auto;"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    {{-- Qurbani Riders Whitelist (May-2026) --}}
+    <div class="field-section" style="margin-bottom: 20px;">
+        <div class="field-header">
+            <div>
+                <div class="field-title">🏍️ Qurbani Riders</div>
+                <div class="field-subtitle">
+                    Pick which riders show up in the mobile Qurbani screen — both the individual order picker
+                    AND the bulk-assign rider dropdown read from this same list. Leave nothing checked to fall
+                    back to "all active riders" (current default).
+                </div>
+            </div>
+        </div>
+        <div class="field-body">
+            <div style="display: flex; flex-wrap: wrap; gap: 10px; padding: 12px 16px; background: #f9fafb; border-radius: 8px;">
+                @forelse($allActiveRiders as $r)
+                    <label style="display: inline-flex; align-items: center; gap: 6px; padding: 6px 14px; border-radius: 8px; border: 1px solid #d1d5db; background: #fff; cursor: pointer; font-size: 13px; font-weight: 500; user-select: none;">
+                        <input
+                            type="checkbox"
+                            class="qurbani-rider-cb"
+                            value="{{ $r->id }}"
+                            {{ in_array((int) $r->id, $qurbaniRiderIds, true) ? 'checked' : '' }}
+                            onchange="saveQurbaniRiders()"
+                            style="accent-color: #b45309; width: 16px; height: 16px;">
+                        {{ $r->fullname }}
+                    </label>
+                @empty
+                    <span style="color: #9ca3af; font-size: 13px;">No active riders found.</span>
+                @endforelse
+            </div>
+            <div style="display: flex; align-items: center; gap: 10px; margin-top: 8px;">
+                <button type="button" onclick="qurbaniRidersSelectAll(true)" class="btn-sm btn-edit">Check all</button>
+                <button type="button" onclick="qurbaniRidersSelectAll(false)" class="btn-sm btn-delete">Uncheck all</button>
+                <span id="qurbaniRidersSaved" style="display:none; font-size: 12px; color: #059669; font-weight: 600;">✓ Saved</span>
+                <span id="qurbaniRidersErr" style="display:none; font-size: 12px; color: #dc2626; font-weight: 600;">Save failed — retry</span>
             </div>
         </div>
     </div>
@@ -608,6 +732,126 @@ function toggleRiderDelivered() {
         btn.disabled = false;
     })
     .catch(() => { showToast('Error updating setting', 'error'); btn.disabled = false; btn.textContent = 'Retry'; });
+}
+
+// May-2026 — UI wrapper for the verified-coords backfill artisan
+// command. Lets the admin chip away at the historical short-link
+// rows without ever needing SSH access. Batches are capped server-
+// side at 1000 per click so the HTTP request stays inside the PHP
+// timeout; the button auto-suggests another click when the
+// candidate count is still > 0 after the run completes.
+async function runVerifiedCoordsBackfill(dryRun) {
+    const btnGo = document.getElementById('vcBackfillBtn');
+    const btnDry = document.getElementById('vcBackfillDryBtn');
+    const status = document.getElementById('vcBackfillStatus');
+    const limitEl = document.getElementById('vcBackfillLimit');
+    let limit = parseInt((limitEl && limitEl.value) || '200', 10);
+    if (!Number.isFinite(limit) || limit < 10) limit = 10;
+    if (limit > 1000) limit = 1000;
+
+    btnGo.disabled = true; btnDry.disabled = true;
+    status.style.color = '#6b7280';
+    status.textContent = dryRun ? 'Running dry run…' : 'Running backfill…';
+
+    try {
+        const res = await fetch('{{ url("qurbani-settings/api/backfill-verified-coords") }}', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Accept': 'application/json', 'X-CSRF-TOKEN': '{{ csrf_token() }}' },
+            body: JSON.stringify({ dry_run: !!dryRun, limit: limit }),
+        });
+        const data = await res.json();
+        if (!data || !data.success) {
+            throw new Error((data && data.message) || ('HTTP ' + res.status));
+        }
+        const r = data.result || {};
+        // Populate the result tiles + unresolved list.
+        const setNum = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = String(v || 0); };
+        setNum('vcResFixed',      r.fixed);
+        setNum('vcResRemaining',  r.candidates);
+        setNum('vcResProcessed',  r.processed);
+        setNum('vcResNeedAttn',   r.unresolved_count);
+        const block = document.getElementById('vcResUnresolvedBlock');
+        const list = document.getElementById('vcResUnresolvedList');
+        if (Array.isArray(r.unresolved) && r.unresolved.length > 0 && list) {
+            const reasonMap = {
+                'short_link_not_expanded':   'short link couldn\'t expand',
+                'long_unparseable':          'long URL — unknown format',
+                'resolved_but_unparseable':  'redirect worked but no coords',
+                'network_error':             'cURL timeout / DNS error',
+            };
+            list.innerHTML = r.unresolved.map(u =>
+                '<div>#' + u.id + ' · ' + escapeHtml(u.name || '(no name)') +
+                '  <span style="color:#9ca3af;">[' + escapeHtml(reasonMap[u.reason] || u.reason) + ']</span></div>'
+            ).join('');
+            block.style.display = 'block';
+            if (r.unresolved_count > r.unresolved.length) {
+                list.innerHTML += '<div style="color:#9ca3af;">…and ' + (r.unresolved_count - r.unresolved.length) + ' more</div>';
+            }
+        } else if (block) {
+            block.style.display = 'none';
+        }
+        document.getElementById('vcBackfillResult').style.display = 'block';
+        status.style.color = (r.fixed > 0) ? '#059669' : '#6b7280';
+        // Friendly nudge if more candidates remain (run again).
+        const remaining = Math.max(0, (r.candidates || 0) - (r.processed || 0));
+        if (remaining > 0 && !dryRun) {
+            status.textContent = data.message + ' · ' + remaining + ' candidate(s) remaining — click "Run Backfill" again.';
+        } else {
+            status.textContent = data.message;
+        }
+    } catch (e) {
+        status.style.color = '#dc2626';
+        status.textContent = 'Backfill failed: ' + (e.message || 'unknown error');
+    } finally {
+        btnGo.disabled = false; btnDry.disabled = false;
+    }
+}
+
+function escapeHtml(s) {
+    return String(s == null ? '' : s)
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+// May-2026 — Qurbani Rider whitelist save handler. Debounced so a
+// rapid burst of clicks (e.g. "Check all") collapses into one POST.
+// Server stores the raw int[] under config key `qurbani_rider_ids`.
+let _qurbaniRidersTimer = null;
+function saveQurbaniRiders() {
+    if (_qurbaniRidersTimer) clearTimeout(_qurbaniRidersTimer);
+    _qurbaniRidersTimer = setTimeout(_qurbaniRidersFlush, 250);
+}
+function _qurbaniRidersFlush() {
+    const ids = [];
+    document.querySelectorAll('.qurbani-rider-cb').forEach(cb => {
+        if (cb.checked) ids.push(parseInt(cb.value, 10));
+    });
+    const okBadge = document.getElementById('qurbaniRidersSaved');
+    const errBadge = document.getElementById('qurbaniRidersErr');
+    if (okBadge) okBadge.style.display = 'none';
+    if (errBadge) errBadge.style.display = 'none';
+    fetch('{{ url("qurbani-settings/api/qurbani-riders") }}', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Accept': 'application/json', 'X-CSRF-TOKEN': '{{ csrf_token() }}' },
+        body: JSON.stringify({ rider_ids: ids })
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (data && data.success) {
+            if (okBadge) { okBadge.style.display = 'inline'; setTimeout(() => okBadge.style.display = 'none', 1800); }
+        } else {
+            if (errBadge) errBadge.style.display = 'inline';
+            showToast((data && data.message) || 'Failed to save rider list', 'error');
+        }
+    })
+    .catch(() => {
+        if (errBadge) errBadge.style.display = 'inline';
+        showToast('Error saving rider list', 'error');
+    });
+}
+function qurbaniRidersSelectAll(check) {
+    document.querySelectorAll('.qurbani-rider-cb').forEach(cb => { cb.checked = !!check; });
+    saveQurbaniRiders();
 }
 
 function saveHiddenCategories() {

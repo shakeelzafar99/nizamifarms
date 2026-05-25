@@ -505,6 +505,32 @@ class WhatsAppService
                 }
             }
 
+            // Phase 6 (May-2026) — Maps-URL fallback. Some customers reply
+            // with a "https://maps.app.goo.gl/..." link as plain text
+            // instead of attaching a real WhatsApp location pin. The
+            // service follows the shortlink, extracts lat/lng, and feeds
+            // the result through the same reply pipeline so the row lands
+            // in the Reviewer drawer next to the genuine pins. If the
+            // URL doesn't yield coords we silently no-op — the message
+            // itself is already saved above and staff can still use the
+            // "Set as Verified Location" button on /messages to handle
+            // it manually. Non-fatal on any error.
+            if ($type === 'text' && !empty($content)) {
+                try {
+                    app(\App\Services\QurbaniLocationRequestService::class)->recordUrlReply(
+                        $msg['context']['id'] ?? null,
+                        $from,
+                        (string) $content,
+                        $conversation->customer_id ? (int) $conversation->customer_id : null,
+                        $waMessageId
+                    );
+                } catch (\Exception $urlReplyErr) {
+                    Log::debug('WhatsApp: QurbaniLocReq URL link failed (non-fatal)', [
+                        'error' => $urlReplyErr->getMessage(),
+                    ]);
+                }
+            }
+
             // NOTE: Read receipts are NO LONGER sent automatically on webhook
             // receipt. They are sent only when a team member actually reads the
             // message in the UI (web or mobile). This prevents customers from

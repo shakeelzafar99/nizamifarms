@@ -239,30 +239,53 @@ class QurbaniWaAutoSender
     // ─── Trigger 2: Out-for-Delivery / Self-collection ────────────
 
     /**
-     * OFD/collect trigger has 3 timing modes:
+     * OFD trigger (May-2026 rev2). Drives off `qurbani_dispatched_at`
+     * — when the manager presses Dispatch in qurbani mode (or the
+     * rider presses Start in rider mode — same backend event) the
+     * line item enters this worker's candidate set. From there the
+     * eligibility per line item depends on its lane:
      *
-     *   after_status:           fire X min after qurbani_out_for_delivery_at
-     *   after_dispatch:         fire X min after qurbani_dispatched_at
-     *   before_eta_with_buffer: fire X min before (eta + buffer)
+     *   • Self-collection (delivery_type contains self/collect/pickup):
+     *       Fire IMMEDIATELY on dispatch using the self-collection
+     *       template — only 2 params (name, order#). No time window,
+     *       no ETA needed. Customer is coming to us; we just announce
+     *       readiness.
      *
-     * For after_status / after_dispatch the candidate query is a
-     * straight timestamp comparison. For before_eta_with_buffer we
-     * compute (eta + buffer) for each row and fire when (now() >=
-     * (eta + buffer) - X). All 3 modes additionally require:
-     *   • OFD status set
-     *   • require_dispatched (if on) → qurbani_dispatched_at set
-     *   • not previously logged 'sent' for trigger='ofd'
+     *   • Delivery + ETA exists:
+     *       Hold the send until (eta - now) <= eta_window_minutes
+     *       (default 120). At that point fire the delivery template
+     *       with 3 params: name, order#, and a rounded ETA range
+     *       built as floor(eta, 10min) → start, start+30min → end
+     *       (e.g. 7:32 → "7:30 PM - 8:00 PM"). This is the "don't
+     *       spam customers whose stop is 4 hours away" rule.
+     *
+     *   • Delivery + no ETA (missing coords case — Waseem-style):
+     *       Fire IMMEDIATELY on dispatch with the slot string
+     *       (e.g. "Afternoon 11 AM to 3 PM") as the {{3}} param.
+     *       Customer still gets a window, just a wider one — the
+     *       slot they originally booked.
+     *
+     * Stored in wa-log.delivery_time_used: the raw ETA timestamp we
+     * based the message on (NULL for self-collect / no-ETA paths).
+     * The manual delay-update flow compares this against current
+     * `qurbani_estimated_delivery_at` to find stops that need a
+     * second message.
+     *
+     * Worker runs every minute, so a stop whose ETA was 4 h away at
+     * dispatch silently rolls into the 2 h window 2 h later — no
+     * delivery-event hook needed.
      */
     private function processOfdTrigger(int $cap): array
     {
         $out = ['sent' => 0, 'skipped' => 0, 'failed' => 0];
 
-        $deliveryTpl   = trim((string) $this->cfg['ofd_template']);
-        $selfTpl       = trim((string) $this->cfg['ofd_self_collection_template']);
+        $deliveryTpl = trim((string) $this->cfg['ofd_template']);
+        $selfTpl     = trim((string) $this->cfg['ofd_self_collection_template']);
         if ($deliveryTpl === '' && $selfTpl === '') {
             return $out;
         }
 
+        $windowMin  = max(0, (int) $this->cfg['ofd_eta_window_minutes']);
         $candidates = $this->fetchOfdCandidates($cap);
 
         foreach ($candidates as $li) {
@@ -272,7 +295,6 @@ class QurbaniWaAutoSender
                     continue;
                 }
 
-                // Pick the right template based on delivery type.
                 $isSelfCollection = $this->isSelfCollection($li->qurbani_delivery_type);
                 $template = $isSelfCollection ? $selfTpl : $deliveryTpl;
                 if ($template === '') {
@@ -282,38 +304,64 @@ class QurbaniWaAutoSender
                     continue;
                 }
 
-                // Timing gate — does this candidate meet the timing rule right now?
-                $gate = $this->evaluateOfdTiming($li);
-                if (!$gate['ready']) {
-                    // Not eligible yet — DON'T log a skip row (would
-                    // never re-evaluate). Just move on; we'll see this
-                    // row again next run.
-                    continue;
+                // Build params + decide if eligible right now.
+                $etaUsed = null;
+                $params = null;
+
+                if ($isSelfCollection) {
+                    // Self-collection — fire immediately, 2 vars only.
+                    // The template body is configured in Meta to only
+                    // reference {{1}} (name) + {{2}} (order#); no time
+                    // variable. WhatsAppService::sendTemplateMessage
+                    // pads bodyParams to whatever the template expects,
+                    // so passing 2 is correct.
+                    $params = [
+                        $this->customerFirstName($li),
+                        $this->orderNumber($li),
+                    ];
+                } else {
+                    // Delivery — needs 3 params. ETA gates the send.
+                    $eta = $li->qurbani_estimated_delivery_at ?: null;
+                    if ($eta) {
+                        $etaCarbon = \Carbon\Carbon::parse($eta);
+                        // diffInMinutes(now(), false) returns negative
+                        // when the eta is in the future. We want
+                        // "minutes from now until eta" → flip the sign.
+                        $minutesUntil = -1 * $etaCarbon->diffInMinutes(now(), false);
+                        if ($minutesUntil > $windowMin) {
+                            // Too far out — silently skip; we'll re-evaluate
+                            // every minute and fire once it rolls in.
+                            continue;
+                        }
+                        $timeText = $this->formatTenMinRange($etaCarbon);
+                        $etaUsed = $etaCarbon->toDateTimeString();
+                    } else {
+                        // Missing coords / no ETA → slot fallback, fire now.
+                        $timeText = trim((string) ($li->qurbani_slot ?? ''));
+                    }
+                    $params = [
+                        $this->customerFirstName($li),
+                        $this->orderNumber($li),
+                        $timeText,
+                    ];
                 }
 
                 $phone = $this->resolveCustomerPhone($li);
                 if ($phone === null) {
-                    $this->logRow($li, 'ofd', $template, null, 'skipped', 'no_phone', $gate['delivery_time_used']);
+                    $this->logRow($li, 'ofd', $template, null, 'skipped', 'no_phone', $etaUsed);
                     $out['skipped']++;
                     continue;
                 }
                 [$sendTo, $loggedPhone] = $this->resolveSendTarget($phone);
 
-                $deliveryTimeText = $this->buildDeliveryTimeText($li);
-
-                $params = [
-                    $this->customerFirstName($li),
-                    $this->orderNumber($li),
-                    $deliveryTimeText,
-                ];
                 $logCtx = "Qurbani " . ($isSelfCollection ? 'collect' : 'OFD') . ": " . $this->orderNumber($li);
                 $sent = $this->sendTemplate($sendTo, $template, $params, $logCtx);
                 if ($sent['ok']) {
-                    $this->logRow($li, 'ofd', $template, $loggedPhone, 'sent', null, $gate['delivery_time_used'],
+                    $this->logRow($li, 'ofd', $template, $loggedPhone, 'sent', null, $etaUsed,
                         $sent['wa_message_id'] ?? null, $sent['conversation_id'] ?? null);
                     $out['sent']++;
                 } else {
-                    $this->logRow($li, 'ofd', $template, $loggedPhone, 'failed', $sent['error'] ?? 'send_failed', $gate['delivery_time_used']);
+                    $this->logRow($li, 'ofd', $template, $loggedPhone, 'failed', $sent['error'] ?? 'send_failed', $etaUsed);
                     $out['failed']++;
                 }
             } catch (\Throwable $e) {
@@ -327,32 +375,35 @@ class QurbaniWaAutoSender
 
     private function fetchOfdCandidates(int $cap)
     {
-        $requireDispatched = (bool) $this->cfg['ofd_require_dispatched'];
-
-        $q = DB::table('t_crm_prod_order_line_item as li')
+        // May-2026 rev2 — candidate set is now anchored to
+        // qurbani_dispatched_at (dispatch button), NOT the old
+        // qurbani_out_for_delivery_at (manual status flip). Dispatch
+        // = the manager pressing Dispatch in qurbani mode OR the
+        // rider pressing Start in rider mode — both call
+        // dispatchQurbaniRoute(target='pending') which stamps the
+        // same column. So the lane is unified regardless of who
+        // pressed.
+        //
+        // 24h lookback covers overnight-dispatch scenarios (manager
+        // sets up day-2 routes the previous evening). Older rows are
+        // ignored to prevent retroactive spam when the feature is
+        // toggled on after the fact.
+        return DB::table('t_crm_prod_order_line_item as li')
             ->join('t_crm_prod_order as o', 'o.id', '=', 'li.order_id')
             ->leftJoin('t_crm_customer as c', 'c.id', '=', 'o.customer_id')
-            ->whereNotNull('li.qurbani_out_for_delivery_at')
-            // Don't message after delivery completed.
+            ->whereNotNull('li.qurbani_dispatched_at')
             ->whereNull('li.qurbani_delivered_at')
-            // Lookback to today so old OFDs don't get retro-messaged.
-            ->where('li.qurbani_out_for_delivery_at', '>=', now()->subHours(12)->toDateTimeString())
+            ->where('li.qurbani_dispatched_at', '>=', now()->subHours(24)->toDateTimeString())
             ->whereNotExists(function ($q2) {
                 $q2->select(DB::raw(1))
                    ->from('t_ops_qurbani_wa_log as l')
                    ->whereColumn('l.line_item_id', 'li.id')
                    ->where('l.trigger_event', 'ofd')
                    ->where('l.status', 'sent');
-            });
-
-        if ($requireDispatched) {
-            $q->whereNotNull('li.qurbani_dispatched_at');
-        }
-
-        return $q->select(
+            })
+            ->select(
                 'li.id as line_item_id',
                 'li.order_id',
-                'li.qurbani_out_for_delivery_at',
                 'li.qurbani_dispatched_at',
                 'li.qurbani_estimated_delivery_at',
                 'li.qurbani_delivery_priority',
@@ -368,145 +419,305 @@ class QurbaniWaAutoSender
                 'c.last_name as customer_last_name',
                 'c.phone as customer_phone'
             )
-            ->orderBy('li.qurbani_out_for_delivery_at')
-            ->limit($cap * 3) // over-fetch — many will fail the timing gate, that's expected
+            // Earliest-ETA first so the 2h-window rule processes the
+            // nearest stops before the cap is exhausted. Rows with NULL
+            // ETA sort last in MySQL ASC, which is what we want too —
+            // those fire immediately regardless of position in the list.
+            ->orderByRaw('li.qurbani_estimated_delivery_at IS NULL, li.qurbani_estimated_delivery_at ASC')
+            ->limit($cap * 3) // over-fetch; window-gated rows will skip
             ->get();
     }
 
     /**
-     * Returns ['ready' => bool, 'delivery_time_used' => ?string].
-     * delivery_time_used is the (eta + buffer) timestamp when the
-     * timing mode is before_eta_with_buffer — useful for the wa-log.
-     */
-    private function evaluateOfdTiming($li): array
-    {
-        $mode = $this->cfg['ofd_timing_mode'];
-        $now  = now();
-
-        if ($mode === 'after_status') {
-            $delay = max(0, (int) $this->cfg['ofd_minutes_after_status']);
-            if (!$li->qurbani_out_for_delivery_at) return ['ready' => false, 'delivery_time_used' => null];
-            $fireAt = \Carbon\Carbon::parse($li->qurbani_out_for_delivery_at)->addMinutes($delay);
-            return ['ready' => $now->greaterThanOrEqualTo($fireAt), 'delivery_time_used' => null];
-        }
-
-        if ($mode === 'after_dispatch') {
-            $delay = max(0, (int) $this->cfg['ofd_minutes_after_dispatch']);
-            if (!$li->qurbani_dispatched_at) return ['ready' => false, 'delivery_time_used' => null];
-            $fireAt = \Carbon\Carbon::parse($li->qurbani_dispatched_at)->addMinutes($delay);
-            return ['ready' => $now->greaterThanOrEqualTo($fireAt), 'delivery_time_used' => null];
-        }
-
-        // before_eta_with_buffer
-        if (!$li->qurbani_estimated_delivery_at) {
-            return ['ready' => false, 'delivery_time_used' => null];
-        }
-        $buffer  = max(0, (int) $this->cfg['ofd_eta_buffer_minutes']);
-        $before  = max(0, (int) $this->cfg['ofd_minutes_before']);
-        $deliveryTime = \Carbon\Carbon::parse($li->qurbani_estimated_delivery_at)->addMinutes($buffer);
-        $fireAt = $deliveryTime->copy()->subMinutes($before);
-        return [
-            'ready'              => $now->greaterThanOrEqualTo($fireAt),
-            'delivery_time_used' => $deliveryTime->toDateTimeString(),
-        ];
-    }
-
-    // ─── Smart delivery-time text (ETA window vs slot fallback) ───
-
-    /**
-     * Build the {{3}} parameter for the OFD/collect message. Per
-     * user spec:
+     * Format a Carbon ETA as a rounded 10-min / +30-min range, e.g.
+     *   7:32 PM → "7:30 PM - 8:00 PM"
+     *   5:45 PM → "5:40 PM - 6:10 PM"
+     *   11:55 PM → "11:50 PM - 12:20 AM" (day rollover)
      *
-     *   IF rider GPS is fresh AND no earlier stop in this rider's
-     *   route slipped late, return a 1-hour window built from
-     *   (eta + buffer) — formatted "7pm-8pm".
-     *
-     *   ELSE return the slot string (e.g. "Afternoon 11 AM to 3 PM")
-     *   so the customer always gets *something*.
+     * Step 1 — round DOWN to the nearest 10-minute mark for the
+     *           start (so a stop estimated at 7:32 doesn't suggest
+     *           a 7:30-8:00 window to a customer expecting it now).
+     * Step 2 — start + 30 min for the end. Carbon's addMinutes
+     *           handles day/year rollover correctly.
+     * Format — `g:i A` (12h with AM/PM marker, leading zero
+     *           stripped). Picked over compact "7:30pm" because
+     *           customers replied to past tests asking what "7:30pm"
+     *           meant — the explicit "7:30 PM - 8:00 PM" with the
+     *           hyphen + spaces is unambiguous on Android + iPhone
+     *           WhatsApp clients.
      */
-    private function buildDeliveryTimeText($li): string
-    {
-        $slot = trim((string) ($li->qurbani_slot ?? ''));
-
-        // Quick exit if no ETA at all — slot is the only option.
-        if (empty($li->qurbani_estimated_delivery_at)) {
-            return $slot !== '' ? $slot : '';
-        }
-
-        $useEta = $this->canUseEtaForDeliveryText($li);
-        if (!$useEta) {
-            return $slot !== '' ? $slot : $this->formatHourWindow($li->qurbani_estimated_delivery_at, (int) $this->cfg['ofd_eta_buffer_minutes']);
-        }
-
-        return $this->formatHourWindow($li->qurbani_estimated_delivery_at, (int) $this->cfg['ofd_eta_buffer_minutes']);
-    }
-
-    /**
-     * Fresh GPS + no prior late delivery in this rider's sequence
-     * = ETA is trustworthy enough to message a window time.
-     */
-    private function canUseEtaForDeliveryText($li): bool
-    {
-        if (empty($li->qurbani_assigned_rider_user_id)) return false;
-
-        $gps = DB::table('t_ops_rider_location')
-            ->where('user_id', $li->qurbani_assigned_rider_user_id)
-            ->orderBy('captured_at', 'desc')
-            ->select('captured_at')
-            ->first();
-        if (!$gps || !$gps->captured_at) return false;
-        try {
-            $ageMin = (int) abs(now()->diffInMinutes(\Carbon\Carbon::parse($gps->captured_at)));
-            if ($ageMin > self::GPS_FRESH_MAX_MIN) return false;
-        } catch (\Exception $e) {
-            return false;
-        }
-
-        // Any earlier stop in this rider's route delivered > threshold late?
-        // We don't have a dispatch_sequence column, so we use the
-        // earlier estimated_delivery_at (or, failing that, dispatched_at)
-        // as a proxy for "earlier in the route". A stop that has actually
-        // been delivered is definitionally already past — comparing its
-        // delivered_at to its stored ETA tells us if it ran long.
-        $threshold = (int) ConfigModel::get('qurbani_eta_delay_threshold_minutes', '10');
-        if ($threshold < 1) $threshold = self::PRIOR_DELAY_THRESHOLD_MIN_FALLBACK;
-
-        $myEta = $li->qurbani_estimated_delivery_at;
-        $priorQ = DB::table('t_crm_prod_order_line_item')
-            ->where('qurbani_assigned_rider_user_id', $li->qurbani_assigned_rider_user_id)
-            ->whereNotNull('qurbani_delivered_at')
-            ->whereNotNull('qurbani_estimated_delivery_at')
-            ->whereRaw('TIMESTAMPDIFF(MINUTE, qurbani_estimated_delivery_at, qurbani_delivered_at) > ?', [$threshold]);
-        if ($myEta) {
-            // A stop is "before this one" if its planned ETA was earlier.
-            $priorQ->where('qurbani_estimated_delivery_at', '<', $myEta);
-        }
-        $priorDelayed = $priorQ->exists();
-
-        return !$priorDelayed;
-    }
-
-    /**
-     * Format a timestamp + buffer as a 1-hour window like "7pm-8pm".
-     * The window is anchored to the START of the (eta+buffer) hour
-     * so 19:30 → "7pm-8pm" and 19:55 → "7pm-8pm" but 20:05 → "8pm-9pm".
-     */
-    private function formatHourWindow($ts, int $bufferMinutes): string
+    private function formatTenMinRange(\Carbon\Carbon $eta): string
     {
         try {
-            $t = \Carbon\Carbon::parse($ts)->addMinutes(max(0, $bufferMinutes));
-            $start = $t->copy()->minute(0)->second(0);
-            $end   = $start->copy()->addHour();
-            return $this->formatHour($start) . '-' . $this->formatHour($end);
-        } catch (\Exception $e) {
+            $start = $eta->copy()->second(0)->minute(intdiv($eta->minute, 10) * 10);
+            $end   = $start->copy()->addMinutes(30);
+            return $start->format('g:i A') . ' - ' . $end->format('g:i A');
+        } catch (\Throwable $e) {
             return '';
         }
     }
 
-    private function formatHour(\Carbon\Carbon $t): string
+    // ─── Manual delay-update flow (May-2026 — manager-only) ──────
+
+    /**
+     * Find dispatched + un-delivered stops where the rider's CURRENT
+     * Google ETA differs from the timestamp we last messaged the
+     * customer about by more than `delay_threshold_minutes` (default
+     * 30). One row per line item (grouped by customer when returned
+     * to the UI).
+     *
+     * Used by:
+     *   - GET /api/qurbani/riders/{riderId}/delay-impacted — feeds
+     *     the manager banner in the mobile Qurbani Riders → Route
+     *     screen.
+     *   - sendDelayUpdate() below — server-side cross-check before
+     *     firing, so a stale UI payload can't trick the worker into
+     *     resending stops that aren't actually impacted any more.
+     *
+     * "Last messaged" is the most recent SUCCESSFUL wa-log row for
+     * this line item across BOTH trigger types ('ofd' and
+     * 'ofd_delay_update') — that way a previous delay-update resets
+     * the comparison baseline (you don't keep getting "30 min
+     * slipped" alerts for the same slip).
+     *
+     * Returns an array of stdClass rows:
+     *   { line_item_id, order_id, order_number, customer_id,
+     *     customer_name, qurbani_delivery_type,
+     *     messaged_eta_at, current_eta_at, delta_minutes,
+     *     last_trigger_event, in_cooldown (bool) }
+     */
+    public function findDelayImpactedStops(int $riderId): array
     {
-        // 7pm, 12am, 12pm, etc.
-        return strtolower($t->format('ga'));
+        $threshold = max(1, (int) $this->cfg['ofd_delay_threshold_minutes']);
+        $cooldown  = max(0, (int) $this->cfg['ofd_delay_resend_cooldown_minutes']);
+        $cooldownCutoff = $cooldown > 0
+            ? now()->subMinutes($cooldown)->toDateTimeString()
+            : null;
+
+        // Pull every stop on this rider's route that's dispatched +
+        // not delivered + has both a current ETA AND a previously-
+        // messaged ETA. Without either side of the comparison there's
+        // nothing to flag.
+        $rows = DB::select(
+            "SELECT
+                li.id              AS line_item_id,
+                li.order_id,
+                li.qurbani_delivery_type,
+                li.qurbani_estimated_delivery_at AS current_eta_at,
+                o.order_number,
+                o.customer_id,
+                o.address_first_name,
+                o.address_last_name,
+                c.first_name       AS customer_first_name,
+                c.last_name        AS customer_last_name,
+                (SELECT l.delivery_time_used FROM t_ops_qurbani_wa_log l
+                  WHERE l.line_item_id = li.id
+                    AND l.trigger_event IN ('ofd','ofd_delay_update')
+                    AND l.status = 'sent'
+                    AND l.delivery_time_used IS NOT NULL
+                  ORDER BY l.created_at DESC LIMIT 1) AS messaged_eta_at,
+                (SELECT l.trigger_event FROM t_ops_qurbani_wa_log l
+                  WHERE l.line_item_id = li.id
+                    AND l.trigger_event IN ('ofd','ofd_delay_update')
+                    AND l.status = 'sent'
+                  ORDER BY l.created_at DESC LIMIT 1) AS last_trigger_event,
+                (SELECT MAX(l.created_at) FROM t_ops_qurbani_wa_log l
+                  WHERE l.line_item_id = li.id
+                    AND l.trigger_event = 'ofd_delay_update'
+                    AND l.status = 'sent') AS last_delay_update_at
+             FROM t_crm_prod_order_line_item li
+             INNER JOIN t_crm_prod_order o ON o.id = li.order_id
+             LEFT JOIN t_crm_customer c ON c.id = o.customer_id
+             WHERE li.qurbani_assigned_rider_user_id = ?
+               AND li.qurbani_dispatched_at IS NOT NULL
+               AND li.qurbani_delivered_at IS NULL
+               AND li.qurbani_estimated_delivery_at IS NOT NULL",
+            [$riderId]
+        );
+
+        $impacted = [];
+        foreach ($rows as $r) {
+            if (empty($r->messaged_eta_at)) continue; // never messaged → no delay-update applicable
+            try {
+                $messaged = \Carbon\Carbon::parse($r->messaged_eta_at);
+                $current  = \Carbon\Carbon::parse($r->current_eta_at);
+                // Positive delta = current ETA is LATER than what we
+                // messaged. Negative would mean the rider's ahead of
+                // schedule, which the customer doesn't need to know about.
+                $delta = (int) $messaged->diffInMinutes($current, false);
+                if ($delta <= $threshold) continue;
+
+                $inCooldown = $cooldownCutoff !== null
+                    && !empty($r->last_delay_update_at)
+                    && strtotime((string) $r->last_delay_update_at) > strtotime($cooldownCutoff);
+
+                $name = trim(
+                    ($r->address_first_name ?? '') . ' ' .
+                    ($r->address_last_name ?? '')
+                );
+                if ($name === '') {
+                    $name = trim(($r->customer_first_name ?? '') . ' ' . ($r->customer_last_name ?? ''));
+                }
+                if ($name === '') $name = 'Customer';
+
+                $impacted[] = (object) [
+                    'line_item_id'          => (int) $r->line_item_id,
+                    'order_id'              => (int) $r->order_id,
+                    'order_number'          => (string) $r->order_number,
+                    'customer_id'           => $r->customer_id ? (int) $r->customer_id : null,
+                    'customer_name'         => $name,
+                    'qurbani_delivery_type' => (string) ($r->qurbani_delivery_type ?? ''),
+                    'messaged_eta_at'       => (string) $r->messaged_eta_at,
+                    'current_eta_at'        => (string) $r->current_eta_at,
+                    'delta_minutes'         => $delta,
+                    'last_trigger_event'    => (string) ($r->last_trigger_event ?? 'ofd'),
+                    'in_cooldown'           => (bool) $inCooldown,
+                ];
+            } catch (\Throwable $e) {
+                // Bad timestamp — skip this row, don't kill the whole list.
+                Log::debug('QurbaniWaAutoSender: delay impact parse failed', ['li' => $r->line_item_id, 'err' => $e->getMessage()]);
+            }
+        }
+
+        // Sort by largest delay first so the manager sees the worst
+        // slippage at the top of the list.
+        usort($impacted, function ($a, $b) {
+            return $b->delta_minutes <=> $a->delta_minutes;
+        });
+
+        return $impacted;
+    }
+
+    /**
+     * Manager-triggered re-send of the OFD delivery template with the
+     * NEW rounded-range time, for stops whose ETA has slipped.
+     *
+     * Caller (RiderController) is responsible for the permission gate.
+     * Idempotency/cooldown is enforced here so a runaway client can't
+     * spam customers — each line item gets at most one
+     * 'ofd_delay_update' send per `cooldown_minutes` window.
+     *
+     * @param int        $riderId
+     * @param int[]|null $lineItemIds  Optional whitelist. NULL = send
+     *                                 to every currently-impacted stop.
+     * @return array  ['sent'=>int, 'skipped'=>int, 'failed'=>int,
+     *                 'reasons'=>[ [li_id, reason], ... ] ]
+     */
+    public function sendDelayUpdate(int $riderId, ?array $lineItemIds = null): array
+    {
+        $out = ['sent' => 0, 'skipped' => 0, 'failed' => 0, 'reasons' => []];
+
+        // Master switch — same gate as the auto worker.
+        if (!$this->cfg['master_enabled']) {
+            $out['reasons'][] = ['reason' => 'master_off'];
+            return $out;
+        }
+        $deliveryTpl = trim((string) $this->cfg['ofd_template']);
+        if ($deliveryTpl === '') {
+            $out['reasons'][] = ['reason' => 'delivery_template_missing'];
+            return $out;
+        }
+
+        $impacted = $this->findDelayImpactedStops($riderId);
+        if (empty($impacted)) return $out;
+
+        // Build a quick lookup so we can also fetch the customer
+        // contact details for each impacted line item without an
+        // N+1. We need: address phone, customer phone, slot (for
+        // self-collect fallback never reached here — defensive).
+        $impactedIds = array_map(fn($r) => $r->line_item_id, $impacted);
+        if ($lineItemIds !== null) {
+            $whitelist = array_map('intval', $lineItemIds);
+            $impactedIds = array_values(array_intersect($impactedIds, $whitelist));
+            $impacted = array_values(array_filter($impacted, fn($r) => in_array($r->line_item_id, $impactedIds, true)));
+        }
+        if (empty($impacted)) return $out;
+
+        $details = DB::table('t_crm_prod_order_line_item as li')
+            ->join('t_crm_prod_order as o', 'o.id', '=', 'li.order_id')
+            ->leftJoin('t_crm_customer as c', 'c.id', '=', 'o.customer_id')
+            ->whereIn('li.id', $impactedIds)
+            ->select(
+                'li.id as line_item_id',
+                'li.order_id',
+                'li.qurbani_slot',
+                'li.qurbani_delivery_type',
+                'li.qurbani_estimated_delivery_at',
+                'o.order_number',
+                'o.customer_id',
+                'o.address_first_name',
+                'o.address_last_name',
+                'o.address_phone',
+                'c.first_name as customer_first_name',
+                'c.last_name as customer_last_name',
+                'c.phone as customer_phone'
+            )
+            ->get()
+            ->keyBy('line_item_id');
+
+        foreach ($impacted as $imp) {
+            $li = $details[$imp->line_item_id] ?? null;
+            if (!$li) {
+                $out['skipped']++;
+                $out['reasons'][] = ['li_id' => $imp->line_item_id, 'reason' => 'detail_missing'];
+                continue;
+            }
+            // Self-collect should never appear in the impacted list
+            // (no ETA-based message went out) — but defensively skip
+            // if it does.
+            if ($this->isSelfCollection($li->qurbani_delivery_type)) {
+                $out['skipped']++;
+                $out['reasons'][] = ['li_id' => $imp->line_item_id, 'reason' => 'self_collection_skipped'];
+                continue;
+            }
+            if ($imp->in_cooldown) {
+                $out['skipped']++;
+                $out['reasons'][] = ['li_id' => $imp->line_item_id, 'reason' => 'cooldown'];
+                continue;
+            }
+            try {
+                $eta = $li->qurbani_estimated_delivery_at;
+                if (empty($eta)) {
+                    $out['skipped']++;
+                    $out['reasons'][] = ['li_id' => $imp->line_item_id, 'reason' => 'no_current_eta'];
+                    continue;
+                }
+                $etaCarbon = \Carbon\Carbon::parse($eta);
+                $timeText  = $this->formatTenMinRange($etaCarbon);
+
+                $phone = $this->resolveCustomerPhone($li);
+                if ($phone === null) {
+                    $this->logRow($li, 'ofd_delay_update', $deliveryTpl, null, 'skipped', 'no_phone', $etaCarbon->toDateTimeString());
+                    $out['skipped']++;
+                    $out['reasons'][] = ['li_id' => $imp->line_item_id, 'reason' => 'no_phone'];
+                    continue;
+                }
+                [$sendTo, $loggedPhone] = $this->resolveSendTarget($phone);
+
+                $params = [
+                    $this->customerFirstName($li),
+                    $this->orderNumber($li),
+                    $timeText,
+                ];
+                $logCtx = "Qurbani OFD (delay update): " . $this->orderNumber($li);
+                $sent = $this->sendTemplate($sendTo, $deliveryTpl, $params, $logCtx);
+                if ($sent['ok']) {
+                    $this->logRow($li, 'ofd_delay_update', $deliveryTpl, $loggedPhone, 'sent', null, $etaCarbon->toDateTimeString(),
+                        $sent['wa_message_id'] ?? null, $sent['conversation_id'] ?? null);
+                    $out['sent']++;
+                } else {
+                    $this->logRow($li, 'ofd_delay_update', $deliveryTpl, $loggedPhone, 'failed', $sent['error'] ?? 'send_failed', $etaCarbon->toDateTimeString());
+                    $out['failed']++;
+                    $out['reasons'][] = ['li_id' => $imp->line_item_id, 'reason' => 'send_failed'];
+                }
+            } catch (\Throwable $e) {
+                Log::error('QurbaniWaAutoSender: delay-update row failed', ['li' => $imp->line_item_id, 'error' => $e->getMessage()]);
+                $out['failed']++;
+                $out['reasons'][] = ['li_id' => $imp->line_item_id, 'reason' => 'exception'];
+            }
+        }
+
+        return $out;
     }
 
     // ─── Helpers ──────────────────────────────────────────────────
@@ -663,12 +874,16 @@ class QurbaniWaAutoSender
             'ofd_enabled'                 => $bool('qurbani_wa_ofd_enabled', false),
             'ofd_template'                => (string) $get('qurbani_wa_ofd_template', ''),
             'ofd_self_collection_template' => (string) $get('qurbani_wa_ofd_self_collection_template', ''),
-            'ofd_require_dispatched'      => $bool('qurbani_wa_ofd_require_dispatched', true),
-            'ofd_timing_mode'             => (string) $get('qurbani_wa_ofd_timing_mode', 'before_eta_with_buffer'),
-            'ofd_minutes_after_status'    => $int('qurbani_wa_ofd_minutes_after_status', 0),
-            'ofd_minutes_after_dispatch'  => $int('qurbani_wa_ofd_minutes_after_dispatch', 30),
-            'ofd_eta_buffer_minutes'      => $int('qurbani_wa_ofd_eta_buffer_minutes', 15),
-            'ofd_minutes_before'          => $int('qurbani_wa_ofd_minutes_before', 15),
+
+            // May-2026 rev2 — new ETA-window rule + delay-update knobs.
+            // Old config keys (ofd_timing_mode, ofd_minutes_after_status,
+            // ofd_minutes_after_dispatch, ofd_eta_buffer_minutes,
+            // ofd_minutes_before, ofd_require_dispatched) are no longer
+            // consulted but left in t_fin_config so a future revert is
+            // a one-line revert here.
+            'ofd_eta_window_minutes'                => $int('qurbani_wa_ofd_eta_window_minutes', 120),
+            'ofd_delay_threshold_minutes'           => $int('qurbani_wa_ofd_delay_threshold_minutes', 30),
+            'ofd_delay_resend_cooldown_minutes'     => $int('qurbani_wa_ofd_delay_resend_cooldown_minutes', 15),
         ];
     }
 }

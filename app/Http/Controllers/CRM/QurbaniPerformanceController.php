@@ -146,23 +146,32 @@ class QurbaniPerformanceController extends Controller
         // KPI 4: delivered LATE — actual delivered time-of-day past
         // slot end (signed minutes > grace). Uses MySQL math so we
         // don't pull every row to PHP.
+        //
+        // May-2026 fix — `qurbani_slot_end_minute` is `SMALLINT UNSIGNED`,
+        // so naive subtraction `(... - li.qurbani_slot_end_minute)` poisons
+        // the whole expression to UNSIGNED and explodes with
+        // "BIGINT UNSIGNED value is out of range" on every row where the
+        // delivery was EARLY (a negative signed result would otherwise
+        // be perfectly normal). Forcing both operands to SIGNED keeps
+        // the comparison correct AND silent on early deliveries.
         $deliveredLate = (clone $base())
             ->where('li.qurbani_item_status', 'delivered')
             ->whereNotNull('li.qurbani_delivered_at')
             ->whereNotNull('li.qurbani_slot_end_minute')
             ->whereRaw(
-                '(HOUR(li.qurbani_delivered_at) * 60 + MINUTE(li.qurbani_delivered_at)) - li.qurbani_slot_end_minute > ?',
+                '(CAST(HOUR(li.qurbani_delivered_at) * 60 + MINUTE(li.qurbani_delivered_at) AS SIGNED) - CAST(li.qurbani_slot_end_minute AS SIGNED)) > ?',
                 [$graceMin]
             )
             ->count();
 
         // KPI 5: delivered ON TIME — same comparison but within grace.
+        // Same SIGNED cast as KPI 4 above — see comment there for why.
         $deliveredOnTime = (clone $base())
             ->where('li.qurbani_item_status', 'delivered')
             ->whereNotNull('li.qurbani_delivered_at')
             ->whereNotNull('li.qurbani_slot_end_minute')
             ->whereRaw(
-                '(HOUR(li.qurbani_delivered_at) * 60 + MINUTE(li.qurbani_delivered_at)) - li.qurbani_slot_end_minute <= ?',
+                '(CAST(HOUR(li.qurbani_delivered_at) * 60 + MINUTE(li.qurbani_delivered_at) AS SIGNED) - CAST(li.qurbani_slot_end_minute AS SIGNED)) <= ?',
                 [$graceMin]
             )
             ->count();
@@ -229,7 +238,11 @@ class QurbaniPerformanceController extends Controller
                 DB::raw("SUM(CASE WHEN li.qurbani_item_status = 'slaughtered' THEN 1 ELSE 0 END) as slaughtered"),
                 DB::raw("SUM(CASE WHEN li.qurbani_item_status = 'out_for_delivery' THEN 1 ELSE 0 END) as ofd"),
                 DB::raw("SUM(CASE WHEN li.qurbani_item_status = 'delivered' THEN 1 ELSE 0 END) as delivered"),
-                DB::raw("SUM(CASE WHEN li.qurbani_item_status = 'delivered' AND ((HOUR(li.qurbani_delivered_at) * 60 + MINUTE(li.qurbani_delivered_at)) - li.qurbani_slot_end_minute) > {$graceMin} THEN 1 ELSE 0 END) as delivered_late"),
+                // May-2026 fix — CAST to SIGNED on both sides; see comment
+                // on $deliveredLate KPI for why (qurbani_slot_end_minute is
+                // UNSIGNED and unsigned subtraction crashes on early
+                // deliveries).
+                DB::raw("SUM(CASE WHEN li.qurbani_item_status = 'delivered' AND (CAST(HOUR(li.qurbani_delivered_at) * 60 + MINUTE(li.qurbani_delivered_at) AS SIGNED) - CAST(li.qurbani_slot_end_minute AS SIGNED)) > {$graceMin} THEN 1 ELSE 0 END) as delivered_late"),
                 DB::raw('COUNT(*) as total')
             )
             ->groupBy('li.qurbani_delivery_type', 'li.qurbani_slot', 'li.qurbani_slot_end_minute')
@@ -412,20 +425,22 @@ class QurbaniPerformanceController extends Controller
                 $q->where('li.qurbani_item_status', 'delivered');
                 break;
             case 'delivered_on_time':
+                // May-2026 fix — CAST to SIGNED; see $deliveredLate KPI.
                 $q->where('li.qurbani_item_status', 'delivered')
                   ->whereNotNull('li.qurbani_delivered_at')
                   ->whereNotNull('li.qurbani_slot_end_minute')
                   ->whereRaw(
-                      '(HOUR(li.qurbani_delivered_at) * 60 + MINUTE(li.qurbani_delivered_at)) - li.qurbani_slot_end_minute <= ?',
+                      '(CAST(HOUR(li.qurbani_delivered_at) * 60 + MINUTE(li.qurbani_delivered_at) AS SIGNED) - CAST(li.qurbani_slot_end_minute AS SIGNED)) <= ?',
                       [$graceMin]
                   );
                 break;
             case 'delivered_late':
+                // May-2026 fix — CAST to SIGNED; see $deliveredLate KPI.
                 $q->where('li.qurbani_item_status', 'delivered')
                   ->whereNotNull('li.qurbani_delivered_at')
                   ->whereNotNull('li.qurbani_slot_end_minute')
                   ->whereRaw(
-                      '(HOUR(li.qurbani_delivered_at) * 60 + MINUTE(li.qurbani_delivered_at)) - li.qurbani_slot_end_minute > ?',
+                      '(CAST(HOUR(li.qurbani_delivered_at) * 60 + MINUTE(li.qurbani_delivered_at) AS SIGNED) - CAST(li.qurbani_slot_end_minute AS SIGNED)) > ?',
                       [$graceMin]
                   );
                 break;

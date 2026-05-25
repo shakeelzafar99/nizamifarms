@@ -292,6 +292,20 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('/qurbani/riders/{riderId}/optimize-route', [\App\Http\Controllers\API\RiderController::class, 'optimizeQurbaniRoute']);
     Route::post('/qurbani/riders/{riderId}/save-route', [\App\Http\Controllers\API\RiderController::class, 'saveQurbaniRoute']);
     Route::post('/qurbani/riders/{riderId}/dispatch', [\App\Http\Controllers\API\RiderController::class, 'dispatchQurbaniRoute']);
+    // May-2026 — handover support. Releases undelivered items from
+    // an active dispatch back to "pending" so they can be
+    // re-dispatched (same rider after a fix, or by a different
+    // rider after the manager reassigns via the bulk-rider flow).
+    // Accepts an optional batch_dispatched_at to target a specific
+    // wave; omitting it cancels ALL active waves for the rider.
+    Route::post('/qurbani/riders/{riderId}/cancel-dispatch', [\App\Http\Controllers\API\RiderController::class, 'cancelQurbaniDispatch']);
+    // Phase G (May-2026) — post-dispatch reorder. Lets the manager (or
+    // rider, on their own route) reshuffle ALREADY-dispatched bundles
+    // and recompute ETAs against the rider's current GPS. ETAs are
+    // only persisted when the new value differs from the saved value
+    // by more than `eta_threshold_min` (default 30) to keep customer-
+    // facing displays stable on minor reorders.
+    Route::post('/qurbani/riders/{riderId}/edit-dispatched-route', [\App\Http\Controllers\API\RiderController::class, 'editDispatchedRoute']);
     // Phase 1 (May-2026) — Live ETA tracking toggle. Either the manager
     // (with access_qurbani_mode) or the rider themselves can flip it.
     Route::post('/qurbani/riders/{riderId}/live-tracking', [\App\Http\Controllers\API\RiderController::class, 'setQurbaniLiveTracking']);
@@ -301,6 +315,14 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/qurbani/line-items/{lineItemId}/timeline', [\App\Http\Controllers\API\RiderController::class, 'getQurbaniOrderTimeline']);
     Route::post('/qurbani/riders/{riderId}/lock-route', [\App\Http\Controllers\API\RiderController::class, 'lockQurbaniRoute']);
     Route::delete('/qurbani/riders/{riderId}/lock-route', [\App\Http\Controllers\API\RiderController::class, 'unlockQurbaniRoute']);
+    // May-2026 (rev2) — manager-only WhatsApp delay-update flow.
+    // GET feeds the "N stops · ETA slipped 30+ min" banner in the
+    // mobile Qurbani Rider Route screen. POST resends the OFD template
+    // with the new rounded-range ETA, gated by a 15-min/stop cooldown
+    // enforced inside QurbaniWaAutoSender (so a runaway client can
+    // never spam the customer side).
+    Route::get('/qurbani/riders/{riderId}/delay-impacted',  [\App\Http\Controllers\API\RiderController::class, 'getQurbaniDelayImpacted']);
+    Route::post('/qurbani/riders/{riderId}/send-delay-update', [\App\Http\Controllers\API\RiderController::class, 'sendQurbaniDelayUpdate']);
     Route::put('/orders/{orderId}/line-items/{lineItemId}/instructions', [\App\Http\Controllers\API\RiderController::class, 'updateLineItemInstructions']);
     Route::get('/orders/{id}/payments', [\App\Http\Controllers\API\RiderController::class, 'getOrderPayments']);
     Route::post('/orders/{id}/payments', [\App\Http\Controllers\API\RiderController::class, 'addOrderPayment']);

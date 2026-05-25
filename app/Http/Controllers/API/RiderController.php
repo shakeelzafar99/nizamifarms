@@ -37,32 +37,149 @@ class RiderController extends Controller
         if (empty($url)) {
             return null;
         }
-        
-        // Pattern 1: ?q=lat,lng or ?ll=lat,lng
-        if (preg_match('/[?&](q|ll)=(-?\d+\.?\d*),(-?\d+\.?\d*)/', $url, $matches)) {
-            return [
-                'latitude' => (float) $matches[2],
-                'longitude' => (float) $matches[3],
-            ];
+        $url = trim((string) $url);
+
+        // Helper — sanity-check that a captured (lat,lng) pair looks like a
+        // real geographic coordinate before returning it. Google Maps URLs
+        // are full of "1234,5678" style data tokens that can match a naive
+        // /(\d+),(\d+)/ regex and yield nonsense coords (e.g. -91, 200).
+        $accept = function ($lat, $lng) {
+            $lat = (float) $lat; $lng = (float) $lng;
+            if ($lat == 0.0 && $lng == 0.0) return null; // null-island guard
+            if ($lat < -90.0 || $lat > 90.0) return null;
+            if ($lng < -180.0 || $lng > 180.0) return null;
+            return ['latitude' => $lat, 'longitude' => $lng];
+        };
+
+        // Pattern 1: ?q=lat,lng / ?ll=lat,lng / &destination=lat,lng /
+        // ?daddr=lat,lng — covers query-string variants used by classic
+        // Maps, Directions deep links, and iOS Maps shares.
+        if (preg_match('/[?&](?:q|ll|destination|daddr|saddr)=(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?)/i', $url, $m)) {
+            if ($r = $accept($m[1], $m[2])) return $r;
         }
-        
-        // Pattern 2: @lat,lng in URL path (e.g., /maps/@33.6844,73.0479,15z or /maps/place/.../@33.6844,73.0479,15z)
-        if (preg_match('/@(-?\d+\.?\d*),(-?\d+\.?\d*)/', $url, $matches)) {
-            return [
-                'latitude' => (float) $matches[1],
-                'longitude' => (float) $matches[2],
-            ];
+
+        // Pattern 2: @lat,lng in URL path (map centre marker — present on
+        // most desktop /maps/ URLs and shared "place" links).
+        if (preg_match('/@(-?\d+\.\d+),(-?\d+\.\d+)/', $url, $m)) {
+            if ($r = $accept($m[1], $m[2])) return $r;
         }
-        
-        // Pattern 3: place/lat,lng format
-        if (preg_match('/place\/(-?\d+\.?\d*),(-?\d+\.?\d*)/', $url, $matches)) {
-            return [
-                'latitude' => (float) $matches[1],
-                'longitude' => (float) $matches[2],
-            ];
+
+        // Pattern 3: /place/lat,lng/
+        if (preg_match('/\/place\/(-?\d+\.\d+),(-?\d+\.\d+)/', $url, $m)) {
+            if ($r = $accept($m[1], $m[2])) return $r;
         }
-        
+
+        // Pattern 4 (May-2026) — Google's "data" URI uses !3d<lat>!4d<lng>
+        // to encode the *exact* user-dropped pin (the @lat,lng before it
+        // is just the map viewport centre, which can be off by 100m+ on
+        // zoom changes). Long share URLs straight from the Android Maps
+        // app look like:
+        //   https://www.google.com/maps/place/Foo/@33.68,73.04,17z/
+        //     data=!3m1!4b1!4m6!3m5!1s0x...:0x...!7e2!8m2!3d33.6844!4d73.0479
+        // Picking the !3d/!4d pair preserves the true dropped pin and is
+        // strictly more accurate than the @lat,lng fallback.
+        if (preg_match('/!3d(-?\d+\.\d+)!4d(-?\d+\.\d+)/', $url, $m)) {
+            if ($r = $accept($m[1], $m[2])) return $r;
+        }
+
+        // Pattern 5 (May-2026) — Directions deep link destination:
+        //   https://www.google.com/maps/dir/?api=1&destination=lat,lng
+        //   https://www.google.com/maps/dir//lat,lng/
+        if (preg_match('/\/dir\/(?:[^\/]*\/)?(-?\d+\.\d+),(-?\d+\.\d+)/', $url, $m)) {
+            if ($r = $accept($m[1], $m[2])) return $r;
+        }
+
+        // Pattern 6 (May-2026) — bare coords in path (e.g. some shortened
+        // share-sheet variants of /maps?q):  /maps/<lat>,<lng>
+        if (preg_match('/\/maps\/(-?\d+\.\d+),(-?\d+\.\d+)(?:[\/,?]|$)/', $url, $m)) {
+            if ($r = $accept($m[1], $m[2])) return $r;
+        }
+
+        // NOTE — `maps.app.goo.gl` / `goo.gl/maps` short links cannot be
+        // parsed in-process because the coords are only revealed after an
+        // HTTP redirect chain. Resolution should happen at the time the
+        // URL is saved (LocationService::saveVerifiedLocation already
+        // expands short links to a long URL before storing it). If a
+        // short link slipped through, the caller will see null here and
+        // surface the dispatch warning so a human can re-save the pin.
+
         return null;
+    }
+
+    /**
+     * Lightweight diagnostic — distinguishes "URL totally unparseable"
+     * from "URL is a known short-link format we couldn't expand" so the
+     * dispatch warning banner can show a more actionable message
+     * (e.g. "re-share the pin so we can parse it" vs "unknown format").
+     * Pure function, no I/O.
+     */
+    private function classifyUnparseableMapUrl(?string $url): ?string
+    {
+        if (empty($url)) return null;
+        $u = strtolower(trim((string) $url));
+        if (str_contains($u, 'maps.app.goo.gl') || str_contains($u, 'goo.gl/maps')) {
+            return 'short_link_not_expanded';
+        }
+        if (str_contains($u, 'plus.codes/') || preg_match('/[23456789CFGHJMPQRVWX]{4,}\+[23456789CFGHJMPQRVWX]{2,}/', strtoupper($url))) {
+            return 'plus_code';
+        }
+        if (str_contains($u, 'apple.com/maps') || str_contains($u, 'maps.apple.com')) {
+            return 'apple_maps_share';
+        }
+        return 'unknown_format';
+    }
+
+    /**
+     * Resolve a customer's effective dispatch coordinates (Phase E,
+     * May-2026 fix for the "Nth order has no ETA" bug).
+     *
+     * Priority order:
+     *   1. Saved pin (c.latitude / c.longitude) — the canonical source.
+     *   2. Parse c.verified_location_url — covers legacy customers and
+     *      Phase-3 location-request replies where the URL was saved
+     *      but the lat/lng pin columns were never backfilled. Before
+     *      this fallback, those bundles shipped cust_lat=NULL, which
+     *      silently excluded them from the Google Directions waypoint
+     *      list — manifesting as "the 5th order sometimes has no ETA".
+     *
+     * Returns ['lat' => ?float, 'lng' => ?float, 'source' => 'pin'|'url'|null].
+     */
+    private function resolveCustomerDispatchCoords($customer): array
+    {
+        if (!$customer) {
+            return ['lat' => null, 'lng' => null, 'source' => null, 'reason' => 'no_customer'];
+        }
+        if (!empty($customer->latitude) && !empty($customer->longitude)) {
+            return [
+                'lat'    => (float) $customer->latitude,
+                'lng'    => (float) $customer->longitude,
+                'source' => 'pin',
+                'reason' => null,
+            ];
+        }
+        if (!empty($customer->verified_location_url)) {
+            $parsed = $this->parseCoordinatesFromGoogleMapsUrl($customer->verified_location_url);
+            if ($parsed && isset($parsed['latitude'], $parsed['longitude'])) {
+                return [
+                    'lat'    => (float) $parsed['latitude'],
+                    'lng'    => (float) $parsed['longitude'],
+                    'source' => 'url',
+                    'reason' => null,
+                ];
+            }
+            // May-2026 — URL exists but our parser couldn't extract a
+            // lat/lng pair. Surface a diagnostic reason so the mobile
+            // warning banner can tell the rider exactly what went wrong
+            // (e.g. a maps.app.goo.gl short link the original capture
+            // never expanded) instead of the generic "missing coords".
+            return [
+                'lat'    => null,
+                'lng'    => null,
+                'source' => null,
+                'reason' => $this->classifyUnparseableMapUrl($customer->verified_location_url) ?: 'url_unparseable',
+            ];
+        }
+        return ['lat' => null, 'lng' => null, 'source' => null, 'reason' => 'no_pin_no_url'];
     }
 
     /**
@@ -465,32 +582,50 @@ class RiderController extends Controller
                 // URL provided - resolve if shortened and extract coordinates
                 $originalUrl = $validated['url'];
                 $resolvedUrl = $this->resolveGoogleMapsUrl($originalUrl);
-                
-                // Store the original URL (user-provided)
-                $updateData['verified_location_url'] = $originalUrl;
-                
+
+                // May-2026 fix — previously this stored $originalUrl
+                // even when the URL was a maps.app.goo.gl short link
+                // that resolveGoogleMapsUrl had already expanded. The
+                // bundle loader's per-request parser
+                // (parseCoordinatesFromGoogleMapsUrl) cannot follow
+                // redirects in-process, so those rows shipped with
+                // verified_location_url set + lat/lng NULL —
+                // manifesting as the rider's "Verified Pin" badge
+                // showing AT THE SAME TIME as the missing-coords
+                // warning (Waseem Aslam case).
+                //
+                // Storing the resolved long URL when we have one
+                // keeps the badge meaningful AND lets every
+                // downstream parser succeed without a network round
+                // trip. We fall back to the original URL only when
+                // resolution didn't change anything (already long).
+                $urlToStore = !empty($resolvedUrl) ? $resolvedUrl : $originalUrl;
+                $updateData['verified_location_url'] = $urlToStore;
+
                 // Try to parse coordinates from the resolved URL
                 $parsedCoords = $this->parseCoordinatesFromGoogleMapsUrl($resolvedUrl);
-                
+
                 if ($parsedCoords) {
                     // Successfully extracted coordinates - save them too!
                     $updateData['latitude'] = $parsedCoords['latitude'];
                     $updateData['longitude'] = $parsedCoords['longitude'];
-                    
+
                     \Log::info('Setting verified location from URL with extracted coordinates', [
                         'customer_id' => $customerId,
                         'original_url' => $originalUrl,
                         'resolved_url' => $resolvedUrl,
-                        'latitude' => $parsedCoords['latitude'],
+                        'stored_url'   => $urlToStore,
+                        'latitude'  => $parsedCoords['latitude'],
                         'longitude' => $parsedCoords['longitude'],
-                        'saved_by' => Auth::user()->fullname,
+                        'saved_by'  => Auth::user()->fullname,
                     ]);
                 } else {
-                    \Log::info('Setting verified location URL (coordinates not extracted)', [
+                    \Log::warning('Setting verified location URL but COORDS NOT EXTRACTED — bundle loader will treat this customer as missing-coords', [
                         'customer_id' => $customerId,
-                        'url' => $originalUrl,
-                        'resolved_url' => $resolvedUrl,
-                        'saved_by' => Auth::user()->fullname,
+                        'url'         => $originalUrl,
+                        'resolved_url'=> $resolvedUrl,
+                        'stored_url'  => $urlToStore,
+                        'saved_by'    => Auth::user()->fullname,
                     ]);
                 }
             }
@@ -8838,7 +8973,44 @@ class RiderController extends Controller
                     'u.id',
                     'u.fullname',
                 ]);
-            
+
+            // May-2026 — `mode=qurbani` opts into the Qurbani-rider
+            // whitelist configured in Qurbani Settings. When the
+            // config is empty we fall through to the default
+            // "all active riders" list so existing installs don't
+            // break. Both the individual order detail picker and the
+            // bulk-rider modal in QurbaniOpenOrdersScreen request
+            // this filtered list so the same names show up in both.
+            if ($request->input('mode') === 'qurbani') {
+                $raw = (string) \App\Models\FIN\ConfigModel::get('qurbani_rider_ids', '[]');
+                $ids = json_decode($raw, true);
+                if (is_array($ids)) {
+                    $ids = array_values(array_filter(array_map('intval', $ids), fn($v) => $v > 0));
+                    if (!empty($ids)) {
+                        $filtered = $riders->filter(fn($r) => in_array((int) $r->id, $ids, true))->values();
+                        // Defensive — if every whitelisted user has since
+                        // been deactivated we'd otherwise hand back an
+                        // empty list, which would silently hide riders
+                        // from the mobile picker. Fall back to "all
+                        // active" with a hint flag instead.
+                        if ($filtered->count() > 0) {
+                            return response()->json([
+                                'success'   => true,
+                                'riders'    => $filtered,
+                                'mode'      => 'qurbani',
+                                'whitelist' => true,
+                            ]);
+                        }
+                    }
+                }
+                return response()->json([
+                    'success'   => true,
+                    'riders'    => $riders,
+                    'mode'      => 'qurbani',
+                    'whitelist' => false,
+                ]);
+            }
+
             return response()->json([
                 'success' => true,
                 'riders' => $riders
@@ -18579,10 +18751,14 @@ class RiderController extends Controller
 
                 // Verified-location info — surfaced so the rider can see
                 // who saved the pin BEFORE tapping the address.
+                // Phase E (May-2026) — resolve through the URL-parse
+                // fallback so customers with verified_location_url but
+                // no pin row aren't silently dropped from ETA calcs.
                 $cust = $order->customer;
-                $hasCoords = $cust && !empty($cust->latitude) && !empty($cust->longitude);
-                $custLat = $hasCoords ? (float) $cust->latitude : null;
-                $custLng = $hasCoords ? (float) $cust->longitude : null;
+                $resolved = $this->resolveCustomerDispatchCoords($cust);
+                $hasCoords = $resolved['lat'] !== null && $resolved['lng'] !== null;
+                $custLat = $resolved['lat'];
+                $custLng = $resolved['lng'];
 
                 // The order's "route position" = the min priority across
                 // its bundles (a customer with priority-1 stop comes
@@ -18622,6 +18798,13 @@ class RiderController extends Controller
                     'verified_location_saved_by' => $cust->verified_location_saved_by ?? null,
                     'verified_location_saved_at' => $cust && $cust->verified_location_saved_at
                         ? (string) $cust->verified_location_saved_at : null,
+                    // May-2026 diagnostic — when this is non-null the
+                    // mobile warning banner can tell the rider WHY the
+                    // pin couldn't be turned into coords (short link not
+                    // expanded, plus code, etc.) instead of the generic
+                    // "missing coords".
+                    'coords_source' => $resolved['source'] ?? null,
+                    'coords_reason' => $resolved['reason'] ?? null,
                 ];
             }
 
@@ -19943,9 +20126,14 @@ class RiderController extends Controller
             }
 
             $cust = $order->customer;
-            $hasCoords = $cust && !empty($cust->latitude) && !empty($cust->longitude);
-            $custLat = $hasCoords ? (float) $cust->latitude : null;
-            $custLng = $hasCoords ? (float) $cust->longitude : null;
+            // Phase E (May-2026) — resolve cust_lat/lng through the
+            // URL-parse fallback. Otherwise customers with only
+            // verified_location_url (no pin row) drop out of the
+            // Google Directions waypoint list and skip ETA calc.
+            $resolved = $this->resolveCustomerDispatchCoords($cust);
+            $hasCoords = $resolved['lat'] !== null && $resolved['lng'] !== null;
+            $custLat = $resolved['lat'];
+            $custLng = $resolved['lng'];
             // Verified-location metadata: who saved/last-updated the
             // pin and when. Surfaced so the rider knows whose pin
             // they're trusting before they tap an address.
@@ -19968,6 +20156,10 @@ class RiderController extends Controller
                 'verified_location_url' => $cust->verified_location_url ?? null,
                 'verified_location_saved_by' => $verifiedBy,
                 'verified_location_saved_at' => $verifiedAt ? (string) $verifiedAt : null,
+                // May-2026 diagnostic for the rider's missing-coords
+                // banner; see RiderController::resolveCustomerDispatchCoords.
+                'coords_source' => $resolved['source'] ?? null,
+                'coords_reason' => $resolved['reason'] ?? null,
             ];
 
             foreach ($myItems as $li) {
@@ -19988,6 +20180,8 @@ class RiderController extends Controller
                         'verified_location_url'   => $orderShells[$order->id]['verified_location_url'],
                         'verified_location_saved_by' => $orderShells[$order->id]['verified_location_saved_by'],
                         'verified_location_saved_at' => $orderShells[$order->id]['verified_location_saved_at'],
+                        'coords_source'           => $orderShells[$order->id]['coords_source'] ?? null,
+                        'coords_reason'           => $orderShells[$order->id]['coords_reason'] ?? null,
                         'qurbani_day'             => $li->qurbani_day,
                         'qurbani_slot'            => $li->qurbani_slot,
                         'qurbani_slot_start_minute' => $li->qurbani_slot_start_minute !== null ? (int) $li->qurbani_slot_start_minute : null,
@@ -20249,6 +20443,14 @@ class RiderController extends Controller
                     \DB::raw("SUM(CASE WHEN li.qurbani_item_status='delivered' THEN 1 ELSE 0 END) as delivered_items"),
                     \DB::raw("SUM(CASE WHEN li.qurbani_item_status IS NULL OR li.qurbani_item_status NOT IN ('delivered','out_for_delivery') THEN 1 ELSE 0 END) as pending_items"),
                     \DB::raw("MAX(li.qurbani_dispatched_at) as last_dispatched_at"),
+                    // May-2026 — Haider-bug fix. Surface the most recent
+                    // delivery timestamp too so the mobile riders summary
+                    // can show "Finished delivery Xm ago" (vs "Dispatched
+                    // Xm ago") once every assigned item is delivered.
+                    // Without this, a rider who completed his run hours
+                    // ago kept showing "Last dispatched 5m ago" purely
+                    // because the dispatch time stuck around.
+                    \DB::raw("MAX(li.qurbani_delivered_at) as last_delivered_at"),
                 ])
                 ->groupBy('u.id', 'u.fullname')
                 ->orderBy('u.fullname', 'asc')
@@ -20319,6 +20521,7 @@ class RiderController extends Controller
                     'ofd_items' => (int) $r->ofd_items,
                     'delivered_items' => (int) $r->delivered_items,
                     'last_dispatched_at' => $r->last_dispatched_at ? (string) $r->last_dispatched_at : null,
+                    'last_delivered_at'  => $r->last_delivered_at  ? (string) $r->last_delivered_at  : null,
                     'route_locked' => (bool) $lock,
                     'route_lock' => $lock ? [
                         'locked_by' => (int) $lock->locked_by,
@@ -20992,6 +21195,306 @@ class RiderController extends Controller
     }
 
     /**
+     * POST /api/rider/qurbani/riders/{riderId}/edit-dispatched-route
+     *
+     * Phase G (May-2026) — post-dispatch reorder.
+     *
+     * Lets the manager (or rider on their own route) reshuffle the
+     * sequence of bundles that have ALREADY been dispatched, without
+     * having to un-dispatch and re-dispatch the route. Useful when
+     * field conditions change mid-run: a customer says "come in an
+     * hour", a road is blocked, weather rerouting, etc.
+     *
+     * Differences from `saveQurbaniRoute`:
+     *   - Accepts priority updates on dispatched bundles (the older
+     *     endpoint silently skips them by design).
+     *   - Recomputes ETAs against the rider's CURRENT origin (GPS if
+     *     fresh, else base / office — same chain as dispatch + refresh).
+     *   - 30-minute delta gate: a recomputed ETA is only persisted
+     *     when it differs from the saved ETA by MORE than
+     *     `eta_threshold_min` (default 30). Below the threshold the
+     *     old ETA is kept so customer-facing surfaces (rider screen,
+     *     auto-WA "Out for delivery" timing, future ETA pushes) don't
+     *     flicker on every small reorder. The manager still sees the
+     *     `eta_changes` array in the response so they know what the
+     *     fresh Google ETA would have been.
+     *
+     * Caller pattern:
+     *   - Mobile sends the full new sequence (dispatched + pending)
+     *     on the 5-second debounce after the manager finishes
+     *     reordering, AND again when they press "Save & Exit".
+     *   - Server does the heavy lifting (Google call + delta gate +
+     *     persistence). Mobile just shows the summary toast.
+     *
+     * Request body:
+     *   {
+     *     sequence: [{ bundle_key: string, priority: int }, ...],
+     *     recompute: bool          // default true; false = priorities only
+     *     eta_threshold_min: int   // default 30; clamp 0..240
+     *   }
+     */
+    public function editDispatchedRoute(Request $request, $riderId)
+    {
+        try {
+            $user = Auth::user();
+            $isOwnRoute = ((int) $user->id === (int) $riderId);
+            if (!$isOwnRoute && !$user->hasMobilePermission('access_qurbani_mode')) {
+                return response()->json(['success' => false, 'message' => 'Permission denied'], 403);
+            }
+
+            $validated = $request->validate([
+                'sequence' => 'required|array|min:1',
+                'sequence.*.bundle_key' => 'required|string',
+                'sequence.*.priority' => 'required|integer|min:1',
+                'recompute' => 'sometimes|boolean',
+                'eta_threshold_min' => 'sometimes|integer|min:0|max:240',
+            ]);
+            $recompute = $request->boolean('recompute', true);
+            $threshold = (int) ($validated['eta_threshold_min'] ?? 30);
+
+            // Lock check — block anyone else from editing while a
+            // different user has the route locked.
+            $lock = $this->getQurbaniRouteLockInfo($riderId);
+            if ($lock && (int) $lock['locked_by'] !== (int) $user->id) {
+                return response()->json([
+                    'success' => false,
+                    'message' => "Route is locked by {$lock['locked_by_name']}. Unlock it first to change the dispatched sequence.",
+                    'route_locked' => true,
+                    'locked_by_name' => $lock['locked_by_name'],
+                ], 423);
+            }
+
+            $route = $this->buildQurbaniRiderRoute($riderId, 'all');
+            $bundles = $route['bundles'];
+            $byKey = [];
+            foreach ($bundles as $b) {
+                $byKey[$b['bundle_key']] = $b;
+            }
+
+            // 1) Persist priorities for every non-delivered bundle in
+            //    the supplied sequence (dispatched OR pending). The
+            //    delivered guard is enforced both at the PHP level
+            //    AND the DB query so a stale client can't accidentally
+            //    rewrite a delivered item's priority.
+            \DB::beginTransaction();
+            $updatedItems = 0;
+            $updatedBundles = 0;
+            $touchedDispatchedKeys = [];
+            foreach ($validated['sequence'] as $entry) {
+                $b = $byKey[$entry['bundle_key']] ?? null;
+                if (!$b) continue;
+                $ds = $b['bundle_dispatch_status'] ?? 'pending';
+                if ($ds === 'delivered') continue;
+                $itemIds = array_map(fn($it) => $it['id'], $b['items']);
+                if (empty($itemIds)) continue;
+                $rows = \DB::table('t_crm_prod_order_line_item')
+                    ->whereIn('id', $itemIds)
+                    ->where('qurbani_assigned_rider_user_id', $riderId)
+                    ->whereNull('qurbani_delivered_at')
+                    ->update([
+                        'qurbani_delivery_priority' => $entry['priority'],
+                        'updated_at' => now(),
+                    ]);
+                if ($rows > 0) {
+                    $updatedBundles++;
+                    $updatedItems += $rows;
+                    if ($ds === 'dispatched') {
+                        $touchedDispatchedKeys[] = $b['bundle_key'];
+                    }
+                }
+            }
+            \DB::commit();
+
+            // 2) Optionally recompute ETAs for the (now-reordered)
+            //    dispatched batch and apply the delta gate.
+            $etaChanges = [];
+            $etaWritten = 0;
+            $etaSkipped = 0;
+            $totalDurationMin = null;
+            $returnToBase = null;
+            $originSource = null;
+            $bundlesNoLoc = [];
+            $googleFailed = false;
+
+            if ($recompute) {
+                $route2 = $this->buildQurbaniRiderRoute($riderId, 'open');
+                $ofdBundles = array_values(array_filter($route2['bundles'], function ($b) {
+                    $ds = $b['bundle_dispatch_status'] ?? 'pending';
+                    return ($b['bundle_status'] ?? '') === 'out_for_delivery' && $ds === 'dispatched';
+                }));
+                // Sort by the freshly-saved priority so the Google
+                // call uses the new order.
+                usort($ofdBundles, function ($a, $b) {
+                    $pa = $a['qurbani_delivery_priority'] ?? 9999;
+                    $pb = $b['qurbani_delivery_priority'] ?? 9999;
+                    return $pa <=> $pb;
+                });
+
+                if (!empty($ofdBundles)) {
+                    // Origin chain — same 30-min freshness window as
+                    // the manager-side Refresh ETA path; we're not in
+                    // the rider's auto-loop so we don't need the
+                    // 5-min refresh-self window here.
+                    $origin = \App\Services\LocationService::getQurbaniOriginForRider($riderId, 30);
+                    if ($origin) {
+                        $originSource = $origin['source'];
+                        $waypoints = [['lat' => (float) $origin['latitude'], 'lng' => (float) $origin['longitude']]];
+                        $bundlesWithLoc = [];
+                        foreach ($ofdBundles as $b) {
+                            if ($b['cust_lat'] && $b['cust_lng']) {
+                                $waypoints[] = ['lat' => (float) $b['cust_lat'], 'lng' => (float) $b['cust_lng']];
+                                $bundlesWithLoc[] = $b;
+                            } else {
+                                $bundlesNoLoc[] = $b;
+                            }
+                        }
+                        $qBase = \App\Services\LocationService::getQurbaniBaseLocation();
+                        $appendBase = ($qBase !== null && count($bundlesWithLoc) > 0);
+                        if ($appendBase) {
+                            $waypoints[] = ['lat' => (float) $qBase->latitude, 'lng' => (float) $qBase->longitude];
+                        }
+
+                        if (count($bundlesWithLoc) > 0) {
+                            $etaResult = $this->getMultiStopEtaFromGoogle($waypoints);
+                            if ($etaResult) {
+                                $stopBufferMinutes = 5;
+                                $cumulative = 0;
+                                $now = now();
+                                $newEtaByBundle = [];
+                                foreach ($bundlesWithLoc as $idx => $b) {
+                                    $legDuration = $etaResult['legs'][$idx] ?? 0;
+                                    $cumulative += $legDuration;
+                                    $estAt = $now->copy()->addMinutes(round($cumulative));
+                                    $newEtaByBundle[$b['bundle_key']] = $estAt;
+                                    $cumulative += $stopBufferMinutes;
+                                }
+                                $totalDurationMin = (int) round($cumulative);
+                                if ($appendBase) {
+                                    $returnLegIdx = count($bundlesWithLoc);
+                                    $returnLegMin = $etaResult['legs'][$returnLegIdx] ?? 0;
+                                    if ($returnLegMin > 0) {
+                                        $cumulativeAtLast = $cumulative - $stopBufferMinutes;
+                                        $eta = $now->copy()->addMinutes(round($cumulativeAtLast + $returnLegMin));
+                                        $returnToBase = [
+                                            'base_name'        => (string) $qBase->location_name,
+                                            'return_minutes'   => (int) round($returnLegMin),
+                                            'estimated_at'     => $eta->toIso8601String(),
+                                            'estimated_at_iso' => $eta->toIso8601String(),
+                                        ];
+                                    }
+                                }
+
+                                // 30-minute delta gate. We compare the
+                                // freshly-computed ETA against whatever
+                                // is currently saved on the bundle. The
+                                // gate fires per bundle so a single big
+                                // shift can update one customer's ETA
+                                // without touching the others.
+                                \DB::beginTransaction();
+                                foreach ($bundlesWithLoc as $b) {
+                                    $newEta = $newEtaByBundle[$b['bundle_key']] ?? null;
+                                    if (!$newEta) continue;
+                                    $oldEtaRaw = $b['qurbani_estimated_delivery_at'] ?? null;
+                                    $oldEta = null;
+                                    if ($oldEtaRaw) {
+                                        try { $oldEta = \Carbon\Carbon::parse($oldEtaRaw); }
+                                        catch (\Exception $e) { $oldEta = null; }
+                                    }
+                                    $deltaMin = $oldEta ? (int) abs($newEta->diffInMinutes($oldEta)) : null;
+                                    // Write if no old ETA, OR delta strictly exceeds threshold.
+                                    $shouldWrite = ($oldEta === null) || ($deltaMin !== null && $deltaMin > $threshold);
+
+                                    if ($shouldWrite) {
+                                        $itemIds = array_map(fn($it) => $it['id'], $b['items']);
+                                        \DB::table('t_crm_prod_order_line_item')
+                                            ->whereIn('id', $itemIds)
+                                            ->where('qurbani_assigned_rider_user_id', $riderId)
+                                            ->whereNull('qurbani_delivered_at')
+                                            ->update([
+                                                'qurbani_estimated_delivery_at' => $newEta,
+                                                'qurbani_eta_calculated_at' => $now,
+                                                'updated_at' => $now,
+                                            ]);
+                                        $etaWritten++;
+                                    } else {
+                                        $etaSkipped++;
+                                    }
+
+                                    $etaChanges[] = [
+                                        'bundle_key' => $b['bundle_key'],
+                                        'customer_name' => $b['customer_name'],
+                                        'old_eta'  => $oldEtaRaw ? (string) $oldEtaRaw : null,
+                                        'new_eta'  => $newEta->toIso8601String(),
+                                        'delta_min' => $deltaMin,
+                                        'written'  => $shouldWrite,
+                                    ];
+                                }
+                                \DB::commit();
+                            } else {
+                                $googleFailed = true;
+                            }
+                        }
+                    }
+                }
+            }
+
+            \Log::info('Qurbani dispatched route edited', [
+                'rider_id'             => $riderId,
+                'edited_by'            => $user->id,
+                'is_own_route'         => $isOwnRoute,
+                'updated_bundles'      => $updatedBundles,
+                'touched_dispatched'   => count($touchedDispatchedKeys),
+                'eta_threshold_min'    => $threshold,
+                'eta_written_count'    => $etaWritten,
+                'eta_skipped_count'    => $etaSkipped,
+                'recompute_requested'  => $recompute,
+                'google_failed'        => $googleFailed,
+                'origin_source'        => $originSource,
+            ]);
+
+            $msg = "Route updated ({$updatedBundles} bundle" . ($updatedBundles === 1 ? '' : 's') . ").";
+            if ($recompute) {
+                if ($googleFailed) {
+                    $msg .= " ETA recompute failed (Google API).";
+                } elseif ($etaWritten + $etaSkipped === 0) {
+                    $msg .= " No ETAs to recompute.";
+                } else {
+                    $msg .= " ETAs: {$etaWritten} updated (>{$threshold}m delta), {$etaSkipped} unchanged.";
+                }
+            }
+
+            return response()->json([
+                'success' => true,
+                'message' => $msg,
+                'updated_bundles' => $updatedBundles,
+                'updated_items' => $updatedItems,
+                'eta_threshold_min' => $threshold,
+                'eta_recomputed' => $recompute,
+                'eta_written_count' => $etaWritten,
+                'eta_skipped_count' => $etaSkipped,
+                'eta_changes' => $etaChanges,
+                'total_duration_minutes' => $totalDurationMin,
+                'return_to_base' => $returnToBase,
+                'origin_source' => $originSource,
+                'google_failed' => $googleFailed,
+                'no_location_bundles' => array_map(function ($b) {
+                    return $b['order_number'] . ' (' . $b['customer_name'] . ')';
+                }, $bundlesNoLoc),
+            ]);
+        } catch (\Illuminate\Validation\ValidationException $e) {
+            return response()->json(['success' => false, 'message' => 'Validation failed', 'errors' => $e->errors()], 422);
+        } catch (\Exception $e) {
+            try { \DB::rollBack(); } catch (\Exception $e2) {}
+            \Log::error('Qurbani edit dispatched route failed', [
+                'rider_id' => $riderId,
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString(),
+            ]);
+            return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
+        }
+    }
+
+    /**
      * POST /rider/qurbani/riders/{riderId}/dispatch
      * Body (optional):
      *   target:   'pending' (default)  | 'refresh'
@@ -21366,6 +21869,185 @@ class RiderController extends Controller
             \Log::error('Qurbani dispatch failed', [
                 'rider_id' => $riderId,
                 'error' => $e->getMessage(),
+            ]);
+            return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
+        }
+    }
+
+    /**
+     * POST /rider/qurbani/riders/{riderId}/cancel-dispatch
+     * Body: { batch_dispatched_at?: 'YYYY-MM-DD HH:MM:SS' }
+     *
+     * May-2026 — handover support. Releases UNDELIVERED line items
+     * from an active dispatch back to "pending" so they can be
+     * re-dispatched (either by the same rider after a vehicle fix,
+     * or by a different rider after the manager reassigns).
+     *
+     * What gets cleared on each affected line item:
+     *   qurbani_dispatched_at, qurbani_dispatched_by,
+     *   qurbani_estimated_delivery_at, qurbani_eta_calculated_at,
+     *   qurbani_live_tracking_enabled, qurbani_started_delivery_at
+     *
+     * What is intentionally NOT changed:
+     *   - qurbani_item_status (e.g. 'slaughtered' / 'out_for_delivery')
+     *     — orthogonal to dispatch state, set by separate flows.
+     *   - qurbani_assigned_rider_user_id — the manager reassigns
+     *     separately via the bulk-rider flow if a different rider
+     *     should take over. By default the same rider keeps the
+     *     items so cancel + immediate re-dispatch "just works".
+     *   - qurbani_delivered_at / qurbani_delivered_by — already-
+     *     delivered items are filtered out and stay intact.
+     *   - t_ops_qurbani_wa_log rows — customers who already received
+     *     an OFD WhatsApp keep that record. If the re-dispatch's
+     *     fresh ETA differs by more than the configured threshold,
+     *     the existing delay-update banner picks them up so the
+     *     customer is updated without spamming.
+     *
+     * batch_dispatched_at (optional): when supplied, only items in
+     * that specific wave are cancelled. Matched with a 1-second
+     * window in case the client rounded the timestamp. When
+     * omitted, ALL active waves for the rider are cancelled.
+     *
+     * Permissions: manager (access_qurbani_mode) OR rider on own
+     * route. Refuses if the route is locked by someone else (same
+     * gate as saveQurbaniRoute) so a phone with a stale screen
+     * can't kill a run the manager is actively rearranging.
+     */
+    public function cancelQurbaniDispatch(Request $request, $riderId)
+    {
+        try {
+            $user = Auth::user();
+            $isOwnRoute = ((int) $user->id === (int) $riderId);
+            if (!$isOwnRoute && !$user->hasMobilePermission('access_qurbani_mode')) {
+                return response()->json(['success' => false, 'message' => 'Permission denied'], 403);
+            }
+
+            $rider = \DB::table('t_sys_user')
+                ->where('id', $riderId)
+                ->where('is_active', 1)
+                ->select('id', 'fullname')
+                ->first();
+            if (!$rider) {
+                return response()->json(['success' => false, 'message' => 'Rider not found'], 404);
+            }
+
+            // Lock gate — mirrors saveQurbaniRoute / dispatchQurbaniRoute.
+            $lock = $this->getQurbaniRouteLockInfo($riderId);
+            if ($lock && (int) $lock['locked_by'] !== (int) $user->id) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Route is locked by ' . ($lock['locked_by_name'] ?? 'another user') . '. Ask them to unlock first.',
+                ], 423);
+            }
+
+            $batchAtRaw = $request->input('batch_dispatched_at');
+            $batchStart = null;
+            $batchEnd = null;
+            if ($batchAtRaw) {
+                try {
+                    $parsed = \Carbon\Carbon::parse($batchAtRaw);
+                    // ±1s window so a client that truncated millis still
+                    // matches the canonical server-side dispatched_at.
+                    $batchStart = $parsed->copy()->subSecond();
+                    $batchEnd = $parsed->copy()->addSecond();
+                } catch (\Throwable $e) {
+                    return response()->json([
+                        'success' => false,
+                        'message' => 'Invalid batch_dispatched_at — expected ISO 8601 or YYYY-MM-DD HH:MM:SS.',
+                    ], 422);
+                }
+            }
+
+            \DB::beginTransaction();
+
+            $base = \DB::table('t_crm_prod_order_line_item as li')
+                ->where('li.qurbani_assigned_rider_user_id', $riderId)
+                ->whereNotNull('li.qurbani_dispatched_at')
+                ->whereNull('li.qurbani_delivered_at');
+            if ($batchStart && $batchEnd) {
+                $base->whereBetween('li.qurbani_dispatched_at', [$batchStart, $batchEnd]);
+            }
+
+            // Snapshot affected rows for audit + UI feedback.
+            $rows = (clone $base)
+                ->leftJoin('t_crm_prod_customer as c', 'c.id', '=', 'li.customer_id')
+                ->leftJoin('t_crm_prod_order as o', 'o.id', '=', 'li.order_id')
+                ->select(
+                    'li.id',
+                    'li.order_id',
+                    'o.order_number',
+                    'c.fullname as customer_name',
+                    'li.qurbani_dispatched_at',
+                    'li.qurbani_estimated_delivery_at',
+                    'li.qurbani_started_delivery_at'
+                )
+                ->get();
+
+            if ($rows->isEmpty()) {
+                \DB::rollBack();
+                return response()->json([
+                    'success' => false,
+                    'message' => $batchAtRaw
+                        ? 'No undelivered items found in that dispatch — it may have already been cancelled or fully delivered.'
+                        : 'No active dispatch to cancel for ' . $rider->fullname . '.',
+                ], 400);
+            }
+
+            $itemsTouched = (clone $base)->update([
+                'qurbani_dispatched_at'         => null,
+                'qurbani_dispatched_by'         => null,
+                'qurbani_estimated_delivery_at' => null,
+                'qurbani_eta_calculated_at'     => null,
+                'qurbani_live_tracking_enabled' => 0,
+                'qurbani_started_delivery_at'   => null,
+                'updated_at'                    => now(),
+            ]);
+
+            \DB::commit();
+
+            // Group by order for a friendlier response payload that
+            // the mobile UI can render in a confirmation toast.
+            $byOrder = [];
+            foreach ($rows as $r) {
+                $key = $r->order_id;
+                if (!isset($byOrder[$key])) {
+                    $byOrder[$key] = [
+                        'order_id'      => (int) $r->order_id,
+                        'order_number'  => $r->order_number,
+                        'customer_name' => $r->customer_name,
+                        'items'         => 0,
+                    ];
+                }
+                $byOrder[$key]['items']++;
+            }
+            $ordersReleased = array_values($byOrder);
+
+            \Log::info('Qurbani dispatch cancelled', [
+                'rider_id'            => $riderId,
+                'rider_name'          => $rider->fullname,
+                'cancelled_by'        => $user->id,
+                'cancelled_by_name'   => $user->fullname,
+                'is_own_route'        => $isOwnRoute,
+                'batch_dispatched_at' => $batchAtRaw,
+                'items_touched'       => $itemsTouched,
+                'orders_affected'     => array_column($ordersReleased, 'order_number'),
+            ]);
+
+            return response()->json([
+                'success'             => true,
+                'message'             => 'Released ' . $itemsTouched . ' undelivered item(s) across '
+                    . count($ordersReleased) . ' order(s). They are now pending and can be re-dispatched.',
+                'items_touched'       => $itemsTouched,
+                'orders_released'     => $ordersReleased,
+                'batch_dispatched_at' => $batchAtRaw,
+                'rider_id'            => (int) $riderId,
+                'rider_name'          => $rider->fullname,
+            ]);
+        } catch (\Exception $e) {
+            \DB::rollBack();
+            \Log::error('Qurbani dispatch cancel failed', [
+                'rider_id' => $riderId,
+                'error'    => $e->getMessage(),
             ]);
             return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
         }
@@ -22156,6 +22838,128 @@ class RiderController extends Controller
         } catch (\Exception $e) {
             \Log::error('Qurbani unlock route error: ' . $e->getMessage());
             return response()->json(['success' => false, 'message' => 'Failed to unlock route'], 500);
+        }
+    }
+
+    /**
+     * GET /api/qurbani/riders/{riderId}/delay-impacted (May-2026)
+     *
+     * Returns the list of stops on this rider's route where the
+     * current Google ETA has drifted from the last ETA we messaged
+     * the customer about by more than `qurbani_wa_ofd_delay_threshold_minutes`
+     * (default 30). Used by the mobile manager view to render the
+     * "Send updated times" banner above the action bar.
+     *
+     * Manager-only (qurbani mode permission). The actual rider's own
+     * mobile screen does NOT call this endpoint — the user wanted
+     * the delay-update decision to stay with the manager.
+     *
+     * Returns:
+     *   {
+     *     success: true,
+     *     impacted: [ { line_item_id, customer_name, order_number,
+     *                   messaged_eta_at, current_eta_at, delta_minutes,
+     *                   in_cooldown }, ... ],
+     *     threshold_minutes: 30,
+     *     cooldown_minutes:  15,
+     *     total_impacted: int   // count NOT in cooldown
+     *   }
+     */
+    public function getQurbaniDelayImpacted(Request $request, $riderId, \App\Services\QurbaniWaAutoSender $waSender)
+    {
+        try {
+            $user = Auth::user();
+            // Manager-only — the decision to nudge customers with a new
+            // ETA is operational, not the rider's call to make.
+            if (!$user->hasMobilePermission('access_qurbani_mode')) {
+                return response()->json(['success' => false, 'message' => 'Permission denied'], 403);
+            }
+            $impacted = $waSender->findDelayImpactedStops((int) $riderId);
+            $threshold = (int) \App\Models\FIN\ConfigModel::get('qurbani_wa_ofd_delay_threshold_minutes', '30');
+            $cooldown  = (int) \App\Models\FIN\ConfigModel::get('qurbani_wa_ofd_delay_resend_cooldown_minutes', '15');
+            // Total = count of stops eligible to send right now (not in
+            // cooldown). The mobile UI uses this to decide whether the
+            // banner should be enabled or muted.
+            $eligible = array_filter($impacted, fn($r) => !$r->in_cooldown);
+
+            return response()->json([
+                'success'           => true,
+                'impacted'          => array_map(function ($r) {
+                    return [
+                        'line_item_id'    => $r->line_item_id,
+                        'order_id'        => $r->order_id,
+                        'order_number'    => $r->order_number,
+                        'customer_name'   => $r->customer_name,
+                        'messaged_eta_at' => $r->messaged_eta_at,
+                        'current_eta_at'  => $r->current_eta_at,
+                        'delta_minutes'   => $r->delta_minutes,
+                        'in_cooldown'     => $r->in_cooldown,
+                        'last_trigger_event' => $r->last_trigger_event,
+                    ];
+                }, $impacted),
+                'threshold_minutes' => $threshold,
+                'cooldown_minutes'  => $cooldown,
+                'total_impacted'    => count($impacted),
+                'total_eligible'    => count($eligible),
+            ]);
+        } catch (\Throwable $e) {
+            \Log::error('getQurbaniDelayImpacted failed', ['rider_id' => $riderId, 'err' => $e->getMessage()]);
+            return response()->json(['success' => false, 'message' => 'Failed to compute delay-impacted stops'], 500);
+        }
+    }
+
+    /**
+     * POST /api/qurbani/riders/{riderId}/send-delay-update (May-2026)
+     *
+     * Manager-triggered re-send of the OFD delivery template (with the
+     * new rounded-range ETA) for stops impacted by route delays.
+     *
+     * Body (optional):
+     *   { line_item_ids: [int, ...] }    // limit to specific stops
+     * Omit `line_item_ids` to send to every currently-impacted stop.
+     *
+     * Cooldown (default 15 min/stop) is enforced server-side regardless
+     * of whether the client passes a whitelist — a misbehaving UI can
+     * never trigger duplicate sends.
+     *
+     * Returns: { success, sent, skipped, failed, reasons[] }
+     */
+    public function sendQurbaniDelayUpdate(Request $request, $riderId, \App\Services\QurbaniWaAutoSender $waSender)
+    {
+        try {
+            $user = Auth::user();
+            if (!$user->hasMobilePermission('access_qurbani_mode')) {
+                return response()->json(['success' => false, 'message' => 'Permission denied'], 403);
+            }
+            $validated = $request->validate([
+                'line_item_ids'   => 'nullable|array',
+                'line_item_ids.*' => 'integer',
+            ]);
+            $whitelist = $validated['line_item_ids'] ?? null;
+
+            $result = $waSender->sendDelayUpdate((int) $riderId, $whitelist);
+
+            \Log::info('Qurbani delay-update sent', [
+                'rider_id'   => $riderId,
+                'manager_id' => $user->id,
+                'whitelist'  => $whitelist,
+                'result'     => $result,
+            ]);
+
+            $msg = $result['sent'] . ' sent';
+            if (($result['skipped'] ?? 0) > 0) $msg .= ', ' . $result['skipped'] . ' skipped';
+            if (($result['failed'] ?? 0) > 0)  $msg .= ', ' . $result['failed'] . ' failed';
+
+            return response()->json([
+                'success' => true,
+                'message' => $msg,
+                'result'  => $result,
+            ]);
+        } catch (\Illuminate\Validation\ValidationException $e) {
+            return response()->json(['success' => false, 'message' => 'Validation failed', 'errors' => $e->errors()], 422);
+        } catch (\Throwable $e) {
+            \Log::error('sendQurbaniDelayUpdate failed', ['rider_id' => $riderId, 'err' => $e->getMessage()]);
+            return response()->json(['success' => false, 'message' => 'Failed to send delay updates: ' . $e->getMessage()], 500);
         }
     }
 }

@@ -582,6 +582,10 @@ class QurbaniSettingsController extends Controller
             'ofd_minutes_after_dispatch'           => 'nullable|integer|min:0|max:240',
             'ofd_eta_buffer_minutes'               => 'nullable|integer|min:0|max:120',
             'ofd_minutes_before'                   => 'nullable|integer|min:0|max:120',
+            // May-2026 rev2 — new ETA-window rule + delay-update knobs.
+            'ofd_eta_window_minutes'               => 'nullable|integer|min:15|max:480',
+            'ofd_delay_threshold_minutes'          => 'nullable|integer|min:5|max:180',
+            'ofd_delay_resend_cooldown_minutes'    => 'nullable|integer|min:0|max:240',
         ]);
 
         // Helper closure so we don't repeat the if-set-then-save dance
@@ -653,10 +657,14 @@ class QurbaniSettingsController extends Controller
             \App\Models\FIN\ConfigModel::set($cfgKey, (string) ($validated[$payloadKey] ?? ''), $desc);
         }
         $intFields = [
-            'ofd_minutes_after_status'    => ['qurbani_wa_ofd_minutes_after_status',    'Auto-WA OFD: when timing_mode=after_status, fire X min after qurbani_out_for_delivery_at'],
-            'ofd_minutes_after_dispatch'  => ['qurbani_wa_ofd_minutes_after_dispatch',  'Auto-WA OFD: when timing_mode=after_dispatch, fire X min after qurbani_dispatched_at'],
-            'ofd_eta_buffer_minutes'      => ['qurbani_wa_ofd_eta_buffer_minutes',      'Auto-WA OFD: buffer added on top of Google ETA when computing the "expected delivery time"'],
-            'ofd_minutes_before'          => ['qurbani_wa_ofd_minutes_before',          'Auto-WA OFD: when timing_mode=before_eta_with_buffer, fire X min before (eta + buffer)'],
+            'ofd_minutes_after_status'    => ['qurbani_wa_ofd_minutes_after_status',    'Auto-WA OFD: when timing_mode=after_status, fire X min after qurbani_out_for_delivery_at (legacy — May-2026 rev2 no longer reads this)'],
+            'ofd_minutes_after_dispatch'  => ['qurbani_wa_ofd_minutes_after_dispatch',  'Auto-WA OFD: when timing_mode=after_dispatch, fire X min after qurbani_dispatched_at (legacy)'],
+            'ofd_eta_buffer_minutes'      => ['qurbani_wa_ofd_eta_buffer_minutes',      'Auto-WA OFD: buffer added on top of Google ETA when computing the "expected delivery time" (legacy)'],
+            'ofd_minutes_before'          => ['qurbani_wa_ofd_minutes_before',          'Auto-WA OFD: when timing_mode=before_eta_with_buffer, fire X min before (eta + buffer) (legacy)'],
+            // May-2026 rev2 — active fields.
+            'ofd_eta_window_minutes'           => ['qurbani_wa_ofd_eta_window_minutes',           'Auto-WA OFD (rev2): only fire when ETA is within this many minutes of now (default 120 = 2h)'],
+            'ofd_delay_threshold_minutes'      => ['qurbani_wa_ofd_delay_threshold_minutes',      'Auto-WA OFD (rev2): manager "Send updated times" banner appears when ETA slips by more than this many minutes vs last messaged ETA (default 30)'],
+            'ofd_delay_resend_cooldown_minutes'=> ['qurbani_wa_ofd_delay_resend_cooldown_minutes', 'Auto-WA OFD (rev2): per-line-item cooldown for the manual delay-update so a single button press cannot spam (default 15)'],
         ];
         foreach ($intFields as $payloadKey => [$cfgKey, $desc]) {
             if (!array_key_exists($payloadKey, $validated)) continue;
@@ -712,6 +720,10 @@ class QurbaniSettingsController extends Controller
             'ofd_minutes_after_dispatch'           => $int('qurbani_wa_ofd_minutes_after_dispatch', 30),
             'ofd_eta_buffer_minutes'               => $int('qurbani_wa_ofd_eta_buffer_minutes', 15),
             'ofd_minutes_before'                   => $int('qurbani_wa_ofd_minutes_before', 15),
+            // May-2026 rev2 — new ETA-window rule + delay-update knobs.
+            'ofd_eta_window_minutes'               => $int('qurbani_wa_ofd_eta_window_minutes', 120),
+            'ofd_delay_threshold_minutes'          => $int('qurbani_wa_ofd_delay_threshold_minutes', 30),
+            'ofd_delay_resend_cooldown_minutes'    => $int('qurbani_wa_ofd_delay_resend_cooldown_minutes', 15),
         ];
     }
 
@@ -749,6 +761,108 @@ class QurbaniSettingsController extends Controller
         return response()->json([
             'success' => true,
             'message' => 'Stats category visibility updated',
+        ]);
+    }
+
+    /**
+     * POST /qurbani-settings/api/backfill-verified-coords
+     *
+     * May-2026 — UI wrapper around the qurbani:backfill-verified-coords
+     * artisan command so a non-CLI admin can repair customer rows that
+     * have a verified_location_url set but NULL lat/lng (the Waseem
+     * Aslam case). Without this button the only way to clear out
+     * historical short links was SSH + artisan, which isn't an option
+     * on the shared production host.
+     *
+     * Request body:
+     *   { dry_run?: bool,  // default false — preview without writes
+     *     limit?:   int }  // default 200 — cap rows per click so the
+     *                      // HTTP request stays under the PHP timeout.
+     *                      // The button re-enables after each click so
+     *                      // staff can chip away at larger backlogs.
+     *
+     * Returns the same structured counts the artisan command shows.
+     */
+    public function backfillVerifiedCoords(Request $request, \App\Services\QurbaniVerifiedCoordsBackfill $svc)
+    {
+        $validated = $request->validate([
+            'dry_run' => 'nullable|boolean',
+            // Hard ceiling of 1000 per click — keeps the request well
+            // inside the default 30s PHP timeout even on a slow uplink
+            // (each row does one cURL roundtrip with 8s timeout).
+            'limit'   => 'nullable|integer|min:1|max:1000',
+        ]);
+
+        $dryRun = (bool) ($validated['dry_run'] ?? false);
+        $limit  = (int)  ($validated['limit']   ?? 200);
+
+        try {
+            $result = $svc->run($limit, $dryRun);
+
+            return response()->json([
+                'success' => true,
+                'result'  => $result,
+                'message' => $dryRun
+                    ? "Dry run: would have fixed {$result['fixed']} of {$result['processed']} processed customer(s) (out of {$result['candidates']} candidates)."
+                    : "Fixed {$result['fixed']} of {$result['processed']} processed customer(s). {$result['candidates']} candidate row(s) total — re-click to continue if more remain.",
+            ]);
+        } catch (\Throwable $e) {
+            \Log::error('Qurbani backfill-verified-coords (UI) failed', [
+                'user_id' => auth()->id(),
+                'error'   => $e->getMessage(),
+            ]);
+            return response()->json([
+                'success' => false,
+                'message' => 'Backfill failed: ' . $e->getMessage(),
+            ], 500);
+        }
+    }
+
+    /**
+     * POST /qurbani-settings/api/qurbani-riders
+     *
+     * May-2026 — Save the whitelist of user IDs that show up in the
+     * mobile Qurbani rider pickers (individual order detail picker AND
+     * the bulk-assign modal both read from this same config). Empty
+     * array = show every active rider (default behaviour).
+     *
+     * We only persist user IDs that actually resolve to an active user
+     * record — keeps stale IDs from sneaking in if someone hand-edits
+     * the request payload and a rider has since been deactivated.
+     */
+    public function updateQurbaniRiders(Request $request)
+    {
+        $validated = $request->validate([
+            'rider_ids'   => 'present|array',
+            'rider_ids.*' => 'integer|min:1',
+        ]);
+
+        $rawIds = array_values(array_unique(array_map('intval', $validated['rider_ids'])));
+
+        // Resolve against t_sys_user so we don't store IDs that no
+        // longer correspond to an active rider account.
+        $valid = [];
+        if (!empty($rawIds)) {
+            $valid = DB::table('t_sys_user')
+                ->whereIn('id', $rawIds)
+                ->where('is_active', 1)
+                ->pluck('id')
+                ->map(fn($v) => (int) $v)
+                ->values()
+                ->all();
+        }
+
+        \App\Models\FIN\ConfigModel::set(
+            'qurbani_rider_ids',
+            json_encode($valid),
+            'Whitelist of user IDs shown in mobile Qurbani rider pickers (empty = all active)'
+        );
+
+        return response()->json([
+            'success'    => true,
+            'message'    => 'Qurbani rider list updated',
+            'rider_ids'  => $valid,
+            'dropped'    => array_values(array_diff($rawIds, $valid)),
         ]);
     }
 }

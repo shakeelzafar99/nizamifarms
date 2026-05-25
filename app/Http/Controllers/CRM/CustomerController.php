@@ -1289,17 +1289,45 @@ class CustomerController extends Controller
             ];
             
             if (!empty($validated['url'])) {
-                // URL provided - store it
-                $updateData['verified_location_url'] = $validated['url'];
-                \Log::info('Setting verified location URL for customer (webapp)', [
-                    'customer_id' => $id,
-                    'url' => $validated['url'],
-                    'saved_by' => auth()->user()->fullname,
-                ]);
+                // URL provided — store the user-supplied URL verbatim
+                // AND best-effort resolve/parse it to lat/lng so the
+                // customer truly counts as "verified" (the Qurbani
+                // Orders page treats a customer as verified only when
+                // latitude AND longitude are non-empty). Without this
+                // step, customers who share a `maps.app.goo.gl/...`
+                // link in chat stay flagged as "needs pin" forever.
+                // Mirrors the rider endpoint's behaviour
+                // (RiderController::setCustomerVerifiedLocation) so
+                // both surfaces converge on the same data shape.
+                $originalUrl = $validated['url'];
+                $updateData['verified_location_url'] = $originalUrl;
+
+                $resolvedUrl = $this->resolveGoogleMapsShortLink($originalUrl);
+                $parsedCoords = $this->parseCoordsFromMapsUrl($resolvedUrl);
+                if ($parsedCoords) {
+                    $updateData['latitude'] = $parsedCoords['latitude'];
+                    $updateData['longitude'] = $parsedCoords['longitude'];
+                    \Log::info('Setting verified location from URL with extracted coords (webapp)', [
+                        'customer_id' => $id,
+                        'url'         => $originalUrl,
+                        'resolved'    => $resolvedUrl,
+                        'lat'         => $parsedCoords['latitude'],
+                        'lng'         => $parsedCoords['longitude'],
+                        'saved_by'    => auth()->user()->fullname,
+                    ]);
+                } else {
+                    \Log::info('Setting verified location URL only (no coords extractable) (webapp)', [
+                        'customer_id' => $id,
+                        'url'         => $originalUrl,
+                        'resolved'    => $resolvedUrl,
+                        'saved_by'    => auth()->user()->fullname,
+                    ]);
+                }
             }
-            
+
             if (!empty($validated['latitude']) && !empty($validated['longitude'])) {
-                // Coordinates provided - store them
+                // Explicit coordinates always win over URL-extracted
+                // ones — they're the most accurate signal staff has.
                 $updateData['latitude'] = $validated['latitude'];
                 $updateData['longitude'] = $validated['longitude'];
                 \Log::info('Setting verified location coordinates for customer (webapp)', [
@@ -1337,6 +1365,74 @@ class CustomerController extends Controller
         }
     }
     
+    /**
+     * Follow a shortened Google Maps URL to its final destination so
+     * we can extract coordinates. Returns the original URL unchanged
+     * if it isn't shortened or if the redirect lookup fails. Used by
+     * setVerifiedLocation() — duplicated (deliberately) from the
+     * rider controller's helper of the same shape rather than shared
+     * via a trait, because both controllers are independently
+     * deployable and we don't want a shared dependency churn here.
+     */
+    private function resolveGoogleMapsShortLink(string $url): string
+    {
+        $shortDomains = ['goo.gl', 'maps.app.goo.gl', 'g.co'];
+        $needsResolve = false;
+        foreach ($shortDomains as $d) {
+            if (stripos($url, $d) !== false) { $needsResolve = true; break; }
+        }
+        if (!$needsResolve || !function_exists('curl_init')) {
+            return $url;
+        }
+        try {
+            $ch = curl_init($url);
+            curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
+            curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+            curl_setopt($ch, CURLOPT_HEADER, false);
+            curl_setopt($ch, CURLOPT_TIMEOUT, 8);
+            curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 4);
+            curl_setopt($ch, CURLOPT_MAXREDIRS, 5);
+            curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
+            curl_setopt($ch, CURLOPT_USERAGENT, 'Mozilla/5.0 (compatible; NizamiFarms-LocResolver/1.0)');
+            curl_exec($ch);
+            $finalUrl = curl_getinfo($ch, CURLINFO_EFFECTIVE_URL);
+            $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+            curl_close($ch);
+            if ($httpCode >= 200 && $httpCode < 400 && !empty($finalUrl)) {
+                return (string) $finalUrl;
+            }
+        } catch (\Throwable $e) {
+            \Log::debug('CustomerController: resolveGoogleMapsShortLink failed (non-fatal)', [
+                'url' => $url, 'error' => $e->getMessage(),
+            ]);
+        }
+        return $url;
+    }
+
+    /**
+     * Extract lat/lng from a resolved Google Maps URL. Recognises:
+     *   - ?q=LAT,LNG / ?ll=LAT,LNG / ?destination=LAT,LNG
+     *   - /@LAT,LNG,...  (the canonical share format)
+     *   - /place/LAT,LNG/...
+     * Returns ['latitude' => float, 'longitude' => float] or null if
+     * the URL contains no coordinates (e.g. it's a named-place share
+     * that only resolves to a Place ID without coords in the URL).
+     */
+    private function parseCoordsFromMapsUrl(?string $url): ?array
+    {
+        if (empty($url)) { return null; }
+        if (preg_match('/[?&](?:q|ll|destination)=(-?\d+\.\d+),(-?\d+\.\d+)/i', $url, $m)) {
+            return ['latitude' => (float) $m[1], 'longitude' => (float) $m[2]];
+        }
+        if (preg_match('/@(-?\d+\.\d+),(-?\d+\.\d+)/', $url, $m)) {
+            return ['latitude' => (float) $m[1], 'longitude' => (float) $m[2]];
+        }
+        if (preg_match('~/place/(-?\d+\.\d+),(-?\d+\.\d+)~', $url, $m)) {
+            return ['latitude' => (float) $m[1], 'longitude' => (float) $m[2]];
+        }
+        return null;
+    }
+
     public function destroy($id)
     {
         try {

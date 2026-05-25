@@ -407,14 +407,21 @@
             <label style="font-size:11px;font-weight:600;color:#6b7280;display:block;margin-bottom:3px;">Category</label>
             <select id="sheetCategory" class="qo-filter" style="width:100%;" onchange="loadSheetPreview()">
                 <option value="">All Categories</option>
+                {{-- A4 sheets are dispatch backups for actual qurbani animal
+                     items only — Charity Rajanpur and Bhunnay Paaye add-ons
+                     don't need printed sheets, so they're hidden here.
+                     This is a print-modal display filter only — the
+                     underlying category list and other features stay
+                     untouched. --}}
                 @foreach($categories as $cat)
-                <option value="{{ $cat }}">{{ $cat }}</option>
+                    @continue(preg_match('/charity|bhunnay/i', $cat) === 1)
+                    <option value="{{ $cat }}">{{ $cat }}</option>
                 @endforeach
             </select>
         </div>
         <div>
             <label style="font-size:11px;font-weight:600;color:#6b7280;display:block;margin-bottom:3px;">Day</label>
-            <select id="sheetDay" class="qo-filter" style="width:100%;" onchange="loadSheetPreview()">
+            <select id="sheetDay" class="qo-filter" style="width:100%;" onchange="updateSheetSlotDropdown(); loadSheetPreview();">
                 <option value="">All Days</option>
                 @foreach($days as $d)
                 <option value="{{ $d }}">{{ $d }}</option>
@@ -423,7 +430,7 @@
         </div>
         <div>
             <label style="font-size:11px;font-weight:600;color:#6b7280;display:block;margin-bottom:3px;">Delivery Type</label>
-            <select id="sheetDeliveryType" class="qo-filter" style="width:100%;" onchange="loadSheetPreview()">
+            <select id="sheetDeliveryType" class="qo-filter" style="width:100%;" onchange="updateSheetSlotDropdown(); loadSheetPreview();">
                 <option value="">All Types</option>
                 @foreach($deliveryTypes as $dt)
                 <option value="{{ $dt }}">{{ $dt }}</option>
@@ -432,7 +439,7 @@
         </div>
         <div>
             <label style="font-size:11px;font-weight:600;color:#6b7280;display:block;margin-bottom:3px;">Region</label>
-            <select id="sheetRegion" class="qo-filter" style="width:100%;" onchange="loadSheetPreview()">
+            <select id="sheetRegion" class="qo-filter" style="width:100%;" onchange="updateSheetSubRegionDropdown(); loadSheetPreview();">
                 <option value="">All Regions</option>
                 @foreach($regions as $r)
                 <option value="{{ $r }}">{{ $r }}</option>
@@ -458,12 +465,44 @@
             </select>
         </div>
     </div>
-    <div style="display:flex;align-items:center;gap:10px;padding:8px 12px;background:#fafafa;border:1px solid #e5e7eb;border-radius:6px;margin-bottom:14px;">
+    <div style="display:flex;align-items:center;gap:10px;padding:8px 12px;background:#fafafa;border:1px solid #e5e7eb;border-radius:6px;margin-bottom:8px;flex-wrap:wrap;">
         <label style="font-size:12px;color:#374151;display:flex;align-items:center;gap:6px;cursor:pointer;">
             <input type="checkbox" id="sheetIncludeDelivered" onchange="loadSheetPreview()">
             Include delivered orders
         </label>
         <span style="font-size:11px;color:#9ca3af;">(default: exclude — these are dispatch backups)</span>
+    </div>
+    {{-- Sheet-type picker — replaces the older orientation toggle.
+         Each team option carries its own orientation, column set,
+         row-height and font sizing inside _buildSheetDocument(). The
+         shared filter set above stays exactly the same across all
+         three teams; only the printed layout changes.
+            • Master Sheet (Landscape)  — full record: order#, customer,
+              address, contact, qurbani, qty, type, paaye. The "control
+              copy" the user keeps on-page.
+            • Delivery Team (Landscape) — driver manifest: order#,
+              customer, address (real street), contact, qurbani, no.
+              of packs. One row per bundle (May-2026 — collapsed,
+              so a 7-pack drop prints once as "Packs 7" instead of
+              seven rows).
+            • Inhouse Team (Portrait) — kitchen / slaughter copy.
+              Wide Type column for animal-detail notes, slim Qty /
+              Paaye, no Weight column (May-2026: kitchen records
+              weights elsewhere now). --}}
+    <div style="display:flex;align-items:stretch;gap:8px;padding:10px 12px;background:#fff7ed;border:1px solid #fed7aa;border-radius:6px;margin-bottom:14px;flex-wrap:wrap;">
+        <span style="font-size:12px;color:#9a3412;font-weight:700;align-self:center;margin-right:4px;">Sheet for:</span>
+        <label style="flex:1 1 200px;min-width:200px;display:flex;align-items:center;gap:8px;padding:8px 10px;border:1.5px solid #fed7aa;border-radius:6px;background:#fff;cursor:pointer;font-size:12px;color:#374151;" title="Full record sheet kept by the manager. Landscape A4.">
+            <input type="radio" name="sheetType" value="master" checked onchange="loadSheetPreview()">
+            <span><b>📊 Master Sheet</b><br><span style="color:#6b7280;font-size:11px;">Landscape · full record (8 cols)</span></span>
+        </label>
+        <label style="flex:1 1 200px;min-width:200px;display:flex;align-items:center;gap:8px;padding:8px 10px;border:1.5px solid #fed7aa;border-radius:6px;background:#fff;cursor:pointer;font-size:12px;color:#374151;" title="Driver manifest. Landscape A4. Real street address + contact + packs. One row per bundle.">
+            <input type="radio" name="sheetType" value="delivery" onchange="loadSheetPreview()">
+            <span><b>🚚 Delivery Team</b><br><span style="color:#6b7280;font-size:11px;">Landscape · driver manifest (6 cols)</span></span>
+        </label>
+        <label style="flex:1 1 200px;min-width:200px;display:flex;align-items:center;gap:8px;padding:8px 10px;border:1.5px solid #fed7aa;border-radius:6px;background:#fff;cursor:pointer;font-size:12px;color:#374151;" title="Kitchen / slaughter team. Portrait A4. Wide Type column for animal-detail notes; no weight column.">
+            <input type="radio" name="sheetType" value="inhouse" onchange="loadSheetPreview()">
+            <span><b>🔪 Inhouse Team</b><br><span style="color:#6b7280;font-size:11px;">Portrait · wide Type column (5 cols)</span></span>
+        </label>
     </div>
     <div id="sheetPreviewSummary" style="font-size:13px;color:#374151;padding:10px 12px;background:#f0f9ff;border:1px solid #bae6fd;border-radius:6px;margin-bottom:14px;">
         <span style="color:#9ca3af;">Loading preview…</span>
@@ -550,6 +589,68 @@
                 <input type="checkbox" id="locReqHideRecentlySent" checked onchange="renderLocReqList()">
                 Hide customers messaged in last 24h
             </label>
+        </div>
+    </div>
+
+    {{-- May-2026 stats strip — gives the user the full picture for
+         the current filter set without leaving the modal. Four
+         compact tiles: Total customers in the filter, Verified pins
+         (auto-excluded), Unverified (the table below), and a
+         drill-into-list tile for "sent but no reply" so the user can
+         call/remind those customers directly. Awaiting-reply count
+         doubles as an expand toggle for the inline list. --}}
+    <div id="locReqStatsBar" style="display:grid;grid-template-columns:repeat(5,1fr);gap:6px;margin-bottom:8px;font-size:11px;">
+        <div style="background:#f9fafb;border:1px solid #e5e7eb;border-radius:6px;padding:6px 8px;text-align:center;">
+            <div id="locReqStatTotal" style="font-size:16px;font-weight:800;color:#1f2937;">—</div>
+            <div style="font-size:10px;color:#6b7280;text-transform:uppercase;letter-spacing:.03em;">Customers</div>
+        </div>
+        <div style="background:#ecfdf5;border:1px solid #a7f3d0;border-radius:6px;padding:6px 8px;text-align:center;" title="Already pinned — auto-excluded from the table below">
+            <div id="locReqStatVerified" style="font-size:16px;font-weight:800;color:#065f46;">—</div>
+            <div style="font-size:10px;color:#065f46;text-transform:uppercase;letter-spacing:.03em;">Verified Pin</div>
+        </div>
+        <div style="background:#fef3c7;border:1px solid #fcd34d;border-radius:6px;padding:6px 8px;text-align:center;" title="No pin yet — these are the rows in the table">
+            <div id="locReqStatUnverified" style="font-size:16px;font-weight:800;color:#92400e;">—</div>
+            <div style="font-size:10px;color:#92400e;text-transform:uppercase;letter-spacing:.03em;">Unverified</div>
+        </div>
+        <div id="locReqStatWaitingCard"
+             role="button" tabindex="0"
+             onclick="locReqToggleWaitingPanel()"
+             onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();locReqToggleWaitingPanel();}"
+             style="background:#fef2f2;border:1px solid #fca5a5;border-radius:6px;padding:6px 8px;text-align:center;cursor:pointer;"
+             title="Customers messaged but no reply yet — click to expand the list with Call / Remind actions">
+            <div id="locReqStatWaiting" style="font-size:16px;font-weight:800;color:#991b1b;">—</div>
+            <div style="font-size:10px;color:#991b1b;text-transform:uppercase;letter-spacing:.03em;">
+                Awaiting Reply <span id="locReqStatWaitingCaret" style="color:#9ca3af;">▾</span>
+            </div>
+        </div>
+        <div style="background:#eef2ff;border:1px solid #c7d2fe;border-radius:6px;padding:6px 8px;text-align:center;cursor:pointer;"
+             onclick="openLocReqReviewDrawer()" title="Open Reviewer drawer to save replies">
+            <div id="locReqStatReplied" style="font-size:16px;font-weight:800;color:#3730a3;">—</div>
+            <div style="font-size:10px;color:#3730a3;text-transform:uppercase;letter-spacing:.03em;">Replies to Save</div>
+        </div>
+    </div>
+
+    {{-- Expandable Awaiting-Reply panel. Hidden by default; toggled
+         from the Awaiting Reply stat tile. Each row exposes a Call
+         link (tel:) and a one-tap Remind button that fires the same
+         sendOne endpoint a per-order Request button uses. A "Remind
+         All Waiting" button at the top is the bulk shortcut. --}}
+    <div id="locReqWaitingPanel" style="display:none;margin-bottom:10px;padding:10px;background:#fef2f2;border:1px solid #fca5a5;border-radius:6px;max-height:240px;overflow-y:auto;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;gap:8px;flex-wrap:wrap;">
+            <div style="font-size:12px;font-weight:700;color:#991b1b;">
+                💤 Awaiting reply — <span id="locReqWaitingCount">0</span> customer(s)
+            </div>
+            <div style="display:flex;gap:6px;">
+                <button class="qo-toolbar-btn secondary" type="button" onclick="locReqRemindAllWaiting()" style="padding:4px 10px;font-size:11px;">
+                    💬 Remind All Waiting
+                </button>
+                <button class="qo-toolbar-btn secondary" type="button" onclick="locReqToggleWaitingPanel(false)" style="padding:4px 10px;font-size:11px;">
+                    Close
+                </button>
+            </div>
+        </div>
+        <div id="locReqWaitingList" style="display:flex;flex-direction:column;gap:4px;font-size:12px;">
+            <div style="color:#9ca3af;font-style:italic;">Loading…</div>
         </div>
     </div>
 
@@ -1665,11 +1766,35 @@ window.QURBANI_ORDERS_BOOT = {!! json_encode($qurbaniOrdersBoot, JSON_HEX_TAG | 
             // top/bottom margins from 3mm to 2mm so the row stretches
             // further into the reclaimed vertical space.
             '.body-row { flex: 1 1 auto; display: flex; flex-direction: row; align-items: stretch; gap: 5mm; margin-top: 2mm; margin-bottom: 2mm; min-height: 0; }' +
-            // Left hero block — bumped border (3pt) and caption sizes
-            // for a more confident, professional feel.
-            '.box-block { flex: 0 0 95mm; display: flex; flex-direction: column; align-items: center; justify-content: center; border: 3pt solid #000; border-radius: 3mm; background: #fffbeb; padding: 4mm; }' +
-            '.box-num   { font-size: 260pt; font-weight: 900; line-height: 0.85; color: #000; letter-spacing: -4pt; font-feature-settings: "tnum"; }' +
-            '.box-of    { font-size: 40pt; font-weight: 800; color: #444; margin-top: 4mm; letter-spacing: -0.5pt; }' +
+            // Left hero block — slimmed from 95mm → 60mm so the info
+            // grid on the right gets ~35mm of extra horizontal width.
+            // That extra space lets the Customer Name row stay on a
+            // single line for longer names (e.g. "Muhammad usman Khan")
+            // and keeps the lower cells from being cropped when the
+            // banner had to wrap to 2 lines at the old 95mm width.
+            // Single-digit positions (the common case) sit comfortably
+            // in 52mm internal (60mm - 8mm padding); 2-digit positions
+            // shrink via .box-num-narrow below as a safety guard.
+            '.box-block { flex: 0 0 60mm; display: flex; flex-direction: column; align-items: center; justify-content: center; border: 3pt solid #000; border-radius: 3mm; background: #fffbeb; padding: 4mm; }' +
+            // Weight 600 (was 900) + colour #333 (was #000): at 260pt
+            // the "Black" weight prints as a near-solid ink slab that
+            // drains toner unnecessarily. Semibold + dark-grey keeps
+            // the visual hierarchy (still clearly the dominant element,
+            // readable from across a warehouse) with roughly 40% less
+            // stroke area per glyph PLUS printer halftoning at #333
+            // lays down ~20% fewer toner dots than #000. Customer
+            // Name above keeps its 900 + #000 because at 38pt the
+            // strokes scale to a proportional "bold" rather than a
+            // blocky one.
+            '.box-num   { font-size: 260pt; font-weight: 600; line-height: 0.85; color: #333; letter-spacing: -4pt; font-feature-settings: "tnum"; }' +
+            // Auto-shrink overrides for multi-digit positions so they
+            // still fit inside the slim 60mm box-block. Bundle sizes
+            // are usually 1-5, occasionally up to 7, so .narrow is the
+            // only realistic fallback; .tiny is a paranoia guard for
+            // any future hissa configuration that grows beyond 9.
+            '.box-num.box-num-narrow { font-size: 160pt; letter-spacing: -3pt; }' +
+            '.box-num.box-num-tiny   { font-size: 100pt; letter-spacing: -2pt; }' +
+            '.box-of    { font-size: 40pt; font-weight: 600; color: #555; margin-top: 4mm; letter-spacing: -0.5pt; }' +
             '.box-caption { font-size: 13pt; font-weight: 800; color: #555; text-transform: uppercase; letter-spacing: 1.2pt; margin-top: 6mm; }' +
             // Right info grid — heavier borders, slightly more padding
             // so each value sits comfortably inside its frame.
@@ -1695,6 +1820,20 @@ window.QURBANI_ORDERS_BOOT = {!! json_encode($qurbaniOrdersBoot, JSON_HEX_TAG | 
             // so the most important values scan at a glance.
             '.cell-value.lg { font-size: 36pt; font-weight: 900; letter-spacing: -1pt; line-height: 1.05; font-feature-settings: "tnum"; }' +
             '.cell-value.xl { font-size: 38pt; font-weight: 900; letter-spacing: -0.5pt; line-height: 1.05; }' +
+            // Auto-fit ladder for the Customer Name banner. Default
+            // .xl handles names ≤18 chars cleanly inside the new
+            // wider info-grid (after the box-block slim). Longer
+            // names step down in size so the banner stays on a
+            // SINGLE line — preventing the wrap that was pushing
+            // the lower info cells off the bottom of the label.
+            // Tiers chosen by measurement, not eyeball: at the new
+            // ~217mm info-grid width, 38pt fits ~18 chars, 30pt
+            // fits ~26, 23pt fits ~38, 18pt fits ~50. Past that
+            // the name wraps — rare enough we accept the wrap and
+            // the layout still holds because line-height is tight.
+            '.cell-value.xl.xl-fit-2 { font-size: 30pt; letter-spacing: -0.3pt; }' +
+            '.cell-value.xl.xl-fit-3 { font-size: 23pt; letter-spacing: -0.2pt; }' +
+            '.cell-value.xl.xl-fit-4 { font-size: 18pt; letter-spacing: -0.1pt; line-height: 1.15; }' +
             // Footer — single weighted scale, no random sizes.
             '.label-footer { flex: 0 0 auto; border-top: 2.5pt solid #000; padding-top: 4mm; padding-bottom: 1mm; display: flex; justify-content: space-between; align-items: center; font-size: 11pt; color: #555; font-weight: 700; }' +
             '.label-footer .phone { font-size: 14pt; font-weight: 900; color: #000; letter-spacing: 0.4pt; }' +
@@ -1734,6 +1873,24 @@ window.QURBANI_ORDERS_BOOT = {!! json_encode($qurbaniOrdersBoot, JSON_HEX_TAG | 
         if (len <= 22) return 'cell-value cv-medium';
         if (len <= 45) return 'cell-value cv-long';
         return 'cell-value cv-xlong';
+    }
+
+    // Same idea as fitClass() but tuned for the Customer Name banner
+    // — that row uses the .xl class (38pt) instead of the regular
+    // ladder, so it gets its own shrink tiers calibrated for the
+    // post-slim info-grid width (~217mm). The earlier behaviour was
+    // "always 38pt", which meant long names like "Muhammad usman
+    // Khan" wrapped to 2 lines and pushed the lower cells off the
+    // bottom of the label. Now the font steps down just enough to
+    // keep the banner on ONE line for nearly every real name.
+    function fitClassXL(text) {
+        const t = String(text == null ? '' : text);
+        if (!t || t === '—') return 'cell-value xl';
+        const len = t.trim().length;
+        if (len <= 18) return 'cell-value xl';                  // 38pt — short names
+        if (len <= 26) return 'cell-value xl xl-fit-2';         // 30pt — most common long names
+        if (len <= 38) return 'cell-value xl xl-fit-3';         // 23pt — full triple-barrel names
+        return 'cell-value xl xl-fit-4';                        // 18pt — extreme edge cases (still single line)
     }
 
     // Strips noise from the product name so the cell shows just the
@@ -1805,20 +1962,28 @@ window.QURBANI_ORDERS_BOOT = {!! json_encode($qurbaniOrdersBoot, JSON_HEX_TAG | 
 
         // Big box number (left column). The "Box" caption ties the
         // huge number back to its meaning since it sits alone in
-        // its own framed cell.
+        // its own framed cell. Auto-shrink the digit's font when
+        // position is multi-digit (rare) so it still fits the
+        // slimmed 60mm box-block without overflowing.
+        const posLen = String(l.position).length;
+        let boxNumCls = 'box-num';
+        if (posLen >= 3) { boxNumCls += ' box-num-tiny'; }
+        else if (posLen >= 2) { boxNumCls += ' box-num-narrow'; }
         html += '<div class="box-block">' +
-                '<div class="box-num">' + l.position + '</div>' +
+                '<div class="' + boxNumCls + '">' + l.position + '</div>' +
                 '<div class="box-of">of ' + l.bundle_size + '</div>' +
                 '<div class="box-caption">Box</div>' +
                 '</div>';
 
         // Info grid (right column).
         // Customer Name banner (full-width row) is the visual hero
-        // of the right column.
+        // of the right column. Pass the raw name through fitClassXL
+        // so long names auto-shrink to stay on ONE line instead of
+        // wrapping and pushing the lower cells off the label.
         html += '<table class="info-grid">';
         html += '<tr><td colspan="3" style="background:#fffbeb;">' +
                 '<div class="cell-label">Customer Name</div>' +
-                '<div class="cell-value xl">' + customerName + '</div>' +
+                '<div class="' + fitClassXL(l.customer_name) + '">' + customerName + '</div>' +
                 '</td></tr>';
 
         // Row: Order No. | Day | Region — fitClass() picks the font size
@@ -2216,7 +2381,116 @@ window.QURBANI_ORDERS_BOOT = {!! json_encode($qurbaniOrdersBoot, JSON_HEX_TAG | 
 
         document.getElementById('sheetOverlay').style.display = 'block';
         document.getElementById('sheetModal').style.display = 'block';
+
+        // Run the cascade refreshers AFTER setting the pre-filled values
+        // so dropdowns get narrowed to valid children of the active
+        // Region / Day×DeliveryType. The cascade functions preserve the
+        // current value if it's still valid, or clear it otherwise — so
+        // a stale "Sub Region X under wrong Region" silently resets.
+        updateSheetSubRegionDropdown();
+        updateSheetSlotDropdown();
+
         loadSheetPreview();
+    }
+
+    // -----------------------------------------------------------------
+    // Cascading filter helpers for the Print A4 Sheets modal.
+    // Pattern lifted verbatim from invoices.blade.php so the two pages
+    // stay consistent — same FIELD_OPTIONS source, same parent_id /
+    // delivery_type_parent_id semantics, same "fall back to all if no
+    // children configured" fallback. If staff later edits the field
+    // option tree in Qurbani Settings, both pages pick it up via the
+    // server-rendered FIELD_OPTIONS without any code change.
+    // -----------------------------------------------------------------
+    function updateSheetSubRegionDropdown() {
+        const sel = document.getElementById('sheetSubRegion');
+        if (!sel) return;
+        const regionVal = (document.getElementById('sheetRegion') || {}).value || '';
+        const current = sel.value;
+
+        // Wipe everything except the leading "All Sub Regions" sentinel.
+        while (sel.options.length > 1) sel.remove(1);
+
+        let subRegions = (FIELD_OPTIONS['qurbani_sub_region'] || []).filter(o => o.is_active);
+        if (regionVal) {
+            const regionOpts = FIELD_OPTIONS['qurbani_region'] || [];
+            const regionObj = regionOpts.find(r => r.is_active && r.option_value === regionVal);
+            if (regionObj) {
+                const filtered = subRegions.filter(s => s.parent_id === regionObj.id);
+                // If the region has no configured children, fall back to
+                // the full list rather than rendering an empty dropdown
+                // (mirrors invoices behaviour for un-mapped regions).
+                if (filtered.length > 0) subRegions = filtered;
+            }
+        }
+
+        const seen = new Set();
+        subRegions.forEach(o => {
+            if (seen.has(o.option_value)) return;
+            seen.add(o.option_value);
+            const opt = document.createElement('option');
+            opt.value = o.option_value;
+            opt.textContent = o.option_value;
+            if (o.option_value === current) opt.selected = true;
+            sel.appendChild(opt);
+        });
+
+        // If the previously-selected sub-region no longer matches the new
+        // region, blank it. loadSheetPreview() will run after this and
+        // pick up the cleared filter — no stale UI state.
+        if (current && !seen.has(current)) sel.value = '';
+    }
+
+    function updateSheetSlotDropdown() {
+        const sel = document.getElementById('sheetSlot');
+        if (!sel) return;
+        const dayVal = (document.getElementById('sheetDay') || {}).value || '';
+        const dtVal  = (document.getElementById('sheetDeliveryType') || {}).value || '';
+        const current = sel.value;
+
+        while (sel.options.length > 1) sel.remove(1);
+
+        let slots = (FIELD_OPTIONS['qurbani_slot'] || []).filter(o => o.is_active);
+
+        let dayObj = null, dtObj = null;
+        if (dayVal) {
+            const dayOpts = FIELD_OPTIONS['qurbani_day'] || [];
+            dayObj = dayOpts.find(d => d.is_active && d.option_value === dayVal);
+        }
+        if (dtVal) {
+            const dtOpts = FIELD_OPTIONS['qurbani_delivery_type'] || [];
+            dtObj = dtOpts.find(d => d.is_active && d.option_value === dtVal);
+        }
+
+        if (dayObj && dtObj) {
+            const filtered = slots.filter(s => s.parent_id === dayObj.id
+                                          && s.delivery_type_parent_id === dtObj.id);
+            if (filtered.length > 0) {
+                slots = filtered;
+            } else {
+                // Day×DT combo has no slot mapping → fall back to
+                // day-only filter so the user still sees something
+                // usable instead of an empty dropdown.
+                const dayOnly = slots.filter(s => s.parent_id === dayObj.id);
+                if (dayOnly.length > 0) slots = dayOnly;
+            }
+        } else if (dayObj) {
+            const filtered = slots.filter(s => s.parent_id === dayObj.id);
+            if (filtered.length > 0) slots = filtered;
+        }
+
+        const seen = new Set();
+        slots.forEach(o => {
+            if (seen.has(o.option_value)) return;
+            seen.add(o.option_value);
+            const opt = document.createElement('option');
+            opt.value = o.option_value;
+            opt.textContent = o.option_value;
+            if (o.option_value === current) opt.selected = true;
+            sel.appendChild(opt);
+        });
+
+        if (current && !seen.has(current)) sel.value = '';
     }
 
     function closeSheetModal() {
@@ -2250,7 +2524,16 @@ window.QURBANI_ORDERS_BOOT = {!! json_encode($qurbaniOrdersBoot, JSON_HEX_TAG | 
         btnEl.textContent = 'Preview & Print (—)';
 
         const params = _collectSheetParams();
-        fetch('/qurbani/api/orders-items?' + params.toString(), { headers: { 'Accept': 'application/json' } })
+        // May-2026 — cache-bust + no-store guard. Edge / some
+        // corporate proxies aggressively cache GET responses even
+        // without a Cache-Control header, which made the
+        // "customer_address" field appear missing after the SQL
+        // change even though the server was returning it.
+        params.set('_', String(Date.now()));
+        fetch('/qurbani/api/orders-items?' + params.toString(), {
+            headers: { 'Accept': 'application/json', 'Cache-Control': 'no-cache' },
+            cache: 'no-store',
+        })
             .then(r => r.json())
             .then(data => {
                 if (!data.success) throw new Error(data.message || 'Failed');
@@ -2273,10 +2556,17 @@ window.QURBANI_ORDERS_BOOT = {!! json_encode($qurbaniOrdersBoot, JSON_HEX_TAG | 
                 const totalLineItems = items.length;
                 const totalOrders = new Set(items.map(it => it.order_id)).size;
                 const totalSections = _sheetSectionsCache.length;
-                // Total printed rows = sum of section_total across
-                // sections, because each unit (qty=1) emits one row.
+                // May-2026 — preview totals are layout-aware so the
+                // "X animal rows" headline matches what the printer
+                // actually emits. Master sheet collapses to one row
+                // per line item; Inhouse / Delivery still print one
+                // row per animal unit.
+                const _previewSheetType = (document.querySelector('input[name="sheetType"]:checked') || {}).value || 'master';
+                const _previewCfg = _sheetLayoutConfig(_previewSheetType);
+                const _previewCollapsed = !!_previewCfg.collapseBundlesToSingleRow;
                 const totalPrintedRows = _sheetSectionsCache.reduce(
-                    (acc, s) => acc + s.section_total, 0
+                    (acc, s) => acc + (_previewCollapsed ? s.items.length : s.section_total),
+                    0
                 );
                 // Rough page estimate — ~10 rows fit comfortably on
                 // landscape A4 at the new, larger row height. Each
@@ -2284,7 +2574,10 @@ window.QURBANI_ORDERS_BOOT = {!! json_encode($qurbaniOrdersBoot, JSON_HEX_TAG | 
                 // so we always get ≥1 page per section.
                 const ROWS_PER_PAGE = 10;
                 const totalPages = _sheetSectionsCache.reduce(
-                    (acc, s) => acc + Math.max(1, Math.ceil(s.section_total / ROWS_PER_PAGE)),
+                    (acc, s) => acc + Math.max(
+                        1,
+                        Math.ceil((_previewCollapsed ? s.items.length : s.section_total) / ROWS_PER_PAGE)
+                    ),
                     0
                 );
 
@@ -2293,9 +2586,14 @@ window.QURBANI_ORDERS_BOOT = {!! json_encode($qurbaniOrdersBoot, JSON_HEX_TAG | 
                     btnEl.disabled = true;
                     btnEl.textContent = 'Preview & Print (0)';
                 } else {
+                    // Row label flips with layout — "printed rows"
+                    // is accurate both when each animal gets its own
+                    // row (inhouse / delivery) and when bundles are
+                    // collapsed to one row each (master).
+                    const _rowLabel = _previewCollapsed ? 'printed row(s)' : 'animal row(s)';
                     summaryEl.innerHTML =
                         '<b>' + totalSections + '</b> sheet(s) &middot; ' +
-                        '<b>' + totalPrintedRows + '</b> animal row(s) &middot; ' +
+                        '<b>' + totalPrintedRows + '</b> ' + _rowLabel + ' &middot; ' +
                         totalLineItems + ' line item(s) &middot; ' +
                         totalOrders + ' customer(s) &middot; ' +
                         '~<b>' + totalPages + '</b> A4 page(s) &middot; ' +
@@ -2329,10 +2627,24 @@ window.QURBANI_ORDERS_BOOT = {!! json_encode($qurbaniOrdersBoot, JSON_HEX_TAG | 
         const sections = _sheetSectionsCache;
         if (!sections || !sections.length) { toast('Nothing to print', 'info'); return; }
 
+        // Read the sheet-type picker — defaults to master (landscape)
+        // if the radio group can't be found for any reason. The team
+        // value drives orientation + columns + row-height entirely
+        // inside _buildSheetDocument() — this function stays layout-
+        // agnostic.
+        const teamEl = document.querySelector('input[name="sheetType"]:checked');
+        const sheetType = teamEl ? teamEl.value : 'master';
+        const cfg = _sheetLayoutConfig(sheetType);
+
+        // Open the preview window FIRST (in the same click tick) so
+        // Chrome/Edge don't flag it as a popup. Portrait gets a
+        // narrower preview window matching the page shape.
+        const winW = cfg.orientation === 'portrait' ? 900 : 1180;
+
         closeSheetModal();
 
-        const html = _buildSheetDocument(sections);
-        const w = window.open('', '_blank', 'width=1180,height=820');
+        const html = _buildSheetDocument(sections, sheetType);
+        const w = window.open('', '_blank', 'width=' + winW + ',height=820');
         if (!w) {
             alert('Popup blocked! Please allow popups for this site to preview / print sheets.');
             return;
@@ -2341,17 +2653,292 @@ window.QURBANI_ORDERS_BOOT = {!! json_encode($qurbaniOrdersBoot, JSON_HEX_TAG | 
         w.document.write(html);
         w.document.close();
 
-        const totalAnimals = sections.reduce((acc, s) => acc + s.section_total, 0);
+        // Row count for the success toast — must match the
+        // emission mode (collapsed = one row per line item, expanded
+        // = one row per animal unit). Mirrors the same logic in the
+        // preview-summary `summaryEl` block.
+        const _toastRows = cfg.collapseBundlesToSingleRow
+            ? sections.reduce((acc, s) => acc + s.items.length, 0)
+            : sections.reduce((acc, s) => acc + s.section_total, 0);
+        const _toastRowLabel = cfg.collapseBundlesToSingleRow ? 'printed row(s)' : 'animal row(s)';
         toast(
-            sections.length + ' sheet(s) ready · ' + totalAnimals + ' animal row(s) total. Review the preview and click "Print All Sheets".',
+            cfg.label + ' · ' + sections.length + ' sheet(s) ready · ' + _toastRows + ' ' + _toastRowLabel + '. Review the preview and click "Print All Sheets".',
             'success',
             4000
         );
     }
 
-    // Self-contained A4 landscape document containing ALL sections.
-    // CSS is inlined so the preview window can't inherit the main
-    // page's styles (same safety stance as buildPrintDocument).
+    // -----------------------------------------------------------------
+    // Team-aware print-sheet layout config. Three sheet types — each
+    // carries its own orientation, column set, row height, and font
+    // sizing. The shared filter pipeline / sectioning / per-customer
+    // bundle math stays identical across all three; only the printed
+    // layout changes between them.
+    //
+    //   master   — Landscape A4. Full record (8 columns). The "control
+    //              copy" the manager keeps on-hand.
+    //   delivery — Landscape A4. Driver manifest (6 columns: order#,
+    //              customer, real street address, contact, qurbani,
+    //              packs). One row per bundle (May-2026 — collapsed
+    //              the same way Master collapses, so a 7-pack drop
+    //              prints once with Packs = 7 instead of seven rows).
+    //   inhouse  — Portrait A4.  Kitchen / slaughter (5 columns).
+    //              Wide Type column for animal-detail notes; slim
+    //              Qty / Paaye. Weight column was dropped (May-2026)
+    //              because the team no longer attaches weight-machine
+    //              stickers to the sheet — weights are recorded
+    //              elsewhere now. The 2× row height that the sticker
+    //              required was also reverted.
+    //
+    // Column keys are resolved by _sheetCellValue() — keeps row
+    // rendering generic. To add a new column type, add a resolver
+    // there and reference the key in a layout's `columns` array.
+    // -----------------------------------------------------------------
+    function _sheetLayoutConfig(sheetType) {
+        // Header labels are deliberately SHORT (Order #, Qty, Type,
+        // Packs, ...) so the uppercase-letter-spaced <th> text doesn't
+        // overflow narrow fixed-width columns and visually collide
+        // with adjacent headers. A word-wrap safety net on <th> below
+        // catches anything still too long.
+        if (sheetType === 'delivery') {
+            // May-2026 (revision 2) — brought in line with the
+            // Master sheet's recent updates:
+            //   • Orientation switched portrait → LANDSCAPE so the
+            //     real customer street address has room to breathe
+            //     in one line instead of wrapping awkwardly in a
+            //     30mm portrait column.
+            //   • `address` swapped for `address_full` so the
+            //     driver gets the actual street address (order
+            //     shipping fields, falling back to customer
+            //     profile) — not the region label. Same resolver
+            //     the Master sheet uses; truncated at 70 chars.
+            //   • `qty` swapped for `qty_total` AND
+            //     collapseBundlesToSingleRow turned on so a 7-pack
+            //     bundle prints as ONE row with Packs = 7 instead
+            //     of seven rows (1/7 … 7/7). Driver reads "drop
+            //     7 packs at this stop" in one glance.
+            //   • Order # column widened 22mm → 26mm to match the
+            //     "no clipping" fix already applied to Master.
+            //
+            // Landscape A4 usable width @ 10mm margin = 277mm.
+            // Fixed cols = 26 + 42 + 34 + 22 + 20 = 144mm → auto
+            // (address) gets ~133mm, plenty for full PK addresses.
+            return {
+                key: 'delivery',
+                label: '🚚 Delivery Team Sheet',
+                orientation: 'landscape',
+                rowHeight: '14mm',
+                titleSize: '24pt', metaSize: '12pt',
+                thSize: '10pt',    tdSize: '12pt',
+                orderSize: '11pt', qtySize: '15pt',
+                collapseBundlesToSingleRow: true,
+                columns: [
+                    { key: 'order',        label: 'Order #',  width: '26mm' },
+                    { key: 'name',         label: 'Customer', width: '42mm' },
+                    { key: 'address_full', label: 'Address',  width: 'auto' },
+                    { key: 'contact',      label: 'Contact',  width: '34mm' },
+                    { key: 'qurbani',      label: 'Qurbani',  width: '22mm' },
+                    { key: 'qty_total',    label: 'Packs',    width: '20mm' },
+                ],
+            };
+        }
+        if (sheetType === 'inhouse') {
+            // May-2026 (revision) — switched to PORTRAIT A4, dropped
+            // the empty Weight column (kitchen records weights
+            // elsewhere now), and rebalanced widths so the Type
+            // column gets the lion's share of the remaining space
+            // (animal-detail notes are the longest field on this
+            // sheet). Qty + Paaye are deliberately the narrowest
+            // fixed columns because their values are short (e.g.
+            // "1/5", "Yes/No").
+            //
+            // Portrait usable width @ 10mm margin = 190mm. Fixed
+            // columns total = 24 + 50 + 18 + 22 = 114mm, leaving
+            // ~76mm for the auto-sized Type column.
+            //
+            // rowHeight reduced from 28mm → 18mm — the 2× height
+            // existed only to fit the weight-machine sticker. 18mm
+            // still gives enough vertical breathing room to read
+            // each animal's row at arm's length without wasting
+            // paper.
+            return {
+                key: 'inhouse',
+                label: '🔪 Inhouse Team Sheet',
+                orientation: 'portrait',
+                // May-2026 (revision 2) — row height bumped 18mm → 27mm
+                // (×1.5). The earlier 18mm felt cramped when the kitchen
+                // team writes notes by hand against each row. Type
+                // column still gets the lion's share of horizontal
+                // space via width:auto.
+                rowHeight: '27mm',
+                titleSize: '26pt', metaSize: '13pt',
+                thSize: '10pt',    tdSize: '13pt',
+                orderSize: '12pt', qtySize: '16pt',
+                columns: [
+                    { key: 'order', label: 'Order #',  width: '24mm' },
+                    { key: 'name',  label: 'Customer', width: '50mm' },
+                    { key: 'type',  label: 'Type',     width: 'auto' },
+                    { key: 'qty',   label: 'Qty',      width: '18mm' },
+                    { key: 'paya',  label: 'Paaye',    width: '22mm' },
+                ],
+            };
+        }
+        // Default: master sheet — landscape, full record.
+        //
+        // May-2026 (revision 2):
+        //   • Row height 14mm → 21mm (×1.5) for breathing room.
+        //   • `address` column swapped for new `address_full` resolver —
+        //     prints the real customer street address (address1 + 2),
+        //     auto-truncated to keep rows compact. Delivery sheet
+        //     still uses the legacy region-based `address` so its
+        //     driver manifest behaviour is unchanged.
+        //   • `contact` column dropped (manager already has phones
+        //     elsewhere; printed copy is now less PII-heavy).
+        //   • `type` is now a FIXED 50mm with its own smaller font
+        //     (typeSize: 11pt) — was auto, which made it dominate
+        //     the row visually.
+        //   • `qty` swapped for new `qty_total` (plain integer
+        //     count) AND the row emission loop collapses each
+        //     line item to ONE row when collapseBundlesToSingleRow
+        //     is set, so a customer with a 7-share bundle prints
+        //     one row (Qty 7) instead of seven rows (1/7 … 7/7).
+        //     Inhouse sheet deliberately stays expanded — kitchen
+        //     needs one row per animal unit for tracking.
+        return {
+            key: 'master',
+            label: '📊 Master Sheet',
+            orientation: 'landscape',
+            rowHeight: '21mm',
+            titleSize: '30pt', metaSize: '14pt',
+            thSize: '10pt',    tdSize: '13pt',
+            orderSize: '12pt', qtySize: '20pt',
+            typeSize: '11pt',
+            collapseBundlesToSingleRow: true,
+            columns: [
+                // 30mm (was 26mm) so the full QUR26-XXXX number prints
+                // without clipping. white-space:nowrap was also
+                // dropped on the order-column style below so any
+                // future longer prefix wraps to two lines instead
+                // of being silently truncated.
+                { key: 'order',        label: 'Order #',  width: '30mm' },
+                { key: 'name',         label: 'Customer', width: '42mm' },
+                { key: 'address_full', label: 'Address',  width: 'auto' },
+                { key: 'qurbani',      label: 'Qurbani',  width: '22mm' },
+                { key: 'qty_total',    label: 'Qty',      width: '18mm' },
+                { key: 'type',         label: 'Type',     width: '50mm' },
+                { key: 'paya',         label: 'Paaye',    width: '28mm' },
+            ],
+        };
+    }
+
+    // Short, customer-facing animal label for the "Qurbani" column.
+    // category_level_2 in the catalogue uses long names like
+    //   "Goat (Bakra)" / "Cow Share (Hissa)" / "Lamb (Dumba)"
+    // — printed copies need the single-word label customers / drivers
+    // recognise on the actual delivery (per the user's Google-Sheets
+    // reference). Heuristic resolves the four common categories;
+    // anything else falls back to product_name → category_level_2 so
+    // we never print a blank.
+    function _sheetShortAnimalLabel(it) {
+        const cat = String(it.category_level_2 || '').toLowerCase();
+        if (/cow\s*share|hissa/.test(cat)) return 'Hissa';
+        if (/goat|bakra/.test(cat))         return 'Goat';
+        if (/lamb|dumba/.test(cat))         return 'Lamb';
+        if (/(^|\s)cow(\s|$)/.test(cat))    return 'Cow';
+        return (it.product_name || it.category_level_2 || '—');
+    }
+
+    // Resolves the value to render for one cell. `pos`/`total` are the
+    // per-customer bundle coordinates already computed in
+    // _groupItemsIntoSheetSections (e.g. pos=2, total=5 → "2/5").
+    function _sheetCellValue(colKey, it, pos, total) {
+        switch (colKey) {
+            case 'order': {
+                // May-2026 — split the order number around the
+                // first dash so the prefix (e.g. "QUR26-") prints
+                // in the column's base weight (800) while the
+                // sequence suffix (e.g. "0361") is rendered
+                // visually heavier. Helps the operator scan a
+                // column of order numbers — the year prefix is
+                // identical on every row, the suffix is the
+                // distinguishing part. Applies to every sheet
+                // layout because the column emits via this
+                // resolver — Master / Inhouse / Delivery all
+                // benefit from the same hierarchy. Falls back to
+                // plain rendering when the order number has no
+                // dash (defensive — never seen on real data).
+                const raw = String(it.order_number || '—');
+                const dashIdx = raw.indexOf('-');
+                if (dashIdx < 0) return esc(raw);
+                const prefix = raw.slice(0, dashIdx + 1);
+                const suffix = raw.slice(dashIdx + 1);
+                return esc(prefix) + '<span style="font-weight:900;">' + esc(suffix) + '</span>';
+            }
+            case 'name':    return esc(it.customer_name || '—');
+            // Legacy region-based "address" — still used by the
+            // Delivery Team sheet so its driver manifest behaviour
+            // is unchanged. Master sheet uses 'address_full' below.
+            case 'address': return esc(it.qurbani_region || it.qurbani_sub_region || '—');
+            case 'address_full': {
+                // May-2026 — real customer street address built
+                // server-side from the order's shipping fields
+                // (address_line1 + address_line2 + address_city)
+                // with the customer profile address as fallback.
+                // See QurbaniWebController::getOrderItems.
+                //
+                // Three distinct visual outcomes so the operator
+                // can tell at a glance WHY a row is short on
+                // address info (and reading "the region" no longer
+                // silently masks bad data):
+                //
+                //   1. Field missing from payload → bright marker
+                //      tells the user the page is stale and needs
+                //      a hard refresh.
+                //   2. Field present but empty → the order genuinely
+                //      has no address on file; row prints "—" so
+                //      the manager can spot it and follow up.
+                //   3. Field has a value → print it, truncated at
+                //      70 chars so PK-style long addresses stay on
+                //      one or two lines in the auto-width column.
+                if (typeof it.customer_address === 'undefined') {
+                    // Diagnostic — show the first three address-ish
+                    // keys we DID receive so we can tell whether the
+                    // server-side change is live (just empty data)
+                    // vs hasn't been picked up yet (key absent).
+                    const candidates = ['customer_address','address_line1','address1','address']
+                        .filter(k => Object.prototype.hasOwnProperty.call(it, k));
+                    const note = candidates.length
+                        ? 'keys present: ' + candidates.join(', ')
+                        : 'no address keys in payload';
+                    return '<span style="color:#dc2626;font-style:italic;">⚠ ' + esc(note) + '</span>';
+                }
+                const raw = String(it.customer_address || '').trim();
+                if (!raw) return '<span style="color:#9ca3af;">— (empty in DB)</span>';
+                const MAX_ADDR_CHARS = 70;
+                return esc(raw.length > MAX_ADDR_CHARS
+                    ? raw.slice(0, MAX_ADDR_CHARS - 1).trimEnd() + '…'
+                    : raw);
+            }
+            case 'contact': return esc(it.customer_phone || '—');
+            case 'qurbani': return esc(_sheetShortAnimalLabel(it));
+            case 'qty':     return pos + '/' + total;
+            // May-2026 — collapsed-row qty (Master sheet). Shows the
+            // line item's quantity as a plain integer so a 7-share
+            // hissa prints once as "7" instead of seven rows
+            // (1/7 … 7/7). Used when cfg.collapseBundlesToSingleRow
+            // is set; the row emission loop in _buildSheetDocument
+            // skips the per-animal expansion in that mode.
+            case 'qty_total': return String(Math.max(1, parseInt(it.quantity) || 1));
+            case 'type':    return esc(it.qurbani_type || '—');
+            case 'paya':    return esc(it.qurbani_paya || '—');
+            case 'weight':  return '';   // empty — for weight sticker / hand-write
+            default:        return '';
+        }
+    }
+
+    // Self-contained A4 document containing ALL sections. CSS is
+    // inlined so the preview window can't inherit the main page's
+    // styles (same safety stance as buildPrintDocument).
     //
     // Layout (per section) — matches the user's original Google-Sheets
     // reference image:
@@ -2361,23 +2948,92 @@ window.QURBANI_ORDERS_BOOT = {!! json_encode($qurbaniOrdersBoot, JSON_HEX_TAG | 
     //       Sub Region: <sub_region>
     //       Day:        <day>
     //       Slot:       <slot>
-    //   • 6-column table: Order# / Customer / Qurbani Type / Quantity
-    //     / Paaye / Weight   (Region + Sub Region intentionally NOT
-    //     columns — they're in the header above)
+    //   • Variable-column table driven by _sheetLayoutConfig(sheetType).
+    //     Region + Sub Region are intentionally NOT columns — they
+    //     already live in the section header above.
     //   • Each line item is expanded to ONE row per animal so qty
-    //     reads as `pos/section_total` (e.g. 1/8, 2/8, ... 8/8).
+    //     reads as `pos/total` per-customer (e.g. 1/5, 2/5, ... 5/5).
     //   • Footer: brand line + print timestamp + sheet X of Y
     //
-    // Sections are separated by page-break-before so each section
-    // starts on a fresh A4 page.
-    function _buildSheetDocument(sections) {
-        // Landscape A4: 297mm × 210mm; 10mm margins → 277mm × 190mm usable.
-        // 6 columns (down from 8) means each cell is meaningfully wider
-        // → larger, bolder body text without crowding.
-        // Fixed widths: 32+62+30+40+38 = 202mm. Qurbani Type flexes
-        // into the remaining ~75mm.
+    // Team parameter drives orientation, columns, font sizes, and
+    // row height. See _sheetLayoutConfig() for the exact recipe per
+    // team. The shared filter pipeline / sectioning / bundle math
+    // is completely untouched.
+    function _buildSheetDocument(sections, sheetType) {
+        const cfg = _sheetLayoutConfig(sheetType);
+        const isPortrait = cfg.orientation === 'portrait';
+
+        // Page geometry per orientation.
+        //   Landscape: 297×210mm, 10mm margins → 277×190mm usable
+        //   Portrait : 210×297mm, 10mm margins → 190×277mm usable
+        const pageRule = isPortrait
+            ? '@page { size: A4 portrait; margin: 10mm; }'
+            : '@page { size: A4 landscape; margin: 10mm; }';
+
+        // Preview-window page shape — swapped between orientations so
+        // each "sheet card" on screen visually matches what comes out
+        // of the printer (no mental rotation needed when reviewing).
+        const previewPage = isPortrait
+            ? '.sheet-page { background: #fff; padding: 10mm; box-shadow: 0 4px 12px rgba(0,0,0,.1); margin: 0 auto 20px; max-width: 210mm; min-height: 297mm; }'
+            : '.sheet-page { background: #fff; padding: 10mm; box-shadow: 0 4px 12px rgba(0,0,0,.1); margin: 0 auto 20px; max-width: 297mm; min-height: 210mm; }';
+
+        // Per-column CSS rules generated from the layout config so we
+        // never have to update _buildSheetDocument when a layout's
+        // column set changes — just the config and the cell resolver.
+        // Special-case styling per column key matches the look the
+        // previous hard-coded version produced.
+        const colRules = cfg.columns.map(c => {
+            let extra = '';
+            switch (c.key) {
+                case 'order':
+                    // white-space:nowrap removed (May-2026) — long
+                    // order numbers were silently clipped to the
+                    // column width. We let them wrap to two lines
+                    // instead so the operator always sees the full
+                    // QUR26-XXXX value. The 30mm column on Master
+                    // fits the current 10-char numbers on one line;
+                    // wrap is just the safety net.
+                    extra = "font-weight:800; font-family:'Courier New', monospace; font-size:" + cfg.orderSize + ";";
+                    break;
+                case 'name':
+                    extra = 'font-weight:800;';
+                    break;
+                case 'type':
+                    // typeSize is optional per layout (Master sets it
+                    // smaller so the long product/type strings don't
+                    // visually dominate the row). Other layouts fall
+                    // back to the table's default tdSize.
+                    extra = 'font-weight:700; line-height:1.3;'
+                        + (cfg.typeSize ? (' font-size:' + cfg.typeSize + ';') : '');
+                    break;
+                case 'qty':
+                case 'qty_total':
+                    // qty_total prints a single integer (collapsed-row
+                    // mode). Same big monospace treatment as qty so the
+                    // headline number is easy to scan down a column.
+                    extra = "text-align:center; font-weight:900; font-size:" + cfg.qtySize + "; font-family:'Courier New', monospace; color:#000;";
+                    break;
+                case 'paya':
+                    extra = 'font-weight:700;';
+                    break;
+                case 'weight':
+                    // Amber tint + dashed inner border hint so the
+                    // weight-sticker slot stands out as "this is where
+                    // the sticker / hand-fill goes".
+                    extra = 'background:#fffbeb;';
+                    break;
+                case 'address':
+                case 'address_full':
+                case 'contact':
+                case 'qurbani':
+                    extra = 'font-weight:700;';
+                    break;
+            }
+            return '.sheet-table .col-' + c.key + ' { width:' + c.width + '; ' + extra + ' }';
+        }).join(' ');
+
         const css =
-            '@page { size: A4 landscape; margin: 10mm; }' +
+            pageRule +
             'html, body { margin: 0; padding: 0; font-family: Arial, Helvetica, sans-serif; color: #111; background: #fff; }' +
             '* { box-sizing: border-box; }' +
             // Screen-only floating toolbar at the top of the preview
@@ -2403,35 +3059,46 @@ window.QURBANI_ORDERS_BOOT = {!! json_encode($qurbaniOrdersBoot, JSON_HEX_TAG | 
             // the sheet (Region / Sub Region / Day / Slot) matching the
             // user\'s original Google-Sheets reference.
             '.sheet-header { margin-bottom: 5mm; padding-bottom: 4mm; border-bottom: 2.5pt solid #d97706; }' +
-            '.sheet-title { font-size: 32pt; font-weight: 900; color: #d97706; margin: 0 0 5mm; letter-spacing: 1.5pt; text-transform: uppercase; line-height: 1; }' +
-            '.sheet-meta { display: grid; grid-template-columns: max-content auto; gap: 2.5mm 8mm; font-size: 15pt; color: #111; align-items: baseline; }' +
+            '.sheet-title { font-size: ' + cfg.titleSize + '; font-weight: 900; color: #d97706; margin: 0 0 5mm; letter-spacing: 1.5pt; text-transform: uppercase; line-height: 1; }' +
+            '.sheet-meta { display: grid; grid-template-columns: max-content auto; gap: 2.5mm 8mm; font-size: ' + cfg.metaSize + '; color: #111; align-items: baseline; }' +
             '.sheet-meta .lbl { font-weight: 700; color: #4b5563; }' +
             '.sheet-meta .val { font-weight: 900; color: #000; }' +
-            // Table — bolder borders, bigger row height (≥14mm), and
-            // larger body font so each row reads cleanly from arm\'s
-            // length and there\'s comfortable space to hand-write
-            // the weight value in the last column.
-            '.sheet-table { width: 100%; border-collapse: collapse; font-size: 14pt; margin-top: 4mm; table-layout: fixed; }' +
+            // Subtle team-tag below the meta block so anyone holding
+            // the printed sheet knows which copy it is at a glance
+            // (manager / driver / kitchen).
+            '.sheet-team-tag { display: inline-block; margin-top: 3mm; padding: 1mm 3mm; background: #fff7ed; border: 1pt solid #fed7aa; color: #9a3412; font-size: 10pt; font-weight: 800; letter-spacing: 0.5pt; border-radius: 3pt; }' +
+            // Table — bolder borders, comfortable row height, and
+            // large body font so each row reads cleanly from arm\'s
+            // length. Inhouse no longer reserves a hand-write Weight
+            // column (May-2026 — see _sheetLayoutConfig).
+            '.sheet-table { width: 100%; border-collapse: collapse; font-size: ' + cfg.tdSize + '; margin-top: 4mm; table-layout: fixed; }' +
             '.sheet-table thead { display: table-header-group; }' +  // repeat thead on each printed page
-            '.sheet-table th { background: #f3f4f6; border: 1.2pt solid #4b5563; padding: 3mm 3mm; text-align: left; font-weight: 900; text-transform: uppercase; font-size: 11pt; letter-spacing: 0.5pt; color: #1f2937; }' +
-            '.sheet-table td { border: 1.2pt solid #6b7280; padding: 3mm 3mm; vertical-align: middle; height: 14mm; word-wrap: break-word; overflow-wrap: break-word; font-weight: 700; color: #111; }' +
+            // word-wrap + overflow-wrap on <th> are the safety net for
+            // any header that ends up wider than its fixed column —
+            // without these, uppercase letter-spaced labels in narrow
+            // columns would overflow into adjacent <th> cells and
+            // appear to "overlap" (e.g. "QUANTITY" bleeding into the
+            // next column's header). overflow:hidden as the absolute
+            // last-resort clip so we never visually break alignment.
+            '.sheet-table th { background: #f3f4f6; border: 1.2pt solid #4b5563; padding: 3mm 3mm; text-align: left; font-weight: 900; text-transform: uppercase; font-size: ' + cfg.thSize + '; letter-spacing: 0.3pt; color: #1f2937; word-wrap: break-word; overflow-wrap: break-word; overflow: hidden; line-height: 1.15; }' +
+            '.sheet-table td { border: 1.2pt solid #6b7280; padding: 3mm 3mm; vertical-align: middle; height: ' + cfg.rowHeight + '; word-wrap: break-word; overflow-wrap: break-word; overflow: hidden; font-weight: 700; color: #111; }' +
             '.sheet-table tr { page-break-inside: avoid; }' +
-            // Column sizing — 6 columns (no Region / Sub Region — both
-            // live in the section header above).
-            '.sheet-table .col-order   { width: 32mm; font-weight: 800; font-family: \'Courier New\', monospace; font-size: 13pt; white-space: nowrap; }' +
-            '.sheet-table .col-name    { width: 62mm; font-weight: 800; }' +
-            '.sheet-table .col-type    { width: auto; font-weight: 700; line-height: 1.3; }' +
-            '.sheet-table .col-qty     { width: 30mm; text-align: center; font-weight: 900; font-size: 18pt; font-family: \'Courier New\', monospace; color: #000; }' +
-            '.sheet-table .col-paya    { width: 40mm; font-weight: 700; }' +
-            '.sheet-table .col-weight  { width: 38mm; background: #fffbeb; }' + // amber tint so hand-fill cell stands out
+            // Per-column rules generated from the layout config above.
+            colRules + ' ' +
             '.sheet-footer { margin-top: 4mm; padding-top: 3mm; border-top: 1pt solid #d1d5db; font-size: 9pt; color: #6b7280; display: flex; justify-content: space-between; }' +
             // Screen preview — each page rendered on its own card with
             // a drop shadow so the user can visually scroll through all
             // sheets before clicking Print.
-            '@media screen { body { background: #f3f4f6; } .sheet-pages-wrap { padding: 20px; } .sheet-page { background: #fff; padding: 10mm; box-shadow: 0 4px 12px rgba(0,0,0,.1); margin: 0 auto 20px; max-width: 297mm; min-height: 210mm; } .sheet-page + .sheet-page { page-break-before: always; } }';
+            '@media screen { body { background: #f3f4f6; } .sheet-pages-wrap { padding: 20px; } ' + previewPage + ' .sheet-page + .sheet-page { page-break-before: always; } }';
 
         const stamp = new Date().toLocaleString([], { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
-        const totalAnimals = sections.reduce((acc, s) => acc + s.section_total, 0);
+        // Total printed rows for the preview window's header strip.
+        // Mirrors the emission mode used below so the headline number
+        // always matches what's actually in the preview.
+        const totalRowsTopBar = cfg.collapseBundlesToSingleRow
+            ? sections.reduce((acc, s) => acc + s.items.length, 0)
+            : sections.reduce((acc, s) => acc + s.section_total, 0);
+        const totalRowsTopBarLabel = cfg.collapseBundlesToSingleRow ? 'printed row(s)' : 'animal row(s)';
 
         // Screen-only toolbar at the top of the preview window. The
         // "Print All Sheets" button calls window.print() so the user
@@ -2439,13 +3106,18 @@ window.QURBANI_ORDERS_BOOT = {!! json_encode($qurbaniOrdersBoot, JSON_HEX_TAG | 
         // printer. NO auto-print — user explicitly asked for a
         // "preview before print" flow.
         let body = '<div class="screen-toolbar">' +
-            '<span class="lbl">🖨️ Qurbani Sheets — Print Preview</span>' +
-            '<span class="meta">' + sections.length + ' sheet(s) · ' + totalAnimals + ' animal row(s) total</span>' +
+            '<span class="lbl">🖨️ ' + esc(cfg.label) + ' — Print Preview</span>' +
+            '<span class="meta">' + sections.length + ' sheet(s) · ' + totalRowsTopBar + ' ' + totalRowsTopBarLabel + ' total · ' + (isPortrait ? 'Portrait' : 'Landscape') + ' A4</span>' +
             '<button class="btn-print" onclick="window.print()">🖨️ Print All Sheets</button>' +
             '<button class="btn-close" onclick="window.close()">Close</button>' +
             '</div>';
 
         body += '<div class="sheet-pages-wrap">';
+
+        // Pre-build the <thead> row once — same for every section.
+        const theadHtml = '<thead><tr>' +
+            cfg.columns.map(c => '<th class="col-' + c.key + '">' + esc(c.label) + '</th>').join('') +
+            '</tr></thead>';
 
         sections.forEach((section, idx) => {
             body += '<div class="sheet-page">';
@@ -2460,45 +3132,65 @@ window.QURBANI_ORDERS_BOOT = {!! json_encode($qurbaniOrdersBoot, JSON_HEX_TAG | 
                     '<span class="lbl">Day:</span><span class="val">' + esc(section.day) + '</span>' +
                     '<span class="lbl">Slot:</span><span class="val">' + esc(section.slot) + '</span>' +
                     '</div>';
+            body += '<span class="sheet-team-tag">' + esc(cfg.label) + '</span>';
             body += '</div>';
 
-            body += '<table class="sheet-table"><thead><tr>' +
-                    '<th class="col-order">Order Number</th>' +
-                    '<th class="col-name">Customer Name</th>' +
-                    '<th class="col-type">Qurbani Type</th>' +
-                    '<th class="col-qty">Quantity</th>' +
-                    '<th class="col-paya">Paaye</th>' +
-                    '<th class="col-weight">Weight</th>' +
-                    '</tr></thead><tbody>';
+            body += '<table class="sheet-table">' + theadHtml + '<tbody>';
 
-            // Expand each line item into one row PER ANIMAL UNIT.
-            // Quantity denominator = the CUSTOMER's bundle inside
-            // this section (their total hissas / goats etc. for
-            // this Cat × Day × Slot × Region × SubRegion). So a
-            // customer with qty=2 gets "1/2, 2/2"; a customer with
-            // qty=1 in the same section gets just "1/1". Other
-            // customers in the same section don't affect their
-            // denominators.
-            section.items.forEach(it => {
-                const start = it._sheet_pos_start;
-                const end   = it._sheet_pos_end;
-                const total = it._sheet_bundle_total;
-                for (let pos = start; pos <= end; pos++) {
+            // Row emission has two modes, picked per layout via
+            // cfg.collapseBundlesToSingleRow:
+            //
+            //   Expanded (default — Inhouse, Delivery):
+            //     Each line item produces one row PER ANIMAL UNIT.
+            //     Qty denominator = the CUSTOMER's bundle inside this
+            //     section (their total hissas / goats etc. for this
+            //     Cat × Day × Slot × Region × SubRegion). So a customer
+            //     with qty=2 prints "1/2, 2/2"; a customer with qty=1
+            //     in the same section just prints "1/1". Other
+            //     customers in the same section don't affect their
+            //     denominators. Kitchen / driver needs one row per
+            //     actual animal so this is the right granularity for
+            //     them.
+            //
+            //   Collapsed (May-2026 — Master sheet):
+            //     One row per LINE ITEM, qty cell prints the line
+            //     item's quantity as a plain integer ("7"). Cuts a
+            //     7-share hissa down from 7 rows to 1, which is what
+            //     the manager actually wants on the control copy.
+            //     A customer with TWO line items in the same section
+            //     (rare but possible — e.g. a hissa + a separate
+            //     hissa booking under the same order) still prints
+            //     once per line item, preserving the per-item detail.
+            if (cfg.collapseBundlesToSingleRow) {
+                section.items.forEach(it => {
+                    // pos / total args are unused for qty_total but
+                    // we pass 1/1 defensively in case a future column
+                    // resolver reads them.
                     body += '<tr>' +
-                            '<td class="col-order">' + esc(it.order_number || '—') + '</td>' +
-                            '<td class="col-name">' + esc(it.customer_name || '—') + '</td>' +
-                            '<td class="col-type">' + esc(it.qurbani_type || '—') + '</td>' +
-                            '<td class="col-qty">' + pos + '/' + total + '</td>' +
-                            '<td class="col-paya">' + esc(it.qurbani_paya || '—') + '</td>' +
-                            '<td class="col-weight"></td>' +
+                        cfg.columns.map(c =>
+                            '<td class="col-' + c.key + '">' + _sheetCellValue(c.key, it, 1, 1) + '</td>'
+                        ).join('') +
+                        '</tr>';
+                });
+            } else {
+                section.items.forEach(it => {
+                    const start = it._sheet_pos_start;
+                    const end   = it._sheet_pos_end;
+                    const total = it._sheet_bundle_total;
+                    for (let pos = start; pos <= end; pos++) {
+                        body += '<tr>' +
+                            cfg.columns.map(c =>
+                                '<td class="col-' + c.key + '">' + _sheetCellValue(c.key, it, pos, total) + '</td>'
+                            ).join('') +
                             '</tr>';
-                }
-            });
+                    }
+                });
+            }
 
             body += '</tbody></table>';
 
             body += '<div class="sheet-footer">' +
-                    '<span>Nizami Farms &middot; Qurbani \'26 &middot; Manual Sheet (' + esc(section.category) + ')</span>' +
+                    '<span>Nizami Farms &middot; Qurbani \'26 &middot; ' + esc(cfg.label) + ' (' + esc(section.category) + ')</span>' +
                     '<span>Printed ' + esc(stamp) + ' &middot; ' + section.section_total + ' animal(s) &middot; Sheet ' + (idx + 1) + ' of ' + sections.length + '</span>' +
                     '</div>';
             body += '</div>';
@@ -2506,7 +3198,7 @@ window.QURBANI_ORDERS_BOOT = {!! json_encode($qurbaniOrdersBoot, JSON_HEX_TAG | 
 
         body += '</div>'; // .sheet-pages-wrap
 
-        return '<!DOCTYPE html><html><head><meta charset="utf-8"><title>Qurbani Sheets &mdash; ' + sections.length + ' sheet(s)</title>' +
+        return '<!DOCTYPE html><html><head><meta charset="utf-8"><title>Qurbani Sheets &mdash; ' + esc(cfg.label) + ' &mdash; ' + sections.length + ' sheet(s)</title>' +
             '<style>' + css + '</style></head><body>' + body +
             '</body></html>';
     }
@@ -2700,16 +3392,31 @@ window.QURBANI_ORDERS_BOOT = {!! json_encode($qurbaniOrdersBoot, JSON_HEX_TAG | 
         };
     }
 
+    // May-2026 — cached server-side stats (total + verified counts).
+    // The unverified breakdown is derived from _qoLocReqEligibleRows
+    // every render. Stored at module scope so renderLocReqStats() can
+    // rebuild after any local mutation (e.g. dismissing a row) without
+    // refetching.
+    let _qoLocReqStats = { total_customers: 0, verified_customers: 0, unverified_customers: 0 };
+
     function loadLocReqEligible() {
         const f = _locReqCollectFilters();
         const tbody = document.getElementById('locReqListBody');
         tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:#9ca3af;padding:20px;">Loading…</td></tr>';
         const qs = new URLSearchParams(f).toString();
+        // Reset stat tiles to "—" while we wait, so stale numbers from
+        // the previous filter set don't sit on screen for a beat.
+        _locReqResetStatsToLoading();
         fetch('/qurbani/api/loc-request/eligible?' + qs, { headers: { 'Accept': 'application/json' } })
             .then(r => r.json())
             .then(data => {
                 if (!data.success) throw new Error(data.message || 'Failed to load eligible customers');
                 _qoLocReqEligibleRows = data.items || [];
+                _qoLocReqStats = data.stats || {
+                    total_customers: _qoLocReqEligibleRows.length,
+                    verified_customers: 0,
+                    unverified_customers: _qoLocReqEligibleRows.length,
+                };
                 // Default: pre-tick everyone except customers we
                 // messaged in the last 24h (matches the "Hide
                 // recently sent" checkbox default).
@@ -2723,7 +3430,13 @@ window.QURBANI_ORDERS_BOOT = {!! json_encode($qurbaniOrdersBoot, JSON_HEX_TAG | 
             .catch(err => {
                 tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:#dc2626;padding:20px;">'
                     + esc(err.message) + '</td></tr>';
+                _locReqResetStatsToLoading();
             });
+    }
+
+    function _locReqResetStatsToLoading() {
+        ['locReqStatTotal','locReqStatVerified','locReqStatUnverified','locReqStatWaiting','locReqStatReplied']
+            .forEach(id => { const el = document.getElementById(id); if (el) el.textContent = '—'; });
     }
 
     function _locReqIsRecentlySent(row) {
@@ -2735,6 +3448,9 @@ window.QURBANI_ORDERS_BOOT = {!! json_encode($qurbaniOrdersBoot, JSON_HEX_TAG | 
     }
 
     function renderLocReqList() {
+        // Stats first so they update even when the table is empty.
+        renderLocReqStats();
+
         const tbody = document.getElementById('locReqListBody');
         const hideRecent = document.getElementById('locReqHideRecentlySent')?.checked;
         const visible = _qoLocReqEligibleRows.filter(r => !(hideRecent && _locReqIsRecentlySent(r)));
@@ -2839,6 +3555,209 @@ window.QURBANI_ORDERS_BOOT = {!! json_encode($qurbaniOrdersBoot, JSON_HEX_TAG | 
         btn.disabled = (sel === 0);
         btn.textContent = 'Send to Selected (' + sel + ')';
         document.getElementById('locReqSelectHeader').checked = (sel > 0 && sel === total);
+    }
+
+    // May-2026 — derive the unverified breakdown from the eligible
+    // items array. Three actionable buckets:
+    //   - never_asked: no last_request row at all → primary candidates
+    //                  to send the first message to.
+    //   - awaiting:    sent_no_reply OR failed → these are the ones
+    //                  the user wants to chase down (call + remind).
+    //   - replied:     replied_pending (reply not yet saved) → links
+    //                  to the Reviewer drawer.
+    function _locReqDeriveBreakdown() {
+        let neverAsked = 0, awaiting = 0, replied = 0;
+        const waitingList = [];
+        (_qoLocReqEligibleRows || []).forEach(r => {
+            const st = r.last_request;
+            if (!st) { neverAsked++; return; }
+            if (st.display === 'replied_pending') { replied++; return; }
+            if (st.display === 'sent_no_reply' || st.display === 'failed') {
+                awaiting++;
+                waitingList.push(r);
+                return;
+            }
+            // 'saved'/'dismissed'/'queued'/'sending'/'skipped' — count
+            // saved/dismissed under verified noise, count the transient
+            // ones (queued/sending) under awaiting so the user sees they
+            // exist. Keep it simple — they're rare.
+            if (st.display === 'queued' || st.display === 'sending') {
+                awaiting++;
+                waitingList.push(r);
+            }
+        });
+        return { neverAsked, awaiting, replied, waitingList };
+    }
+
+    function renderLocReqStats() {
+        const total      = _qoLocReqStats.total_customers || 0;
+        const verified   = _qoLocReqStats.verified_customers || 0;
+        const unverified = _qoLocReqStats.unverified_customers || _qoLocReqEligibleRows.length;
+        const b = _locReqDeriveBreakdown();
+
+        const pct = (n) => total > 0 ? Math.round((n / total) * 100) + '%' : '0%';
+
+        const setTxt = (id, val) => { const el = document.getElementById(id); if (el) el.textContent = val; };
+        setTxt('locReqStatTotal',      String(total));
+        setTxt('locReqStatVerified',   verified + ' (' + pct(verified) + ')');
+        setTxt('locReqStatUnverified', unverified + ' (' + pct(unverified) + ')');
+        setTxt('locReqStatWaiting',    String(b.awaiting));
+        setTxt('locReqStatReplied',    String(b.replied));
+
+        // If the panel is open, refresh its rows to reflect the latest
+        // status (e.g. after a Remind action bumps a row from
+        // never_asked → awaiting).
+        const panel = document.getElementById('locReqWaitingPanel');
+        if (panel && panel.style.display !== 'none') {
+            _renderLocReqWaitingList(b.waitingList);
+        }
+    }
+
+    function locReqToggleWaitingPanel(forceState) {
+        const panel = document.getElementById('locReqWaitingPanel');
+        const caret = document.getElementById('locReqStatWaitingCaret');
+        if (!panel) return;
+        const willOpen = (typeof forceState === 'boolean')
+            ? forceState
+            : (panel.style.display === 'none' || !panel.style.display);
+        panel.style.display = willOpen ? 'block' : 'none';
+        if (caret) caret.textContent = willOpen ? '▴' : '▾';
+        if (willOpen) {
+            const { waitingList } = _locReqDeriveBreakdown();
+            _renderLocReqWaitingList(waitingList);
+        }
+    }
+
+    function _renderLocReqWaitingList(list) {
+        const countEl = document.getElementById('locReqWaitingCount');
+        const box = document.getElementById('locReqWaitingList');
+        if (!box) return;
+        if (countEl) countEl.textContent = String(list.length);
+        if (list.length === 0) {
+            box.innerHTML = '<div style="color:#6b7280;font-style:italic;padding:6px 0;">'
+                + 'Nobody is currently awaiting reply in this filter. 🎉</div>';
+            return;
+        }
+        // Sort oldest sent first — those are the most overdue chases.
+        const sorted = list.slice().sort((a, b) => {
+            const ta = (a.last_request && a.last_request.sent_at) || '';
+            const tb = (b.last_request && b.last_request.sent_at) || '';
+            return ta.localeCompare(tb);
+        });
+        let html = '';
+        sorted.forEach(r => {
+            const st = r.last_request || {};
+            const phone = (r.phone || '').replace(/\s+/g, '');
+            const telHref = phone ? 'tel:' + phone : '#';
+            const sentAgo = st.sent_at ? _locReqFmtRelTime(st.sent_at) : '—';
+            const failed = st.display === 'failed';
+            html +=
+                '<div data-cid="' + r.customer_id + '" '
+                +     'style="display:flex;align-items:center;gap:8px;padding:6px 8px;background:#fff;border:1px solid #fecaca;border-radius:5px;">'
+                +   '<div style="flex:1;min-width:0;">'
+                +     '<div style="font-weight:600;color:#111827;">' + esc(r.customer_name || '—')
+                +       (failed ? ' <span style="background:#fecaca;color:#7f1d1d;font-size:10px;padding:1px 6px;border-radius:8px;">SEND FAILED</span>' : '')
+                +     '</div>'
+                +     '<div style="font-size:11px;color:#6b7280;">'
+                +       (phone ? esc(phone) : '<i>no phone</i>')
+                +       ' · last sent ' + esc(sentAgo)
+                +     '</div>'
+                +   '</div>'
+                +   (phone
+                       ? '<a href="' + telHref + '" '
+                         + 'style="padding:4px 10px;border-radius:5px;background:#dbeafe;color:#1d4ed8;font-weight:700;text-decoration:none;font-size:11px;border:1px solid #bfdbfe;">📞 Call</a>'
+                       : '')
+                +   '<button type="button" onclick="locReqRemindOne(' + r.customer_id + ', this)" '
+                +     'style="padding:4px 10px;border-radius:5px;background:#fef3c7;color:#92400e;font-weight:700;border:1px solid #fcd34d;cursor:pointer;font-size:11px;">'
+                +     '💬 Remind'
+                +   '</button>'
+                + '</div>';
+        });
+        box.innerHTML = html;
+    }
+
+    // Re-fires the qurbani_location template to a single customer.
+    // Uses the existing /send-one endpoint (per-card flow), so the
+    // worker drains immediately and the new sent_at stamps onto the
+    // most recent request row for this customer.
+    function locReqRemindOne(customerId, btn) {
+        if (!customerId) return;
+        // Pick the customer's most recent order/line item context so
+        // the reminder row carries the same region/day/slot — keeps
+        // Reviewer-drawer grouping consistent.
+        const row = (_qoLocReqEligibleRows || []).find(r => r.customer_id === customerId);
+        const orderId = row && row.order_ids && row.order_ids[0] ? row.order_ids[0] : null;
+        const lineItemId = row && row.line_item_ids && row.line_item_ids[0] ? row.line_item_ids[0] : null;
+        const prevText = btn ? btn.textContent : '';
+        if (btn) { btn.disabled = true; btn.textContent = 'Sending…'; }
+        fetch('/qurbani/api/loc-request/send-one', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Accept': 'application/json', 'X-CSRF-TOKEN': '{{ csrf_token() }}' },
+            body: JSON.stringify({ customer_id: customerId, order_id: orderId, line_item_id: lineItemId }),
+        })
+        .then(r => r.json())
+        .then(data => {
+            if (data && data.success) {
+                if (btn) { btn.textContent = '✓ Sent'; btn.style.background = '#d1fae5'; btn.style.color = '#065f46'; btn.style.borderColor = '#34d399'; }
+                // Refresh the eligible list so the new sent_at shows up
+                // and the row may drop out of "Hide messaged in last 24h".
+                setTimeout(loadLocReqEligible, 1200);
+            } else {
+                if (btn) { btn.disabled = false; btn.textContent = prevText || '💬 Remind'; }
+                alert('Remind failed: ' + ((data && (data.error_message || data.message)) || 'unknown error'));
+            }
+        })
+        .catch(() => {
+            if (btn) { btn.disabled = false; btn.textContent = prevText || '💬 Remind'; }
+            alert('Remind failed — network error');
+        });
+    }
+
+    // "Remind All Waiting" — queues the qurbani_location template for
+    // every customer currently in the waiting bucket. Reuses sendBulk
+    // + startBatch so the existing rate limiter and progress bar do
+    // the heavy lifting. Bypasses the 24h-hide UI filter (this is an
+    // explicit user action) but still subject to the server-side
+    // dedupe / send rules.
+    async function locReqRemindAllWaiting() {
+        const { waitingList } = _locReqDeriveBreakdown();
+        if (waitingList.length === 0) {
+            alert('Nobody is currently awaiting reply.');
+            return;
+        }
+        if (!confirm('Send a reminder qurbani_location WhatsApp to ' + waitingList.length + ' waiting customer(s)?')) return;
+        const customerIds = waitingList.map(r => r.customer_id);
+        const filters = _locReqCollectFilters();
+        try {
+            const res = await fetch('/qurbani/api/loc-request/send-bulk', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'Accept': 'application/json', 'X-CSRF-TOKEN': '{{ csrf_token() }}' },
+                body: JSON.stringify(Object.assign({ customer_ids: customerIds, batch_label: 'Reminder · awaiting reply' }, filters)),
+            });
+            const data = await res.json();
+            if (!data || !data.success) throw new Error((data && data.message) || 'Failed to queue reminders');
+            // Reuse the standard send-drain pipeline so the progress
+            // bar, batch dashboard and review jump all just work — this
+            // is the same flow runLocReqSend() runs after a successful
+            // /send-bulk queue.
+            _qoLocReqActiveBatchId = data.batch_id;
+            const queued = data.queued || waitingList.length;
+            const progress = document.getElementById('locReqProgress');
+            if (progress) progress.style.display = 'block';
+            const lbl = document.getElementById('locReqProgressLabel');
+            if (lbl) lbl.textContent = 'Sending reminders…';
+            const cnt = document.getElementById('locReqProgressCount');
+            if (cnt) cnt.textContent = '0 / ' + queued;
+            const bar = document.getElementById('locReqProgressBar');
+            if (bar) bar.style.width = '0%';
+            await _runLocReqBatchPoll(data.batch_id, queued);
+            // Pull fresh stats so the "Awaiting Reply" tile reflects
+            // the freshly bumped sent_at timestamps (some may now fall
+            // outside the "no reply yet" window once Meta delivers).
+            setTimeout(loadLocReqEligible, 800);
+        } catch (err) {
+            alert('Remind All failed: ' + (err.message || 'unknown error'));
+        }
     }
 
     function locReqToggleRow(cid, on) {
@@ -3293,6 +4212,11 @@ window.QURBANI_ORDERS_BOOT = {!! json_encode($qurbaniOrdersBoot, JSON_HEX_TAG | 
     window.closeSheetModal = closeSheetModal;
     window.loadSheetPreview = loadSheetPreview;
     window.runSheetPrintFromModal = runSheetPrintFromModal;
+    // Cascading filter helpers — wired from the Region / Day / Delivery
+    // Type <select> onchange attributes so the Sub-Region / Slot
+    // dropdowns narrow to valid children when their parent changes.
+    window.updateSheetSubRegionDropdown = updateSheetSubRegionDropdown;
+    window.updateSheetSlotDropdown = updateSheetSlotDropdown;
     window.setPrintFilter = setPrintFilter;
     window.toggleAllCb = toggleAllCb;
     window.selectAllLabels = selectAllLabels;
@@ -3329,6 +4253,10 @@ window.QURBANI_ORDERS_BOOT = {!! json_encode($qurbaniOrdersBoot, JSON_HEX_TAG | 
     window.locReviewSaveAll = locReviewSaveAll;
     window.sendLocReqForLineItem = sendLocReqForLineItem;
     window.openLocReqReviewDrawerForBatch = openLocReqReviewDrawerForBatch;
+    // May-2026 stats strip + Awaiting-Reply expander on the bulk modal.
+    window.locReqToggleWaitingPanel = locReqToggleWaitingPanel;
+    window.locReqRemindOne = locReqRemindOne;
+    window.locReqRemindAllWaiting = locReqRemindAllWaiting;
 
     // ===== Phase C2 (May-2026) — Riders Map modal =====================
     // Lazy-loads the Google Maps JS API on first open. Same key as

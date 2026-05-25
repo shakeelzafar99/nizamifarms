@@ -2781,10 +2781,34 @@ select.wa-mgr-input { background: #fff; cursor: pointer; }
                 if (locAddr) html += `<div style="font-size:12px;color:#6B7280;">${esc(locAddr)}</div>`;
                 html += `<div style="font-size:12px;color:#2563EB;margin-top:2px;">Click to open in Maps</div>`;
                 html += '</div></div>';
+
+                // Inbound location pins from a customer can be saved as
+                // their verified location with one click — same as the
+                // mobile Store screen. Only shown for inbound messages
+                // on conversations linked to a known customer (no
+                // customer = no place to save). Outbound pins we
+                // ourselves sent obviously don't need this.
+                if (!isOut && lat && lng && activeConv && activeConv.customer_id) {
+                    html += `<button type="button" class="wa-set-verified-btn" data-cust="${activeConv.customer_id}" data-lat="${esc(String(lat))}" data-lng="${esc(String(lng))}" style="margin-top:4px;background:#2563EB;color:#fff;border:none;border-radius:5px;padding:5px 10px;font-size:11px;font-weight:600;cursor:pointer;">📌 Set as Verified Location</button>`;
+                }
             }
             if (m.content && m.type !== 'location' && m.type !== 'audio') {
                 const linked = esc(m.content).replace(/(https?:\/\/[^\s<]+)/g, '<a href="$1" target="_blank" style="color:#2563EB;text-decoration:underline;">$1</a>');
                 html += `<div class="wa-msg-text">${linked}</div>`;
+
+                // Inbound text containing a Google Maps share-link
+                // (the maps.app.goo.gl shortlink that opens in maps)
+                // can also be saved as verified location. The web
+                // CustomerController::setVerifiedLocation endpoint now
+                // follows the shortlink and extracts lat/lng server
+                // side, so a URL-only save still verifies the customer.
+                if (!isOut && activeConv && activeConv.customer_id) {
+                    const mapsRe = /https?:\/\/(maps\.google\.com|www\.google\.com\/maps|goo\.gl\/maps|maps\.app\.goo\.gl|g\.co\/maps)[^\s)\]"<]*/i;
+                    const um = m.content.match(mapsRe);
+                    if (um && um[0]) {
+                        html += `<button type="button" class="wa-set-verified-btn" data-cust="${activeConv.customer_id}" data-url="${esc(um[0])}" style="margin-top:4px;background:#2563EB;color:#fff;border:none;border-radius:5px;padding:5px 10px;font-size:11px;font-weight:600;cursor:pointer;">📌 Set as Verified Location</button>`;
+                    }
+                }
             }
             html += `<div class="wa-msg-meta">`;
             if (m.sender_name && isOut) html += `<span class="wa-msg-sender">${esc(m.sender_name)} · </span>`;
@@ -2806,6 +2830,55 @@ select.wa-mgr-input { background: #fff; cursor: pointer; }
         });
         el.innerHTML = html;
         el.scrollTop = el.scrollHeight;
+
+        // Wire any "Set as Verified Location" buttons we just rendered.
+        // Done via event delegation on each button rather than a single
+        // container listener so we get explicit per-button disabled
+        // state during the network call. The handler hits the existing
+        // /customers/{id}/set-verified-location endpoint which now
+        // (server-side) follows short URLs and extracts coords too,
+        // so a maps.app.goo.gl link saves both the URL AND the pin.
+        el.querySelectorAll('.wa-set-verified-btn').forEach(function (btn) {
+            btn.addEventListener('click', function () {
+                const cust = btn.getAttribute('data-cust');
+                if (!cust) return;
+                const lat = btn.getAttribute('data-lat');
+                const lng = btn.getAttribute('data-lng');
+                const url = btn.getAttribute('data-url');
+                const payload = {};
+                if (lat && lng) {
+                    payload.latitude = parseFloat(lat);
+                    payload.longitude = parseFloat(lng);
+                } else if (url) {
+                    payload.url = url;
+                } else {
+                    return;
+                }
+                const original = btn.innerHTML;
+                btn.disabled = true;
+                btn.innerHTML = 'Saving...';
+                btn.style.opacity = '0.7';
+                apiFetch('/customers/' + cust + '/set-verified-location', {
+                    method: 'POST',
+                    body: JSON.stringify(payload),
+                }).then(function (r) {
+                    if (r && r.success) {
+                        btn.innerHTML = '✅ Saved as Verified';
+                        btn.style.background = '#16a34a';
+                    } else {
+                        btn.disabled = false;
+                        btn.innerHTML = original;
+                        btn.style.opacity = '1';
+                        alert((r && r.message) || 'Failed to save verified location');
+                    }
+                }).catch(function () {
+                    btn.disabled = false;
+                    btn.innerHTML = original;
+                    btn.style.opacity = '1';
+                    alert('Failed to save verified location');
+                });
+            });
+        });
     }
 
     // ── Send Message ──

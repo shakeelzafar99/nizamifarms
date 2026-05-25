@@ -1170,6 +1170,49 @@ class QurbaniWebController extends Controller
     }
 
     /**
+     * GET /qurbani/riders
+     *
+     * Phase 1 (May-2026) — Qurbani Riders dispatch view (web).
+     *
+     * Read-only landing page that mirrors the mobile QurbaniRidersScreen.
+     * The page is a thin shell that fetches /qurbani/api/riders (alias
+     * of the mobile getQurbaniRidersSummary endpoint) on load and polls
+     * every 30s. Phase 1 is INFORMATIONAL only — Dispatch / Cancel /
+     * Auto Route / Edit Route / Live Tracking all remain on the mobile
+     * so we don't fork destructive action paths before this read-only
+     * shape is validated against real usage.
+     *
+     * Permission gating happens inside the API endpoint
+     * (hasMobilePermission('access_qurbani_mode')). This view method
+     * itself just renders the empty shell so that route protection is
+     * uniform across the qurbani group via the parent web middleware.
+     */
+    public function ridersIndex()
+    {
+        return view('pages.qurbani.riders');
+    }
+
+    /**
+     * GET /qurbani/riders/{riderId}
+     *
+     * Phase 1 (May-2026) — Per-rider route detail (web).
+     *
+     * Read-only mirror of the mobile manager planner
+     * (QurbaniRiderRouteScreen). Pulls bundle/dispatch/ETA data from
+     * /qurbani/api/riders/{id}/route and the existing
+     * /qurbani/api/riders/{id}/dispatch-map endpoint for the map modal.
+     * Same Phase-1 constraint as ridersIndex(): informational only —
+     * no Dispatch / Cancel / Auto Route / Edit Route / Live Tracking
+     * actions here yet.
+     */
+    public function riderRouteView($riderId)
+    {
+        return view('pages.qurbani.rider-route', [
+            'riderId' => (int) $riderId,
+        ]);
+    }
+
+    /**
      * GET /qurbani/api/orders-items
      *
      * Returns the flat line-item list with bundle positions, status,
@@ -1279,6 +1322,42 @@ class QurbaniWebController extends Controller
                 'o.order_date',
                 DB::raw("CONCAT(COALESCE(c.first_name,''), ' ', COALESCE(c.last_name,'')) as customer_name"),
                 'c.phone as customer_phone',
+                // May-2026 — surfaced so the printed Master Sheet can
+                // show the real street address instead of the region
+                // label. Priority order matches the rest of the
+                // dispatch pipeline (see RiderController @ 19267):
+                //   1. Order shipping address (address_line1 +
+                //      address_line2 + address_city). This is the
+                //      address the customer typed at checkout — the
+                //      authoritative drop-off location.
+                //   2. Customer profile address (address1 + address2)
+                //      as a fallback for orders whose shipping fields
+                //      weren't populated (legacy / hand-entered).
+                //   3. Empty string if neither exists — the front-end
+                //      resolver then falls back to qurbani_region so
+                //      a row never prints blank.
+                //
+                // Everything is concatenated server-side with NULLIF
+                // / IF guards so blank parts don't introduce stray
+                // ", " separators. Other UI surfaces ignore this
+                // field and keep using qurbani_region for their
+                // on-screen address column.
+                // CONCAT_WS skips NULL parts and never inserts a
+                // stray separator at the ends, so we don't need a
+                // TRIM around it (avoids any MySQL-version quirks
+                // with multi-char TRIM remstr). We compute both
+                // candidates and use the order's shipping address
+                // when ANY of its parts is non-empty, else fall
+                // back to the customer profile address.
+                DB::raw(
+                    "CASE "
+                    .   "WHEN COALESCE(o.address_line1, '') <> '' "
+                    .     "OR COALESCE(o.address_line2, '') <> '' "
+                    .     "OR COALESCE(o.address_city,  '') <> '' "
+                    .   "THEN CONCAT_WS(', ', NULLIF(o.address_line1, ''), NULLIF(o.address_line2, ''), NULLIF(o.address_city, '')) "
+                    .   "ELSE CONCAT_WS(', ', NULLIF(c.address1, ''), NULLIF(c.address2, '')) "
+                    . "END AS customer_address"
+                ),
                 'c.latitude as cust_lat',
                 'c.longitude as cust_lng',
                 'c.verified_location_url',
@@ -1428,6 +1507,12 @@ class QurbaniWebController extends Controller
                 'order_status'       => $r->order_status,
                 'customer_name'      => trim($r->customer_name) ?: 'Unknown',
                 'customer_phone'     => $r->customer_phone,
+                // May-2026 — derived in the SELECT (see getOrderItems
+                // SQL). Falls back to '' so the front-end resolver
+                // can distinguish "field not present" (server-side
+                // change not loaded yet) from "field empty" (no
+                // address on file).
+                'customer_address'   => isset($r->customer_address) ? (string) $r->customer_address : '',
                 'product_id'         => $r->product_id,
                 'product_name'       => $r->product_name,
                 'category_level_2'   => $r->category_level_2,

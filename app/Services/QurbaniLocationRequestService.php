@@ -276,7 +276,50 @@ class QurbaniLocationRequestService
             }
 
             if (!empty($resp['success'])) {
-                $waMsgId = $resp['messages'][0]['id'] ?? null;
+                // Sniff the Meta message id — Cloud-API responses normally
+                // expose it at messages[0].id but some SDK shapes nest it
+                // under data.messages[0].id, so we try both.
+                $waMsgId = $resp['messages'][0]['id']
+                    ?? ($resp['data']['messages'][0]['id'] ?? null);
+
+                // Persist the outbound template into the conversation
+                // timeline so it shows in the /messages page chat with
+                // the standard "Template: qurbani_location" badge.
+                // Without this, the Reviewer sees a customer's reply but
+                // there's no visible "we sent the request" entry above
+                // it — which is confusing and was the original bug.
+                // Pattern mirrored from QurbaniWaAutoSender::sendTemplate.
+                $conversationId = null;
+                try {
+                    $conv = $this->wa->findOrCreateConversation($row->wa_phone);
+                    $conversationId = $conv->id;
+                    $savedMsg = $this->wa->saveOutboundMessage(
+                        $conv->id,
+                        $resp,
+                        'template',
+                        $templateName, // content column — what the chat list shows
+                        $row->sent_by ?: null,
+                        $templateName,
+                        ['1' => trim($customerName) ?: 'Customer']
+                    );
+                    // saveOutboundMessage stores the wa_message_id on the
+                    // MessageModel row from the API response; prefer that
+                    // value because it's the canonical persisted one.
+                    if ($savedMsg && $savedMsg->wa_message_id) {
+                        $waMsgId = $savedMsg->wa_message_id;
+                    }
+                } catch (\Throwable $persistErr) {
+                    // Non-fatal: the Meta send already succeeded, so we
+                    // don't want to flip the row back to failed. The
+                    // request still works for matching (we'll fall back
+                    // to phone+window matching if context.id is missing).
+                    Log::warning('QurbaniLocReq: outbound persist failed (non-fatal)', [
+                        'row_id'  => $row->id,
+                        'phone'   => $row->wa_phone,
+                        'error'   => $persistErr->getMessage(),
+                    ]);
+                }
+
                 DB::table(self::TABLE)->where('id', $row->id)->update([
                     'status'             => 'sent',
                     'sent_at'            => now(),
@@ -457,6 +500,159 @@ class QurbaniLocationRequestService
         }
 
         return (int) $request->id;
+    }
+
+    /**
+     * Handle an inbound TEXT message that contains a Google Maps URL.
+     * Resolves shortened links (maps.app.goo.gl / goo.gl) by following
+     * the redirect, extracts the lat/lng from the final URL, and feeds
+     * those into the standard recordReply() flow so the row appears in
+     * the Reviewer drawer alongside real WhatsApp pin replies.
+     *
+     * Why this exists: customers sometimes share their location as a
+     * Google Maps share-link inside the message body instead of using
+     * WhatsApp's native location-pin attachment. Without this hook
+     * those replies just sat in t_wa_messages as plain text and
+     * Reviewer never saw them.
+     *
+     * Returns the matched request id, or null if no maps URL was found,
+     * no coords could be extracted, or no outstanding request matched.
+     * All resolve / parse failures are swallowed and logged at debug —
+     * the message itself is still saved in the conversation by the
+     * caller, so we never lose visibility.
+     */
+    public function recordUrlReply(
+        ?string $contextId,
+        string $phone,
+        string $messageBody,
+        ?int $conversationCustomerId = null,
+        ?string $replyWaMessageId = null
+    ): ?int {
+        $url = $this->extractMapsUrl($messageBody);
+        if (!$url) { return null; }
+
+        $resolved = $this->resolveShortMapsUrl($url);
+        $coords = $this->parseCoordsFromMapsUrl($resolved);
+
+        if (!$coords) {
+            // We saw a maps URL but couldn't get lat/lng out of it. Log
+            // for triage — the manual "Set as Verified Location"
+            // button on the message screen still handles this case.
+            Log::info('QurbaniLocReq: maps URL detected but coords not extracted', [
+                'phone'       => $phone,
+                'url'         => $url,
+                'resolved'    => $resolved,
+            ]);
+            return null;
+        }
+
+        // Reuse the standard recordReply() pipeline so we get the same
+        // context.id matching, customer cross-check, auto-dismiss on
+        // already-verified customers, and reply-coords persistence
+        // for free. We stash the source URL in reply_address with a
+        // recognisable prefix so the Reviewer can show it.
+        return $this->recordReply(
+            $contextId,
+            $phone,
+            (float) $coords['lat'],
+            (float) $coords['lng'],
+            'Shared via Google Maps link',
+            'URL: ' . substr($resolved, 0, 450),
+            $conversationCustomerId,
+            $replyWaMessageId
+        );
+    }
+
+    /**
+     * Pull the first Google Maps URL out of a free-text message body.
+     * Recognises the same domain shortlist the mobile chat uses
+     * (StoreOpenOrdersScreen.js GMAPS_REGEX) so behaviour stays
+     * consistent across surfaces.
+     */
+    protected function extractMapsUrl(?string $body): ?string
+    {
+        if (empty($body)) { return null; }
+        $re = '~https?://(?:maps\.google\.com|www\.google\.com/maps|goo\.gl/maps|maps\.app\.goo\.gl|g\.co/maps)[^\s)\]"<]*~i';
+        if (preg_match($re, $body, $m)) {
+            return $m[0];
+        }
+        return null;
+    }
+
+    /**
+     * Follow a shortened Google Maps link to its final URL using cURL.
+     * If the URL isn't shortened we return it as-is. On any network
+     * error we return the input unchanged — the caller will then try
+     * to parse coords from the original URL and silently no-op if
+     * that fails.
+     *
+     * Note: This mirrors RiderController::resolveGoogleMapsUrl. We
+     * keep a local copy rather than refactor into a shared trait
+     * because the rider helper is private and we don't want to
+     * widen its visibility in a hot operational controller.
+     */
+    protected function resolveShortMapsUrl(string $url): string
+    {
+        $shortDomains = ['goo.gl', 'maps.app.goo.gl', 'g.co'];
+        $isShort = false;
+        foreach ($shortDomains as $d) {
+            if (stripos($url, $d) !== false) { $isShort = true; break; }
+        }
+        if (!$isShort) { return $url; }
+
+        if (!function_exists('curl_init')) {
+            return $url;
+        }
+
+        try {
+            $ch = curl_init($url);
+            curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
+            curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+            curl_setopt($ch, CURLOPT_HEADER, false);
+            curl_setopt($ch, CURLOPT_NOBODY, false);
+            curl_setopt($ch, CURLOPT_TIMEOUT, 8);
+            curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 4);
+            curl_setopt($ch, CURLOPT_MAXREDIRS, 5);
+            curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
+            curl_setopt($ch, CURLOPT_USERAGENT, 'Mozilla/5.0 (compatible; NizamiFarms-LocResolver/1.0)');
+            curl_exec($ch);
+            $finalUrl = curl_getinfo($ch, CURLINFO_EFFECTIVE_URL);
+            $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+            curl_close($ch);
+            if ($httpCode >= 200 && $httpCode < 400 && !empty($finalUrl)) {
+                return (string) $finalUrl;
+            }
+        } catch (\Throwable $e) {
+            Log::debug('QurbaniLocReq: resolveShortMapsUrl failed (non-fatal)', [
+                'url' => $url, 'error' => $e->getMessage(),
+            ]);
+        }
+        return $url;
+    }
+
+    /**
+     * Extract lat/lng coordinates from a (resolved) Google Maps URL.
+     * Recognises three common patterns:
+     *   - ?q=LAT,LNG / ?ll=LAT,LNG
+     *   - /@LAT,LNG,ZOOM in the path
+     *   - /place/LAT,LNG/...
+     * Returns ['lat' => float, 'lng' => float] or null if no
+     * coordinates were found (e.g. the URL is a place-name share
+     * with no coords in the query string).
+     */
+    protected function parseCoordsFromMapsUrl(string $url): ?array
+    {
+        if (empty($url)) { return null; }
+        if (preg_match('/[?&](?:q|ll|destination)=(-?\d+\.\d+),(-?\d+\.\d+)/i', $url, $m)) {
+            return ['lat' => (float) $m[1], 'lng' => (float) $m[2]];
+        }
+        if (preg_match('/@(-?\d+\.\d+),(-?\d+\.\d+)/', $url, $m)) {
+            return ['lat' => (float) $m[1], 'lng' => (float) $m[2]];
+        }
+        if (preg_match('~/place/(-?\d+\.\d+),(-?\d+\.\d+)~', $url, $m)) {
+            return ['lat' => (float) $m[1], 'lng' => (float) $m[2]];
+        }
+        return null;
     }
 
     // -----------------------------------------------------------------

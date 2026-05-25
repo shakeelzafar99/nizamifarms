@@ -299,6 +299,11 @@ Route::middleware(['auth'])->group(function () {
         Route::post('/api/default-payment-method', [\App\Http\Controllers\CRM\QurbaniSettingsController::class, 'updateDefaultPaymentMethod'])->name('qurbani-settings.api.default-payment-method');
         Route::post('/api/cancellation-code', [\App\Http\Controllers\CRM\QurbaniSettingsController::class, 'updateCancellationCode'])->name('qurbani-settings.api.cancellation-code');
         Route::post('/api/hidden-categories', [\App\Http\Controllers\CRM\QurbaniSettingsController::class, 'updateHiddenCategories'])->name('qurbani-settings.api.hidden-categories');
+        // May-2026 — Qurbani rider whitelist (mobile rider pickers).
+        Route::post('/api/qurbani-riders', [\App\Http\Controllers\CRM\QurbaniSettingsController::class, 'updateQurbaniRiders'])->name('qurbani-settings.api.qurbani-riders');
+        // May-2026 — UI-driven verified-coords backfill (replaces the
+        // SSH-only artisan command for non-CLI admins).
+        Route::post('/api/backfill-verified-coords', [\App\Http\Controllers\CRM\QurbaniSettingsController::class, 'backfillVerifiedCoords'])->name('qurbani-settings.api.backfill-verified-coords');
         // Qurbani Operations Base location — used as origin fallback +
         // return-to-base ETA endpoint (May-2026 plan). Save name/lat/lng
         // as ConfigModel keys; pass all-empty to clear.
@@ -339,6 +344,36 @@ Route::middleware(['auth'])->group(function () {
         // activity for a single Qurbani line item. Mirrors the mobile
         // endpoint. Manager-only (access_qurbani_mode).
         Route::get('/api/line-items/{lineItemId}/timeline', [\App\Http\Controllers\API\RiderController::class, 'getQurbaniOrderTimeline'])->name('qurbani.api.line-items.timeline');
+
+        // -----------------------------------------------------------
+        // QURBANI RIDERS — Phase 1 (May-2026). Read-only web mirror
+        // of the mobile manager dispatch view (QurbaniRidersScreen +
+        // QurbaniRiderRouteScreen). The list page lands the manager
+        // on a grid of riders; clicking one opens the route detail
+        // page with bundle sections + ETAs + dispatch map.
+        //
+        // Phase 1 is INFORMATIONAL only — Dispatch / Cancel /
+        // Auto Route / Edit Route / Live Tracking still happen on
+        // the mobile so we don't duplicate destructive action paths
+        // before the read-only shape is validated.
+        //
+        // Both API endpoints are thin aliases to the same
+        // RiderController methods the mobile uses. Permission gates
+        // inside those methods (hasMobilePermission('access_qurbani_mode'))
+        // work identically on web session auth. The dispatch-map +
+        // timeline endpoints already exist further up so we don't
+        // add aliases for them.
+        // -----------------------------------------------------------
+        Route::get('/riders', [\App\Http\Controllers\CRM\QurbaniWebController::class, 'ridersIndex'])
+            ->name('qurbani.riders.index');
+        Route::get('/riders/{riderId}', [\App\Http\Controllers\CRM\QurbaniWebController::class, 'riderRouteView'])
+            ->whereNumber('riderId')
+            ->name('qurbani.riders.route');
+        Route::get('/api/riders', [\App\Http\Controllers\API\RiderController::class, 'getQurbaniRidersSummary'])
+            ->name('qurbani.api.riders');
+        Route::get('/api/riders/{riderId}/route', [\App\Http\Controllers\API\RiderController::class, 'getQurbaniRiderRoute'])
+            ->whereNumber('riderId')
+            ->name('qurbani.api.riders.route');
 
         // -----------------------------------------------------------
         // QURBANI INVOICES — invoice-level page (formerly /qurbani/orders).

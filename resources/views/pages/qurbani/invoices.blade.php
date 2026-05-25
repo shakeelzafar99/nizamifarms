@@ -3194,6 +3194,7 @@ function renderQurbaniBreakdown(deliveryType) {
                     <span>${qstatsEscape(deliveryType)} &mdash; detailed breakdown</span>
                 </div>
                 <div class="qstats-card-actions">
+                    <button id="qstatsImgBtn" class="qstats-ghostbtn" onclick="openQurbaniBreakdownImageMenu()" title="Save as PNG images">📥 Save as Images</button>
                     <button class="qstats-ghostbtn secondary" onclick="renderQurbaniSummary()">&larr; Back to summary</button>
                 </div>
             </div>
@@ -3447,6 +3448,302 @@ async function restoreQurbaniOrder(orderId, orderNumber) {
         console.error('Restore error:', e);
         alert('Network error while restoring order');
     }
+}
+
+// ======= QURBANI SUMMARY → SAVE AS IMAGES =======
+// Render the active "delivery — detailed breakdown" view into PNG snapshots
+// (either 9 images, one per Day × Category, or 3 images, one per Day with
+// all categories stacked vertically). Snapshots are bundled into a single
+// .zip download. Mobile-readable: fixed 700px wide, bumped fonts, branded
+// header + timestamp on each image so the file is self-explanatory when
+// shared on WhatsApp / Telegram.
+//
+// IMPLEMENTATION NOTE — we deliberately mirror the iframe-based strategy
+// used by captureQurbaniInvoiceImage() below. Capturing directly off the
+// live page crashes html2canvas because the KeenUI / Tailwind theme on
+// this page emits some colors as oklch(...) which html2canvas@1.4 can't
+// parse. By rendering our own clean HTML into an isolated iframe (no
+// inherited stylesheet, only the safe inline CSS we write ourselves) and
+// running html2canvas inside that iframe's window, we sidestep the issue
+// entirely.
+
+function _qstatsSafeFileName() {
+    return Array.from(arguments)
+        .map(p => String(p == null ? '' : p).toLowerCase()
+            .replace(/[^a-z0-9]+/g, '-')
+            .replace(/^-+|-+$/g, ''))
+        .filter(p => p)
+        .join('-');
+}
+
+// Memoized JSZip loader on the page-side window. Safe to load directly —
+// no DOM/styling involved.
+let _qstatsJszipPromise = null;
+function _qstatsLoadJSZip() {
+    if (window.JSZip) return Promise.resolve();
+    if (_qstatsJszipPromise) return _qstatsJszipPromise;
+    _qstatsJszipPromise = new Promise((resolve, reject) => {
+        const s = document.createElement('script');
+        s.src = 'https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js';
+        s.onload = resolve;
+        s.onerror = () => reject(new Error('Failed to load JSZip'));
+        document.head.appendChild(s);
+    });
+    return _qstatsJszipPromise;
+}
+
+// Standalone cell formatter — mirrors qstatsFormatCell() but uses class
+// names that match our isolated-iframe stylesheet (cell-ok / cell-near /
+// cell-over / cell-target / zero) instead of the page's qstats-* classes.
+function _qstatsFmtCellSafe(booked, target) {
+    const t = parseInt(target) || 0;
+    const b = parseInt(booked) || 0;
+    if (t <= 0) return b === 0 ? '<span class="zero">0</span>' : '<span>' + b + '</span>';
+    let cls = 'cell-ok';
+    const pct = (b / t) * 100;
+    if (pct > 100) cls = 'cell-over';
+    else if (pct >= 90) cls = 'cell-near';
+    return '<span class="' + cls + '">' + b + '</span><span class="cell-target">/' + t + '</span>';
+}
+
+// Build the list of {filename, html} sections to capture. Source-of-truth
+// is qStatsData (not the live DOM) so we know exactly what gets rendered
+// and don't pick up anything from the page's stylesheet.
+function _qstatsBuildCaptureSections(deliveryType, mode) {
+    const days = (qStatsData && qStatsData.days) || [];
+    const categories = ((qStatsData && qStatsData.categories) || [])
+        .filter(c => !qstatsCategoryHiddenInCard(c, deliveryType));
+    const detail = (((qStatsData && qStatsData.detail) || {})[deliveryType]) || {};
+    const summaryForType = (((qStatsData && qStatsData.summary) || {})[deliveryType]) || {};
+    const bdTargetsType = ((((qStatsData && qStatsData.targets) || {}).breakdown || {})[deliveryType]) || {};
+
+    const stamp = new Date().toLocaleString([], {day:'2-digit', month:'short', year:'numeric', hour:'2-digit', minute:'2-digit'});
+
+    const buildMini = (day, cat) => {
+        const qtyTotal = ((summaryForType[day] || {})[cat]) || 0;
+        if (qtyTotal === 0) return null;
+        const cellMap = (((detail[day] || {})[cat] || {}).cell) || {};
+        const slots   = ((detail[day] || {})[cat] || {}).slots   || [];
+        const regions = ((detail[day] || {})[cat] || {}).regions || [];
+        if (slots.length === 0 || regions.length === 0) return null;
+
+        const targetsForCell = ((bdTargetsType[day] || {})[cat]) || {};
+        const rowsHtml = slots.map(slot => {
+            const cells = regions.map(region => {
+                const v = ((cellMap[slot] || {})[region]) || 0;
+                const t = ((targetsForCell[slot] || {})[region]) || 0;
+                return '<td>' + _qstatsFmtCellSafe(v, t) + '</td>';
+            }).join('');
+            return '<tr><td class="row-label">' + qstatsEscape(slot) + '</td>' + cells + '</tr>';
+        }).join('');
+
+        return (
+            '<div class="mini">' +
+                '<div class="mini-head">' +
+                    '<div class="mini-title">' + qstatsEscape(cat) + '</div>' +
+                    '<div class="mini-total">' + qtyTotal + '</div>' +
+                '</div>' +
+                '<table>' +
+                    '<thead><tr><th class="col-label">Slot \\ Region</th>' +
+                        regions.map(r => '<th>' + qstatsEscape(r) + '</th>').join('') +
+                    '</tr></thead>' +
+                    '<tbody>' + rowsHtml + '</tbody>' +
+                '</table>' +
+            '</div>'
+        );
+    };
+
+    const buildBrandHead = (subtitle) => (
+        '<div class="brand-head">' +
+            '<div class="brand-title">NIZAMI FARMS</div>' +
+            '<div class="brand-sub">Qurbani Booked &mdash; ' + qstatsEscape(subtitle) + '</div>' +
+            '<div class="brand-stamp">As of ' + qstatsEscape(stamp) + '</div>' +
+        '</div>'
+    );
+
+    const sections = [];
+    days.forEach(day => {
+        if (mode === 'per-category') {
+            categories.forEach(cat => {
+                const mini = buildMini(day, cat);
+                if (!mini) return;
+                sections.push({
+                    filename: _qstatsSafeFileName('qurbani', deliveryType, day, cat) + '.png',
+                    html: buildBrandHead(deliveryType + ' · ' + day + ' · ' + cat) + mini,
+                });
+            });
+        } else {
+            const parts = [];
+            categories.forEach(cat => {
+                const mini = buildMini(day, cat);
+                if (mini) parts.push(mini);
+            });
+            if (parts.length === 0) return;
+            sections.push({
+                filename: _qstatsSafeFileName('qurbani', deliveryType, day) + '.png',
+                html: buildBrandHead(deliveryType + ' · ' + day) + parts.join(''),
+            });
+        }
+    });
+    return sections;
+}
+
+// Render the sections into an isolated off-screen iframe and screenshot
+// each via the iframe's own html2canvas. Same iframe pattern that
+// captureQurbaniInvoiceImage() above uses for the WhatsApp invoice flow.
+function _qstatsRenderAndCapture(sections) {
+    return new Promise((resolve, reject) => {
+        const iframe = document.createElement('iframe');
+        iframe.style.cssText = 'position:fixed;left:-9999px;top:0;width:760px;height:1400px;border:none;opacity:0;';
+
+        const sectionHtml = sections
+            .map((s, i) => '<div class="capture" data-idx="' + i + '">' + s.html + '</div>')
+            .join('\n');
+
+        // Hand-written safe stylesheet. ONLY hex colors. No oklch / lch /
+        // lab. No Tailwind. This is the entire visual contract for the PNG.
+        const css =
+            'body { margin:0; padding:0; background:#ffffff; font-family: Arial, Helvetica, sans-serif; color:#111111; }' +
+            '.capture { width:700px; padding:22px 22px 20px; background:#ffffff; box-sizing:border-box; }' +
+            '.brand-head { margin-bottom:14px; padding-bottom:10px; border-bottom:3px solid #d97706; }' +
+            '.brand-title { font-size:22px; font-weight:900; color:#d97706; letter-spacing:0.5px; }' +
+            '.brand-sub   { font-size:14px; font-weight:700; color:#1f2937; margin-top:6px; }' +
+            '.brand-stamp { font-size:11px; color:#6b7280; margin-top:2px; }' +
+            '.mini { background:#ffffff; border:1px solid #e5e7eb; border-radius:10px; padding:12px 14px; margin-bottom:12px; }' +
+            '.mini:last-child { margin-bottom:0; }' +
+            '.mini-head { display:flex; align-items:center; justify-content:space-between; margin-bottom:8px; padding-bottom:8px; border-bottom:1px dashed #e5e7eb; }' +
+            '.mini-title { font-size:15px; font-weight:700; color:#111827; }' +
+            '.mini-total { font-size:13px; color:#92400e; font-weight:700; background:#fef3c7; padding:3px 10px; border-radius:5px; }' +
+            '.mini table { width:100%; border-collapse:collapse; font-size:12.5px; table-layout:auto; }' +
+            '.mini th, .mini td { padding:7px 6px; border:1px solid #f0f1f3; text-align:center; color:#111827; }' +
+            '.mini th { background:#f9fafb; font-weight:700; color:#374151; }' +
+            '.mini th.col-label, .mini td.row-label { text-align:left; font-weight:600; color:#374151; }' +
+            '.zero { color:#d1d5db; }' +
+            '.cell-ok { color:#059669; font-weight:700; }' +
+            '.cell-near { color:#d97706; font-weight:700; }' +
+            '.cell-over { color:#dc2626; font-weight:700; }' +
+            '.cell-target { color:#9ca3af; font-size:11px; margin-left:2px; }';
+
+        const doc = '<!doctype html><html><head><meta charset="utf-8"><style>' + css + '</style></head><body>' + sectionHtml + '</body></html>';
+
+        // Some sandboxed iframes ignore srcdoc; document.open/write is the
+        // pattern most compatible with stackcp's CSP. Append first, then
+        // write, then close.
+        document.body.appendChild(iframe);
+        try {
+            const iDoc = iframe.contentDocument || iframe.contentWindow.document;
+            iDoc.open();
+            iDoc.write(doc);
+            iDoc.close();
+        } catch (e) {
+            iframe.remove();
+            reject(e);
+            return;
+        }
+
+        // After document.close() the iframe load is synchronous in practice
+        // for srcdoc-style writes, but we still wait one frame for layout.
+        const afterReady = () => {
+            try {
+                const iDoc = iframe.contentDocument || iframe.contentWindow.document;
+                const script = iDoc.createElement('script');
+                script.src = 'https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js';
+                script.onload = async function () {
+                    try {
+                        const captures = iDoc.querySelectorAll('.capture');
+                        const out = [];
+                        for (let i = 0; i < captures.length; i++) {
+                            const canvas = await iframe.contentWindow.html2canvas(captures[i], {
+                                scale: 2,
+                                useCORS: true,
+                                allowTaint: true,
+                                backgroundColor: '#ffffff',
+                                logging: false,
+                            });
+                            const blob = await new Promise(res => canvas.toBlob(b => res(b), 'image/png'));
+                            out.push({ filename: sections[i].filename, blob: blob });
+                        }
+                        iframe.remove();
+                        resolve(out);
+                    } catch (e) { iframe.remove(); reject(e); }
+                };
+                script.onerror = function () { iframe.remove(); reject(new Error('Failed to load html2canvas in capture frame')); };
+                iDoc.head.appendChild(script);
+            } catch (e) { iframe.remove(); reject(e); }
+        };
+        // Wait a tick for layout to settle before injecting the script.
+        setTimeout(afterReady, 50);
+    });
+}
+
+async function captureQurbaniBreakdownImages(mode) {
+    const dt = qStatsBreakdownKey;
+    if (!dt || !qStatsData) { alert('Open a delivery breakdown first.'); return; }
+
+    const btn = document.getElementById('qstatsImgBtn');
+    const origText = btn ? btn.innerHTML : '';
+    if (btn) { btn.disabled = true; btn.innerHTML = '⏳ Capturing…'; }
+
+    try {
+        const sections = _qstatsBuildCaptureSections(dt, mode);
+        if (sections.length === 0) { alert('Nothing to capture in the current view.'); return; }
+
+        const [blobs] = await Promise.all([
+            _qstatsRenderAndCapture(sections),
+            _qstatsLoadJSZip(),
+        ]);
+
+        const zip = new window.JSZip();
+        blobs.forEach(({ filename, blob }) => { if (blob) zip.file(filename, blob); });
+
+        const zipBlob = await zip.generateAsync({ type: 'blob' });
+        const url = URL.createObjectURL(zipBlob);
+        const a = document.createElement('a');
+        a.href = url;
+        const modeTag = mode === 'per-category' ? 'per-cat' : 'per-day';
+        const dateTag = new Date().toISOString().slice(0, 10);
+        a.download = _qstatsSafeFileName('qurbani-summary', dt, modeTag, dateTag) + '.zip';
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch (e) {
+        console.error('Save as Images failed:', e);
+        alert('Capture failed: ' + ((e && e.message) || e));
+    } finally {
+        if (btn) { btn.disabled = false; btn.innerHTML = origText; }
+    }
+}
+
+function openQurbaniBreakdownImageMenu() {
+    const existing = document.getElementById('qstatsImgMenu');
+    if (existing) { existing.remove(); return; }
+
+    const overlay = document.createElement('div');
+    overlay.id = 'qstatsImgMenu';
+    overlay.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.45);z-index:9998;display:flex;align-items:center;justify-content:center;';
+    overlay.innerHTML =
+        '<div style="background:#fff;border-radius:12px;width:440px;max-width:92vw;box-shadow:0 20px 60px rgba(0,0,0,0.25);overflow:hidden;">' +
+            '<div style="padding:14px 18px;border-bottom:1px solid #e5e7eb;display:flex;align-items:center;justify-content:space-between;">' +
+                '<div style="font-size:15px;font-weight:700;color:#111827;">📥 Save Breakdown as Images</div>' +
+                '<button type="button" onclick="document.getElementById(\'qstatsImgMenu\').remove()" style="background:none;border:none;font-size:22px;cursor:pointer;color:#6b7280;line-height:1;">&times;</button>' +
+            '</div>' +
+            '<div style="padding:14px 18px 4px;font-size:12px;color:#6b7280;line-height:1.5;">' +
+                'PNG snapshots are bundled into a single <b>.zip</b> file. Each image gets a Nizami Farms header + timestamp so it\'s self-explanatory when forwarded.' +
+            '</div>' +
+            '<div style="display:flex;flex-direction:column;gap:8px;padding:12px 18px 18px;">' +
+                '<button type="button" onclick="document.getElementById(\'qstatsImgMenu\').remove(); captureQurbaniBreakdownImages(\'per-category\');" style="padding:12px 14px;border:1px solid #d97706;background:#fff7ed;color:#92400e;border-radius:8px;font-size:13px;font-weight:700;cursor:pointer;text-align:left;">' +
+                    '📋 9 images &mdash; one per <span style="text-decoration:underline;">Day × Category</span>' +
+                    '<div style="font-size:11px;font-weight:500;color:#a16207;margin-top:3px;">Best for sharing a single category with the relevant dispatch lead.</div>' +
+                '</button>' +
+                '<button type="button" onclick="document.getElementById(\'qstatsImgMenu\').remove(); captureQurbaniBreakdownImages(\'per-day\');" style="padding:12px 14px;border:1px solid #d97706;background:#fff7ed;color:#92400e;border-radius:8px;font-size:13px;font-weight:700;cursor:pointer;text-align:left;">' +
+                    '🗂️ 3 images &mdash; one per <span style="text-decoration:underline;">Day</span> (all categories stacked)' +
+                    '<div style="font-size:11px;font-weight:500;color:#a16207;margin-top:3px;">Best for the daily ops overview &mdash; all 3 categories in one mobile-friendly column.</div>' +
+                '</button>' +
+            '</div>' +
+        '</div>';
+    document.body.appendChild(overlay);
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove(); });
 }
 
 async function deleteQurbaniOrder(orderId, orderNumber) {

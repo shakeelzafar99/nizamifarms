@@ -27,6 +27,15 @@ class MessageModel extends Model
         'error_message',
         'metadata',
         'created_at',
+        // Apr-2026 auto-reply: stamps the outbound row with the rule
+        // that generated it. MUST be in $fillable — the cooldown lookup
+        // in WhatsAppService::maybeSendAutoReply() does
+        //   ->whereNotNull('auto_reply_rule_id')
+        // so if Eloquent silently drops this field on persist (which it
+        // will if it's not fillable), every auto-reply row ends up with
+        // auto_reply_rule_id = NULL, the cooldown query returns nothing,
+        // and the rule fires on every inbound forever.
+        'auto_reply_rule_id',
     ];
 
     protected $casts = [
