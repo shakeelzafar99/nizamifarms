@@ -3630,6 +3630,49 @@ select.wa-mgr-input { background: #fff; cursor: pointer; }
             : '';
         const clickable = (ad.type === 'qurbani' && ad.line_item_id);
 
+        // May-2026 — ETA freshness + drift chips. The CS manager
+        // looks at this banner BEFORE quoting an ETA to a customer,
+        // so we surface (a) how stale the displayed ETA is and (b)
+        // whether the customer was previously told a different
+        // value via WhatsApp. Both signals come pre-baked from the
+        // controller; we just render them.
+        function fmtAge(m) {
+            if (m == null) return null;
+            if (m < 1) return 'just now';
+            if (m < 60) return m + 'm ago';
+            const h = Math.floor(m / 60); const r = m % 60;
+            return h + 'h' + (r ? ' ' + r + 'm' : '') + ' ago';
+        }
+        let freshChip = '';
+        if (ad.eta_age_minutes != null) {
+            const ageLabel = fmtAge(ad.eta_age_minutes);
+            const color = ad.eta_age_minutes <= 5  ? '#16a34a'
+                         : ad.eta_age_minutes >= 30 ? '#b45309' : '#6b7280';
+            freshChip = '<span style="font-size:10px;color:' + color
+                + ';font-weight:600;">calc\'d ' + esc(ageLabel) + '</span>';
+        }
+        let driftChip = '';
+        if (ad.eta_drift_state && ad.eta_drift_state !== 'none' && ad.eta_drift_minutes != null) {
+            const palette = {
+                in_sync:  { bg: '#d1fae5', fg: '#065f46', bd: '#10b981', text: '✓ Customer has correct ETA' },
+                drifting: { bg: '#fef3c7', fg: '#92400e', bd: '#f59e0b', text: 'ETA shifted ' + (ad.eta_drift_minutes>=0?'+':'') + ad.eta_drift_minutes + 'm since last WhatsApp' },
+                stale:    { bg: '#fee2e2', fg: '#991b1b', bd: '#ef4444', text: '⚠ Customer has STALE ETA · ' + (ad.eta_drift_minutes>=0?'+':'') + ad.eta_drift_minutes + 'm drift · send update' },
+            };
+            const p = palette[ad.eta_drift_state] || palette.drifting;
+            let msgTip = '';
+            if (ad.messaged_eta_at) {
+                try {
+                    const m = new Date(String(ad.messaged_eta_at).replace(' ', 'T'));
+                    msgTip = ' (told ' + m.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}) + ')';
+                } catch (_) {}
+            }
+            driftChip = '<div style="margin-top:6px;padding:5px 10px;background:' + p.bg
+                + ';color:' + p.fg + ';border:1px solid ' + p.bd
+                + ';border-radius:6px;font-size:11px;font-weight:700;display:flex;align-items:center;gap:6px;">'
+                + esc(p.text + msgTip)
+                + '</div>';
+        }
+
         el.style.display = 'block';
         el.style.cursor = clickable ? 'pointer' : 'default';
         el.title = clickable ? 'Click to open the order timeline' : '';
@@ -3641,10 +3684,14 @@ select.wa-mgr-input { background: #fff; cursor: pointer; }
                 '<span style="font-size:11px;color:#1d4ed8;">' + esc(orderTag) + ' · Rider: ' + riderTxt + '</span>' +
                 '<span style="margin-left:auto;display:flex;gap:8px;align-items:center;">' +
                     '<span style="background:#fff;border:1px solid #bfdbfe;border-radius:6px;padding:2px 8px;font-weight:700;color:#1e3a8a;">' + aheadTxt + '</span>' +
-                    '<span style="background:#fff;border:1px solid #bfdbfe;border-radius:6px;padding:2px 8px;font-weight:700;color:#1e3a8a;">' + etaTxt + '</span>' +
+                    '<span style="background:#fff;border:1px solid #bfdbfe;border-radius:6px;padding:2px 8px;font-weight:700;color:#1e3a8a;display:flex;flex-direction:column;align-items:center;line-height:1.15;">' +
+                        '<span>' + etaTxt + '</span>' +
+                        (freshChip ? freshChip : '') +
+                    '</span>' +
                     moreHint +
                 '</span>' +
-            '</div>';
+            '</div>' +
+            driftChip;
 
         if (clickable) {
             el.onclick = () => {
@@ -4819,12 +4866,58 @@ select.wa-mgr-input { background: #fff; cursor: pointer; }
         if (activeConvId) loadRecentMarketingStrip(activeConvId);
     }, POLL_INTERVAL);
 
+    // ── Deep-link bootstrap (May-2026) ────────────────────────────
+    // Other pages (Qurbani Performance, Qurbani Orders, etc.) can
+    // deep-link straight to a customer's conversation by opening
+    //   /messages?focus_phone=<phone>
+    // We honour the param by:
+    //   1. Pre-filling the existing #waSearch input so the user can
+    //      see what filter is active (and can clear it manually).
+    //   2. Hitting the conversations endpoint with that search; if
+    //      EXACTLY one match comes back we auto-open it. Multiple
+    //      matches stay as a filtered list for the user to pick.
+    // We strip non-digits/+ from the param so any phone format works
+    // (e.g. "+92 321 4567890", "03214567890", "923214567890" all hit).
+    function _qpFocusPhoneFromUrl() {
+        try {
+            const sp = new URLSearchParams(window.location.search);
+            const raw = sp.get('focus_phone');
+            if (!raw) return null;
+            const cleaned = String(raw).replace(/[^\d+]/g, '');
+            return cleaned || null;
+        } catch (e) { return null; }
+    }
+    const _qpFocusPhone = _qpFocusPhoneFromUrl();
+    if (_qpFocusPhone) {
+        const searchEl = document.getElementById('waSearch');
+        if (searchEl) {
+            // Use the last 9 digits — most resilient to PK number
+            // format variants (+92/0/0092 prefixes drop off).
+            const tail = _qpFocusPhone.replace(/\D/g, '').slice(-9) || _qpFocusPhone;
+            searchEl.value = tail;
+        }
+    }
+
     // ── Init ──
     loadQurbaniSettings();
     loadConversations();
     convPollTimer = setInterval(() => {
         loadConversations();
     }, POLL_INTERVAL);
+
+    // Phase 2 (May-2026) — auto-open the matching conversation when
+    // the user landed here via ?focus_phone=. We do this AFTER the
+    // first loadConversations() so the sidebar list is already in
+    // sync; the openConv call below will highlight the right row.
+    if (_qpFocusPhone) {
+        const tail = _qpFocusPhone.replace(/\D/g, '').slice(-9) || _qpFocusPhone;
+        apiFetch('/messages/conversations?search=' + encodeURIComponent(tail)).then(r => {
+            if (r && r.success && Array.isArray(r.conversations) && r.conversations.length === 1) {
+                openConv(r.conversations[0].id);
+            }
+            // 0 or >1 matches: leave the user looking at the filtered list.
+        }).catch(() => { /* deep-link is best-effort, never block normal load */ });
+    }
     // Phase 2 — keep the @me pip in sync with the server's mention count.
     refreshMentionsPip();
     setInterval(refreshMentionsPip, 30000);

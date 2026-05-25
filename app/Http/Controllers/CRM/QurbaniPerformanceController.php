@@ -8,6 +8,7 @@ use App\Services\QurbaniSlotParser;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
 
 /**
  * Qurbani Performance dashboard (Phase 5, May-2026).
@@ -217,6 +218,33 @@ class QurbaniPerformanceController extends Controller
             ->whereNull('li.qurbani_dispatched_at')
             ->count();
 
+        // KPI 9 (May-2026): Unread WhatsApp messages from Qurbani
+        // customers. Counts DISTINCT customers in the current day
+        // scope who have at least one WhatsApp conversation with
+        // unread_count > 0 — the CS-manager landing metric.
+        //
+        // Implementation notes:
+        //   - Wrapped in Schema::hasTable so dev environments without
+        //     the WhatsApp tables don't blow up the dashboard.
+        //   - Joins t_wa_conversations on customer_id (the standard
+        //     auto-link the inbound webhook populates). Conversations
+        //     that aren't linked to a customer record are ignored on
+        //     purpose — without a customer_id we can't reliably tie
+        //     them back to a Qurbani order anyway.
+        //   - DISTINCT customer_id (not row count) because a single
+        //     customer with 5 unread messages is still "1 customer
+        //     needing attention" — that's the actionable unit.
+        $unreadWaCustomers = 0;
+        $waTableAvailable = Schema::hasTable('t_wa_conversations');
+        if ($waTableAvailable) {
+            $unreadWaCustomers = (clone $base())
+                ->join('t_wa_conversations as wac', 'wac.customer_id', '=', 'o.customer_id')
+                ->where('wac.unread_count', '>', 0)
+                ->whereNotNull('o.customer_id')
+                ->distinct()
+                ->count('o.customer_id');
+        }
+
         // Per-slot rollup: counts grouped by (delivery_type, slot end
         // minute) so the UI can split into "Delivery" vs "Self
         // Collection" tabs — those are different operational flows
@@ -357,6 +385,20 @@ class QurbaniPerformanceController extends Controller
                     'subline'   => 'Slaughtered but not yet dispatched',
                     'drillable' => true,
                 ],
+                // May-2026 — Customer Service Manager KPI. Sits last
+                // so the operational lifecycle (open → delivered) is
+                // read first; CS metrics live to the right.
+                [
+                    'id'        => 'unread_wa',
+                    'label'     => 'Unread WhatsApp',
+                    'value'     => $unreadWaCustomers,
+                    'tone'      => $unreadWaCustomers > 0 ? 'warn' : 'muted',
+                    'subline'   => $waTableAvailable
+                        ? 'Qurbani customers with unread messages'
+                        : 'WhatsApp tables not deployed in this env',
+                    'drillable' => $waTableAvailable,
+                    'inactive'  => !$waTableAvailable,
+                ],
             ],
             'per_slot' => $perSlot,
         ]);
@@ -382,6 +424,30 @@ class QurbaniPerformanceController extends Controller
         if ($atRiskWindow < 1) $atRiskWindow = self::DEFAULT_AT_RISK_WINDOW_MIN;
         $nowMin = (int) ($now->hour * 60 + $now->minute);
 
+        // May-2026 (CS Manager view) — left-join a per-customer
+        // WhatsApp summary so each row can carry the conversation id,
+        // total unread, and last-message timestamp. Built as a sub-
+        // query (grouped by customer_id) so that a customer with
+        // multiple conversation rows doesn't duplicate the line-item
+        // row. SUM(unread_count) gives the total unread across all
+        // threads for that customer; MAX(id) gives a stable
+        // conversation_id for the deep-link button.
+        $waTableAvailable = Schema::hasTable('t_wa_conversations');
+        // May-2026 (ETA freshness guard) — left-join the most-recent
+        // OFD WhatsApp log row per line_item so each row can carry
+        // the ETA that was actually sent to the customer
+        // (delivery_time_used) and when. The CS manager uses this to
+        // see if the current ETA differs from what the customer
+        // believes — i.e. is the customer about to be given stale
+        // info if I quote the current ETA back to them?
+        //
+        // We pull from t_ops_qurbani_wa_log filtered to:
+        //   - trigger_event IN ('ofd', 'ofd_delay_update')
+        //   - status = 'sent'
+        //   - delivery_time_used NOT NULL (some skipped rows have null)
+        // Then INNER JOIN to a per-line_item MAX(created_at) so we
+        // only keep the latest sent row.
+        $waLogAvailable = Schema::hasTable('t_ops_qurbani_wa_log');
         $q = DB::table('t_crm_prod_order_line_item as li')
             ->join('t_crm_prod_order as o', 'o.id', '=', 'li.order_id')
             ->leftJoin('t_crm_prod_customer as c', 'c.id', '=', 'o.customer_id')
@@ -390,6 +456,37 @@ class QurbaniPerformanceController extends Controller
                 $q2->whereNull('o.order_status')
                    ->orWhereRaw("LOWER(o.order_status) <> 'cancelled'");
             });
+        if ($waTableAvailable) {
+            $q->leftJoin(DB::raw(
+                '(SELECT customer_id, '
+                . 'SUM(COALESCE(unread_count,0)) AS wa_unread, '
+                . 'MAX(last_message_at) AS wa_last_at, '
+                . 'MAX(id) AS wa_conv_id, '
+                . 'MAX(wa_phone) AS wa_phone '
+                . 'FROM t_wa_conversations '
+                . 'WHERE customer_id IS NOT NULL '
+                . 'GROUP BY customer_id) as wac'
+            ), 'wac.customer_id', '=', 'c.id');
+        }
+        if ($waLogAvailable) {
+            $q->leftJoin(DB::raw(
+                "(SELECT l.line_item_id, "
+                . "l.delivery_time_used AS messaged_eta_at, "
+                . "l.trigger_event       AS last_wa_trigger, "
+                . "l.created_at          AS last_wa_sent_at "
+                . "FROM t_ops_qurbani_wa_log l "
+                . "INNER JOIN ("
+                . "  SELECT line_item_id, MAX(created_at) AS mx "
+                . "  FROM t_ops_qurbani_wa_log "
+                . "  WHERE trigger_event IN ('ofd','ofd_delay_update') "
+                . "    AND status = 'sent' "
+                . "  GROUP BY line_item_id"
+                . ") mx ON mx.line_item_id = l.line_item_id AND mx.mx = l.created_at "
+                . "WHERE l.trigger_event IN ('ofd','ofd_delay_update') "
+                . "  AND l.status = 'sent'"
+                . ") as wal"
+            ), 'wal.line_item_id', '=', 'li.id');
+        }
         if ($day) {
             $q->where('li.qurbani_day', $day);
         }
@@ -406,6 +503,38 @@ class QurbaniPerformanceController extends Controller
             $q->where(function ($q2) {
                 $q2->whereNull('li.qurbani_delivery_type')
                    ->orWhereRaw("LOWER(COALESCE(li.qurbani_delivery_type,'')) NOT LIKE ?", ['%self%']);
+            });
+        }
+
+        // May-2026 (CS Manager view) — text search for the
+        // customer-services workflow. `q` covers name + order # +
+        // product name (most CS tickets reference one of these),
+        // `phone` is a separate input because phone numbers are
+        // matched character-by-character (the leading-zero / +92
+        // / 0092 variants are common in PK numbers).
+        $searchTerm = trim((string) $request->get('q', ''));
+        if ($searchTerm !== '') {
+            $like = '%' . $searchTerm . '%';
+            $q->where(function ($q2) use ($like) {
+                $q2->where('c.first_name', 'like', $like)
+                   ->orWhere('c.last_name', 'like', $like)
+                   ->orWhereRaw("CONCAT(COALESCE(c.first_name,''),' ',COALESCE(c.last_name,'')) like ?", [$like])
+                   ->orWhere('o.order_number', 'like', $like)
+                   ->orWhere('li.name', 'like', $like);
+            });
+        }
+        $searchPhone = preg_replace('/[^0-9+]/', '', (string) $request->get('phone', ''));
+        if ($searchPhone !== '') {
+            // Strip leading zeros / +92 / 0092 so the search is
+            // resilient to how the user typed the number. We match
+            // on the last 9 digits which is the unique-enough tail
+            // for Pakistani mobiles.
+            $tail = substr($searchPhone, -9);
+            $q->where(function ($q2) use ($tail, $searchPhone) {
+                $q2->where('c.phone', 'like', '%' . $tail)
+                   ->orWhere('c.phone_normalized', 'like', '%' . $tail)
+                   ->orWhere('o.address_phone', 'like', '%' . $tail)
+                   ->orWhere('c.phone', 'like', '%' . $searchPhone . '%');
             });
         }
 
@@ -481,41 +610,73 @@ class QurbaniPerformanceController extends Controller
                 // Just the slot row; no further filter needed once
                 // slot_end_minute has been applied above.
                 break;
+            case 'unread_wa':
+                // May-2026 — CS Manager metric. Requires the WA join
+                // (already conditionally applied above); if the env
+                // doesn't have the WhatsApp tables this metric is
+                // marked inactive in summary() so should never reach
+                // here, but we hard-fail anyway to be safe.
+                if (!$waTableAvailable) {
+                    return response()->json(['success' => false, 'message' => 'WhatsApp tables not deployed in this environment'], 400);
+                }
+                $q->where('wac.wa_unread', '>', 0);
+                break;
             default:
                 return response()->json(['success' => false, 'message' => "Unknown metric: {$metric}"], 400);
         }
 
-        $rows = $q->select([
-                'li.id as line_item_id',
-                'li.order_id',
-                'o.order_number',
-                'o.order_status',
-                DB::raw("CONCAT(COALESCE(c.first_name,''), ' ', COALESCE(c.last_name,'')) as customer_name"),
-                'c.phone as customer_phone',
-                'li.name as product_name',
-                'li.quantity',
-                'li.qurbani_day',
-                'li.qurbani_slot',
-                'li.qurbani_slot_end_minute',
-                'li.qurbani_region',
-                'li.qurbani_sub_region',
-                'li.qurbani_delivery_type',
-                'li.qurbani_item_status',
-                'li.qurbani_slaughtered_at',
-                'li.qurbani_out_for_delivery_at',
-                'li.qurbani_delivered_at',
-                'li.qurbani_estimated_delivery_at',
-                'li.qurbani_dispatched_at',
-                'r.fullname as rider_name',
-            ])
+        $selects = [
+            'li.id as line_item_id',
+            'li.order_id',
+            'o.customer_id',
+            'o.order_number',
+            'o.order_status',
+            DB::raw("CONCAT(COALESCE(c.first_name,''), ' ', COALESCE(c.last_name,'')) as customer_name"),
+            'c.phone as customer_phone',
+            'li.name as product_name',
+            'li.quantity',
+            'li.qurbani_day',
+            'li.qurbani_slot',
+            'li.qurbani_slot_end_minute',
+            'li.qurbani_region',
+            'li.qurbani_sub_region',
+            'li.qurbani_delivery_type',
+            'li.qurbani_item_status',
+            'li.qurbani_slaughtered_at',
+            'li.qurbani_out_for_delivery_at',
+            'li.qurbani_delivered_at',
+            'li.qurbani_estimated_delivery_at',
+            'li.qurbani_eta_calculated_at',
+            'li.qurbani_dispatched_at',
+            'r.fullname as rider_name',
+        ];
+        if ($waTableAvailable) {
+            $selects[] = 'wac.wa_unread';
+            $selects[] = 'wac.wa_last_at';
+            $selects[] = 'wac.wa_conv_id';
+            $selects[] = 'wac.wa_phone as wa_phone';
+        }
+        if ($waLogAvailable) {
+            $selects[] = 'wal.messaged_eta_at';
+            $selects[] = 'wal.last_wa_trigger';
+            $selects[] = 'wal.last_wa_sent_at';
+        }
+        $rows = $q->select($selects)
             ->orderBy('li.qurbani_slot_end_minute')
             ->orderBy('o.order_number')
             ->limit(500)
             ->get();
 
+        // May-2026 (ETA freshness) — drift threshold mirrors the
+        // same config the auto-sender uses for its delay-update
+        // detection, so the warning chip the CS manager sees here
+        // matches the "needs delay update" signal in the planner.
+        $driftThreshold = (int) ConfigModel::get('qurbani_wa_ofd_delay_threshold_minutes', '30');
+        if ($driftThreshold < 1) $driftThreshold = 30;
+
         // Enrich each row with slot_compare so the table can show
         // the same ETA/delivered vs slot chip used elsewhere.
-        $rows = $rows->map(function ($r) use ($graceMin) {
+        $rows = $rows->map(function ($r) use ($graceMin, $driftThreshold) {
             $slotCompare = null;
             if ($r->qurbani_slot_end_minute !== null) {
                 if ($r->qurbani_delivered_at) {
@@ -534,9 +695,54 @@ class QurbaniPerformanceController extends Controller
                     );
                 }
             }
+            // ── ETA freshness + drift (May-2026) ───────────────────
+            // Three signals the CS manager cares about:
+            //   1. eta_age_minutes — how stale the *displayed* ETA is.
+            //      Auto-refresh keeps this fresh, but if the page sat
+            //      idle the chip will say "calc'd 27m ago".
+            //   2. drift_minutes  — current ETA vs what we actually
+            //      WhatsApped to the customer. Positive = current is
+            //      later (customer's expectation is too early).
+            //   3. drift_state — bucketed for UI colour:
+            //        none     = no ETA on file, or never messaged
+            //        in_sync  = within ±5 min of last messaged ETA
+            //        drifting = >5 min but ≤ threshold (yellow)
+            //        stale    = > threshold minutes (red — customer
+            //                   needs an updated WhatsApp)
+            $etaAgeMin = null;
+            if ($r->qurbani_eta_calculated_at) {
+                try {
+                    $etaAgeMin = (int) Carbon::parse($r->qurbani_eta_calculated_at)
+                        ->diffInMinutes(now(), false);
+                    if ($etaAgeMin < 0) $etaAgeMin = 0;
+                } catch (\Throwable $e) { $etaAgeMin = null; }
+            }
+            $messagedEta = $r->messaged_eta_at ?? null;
+            $driftMinutes = null;
+            $driftState   = 'none';
+            if ($messagedEta && $r->qurbani_estimated_delivery_at) {
+                try {
+                    $msg = Carbon::parse($messagedEta);
+                    $cur = Carbon::parse($r->qurbani_estimated_delivery_at);
+                    // Positive = current is LATER than messaged → customer
+                    // has an early-by-N-minutes expectation. Negative =
+                    // current is earlier → customer expects later; not
+                    // user-facing critical but still surfaced.
+                    $driftMinutes = (int) $msg->diffInMinutes($cur, false);
+                    $abs = abs($driftMinutes);
+                    if ($abs <= 5)                  $driftState = 'in_sync';
+                    elseif ($abs <= $driftThreshold) $driftState = 'drifting';
+                    else                             $driftState = 'stale';
+                } catch (\Throwable $e) {
+                    $driftMinutes = null;
+                    $driftState = 'none';
+                }
+            }
+
             return [
                 'line_item_id'                  => (int) $r->line_item_id,
                 'order_id'                      => (int) $r->order_id,
+                'customer_id'                   => isset($r->customer_id) && $r->customer_id ? (int) $r->customer_id : null,
                 'order_number'                  => $r->order_number,
                 'order_status'                  => $r->order_status,
                 'customer_name'                 => trim($r->customer_name) ?: 'Unknown',
@@ -555,17 +761,52 @@ class QurbaniPerformanceController extends Controller
                 'qurbani_out_for_delivery_at'   => $r->qurbani_out_for_delivery_at,
                 'qurbani_delivered_at'          => $r->qurbani_delivered_at,
                 'qurbani_estimated_delivery_at' => $r->qurbani_estimated_delivery_at,
+                'qurbani_eta_calculated_at'     => $r->qurbani_eta_calculated_at,
                 'qurbani_dispatched_at'         => $r->qurbani_dispatched_at,
                 'rider_name'                    => $r->rider_name,
                 'slot_compare'                  => $slotCompare,
+                // May-2026 CS Manager enrichment. Always present in
+                // the response shape so the JS can render the
+                // WhatsApp action unconditionally (it just shows
+                // a disabled badge when wa_unread === 0).
+                'wa_unread'                     => isset($r->wa_unread) && $r->wa_unread !== null ? (int) $r->wa_unread : 0,
+                'wa_last_at'                    => $r->wa_last_at ?? null,
+                'wa_conversation_id'            => isset($r->wa_conv_id) && $r->wa_conv_id ? (int) $r->wa_conv_id : null,
+                'wa_phone'                      => $r->wa_phone ?? null,
+                // ETA freshness — the CS-manager guard against stale
+                // customer information. messaged_eta_at is the ETA
+                // value we WhatsApped to the customer (NULL when no
+                // OFD message has been sent yet); current ETA is the
+                // one Performance + planner currently display.
+                'eta_age_minutes'               => $etaAgeMin,
+                'messaged_eta_at'               => $messagedEta,
+                'last_wa_sent_at'               => $r->last_wa_sent_at ?? null,
+                'last_wa_trigger'               => $r->last_wa_trigger ?? null,
+                'eta_drift_minutes'             => $driftMinutes,
+                'eta_drift_state'               => $driftState,
             ];
         })->all();
+
+        // ETA-drift summary so the UI can show a single "N customers
+        // have stale ETAs" pill in the records header without having
+        // to scan all rows in JS.
+        $staleCount    = 0;
+        $driftingCount = 0;
+        foreach ($rows as $row) {
+            if ($row['eta_drift_state'] === 'stale')    $staleCount++;
+            if ($row['eta_drift_state'] === 'drifting') $driftingCount++;
+        }
 
         return response()->json([
             'success' => true,
             'metric'  => $metric,
             'count'   => count($rows),
             'rows'    => $rows,
+            'eta_drift' => [
+                'threshold_minutes' => $driftThreshold,
+                'stale_count'       => $staleCount,
+                'drifting_count'    => $driftingCount,
+            ],
         ]);
     }
 

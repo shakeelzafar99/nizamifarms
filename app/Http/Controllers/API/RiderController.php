@@ -20939,18 +20939,28 @@ class RiderController extends Controller
      * POST /rider/qurbani/riders/{riderId}/optimize-route
      *
      * Dry-run: returns a suggested bundle ordering based on Google
-     * nearest-neighbour. Does NOT persist anything — the manager
-     * confirms by pressing Set Route which calls saveQurbaniRoute().
+     * nearest-neighbour. Does NOT persist anything — the caller
+     * confirms by pressing Set Route which calls saveQurbaniRoute()
+     * (which itself enforces the lock + permission).
      *
      * Note: works on BUNDLES (one stop per bundle) — multiple items
      * inside the same bundle collapse to a single waypoint because the
      * rider drops them all off in one stop.
+     *
+     * Permissions: caller can be the manager (any user with
+     * access_qurbani_mode, viewing/optimising someone else's route)
+     * OR the rider themselves on their own route. May-2026 fix —
+     * previously this endpoint was manager-only, which broke the
+     * "Auto Route" button in the rider's own delivery view. Now
+     * matches the pattern used by saveQurbaniRoute, dispatchQurbani-
+     * Route, refreshQurbaniRoute, cancelQurbaniDispatch, etc.
      */
     public function optimizeQurbaniRoute(Request $request, $riderId)
     {
         try {
             $user = Auth::user();
-            if (!$user->hasMobilePermission('access_qurbani_mode')) {
+            $isOwnRoute = ((int) $user->id === (int) $riderId);
+            if (!$isOwnRoute && !$user->hasMobilePermission('access_qurbani_mode')) {
                 return response()->json(['success' => false, 'message' => 'Permission denied'], 403);
             }
 
@@ -21969,14 +21979,21 @@ class RiderController extends Controller
             }
 
             // Snapshot affected rows for audit + UI feedback.
+            // May-2026 fix — customer link goes through the ORDER,
+            // not the line item (t_crm_prod_order_line_item has no
+            // customer_id column). And t_crm_prod_customer has
+            // first_name + last_name, not fullname — fullname only
+            // lives on t_sys_user (rider). Both bugs caused the
+            // "c.fullname unknown column" SQL error users hit when
+            // pressing Cancel Dispatch.
             $rows = (clone $base)
-                ->leftJoin('t_crm_prod_customer as c', 'c.id', '=', 'li.customer_id')
                 ->leftJoin('t_crm_prod_order as o', 'o.id', '=', 'li.order_id')
+                ->leftJoin('t_crm_prod_customer as c', 'c.id', '=', 'o.customer_id')
                 ->select(
                     'li.id',
                     'li.order_id',
                     'o.order_number',
-                    'c.fullname as customer_name',
+                    \DB::raw("TRIM(CONCAT(COALESCE(c.first_name,''),' ',COALESCE(c.last_name,''))) as customer_name"),
                     'li.qurbani_dispatched_at',
                     'li.qurbani_estimated_delivery_at',
                     'li.qurbani_started_delivery_at'

@@ -2103,6 +2103,19 @@ class WhatsAppWebController extends Controller
                             $liEtaTs = \Carbon\Carbon::parse($liEta)->getTimestamp();
                         } catch (\Exception $e) {}
                     }
+                    // May-2026 — pass eta_calculated_at through so the
+                    // banner can show "calc'd 3m ago" / "calc'd 47m
+                    // ago" and the CS manager can spot a stale-display
+                    // problem without auto-refresh kicking in.
+                    $etaCalcIso = $li->qurbani_eta_calculated_at
+                        ? (string) $li->qurbani_eta_calculated_at : null;
+                    $etaAgeMin = null;
+                    if ($etaCalcIso) {
+                        try {
+                            $etaAgeMin = (int) \Carbon\Carbon::parse($etaCalcIso)->diffInMinutes(now(), false);
+                            if ($etaAgeMin < 0) $etaAgeMin = 0;
+                        } catch (\Throwable $e) { $etaAgeMin = null; }
+                    }
                     $activeCandidates[] = [
                         'sort_ts'         => $liEtaTs ?: PHP_INT_MAX,
                         'type'            => 'qurbani',
@@ -2113,6 +2126,8 @@ class WhatsAppWebController extends Controller
                         'rider_name'      => $o->assignedRider?->fullname,
                         'eta_at'          => $liEta ? (string) $liEta : null,
                         'eta_human'       => $liEtaHuman,
+                        'eta_calculated_at' => $etaCalcIso,
+                        'eta_age_minutes' => $etaAgeMin,
                         'ahead_count'     => $qurbaniAheadMap[(int) $li->id]['ahead_count'],
                         'total_remaining' => $qurbaniAheadMap[(int) $li->id]['total_remaining'],
                         'qurbani_day'     => $li->qurbani_day,
@@ -2161,6 +2176,86 @@ class WhatsAppWebController extends Controller
                 'ofd_position' => $ofdPosition,
             ];
         });
+
+        // ── ETA-drift enrichment (May-2026 — CS staleness guard) ───
+        // The active-delivery banner now also tells the CS manager
+        // whether the customer is sitting on a stale ETA from a
+        // previous WhatsApp. The signal is exactly the same one the
+        // Performance dashboard and the manager's planner use:
+        //   current ETA  = li.qurbani_estimated_delivery_at
+        //   messaged ETA = latest t_ops_qurbani_wa_log row with
+        //                  trigger_event IN ('ofd','ofd_delay_update')
+        //                  and status = 'sent' for that line item
+        // If |current - messaged| > threshold the chip turns red and
+        // CS knows to fire an updated WA before quoting the new ETA.
+        //
+        // Batched lookup so we never N+1 (max 20 orders * 5 line items
+        // wouldn't bite, but the pattern is the right one).
+        $qurbaniCandidateLiIds = [];
+        foreach ($activeCandidates as $cand) {
+            if (($cand['type'] ?? '') === 'qurbani' && !empty($cand['line_item_id'])) {
+                $qurbaniCandidateLiIds[] = (int) $cand['line_item_id'];
+            }
+        }
+        $waSentMap = []; // line_item_id => ['messaged_eta_at', 'last_wa_sent_at', 'last_wa_trigger']
+        if (!empty($qurbaniCandidateLiIds) && \Illuminate\Support\Facades\Schema::hasTable('t_ops_qurbani_wa_log')) {
+            // Latest sent OFD-ish row per line item, in one query.
+            $sub = \DB::table('t_ops_qurbani_wa_log')
+                ->select('line_item_id', \DB::raw('MAX(created_at) as mx'))
+                ->whereIn('line_item_id', $qurbaniCandidateLiIds)
+                ->whereIn('trigger_event', ['ofd', 'ofd_delay_update'])
+                ->where('status', 'sent')
+                ->groupBy('line_item_id');
+            $waRows = \DB::table('t_ops_qurbani_wa_log as l')
+                ->joinSub($sub, 'mx', function ($j) {
+                    $j->on('mx.line_item_id', '=', 'l.line_item_id')
+                      ->on('mx.mx', '=', 'l.created_at');
+                })
+                ->whereIn('l.trigger_event', ['ofd', 'ofd_delay_update'])
+                ->where('l.status', 'sent')
+                ->select('l.line_item_id', 'l.delivery_time_used', 'l.created_at', 'l.trigger_event')
+                ->get();
+            foreach ($waRows as $row) {
+                $waSentMap[(int) $row->line_item_id] = [
+                    'messaged_eta_at' => $row->delivery_time_used ? (string) $row->delivery_time_used : null,
+                    'last_wa_sent_at' => $row->created_at ? (string) $row->created_at : null,
+                    'last_wa_trigger' => (string) $row->trigger_event,
+                ];
+            }
+        }
+        // Drift threshold mirrors the auto-sender so the "needs update"
+        // signal here matches the planner's delay-update detection.
+        $driftThreshold = (int) \App\Models\FIN\ConfigModel::get('qurbani_wa_ofd_delay_threshold_minutes', '30');
+        if ($driftThreshold < 1) $driftThreshold = 30;
+
+        foreach ($activeCandidates as &$cand) {
+            $cand['messaged_eta_at']   = null;
+            $cand['last_wa_sent_at']   = null;
+            $cand['last_wa_trigger']   = null;
+            $cand['eta_drift_minutes'] = null;
+            $cand['eta_drift_state']   = 'none';
+            $cand['drift_threshold_minutes'] = $driftThreshold;
+            if (($cand['type'] ?? '') !== 'qurbani') continue;
+            $liId = (int) ($cand['line_item_id'] ?? 0);
+            if (!$liId || !isset($waSentMap[$liId])) continue;
+            $info = $waSentMap[$liId];
+            $cand['messaged_eta_at'] = $info['messaged_eta_at'];
+            $cand['last_wa_sent_at'] = $info['last_wa_sent_at'];
+            $cand['last_wa_trigger'] = $info['last_wa_trigger'];
+            if ($info['messaged_eta_at'] && !empty($cand['eta_at'])) {
+                try {
+                    $msg = \Carbon\Carbon::parse($info['messaged_eta_at']);
+                    $cur = \Carbon\Carbon::parse($cand['eta_at']);
+                    $delta = (int) $msg->diffInMinutes($cur, false);
+                    $cand['eta_drift_minutes'] = $delta;
+                    $abs = abs($delta);
+                    if ($abs <= 5)                  $cand['eta_drift_state'] = 'in_sync';
+                    elseif ($abs <= $driftThreshold) $cand['eta_drift_state'] = 'drifting';
+                    else                             $cand['eta_drift_state'] = 'stale';
+                } catch (\Throwable $e) { /* leave drift_state='none' */ }
+            }
+        }
+        unset($cand);
 
         // Pick the soonest-ETA candidate as the banner's primary
         // entry. If multiple, the others come along as `more_count`
