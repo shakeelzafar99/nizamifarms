@@ -1890,6 +1890,15 @@ class QurbaniWebController extends Controller
         if (!$exists) return response()->json(['success' => false, 'message' => 'Line item not found'], 404);
 
         $now = now();
+        // May-2026 — splice a Carbon-stamped string inside COALESCE
+        // (not MySQL's NOW()) so the persisted timestamp matches
+        // config('app.timezone') = Asia/Karachi in prod. Previously
+        // these columns recorded server-MySQL-TZ (UTC) which made
+        // slaughtered_at display ~5h behind the rest of the app and
+        // broke the 1-min slaughter trigger comparison in
+        // QurbaniWaAutoSender. Safe to splice: toDateTimeString()
+        // always returns 'Y-m-d H:i:s' — no quote chars possible.
+        $nowStr = $now->toDateTimeString();
         $update = [
             'qurbani_item_status' => $newStatus,
             'qurbani_status_updated_at' => $now,
@@ -1898,11 +1907,11 @@ class QurbaniWebController extends Controller
         ];
         // Stamp transition column the FIRST time the item enters that state.
         if ($newStatus === 'slaughtered') {
-            $update['qurbani_slaughtered_at'] = DB::raw('COALESCE(qurbani_slaughtered_at, NOW())');
+            $update['qurbani_slaughtered_at'] = DB::raw("COALESCE(qurbani_slaughtered_at, '{$nowStr}')");
         } elseif ($newStatus === 'out_for_delivery') {
-            $update['qurbani_out_for_delivery_at'] = DB::raw('COALESCE(qurbani_out_for_delivery_at, NOW())');
+            $update['qurbani_out_for_delivery_at'] = DB::raw("COALESCE(qurbani_out_for_delivery_at, '{$nowStr}')");
         } elseif ($newStatus === 'delivered') {
-            $update['qurbani_delivered_at'] = DB::raw('COALESCE(qurbani_delivered_at, NOW())');
+            $update['qurbani_delivered_at'] = DB::raw("COALESCE(qurbani_delivered_at, '{$nowStr}')");
         }
 
         DB::table('t_crm_prod_order_line_item')->where('id', $id)->update($update);

@@ -3,6 +3,7 @@
 namespace App\Console\Commands;
 
 use Illuminate\Console\Command;
+use Illuminate\Support\Facades\Log;
 use App\Services\QurbaniWaAutoSender;
 
 /**
@@ -37,6 +38,24 @@ class QurbaniWaProcess extends Command
         $result = $sender->processNow($max);
 
         $this->line(json_encode($result));
+
+        // May-2026 — also write to laravel.log on every run so the
+        // operator can confirm via `tail -f storage/logs/laravel.log`
+        // that the cron actually fired AND see what it found/skipped.
+        // Without this the operator's only signal that anything is
+        // happening is the t_ops_qurbani_wa_log table — and 'skipped'
+        // / 'no_phone' / 'master_off' rows don't appear there at all,
+        // so there's no way to tell "is the worker even running?"
+        // from a config issue. We use INFO level so prod log_level=
+        // info captures it; debug/notice would be filtered out.
+        Log::info('QurbaniWaProcess: tick complete', [
+            'max'     => $max,
+            'ran'     => (bool) ($result['ran'] ?? false),
+            'sent'    => (int) ($result['sent'] ?? 0),
+            'skipped' => (int) ($result['skipped'] ?? 0),
+            'failed'  => (int) ($result['failed'] ?? 0),
+            'reason'  => $result['reason'] ?? null,
+        ]);
 
         // Exit 0 even if 'ran' is false — locked / master-off are
         // expected steady states, not failures.

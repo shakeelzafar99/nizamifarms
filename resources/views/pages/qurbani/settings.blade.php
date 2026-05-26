@@ -358,6 +358,31 @@
                     <span>messages per worker run (per minute). Defers the rest to the next run.</span>
                     <button onclick="saveWaCap()" class="btn-add" style="padding: 4px 10px; font-size: 11px;">Save</button>
                 </div>
+
+                {{-- May-2026 — Diagnose + Run Now toolbar.
+                     Mirrors what the scheduler does on every minute,
+                     plus surfaces per-candidate eligibility so the
+                     operator can answer "why didn't my test fire?"
+                     without SSH or laravel.log greps. The Run Now
+                     button is the manual cron-tick trigger — useful
+                     in dev (no schedule:work running) and in prod
+                     for "I just enabled this, fire it now" workflows.
+                --}}
+                <div style="margin-top: 12px; padding-top: 12px; border-top: 1px dashed #e5e7eb; display: flex; gap: 8px; flex-wrap: wrap; align-items: center;">
+                    <button onclick="diagnoseWaAuto()" type="button" style="padding: 6px 14px; background: #1e40af; color: #fff; border: none; border-radius: 6px; font-size: 12px; font-weight: 700; cursor: pointer;">
+                        🩺 Diagnose
+                    </button>
+                    <button onclick="runWaAutoNow(false)" type="button" style="padding: 6px 14px; background: #059669; color: #fff; border: none; border-radius: 6px; font-size: 12px; font-weight: 700; cursor: pointer;">
+                        🚀 Send Now
+                    </button>
+                    <button onclick="runWaAutoNow(true)" type="button" style="padding: 6px 14px; background: #b91c1c; color: #fff; border: none; border-radius: 6px; font-size: 12px; font-weight: 700; cursor: pointer;" title="Releases the 55s lock first, then fires. Use if the worker says &quot;locked&quot; back-to-back.">
+                        🔓 Force Send (release lock)
+                    </button>
+                    <span style="font-size: 11px; color: #6b7280;">
+                        Diagnose explains why each candidate is/isn't eligible. Send Now fires the worker on-demand.
+                    </span>
+                </div>
+                <div id="waDiagnoseResult" style="display: none; margin-top: 12px; padding: 12px 14px; background: #f9fafb; border: 1px solid #d1d5db; border-radius: 8px; max-height: 480px; overflow: auto;"></div>
             </div>
 
             {{-- Slaughter trigger card --}}
@@ -1336,6 +1361,194 @@ function onWaOfdTimingModeChange() {
     const val = (document.querySelector('input[name="waOfdTimingMode"]:checked') || {}).value;
     if (!val) return;
     saveWaSetting({ ofd_timing_mode: val }, { toast: 'Timing rule saved' });
+}
+
+// ─── May-2026 — Auto-WA Diagnose + Run-Now toolbar ────────────────
+//
+// The auto-WhatsApp worker is silent by design — it logs to the
+// t_ops_qurbani_wa_log table but only writes laravel.log on actual
+// errors. That means "I marked an order slaughtered and nothing
+// happened" has no easy signal in the UI for an admin without SSH.
+//
+// These two helpers wrap the new POST /wa-auto/diagnose and
+// /wa-auto/run-now endpoints (see QurbaniSettingsController) and
+// render the structured response inline below the master switch so
+// the admin can see config + per-candidate eligibility + recent log
+// rows without leaving the page.
+async function diagnoseWaAuto() {
+    const out = document.getElementById('waDiagnoseResult');
+    if (!out) return;
+    out.style.display = 'block';
+    out.innerHTML = '<div style="padding:8px;color:#6b7280;">🩺 Running diagnostic…</div>';
+    try {
+        const r = await fetch('{{ route("qurbani-settings.api.wa-auto.diagnose") }}', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': '{{ csrf_token() }}' },
+            body: '{}',
+        });
+        const d = await r.json();
+        if (!d?.success) {
+            out.innerHTML = `<div style="color:#b91c1c;font-weight:700;">❌ ${d?.message || 'Diagnose failed'}</div>`;
+            return;
+        }
+        out.innerHTML = renderWaDiagnoseHtml(d);
+    } catch (e) {
+        out.innerHTML = `<div style="color:#b91c1c;font-weight:700;">❌ ${e.message}</div>`;
+    }
+}
+
+async function runWaAutoNow(releaseLock) {
+    const out = document.getElementById('waDiagnoseResult');
+    if (!out) return;
+    out.style.display = 'block';
+    out.innerHTML = '<div style="padding:8px;color:#6b7280;">🚀 Firing worker…</div>';
+    try {
+        const r = await fetch('{{ route("qurbani-settings.api.wa-auto.run-now") }}', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': '{{ csrf_token() }}' },
+            body: JSON.stringify({ release_lock: !!releaseLock }),
+        });
+        const d = await r.json();
+        if (!d?.success) {
+            out.innerHTML = `<div style="color:#b91c1c;font-weight:700;">❌ ${d?.message || 'Run failed'}</div>`;
+            return;
+        }
+        const res = d.result || {};
+        const rows = (d.new_log_rows || []);
+        const summary = `Ran: <b>${res.ran ? 'yes' : 'no'}</b> · Sent: <b>${res.sent || 0}</b> · Skipped: <b>${res.skipped || 0}</b> · Failed: <b>${res.failed || 0}</b>${res.reason ? ' · Reason: <b>' + res.reason + '</b>' : ''}`;
+        const rowsHtml = rows.length === 0
+            ? '<div style="color:#6b7280;font-style:italic;padding:6px;">No new log rows in this tick (worker found nothing eligible OR worker did not run — see diagnose).</div>'
+            : '<table style="width:100%;font-size:11px;border-collapse:collapse;">' +
+              '<thead><tr style="background:#e5e7eb;"><th style="padding:5px;text-align:left;">Order</th><th style="padding:5px;text-align:left;">Trigger</th><th style="padding:5px;text-align:left;">Template</th><th style="padding:5px;text-align:left;">Phone</th><th style="padding:5px;text-align:left;">Status</th><th style="padding:5px;text-align:left;">Reason</th></tr></thead><tbody>' +
+              rows.map(x => `<tr style="border-bottom:1px solid #f3f4f6;">
+                <td style="padding:5px;">${escapeHtml(x.order_number || '#' + x.line_item_id)}</td>
+                <td style="padding:5px;">${escapeHtml(x.trigger_event)}</td>
+                <td style="padding:5px;">${escapeHtml(x.template_name || '')}</td>
+                <td style="padding:5px;">${escapeHtml(x.wa_phone || '')}</td>
+                <td style="padding:5px;font-weight:700;color:${x.status === 'sent' ? '#047857' : (x.status === 'failed' ? '#b91c1c' : '#92400e')};">${escapeHtml(x.status)}</td>
+                <td style="padding:5px;color:#6b7280;">${escapeHtml(x.skip_reason || '')}</td>
+              </tr>`).join('') + '</tbody></table>';
+        out.innerHTML = `<div style="font-weight:700;margin-bottom:6px;font-size:13px;">🚀 Worker tick complete</div><div style="margin-bottom:8px;font-size:12px;color:#374151;">${summary}</div><div style="font-size:12px;color:#6b7280;margin-bottom:6px;">${escapeHtml(d.note || '')}</div>${rowsHtml}<div style="margin-top:10px;"><button onclick="diagnoseWaAuto()" type="button" style="padding:4px 10px;background:#1e40af;color:#fff;border:none;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer;">🩺 Run diagnose for full breakdown</button></div>`;
+    } catch (e) {
+        out.innerHTML = `<div style="color:#b91c1c;font-weight:700;">❌ ${e.message}</div>`;
+    }
+}
+
+function renderWaDiagnoseHtml(d) {
+    const escape = (s) => escapeHtml(String(s == null ? '' : s));
+    const verdictColor = { READY: '#047857', WAITING: '#92400e', ALREADY_SENT: '#1e40af', NO_PHONE: '#b91c1c', BLOCKED: '#b91c1c' };
+    const verdictBg = { READY: '#d1fae5', WAITING: '#fef3c7', ALREADY_SENT: '#dbeafe', NO_PHONE: '#fee2e2', BLOCKED: '#fee2e2' };
+
+    let html = `<div style="font-weight:700;font-size:14px;margin-bottom:8px;">🩺 Auto-WhatsApp diagnostic <span style="font-weight:400;color:#6b7280;font-size:11px;">(now: ${escape(d.now)} · tz: ${escape(d.tz)})</span></div>`;
+
+    if ((d.blockers || []).length > 0) {
+        html += '<div style="padding:10px 12px;background:#fee2e2;border:1px solid #fca5a5;border-radius:6px;margin-bottom:10px;"><div style="font-weight:700;color:#991b1b;margin-bottom:4px;">🚫 Blockers</div>' +
+            '<ul style="margin:0;padding-left:18px;font-size:12px;color:#7f1d1d;">' +
+            d.blockers.map(b => `<li>${escape(b)}</li>`).join('') + '</ul></div>';
+    } else {
+        html += '<div style="padding:8px 12px;background:#d1fae5;border:1px solid #6ee7b7;border-radius:6px;margin-bottom:10px;font-size:12px;color:#047857;font-weight:700;">✅ No config blockers detected.</div>';
+    }
+
+    // Templates
+    if (d.templates && d.templates.length) {
+        html += '<div style="font-weight:700;font-size:12px;margin:10px 0 4px;">📄 Templates</div><table style="width:100%;font-size:11px;border-collapse:collapse;background:#fff;">' +
+            '<thead><tr style="background:#e5e7eb;"><th style="padding:5px;text-align:left;">Name</th><th style="padding:5px;text-align:left;">In DB</th><th style="padding:5px;text-align:left;">Approved langs</th><th style="padding:5px;text-align:left;">Other status</th><th style="padding:5px;text-align:left;">Cached lang</th></tr></thead><tbody>' +
+            d.templates.map(t => `<tr style="border-bottom:1px solid #f3f4f6;">
+              <td style="padding:5px;font-weight:700;">${escape(t.name)}</td>
+              <td style="padding:5px;">${t.exists_in_db ? '✅' : '❌'}</td>
+              <td style="padding:5px;color:#047857;">${(t.approved_langs || []).map(escape).join(', ') || '—'}</td>
+              <td style="padding:5px;color:#6b7280;">${(t.other_status || []).map(escape).join(', ') || '—'}</td>
+              <td style="padding:5px;">${escape(t.cached_lang || '')}</td>
+            </tr>`).join('') + '</tbody></table>';
+    }
+
+    // Worker
+    if (d.worker) {
+        const entryAgo = d.worker.last_entry_ago;
+        const tickAgo  = d.worker.last_tick_ago;
+        // Stale buckets — entry should be ≤8m (slowest trigger is the
+        // 5-min rider heartbeat, plus a 3m grace for off-day quiet).
+        const entryFresh = entryAgo !== null && entryAgo <= 8;
+        const tickFresh  = tickAgo  !== null && tickAgo  <= 8;
+        const dot = (fresh) => fresh ? '🟢' : '🔴';
+        html += `<div style="margin-top:10px;padding:8px 12px;background:#f9fafb;border:1px solid #e5e7eb;border-radius:6px;font-size:11px;color:#374151;">
+            <div style="font-weight:700;margin-bottom:4px;">⚙️ Worker heartbeat</div>
+            <div>${dot(entryFresh)} Last trigger entry: <b>${escape(d.worker.last_entry_at || 'never')}</b>${entryAgo !== null ? ' (' + entryAgo + 'm ago)' : ''}</div>
+            <div>${dot(tickFresh)} Last actual run (lock acquired): <b>${escape(d.worker.last_tick_at || 'never')}</b>${tickAgo !== null ? ' (' + tickAgo + 'm ago)' : ''}</div>
+            <div style="margin-top:4px;">🔒 Lock right now: <b>${d.worker.lock_held ? 'HELD' : 'free'}</b>${d.worker.lock_ts ? ' since ' + escape(d.worker.lock_ts) : ''}</div>
+            <div style="margin-top:4px;color:#6b7280;font-size:10.5px;">${escape(d.worker.note)}</div>
+        </div>`;
+    }
+
+    // Slaughter candidates
+    const sc = (d.slaughter && d.slaughter.candidates) || [];
+    html += `<div style="font-weight:700;font-size:12px;margin:14px 0 4px;">🔪 Slaughter candidates <span style="font-weight:400;color:#6b7280;">(mode: ${escape(d.slaughter?.mode)} · delay: ${escape(d.slaughter?.delay_min)}m · lookback: ${escape(d.slaughter?.lookback_h)}h)</span></div>`;
+    if (sc.length === 0) {
+        html += '<div style="padding:8px 12px;background:#f3f4f6;border-radius:6px;font-size:11px;color:#6b7280;">No items with qurbani_slaughtered_at in the last 12h. Mark an order as slaughtered to populate this list.</div>';
+    } else {
+        html += '<table style="width:100%;font-size:11px;border-collapse:collapse;background:#fff;"><thead><tr style="background:#e5e7eb;"><th style="padding:5px;text-align:left;">Order</th><th style="padding:5px;text-align:left;">Customer</th><th style="padding:5px;text-align:left;">Slaughtered at</th><th style="padding:5px;text-align:left;">Age</th><th style="padding:5px;text-align:left;">Eligible at</th><th style="padding:5px;text-align:left;">Phone</th><th style="padding:5px;text-align:left;">Verdict</th><th style="padding:5px;text-align:left;">Reason</th></tr></thead><tbody>';
+        sc.forEach(r => {
+            html += `<tr style="border-bottom:1px solid #f3f4f6;">
+              <td style="padding:5px;font-weight:700;">${escape(r.order_number)}</td>
+              <td style="padding:5px;">${escape(r.customer)}</td>
+              <td style="padding:5px;font-family:monospace;">${escape(r.slaughtered_at)}</td>
+              <td style="padding:5px;">${escape(r.minutes_since)}m</td>
+              <td style="padding:5px;font-family:monospace;">${escape(r.eligible_at)}</td>
+              <td style="padding:5px;font-family:monospace;">${escape(r.effective_phone)}</td>
+              <td style="padding:5px;"><span style="padding:2px 8px;border-radius:10px;background:${verdictBg[r.verdict] || '#f3f4f6'};color:${verdictColor[r.verdict] || '#374151'};font-weight:700;">${escape(r.verdict)}</span></td>
+              <td style="padding:5px;color:#374151;">${escape(r.reason)}</td>
+            </tr>`;
+        });
+        html += '</tbody></table>';
+    }
+
+    // OFD
+    const oc = (d.ofd && d.ofd.candidates) || [];
+    html += `<div style="font-weight:700;font-size:12px;margin:14px 0 4px;">🛵 OFD candidates <span style="font-weight:400;color:#6b7280;">(mode: ${escape(d.ofd?.mode)} · window: ${escape(d.ofd?.window_min)}m · lookback: 24h)</span></div>`;
+    if (oc.length === 0) {
+        html += '<div style="padding:8px 12px;background:#f3f4f6;border-radius:6px;font-size:11px;color:#6b7280;">No dispatched + undelivered items in the last 24h.</div>';
+    } else {
+        html += '<table style="width:100%;font-size:11px;border-collapse:collapse;background:#fff;"><thead><tr style="background:#e5e7eb;"><th style="padding:5px;text-align:left;">Order</th><th style="padding:5px;text-align:left;">Customer</th><th style="padding:5px;text-align:left;">Dispatched at</th><th style="padding:5px;text-align:left;">ETA</th><th style="padding:5px;text-align:left;">Type</th><th style="padding:5px;text-align:left;">Phone</th><th style="padding:5px;text-align:left;">Verdict</th><th style="padding:5px;text-align:left;">Reason</th></tr></thead><tbody>';
+        oc.forEach(r => {
+            html += `<tr style="border-bottom:1px solid #f3f4f6;">
+              <td style="padding:5px;font-weight:700;">${escape(r.order_number)}</td>
+              <td style="padding:5px;">${escape(r.customer)}</td>
+              <td style="padding:5px;font-family:monospace;">${escape(r.dispatched_at)}</td>
+              <td style="padding:5px;font-family:monospace;">${escape(r.eta || '—')}</td>
+              <td style="padding:5px;">${escape(r.delivery_type)}${r.is_self_collect ? ' <small style="color:#6b7280;">(self)</small>' : ''}</td>
+              <td style="padding:5px;font-family:monospace;">${escape(r.effective_phone)}</td>
+              <td style="padding:5px;"><span style="padding:2px 8px;border-radius:10px;background:${verdictBg[r.verdict] || '#f3f4f6'};color:${verdictColor[r.verdict] || '#374151'};font-weight:700;">${escape(r.verdict)}</span></td>
+              <td style="padding:5px;color:#374151;">${escape(r.reason)}</td>
+            </tr>`;
+        });
+        html += '</tbody></table>';
+    }
+
+    // Recent log rows
+    const lg = d.recent_logs || [];
+    if (lg.length) {
+        html += '<div style="font-weight:700;font-size:12px;margin:14px 0 4px;">📋 Last 20 log rows</div>';
+        html += '<table style="width:100%;font-size:11px;border-collapse:collapse;background:#fff;"><thead><tr style="background:#e5e7eb;"><th style="padding:5px;text-align:left;">Time</th><th style="padding:5px;text-align:left;">Order</th><th style="padding:5px;text-align:left;">Trigger</th><th style="padding:5px;text-align:left;">Template</th><th style="padding:5px;text-align:left;">Phone</th><th style="padding:5px;text-align:left;">Status</th><th style="padding:5px;text-align:left;">Reason</th></tr></thead><tbody>';
+        lg.forEach(x => {
+            html += `<tr style="border-bottom:1px solid #f3f4f6;">
+              <td style="padding:5px;font-family:monospace;">${escape(x.created_at)}</td>
+              <td style="padding:5px;">${escape(x.order_number || '#' + x.line_item_id)}</td>
+              <td style="padding:5px;">${escape(x.trigger_event)}</td>
+              <td style="padding:5px;">${escape(x.template_name)}</td>
+              <td style="padding:5px;font-family:monospace;">${escape(x.wa_phone || '')}</td>
+              <td style="padding:5px;font-weight:700;color:${x.status === 'sent' ? '#047857' : (x.status === 'failed' ? '#b91c1c' : '#92400e')};">${escape(x.status)}</td>
+              <td style="padding:5px;color:#6b7280;">${escape(x.skip_reason || '')}</td>
+            </tr>`;
+        });
+        html += '</tbody></table>';
+    }
+
+    html += '<div style="margin-top:12px;padding:8px 12px;background:#eff6ff;border-radius:6px;font-size:11px;color:#1e3a8a;">💡 Tip: if no slaughter candidate is showing READY, fix the verdict reason for the row you expected to fire, then press 🚀 Send Now.</div>';
+    return html;
+}
+
+function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
 }
 
 // Save the test phone on blur (no separate Save button — leaving the

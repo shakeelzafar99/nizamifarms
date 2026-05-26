@@ -403,8 +403,13 @@
         them all and only print when you&rsquo;re satisfied.
     </p>
     <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px 12px;margin-bottom:14px;">
-        <div>
-            <label style="font-size:11px;font-weight:600;color:#6b7280;display:block;margin-bottom:3px;">Category</label>
+        <div id="sheetCategoryWrap">
+            <label style="font-size:11px;font-weight:600;color:#6b7280;display:block;margin-bottom:3px;">
+                Category
+                {{-- May-2026 — note shown only when Shabib Bakra sheet
+                     is selected (the sheet hard-codes Goat + Lamb). --}}
+                <span id="sheetCategoryLockedNote" style="display:none;color:#9a3412;font-weight:600;font-size:10px;margin-left:4px;">(locked to Goat + Lamb)</span>
+            </label>
             <select id="sheetCategory" class="qo-filter" style="width:100%;" onchange="loadSheetPreview()">
                 <option value="">All Categories</option>
                 {{-- A4 sheets are dispatch backups for actual qurbani animal
@@ -488,12 +493,18 @@
             • Inhouse Team (Portrait) — kitchen / slaughter copy.
               Wide Type column for animal-detail notes, slim Qty /
               Paaye, no Weight column (May-2026: kitchen records
-              weights elsewhere now). --}}
+              weights elsewhere now).
+            • Shabib Bakra (Landscape) — auto-restricted to Goat (Bakra)
+              + Lamb (Dumba) categories, with per-line-item
+              instructions in place of address/paaye. Smaller rows for
+              denser pages. The user's Category dropdown filter is
+              ignored on this sheet (it would conflict with the
+              fixed Goat+Lamb scope). --}}
     <div style="display:flex;align-items:stretch;gap:8px;padding:10px 12px;background:#fff7ed;border:1px solid #fed7aa;border-radius:6px;margin-bottom:14px;flex-wrap:wrap;">
         <span style="font-size:12px;color:#9a3412;font-weight:700;align-self:center;margin-right:4px;">Sheet for:</span>
         <label style="flex:1 1 200px;min-width:200px;display:flex;align-items:center;gap:8px;padding:8px 10px;border:1.5px solid #fed7aa;border-radius:6px;background:#fff;cursor:pointer;font-size:12px;color:#374151;" title="Full record sheet kept by the manager. Landscape A4.">
             <input type="radio" name="sheetType" value="master" checked onchange="loadSheetPreview()">
-            <span><b>📊 Master Sheet</b><br><span style="color:#6b7280;font-size:11px;">Landscape · full record (8 cols)</span></span>
+            <span><b>📊 Master Sheet</b><br><span style="color:#6b7280;font-size:11px;">Landscape · full record (7 cols)</span></span>
         </label>
         <label style="flex:1 1 200px;min-width:200px;display:flex;align-items:center;gap:8px;padding:8px 10px;border:1.5px solid #fed7aa;border-radius:6px;background:#fff;cursor:pointer;font-size:12px;color:#374151;" title="Driver manifest. Landscape A4. Real street address + contact + packs. One row per bundle.">
             <input type="radio" name="sheetType" value="delivery" onchange="loadSheetPreview()">
@@ -502,6 +513,10 @@
         <label style="flex:1 1 200px;min-width:200px;display:flex;align-items:center;gap:8px;padding:8px 10px;border:1.5px solid #fed7aa;border-radius:6px;background:#fff;cursor:pointer;font-size:12px;color:#374151;" title="Kitchen / slaughter team. Portrait A4. Wide Type column for animal-detail notes; no weight column.">
             <input type="radio" name="sheetType" value="inhouse" onchange="loadSheetPreview()">
             <span><b>🔪 Inhouse Team</b><br><span style="color:#6b7280;font-size:11px;">Portrait · wide Type column (5 cols)</span></span>
+        </label>
+        <label style="flex:1 1 200px;min-width:200px;display:flex;align-items:center;gap:8px;padding:8px 10px;border:1.5px solid #fed7aa;border-radius:6px;background:#fff;cursor:pointer;font-size:12px;color:#374151;" title="Shabib's Goat + Lamb manifest. Landscape A4. Auto-restricts to Goat (Bakra) + Lamb (Dumba); Category dropdown is ignored. Instructions column replaces address/paaye; smaller rows fit more per page.">
+            <input type="radio" name="sheetType" value="shabib_bakra" onchange="loadSheetPreview()">
+            <span><b>🐑 Shabib Bakra</b><br><span style="color:#6b7280;font-size:11px;">Landscape · Goat + Lamb only (6 cols, dense)</span></span>
         </label>
     </div>
     <div id="sheetPreviewSummary" style="font-size:13px;color:#374151;padding:10px 12px;background:#f0f9ff;border:1px solid #bae6fd;border-radius:6px;margin-bottom:14px;">
@@ -2288,10 +2303,29 @@ window.QURBANI_ORDERS_BOOT = {!! json_encode($qurbaniOrdersBoot, JSON_HEX_TAG | 
     // No items are dropped: items with NULL day / slot / region /
     // sub-region still land in their own labelled section (e.g.
     // "— No Region —") so they're never silently lost.
-    function _groupItemsIntoSheetSections(items) {
+    function _groupItemsIntoSheetSections(items, mergeCategories = false, mergedLabel = 'All Categories') {
+        // May-2026 — `mergeCategories` collapses ALL categories into a
+        // single bucket per [Day × Region × Sub-Region × Slot], so when
+        // the user prints with Category = "All Categories" they get
+        // ONE sheet per slot containing every animal type for the
+        // customers in that slot (Hissa + Goat + Lamb etc. rendered as
+        // contiguous rows, grouped per customer via the byOrder pass
+        // below). Each row's per-animal type still shows in the
+        // QURBANI column so the kitchen / driver can tell them apart.
+        // When the user picks a specific category this flag is off
+        // and behaviour matches the original one-sheet-per-category
+        // semantics.
+        //
+        // `mergedLabel` overrides the printed section header when
+        // categories are merged — defaults to "All Categories", but
+        // the Shabib Bakra sheet passes "Goat + Lamb" because that
+        // sheet only ever covers those two categories and the
+        // generic label would mislead the operator.
         const map = new Map();
         items.forEach(it => {
-            const cat = it.category_level_2 || '— Uncategorized —';
+            const cat = mergeCategories
+                ? '__ALL__'
+                : (it.category_level_2 || '— Uncategorized —');
             const day = it.qurbani_day || '— No Day —';
             const reg = it.qurbani_region || '— No Region —';
             const sub = it.qurbani_sub_region || '— No Sub-Region —';
@@ -2350,6 +2384,8 @@ window.QURBANI_ORDERS_BOOT = {!! json_encode($qurbaniOrdersBoot, JSON_HEX_TAG | 
         // Section ordering — Category → Day → Region → Sub-Region →
         // Slot. Keeps a single category's sheets adjacent in the
         // preview so the manager can scroll through them as a block.
+        // When merged, every section shares the same category value
+        // so the secondary keys (day/region/...) drive ordering.
         sections.sort((a, b) => {
             if (a.category !== b.category) return String(a.category).localeCompare(String(b.category));
             if (a.day !== b.day) return String(a.day).localeCompare(String(b.day));
@@ -2357,6 +2393,20 @@ window.QURBANI_ORDERS_BOOT = {!! json_encode($qurbaniOrdersBoot, JSON_HEX_TAG | 
             if (a.sub_region !== b.sub_region) return String(a.sub_region).localeCompare(String(b.sub_region));
             return String(a.slot).localeCompare(String(b.slot));
         });
+
+        // Swap the internal '__ALL__' bucket marker for a printable
+        // label NOW (post-sort) so the sheet header / footer reads
+        // "ALL CATEGORIES" instead of the placeholder. Tag the
+        // section too so downstream code can branch if it ever
+        // needs to (none today, but the flag is cheap to add).
+        if (mergeCategories) {
+            sections.forEach(sec => {
+                if (sec.category === '__ALL__') {
+                    sec.category = mergedLabel;
+                    sec._categories_merged = true;
+                }
+            });
+        }
         return sections;
     }
 
@@ -2523,7 +2573,42 @@ window.QURBANI_ORDERS_BOOT = {!! json_encode($qurbaniOrdersBoot, JSON_HEX_TAG | 
         btnEl.disabled = true;
         btnEl.textContent = 'Preview & Print (—)';
 
+        // May-2026 — visually lock the Category dropdown on the
+        // Shabib Bakra sheet so the operator can see the "(locked
+        // to Goat + Lamb)" annotation and isn't surprised when
+        // their selection seems to be ignored. The dropdown
+        // remains in the DOM with the user's prior value preserved
+        // so switching back to another sheet restores it.
+        const _sheetTypeLockCheck = (document.querySelector('input[name="sheetType"]:checked') || {}).value || 'master';
+        const _catSelLock = document.getElementById('sheetCategory');
+        const _catNoteLock = document.getElementById('sheetCategoryLockedNote');
+        if (_catSelLock && _catNoteLock) {
+            if (_sheetTypeLockCheck === 'shabib_bakra') {
+                _catSelLock.disabled = true;
+                _catSelLock.style.opacity = '0.55';
+                _catSelLock.style.cursor = 'not-allowed';
+                _catNoteLock.style.display = 'inline';
+            } else {
+                _catSelLock.disabled = false;
+                _catSelLock.style.opacity = '';
+                _catSelLock.style.cursor = '';
+                _catNoteLock.style.display = 'none';
+            }
+        }
+
         const params = _collectSheetParams();
+        // May-2026 — Shabib Bakra sheet ignores the user's Category
+        // dropdown on the server too. Without this strip, picking
+        // "Goat (Bakra)" in the dropdown would cause the server to
+        // return ONLY Goat rows — and we'd silently lose all Lamb
+        // rows before the client-side filter even ran. Strip it
+        // here so the fetch returns the full unfiltered set, and
+        // the post-fetch filter (loadSheetPreview body below) then
+        // narrows to Goat + Lamb.
+        const _activeSheetTypeForFetch = (document.querySelector('input[name="sheetType"]:checked') || {}).value || 'master';
+        if (_activeSheetTypeForFetch === 'shabib_bakra') {
+            params.delete('category');
+        }
         // May-2026 — cache-bust + no-store guard. Edge / some
         // corporate proxies aggressively cache GET responses even
         // without a Cache-Control header, which made the
@@ -2551,7 +2636,43 @@ window.QURBANI_ORDERS_BOOT = {!! json_encode($qurbaniOrdersBoot, JSON_HEX_TAG | 
                 // No more per-customer bundle attach (that helper was
                 // removed when sheet qty switched to section-wide
                 // numbering — see _groupItemsIntoSheetSections).
-                _sheetSectionsCache = _groupItemsIntoSheetSections(items);
+                //
+                // May-2026 — when Category = "All Categories" (empty
+                // dropdown) we merge every category into a single
+                // bucket per slot so the manager doesn't get N
+                // copies of the same slot (one per category). The
+                // QURBANI column on each row still discloses the
+                // per-animal type, and bundle math stays per-customer
+                // — so a customer with 1 hissa + 2 goats in the
+                // same slot prints as 3 contiguous rows under their
+                // name (or 2 rows on the Master sheet's collapsed
+                // layout).
+                //
+                // May-2026 (revision) — Shabib Bakra sheet ALWAYS
+                // restricts to Goat (Bakra) + Lamb (Dumba) and
+                // ALWAYS merges those two categories into one
+                // section. The user's Category dropdown is
+                // deliberately ignored on this sheet (a Bakra-only
+                // selection would silently drop Lamb rows, which
+                // would defeat the purpose). We also force-merge
+                // even if exactly one of the two categories survives
+                // the filter so the section header reads "Goat +
+                // Lamb" consistently.
+                const _activeSheetType = (document.querySelector('input[name="sheetType"]:checked') || {}).value || 'master';
+                let _mergeCategories;
+                let _mergedLabel = 'All Categories';
+                if (_activeSheetType === 'shabib_bakra') {
+                    items = items.filter(it => {
+                        const c = String(it.category_level_2 || '').toLowerCase();
+                        return /goat|bakra|lamb|dumba/.test(c);
+                    });
+                    _mergeCategories = true;
+                    _mergedLabel = 'Goat + Lamb';
+                } else {
+                    const _categoryFilter = (document.getElementById('sheetCategory') || {}).value || '';
+                    _mergeCategories = _categoryFilter === '';
+                }
+                _sheetSectionsCache = _groupItemsIntoSheetSections(items, _mergeCategories, _mergedLabel);
 
                 const totalLineItems = items.length;
                 const totalOrders = new Set(items.map(it => it.order_id)).size;
@@ -2742,6 +2863,76 @@ window.QURBANI_ORDERS_BOOT = {!! json_encode($qurbaniOrdersBoot, JSON_HEX_TAG | 
                 ],
             };
         }
+        if (sheetType === 'shabib_bakra') {
+            // May-2026 — fourth team layout. Operationally distinct
+            // from the Master sheet in three ways:
+            //
+            //   1. CATEGORY SCOPE IS FIXED: Goat (Bakra) + Lamb
+            //      (Dumba) only. Hissa / Cow / Charity / Bhunnay are
+            //      filtered out client-side (see loadSheetPreview).
+            //      The user's "Category" dropdown is IGNORED for this
+            //      sheet — if they had Bakra selected we still want
+            //      to include Lamb, and vice versa. The label note
+            //      in the radio explains this so the manager isn't
+            //      surprised.
+            //
+            //   2. COLUMNS: Address + Paaye dropped in favour of a
+            //      single wide INSTRUCTIONS column reading the per-
+            //      line-item `instructions` field (the same field
+            //      shown in the order detail screen). That column
+            //      is what Shabib actually needs to read while
+            //      sorting carcasses post-slaughter; address /
+            //      paaye are noise for him.
+            //
+            //   3. DENSER ROWS: 13mm row height (vs Master's 21mm)
+            //      so ~14 rows fit per landscape A4 page vs Master's
+            //      ~10. Body font size dropped accordingly so the
+            //      shorter row still reads cleanly.
+            //
+            // Categories always merge on this sheet (Goat + Lamb in
+            // the same section per Day×Region×SubRegion×Slot), so
+            // _groupItemsIntoSheetSections is called with the
+            // mergeCategories flag forced on (see loadSheetPreview).
+            //
+            // Landscape A4 usable width @ 10mm margin = 277mm.
+            // Fixed cols = 24 + 36 + 18 + 60 + 14 = 152mm → auto
+            // (instructions) gets ~125mm, still plenty for typical
+            // line-item notes (truncated at 90 chars by the cell
+            // resolver as a safety net).
+            //
+            // May-2026 (revision) — added the QURBANI TYPE column
+            // (per-line-item `qurbani_type` field: "Standard: All
+            // Boti cut, 1 Leg (Raan) kept Whole" etc.) at the user's
+            // request. Reuses the existing `type` column key — the
+            // cell resolver already maps it to it.qurbani_type, the
+            // only thing per-sheet is the label and width. Smaller
+            // typeSize (10pt) so a long value still fits inside
+            // the dense 13mm row without crowding the Instructions
+            // column next to it.
+            return {
+                key: 'shabib_bakra',
+                label: '🐑 Shabib Bakra Sheet',
+                orientation: 'landscape',
+                rowHeight: '13mm',
+                titleSize: '24pt', metaSize: '12pt',
+                thSize: '9.5pt',   tdSize: '11pt',
+                orderSize: '10pt', qtySize: '15pt',
+                typeSize: '10pt',
+                // Same collapse semantics as Master — one row per
+                // line item with the bundle quantity printed as a
+                // plain integer (Qty "7" instead of seven 1/7 …
+                // 7/7 rows). Shabib works at line-item granularity.
+                collapseBundlesToSingleRow: true,
+                columns: [
+                    { key: 'order',        label: 'Order #',      width: '24mm' },
+                    { key: 'name',         label: 'Customer',     width: '36mm' },
+                    { key: 'instructions', label: 'Instructions', width: 'auto' },
+                    { key: 'qurbani',      label: 'Qurbani',      width: '18mm' },
+                    { key: 'type',         label: 'Qurbani Type', width: '60mm' },
+                    { key: 'qty_total',    label: 'Qty',          width: '14mm' },
+                ],
+            };
+        }
         if (sheetType === 'inhouse') {
             // May-2026 (revision) — switched to PORTRAIT A4, dropped
             // the empty Weight column (kitchen records weights
@@ -2920,6 +3111,26 @@ window.QURBANI_ORDERS_BOOT = {!! json_encode($qurbaniOrdersBoot, JSON_HEX_TAG | 
                     : raw);
             }
             case 'contact': return esc(it.customer_phone || '—');
+            case 'instructions': {
+                // May-2026 — per-line-item notes (the same field
+                // shown on the order detail screen, server-side
+                // exposed in QurbaniWebController::getOrderItems as
+                // `instructions`). Used by the Shabib Bakra sheet
+                // in place of address/paaye/contact so the only
+                // wide column carries the operationally-useful
+                // text for sorting carcasses post-slaughter.
+                //
+                // 90-char truncation keeps a long note from
+                // pushing the row past its 13mm height while still
+                // showing enough to be useful. Empty notes render
+                // as a faint dash so the row isn't blank-looking.
+                const raw = String(it.instructions || '').trim();
+                if (!raw) return '<span style="color:#9ca3af;">—</span>';
+                const MAX_INSTR_CHARS = 90;
+                return esc(raw.length > MAX_INSTR_CHARS
+                    ? raw.slice(0, MAX_INSTR_CHARS - 1).trimEnd() + '…'
+                    : raw);
+            }
             case 'qurbani': return esc(_sheetShortAnimalLabel(it));
             case 'qty':     return pos + '/' + total;
             // May-2026 — collapsed-row qty (Master sheet). Shows the
@@ -3027,6 +3238,14 @@ window.QURBANI_ORDERS_BOOT = {!! json_encode($qurbaniOrdersBoot, JSON_HEX_TAG | 
                 case 'contact':
                 case 'qurbani':
                     extra = 'font-weight:700;';
+                    break;
+                case 'instructions':
+                    // Tighter line-height than the default 1.3 so a
+                    // 2-line instruction still fits inside the dense
+                    // 13mm row on the Shabib Bakra sheet. Normal
+                    // weight (not bold) — the text is descriptive
+                    // notes, not a heading.
+                    extra = 'font-weight:500; line-height:1.2; color:#1f2937;';
                     break;
             }
             return '.sheet-table .col-' + c.key + ' { width:' + c.width + '; ' + extra + ' }';

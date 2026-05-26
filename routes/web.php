@@ -313,6 +313,14 @@ Route::middleware(['auth'])->group(function () {
         // Phase 3 (May-2026) — Qurbani auto-WhatsApp settings.
         Route::get('/api/wa-auto',  [\App\Http\Controllers\CRM\QurbaniSettingsController::class, 'getWaAuto'])->name('qurbani-settings.api.wa-auto.get');
         Route::post('/api/wa-auto', [\App\Http\Controllers\CRM\QurbaniSettingsController::class, 'updateWaAuto'])->name('qurbani-settings.api.wa-auto');
+        // May-2026 — diagnostic + manual-tick endpoints so an admin can
+        // answer "why isn't my slaughter message firing?" without SSH.
+        // diagnose returns a structured per-candidate explanation;
+        // run-now fires the worker immediately and returns the log
+        // rows it created. See QurbaniSettingsController for the
+        // full payload shape.
+        Route::post('/api/wa-auto/diagnose', [\App\Http\Controllers\CRM\QurbaniSettingsController::class, 'diagnoseWaAuto'])->name('qurbani-settings.api.wa-auto.diagnose');
+        Route::post('/api/wa-auto/run-now',  [\App\Http\Controllers\CRM\QurbaniSettingsController::class, 'runWaAutoNow'])->name('qurbani-settings.api.wa-auto.run-now');
         // Phase 4 (May-2026) — slot start/end minute editing + bulk
         // auto-detect button on the slots section of the settings page.
         // Cascades writes down to t_crm_prod_order_line_item.
@@ -394,6 +402,10 @@ Route::middleware(['auth'])->group(function () {
         Route::get('/api/performance/summary',  [\App\Http\Controllers\CRM\QurbaniPerformanceController::class, 'summary'])->name('qurbani.api.performance.summary');
         Route::get('/api/performance/drill',    [\App\Http\Controllers\CRM\QurbaniPerformanceController::class, 'drill'])->name('qurbani.api.performance.drill');
         Route::post('/api/performance/day-state', [\App\Http\Controllers\CRM\QurbaniPerformanceController::class, 'setDayState'])->name('qurbani.api.performance.day-state');
+        // May-2026 — CS Manager quick-action: send slaughter / OFD
+        // WhatsApp template for one line item on demand. Bypasses
+        // the worker's time-delay gate; respects every other gate.
+        Route::post('/api/performance/send-wa-now', [\App\Http\Controllers\CRM\QurbaniPerformanceController::class, 'sendWaNow'])->name('qurbani.api.performance.send-wa-now');
 
         Route::get('/api/dashboard', [\App\Http\Controllers\CRM\QurbaniWebController::class, 'getDashboardData'])->name('qurbani.api.dashboard');
         Route::get('/api/payment-summary', [\App\Http\Controllers\CRM\QurbaniWebController::class, 'getPaymentAccountSummary'])->name('qurbani.api.payment-summary');

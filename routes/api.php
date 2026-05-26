@@ -299,6 +299,15 @@ Route::middleware('auth:sanctum')->group(function () {
     // Accepts an optional batch_dispatched_at to target a specific
     // wave; omitting it cancels ALL active waves for the rider.
     Route::post('/qurbani/riders/{riderId}/cancel-dispatch', [\App\Http\Controllers\API\RiderController::class, 'cancelQurbaniDispatch']);
+    // May-2026 — handover / change-rider for PENDING (not-yet-dispatched)
+    // Qurbani OFD items. Source rider OR a manager may reassign a subset
+    // of one rider's pending items to another rider. Frozen / dispatched
+    // bundles are off-limits (use cancel-dispatch first to release them).
+    // GET handover-riders returns the same Qurbani whitelist the manager
+    // bulk picker uses, but without the `assign_riders` permission gate
+    // so riders themselves can target other riders mid-route.
+    Route::get('/qurbani/handover-riders', [\App\Http\Controllers\API\RiderController::class, 'getQurbaniHandoverRiders']);
+    Route::post('/qurbani/riders/{riderId}/handover', [\App\Http\Controllers\API\RiderController::class, 'handoverQurbaniItems']);
     // Phase G (May-2026) — post-dispatch reorder. Lets the manager (or
     // rider, on their own route) reshuffle ALREADY-dispatched bundles
     // and recompute ETAs against the rider's current GPS. ETAs are

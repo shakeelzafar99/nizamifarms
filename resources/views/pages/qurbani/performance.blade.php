@@ -428,6 +428,36 @@
         color: #9ca3af; border-color: #e5e7eb; background: #f9fafb;
         cursor: not-allowed;
     }
+    /* May-2026 — Send Slaughter / Send OFD quick-action buttons.
+       Distinct colours so the CS manager can scan-pick without
+       reading labels. Disabled state = already sent OR template not
+       configured OR master switch off. */
+    .qp-row-action-btn.qp-act-send-sl {
+        color: #7f1d1d; border-color: #fca5a5; background: #fef2f2;
+    }
+    .qp-row-action-btn.qp-act-send-sl:hover { background: #fee2e2; }
+    .qp-row-action-btn.qp-act-send-ofd {
+        color: #1e3a8a; border-color: #93c5fd; background: #eff6ff;
+    }
+    .qp-row-action-btn.qp-act-send-ofd:hover { background: #dbeafe; }
+    .qp-row-action-btn.is-disabled {
+        color: #9ca3af; border-color: #e5e7eb; background: #f9fafb;
+        cursor: not-allowed;
+    }
+    .qp-row-action-btn.is-busy {
+        opacity: 0.55; pointer-events: none;
+    }
+    /* WA outcome chips in the Slaughtered / OFD columns. Same shape
+       as the slot chip so the table reads consistently. */
+    .qp-wa-chip {
+        display: inline-block; margin-top: 3px; padding: 1px 6px;
+        border-radius: 999px; font-size: 10px; font-weight: 700;
+        white-space: nowrap; border: 1px solid;
+        font-variant-numeric: tabular-nums;
+    }
+    .qp-wa-chip.is-sent    { background: #d1fae5; color: #065f46; border-color: #10b981; }
+    .qp-wa-chip.is-failed  { background: #fee2e2; color: #991b1b; border-color: #ef4444; }
+    .qp-wa-chip.is-skipped { background: #fef3c7; color: #92400e; border-color: #f59e0b; }
 
     /* Unread WhatsApp badge over the action button. Red dot with
        count overlay so the CS manager spots which rows need
@@ -1199,6 +1229,35 @@
         if (r.eta_drift_minutes != null) parts.push('Drift: ' + r.eta_drift_minutes + ' min');
         return parts.join(' · ');
     }
+    // May-2026 — Slaughter / OFD outcome chip rendered under each
+    // status timestamp in the drill table. Status comes from the
+    // latest t_ops_qurbani_wa_log row for that line item and
+    // trigger; possible values: sent / failed / skipped. NULL =
+    // no log row exists (message never attempted) → chip omitted.
+    //
+    // For OFD we also flag the trigger sub-type (ofd vs
+    // ofd_delay_update) so the manager can see a single "✓ sent"
+    // chip but with "(delay update)" suffix when applicable.
+    function _qpRenderWaChip(status, sentAt, skipReason, trigger) {
+        if (!status) return '';
+        const label = status === 'sent'
+            ? '✓ msg sent' + (trigger === 'ofd_delay_update' ? ' (delay)' : '')
+            : (status === 'failed' ? '✗ msg failed' : '⏸ skipped');
+        const tooltipParts = [];
+        if (sentAt) tooltipParts.push('At: ' + sentAt);
+        if (skipReason) tooltipParts.push('Reason: ' + skipReason);
+        if (trigger) tooltipParts.push('Trigger: ' + trigger);
+        const tooltip = tooltipParts.join(' · ');
+        const ageSuffix = sentAt ? ' <span style="opacity:0.75;">· ' + esc(_qpFmtAgeFromTs(sentAt)) + '</span>' : '';
+        return '<div class="qp-wa-chip is-' + status + '" title="' + esc(tooltip) + '">' + esc(label) + ageSuffix + '</div>';
+    }
+    function _qpFmtAgeFromTs(ts) {
+        try {
+            const t = new Date(ts.replace(' ', 'T'));
+            const min = Math.max(0, Math.floor((Date.now() - t.getTime()) / 60000));
+            return _qpFmtAge(min) || '';
+        } catch (e) { return ''; }
+    }
 
     function renderDrill(rows) {
         const body = $('#qpDrillBody');
@@ -1256,16 +1315,63 @@
             }
             const tlBtn = '<button type="button" class="qp-row-action-btn qp-act-timeline" data-li="' + r.line_item_id + '" title="Open order timeline">🕒 Timeline</button>';
 
+            // May-2026 — Slaughter / OFD quick-send buttons.
+            // We disable when:
+            //   slaughter: status='sent' already exists for this li,
+            //              OR qurbani_slaughtered_at is NULL (item
+            //              isn't slaughtered yet — nothing to message
+            //              about).
+            //   ofd:       status='sent' already exists for this li.
+            //              (Pre-dispatch we still allow it — the CS
+            //              manager occasionally wants to push the
+            //              ETA early to a specific customer.)
+            // Disabled buttons are still visible (greyed) so the
+            // manager can hover and read the "why not" tooltip.
+            const slSent  = r.slaughter_wa_status === 'sent';
+            const ofdSent = r.ofd_wa_status === 'sent';
+            const canSlaughter = !!r.qurbani_slaughtered_at && !slSent;
+            const slTitle = !r.qurbani_slaughtered_at
+                ? 'Item not slaughtered yet — mark it slaughtered first.'
+                : (slSent ? 'Already sent. Click to force re-send.' : 'Send slaughter WhatsApp to ' + (waPhone || 'this customer'));
+            const ofdTitle = ofdSent
+                ? 'Already sent. Click to force re-send.'
+                : 'Send Out-for-Delivery WhatsApp to ' + (waPhone || 'this customer');
+            const slBtn = '<button type="button" class="qp-row-action-btn qp-act-send-sl'
+                + (canSlaughter ? '' : (slSent ? '' : ' is-disabled'))
+                + '" data-li="' + r.line_item_id
+                + '" data-trigger="slaughter" data-sent="' + (slSent ? '1' : '0')
+                + '" title="' + esc(slTitle) + '">🔪 Slaughter</button>';
+            const ofdBtn = '<button type="button" class="qp-row-action-btn qp-act-send-ofd'
+                + (ofdSent ? '' : '')
+                + '" data-li="' + r.line_item_id
+                + '" data-trigger="ofd" data-sent="' + (ofdSent ? '1' : '0')
+                + '" title="' + esc(ofdTitle) + '">🛵 OFD</button>';
+
             html += '<tr>'
                 + '<td><a class="qp-order-link" href="/qurbani/invoices?customer=' + encodeURIComponent(r.order_number || '') + '" target="_blank">' + esc(r.order_number || '') + '</a></td>'
                 + '<td>' + esc(r.customer_name || '') + (r.customer_phone ? '<div style="font-size:10px;color:#9ca3af;">' + esc(r.customer_phone) + '</div>' : '') + '</td>'
                 + '<td>' + esc(r.product_name || '') + ' <span style="color:#9ca3af;">×' + esc(r.quantity) + '</span></td>'
-                + '<td>' + esc(r.qurbani_day || '—') + (r.qurbani_slot_end_display ? '<div style="font-size:10px;color:#9ca3af;">ends ' + esc(r.qurbani_slot_end_display) + '</div>' : '') + '</td>'
+                // Day · Slot. We show:
+                //   • Day number (top line)
+                //   • Original booked slot string (e.g. "Afternoon 11
+                //     AM to 3 PM") — what the customer chose at order
+                //     time. Critical for CS calls where the customer
+                //     references the slot they booked, not a
+                //     computed end-minute timestamp.
+                //   • Slot end (small, faint) — the parsed end so
+                //     late/at-risk math is reproducible from this row.
+                + '<td>' + esc(r.qurbani_day || '—')
+                    + (r.qurbani_slot ? '<div style="font-size:10.5px;color:#374151;margin-top:2px;">' + esc(r.qurbani_slot) + '</div>' : '')
+                    + (r.qurbani_slot_end_display ? '<div style="font-size:10px;color:#9ca3af;">ends ' + esc(r.qurbani_slot_end_display) + '</div>' : '')
+                + '</td>'
                 + '<td>' + esc([r.qurbani_region, r.qurbani_sub_region].filter(Boolean).join(' / ') || '—') + '</td>'
                 + '<td>' + esc(r.qurbani_delivery_type || '—') + '</td>'
                 + '<td><span class="qp-status-pill ' + statusClass + '">' + esc(status) + '</span></td>'
-                + '<td>' + fmtTime(r.qurbani_slaughtered_at) + '</td>'
-                + '<td>' + fmtTime(r.qurbani_out_for_delivery_at) + '</td>'
+                // Slaughtered column = timestamp + (when present)
+                // WhatsApp outcome chip showing whether/when the
+                // slaughter message went out.
+                + '<td>' + fmtTime(r.qurbani_slaughtered_at) + _qpRenderWaChip(r.slaughter_wa_status, r.slaughter_wa_sent_at, r.slaughter_wa_skip_reason, 'slaughter') + '</td>'
+                + '<td>' + fmtTime(r.qurbani_out_for_delivery_at) + _qpRenderWaChip(r.ofd_wa_status, r.ofd_wa_sent_at, r.ofd_wa_skip_reason, r.ofd_wa_trigger || 'ofd') + '</td>'
                 + '<td>'
                     + fmtTime(r.qurbani_estimated_delivery_at)
                     // ETA freshness subtitle — green when calc'd within 5
@@ -1278,7 +1384,7 @@
                 + '<td>' + fmtTime(r.qurbani_delivered_at) + '</td>'
                 + '<td>' + scHtml + '</td>'
                 + '<td>' + esc(r.rider_name || '—') + '</td>'
-                + '<td><div class="qp-row-actions">' + tlBtn + waBtn + '</div></td>'
+                + '<td><div class="qp-row-actions">' + tlBtn + waBtn + slBtn + ofdBtn + '</div></td>'
                 + '</tr>';
         });
         html += '</tbody></table></div>';
@@ -1301,6 +1407,91 @@
                 if (id) qpTlOpen(id);
             });
         });
+
+        // May-2026 — Slaughter / OFD send buttons. Both trigger the
+        // same /send-wa-now endpoint with a different trigger value.
+        // We bind to BOTH disabled and enabled buttons: the disabled
+        // state for "already sent" allows a force re-send (with
+        // confirmation), while the disabled state for "no
+        // qurbani_slaughtered_at" is a hard no-op (handled below).
+        body.querySelectorAll('button.qp-act-send-sl, button.qp-act-send-ofd').forEach(btn => {
+            btn.addEventListener('click', async () => {
+                const liId    = parseInt(btn.dataset.li, 10);
+                const trigger = btn.dataset.trigger;
+                const alreadySent = btn.dataset.sent === '1';
+                if (!liId || !trigger) return;
+                // Hard block: slaughter button when item isn't
+                // slaughtered yet. The button is greyed but still
+                // clickable so the tooltip surfaces; we no-op the
+                // click with a toast.
+                if (trigger === 'slaughter' && btn.classList.contains('is-disabled') && !alreadySent) {
+                    _qpToast('Mark the item as Slaughtered first.', 'warn');
+                    return;
+                }
+                // Force confirmation when re-sending.
+                let force = false;
+                if (alreadySent) {
+                    if (!confirm('A ' + (trigger === 'slaughter' ? 'slaughter' : 'OFD') + ' message has already been sent for this item. Send it AGAIN to the customer?')) return;
+                    force = true;
+                }
+                btn.classList.add('is-busy');
+                const originalText = btn.innerHTML;
+                btn.innerHTML = '⏳ Sending…';
+                try {
+                    const r = await fetch('{{ route("qurbani.api.performance.send-wa-now") }}', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'X-CSRF-TOKEN': '{{ csrf_token() }}',
+                            'Accept': 'application/json',
+                        },
+                        body: JSON.stringify({ line_item_id: liId, trigger: trigger, force: force }),
+                    });
+                    const d = await r.json();
+                    if (d && d.success) {
+                        _qpToast('✓ ' + (d.message || 'Message sent') + (d.phone ? ' → ' + d.phone : ''), 'ok');
+                        // Refresh the drill so the row picks up the
+                        // new "✓ msg sent" chip. Reuses the existing
+                        // runDrill() so the current metric / slot /
+                        // bucket filter state is preserved (the
+                        // request id + AbortController inside it
+                        // also handle the race if the manager clicks
+                        // multiple Send buttons in quick succession).
+                        if (typeof runDrill === 'function' && typeof activeMetric !== 'undefined' && activeMetric) {
+                            runDrill(activeMetric, activeSlotEnd, activeBucketState);
+                        }
+                    } else {
+                        _qpToast('✗ ' + (d?.message || 'Send failed'), 'err');
+                    }
+                } catch (e) {
+                    _qpToast('✗ Network error: ' + e.message, 'err');
+                } finally {
+                    btn.classList.remove('is-busy');
+                    btn.innerHTML = originalText;
+                }
+            });
+        });
+    }
+
+    // Tiny toast — no dep, no styling overhead. Auto-dismisses
+    // after 3.5s. Reuses the body so multiple toasts stack.
+    function _qpToast(msg, kind) {
+        const colors = { ok: '#065f46', err: '#991b1b', warn: '#92400e' };
+        const bg     = { ok: '#d1fae5', err: '#fee2e2', warn: '#fef3c7' };
+        const tcol = colors[kind] || '#111827';
+        const tbg  = bg[kind] || '#f3f4f6';
+        let host = document.getElementById('qpToastHost');
+        if (!host) {
+            host = document.createElement('div');
+            host.id = 'qpToastHost';
+            host.style.cssText = 'position:fixed;top:20px;right:20px;z-index:9999;display:flex;flex-direction:column;gap:8px;pointer-events:none;';
+            document.body.appendChild(host);
+        }
+        const t = document.createElement('div');
+        t.style.cssText = 'padding:10px 14px;border-radius:8px;font-size:12.5px;font-weight:600;box-shadow:0 4px 12px rgba(0,0,0,0.15);max-width:380px;pointer-events:auto;background:' + tbg + ';color:' + tcol + ';border:1px solid ' + tcol + ';';
+        t.textContent = msg;
+        host.appendChild(t);
+        setTimeout(() => t.remove(), 3500);
     }
 
     // ── Day-state actions ──────────────────────────────────────

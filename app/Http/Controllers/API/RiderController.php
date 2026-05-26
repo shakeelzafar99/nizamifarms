@@ -22,6 +22,29 @@ use App\Services\LocationService;
 class RiderController extends Controller
 {
     /**
+     * May-2026 — single source of truth for "what counts as a FRESH
+     * rider GPS reading" when picking the origin for Qurbani route
+     * planning. Used by Auto Route, Dispatch (Start), the manager-
+     * side Refresh ETA, and any other path that needs to decide
+     * "rider GPS or warehouse?".
+     *
+     * 10 minutes balances two competing concerns:
+     *   - LocationHeartbeat fires every ~5 min. A rider with the
+     *     app open and GPS working will always have a reading
+     *     within the last cycle, so they pass the gate.
+     *   - A rider whose phone has been backgrounded / signal dropped
+     *     for >10 min has likely moved enough that their last
+     *     reading is no longer the right origin — fall back to
+     *     the configured warehouse instead.
+     *
+     * The mid-run refresh-self path uses a tighter 5-min window
+     * (see dispatchQurbaniRoute) because that path is supposed to
+     * reflect the rider's current position right now, not "last
+     * known".
+     */
+    public const QURBANI_FRESH_GPS_MINUTES = 10;
+
+    /**
      * Parse coordinates from a Google Maps URL
      * Handles various URL formats:
      * - https://www.google.com/maps?q=33.6844,73.0479
@@ -4102,6 +4125,26 @@ class RiderController extends Controller
                     ]);
                 }
             }
+
+            // May-2026 — Qurbani auto-WhatsApp piggyback on the rider
+            // GPS heartbeat. The mobile app POSTs here every 5 minutes
+            // per checked-in rider (locationHeartbeat.js), so during
+            // Qurbani day with N active riders this endpoint fires
+            // roughly N×12 times per hour — far more reliable than a
+            // server cron on shared hosting (stackcp, etc.) where we
+            // can't always count on `* * * * * schedule:run` being set
+            // up. Combined with the existing scheduler hook and the
+            // manager-planner terminating() hook, this gives us three
+            // independent triggers, any of which is enough to keep
+            // slaughter + OFD messages flowing.
+            //
+            // Self-throttled by the QurbaniWaAutoSender's 55-second
+            // Cache lock, so even ten riders heartbeating at once
+            // results in at most one effective worker run per minute.
+            // Fires via app()->terminating() so the response to the
+            // rider phone is already flushed before we hit Meta — the
+            // rider's GPS save latency is unaffected.
+            $this->fireQurbaniWaAutoSender();
 
             return response()->json([
                 'success' => true,
@@ -18222,6 +18265,17 @@ class RiderController extends Controller
                 'paid' => $formattedOrders->where('payment_status', 'paid')->count(),
             ];
 
+            // May-2026 — Qurbani auto-WhatsApp piggyback. The Qurbani
+            // Open Orders screen polls this endpoint every 30 seconds
+            // while any manager has it open (web or mobile). That's a
+            // far higher cadence than the 5-min rider GPS heartbeat
+            // and is the most common operational scenario — a manager
+            // monitoring orders is virtually guaranteed during event
+            // hours. Self-throttled by the 55s Cache lock so the
+            // high-frequency poll just keeps the worker warm without
+            // any duplicate sends.
+            $this->fireQurbaniWaAutoSender();
+
             return response()->json([
                 'success' => true,
                 'orders' => $formattedOrders->values(),
@@ -18385,6 +18439,17 @@ class RiderController extends Controller
             }
 
             $now = now();
+            // May-2026 — pre-formatted Carbon timestamp string. Used
+            // INSIDE the COALESCE() raw expressions below so the stamp
+            // matches Laravel's config('app.timezone') (Asia/Karachi
+            // in prod) instead of MySQL's server timezone (UTC on
+            // most cloud hosts). Earlier code used `NOW()` which is
+            // server-MySQL-timezone — that's why slaughtered_at
+            // showed up ~5h behind the rest of the app, and why the
+            // 1-minute slaughter trigger comparison drifted. Safe to
+            // splice straight into SQL: toDateTimeString() always
+            // returns a fixed 'Y-m-d H:i:s' format with no quote chars.
+            $nowStr = $now->toDateTimeString();
             $update = [
                 'qurbani_item_status' => $newStatus,
                 'qurbani_status_updated_at' => $now,
@@ -18397,11 +18462,11 @@ class RiderController extends Controller
             // FIRST-entered timestamp), so the update is conditional via raw
             // expressions. NULL stays NULL until the state is first entered.
             if ($newStatus === 'slaughtered') {
-                $update['qurbani_slaughtered_at'] = \DB::raw('COALESCE(qurbani_slaughtered_at, NOW())');
+                $update['qurbani_slaughtered_at'] = \DB::raw("COALESCE(qurbani_slaughtered_at, '{$nowStr}')");
             } elseif ($newStatus === 'out_for_delivery') {
-                $update['qurbani_out_for_delivery_at'] = \DB::raw('COALESCE(qurbani_out_for_delivery_at, NOW())');
+                $update['qurbani_out_for_delivery_at'] = \DB::raw("COALESCE(qurbani_out_for_delivery_at, '{$nowStr}')");
             } elseif ($newStatus === 'delivered') {
-                $update['qurbani_delivered_at'] = \DB::raw('COALESCE(qurbani_delivered_at, NOW())');
+                $update['qurbani_delivered_at'] = \DB::raw("COALESCE(qurbani_delivered_at, '{$nowStr}')");
             }
             $updated = \App\Models\CRM\OrderLineItemModel::whereIn('id', $validated['line_item_ids'])
                 ->update($update);
@@ -18520,8 +18585,15 @@ class RiderController extends Controller
      * "3 of 5 packets" position even when their assignment covers a
      * subset of the bundle.
      *
-     * Filtering: ?show=open|delivered|all (default open) — open hides
-     * line items already marked qurbani_item_status='delivered'.
+     * Filtering: ?show=ofd_only|open|delivered|all (default ofd_only)
+     *   - ofd_only   → only items with qurbani_item_status='out_for_delivery'
+     *                  (default mode for the rider screen — May-2026: hides
+     *                  items still 'open' / 'slaughtered' so the rider's
+     *                  Qurbani view only contains items that have been
+     *                  explicitly handed off to delivery by the manager).
+     *   - open       → legacy: any item not yet 'delivered'.
+     *   - delivered  → delivered items only.
+     *   - all        → everything assigned, no status filter.
      */
     public function getQurbaniRiderDeliveries(Request $request)
     {
@@ -18534,9 +18606,17 @@ class RiderController extends Controller
             // assignments. Rider users without that permission still need
             // to be able to see what's been pushed to them.
 
-            $show = strtolower((string) $request->get('show', 'open'));
-            if (!in_array($show, ['open', 'delivered', 'all'], true)) {
-                $show = 'open';
+            // May-2026 — default is now 'ofd_only' (was 'open'). The
+            // rider's screen should only surface items the manager has
+            // explicitly moved into the out-for-delivery lane; items
+            // still being processed at the slaughterhouse ('open' or
+            // 'slaughtered' status) are noise that confused riders
+            // about what was actually theirs to deliver. Old mobile
+            // builds that still send show=open continue to get the
+            // legacy behaviour, so this is backwards-compatible.
+            $show = strtolower((string) $request->get('show', 'ofd_only'));
+            if (!in_array($show, ['ofd_only', 'open', 'delivered', 'all'], true)) {
+                $show = 'ofd_only';
             }
 
             // Phase A3 (May-2026) — passive late detection on the
@@ -18578,7 +18658,13 @@ class RiderController extends Controller
             // assignment lives there now (not on the order).
             $assignedQuery = \DB::table('t_crm_prod_order_line_item')
                 ->where('qurbani_assigned_rider_user_id', $user->id);
-            if ($show === 'open') {
+            if ($show === 'ofd_only') {
+                // May-2026 — only items explicitly marked OFD by the
+                // manager. Hides everything still 'open' / 'slaughtered'
+                // so the rider sees a focused list of what's ready to
+                // actually deliver.
+                $assignedQuery->where('qurbani_item_status', 'out_for_delivery');
+            } elseif ($show === 'open') {
                 $assignedQuery->where(function($q) {
                     $q->whereNull('qurbani_item_status')
                       ->orWhere('qurbani_item_status', '!=', 'delivered');
@@ -18639,11 +18725,13 @@ class RiderController extends Controller
             $totalOpen = 0; $totalDelivered = 0;
             foreach ($orders as $order) {
                 // Filter line items down to ones assigned to this rider, and
-                // apply the show filter (open|delivered|all).
+                // apply the show filter (ofd_only|open|delivered|all).
                 $myItems = $order->lineItems->filter(function($li) use ($user, $show) {
                     if ((int) $li->qurbani_assigned_rider_user_id !== (int) $user->id) return false;
                     $isDelivered = $li->qurbani_item_status === 'delivered';
-                    if ($show === 'open') return !$isDelivered;
+                    $isOfd       = $li->qurbani_item_status === 'out_for_delivery';
+                    if ($show === 'ofd_only') return $isOfd;
+                    if ($show === 'open')     return !$isDelivered;
                     if ($show === 'delivered') return $isDelivered;
                     return true;
                 })->values();
@@ -18873,6 +18961,14 @@ class RiderController extends Controller
                 unset($p);
             }
 
+            // May-2026 — Qurbani auto-WhatsApp piggyback for the
+            // rider-side delivery feed. Rider's My Deliveries screen
+            // polls this every 30s while open, so an active rider
+            // also keeps the worker alive without depending on the
+            // GPS heartbeat being functional (Android background
+            // service can flake). 55s Cache lock prevents spam.
+            $this->fireQurbaniWaAutoSender();
+
             return response()->json([
                 'success' => true,
                 'orders' => $payload,
@@ -18966,6 +19062,11 @@ class RiderController extends Controller
             }
 
             $now = now();
+            // See timezone note in the sibling bulkUpdateQurbaniItemStatus
+            // — COALESCE NOW() returns MySQL-server TZ; we splice a
+            // Carbon-stamped string instead so the value matches
+            // config('app.timezone').
+            $nowStr = $now->toDateTimeString();
             $updated = \App\Models\CRM\OrderLineItemModel::whereIn('id', $validated['line_item_ids'])
                 ->update([
                     'qurbani_item_status' => 'delivered',
@@ -18974,7 +19075,7 @@ class RiderController extends Controller
                     'updated_by' => $user->id,
                     // Stamp first-time-delivered timestamp (preserve original
                     // if somehow re-delivered after being undone).
-                    'qurbani_delivered_at' => \DB::raw('COALESCE(qurbani_delivered_at, NOW())'),
+                    'qurbani_delivered_at' => \DB::raw("COALESCE(qurbani_delivered_at, '{$nowStr}')"),
                 ]);
 
             // Auto-promote: if ALL line items in any of the affected orders
@@ -19301,6 +19402,15 @@ class RiderController extends Controller
             $total = $items->count();
             $open = $items->filter(fn($i) => !$i['qurbani_item_status'] || in_array($i['qurbani_item_status'], ['open', 'slaughtered']))->count();
             $delivered = $items->filter(fn($i) => $i['qurbani_item_status'] === 'delivered')->count();
+
+            // May-2026 — same Qurbani auto-WhatsApp piggyback as the
+            // open-orders endpoint above. The region-view of the
+            // Qurbani Orders screen polls THIS endpoint every 30s
+            // (whichever of /open-orders or /line-items is active
+            // depending on isRegionView in QurbaniOpenOrdersScreen).
+            // Hooking both ensures the worker fires regardless of
+            // which view mode the manager is using.
+            $this->fireQurbaniWaAutoSender();
 
             return response()->json([
                 'success' => true,
@@ -20902,6 +21012,44 @@ class RiderController extends Controller
 
             $qBase = \App\Services\LocationService::getQurbaniBaseLocation();
 
+            // May-2026 — compute the EFFECTIVE ORIGIN the map should
+            // visually anchor the route to. Mirrors the freshness gate
+            // used by Auto Route + Dispatch (Start) — see
+            // QURBANI_FRESH_GPS_MINUTES. The mobile dispatch map and
+            // the "Open in Google Maps" link both read this field so
+            // the map shows the SAME starting point the server uses
+            // when planning ETAs:
+            //
+            //   - GPS within last 10 min  → rider GPS (live route)
+            //   - GPS older / missing     → Qurbani warehouse base
+            //                               (if configured)
+            //   - No base + no fresh GPS  → null (mobile shows a
+            //                               warning instead of a
+            //                               misleading start point)
+            //
+            // Surfacing this server-side keeps map / route / Google
+            // Maps deep-link aligned — no more "the map shows my
+            // GPS as start but the ETAs were planned from the
+            // warehouse" mismatch.
+            $effectiveOrigin = null;
+            $freshGpsMin = self::QURBANI_FRESH_GPS_MINUTES;
+            if ($gpsRow && $gpsRow->latitude && $gpsRow->longitude
+                && $gpsAgeMinutes !== null && $gpsAgeMinutes <= $freshGpsMin) {
+                $effectiveOrigin = [
+                    'lat'          => (float) $gpsRow->latitude,
+                    'lng'          => (float) $gpsRow->longitude,
+                    'source'       => 'rider_gps',
+                    'source_label' => 'Rider GPS · ' . $gpsAgeMinutes . ' min ago',
+                ];
+            } elseif ($qBase) {
+                $effectiveOrigin = [
+                    'lat'          => (float) $qBase->latitude,
+                    'lng'          => (float) $qBase->longitude,
+                    'source'       => 'qurbani_base',
+                    'source_label' => 'Warehouse (' . $qBase->location_name . ')',
+                ];
+            }
+
             return response()->json([
                 'success' => true,
                 'rider' => ['id' => (int) $rider->id, 'name' => $rider->fullname],
@@ -20912,12 +21060,21 @@ class RiderController extends Controller
                     'captured_at' => $gpsCapturedAt,
                     'lat'         => $gpsRow && $gpsRow->latitude  ? (float) $gpsRow->latitude  : null,
                     'lng'         => $gpsRow && $gpsRow->longitude ? (float) $gpsRow->longitude : null,
+                    // May-2026 — explicit "fresh enough to be used as
+                    // origin?" flag so the mobile map can stop
+                    // duplicating the freshness rule client-side.
+                    'is_fresh'    => $gpsAgeMinutes !== null && $gpsAgeMinutes <= $freshGpsMin,
+                    'fresh_threshold_min' => $freshGpsMin,
                 ],
                 'base' => $qBase ? [
                     'name' => (string) $qBase->location_name,
                     'lat'  => (float) $qBase->latitude,
                     'lng'  => (float) $qBase->longitude,
                 ] : null,
+                // The single source of truth for the route start —
+                // the mobile map uses this for the polyline anchor
+                // and the Open-in-Google-Maps origin parameter.
+                'effective_origin' => $effectiveOrigin,
                 'ofd_bundles'       => $ofd,
                 'delivered_bundles' => $delivered,
                 'counts' => [
@@ -20978,7 +21135,14 @@ class RiderController extends Controller
             // base (configurable from /qurbani-settings) is the new
             // preferred fallback so ETAs reflect the actual depot
             // when the rider's app hasn't pinged GPS recently.
-            $origin = \App\Services\LocationService::getQurbaniOriginForRider($riderId, 30);
+            //
+            // May-2026 — freshness tightened 30 → 10 min (see
+            // QURBANI_FRESH_GPS_MINUTES). 30 was too lenient: a
+            // rider whose GPS pinged 25 min ago could have moved
+            // far enough that planning the route from their stale
+            // pin would produce wrong ETAs — using the configured
+            // warehouse is the safer fallback in that case.
+            $origin = \App\Services\LocationService::getQurbaniOriginForRider($riderId, self::QURBANI_FRESH_GPS_MINUTES);
             if (!$origin) {
                 return response()->json([
                     'success' => false,
@@ -21341,11 +21505,14 @@ class RiderController extends Controller
                 });
 
                 if (!empty($ofdBundles)) {
-                    // Origin chain — same 30-min freshness window as
-                    // the manager-side Refresh ETA path; we're not in
-                    // the rider's auto-loop so we don't need the
-                    // 5-min refresh-self window here.
-                    $origin = \App\Services\LocationService::getQurbaniOriginForRider($riderId, 30);
+                    // Origin chain — same freshness window as Auto
+                    // Route and Dispatch. May-2026: tightened 30 →
+                    // 10 min via QURBANI_FRESH_GPS_MINUTES so stale
+                    // rider GPS falls back to the configured
+                    // warehouse instead of producing wrong ETAs.
+                    // We're not in the rider's auto-loop so we
+                    // don't need the 5-min refresh-self window here.
+                    $origin = \App\Services\LocationService::getQurbaniOriginForRider($riderId, self::QURBANI_FRESH_GPS_MINUTES);
                     if ($origin) {
                         $originSource = $origin['source'];
                         $waypoints = [['lat' => (float) $origin['latitude'], 'lng' => (float) $origin['longitude']]];
@@ -21606,7 +21773,14 @@ class RiderController extends Controller
             // to react to the rider's current position; if their GPS
             // is older than 5 min, we silently skip rather than
             // recompute against stale data.
-            $freshness = ($target === 'refresh-self') ? 5 : 30;
+            //
+            // May-2026 — initial-dispatch path tightened 30 → 10 min
+            // via QURBANI_FRESH_GPS_MINUTES. See the constant for
+            // the rationale. Effect: when the rider presses Start
+            // with a GPS reading older than 10 minutes, we use the
+            // configured warehouse as the route origin instead of
+            // their stale GPS — exactly what the user asked for.
+            $freshness = ($target === 'refresh-self') ? 5 : self::QURBANI_FRESH_GPS_MINUTES;
             $origin = \App\Services\LocationService::getQurbaniOriginForRider($riderId, $freshness);
             if ($target === 'refresh-self' && (!$origin || $origin['source'] !== 'rider_gps')) {
                 return response()->json([
@@ -22065,6 +22239,361 @@ class RiderController extends Controller
             \Log::error('Qurbani dispatch cancel failed', [
                 'rider_id' => $riderId,
                 'error'    => $e->getMessage(),
+            ]);
+            return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
+        }
+    }
+
+    /**
+     * Qurbani rider hand-over picker source (May-2026).
+     *
+     * GET /api/rider/qurbani/handover-riders
+     *
+     * Returns the Qurbani-whitelisted active riders (same list the
+     * manager uses in QurbaniOpenOrdersScreen's bulk-rider picker via
+     * /store/riders?mode=qurbani) but WITHOUT the `assign_riders`
+     * permission gate so a regular rider can use it to hand work off
+     * to another rider mid-route.
+     *
+     * The whitelist source is the same config key (`qurbani_rider_ids`)
+     * the manager maintains in Qurbani Settings — keeping ONE source
+     * of truth so adding/removing a rider in settings instantly
+     * flows through to every picker in the app.
+     *
+     * Response also annotates each rider with their current dispatch
+     * state (`has_active_dispatch` + `last_dispatched_at`) so the
+     * client can show "🟢 Currently delivering" vs "⚪ Idle" hints
+     * — helps the caller pick a target with capacity.
+     */
+    public function getQurbaniHandoverRiders(Request $request)
+    {
+        try {
+            $user = Auth::user();
+            // Auth-only gate. The endpoint hands BACK a name list,
+            // never mutates anything — and the actual reassignment
+            // endpoint enforces its own own-or-manager check, so a
+            // leaked rider list is no worse than today's /qurbani/riders
+            // summary (which has the same names visible to all
+            // managers). Riders need this without `assign_riders`.
+
+            // Same shape as getActiveRiders(mode=qurbani) so the mobile
+            // picker can render rows without a second adapter.
+            $riders = \DB::table('t_sys_user as u')
+                ->leftJoin('t_ops_rider_profile as p', 'p.user_id', '=', 'u.id')
+                ->where(function ($q) {
+                    $q->whereNull('p.user_id')->orWhere('p.active', 1);
+                })
+                ->where('u.is_active', 1)
+                ->orderBy('u.fullname')
+                ->get(['u.id', 'u.fullname']);
+
+            $whitelistApplied = false;
+            $raw = (string) \App\Models\FIN\ConfigModel::get('qurbani_rider_ids', '[]');
+            $ids = json_decode($raw, true);
+            if (is_array($ids)) {
+                $ids = array_values(array_filter(array_map('intval', $ids), fn($v) => $v > 0));
+                if (!empty($ids)) {
+                    $filtered = $riders->filter(fn($r) => in_array((int) $r->id, $ids, true))->values();
+                    // Defensive empty-whitelist fallback (matches
+                    // getActiveRiders behaviour) so a misconfigured
+                    // setting doesn't silently kill the picker.
+                    if ($filtered->count() > 0) {
+                        $riders = $filtered;
+                        $whitelistApplied = true;
+                    }
+                }
+            }
+
+            // Annotate each rider with dispatch state so the caller can
+            // hint the operator about target capacity. One round-trip
+            // groupBy — no N+1.
+            $riderIds = $riders->pluck('id')->all();
+            $dispatchByRider = [];
+            if (!empty($riderIds)) {
+                $rows = \DB::table('t_crm_prod_order_line_item')
+                    ->whereIn('qurbani_assigned_rider_user_id', $riderIds)
+                    ->select(
+                        'qurbani_assigned_rider_user_id as rider_id',
+                        \DB::raw('MAX(qurbani_dispatched_at) as last_dispatched_at'),
+                        \DB::raw("SUM(CASE WHEN qurbani_dispatched_at IS NOT NULL AND qurbani_delivered_at IS NULL THEN 1 ELSE 0 END) as in_flight_items"),
+                        \DB::raw("SUM(CASE WHEN qurbani_item_status='out_for_delivery' AND qurbani_dispatched_at IS NULL AND qurbani_delivered_at IS NULL THEN 1 ELSE 0 END) as pending_items")
+                    )
+                    ->groupBy('qurbani_assigned_rider_user_id')
+                    ->get();
+                foreach ($rows as $row) {
+                    $dispatchByRider[(int) $row->rider_id] = $row;
+                }
+            }
+
+            $payload = $riders->map(function ($r) use ($dispatchByRider) {
+                $d = $dispatchByRider[(int) $r->id] ?? null;
+                $inFlight = $d ? (int) $d->in_flight_items : 0;
+                $pending  = $d ? (int) $d->pending_items   : 0;
+                return [
+                    'id'                  => (int) $r->id,
+                    'fullname'            => $r->fullname,
+                    'has_active_dispatch' => $inFlight > 0,
+                    'in_flight_items'     => $inFlight,
+                    'pending_items'       => $pending,
+                    'last_dispatched_at'  => $d->last_dispatched_at ?? null,
+                ];
+            })->values();
+
+            return response()->json([
+                'success'   => true,
+                'riders'    => $payload,
+                'whitelist' => $whitelistApplied,
+            ]);
+        } catch (\Exception $e) {
+            \Log::error('getQurbaniHandoverRiders failed', [
+                'user_id' => Auth::id(),
+                'error'   => $e->getMessage(),
+            ]);
+            return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
+        }
+    }
+
+    /**
+     * Qurbani hand-over (May-2026) — reassign a SUBSET of a rider's
+     * pending OFD items to a different rider.
+     *
+     * POST /api/rider/qurbani/riders/{fromRiderId}/handover
+     *
+     * Body:
+     *   line_item_ids: int[]              (REQUIRED, ≥1)
+     *   to_rider_user_id: int             (REQUIRED, must be active + different from fromRiderId)
+     *
+     * Permission: own route OR access_qurbani_mode (manager).
+     *
+     * Guards (every item MUST pass — partial-success rejects with the
+     * exact reasons so the client can show a useful error):
+     *   - item belongs to fromRiderId (qurbani_assigned_rider_user_id matches)
+     *   - qurbani_item_status = 'out_for_delivery'  (assigned for delivery)
+     *   - qurbani_dispatched_at IS NULL             (NOT yet dispatched — frozen waves are off-limits)
+     *   - qurbani_delivered_at  IS NULL             (defensive)
+     *
+     * Side effects per item:
+     *   - qurbani_assigned_rider_user_id → toRiderId
+     *   - qurbani_delivery_priority      → NULL   (old rider's sequence
+     *                                              doesn't apply; new rider
+     *                                              will resequence with Auto
+     *                                              Route or manual move)
+     *   - updated_by, updated_at         → caller, now
+     *
+     * Things we DELIBERATELY do NOT touch:
+     *   - qurbani_dispatched_at / qurbani_dispatched_by   (already NULL by guard)
+     *   - qurbani_estimated_delivery_at / *_eta_*         (already NULL since not dispatched)
+     *   - qurbani_started_delivery_at                     (already NULL)
+     *   - qurbani_item_status                             (stays 'out_for_delivery'
+     *                                                      so the new rider sees them
+     *                                                      in his pending OFD pool)
+     *
+     * Lock interaction: same gate as cancel-dispatch / save-route — if
+     * fromRider's route is locked by someone OTHER than the caller, we
+     * refuse. The TARGET rider's lock is irrelevant: we're not editing
+     * his frozen sequence, just adding to his pending pool.
+     *
+     * Response includes a per-order breakdown plus the target rider's
+     * current dispatch state, so the mobile client can phrase the
+     * confirmation correctly ("Queued for next dispatch" vs "Added to
+     * pending pool").
+     */
+    public function handoverQurbaniItems(Request $request, $fromRiderId)
+    {
+        try {
+            $user = Auth::user();
+            $fromRiderId = (int) $fromRiderId;
+            $isOwnRoute = ((int) $user->id === $fromRiderId);
+            if (!$isOwnRoute && !$user->hasMobilePermission('access_qurbani_mode')) {
+                return response()->json(['success' => false, 'message' => 'Permission denied'], 403);
+            }
+
+            $validated = $request->validate([
+                'line_item_ids'    => 'required|array|min:1',
+                'line_item_ids.*'  => 'required|integer',
+                'to_rider_user_id' => 'required|integer|exists:t_sys_user,id',
+            ]);
+
+            $toRiderId = (int) $validated['to_rider_user_id'];
+            $itemIds   = array_values(array_unique(array_map('intval', $validated['line_item_ids'])));
+
+            if ($toRiderId === $fromRiderId) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Source and target riders are the same — nothing to hand over.',
+                ], 422);
+            }
+
+            // Validate both riders.
+            $fromRider = \DB::table('t_sys_user')
+                ->where('id', $fromRiderId)->where('is_active', 1)
+                ->select('id', 'fullname')->first();
+            if (!$fromRider) {
+                return response()->json(['success' => false, 'message' => 'Source rider not found or inactive'], 404);
+            }
+            $toRider = \DB::table('t_sys_user')
+                ->where('id', $toRiderId)->where('is_active', 1)
+                ->select('id', 'fullname')->first();
+            if (!$toRider) {
+                return response()->json(['success' => false, 'message' => 'Target rider not found or inactive'], 404);
+            }
+
+            // Lock gate — mirror save/dispatch/cancel. Only fromRider's
+            // route lock matters; we're not mutating toRider's frozen
+            // sequence (we only touch his pending pool, which has no
+            // saved order yet).
+            $lock = $this->getQurbaniRouteLockInfo($fromRiderId);
+            if ($lock && (int) $lock['locked_by'] !== (int) $user->id) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Source rider\'s route is locked by ' . ($lock['locked_by_name'] ?? 'another user') . '. Ask them to unlock first.',
+                ], 423);
+            }
+
+            \DB::beginTransaction();
+
+            // Snapshot every requested item with the columns needed to
+            // both check guards AND build a friendly per-order audit
+            // payload. Single query, no N+1.
+            $snapshot = \DB::table('t_crm_prod_order_line_item as li')
+                ->leftJoin('t_crm_prod_order as o', 'o.id', '=', 'li.order_id')
+                ->leftJoin('t_crm_prod_customer as c', 'c.id', '=', 'o.customer_id')
+                ->whereIn('li.id', $itemIds)
+                ->select(
+                    'li.id',
+                    'li.order_id',
+                    'o.order_number',
+                    'li.qurbani_assigned_rider_user_id',
+                    'li.qurbani_item_status',
+                    'li.qurbani_dispatched_at',
+                    'li.qurbani_delivered_at',
+                    \DB::raw("TRIM(CONCAT(COALESCE(c.first_name,''),' ',COALESCE(c.last_name,''))) as customer_name")
+                )
+                ->get();
+
+            // Per-item guard pass — collect blockers in one go so we
+            // can return a structured rejection rather than silently
+            // skipping bad items. Partial-success would let bad UX
+            // creep in (rider thinks all 5 were handed over when only
+            // 3 actually moved).
+            $blockers = [];
+            $okIds    = [];
+            $foundIds = $snapshot->pluck('id')->map(fn($v) => (int) $v)->all();
+            foreach ($itemIds as $iid) {
+                if (!in_array($iid, $foundIds, true)) {
+                    $blockers[] = "Item #{$iid}: not found";
+                }
+            }
+            foreach ($snapshot as $r) {
+                $reasons = [];
+                if ((int) $r->qurbani_assigned_rider_user_id !== $fromRiderId) {
+                    $reasons[] = 'belongs to a different rider';
+                }
+                if (($r->qurbani_item_status ?? null) !== 'out_for_delivery') {
+                    $reasons[] = 'not Out for Delivery';
+                }
+                if (!empty($r->qurbani_dispatched_at)) {
+                    $reasons[] = 'already dispatched (must be cancelled first)';
+                }
+                if (!empty($r->qurbani_delivered_at)) {
+                    $reasons[] = 'already delivered';
+                }
+                if (!empty($reasons)) {
+                    $label = $r->order_number ?: ('item #' . $r->id);
+                    $blockers[] = "{$label}: " . implode(', ', $reasons);
+                } else {
+                    $okIds[] = (int) $r->id;
+                }
+            }
+            if (!empty($blockers)) {
+                \DB::rollBack();
+                return response()->json([
+                    'success'  => false,
+                    'message'  => 'Cannot hand over — ' . count($blockers) . ' item(s) failed checks. ' . implode(' · ', array_slice($blockers, 0, 5)) . (count($blockers) > 5 ? ' …' : ''),
+                    'blockers' => $blockers,
+                ], 422);
+            }
+
+            // All clear — apply the reassignment.
+            //   - rider: pointed at the target
+            //   - delivery_priority: cleared (target will re-sequence)
+            //   - updated_*: caller stamp
+            // We DO NOT touch dispatched_at / eta / item_status — guards
+            // already proved they're null / OFD, and the new rider's
+            // route screen will surface these as pending items ready
+            // for his next Auto Route press.
+            $updated = \App\Models\CRM\OrderLineItemModel::whereIn('id', $okIds)
+                ->update([
+                    'qurbani_assigned_rider_user_id' => $toRiderId,
+                    'qurbani_delivery_priority'      => null,
+                    'updated_by'                     => $user->id,
+                    'updated_at'                     => now(),
+                ]);
+
+            \DB::commit();
+
+            // Build per-order grouping for the response toast.
+            $byOrder = [];
+            foreach ($snapshot->whereIn('id', $okIds) as $r) {
+                $key = (int) $r->order_id;
+                if (!isset($byOrder[$key])) {
+                    $byOrder[$key] = [
+                        'order_id'      => $key,
+                        'order_number'  => $r->order_number,
+                        'customer_name' => $r->customer_name,
+                        'items'         => 0,
+                    ];
+                }
+                $byOrder[$key]['items']++;
+            }
+            $ordersAffected = array_values($byOrder);
+
+            // Compute target's current dispatch state so the client can
+            // phrase the confirmation right.
+            $toRiderInFlight = (int) \DB::table('t_crm_prod_order_line_item')
+                ->where('qurbani_assigned_rider_user_id', $toRiderId)
+                ->whereNotNull('qurbani_dispatched_at')
+                ->whereNull('qurbani_delivered_at')
+                ->count();
+
+            \Log::info('Qurbani items handed over', [
+                'from_rider_id'    => $fromRiderId,
+                'from_rider_name'  => $fromRider->fullname,
+                'to_rider_id'      => $toRiderId,
+                'to_rider_name'    => $toRider->fullname,
+                'caller_user_id'   => $user->id,
+                'caller_user_name' => $user->fullname,
+                'is_own_route'     => $isOwnRoute,
+                'items_count'      => $updated,
+                'item_ids'         => $okIds,
+                'orders_affected'  => array_column($ordersAffected, 'order_number'),
+                'target_in_flight' => $toRiderInFlight,
+            ]);
+
+            $queuedHint = $toRiderInFlight > 0
+                ? "Queued for {$toRider->fullname}'s next dispatch (they have {$toRiderInFlight} item(s) currently in-flight)."
+                : "Added to {$toRider->fullname}'s pending pool — ready for Auto Route + Dispatch.";
+
+            return response()->json([
+                'success'            => true,
+                'message'            => 'Handed over ' . $updated . ' item(s) across ' . count($ordersAffected) . ' order(s) from ' . $fromRider->fullname . ' to ' . $toRider->fullname . '. ' . $queuedHint,
+                'items_count'        => $updated,
+                'item_ids'           => $okIds,
+                'orders_affected'    => $ordersAffected,
+                'from_rider_id'      => $fromRiderId,
+                'from_rider_name'    => $fromRider->fullname,
+                'to_rider_id'        => $toRiderId,
+                'to_rider_name'      => $toRider->fullname,
+                'target_in_flight'   => $toRiderInFlight,
+                'target_has_active_dispatch' => $toRiderInFlight > 0,
+            ]);
+        } catch (\Illuminate\Validation\ValidationException $e) {
+            return response()->json(['success' => false, 'message' => 'Validation failed', 'errors' => $e->errors()], 422);
+        } catch (\Exception $e) {
+            \DB::rollBack();
+            \Log::error('Qurbani handover failed', [
+                'from_rider_id' => $fromRiderId,
+                'error'         => $e->getMessage(),
             ]);
             return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
         }

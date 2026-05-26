@@ -88,6 +88,20 @@ class QurbaniWaAutoSender
     {
         $result = ['ran' => false, 'sent' => 0, 'skipped' => 0, 'failed' => 0, 'reason' => null];
 
+        // May-2026 — heartbeat. Stamp EVERY entry into processNow()
+        // including master-off and locked paths. The diagnose page
+        // surfaces this as "last attempt" so the operator can tell
+        // at a glance whether the scheduler/cron is alive in prod.
+        // Without this heartbeat the only signal that the worker is
+        // running is t_ops_qurbani_wa_log rows — but those only
+        // appear when a real candidate is found, so a quiet day
+        // looks identical to "cron is dead".
+        try {
+            Cache::put('qurbani_wa_last_entry_at', now()->toDateTimeString(), now()->addDays(7));
+        } catch (\Throwable $e) {
+            // Cache failures must NEVER break the worker.
+        }
+
         if (!$this->cfg['master_enabled']) {
             $result['reason'] = 'master_off';
             return $result;
@@ -99,6 +113,15 @@ class QurbaniWaAutoSender
         if (!$gotLock) {
             $result['reason'] = 'locked';
             return $result;
+        }
+
+        // Stamp "actually got the lock" so we can distinguish
+        // "scheduler is firing but always losing the lock race" from
+        // "scheduler not running at all".
+        try {
+            Cache::put('qurbani_wa_last_tick_at', now()->toDateTimeString(), now()->addDays(7));
+        } catch (\Throwable $e) {
+            // ignore
         }
 
         $cap = $maxSends ?: max(1, (int) $this->cfg['send_max_per_minute']);
@@ -164,6 +187,18 @@ class QurbaniWaAutoSender
                     $out['skipped']++;
                     continue;
                 }
+                // Defence-in-depth — see hasReachedHardCap docstring.
+                if ($this->hasReachedHardCap($li->line_item_id, 'slaughtered')) {
+                    $this->logRow($li, 'slaughtered', $template, null, 'skipped', 'hard_cap_reached', null);
+                    Log::warning('QurbaniWaAutoSender: hard send cap reached', [
+                        'line_item_id' => $li->line_item_id,
+                        'trigger'      => 'slaughtered',
+                        'cap'          => self::HARD_SEND_CAP,
+                        'note'         => 'No further attempts will be made. DELETE log rows for this line item to reset.',
+                    ]);
+                    $out['skipped']++;
+                    continue;
+                }
                 $phone = $this->resolveCustomerPhone($li);
                 if ($phone === null) {
                     $this->logRow($li, 'slaughtered', $template, null, 'skipped', 'no_phone', null);
@@ -203,6 +238,30 @@ class QurbaniWaAutoSender
         $startCutoff = now()->subHours(6)->toDateTimeString();
         $eligibleBefore = now()->subMinutes($delayMin)->toDateTimeString();
 
+        // May-2026 — DEDUPE IS ALL-TIME, NO EXCEPTIONS.
+        // Previously this method had a "test mode" relaxation that
+        // restricted the dedupe whereNotExists to the last 2 minutes
+        // when qurbani_wa_test_phone was set. The intent was to make
+        // re-testing the same line item easy in dev, but the side
+        // effect in production (where the operator uses test_phone
+        // as a "redirect to my number" safety mechanism rather than
+        // a re-test toggle) was that EVERY slaughtered line item
+        // got re-messaged every 2-15 minutes for 6 hours after the
+        // slaughter timestamp. The operator received the same
+        // 'qurbani_start' template repeatedly, traced in prod logs
+        // around 2026-05-25 21:58 → 22:42.
+        //
+        // The fix: test_phone now ONLY redirects the phone, never
+        // relaxes dedupe. For intentional re-tests, use:
+        //   1. Performance screen → row action → 🔪 Slaughter button
+        //      (which has a force=true flag to bypass dedupe ONCE
+        //       after a confirmation dialog), OR
+        //   2. Manual SQL: DELETE FROM t_ops_qurbani_wa_log
+        //      WHERE line_item_id = ? AND trigger_event = 'slaughtered'
+        //
+        // After this fix is deployed, in-flight spam stops
+        // immediately because each spammed line item has a
+        // 'sent' log row that now blocks all subsequent ticks.
         return DB::table('t_crm_prod_order_line_item as li')
             ->join('t_crm_prod_order as o', 'o.id', '=', 'li.order_id')
             ->leftJoin('t_crm_customer as c', 'c.id', '=', 'o.customer_id')
@@ -291,6 +350,16 @@ class QurbaniWaAutoSender
         foreach ($candidates as $li) {
             try {
                 if ($this->isAlreadySent($li->line_item_id, 'ofd')) {
+                    $out['skipped']++;
+                    continue;
+                }
+                if ($this->hasReachedHardCap($li->line_item_id, 'ofd')) {
+                    $this->logRow($li, 'ofd', '(capped)', null, 'skipped', 'hard_cap_reached', null);
+                    Log::warning('QurbaniWaAutoSender: hard send cap reached', [
+                        'line_item_id' => $li->line_item_id,
+                        'trigger'      => 'ofd',
+                        'cap'          => self::HARD_SEND_CAP,
+                    ]);
                     $out['skipped']++;
                     continue;
                 }
@@ -388,6 +457,14 @@ class QurbaniWaAutoSender
         // sets up day-2 routes the previous evening). Older rows are
         // ignored to prevent retroactive spam when the feature is
         // toggled on after the fact.
+        //
+        // May-2026 — DEDUPE IS ALL-TIME, NO EXCEPTIONS. Same fix as
+        // fetchSlaughterCandidates (see the long comment block there
+        // for the root-cause analysis of the 21:58–22:42 prod spam
+        // and why test_phone must NOT relax dedupe). For intentional
+        // re-tests, use the Performance screen's row action 🛵 OFD
+        // button (which has a force flag), or DELETE rows from
+        // t_ops_qurbani_wa_log manually.
         return DB::table('t_crm_prod_order_line_item as li')
             ->join('t_crm_prod_order as o', 'o.id', '=', 'li.order_id')
             ->leftJoin('t_crm_customer as c', 'c.id', '=', 'o.customer_id')
@@ -720,15 +797,282 @@ class QurbaniWaAutoSender
         return $out;
     }
 
+    // ─── One-shot send (May-2026, CS Manager actions) ────────────
+
+    /**
+     * Send the SLAUGHTER template for a single line item NOW.
+     *
+     * Used by the Qurbani Performance screen's "🔪 Send" quick-action
+     * button so the CS manager can manually trigger the message
+     * without waiting for the worker tick. Useful when:
+     *   - The auto worker is paused (master_off was on at slaughter
+     *     time, then turned on later — the candidate is now outside
+     *     the lookback window so processNow() won't catch it).
+     *   - A previous attempt failed (Meta API blip, missing phone
+     *     fixed since) and the manager wants to retry without
+     *     waiting for the next dispatch.
+     *
+     * Gates enforced (same as the auto worker — explicit, no surprises):
+     *   - Master switch must be ON (master_off → returns error)
+     *   - Slaughter trigger must be enabled
+     *   - Slaughter template must be configured
+     *   - Line item must have qurbani_slaughtered_at set
+     *   - If `force=false` (default): respects the same already-sent
+     *     dedupe as the auto worker. Force=true bypasses ONLY the
+     *     dedupe — every other gate still applies. Phone resolution
+     *     still falls back to test_phone in test mode.
+     *
+     * Returns the same shape as processNow() entries with one extra
+     * field: `wa_log_id` — the t_ops_qurbani_wa_log row id we wrote,
+     * so the UI can correlate the result back to a specific log entry.
+     */
+    public function sendSlaughterForLineItem(int $lineItemId, bool $force = false): array
+    {
+        if (!$this->cfg['master_enabled']) {
+            return ['ok' => false, 'reason' => 'master_off', 'message' => 'Auto WhatsApp master switch is OFF.'];
+        }
+        if (!$this->cfg['slaughter_enabled']) {
+            return ['ok' => false, 'reason' => 'slaughter_disabled', 'message' => 'Slaughter trigger is disabled in settings.'];
+        }
+        $template = trim((string) $this->cfg['slaughter_template']);
+        if ($template === '') {
+            return ['ok' => false, 'reason' => 'template_missing', 'message' => 'No slaughter template configured.'];
+        }
+
+        $li = $this->fetchLineItemForSend($lineItemId);
+        if (!$li) {
+            return ['ok' => false, 'reason' => 'not_found', 'message' => 'Line item not found.'];
+        }
+        if (empty($li->qurbani_slaughtered_at)) {
+            return ['ok' => false, 'reason' => 'not_slaughtered', 'message' => 'Line item has no qurbani_slaughtered_at — mark it slaughtered first.'];
+        }
+
+        if (!$force && $this->isAlreadySent($lineItemId, 'slaughtered')) {
+            return ['ok' => false, 'reason' => 'already_sent', 'message' => 'Slaughter message already sent. Use Force to override.'];
+        }
+        // Hard cap protects even force=true. If the operator hammered
+        // force 10 times the only recourse is DELETE from the log table.
+        if ($this->hasReachedHardCap($lineItemId, 'slaughtered')) {
+            return [
+                'ok' => false,
+                'reason' => 'hard_cap_reached',
+                'message' => 'This line item has hit the lifetime send cap of ' . self::HARD_SEND_CAP . ' attempts for the slaughter trigger. To re-test, manually DELETE rows from t_ops_qurbani_wa_log WHERE line_item_id = ' . $lineItemId . " AND trigger_event = 'slaughtered'.",
+            ];
+        }
+
+        $phone = $this->resolveCustomerPhone($li);
+        if ($phone === null) {
+            $this->logRow($li, 'slaughtered', $template, null, 'skipped', 'no_phone', null);
+            return ['ok' => false, 'reason' => 'no_phone', 'message' => 'No customer phone on file (and no test_phone configured).'];
+        }
+        [$sendTo, $loggedPhone] = $this->resolveSendTarget($phone);
+
+        $params = [$this->customerFirstName($li), $this->orderNumber($li)];
+        $logCtx = "Qurbani slaughtered (manual): {$this->orderNumber($li)}";
+        $sent = $this->sendTemplate($sendTo, $template, $params, $logCtx);
+
+        if ($sent['ok']) {
+            $this->logRow($li, 'slaughtered', $template, $loggedPhone, 'sent', null, null,
+                $sent['wa_message_id'] ?? null, $sent['conversation_id'] ?? null);
+            return ['ok' => true, 'reason' => 'sent', 'message' => 'Slaughter message sent.', 'phone' => $sendTo];
+        }
+        $this->logRow($li, 'slaughtered', $template, $loggedPhone, 'failed', $sent['error'] ?? 'send_failed', null);
+        return ['ok' => false, 'reason' => 'send_failed', 'message' => 'Send failed: ' . ($sent['error'] ?? 'unknown'), 'phone' => $sendTo];
+    }
+
+    /**
+     * Send the OFD template for a single line item NOW. Mirrors
+     * sendSlaughterForLineItem; differs only in which template lane
+     * runs (delivery vs self-collection) and the parameter shape.
+     *
+     * Lane selection (same as auto worker):
+     *   - delivery_type contains self/collect/pickup → self-collection
+     *     template, 2 params (name, order#).
+     *   - otherwise → delivery template, 3 params with ETA range
+     *     formatted via formatTenMinRange(), or the booking slot
+     *     string when no Google ETA is available (missing-coords case).
+     *
+     * Force bypasses dedupe ONLY. master_off / template_missing /
+     * no_phone still block the send. ETA-window gate is NOT enforced
+     * here — the whole point of this method is to override the gate
+     * when the manager has explicit reason to fire early.
+     */
+    public function sendOfdForLineItem(int $lineItemId, bool $force = false): array
+    {
+        if (!$this->cfg['master_enabled']) {
+            return ['ok' => false, 'reason' => 'master_off', 'message' => 'Auto WhatsApp master switch is OFF.'];
+        }
+        if (!$this->cfg['ofd_enabled']) {
+            return ['ok' => false, 'reason' => 'ofd_disabled', 'message' => 'OFD trigger is disabled in settings.'];
+        }
+        $li = $this->fetchLineItemForSend($lineItemId);
+        if (!$li) {
+            return ['ok' => false, 'reason' => 'not_found', 'message' => 'Line item not found.'];
+        }
+
+        $isSelfCollection = $this->isSelfCollection($li->qurbani_delivery_type);
+        $template = $isSelfCollection
+            ? trim((string) $this->cfg['ofd_self_collection_template'])
+            : trim((string) $this->cfg['ofd_template']);
+        if ($template === '') {
+            return ['ok' => false, 'reason' => 'template_missing',
+                'message' => $isSelfCollection ? 'Self-collection template not configured.' : 'Delivery template not configured.'];
+        }
+
+        if (!$force && $this->isAlreadySent($lineItemId, 'ofd')) {
+            return ['ok' => false, 'reason' => 'already_sent', 'message' => 'OFD message already sent. Use Force to override.'];
+        }
+        // Hard cap protects even force=true.
+        if ($this->hasReachedHardCap($lineItemId, 'ofd')) {
+            return [
+                'ok' => false,
+                'reason' => 'hard_cap_reached',
+                'message' => 'This line item has hit the lifetime send cap of ' . self::HARD_SEND_CAP . ' attempts for the OFD trigger. To re-test, manually DELETE rows from t_ops_qurbani_wa_log WHERE line_item_id = ' . $lineItemId . " AND trigger_event = 'ofd'.",
+            ];
+        }
+
+        $etaUsed = null;
+        $params  = null;
+        if ($isSelfCollection) {
+            $params = [$this->customerFirstName($li), $this->orderNumber($li)];
+        } else {
+            $eta = $li->qurbani_estimated_delivery_at ?: null;
+            if ($eta) {
+                $etaCarbon = \Carbon\Carbon::parse($eta);
+                $timeText  = $this->formatTenMinRange($etaCarbon);
+                $etaUsed   = $etaCarbon->toDateTimeString();
+            } else {
+                $timeText = trim((string) ($li->qurbani_slot ?? ''));
+            }
+            $params = [$this->customerFirstName($li), $this->orderNumber($li), $timeText];
+        }
+
+        $phone = $this->resolveCustomerPhone($li);
+        if ($phone === null) {
+            $this->logRow($li, 'ofd', $template, null, 'skipped', 'no_phone', $etaUsed);
+            return ['ok' => false, 'reason' => 'no_phone', 'message' => 'No customer phone on file (and no test_phone configured).'];
+        }
+        [$sendTo, $loggedPhone] = $this->resolveSendTarget($phone);
+
+        $logCtx = "Qurbani " . ($isSelfCollection ? 'collect' : 'OFD') . " (manual): " . $this->orderNumber($li);
+        $sent = $this->sendTemplate($sendTo, $template, $params, $logCtx);
+
+        if ($sent['ok']) {
+            $this->logRow($li, 'ofd', $template, $loggedPhone, 'sent', null, $etaUsed,
+                $sent['wa_message_id'] ?? null, $sent['conversation_id'] ?? null);
+            return ['ok' => true, 'reason' => 'sent', 'message' => 'OFD message sent.', 'phone' => $sendTo];
+        }
+        $this->logRow($li, 'ofd', $template, $loggedPhone, 'failed', $sent['error'] ?? 'send_failed', $etaUsed);
+        return ['ok' => false, 'reason' => 'send_failed', 'message' => 'Send failed: ' . ($sent['error'] ?? 'unknown'), 'phone' => $sendTo];
+    }
+
+    /**
+     * Pull a single line item with the same shape the batch fetch
+     * uses (joined order + customer columns). Keeps the manual-send
+     * methods drop-in compatible with the existing helper functions
+     * (customerFirstName, resolveCustomerPhone, orderNumber, etc.)
+     * which all expect that joined shape.
+     */
+    private function fetchLineItemForSend(int $lineItemId)
+    {
+        return DB::table('t_crm_prod_order_line_item as li')
+            ->join('t_crm_prod_order as o', 'o.id', '=', 'li.order_id')
+            ->leftJoin('t_crm_customer as c', 'c.id', '=', 'o.customer_id')
+            ->where('li.id', $lineItemId)
+            ->select(
+                'li.id as line_item_id',
+                'li.order_id',
+                'li.qurbani_slaughtered_at',
+                'li.qurbani_estimated_delivery_at',
+                'li.qurbani_slot',
+                'li.qurbani_delivery_type',
+                'li.qurbani_dispatched_at',
+                'o.order_number',
+                'o.customer_id',
+                'o.address_first_name',
+                'o.address_last_name',
+                'o.address_phone',
+                'c.first_name as customer_first_name',
+                'c.last_name as customer_last_name',
+                'c.phone as customer_phone'
+            )
+            ->first();
+    }
+
     // ─── Helpers ──────────────────────────────────────────────────
+
+    /**
+     * Hard lifetime cap: regardless of status (sent/failed/skipped) or
+     * mode (test/production), no single (line_item_id, trigger_event)
+     * combination may have more than HARD_SEND_CAP attempts written
+     * to t_ops_qurbani_wa_log. This is defence-in-depth — it ONLY
+     * kicks in if every other dedupe layer fails (a bug, race
+     * condition, operator hammering the force button, log rows
+     * deleted out from under us, etc).
+     *
+     * Why 10? Normal flow writes 1 row (sent). Even a pathological
+     * "send fails, retry, succeeds, force-resend twice" flow tops out
+     * around 5. 10 leaves headroom for legitimate manual recovery
+     * while making spam mathematically impossible.
+     *
+     * If a future legitimate use-case ever needs >10 attempts, the
+     * operator deletes log rows for that line item — same escape
+     * hatch as a force re-test.
+     */
+    private const HARD_SEND_CAP = 10;
+
+    private function hasReachedHardCap(int $lineItemId, string $trigger): bool
+    {
+        return DB::table('t_ops_qurbani_wa_log')
+            ->where('line_item_id', $lineItemId)
+            ->where('trigger_event', $trigger)
+            ->count() >= self::HARD_SEND_CAP;
+    }
 
     private function isAlreadySent(int $lineItemId, string $trigger): bool
     {
+        // ALL-TIME dedupe — once a customer has been messaged for a
+        // given trigger on a given line item, that's it. No retries,
+        // no relaxation, regardless of whether test_phone is set.
+        //
+        // May-2026 root cause: prior implementation had a 2-min
+        // "test mode" relaxation here (and in the two SQL fetch
+        // gates). It was meant to enable easy re-testing of a
+        // line item in dev, but in production with test_phone set
+        // as a redirect-safety mechanism, it caused the same
+        // 'qurbani_start' template to fire every ~2 min for 6 hours
+        // after slaughter. See the long comment in
+        // fetchSlaughterCandidates() for the full timeline.
+        //
+        // For intentional re-tests:
+        //   1. Performance screen → row action 🔪/🛵 buttons with
+        //      force=true (already supported via sendSlaughterForLineItem
+        //      and sendOfdForLineItem below), OR
+        //   2. DELETE FROM t_ops_qurbani_wa_log
+        //      WHERE line_item_id = ? AND trigger_event = ?
         return DB::table('t_ops_qurbani_wa_log')
             ->where('line_item_id', $lineItemId)
             ->where('trigger_event', $trigger)
             ->where('status', 'sent')
             ->exists();
+    }
+
+    /** True when a developer/operator has set a test phone — the worker
+     *  treats this as "redirect-to-me-for-safety" mode. The ONLY effect
+     *  is that outbound messages are sent to the test phone instead of
+     *  the customer's phone (resolveCustomerPhone + resolveSendTarget).
+     *  Dedupe, rate limits, and time gates are NOT affected — the worker
+     *  is otherwise identical to production behaviour, so what you see
+     *  on the test phone is a faithful preview of what a customer would
+     *  see.
+     *
+     *  History: prior to May-2026 this flag also relaxed dedupe to a
+     *  2-minute rolling window. That feature was removed because in
+     *  production it caused every slaughtered line item to be
+     *  re-messaged every ~2 minutes for 6 hours. See isAlreadySent. */
+    private function isTestMode(): bool
+    {
+        return trim((string) ($this->cfg['test_phone'] ?? '')) !== '';
     }
 
     private function resolveCustomerPhone($li): ?string
@@ -743,11 +1087,31 @@ class QurbaniWaAutoSender
             $formatted = $this->whatsapp->formatPhone($clean);
             if ($formatted !== '') return $formatted;
         }
+        // May-2026 — TEST MODE fallback: when the test phone is
+        // configured and the order/customer record has no phone on
+        // file, return the test phone itself so the operator can
+        // still verify the flow on half-populated dev orders.
+        // Audit log records 'no_customer_phone' as the resolved
+        // identity so we know it wasn't a real customer number.
+        if ($this->isTestMode()) {
+            $test = $this->whatsapp->formatPhone(trim((string) $this->cfg['test_phone']));
+            if ($test !== '') {
+                return 'TEST:' . $test;
+            }
+        }
         return null;
     }
 
     private function resolveSendTarget(string $customerPhone): array
     {
+        // Special marker emitted by resolveCustomerPhone() when the
+        // customer record had no phone but test mode is on — strip
+        // the marker, send to the test phone, and log the surrogate
+        // so the audit trail makes the situation obvious.
+        if (str_starts_with($customerPhone, 'TEST:')) {
+            $sendTo = substr($customerPhone, 5);
+            return [$sendTo, 'no_customer_phone'];
+        }
         $test = trim((string) $this->cfg['test_phone']);
         if ($test !== '') {
             return [$this->whatsapp->formatPhone($test), $customerPhone];
@@ -797,14 +1161,73 @@ class QurbaniWaAutoSender
     private function sendTemplate(string $to, string $templateName, array $bodyParams, string $logContent): array
     {
         try {
-            // Look up template language; default 'en'.
-            $tplRow = DB::table('t_wa_templates')->where('name', $templateName)->where('status', 'approved')->first(['language']);
-            $lang = $tplRow ? (string) ($tplRow->language ?? 'en') : 'en';
+            // May-2026 — try EVERY approved language for this template
+            // (in priority order), then fall back to ['en', 'en_US',
+            // 'ur', 'en_GB'] if t_wa_templates doesn't have the
+            // template at all. This survives the common case where
+            // Meta approves a template under 'en_US' but t_wa_templates
+            // isn't synced — without this we'd fail forever with
+            // "template name (X) does not exist in en". Cache the
+            // first language that works for 1 hour so we don't retry
+            // dead langs on every cron tick.
+            $cacheKey = 'qurbani_wa_lang:' . $templateName;
+            $cachedLang = \Cache::get($cacheKey);
 
-            $resp = $this->whatsapp->sendTemplateMessage($to, $templateName, $lang ?: 'en', $bodyParams);
-            if (!($resp['success'] ?? false)) {
-                return ['ok' => false, 'error' => substr((string) ($resp['error'] ?? 'send_failed'), 0, 240)];
+            $approvedLangs = DB::table('t_wa_templates')
+                ->where('name', $templateName)
+                ->where('status', 'approved')
+                ->pluck('language')
+                ->map(fn($l) => (string) $l)
+                ->filter()
+                ->values()
+                ->all();
+            $fallbackLangs = ['en', 'en_US', 'ur', 'en_GB'];
+            $langs = array_values(array_unique(array_filter(array_merge(
+                $cachedLang ? [$cachedLang] : [],
+                $approvedLangs,
+                $fallbackLangs
+            ))));
+            if (empty($langs)) {
+                $langs = ['en'];
             }
+
+            if ($this->isTestMode()) {
+                Log::info('QurbaniWaAutoSender: 🧪 test-mode send', [
+                    'template' => $templateName,
+                    'lang_try' => $langs,
+                    'to'       => $to,
+                    'context'  => $logContent,
+                ]);
+            }
+
+            $resp = ['success' => false, 'error' => 'no_attempt'];
+            $lastDoesNotExist = null;
+            foreach ($langs as $lang) {
+                $resp = $this->whatsapp->sendTemplateMessage($to, $templateName, $lang, $bodyParams);
+                if ($resp['success'] ?? false) {
+                    // Remember the language that worked so the next
+                    // 100 cron ticks skip the lookup + failing langs.
+                    \Cache::put($cacheKey, $lang, now()->addHour());
+                    break;
+                }
+                $errMsg = (string) ($resp['error'] ?? '');
+                $isLangErr = stripos($errMsg, 'does not exist') !== false || stripos($errMsg, '132001') !== false;
+                if ($isLangErr) {
+                    $lastDoesNotExist = $errMsg;
+                    continue; // try the next language
+                }
+                // A non-language error (auth, recipient block, rate
+                // limit, etc.) — no point in trying other langs.
+                break;
+            }
+
+            if (!($resp['success'] ?? false)) {
+                $errOut = $lastDoesNotExist
+                    ? ('template_not_found_in_any_lang: ' . $lastDoesNotExist . ' · tried=' . implode(',', $langs))
+                    : ((string) ($resp['error'] ?? 'send_failed'));
+                return ['ok' => false, 'error' => substr($errOut, 0, 240)];
+            }
+            $lang = \Cache::get($cacheKey, $langs[0]);
 
             $conv = $this->whatsapp->findOrCreateConversation($to);
             $msg  = $this->whatsapp->saveOutboundMessage(

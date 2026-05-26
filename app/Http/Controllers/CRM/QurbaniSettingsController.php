@@ -727,6 +727,474 @@ class QurbaniSettingsController extends Controller
         ];
     }
 
+    /**
+     * POST /qurbani-settings/api/wa-auto/diagnose
+     *
+     * May-2026 — UI wrapper around the auto-WhatsApp worker so an
+     * admin can answer "why isn't my slaughter / OFD message firing?"
+     * without SSH or grepping laravel.log. Returns a structured
+     * diagnostic snapshot — no message is sent, no state changes.
+     *
+     * Output sections:
+     *   config       — current qurbani_wa_* values (master/slaughter/ofd
+     *                  enabled flags, template names, delay/window
+     *                  minutes, test phone). The most common cause of
+     *                  "no message sent" is one of these flags being
+     *                  off — flagged in `blockers[]` if so.
+     *   templates    — whether the configured template names exist in
+     *                  t_wa_templates AND in which language(s) Meta
+     *                  has approved them. Mismatched language is the
+     *                  next most common cause (the qurbani_performed
+     *                  vs qurbani_start mixup from the May-2026 logs).
+     *   worker       — last scheduler tick timestamp + whether the
+     *                  Cache lock is currently held.
+     *   slaughter    — eligible/recent line items + per-row diagnosis:
+     *                  ready / waiting for delay / already sent / no
+     *                  phone / dedupe-blocked. So an operator can
+     *                  point at one Mudasser-style test order and see
+     *                  exactly why it's not firing.
+     *   ofd          — same shape as `slaughter` but for the dispatch
+     *                  trigger (qurbani_dispatched_at).
+     *   recent_logs  — last 20 rows of t_ops_qurbani_wa_log for the
+     *                  current day so the operator can see what the
+     *                  worker DID send + why anything was skipped.
+     *
+     * Stateless — does not run the worker, does not write any row.
+     */
+    public function diagnoseWaAuto(Request $request)
+    {
+        try {
+            $cfg = $this->loadWaAutoConfig();
+
+            // ── Section 1: blockers (high-signal config issues) ──────
+            $blockers = [];
+            if (!$cfg['master_enabled']) {
+                $blockers[] = 'Master switch is OFF (qurbani_wa_auto_enabled). Nothing will fire.';
+            }
+            if ($cfg['slaughter_enabled'] && trim((string) $cfg['slaughter_template']) === '') {
+                $blockers[] = 'Slaughter trigger is ON but no template is selected.';
+            }
+            if ($cfg['ofd_enabled'] && trim((string) $cfg['ofd_template']) === '' && trim((string) $cfg['ofd_self_collection_template']) === '') {
+                $blockers[] = 'OFD trigger is ON but neither delivery nor self-collection template is selected.';
+            }
+
+            // ── Section 2: template existence + approved language(s) ─
+            // The May-2026 "(#132001) Template name does not exist in
+            // the translation" error comes from sendTemplateMessage()
+            // being called with a language code Meta doesn't have
+            // approved for the template. Our worker tries every
+            // approved language + 4 fallback codes — but if NONE of
+            // those work the operator needs to know which language to
+            // approve in Meta, or rename their template to match. So
+            // we surface the exact rows from t_wa_templates here.
+            $templateNames = array_values(array_filter(array_unique([
+                trim((string) $cfg['slaughter_template']),
+                trim((string) $cfg['ofd_template']),
+                trim((string) $cfg['ofd_self_collection_template']),
+            ])));
+            $templates = [];
+            if (!empty($templateNames)) {
+                $rows = DB::table('t_wa_templates')
+                    ->whereIn('name', $templateNames)
+                    ->select('name', 'language', 'status', 'category')
+                    ->get();
+                $byName = $rows->groupBy('name');
+                foreach ($templateNames as $tn) {
+                    $hits = $byName[$tn] ?? collect();
+                    $approved = $hits->where('status', 'approved')->pluck('language')->values()->all();
+                    $other    = $hits->where('status', '!=', 'approved')
+                        ->map(fn($r) => $r->language . '(' . $r->status . ')')
+                        ->values()->all();
+                    $templates[] = [
+                        'name'              => $tn,
+                        'approved_langs'    => $approved,
+                        'other_status'      => $other,
+                        'exists_in_db'      => $hits->isNotEmpty(),
+                        'cached_lang'       => \Cache::get('qurbani_wa_lang:' . $tn),
+                    ];
+                    if ($hits->isEmpty()) {
+                        $blockers[] = "Template '{$tn}' is not in t_wa_templates — worker will try fallback langs (en, en_US, ur, en_GB) but Meta will reject if none are approved.";
+                    } elseif (empty($approved)) {
+                        $blockers[] = "Template '{$tn}' exists but no language is approved in Meta. " . ($other ? 'Statuses: ' . implode(', ', $other) : '');
+                    }
+                }
+            }
+
+            // ── Section 3: worker / lock state ───────────────────────
+            $lockHeld     = \Cache::has('qurbani_wa_auto_lock');
+            $lockTs       = $lockHeld ? \Cache::get('qurbani_wa_auto_lock') : null;
+            // May-2026 — heartbeat from processNow().
+            //   last_entry_at — stamps on EVERY call (including
+            //     master-off / locked). Tells you ANY of the three
+            //     trigger sources has fired recently:
+            //       (a) Laravel scheduler cron (everyMinute)
+            //       (b) manager polling the Qurbani planner
+            //       (c) rider GPS heartbeat (every 5 min per checked-
+            //           in rider, May-2026 piggyback)
+            //   last_tick_at — stamps only when the lock was acquired
+            //     i.e. the worker actually ran end-to-end. Lets you
+            //     distinguish "lock contention" from "worker dead".
+            //
+            // Stale check: warn only if there's been NO entry in the
+            // last 8 minutes. The slowest trigger source is the rider
+            // heartbeat (5 min), so 8 min = "even the slowest source
+            // is down". For 2-min slaughter delays this is fine; for
+            // sub-minute precision the cron is still preferred.
+            $lastEntry    = \Cache::get('qurbani_wa_last_entry_at');
+            $lastTick     = \Cache::get('qurbani_wa_last_tick_at');
+            $entryAgoMin  = null;
+            if ($lastEntry) {
+                try {
+                    $entryAgoMin = (int) \Carbon\Carbon::parse($lastEntry)->diffInMinutes(now());
+                } catch (\Throwable $e) {}
+            }
+            $tickAgoMin = null;
+            if ($lastTick) {
+                try {
+                    $tickAgoMin = (int) \Carbon\Carbon::parse($lastTick)->diffInMinutes(now());
+                } catch (\Throwable $e) {}
+            }
+            $workerIsStale = $entryAgoMin === null || $entryAgoMin > 8;
+            if ($workerIsStale) {
+                $blockers[] = $lastEntry
+                    ? "Worker hasn't been triggered in {$entryAgoMin} min. Trigger sources: (a) scheduler cron, (b) manager-planner poll, (c) rider GPS heartbeat. If no rider is checked in AND no manager is polling AND no cron, the worker won't fire. Press Send Now."
+                    : 'Worker has never been triggered on this host. Either set up the scheduler cron `* * * * * cd /path && php artisan schedule:run`, or rely on the rider heartbeat / manager-planner triggers (active during Qurbani hours), or use Send Now manually.';
+            }
+
+            // ── Section 4: slaughter candidates (per-row diagnosis) ──
+            // Pull every slaughtered-today line item, then for each
+            // explain whether the worker would fire on it RIGHT NOW.
+            // This is the answer to "I marked it slaughtered, why no
+            // message?" — far cheaper than guessing from logs.
+            $slaughter = $this->buildSlaughterDiagnosis($cfg);
+
+            // ── Section 5: OFD candidates ────────────────────────────
+            $ofd = $this->buildOfdDiagnosis($cfg);
+
+            // ── Section 6: recent log rows ───────────────────────────
+            $logsTableExists = \Illuminate\Support\Facades\Schema::hasTable('t_ops_qurbani_wa_log');
+            $recentLogs = [];
+            if ($logsTableExists) {
+                $recentLogs = DB::table('t_ops_qurbani_wa_log as l')
+                    ->leftJoin('t_crm_prod_order as o', 'o.id', '=', 'l.order_id')
+                    ->select(
+                        'l.id', 'l.line_item_id', 'l.order_id', 'l.trigger_event',
+                        'l.template_name', 'l.wa_phone', 'l.status', 'l.skip_reason',
+                        'l.delivery_time_used', 'l.created_at',
+                        'o.order_number'
+                    )
+                    ->orderByDesc('l.id')
+                    ->limit(20)
+                    ->get()
+                    ->map(fn($r) => (array) $r)
+                    ->all();
+            }
+
+            return response()->json([
+                'success'    => true,
+                'now'        => now()->toDateTimeString(),
+                'tz'         => config('app.timezone'),
+                'blockers'   => $blockers,
+                'config'     => $cfg,
+                'templates'  => $templates,
+                'worker'     => [
+                    'lock_held'      => $lockHeld,
+                    'lock_ts'        => $lockTs,
+                    'last_entry_at'  => $lastEntry,
+                    'last_entry_ago' => $entryAgoMin,
+                    'last_tick_at'   => $lastTick,
+                    'last_tick_ago'  => $tickAgoMin,
+                    'note'           => 'Triggers: (1) scheduler cron everyMinute, (2) manager planner polling, (3) rider GPS heartbeat every 5 min/rider. Any of the three keeps the worker alive — combined with the 55s lock, no spam.',
+                ],
+                'slaughter'   => $slaughter,
+                'ofd'         => $ofd,
+                'recent_logs' => $recentLogs,
+            ]);
+        } catch (\Throwable $e) {
+            \Illuminate\Support\Facades\Log::error('diagnoseWaAuto failed', ['err' => $e->getMessage(), 'trace' => $e->getTraceAsString()]);
+            return response()->json([
+                'success' => false,
+                'message' => 'Diagnose failed: ' . $e->getMessage(),
+            ], 500);
+        }
+    }
+
+    /**
+     * Per-slaughter-candidate diagnosis. Mirrors the eligibility
+     * logic in QurbaniWaAutoSender::fetchSlaughterCandidates so the
+     * output is faithful to what the worker actually checks.
+     */
+    private function buildSlaughterDiagnosis(array $cfg): array
+    {
+        $delayMin       = max(0, (int) $cfg['slaughter_delay_minutes']);
+        $startCutoff    = now()->subHours(12)->toDateTimeString(); // wider lookback than worker so we surface "missed window" too
+        $isTest         = trim((string) $cfg['test_phone']) !== '';
+        // May-2026 — dedupe is ALL-TIME, matches the fix in
+        // QurbaniWaAutoSender::isAlreadySent. Previously this diagnosis
+        // applied a 2-min dedupe relaxation when test_phone was set,
+        // which masked the same bug that caused the production spam
+        // (the worker re-sending every ~2 min for 6 hours).
+
+        $rows = DB::table('t_crm_prod_order_line_item as li')
+            ->join('t_crm_prod_order as o', 'o.id', '=', 'li.order_id')
+            ->leftJoin('t_crm_customer as c', 'c.id', '=', 'o.customer_id')
+            ->whereNotNull('li.qurbani_slaughtered_at')
+            ->where('li.qurbani_slaughtered_at', '>=', $startCutoff)
+            ->select(
+                'li.id as line_item_id',
+                'li.qurbani_slaughtered_at',
+                'li.qurbani_slot',
+                'li.qurbani_delivery_type',
+                'o.order_number',
+                'o.address_phone',
+                'c.phone as customer_phone',
+                'o.address_first_name',
+                'c.first_name as customer_first_name'
+            )
+            ->orderByDesc('li.qurbani_slaughtered_at')
+            ->limit(30)
+            ->get();
+
+        $diagnosed = [];
+        foreach ($rows as $r) {
+            $slaughteredAt = \Carbon\Carbon::parse($r->qurbani_slaughtered_at);
+            $minutesSince  = (int) $slaughteredAt->diffInMinutes(now());
+            $eligibleAt    = $slaughteredAt->copy()->addMinutes($delayMin);
+
+            // Already-sent gate — mirrors QurbaniWaAutoSender::isAlreadySent
+            // (all-time dedupe, no test-mode relaxation).
+            $alreadySent = DB::table('t_ops_qurbani_wa_log')
+                ->where('line_item_id', $r->line_item_id)
+                ->where('trigger_event', 'slaughtered')
+                ->where('status', 'sent')
+                ->exists();
+            $latestLog   = DB::table('t_ops_qurbani_wa_log')
+                ->where('line_item_id', $r->line_item_id)
+                ->where('trigger_event', 'slaughtered')
+                ->orderByDesc('id')
+                ->select('status', 'skip_reason', 'wa_phone', 'created_at')
+                ->first();
+
+            $hasPhone = trim((string) ($r->address_phone ?? '')) !== ''
+                     || trim((string) ($r->customer_phone ?? '')) !== '';
+            $effectivePhone = $hasPhone
+                ? ($r->address_phone ?: $r->customer_phone)
+                : ($isTest ? '(no_customer_phone → test_phone)' : null);
+
+            if ($alreadySent) {
+                $verdict = 'ALREADY_SENT';
+                $reason = 'A sent log row exists for this line item — customer was already messaged. To re-test, use the Performance screen 🔪 button with force, or DELETE the log row.';
+            } elseif (!$cfg['master_enabled']) {
+                $verdict = 'BLOCKED'; $reason = 'Master switch is OFF.';
+            } elseif (!$cfg['slaughter_enabled']) {
+                $verdict = 'BLOCKED'; $reason = 'Slaughter trigger is OFF.';
+            } elseif (trim((string) $cfg['slaughter_template']) === '') {
+                $verdict = 'BLOCKED'; $reason = 'No slaughter template selected.';
+            } elseif ($minutesSince < $delayMin) {
+                $verdict = 'WAITING';
+                $waitMore = $delayMin - $minutesSince;
+                $reason = "Delay not reached yet ({$minutesSince}m/{$delayMin}m). Eligible at " . $eligibleAt->format('H:i:s') . " (in {$waitMore}m).";
+            } elseif ($effectivePhone === null) {
+                $verdict = 'NO_PHONE';
+                $reason = 'No customer/address phone, and test_phone is empty → worker will log skipped:no_phone.';
+            } else {
+                $verdict = 'READY';
+                $reason = "Eligible since " . $eligibleAt->format('H:i:s') . " — next worker tick will fire.";
+            }
+
+            $diagnosed[] = [
+                'line_item_id'          => (int) $r->line_item_id,
+                'order_number'          => (string) ($r->order_number ?? ''),
+                'customer'              => trim(($r->address_first_name ?? '') ?: ($r->customer_first_name ?? '')),
+                'slaughtered_at'        => (string) $r->qurbani_slaughtered_at,
+                'minutes_since'         => $minutesSince,
+                'eligible_at'           => $eligibleAt->toDateTimeString(),
+                'effective_phone'       => (string) ($effectivePhone ?? ''),
+                'verdict'               => $verdict,
+                'reason'                => $reason,
+                'latest_log'            => $latestLog ? (array) $latestLog : null,
+            ];
+        }
+
+        return [
+            'mode'         => $isTest ? 'test' : 'production',
+            'delay_min'    => $delayMin,
+            'lookback_h'   => 12,
+            'candidates'   => $diagnosed,
+        ];
+    }
+
+    /**
+     * Per-OFD-candidate diagnosis. Mirrors fetchOfdCandidates + the
+     * ETA-window gate inside processOfdTrigger.
+     */
+    private function buildOfdDiagnosis(array $cfg): array
+    {
+        $windowMin   = max(0, (int) $cfg['ofd_eta_window_minutes']);
+        $isTest      = trim((string) $cfg['test_phone']) !== '';
+        // May-2026 — dedupe is ALL-TIME, see fetchOfdCandidates fix.
+
+        $rows = DB::table('t_crm_prod_order_line_item as li')
+            ->join('t_crm_prod_order as o', 'o.id', '=', 'li.order_id')
+            ->leftJoin('t_crm_customer as c', 'c.id', '=', 'o.customer_id')
+            ->whereNotNull('li.qurbani_dispatched_at')
+            ->whereNull('li.qurbani_delivered_at')
+            ->where('li.qurbani_dispatched_at', '>=', now()->subHours(24)->toDateTimeString())
+            ->select(
+                'li.id as line_item_id',
+                'li.qurbani_dispatched_at',
+                'li.qurbani_estimated_delivery_at',
+                'li.qurbani_slot',
+                'li.qurbani_delivery_type',
+                'o.order_number',
+                'o.address_phone',
+                'c.phone as customer_phone',
+                'o.address_first_name',
+                'c.first_name as customer_first_name'
+            )
+            ->orderByDesc('li.qurbani_dispatched_at')
+            ->limit(30)
+            ->get();
+
+        $diagnosed = [];
+        foreach ($rows as $r) {
+            $isSelfCollect = false;
+            $dt = strtolower((string) ($r->qurbani_delivery_type ?? ''));
+            if (str_contains($dt, 'self') || str_contains($dt, 'collect') || str_contains($dt, 'pickup') || str_contains($dt, 'pick-up') || str_contains($dt, 'pick up')) {
+                $isSelfCollect = true;
+            }
+
+            $alreadySent = DB::table('t_ops_qurbani_wa_log')
+                ->where('line_item_id', $r->line_item_id)
+                ->where('trigger_event', 'ofd')
+                ->where('status', 'sent')
+                ->exists();
+
+            $template = $isSelfCollect ? $cfg['ofd_self_collection_template'] : $cfg['ofd_template'];
+            $tplMissing = trim((string) $template) === '';
+
+            $etaInfo = null; $minutesUntilEta = null;
+            if (!empty($r->qurbani_estimated_delivery_at)) {
+                $eta = \Carbon\Carbon::parse($r->qurbani_estimated_delivery_at);
+                $minutesUntilEta = -1 * (int) $eta->diffInMinutes(now(), false);
+                $etaInfo = $eta->format('H:i') . " (" . ($minutesUntilEta >= 0 ? "in {$minutesUntilEta}m" : (abs($minutesUntilEta) . "m ago")) . ")";
+            }
+
+            $hasPhone = trim((string) ($r->address_phone ?? '')) !== '' || trim((string) ($r->customer_phone ?? '')) !== '';
+            $effectivePhone = $hasPhone ? ($r->address_phone ?: $r->customer_phone) : ($isTest ? '(no_customer_phone → test_phone)' : null);
+
+            if ($alreadySent) {
+                $verdict = 'ALREADY_SENT';
+                $reason = 'Already sent. Dedupe blocks all resends — use Performance screen 🛵 button with force for re-tests.';
+            } elseif (!$cfg['master_enabled']) {
+                $verdict = 'BLOCKED'; $reason = 'Master switch is OFF.';
+            } elseif (!$cfg['ofd_enabled']) {
+                $verdict = 'BLOCKED'; $reason = 'OFD trigger is OFF.';
+            } elseif ($tplMissing) {
+                $verdict = 'BLOCKED';
+                $reason = $isSelfCollect ? 'Self-collection template not set.' : 'Delivery template not set.';
+            } elseif (!$isSelfCollect && $minutesUntilEta !== null && $minutesUntilEta > $windowMin) {
+                $verdict = 'WAITING';
+                $reason = "ETA is {$minutesUntilEta}m away — outside the {$windowMin}m window. Worker re-evaluates every minute.";
+            } elseif ($effectivePhone === null) {
+                $verdict = 'NO_PHONE'; $reason = 'No phone on file + test_phone empty.';
+            } else {
+                $verdict = 'READY';
+                $reason = $isSelfCollect
+                    ? 'Self-collection — fires immediately on next worker tick.'
+                    : ($minutesUntilEta === null
+                        ? 'No ETA — falls back to slot string, fires immediately.'
+                        : "Within {$windowMin}m window — fires on next tick.");
+            }
+
+            $diagnosed[] = [
+                'line_item_id'    => (int) $r->line_item_id,
+                'order_number'    => (string) ($r->order_number ?? ''),
+                'customer'        => trim(($r->address_first_name ?? '') ?: ($r->customer_first_name ?? '')),
+                'dispatched_at'   => (string) $r->qurbani_dispatched_at,
+                'eta'             => $etaInfo,
+                'delivery_type'   => (string) ($r->qurbani_delivery_type ?? ''),
+                'is_self_collect' => $isSelfCollect,
+                'effective_phone' => (string) ($effectivePhone ?? ''),
+                'verdict'         => $verdict,
+                'reason'          => $reason,
+            ];
+        }
+
+        return [
+            'mode'         => $isTest ? 'test' : 'production',
+            'window_min'   => $windowMin,
+            'candidates'   => $diagnosed,
+        ];
+    }
+
+    /**
+     * POST /qurbani-settings/api/wa-auto/run-now
+     *
+     * May-2026 — UI trigger for the auto-WhatsApp worker so an admin
+     * can fire a tick on demand instead of waiting for the next cron
+     * minute (or for the manager-polling terminating() hook). Useful
+     * in dev where the operator may not have `php artisan
+     * schedule:work` running, and in prod for "I just enabled this,
+     * run it now" workflows.
+     *
+     * Optional body: { release_lock?: bool }  — if true, deletes the
+     *   qurbani_wa_auto_lock cache key before firing so the call
+     *   succeeds even if a previous tick is still mid-process. Use
+     *   carefully — back-to-back releases can cause concurrent sends.
+     *
+     * Returns processNow()'s output verbatim + the matching log rows
+     * created during this tick so the operator can see exactly what
+     * happened. No silent failures: every state (master_off, locked,
+     * sent/skipped/failed counts) is surfaced.
+     */
+    public function runWaAutoNow(Request $request, \App\Services\QurbaniWaAutoSender $sender)
+    {
+        $releaseLock = (bool) $request->input('release_lock', false);
+
+        try {
+            if ($releaseLock) {
+                \Cache::forget('qurbani_wa_auto_lock');
+            }
+
+            $beforeId = (int) (DB::table('t_ops_qurbani_wa_log')->max('id') ?? 0);
+            $result   = $sender->processNow(20);
+            $newRows  = DB::table('t_ops_qurbani_wa_log as l')
+                ->leftJoin('t_crm_prod_order as o', 'o.id', '=', 'l.order_id')
+                ->where('l.id', '>', $beforeId)
+                ->select(
+                    'l.id', 'l.line_item_id', 'l.trigger_event',
+                    'l.template_name', 'l.wa_phone', 'l.status', 'l.skip_reason',
+                    'l.created_at', 'o.order_number'
+                )
+                ->orderBy('l.id')
+                ->get()
+                ->map(fn($r) => (array) $r)
+                ->all();
+
+            \Illuminate\Support\Facades\Log::info('runWaAutoNow: manual tick', [
+                'release_lock' => $releaseLock,
+                'result'       => $result,
+                'new_log_rows' => count($newRows),
+            ]);
+
+            return response()->json([
+                'success'      => true,
+                'result'       => $result,
+                'new_log_rows' => $newRows,
+                'note'         => $result['ran']
+                    ? 'Worker ran. See new_log_rows for what was attempted.'
+                    : 'Worker did not run: ' . ($result['reason'] ?? 'unknown') . '. If "locked", set release_lock and retry.',
+            ]);
+        } catch (\Throwable $e) {
+            \Illuminate\Support\Facades\Log::error('runWaAutoNow failed', ['err' => $e->getMessage()]);
+            return response()->json([
+                'success' => false,
+                'message' => 'Run failed: ' . $e->getMessage(),
+            ], 500);
+        }
+    }
+
     public function reorderOptions(Request $request)
     {
         $validated = $request->validate([

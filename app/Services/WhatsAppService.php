@@ -810,12 +810,14 @@ class WhatsAppService
     {
         $reported = 0;
 
+        $hasReportedAt = \Illuminate\Support\Facades\Schema::hasColumn('t_wa_messages', 'read_reported_at');
+
         $query = MessageModel::where('conversation_id', $conversationId)
             ->where('direction', 'inbound')
             ->whereNotNull('wa_message_id');
 
         // Only consider columns that exist (new install vs. existing upgrade).
-        if (\Illuminate\Support\Facades\Schema::hasColumn('t_wa_messages', 'read_reported_at')) {
+        if ($hasReportedAt) {
             $query->whereNull('read_reported_at');
         } else {
             // Fallback: if column doesn't exist yet, cap lookback to the last
@@ -829,22 +831,68 @@ class WhatsAppService
             return 0;
         }
 
+        // May-2026 — Cache-based dead-wamid sentinel.
+        // EVEN with the read_reported_at column missing (legacy installs
+        // that haven't run the May-2026 migration yet) we need to stop
+        // hammering Meta's API with the same dead wamids every minute.
+        // Strategy: every wamid that gets a 400 "Message ID does not
+        // exist" goes into Cache with a 7-day TTL (Meta's wamid
+        // retention is ~7 days, so after that the situation can't
+        // recover anyway). Subsequent polls short-circuit the API call.
+        //
+        // This complements (does NOT replace) the DB column — once the
+        // migration runs, the whereNull filter culls them server-side
+        // and this Cache check becomes a no-op for stamped messages.
+        $deadKey = fn(string $wamid) => 'wa_dead_wamid:' . md5($wamid);
+
         foreach ($messages as $m) {
+            // Skip wamids we already know are dead (per process-wide
+            // Cache). This is the line that actually fixes the user's
+            // observed loop when the column hasn't been migrated yet.
+            if (\Illuminate\Support\Facades\Cache::has($deadKey($m->wa_message_id))) {
+                continue;
+            }
+
+            // May-2026 — ALWAYS stamp read_reported_at after an attempt,
+            // regardless of API outcome. The old code only stamped on
+            // exception or success — but WhatsAppService::sendRequest()
+            // doesn't throw, it returns ['success' => false, ...].
+            // So a "Message ID does not exist" 400 (common for test
+            // phone wamids from earlier WABA contexts, or messages
+            // >7 days old) silently looped forever: every conversation
+            // open re-tried the same 9 dead wamids, spamming Meta and
+            // filling the error log with (#100) Invalid parameter
+            // messages every minute. Stamping on failure = give up
+            // after one try, which is the correct policy: Meta won't
+            // suddenly accept a wamid it just said doesn't exist.
+            $apiOk = false;
+            $errMsg = null;
             try {
                 $result = $this->markAsRead($m->wa_message_id);
-                if (!empty($result['success'])) {
-                    if (\Illuminate\Support\Facades\Schema::hasColumn('t_wa_messages', 'read_reported_at')) {
-                        MessageModel::where('id', $m->id)->update(['read_reported_at' => now()]);
-                    }
-                    $reported++;
+                $apiOk = !empty($result['success']);
+                if (!$apiOk) {
+                    $errMsg = $result['error'] ?? 'unknown';
                 }
             } catch (\Exception $e) {
-                // Most common: message too old (Meta rejects >7 days).
-                // Still stamp so we don't retry forever.
-                if (\Illuminate\Support\Facades\Schema::hasColumn('t_wa_messages', 'read_reported_at')) {
-                    MessageModel::where('id', $m->id)->update(['read_reported_at' => now()]);
-                }
-                Log::debug('WhatsApp: markAsRead failed', ['wa_message_id' => $m->wa_message_id, 'error' => $e->getMessage()]);
+                $errMsg = $e->getMessage();
+            }
+
+            if ($hasReportedAt) {
+                MessageModel::where('id', $m->id)->update(['read_reported_at' => now()]);
+            }
+
+            if ($apiOk) {
+                $reported++;
+            } else {
+                // Mirror the DB stamp into Cache for 7 days so legacy
+                // installs without the column also stop retrying.
+                \Illuminate\Support\Facades\Cache::put($deadKey($m->wa_message_id), 1, now()->addDays(7));
+                Log::debug('WhatsApp: markAsRead failed (stamped to skip future retries)', [
+                    'wa_message_id' => $m->wa_message_id,
+                    'error'         => $errMsg,
+                    'db_stamped'    => $hasReportedAt,
+                    'cache_stamped' => true,
+                ]);
             }
         }
 

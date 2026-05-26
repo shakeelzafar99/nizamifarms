@@ -286,6 +286,15 @@
             <div class="qrr-legend-row"><span class="qrr-legend-dot" style="background:#3B82F6;"></span> Rider GPS</div>
             <div class="qrr-legend-row"><span class="qrr-legend-dot" style="background:#F59E0B;"></span> Out for Delivery</div>
             <div class="qrr-legend-row"><span class="qrr-legend-dot" style="background:#10B981;opacity:.85;"></span> Delivered (this batch)</div>
+            {{-- May-2026 — Start: indicator mirrors the mobile
+                 dispatch map. Populated by qrrPaintMap() from
+                 d.effective_origin so the manager can see which
+                 point ETAs were planned from (rider GPS when fresh
+                 ≤10 min, warehouse otherwise). --}}
+            <div class="qrr-legend-row" id="qrrMapStartRow" style="display:none;">
+                <span id="qrrMapStartBadge" style="padding:2px 8px;border-radius:4px;color:#fff;font-weight:800;font-size:11px;"></span>
+                <span id="qrrMapStartNote" style="font-size:11px;color:#4B5563;margin-left:6px;"></span>
+            </div>
         </div>
         <div id="qrrMapCanvas"></div>
     </div>
@@ -779,14 +788,22 @@
             });
             _qrrMapMarkers.push(m); bounds.extend(pos); added++;
         }
-        // Rider GPS
+        // Rider GPS — dimmed when the server picked the warehouse as
+        // the effective origin (rider GPS stale > 10 min) so the
+        // manager can see at a glance "the rider's pin isn't being
+        // used as the route start".
         const rg = d.rider_gps;
+        const eo = d.effective_origin || null;
+        const startIsWarehouseWeb = eo && eo.source === 'qurbani_base';
+        const startIsRiderGpsWeb  = eo && eo.source === 'rider_gps';
+        const riderGpsStaleUnused = rg && rg.lat && rg.lng && !startIsRiderGpsWeb;
         if (rg && rg.lat && rg.lng) {
             const pos = { lat: rg.lat, lng: rg.lng };
             const m = new google.maps.Marker({
                 position: pos, map: _qrrMap,
-                title: 'Rider — ' + (rg.status === 'live' ? 'Live' : rg.status === 'recent' ? ('GPS ' + (rg.age_minutes || '') + 'm') : 'Stale'),
-                icon: { path: google.maps.SymbolPath.CIRCLE, scale: 10, fillColor: '#3B82F6', fillOpacity: 1, strokeColor: '#fff', strokeWeight: 3 },
+                title: 'Rider — ' + (rg.status === 'live' ? 'Live' : rg.status === 'recent' ? ('GPS ' + (rg.age_minutes || '') + 'm') : 'Stale')
+                    + (riderGpsStaleUnused ? ' · stale (warehouse used as route start)' : ''),
+                icon: { path: google.maps.SymbolPath.CIRCLE, scale: 10, fillColor: '#3B82F6', fillOpacity: riderGpsStaleUnused ? 0.4 : 1, strokeColor: '#fff', strokeWeight: 3 },
                 zIndex: 200,
             });
             _qrrMapMarkers.push(m); bounds.extend(pos); added++;
@@ -829,6 +846,33 @@
         document.getElementById('qrrMapMeta').textContent =
             (c.ofd || 0) + ' OFD · ' + (c.delivered || 0) + ' delivered' +
             (d.dispatched_at ? ' · dispatched ' + (relativeTime(d.dispatched_at) || '') : '');
+
+        // May-2026 — populate the Start: indicator. Mirrors the
+        // mobile dispatch map. Hidden when there's no effective
+        // origin (no warehouse + no GPS — already surfaced by the
+        // dispatch panel as a missing-coords warning).
+        const startRow   = document.getElementById('qrrMapStartRow');
+        const startBadge = document.getElementById('qrrMapStartBadge');
+        const startNote  = document.getElementById('qrrMapStartNote');
+        if (startRow && startBadge && startNote) {
+            if (eo && eo.lat != null && eo.lng != null) {
+                if (startIsWarehouseWeb) {
+                    startBadge.textContent = '🏪 Start: Warehouse';
+                    startBadge.style.background = '#7C3AED';
+                } else {
+                    startBadge.textContent = '🛵 Start: Rider GPS';
+                    startBadge.style.background = '#3B82F6';
+                }
+                let note = eo.source_label || '';
+                if (riderGpsStaleUnused) {
+                    note += ' · (rider GPS is ' + (rg.age_minutes != null ? rg.age_minutes : '?') + ' min old — using warehouse instead)';
+                }
+                startNote.textContent = note;
+                startRow.style.display = '';
+            } else {
+                startRow.style.display = 'none';
+            }
+        }
 
         if (added > 0) {
             _qrrMap.fitBounds(bounds);

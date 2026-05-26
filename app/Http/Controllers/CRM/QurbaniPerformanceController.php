@@ -486,6 +486,60 @@ class QurbaniPerformanceController extends Controller
                 . "  AND l.status = 'sent'"
                 . ") as wal"
             ), 'wal.line_item_id', '=', 'li.id');
+
+            // May-2026 (CS Manager) — separate subquery for the
+            // SLAUGHTER trigger so the CS manager's drill table can
+            // show "✓ sent at 14:32" under the Slaughtered column
+            // (analogous to wal for OFD). We need the latest log row
+            // PER (line_item, trigger) regardless of status — that
+            // way the UI can render:
+            //   • status='sent'    → green ✓ + timestamp
+            //   • status='failed'  → red ✗ + reason (so the manager
+            //                        knows to manual-send via the new
+            //                        🔪 Send Now action button)
+            //   • status='skipped' → grey badge + reason
+            // No row → blank dash. Latest-per-li is enforced via the
+            // MAX(id) INNER JOIN, which works even when two log rows
+            // share a created_at timestamp (the autoinc id is
+            // monotonic per insert and tie-breaks correctly).
+            $q->leftJoin(DB::raw(
+                "(SELECT l.line_item_id, "
+                . "l.status     AS slaughter_wa_status, "
+                . "l.created_at AS slaughter_wa_sent_at, "
+                . "l.skip_reason AS slaughter_wa_skip_reason "
+                . "FROM t_ops_qurbani_wa_log l "
+                . "INNER JOIN ("
+                . "  SELECT line_item_id, MAX(id) AS mx "
+                . "  FROM t_ops_qurbani_wa_log "
+                . "  WHERE trigger_event = 'slaughtered' "
+                . "  GROUP BY line_item_id"
+                . ") mx ON mx.line_item_id = l.line_item_id AND mx.mx = l.id "
+                . "WHERE l.trigger_event = 'slaughtered'"
+                . ") as wals"
+            ), 'wals.line_item_id', '=', 'li.id');
+
+            // Mirror subquery for OFD — same latest-per-li shape but
+            // exposing status / skip_reason (the existing wal join only
+            // returns 'sent' rows because it filters on status='sent'
+            // for the ETA-drift calculation). We need failed/skipped
+            // rows visible too so the CS manager can see "we tried but
+            // it bounced" and use the 🛵 Send Now button.
+            $q->leftJoin(DB::raw(
+                "(SELECT l.line_item_id, "
+                . "l.status      AS ofd_wa_status, "
+                . "l.created_at  AS ofd_wa_sent_at, "
+                . "l.skip_reason AS ofd_wa_skip_reason, "
+                . "l.trigger_event AS ofd_wa_trigger "
+                . "FROM t_ops_qurbani_wa_log l "
+                . "INNER JOIN ("
+                . "  SELECT line_item_id, MAX(id) AS mx "
+                . "  FROM t_ops_qurbani_wa_log "
+                . "  WHERE trigger_event IN ('ofd','ofd_delay_update') "
+                . "  GROUP BY line_item_id"
+                . ") mx ON mx.line_item_id = l.line_item_id AND mx.mx = l.id "
+                . "WHERE l.trigger_event IN ('ofd','ofd_delay_update')"
+                . ") as walo"
+            ), 'walo.line_item_id', '=', 'li.id');
         }
         if ($day) {
             $q->where('li.qurbani_day', $day);
@@ -660,6 +714,16 @@ class QurbaniPerformanceController extends Controller
             $selects[] = 'wal.messaged_eta_at';
             $selects[] = 'wal.last_wa_trigger';
             $selects[] = 'wal.last_wa_sent_at';
+            // May-2026 — Slaughter/OFD outcome columns for the CS
+            // Manager action cells. Status can be sent/failed/skipped;
+            // skip_reason carries the human-readable cause.
+            $selects[] = 'wals.slaughter_wa_status';
+            $selects[] = 'wals.slaughter_wa_sent_at';
+            $selects[] = 'wals.slaughter_wa_skip_reason';
+            $selects[] = 'walo.ofd_wa_status';
+            $selects[] = 'walo.ofd_wa_sent_at';
+            $selects[] = 'walo.ofd_wa_skip_reason';
+            $selects[] = 'walo.ofd_wa_trigger';
         }
         $rows = $q->select($selects)
             ->orderBy('li.qurbani_slot_end_minute')
@@ -784,6 +848,18 @@ class QurbaniPerformanceController extends Controller
                 'last_wa_trigger'               => $r->last_wa_trigger ?? null,
                 'eta_drift_minutes'             => $driftMinutes,
                 'eta_drift_state'               => $driftState,
+                // May-2026 — Slaughter / OFD WA outcome surfacing.
+                // status NULL when no log row exists for that trigger
+                // (i.e. message never attempted); otherwise one of
+                // sent / failed / skipped. UI renders a coloured chip
+                // + timestamp + (for failed/skipped) the reason.
+                'slaughter_wa_status'           => $r->slaughter_wa_status ?? null,
+                'slaughter_wa_sent_at'          => $r->slaughter_wa_sent_at ?? null,
+                'slaughter_wa_skip_reason'      => $r->slaughter_wa_skip_reason ?? null,
+                'ofd_wa_status'                 => $r->ofd_wa_status ?? null,
+                'ofd_wa_sent_at'                => $r->ofd_wa_sent_at ?? null,
+                'ofd_wa_skip_reason'            => $r->ofd_wa_skip_reason ?? null,
+                'ofd_wa_trigger'                => $r->ofd_wa_trigger ?? null,
             ];
         })->all();
 
@@ -808,6 +884,61 @@ class QurbaniPerformanceController extends Controller
                 'drifting_count'    => $driftingCount,
             ],
         ]);
+    }
+
+    /**
+     * POST /qurbani/api/performance/send-wa-now
+     *
+     * May-2026 — CS Manager quick-action endpoint. Fires the
+     * slaughter OR OFD WhatsApp template for one line item NOW,
+     * bypassing the auto-worker's time-delay gate but respecting
+     * every other gate (master switch, trigger enabled, template
+     * configured, customer phone). Used by the 🔪 Slaughter and
+     * 🛵 OFD action buttons in the Performance drill table.
+     *
+     * Body:
+     *   { line_item_id: int, trigger: 'slaughter'|'ofd', force?: bool }
+     *
+     * force=true bypasses the already-sent dedupe ONLY — every other
+     * gate still applies. Use carefully: a re-send replaces the
+     * customer's last-known ETA in the drift calc and can cause a
+     * yo-yo if the ETA hasn't actually moved.
+     */
+    public function sendWaNow(Request $request, \App\Services\QurbaniWaAutoSender $sender)
+    {
+        $validated = $request->validate([
+            'line_item_id' => 'required|integer',
+            'trigger'      => 'required|string|in:slaughter,ofd',
+            'force'        => 'nullable|boolean',
+        ]);
+        $lineItemId = (int) $validated['line_item_id'];
+        $trigger    = (string) $validated['trigger'];
+        $force      = (bool) ($validated['force'] ?? false);
+
+        try {
+            if ($trigger === 'slaughter') {
+                $result = $sender->sendSlaughterForLineItem($lineItemId, $force);
+            } else {
+                $result = $sender->sendOfdForLineItem($lineItemId, $force);
+            }
+            return response()->json([
+                'success' => (bool) ($result['ok'] ?? false),
+                'reason'  => $result['reason'] ?? 'unknown',
+                'message' => $result['message'] ?? '',
+                'phone'   => $result['phone'] ?? null,
+            ]);
+        } catch (\Throwable $e) {
+            \Illuminate\Support\Facades\Log::error('Performance sendWaNow failed', [
+                'line_item_id' => $lineItemId,
+                'trigger'      => $trigger,
+                'err'          => $e->getMessage(),
+            ]);
+            return response()->json([
+                'success' => false,
+                'reason'  => 'exception',
+                'message' => 'Send failed: ' . $e->getMessage(),
+            ], 500);
+        }
     }
 
     /**
