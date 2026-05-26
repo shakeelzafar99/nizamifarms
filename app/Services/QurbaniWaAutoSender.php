@@ -378,19 +378,16 @@ class QurbaniWaAutoSender
                 $params = null;
 
                 if ($isSelfCollection) {
-                    // Self-collection — fire immediately, 2 vars only.
-                    // The template body is configured in Meta to only
-                    // reference {{1}} (name) + {{2}} (order#); no time
-                    // variable. WhatsAppService::sendTemplateMessage
-                    // pads bodyParams to whatever the template expects,
-                    // so passing 2 is correct.
-                    $params = [
-                        $this->customerFirstName($li),
-                        $this->orderNumber($li),
-                    ];
+                    // Self-collection — 2 vars only (name + order). The
+                    // template body is configured in Meta to only use
+                    // {{1}} and {{2}}; no time / rider variables.
+                    $params = $this->buildOfdParams($li, null, true);
                 } else {
-                    // Delivery — needs 3 params. ETA gates the send.
+                    // Delivery — 3 vars by default, or 5 with the
+                    // qurbani_ofd_rider variant (adds rider name +
+                    // contact). ETA still gates the send identically.
                     $eta = $li->qurbani_estimated_delivery_at ?: null;
+                    $timeText = '';
                     if ($eta) {
                         $etaCarbon = \Carbon\Carbon::parse($eta);
                         // diffInMinutes(now(), false) returns negative
@@ -408,11 +405,7 @@ class QurbaniWaAutoSender
                         // Missing coords / no ETA → slot fallback, fire now.
                         $timeText = trim((string) ($li->qurbani_slot ?? ''));
                     }
-                    $params = [
-                        $this->customerFirstName($li),
-                        $this->orderNumber($li),
-                        $timeText,
-                    ];
+                    $params = $this->buildOfdParams($li, $timeText, false);
                 }
 
                 $phone = $this->resolveCustomerPhone($li);
@@ -720,6 +713,9 @@ class QurbaniWaAutoSender
                 'li.qurbani_slot',
                 'li.qurbani_delivery_type',
                 'li.qurbani_estimated_delivery_at',
+                // May-2026 — needed by buildOfdParams() for the
+                // with_rider variant. See QurbaniWaAutoSender::resolveRiderInfo.
+                'li.qurbani_assigned_rider_user_id',
                 'o.order_number',
                 'o.customer_id',
                 'o.address_first_name',
@@ -771,11 +767,7 @@ class QurbaniWaAutoSender
                 }
                 [$sendTo, $loggedPhone] = $this->resolveSendTarget($phone);
 
-                $params = [
-                    $this->customerFirstName($li),
-                    $this->orderNumber($li),
-                    $timeText,
-                ];
+                $params = $this->buildOfdParams($li, $timeText, false);
                 $logCtx = "Qurbani OFD (delay update): " . $this->orderNumber($li);
                 $sent = $this->sendTemplate($sendTo, $deliveryTpl, $params, $logCtx);
                 if ($sent['ok']) {
@@ -934,9 +926,10 @@ class QurbaniWaAutoSender
         $etaUsed = null;
         $params  = null;
         if ($isSelfCollection) {
-            $params = [$this->customerFirstName($li), $this->orderNumber($li)];
+            $params = $this->buildOfdParams($li, null, true);
         } else {
             $eta = $li->qurbani_estimated_delivery_at ?: null;
+            $timeText = '';
             if ($eta) {
                 $etaCarbon = \Carbon\Carbon::parse($eta);
                 $timeText  = $this->formatTenMinRange($etaCarbon);
@@ -944,7 +937,7 @@ class QurbaniWaAutoSender
             } else {
                 $timeText = trim((string) ($li->qurbani_slot ?? ''));
             }
-            $params = [$this->customerFirstName($li), $this->orderNumber($li), $timeText];
+            $params = $this->buildOfdParams($li, $timeText, false);
         }
 
         $phone = $this->resolveCustomerPhone($li);
@@ -987,6 +980,10 @@ class QurbaniWaAutoSender
                 'li.qurbani_slot',
                 'li.qurbani_delivery_type',
                 'li.qurbani_dispatched_at',
+                // May-2026 — needed by buildOfdParams() / resolveRiderInfo()
+                // when the operator selects the with_rider OFD variant.
+                // Cheap to always select.
+                'li.qurbani_assigned_rider_user_id',
                 'o.order_number',
                 'o.customer_id',
                 'o.address_first_name',
@@ -1140,6 +1137,91 @@ class QurbaniWaAutoSender
     private function orderNumber($li): string
     {
         return (string) ($li->order_number ?? ('#' . ($li->order_id ?? '')));
+    }
+
+    /**
+     * May-2026 — Resolve the rider's display name + contact for the
+     * 'with_rider' (5-variable) OFD template. Returns ['name', 'contact']
+     * with soft fallbacks so the send NEVER fails just because a rider
+     * row is incomplete (a failed delivery message is worse than one
+     * that says "your rider" / "(contact pending)").
+     *
+     *   • name    — t_sys_user.fullname for $li->qurbani_assigned_rider_user_id;
+     *               falls back to "your rider" when unassigned / not found
+     *   • contact — qurbani_rider_meta config map keyed by user_id;
+     *               falls back to "(contact pending)" when not set
+     *
+     * The contact map is cached on the instance because processOfdTrigger
+     * loops through many candidates and each one calls this helper. One
+     * cheap JSON decode on first hit, zero on subsequent. The rider
+     * name lookup is a single per-call query — acceptable for the
+     * worker's <100 rows/min cap and avoids forcing every fetch
+     * helper to add a join.
+     */
+    private array $_riderMetaCache = [];
+    private bool  $_riderMetaCacheLoaded = false;
+
+    private function loadRiderMetaCache(): array
+    {
+        if ($this->_riderMetaCacheLoaded) return $this->_riderMetaCache;
+        $raw = (string) ConfigModel::get('qurbani_rider_meta', '{}');
+        $map = json_decode($raw, true);
+        $this->_riderMetaCache = is_array($map) ? $map : [];
+        $this->_riderMetaCacheLoaded = true;
+        return $this->_riderMetaCache;
+    }
+
+    private function resolveRiderInfo($li): array
+    {
+        $riderId = (int) ($li->qurbani_assigned_rider_user_id ?? 0);
+        $name    = 'your rider';
+        $contact = '(contact pending)';
+        if ($riderId > 0) {
+            $row = DB::table('t_sys_user')->where('id', $riderId)->first(['fullname']);
+            if ($row && trim((string) $row->fullname) !== '') {
+                $name = trim((string) $row->fullname);
+            }
+            $meta = $this->loadRiderMetaCache();
+            $entry = $meta[(string) $riderId] ?? null;
+            if (is_array($entry)) {
+                $c = trim((string) ($entry['contact'] ?? ''));
+                if ($c !== '') {
+                    $contact = $c;
+                }
+            }
+        }
+        return ['name' => $name, 'contact' => $contact];
+    }
+
+    /**
+     * Build the template body params array for an OFD send, branching
+     * on (a) whether the item is self-collection (2 vars), and (b) the
+     * configured template variant for the delivery path (standard 3
+     * vars vs with_rider 5 vars). Centralised so processOfdTrigger,
+     * sendOfdForLineItem, and sendDelayUpdate all stay in sync — a
+     * mismatch between them would either truncate the rider info or
+     * cause WhatsApp to reject the send with a param-count error.
+     */
+    private function buildOfdParams($li, ?string $timeText, bool $isSelfCollection): array
+    {
+        if ($isSelfCollection) {
+            return [
+                $this->customerFirstName($li),
+                $this->orderNumber($li),
+            ];
+        }
+        $base = [
+            $this->customerFirstName($li),
+            $this->orderNumber($li),
+            (string) ($timeText ?? ''),
+        ];
+        $variant = (string) ($this->cfg['ofd_template_variant'] ?? 'standard');
+        if ($variant === 'with_rider') {
+            $rider = $this->resolveRiderInfo($li);
+            $base[] = $rider['name'];
+            $base[] = $rider['contact'];
+        }
+        return $base;
     }
 
     private function isSelfCollection(?string $deliveryType): bool
@@ -1297,6 +1379,18 @@ class QurbaniWaAutoSender
             'ofd_enabled'                 => $bool('qurbani_wa_ofd_enabled', false),
             'ofd_template'                => (string) $get('qurbani_wa_ofd_template', ''),
             'ofd_self_collection_template' => (string) $get('qurbani_wa_ofd_self_collection_template', ''),
+            // May-2026 — Which delivery-template variant to render:
+            //   • 'standard'   → 3 vars: {{1}} name, {{2}} order, {{3}} time
+            //   • 'with_rider' → 5 vars: {{1}} name, {{2}} order, {{3}} time,
+            //                             {{4}} rider name, {{5}} rider contact
+            // The Meta-approved template `qurbani_ofd_rider` ships with
+            // the 5-var body. Picking 'with_rider' here switches the
+            // sender to pass those two extra params; rider name comes
+            // from t_sys_user.fullname of qurbani_assigned_rider_user_id
+            // and contact from the new qurbani_rider_meta config (saved
+            // per-rider in Qurbani Settings → 🏍️ Qurbani Riders).
+            // Defaults to 'standard' so existing installs unaffected.
+            'ofd_template_variant'        => (string) $get('qurbani_wa_ofd_template_variant', 'standard'),
 
             // May-2026 rev2 — new ETA-window rule + delay-update knobs.
             // Old config keys (ofd_timing_mode, ofd_minutes_after_status,

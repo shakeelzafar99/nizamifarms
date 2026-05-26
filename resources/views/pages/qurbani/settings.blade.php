@@ -66,6 +66,22 @@
         $qurbaniRiderIds = json_decode($qurbaniRiderIdsJson, true);
         if (!is_array($qurbaniRiderIds)) { $qurbaniRiderIds = []; }
         $qurbaniRiderIds = array_values(array_filter(array_map('intval', $qurbaniRiderIds), fn($v) => $v > 0));
+        // May-2026 — Per-rider extras (region + contact). Stored in a
+        // separate ConfigModel key so it survives whitelist on/off
+        // toggling. Keys are stringified user_ids to match how it's
+        // serialised in updateQurbaniRiderMeta.
+        $qurbaniRiderMetaJson = \App\Models\FIN\ConfigModel::get('qurbani_rider_meta', '{}');
+        $qurbaniRiderMeta = json_decode($qurbaniRiderMetaJson, true);
+        if (!is_array($qurbaniRiderMeta)) { $qurbaniRiderMeta = []; }
+        // Region options for the per-rider dropdown — same source the
+        // mobile and CRM qurbani screens use (qurbani_region field
+        // options table). Avoids drift between settings and ops.
+        $qurbaniRegionOptions = \DB::table('t_crm_qurbani_field_options')
+            ->where('field_name', 'qurbani_region')
+            ->where('is_active', 1)
+            ->orderBy('display_order')
+            ->pluck('option_value')
+            ->toArray();
         // Same query as RiderController::getActiveRiders so the
         // Settings UI can offer EXACTLY the riders the mobile picker
         // would otherwise show by default.
@@ -103,6 +119,16 @@
         $waOfdSelfCollectionTemplate  = (string) \App\Models\FIN\ConfigModel::get('qurbani_wa_ofd_self_collection_template', '');
         $waOfdRequireDispatched       = \App\Models\FIN\ConfigModel::get('qurbani_wa_ofd_require_dispatched', '1') === '1';
         $waOfdTimingMode              = (string) \App\Models\FIN\ConfigModel::get('qurbani_wa_ofd_timing_mode', 'before_eta_with_buffer');
+        // May-2026 — which delivery template body shape to use:
+        //   'standard'   → 3 vars (name / order / time)
+        //   'with_rider' → 5 vars (adds rider name + contact). The
+        //                  Meta-approved template `qurbani_ofd_rider`
+        //                  ships with the 5-var body. Must match the
+        //                  template actually selected in the dropdown.
+        $waOfdTemplateVariant         = (string) \App\Models\FIN\ConfigModel::get('qurbani_wa_ofd_template_variant', 'standard');
+        if (!in_array($waOfdTemplateVariant, ['standard', 'with_rider'], true)) {
+            $waOfdTemplateVariant = 'standard';
+        }
         // May-2026 rev2 — new ETA-window rule + delay-update knobs.
         $waOfdEtaWindowMinutes        = (int) \App\Models\FIN\ConfigModel::get('qurbani_wa_ofd_eta_window_minutes', '120');
         $waOfdDelayThresholdMinutes   = (int) \App\Models\FIN\ConfigModel::get('qurbani_wa_ofd_delay_threshold_minutes', '30');
@@ -452,6 +478,27 @@
                     </div>
                 </div>
 
+                {{-- May-2026 — Variant selector. Standard = 3 vars,
+                     with_rider = 5 vars (qurbani_ofd_rider). Must
+                     match the body of the template selected above
+                     or WhatsApp rejects the send. The help text on
+                     the right reminds admin which template uses which
+                     shape so picking is mechanical. --}}
+                <div style="display: grid; grid-template-columns: 1fr 1.6fr; gap: 12px; margin-bottom: 12px; padding: 10px 12px; background: #fef3c7; border: 1px solid #fde68a; border-radius: 6px;">
+                    <div>
+                        <label style="font-size: 12px; font-weight: 700; color: #92400e; display: block; margin-bottom: 4px;">Delivery template variables</label>
+                        <select id="waOfdTemplateVariant" onchange="saveWaTriggerField('ofd_template_variant', this.value)" style="width: 100%; padding: 8px 10px; border: 1px solid #d1d5db; border-radius: 8px; font-size: 13px;">
+                            <option value="standard"    {{ $waOfdTemplateVariant === 'standard'   ? 'selected' : '' }}>Standard — 3 variables (name, order, time)</option>
+                            <option value="with_rider"  {{ $waOfdTemplateVariant === 'with_rider' ? 'selected' : '' }}>With rider — 5 variables (+ rider name + contact)</option>
+                        </select>
+                    </div>
+                    <div style="font-size: 11px; color: #78350f; line-height: 1.55;">
+                        <b>Pick this to match the delivery template's body:</b><br>
+                        • <b>Standard</b> — works with the original 3-variable template (e.g. <code>qurbani_ofd</code>): <code>@{{1}}</code> customer name · <code>@{{2}}</code> order · <code>@{{3}}</code> time.<br>
+                        • <b>With rider</b> — works with the 5-variable template <code>qurbani_ofd_rider</code>: adds <code>@{{4}}</code> rider name · <code>@{{5}}</code> rider contact. The rider name is read from the user's <i>fullname</i> and the contact comes from the per-rider field below (🏍️ Qurbani Riders → contact column). Riders without a contact filled in send "(contact pending)" to the customer instead of failing.
+                    </div>
+                </div>
+
                 {{-- May-2026 rev2 — New trigger rule. Replaces the old
                      timing-mode radio (after_status / after_dispatch /
                      before_eta_with_buffer). Now driven by:
@@ -494,8 +541,9 @@
                 </div>
 
                 <div style="font-size: 11px; color: #6b7280; line-height: 1.55; padding: 8px 10px; background: #f9fafb; border-radius: 6px;">
-                    <b>Delivery template params (in order):</b> <code>@{{1}}</code> = customer first name · <code>@{{2}}</code> = order number · <code>@{{3}}</code> = delivery time text<br>
-                    <b>Self-collection template params:</b> <code>@{{1}}</code> = customer first name · <code>@{{2}}</code> = order number (no time variable)<br>
+                    <b>Delivery template params (Standard variant):</b> <code>@{{1}}</code> = customer first name · <code>@{{2}}</code> = order number · <code>@{{3}}</code> = delivery time text<br>
+                    <b>Delivery template params (With rider variant):</b> Standard + <code>@{{4}}</code> = rider name · <code>@{{5}}</code> = rider contact number<br>
+                    <b>Self-collection template params:</b> <code>@{{1}}</code> = customer first name · <code>@{{2}}</code> = order number (no time variable — variant setting above is ignored for self-collection)<br>
                     <b>Delivery time text format:</b> ETA rounded DOWN to nearest 10 min, + 30 min for end of range. Example: ETA 7:32 PM → <i>"7:30 PM - 8:00 PM"</i>. Fallback for missing coords: the booking slot string (e.g. <i>"Afternoon 11 AM to 3 PM"</i>).
                 </div>
             </div>
@@ -597,22 +645,65 @@
                     Pick which riders show up in the mobile Qurbani screen — both the individual order picker
                     AND the bulk-assign rider dropdown read from this same list. Leave nothing checked to fall
                     back to "all active riders" (current default).
+                    <br>
+                    <span style="color:#4b5563; font-size:12px;">
+                        Set a <b>Region</b> per rider to auto-sort the picker
+                        when the operator is bulk-assigning orders from a
+                        specific region (riders in that region appear at the
+                        top; other-region riders are still listed under
+                        "Other regions"). The <b>Contact</b> number will be
+                        used in the next phase to populate the OFD WhatsApp
+                        template variables.
+                    </span>
                 </div>
             </div>
         </div>
         <div class="field-body">
-            <div style="display: flex; flex-wrap: wrap; gap: 10px; padding: 12px 16px; background: #f9fafb; border-radius: 8px;">
+            <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 10px; padding: 12px 16px; background: #f9fafb; border-radius: 8px;">
                 @forelse($allActiveRiders as $r)
-                    <label style="display: inline-flex; align-items: center; gap: 6px; padding: 6px 14px; border-radius: 8px; border: 1px solid #d1d5db; background: #fff; cursor: pointer; font-size: 13px; font-weight: 500; user-select: none;">
-                        <input
-                            type="checkbox"
-                            class="qurbani-rider-cb"
-                            value="{{ $r->id }}"
-                            {{ in_array((int) $r->id, $qurbaniRiderIds, true) ? 'checked' : '' }}
-                            onchange="saveQurbaniRiders()"
-                            style="accent-color: #b45309; width: 16px; height: 16px;">
-                        {{ $r->fullname }}
-                    </label>
+                    @php
+                        $meta = $qurbaniRiderMeta[(string) $r->id] ?? null;
+                        $rRegion  = is_array($meta) ? (string) ($meta['region']  ?? '') : '';
+                        $rContact = is_array($meta) ? (string) ($meta['contact'] ?? '') : '';
+                        $isChecked = in_array((int) $r->id, $qurbaniRiderIds, true);
+                    @endphp
+                    <div class="qurbani-rider-card" data-rider-id="{{ $r->id }}"
+                         style="display:flex; flex-direction:column; gap:6px; padding:10px 12px; border-radius:8px; border:1px solid {{ $isChecked ? '#fcd34d' : '#e5e7eb' }}; background:{{ $isChecked ? '#fffbeb' : '#fff' }};">
+                        <label style="display:inline-flex; align-items:center; gap:8px; cursor:pointer; font-size:13px; font-weight:600; user-select:none; color:#111827;">
+                            <input
+                                type="checkbox"
+                                class="qurbani-rider-cb"
+                                value="{{ $r->id }}"
+                                {{ $isChecked ? 'checked' : '' }}
+                                onchange="saveQurbaniRiders(); _toggleRiderCardChrome(this);"
+                                style="accent-color: #b45309; width: 16px; height: 16px;">
+                            {{ $r->fullname }}
+                        </label>
+                        <div style="display:flex; gap:6px; align-items:center;">
+                            <select
+                                class="qurbani-rider-region"
+                                data-rider-id="{{ $r->id }}"
+                                onchange="saveQurbaniRiderMeta({{ $r->id }})"
+                                style="flex:1; min-width:0; padding:5px 6px; border:1px solid #d1d5db; border-radius:6px; font-size:12px; color:#374151; background:#fff;">
+                                <option value="">— Region —</option>
+                                @foreach($qurbaniRegionOptions as $regionOpt)
+                                    <option value="{{ $regionOpt }}" {{ $rRegion === $regionOpt ? 'selected' : '' }}>{{ $regionOpt }}</option>
+                                @endforeach
+                            </select>
+                        </div>
+                        <div style="display:flex; gap:6px; align-items:center;">
+                            <input
+                                type="tel"
+                                class="qurbani-rider-contact"
+                                data-rider-id="{{ $r->id }}"
+                                value="{{ $rContact }}"
+                                placeholder="+92 3xx xxxxxxx"
+                                oninput="saveQurbaniRiderMeta({{ $r->id }})"
+                                style="flex:1; min-width:0; padding:5px 8px; border:1px solid #d1d5db; border-radius:6px; font-size:12px; color:#374151; background:#fff;">
+                            <span class="qurbani-rider-meta-saved" data-rider-id="{{ $r->id }}" style="display:none; font-size:11px; color:#059669; font-weight:600;">✓</span>
+                            <span class="qurbani-rider-meta-err" data-rider-id="{{ $r->id }}" style="display:none; font-size:11px; color:#dc2626; font-weight:600;" title="Save failed">!</span>
+                        </div>
+                    </div>
                 @empty
                     <span style="color: #9ca3af; font-size: 13px;">No active riders found.</span>
                 @endforelse
@@ -875,8 +966,69 @@ function _qurbaniRidersFlush() {
     });
 }
 function qurbaniRidersSelectAll(check) {
-    document.querySelectorAll('.qurbani-rider-cb').forEach(cb => { cb.checked = !!check; });
+    document.querySelectorAll('.qurbani-rider-cb').forEach(cb => {
+        cb.checked = !!check;
+        _toggleRiderCardChrome(cb);
+    });
     saveQurbaniRiders();
+}
+
+// May-2026 — Per-rider region + contact save.
+//
+// Each rider card has its own debounce timer (keyed by rider_id) so
+// quick typing in one rider's contact field doesn't kick off saves
+// for unrelated riders. Region <select> changes also debounce on
+// the same timer so a flurry of changes for the same rider collapses
+// into a single POST.
+//
+// Server is at /qurbani-settings/api/qurbani-rider-meta and merges
+// the per-rider entry into config key `qurbani_rider_meta` — see
+// QurbaniSettingsController::updateQurbaniRiderMeta for the shape.
+const _qurbaniRiderMetaTimers = {};
+function saveQurbaniRiderMeta(riderId) {
+    if (_qurbaniRiderMetaTimers[riderId]) clearTimeout(_qurbaniRiderMetaTimers[riderId]);
+    _qurbaniRiderMetaTimers[riderId] = setTimeout(() => _qurbaniRiderMetaFlush(riderId), 500);
+}
+function _qurbaniRiderMetaFlush(riderId) {
+    const regionEl  = document.querySelector('.qurbani-rider-region[data-rider-id="' + riderId + '"]');
+    const contactEl = document.querySelector('.qurbani-rider-contact[data-rider-id="' + riderId + '"]');
+    const okBadge   = document.querySelector('.qurbani-rider-meta-saved[data-rider-id="' + riderId + '"]');
+    const errBadge  = document.querySelector('.qurbani-rider-meta-err[data-rider-id="' + riderId + '"]');
+    if (okBadge)  okBadge.style.display  = 'none';
+    if (errBadge) errBadge.style.display = 'none';
+    const region  = regionEl  ? String(regionEl.value || '').trim() : '';
+    const contact = contactEl ? String(contactEl.value || '').trim() : '';
+    fetch('{{ url("qurbani-settings/api/qurbani-rider-meta") }}', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Accept': 'application/json', 'X-CSRF-TOKEN': '{{ csrf_token() }}' },
+        body: JSON.stringify({ rider_id: riderId, region: region, contact: contact }),
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (data && data.success) {
+            if (okBadge) { okBadge.style.display = 'inline'; setTimeout(() => okBadge.style.display = 'none', 1500); }
+        } else {
+            if (errBadge) { errBadge.style.display = 'inline'; errBadge.title = (data && data.message) || 'Save failed'; }
+        }
+    })
+    .catch(() => {
+        if (errBadge) { errBadge.style.display = 'inline'; errBadge.title = 'Network error — save failed'; }
+    });
+}
+
+// Visual chrome toggle on the rider card when the checkbox changes —
+// purely cosmetic (highlights whitelisted riders) but keeps the panel
+// scannable when only a handful of riders are enabled.
+function _toggleRiderCardChrome(cb) {
+    const card = cb.closest('.qurbani-rider-card');
+    if (!card) return;
+    if (cb.checked) {
+        card.style.borderColor = '#fcd34d';
+        card.style.background  = '#fffbeb';
+    } else {
+        card.style.borderColor = '#e5e7eb';
+        card.style.background  = '#fff';
+    }
 }
 
 function saveHiddenCategories() {

@@ -684,8 +684,29 @@ class WhatsAppWebController extends Controller
             }
         }
 
-        $query = MessageModel::where('conversation_id', $conversationId)
-            ->orderBy('created_at', 'asc');
+        // May-2026 bugfix — used to be ORDER BY created_at ASC LIMIT 51,
+        // which on a conversation with >50 messages returned the OLDEST 50
+        // and silently dropped the NEWEST messages off the bottom of the
+        // chat panel (reported: Ali Nizami's "Wow" / "Order kahan hai mera"
+        // invisible in /messages even though they showed in the timeline
+        // drawer and in the mobile chat — that conversation has 58
+        // messages total, so messages #51-58 — the latest 8 — never made
+        // it into the JSON payload).
+        //
+        // Fix mirrors the sibling mobile endpoint
+        // (App\Http\Controllers\API\WhatsAppController::getMessages):
+        //   • ORDER BY created_at DESC + LIMIT (N+1) gets the latest N
+        //     messages (plus 1 sentinel row used only to decide whether
+        //     a "Load older messages" link should render).
+        //   • ->reverse()->values() flips back to chronological order so
+        //     the front-end renderer (which already walks msgs.forEach,
+        //     pushes date-separators in forward order, and scrolls to
+        //     scrollHeight at the end) keeps working unchanged.
+        //   • The `before` query-string param keeps its existing
+        //     contract — "give me 50 messages with id < before" — so
+        //     the new loadOlderMessages() pagination just walks the
+        //     id space backwards exactly like the mobile screen does.
+        $query = MessageModel::where('conversation_id', $conversationId);
 
         // And within an allowed conversation, limited users still only see
         // messages from today + yesterday.
@@ -698,9 +719,16 @@ class WhatsAppWebController extends Controller
         }
 
         $limit = $request->limit ?? 50;
-        $messages = $query->limit($limit + 1)->get();
-        $hasMore = $messages->count() > $limit;
-        if ($hasMore) $messages = $messages->slice(0, $limit);
+        $messagesDesc = $query
+            ->orderBy('created_at', 'desc')
+            ->orderBy('id', 'desc') // tie-breaker — two messages can land in the same second
+            ->limit($limit + 1)
+            ->get();
+        $hasMore = $messagesDesc->count() > $limit;
+        if ($hasMore) {
+            $messagesDesc = $messagesDesc->slice(0, $limit);
+        }
+        $messages = $messagesDesc->reverse()->values();
 
         $totalOrders = $conversation->customer_id
             ? \App\Models\CRM\OrderModel::where('customer_id', $conversation->customer_id)->count()

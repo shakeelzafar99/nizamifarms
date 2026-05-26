@@ -106,6 +106,19 @@ a.qr-card:focus-visible { outline: 2px solid #d97706; outline-offset: 2px; }
     font-weight: 700; text-transform: uppercase; letter-spacing: .3px;
 }
 
+/* May-2026 — Return-to-base chip. Indigo so it reads as
+   "route-derived planning data" (distinct from amber pending,
+   red OFD, green delivered, grey lock). Renders below the
+   last-activity line; absent when the rider has no active
+   dispatch or no cached estimate. */
+.qr-rtb {
+    display: inline-flex; align-items: center; gap: 4px;
+    margin-top: 4px;
+    padding: 3px 8px; border-radius: 999px;
+    background: #EEF2FF; border: 1px solid #C7D2FE; color: #3730A3;
+    font-size: 11px; font-weight: 700; line-height: 1;
+}
+
 /* Empty/loading states */
 .qr-empty {
     text-align: center; padding: 60px 20px; color: #6B7280; font-size: 14px;
@@ -192,6 +205,24 @@ a.qr-card:focus-visible { outline: 2px solid #d97706; outline-offset: 2px; }
         return d + 'd ago';
     }
 
+    // May-2026 — Return-to-base time formatter. The server caches the
+    // dispatch-time estimate so this page can show "Back at HH:MM"
+    // WITHOUT making any Google calls per refresh. Returns null when
+    // the estimate is missing OR more than 30 min past — defensive
+    // (server cache TTL is the primary guard).
+    function backByTime(iso) {
+        if (!iso) return null;
+        const d = new Date(String(iso).replace(' ', 'T'));
+        if (isNaN(d.getTime())) return null;
+        if (d.getTime() < Date.now() - 30 * 60 * 1000) return null;
+        const h = d.getHours();
+        const m = d.getMinutes();
+        const ampm = h >= 12 ? 'PM' : 'AM';
+        const hh = (h % 12) || 12;
+        const mm = m < 10 ? '0' + m : '' + m;
+        return hh + ':' + mm + ' ' + ampm;
+    }
+
     function gpsPill(g) {
         if (!g || !g.status) return '';
         const map = {
@@ -229,6 +260,22 @@ a.qr-card:focus-visible { outline: 2px solid #d97706; outline-offset: 2px; }
             ? '<span class="qr-lock" title="Locked by ' + esc(r.route_lock.locked_by_name || ('user ' + r.route_lock.locked_by)) + '">🔒 Editing</span>'
             : '';
 
+        // May-2026 — Back-to-base chip. The server only returns
+        // return_to_base for riders with an ACTIVE dispatch AND a
+        // cached estimate (gated server-side); both conditions failing
+        // is the common "no chip" path, so this branch is silent
+        // rather than rendering a placeholder.
+        let rtbChip = '';
+        if (r.return_to_base && r.return_to_base.estimated_at) {
+            const t = backByTime(r.return_to_base.estimated_at);
+            if (t) {
+                const baseName = r.return_to_base.base_name || 'base';
+                const mins = r.return_to_base.return_minutes;
+                const title = mins ? '~' + mins + ' min return leg from last stop' : 'Estimated return time';
+                rtbChip = '<span class="qr-rtb" title="' + esc(title) + '">⮌ Back at ' + esc(baseName) + ' by ' + esc(t) + '</span>';
+            }
+        }
+
         const href = RIDER_URL_BASE + '/' + r.rider_id;
         return ''
             + '<a class="qr-card" href="' + esc(href) + '">'
@@ -242,6 +289,7 @@ a.qr-card:focus-visible { outline: 2px solid #d97706; outline-offset: 2px; }
             +         '<div class="qr-count-chip qr-count-delivered"><div class="qr-count-num">' + (r.delivered_items || 0) + '</div><div class="qr-count-label">Delivered</div></div>'
             +     '</div>'
             +     lastLine
+            +     (rtbChip ? '<div>' + rtbChip + '</div>' : '')
             +     (lockChip ? '<div>' + lockChip + ' · ' + esc(total) + ' total assigned</div>' : '<div style="font-size:11px;color:#9CA3AF;">' + esc(total) + ' total assigned</div>')
             + '</a>';
     }

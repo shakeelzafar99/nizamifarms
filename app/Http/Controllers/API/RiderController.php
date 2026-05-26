@@ -9027,6 +9027,7 @@ class RiderController extends Controller
             if ($request->input('mode') === 'qurbani') {
                 $raw = (string) \App\Models\FIN\ConfigModel::get('qurbani_rider_ids', '[]');
                 $ids = json_decode($raw, true);
+                $whitelistApplied = false;
                 if (is_array($ids)) {
                     $ids = array_values(array_filter(array_map('intval', $ids), fn($v) => $v > 0));
                     if (!empty($ids)) {
@@ -9037,20 +9038,36 @@ class RiderController extends Controller
                         // from the mobile picker. Fall back to "all
                         // active" with a hint flag instead.
                         if ($filtered->count() > 0) {
-                            return response()->json([
-                                'success'   => true,
-                                'riders'    => $filtered,
-                                'mode'      => 'qurbani',
-                                'whitelist' => true,
-                            ]);
+                            $riders = $filtered;
+                            $whitelistApplied = true;
                         }
                     }
                 }
+
+                // May-2026 — Enrich each rider row with `qurbani_region`
+                // and `qurbani_contact` from the new per-rider meta
+                // config (qurbani_rider_meta). Empty strings when no
+                // meta is configured for that rider so the mobile
+                // picker can render unconditionally (it already
+                // tolerates falsy values). Kept additive — every
+                // existing field stays in place so consumers that
+                // only read id/fullname continue to work unchanged.
+                $metaRaw = (string) \App\Models\FIN\ConfigModel::get('qurbani_rider_meta', '{}');
+                $metaMap = json_decode($metaRaw, true);
+                if (!is_array($metaMap)) { $metaMap = []; }
+                $riders = $riders->map(function ($r) use ($metaMap) {
+                    $key = (string) $r->id;
+                    $m = isset($metaMap[$key]) && is_array($metaMap[$key]) ? $metaMap[$key] : null;
+                    $r->qurbani_region  = $m ? (string) ($m['region']  ?? '') : '';
+                    $r->qurbani_contact = $m ? (string) ($m['contact'] ?? '') : '';
+                    return $r;
+                })->values();
+
                 return response()->json([
                     'success'   => true,
                     'riders'    => $riders,
                     'mode'      => 'qurbani',
-                    'whitelist' => false,
+                    'whitelist' => $whitelistApplied,
                 ]);
             }
 
@@ -18794,6 +18811,14 @@ class RiderController extends Controller
                         'category_level_2' => $li->product->attribute_2 ?? null,
                         'qurbani_type' => $li->qurbani_type,
                         'qurbani_paya' => $li->qurbani_paya,
+                        // May-2026 — Region is needed by the Hand Over
+                        // modal so it can pre-group target riders by
+                        // matching region (same UX as the manager
+                        // bulk-assign picker in QurbaniOpenOrdersScreen).
+                        // Already loaded on $li from the lineItems
+                        // select above — just surfacing it.
+                        'qurbani_region'     => $li->qurbani_region,
+                        'qurbani_sub_region' => $li->qurbani_sub_region,
                         'qurbani_item_status' => $li->qurbani_item_status,
                         'qurbani_status_updated_at' => $li->qurbani_status_updated_at
                             ? (string) $li->qurbani_status_updated_at : null,
@@ -18969,6 +18994,12 @@ class RiderController extends Controller
             // service can flake). 55s Cache lock prevents spam.
             $this->fireQurbaniWaAutoSender();
 
+            // May-2026 — Re-hydrate the rider's return-to-base ETA from
+            // the dispatch cache so it survives screen reloads (the
+            // dispatch endpoint only returns it once; without this the
+            // chip vanishes the moment the user backgrounds the app).
+            $cachedRtb = $latestDispatchedAt ? $this->getCachedQurbaniReturnToBase((int) $user->id) : null;
+
             return response()->json([
                 'success' => true,
                 'orders' => $payload,
@@ -18990,6 +19021,9 @@ class RiderController extends Controller
                     // POST .../live-tracking endpoint.
                     'live_tracking_enabled' => $liveTrackingEnabled,
                 ],
+                // May-2026 — same shape returned by the dispatch endpoint
+                // (null when not cached / no active dispatch).
+                'return_to_base' => $cachedRtb,
                 // Phase A3 — server tells the rider's screen when it
                 // auto-recomputed because something slipped past
                 // threshold. Mobile shows a one-off toast.
@@ -20449,6 +20483,90 @@ class RiderController extends Controller
     }
 
     /**
+     * May-2026 — Return-to-base ETA cache (Phase B extension).
+     *
+     * Background: dispatchQurbaniRoute and editDispatchedRoute already
+     * compute a "back at base by HH:MM" estimate using the same
+     * Google Directions call that builds per-stop ETAs (the trick is
+     * appending the configured Qurbani base as a synthetic final
+     * waypoint — no extra API spend). Today that value is only
+     * returned in the immediate response and shown on the active
+     * rider's own delivery screen.
+     *
+     * The manager dashboard (mobile QurbaniRidersScreen + web
+     * /qurbani/riders) doesn't get to see it because it polls
+     * /qurbani/riders separately — that endpoint has no access to
+     * the Google call without burning API credits per refresh.
+     *
+     * Fix: cache the RTB payload PER RIDER for the lifetime of the
+     * current dispatch. Auto-expire shortly after the ETA passes so a
+     * stale value never lingers; explicitly forget on cancel-dispatch
+     * so the chip disappears the moment work is released. Reads are
+     * gated by the caller (only show if the rider still has dispatched
+     * undelivered items — pruning dispatch-completed states naturally).
+     *
+     * Keys: `qurbani:rtb:{riderId}`. Cache backend is whatever the app
+     * uses (Redis in prod, file/array in dev) — same one
+     * fireQurbaniWaAutoSender already relies on, so no new ops surface.
+     */
+    private const QURBANI_RTB_CACHE_PREFIX = 'qurbani:rtb:';
+
+    private function cacheQurbaniReturnToBase(int $riderId, ?array $rtb): void
+    {
+        if (!$rtb || empty($rtb['estimated_at'])) {
+            return;
+        }
+        try {
+            $eta = \Carbon\Carbon::parse($rtb['estimated_at']);
+            // Keep until 30 min after the projected ETA to absorb
+            // slight drift, capped at 8h to defend against a clock-
+            // skewed write that would otherwise live forever.
+            $secondsUntilEta = max(60, $eta->diffInSeconds(now(), false) * -1);
+            $ttl = (int) min(8 * 3600, $secondsUntilEta + 30 * 60);
+            \Cache::put(
+                self::QURBANI_RTB_CACHE_PREFIX . (int) $riderId,
+                $rtb,
+                $ttl
+            );
+        } catch (\Throwable $e) {
+            // Cache failure must never break the dispatch response.
+            \Log::debug('cacheQurbaniReturnToBase failed', ['rider' => $riderId, 'error' => $e->getMessage()]);
+        }
+    }
+
+    private function getCachedQurbaniReturnToBase(int $riderId): ?array
+    {
+        try {
+            $v = \Cache::get(self::QURBANI_RTB_CACHE_PREFIX . (int) $riderId);
+            if (!is_array($v)) return null;
+            // Defensive freshness check: if the projected ETA is more
+            // than 30 min in the past, treat as stale and drop. The
+            // TTL above is the primary guard; this catches edge cases
+            // where the cache TTL hadn't ticked yet (or a redis flush
+            // resurrected an old write).
+            if (!empty($v['estimated_at'])) {
+                $eta = \Carbon\Carbon::parse($v['estimated_at']);
+                if ($eta->lt(now()->subMinutes(30))) {
+                    \Cache::forget(self::QURBANI_RTB_CACHE_PREFIX . (int) $riderId);
+                    return null;
+                }
+            }
+            return $v;
+        } catch (\Throwable $e) {
+            return null;
+        }
+    }
+
+    private function forgetCachedQurbaniReturnToBase(int $riderId): void
+    {
+        try {
+            \Cache::forget(self::QURBANI_RTB_CACHE_PREFIX . (int) $riderId);
+        } catch (\Throwable $e) {
+            // Same swallow-rule as the writer.
+        }
+    }
+
+    /**
      * Helper: enrich each bundle with ETA comparison (early/late/on time)
      * once it has BOTH an estimated_delivery_at and a delivered_at.
      */
@@ -20624,6 +20742,17 @@ class RiderController extends Controller
                     }
                 }
 
+                // May-2026 — Return-to-base ETA piggy-back. Only show
+                // when the rider STILL has dispatched-undelivered work
+                // (the OFD bucket here): when the run is over the
+                // estimate is irrelevant and would just confuse the
+                // operator. Cache writer guarantees freshness; we don't
+                // call Google here.
+                $rtb = null;
+                if ((int) $r->ofd_items > 0) {
+                    $rtb = $this->getCachedQurbaniReturnToBase((int) $r->rider_id);
+                }
+
                 $payload[] = [
                     'rider_id' => (int) $r->rider_id,
                     'rider_name' => $r->rider_name,
@@ -20646,6 +20775,10 @@ class RiderController extends Controller
                         'latitude'       => $g && $g->latitude ? (float) $g->latitude : null,
                         'longitude'      => $g && $g->longitude ? (float) $g->longitude : null,
                     ],
+                    // Phase B (May-2026 ext) — back-to-base chip. Null
+                    // when the rider has no dispatched OFD items OR no
+                    // dispatch has run yet today.
+                    'return_to_base' => $rtb,
                 ];
             }
 
@@ -21554,10 +21687,16 @@ class RiderController extends Controller
                                         $eta = $now->copy()->addMinutes(round($cumulativeAtLast + $returnLegMin));
                                         $returnToBase = [
                                             'base_name'        => (string) $qBase->location_name,
+                                            'base_lat'         => (float) $qBase->latitude,
+                                            'base_lng'         => (float) $qBase->longitude,
                                             'return_minutes'   => (int) round($returnLegMin),
                                             'estimated_at'     => $eta->toIso8601String(),
                                             'estimated_at_iso' => $eta->toIso8601String(),
                                         ];
+                                        // May-2026 — Persist for manager
+                                        // dashboards. See dispatchQurbaniRoute
+                                        // for the rationale + cache helper.
+                                        $this->cacheQurbaniReturnToBase((int) $riderId, $returnToBase);
                                     }
                                 }
 
@@ -21949,6 +22088,10 @@ class RiderController extends Controller
                             'estimated_at'     => $eta->toIso8601String(),
                             'estimated_at_iso' => $eta->toIso8601String(),
                         ];
+                        // May-2026 — Persist for the manager dashboards
+                        // (mobile QurbaniRidersScreen + web /qurbani/riders)
+                        // and for /my-deliveries reloads. See helper docs.
+                        $this->cacheQurbaniReturnToBase((int) $riderId, $returnToBase);
                     }
                 }
             }
@@ -22196,6 +22339,22 @@ class RiderController extends Controller
 
             \DB::commit();
 
+            // May-2026 — RTB cache invalidation. If the rider has NO
+            // remaining dispatched-undelivered items after this cancel,
+            // forget the back-to-base estimate so the dashboard chip
+            // disappears immediately. When a single batch is cancelled
+            // but other batches remain dispatched we deliberately
+            // leave the cache alone — those other ETAs are still valid
+            // and the RTB chip represents the most recent dispatch.
+            $stillDispatched = \DB::table('t_crm_prod_order_line_item')
+                ->where('qurbani_assigned_rider_user_id', $riderId)
+                ->whereNotNull('qurbani_dispatched_at')
+                ->whereNull('qurbani_delivered_at')
+                ->count();
+            if ($stillDispatched === 0) {
+                $this->forgetCachedQurbaniReturnToBase((int) $riderId);
+            }
+
             // Group by order for a friendlier response payload that
             // the mobile UI can render in a confirmation toast.
             $byOrder = [];
@@ -22325,13 +22484,25 @@ class RiderController extends Controller
                 }
             }
 
-            $payload = $riders->map(function ($r) use ($dispatchByRider) {
+            // May-2026 — Same per-rider meta enrichment as the manager
+            // /store/riders?mode=qurbani endpoint so the handover
+            // picker can show region/contact next to each name in the
+            // same visual style.
+            $metaRaw = (string) \App\Models\FIN\ConfigModel::get('qurbani_rider_meta', '{}');
+            $metaMap = json_decode($metaRaw, true);
+            if (!is_array($metaMap)) { $metaMap = []; }
+
+            $payload = $riders->map(function ($r) use ($dispatchByRider, $metaMap) {
                 $d = $dispatchByRider[(int) $r->id] ?? null;
                 $inFlight = $d ? (int) $d->in_flight_items : 0;
                 $pending  = $d ? (int) $d->pending_items   : 0;
+                $key = (string) $r->id;
+                $m = isset($metaMap[$key]) && is_array($metaMap[$key]) ? $metaMap[$key] : null;
                 return [
                     'id'                  => (int) $r->id,
                     'fullname'            => $r->fullname,
+                    'qurbani_region'      => $m ? (string) ($m['region']  ?? '') : '',
+                    'qurbani_contact'     => $m ? (string) ($m['contact'] ?? '') : '',
                     'has_active_dispatch' => $inFlight > 0,
                     'in_flight_items'     => $inFlight,
                     'pending_items'       => $pending,

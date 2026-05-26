@@ -301,6 +301,12 @@ Route::middleware(['auth'])->group(function () {
         Route::post('/api/hidden-categories', [\App\Http\Controllers\CRM\QurbaniSettingsController::class, 'updateHiddenCategories'])->name('qurbani-settings.api.hidden-categories');
         // May-2026 — Qurbani rider whitelist (mobile rider pickers).
         Route::post('/api/qurbani-riders', [\App\Http\Controllers\CRM\QurbaniSettingsController::class, 'updateQurbaniRiders'])->name('qurbani-settings.api.qurbani-riders');
+        // May-2026 — Per-rider region + contact saved separately so
+        // adding/removing from the whitelist doesn't erase the meta.
+        // Region drives the auto-sort of the mobile rider picker by
+        // bulk-selection region; contact is reserved for the next-phase
+        // OFD WhatsApp template.
+        Route::post('/api/qurbani-rider-meta', [\App\Http\Controllers\CRM\QurbaniSettingsController::class, 'updateQurbaniRiderMeta'])->name('qurbani-settings.api.qurbani-rider-meta');
         // May-2026 — UI-driven verified-coords backfill (replaces the
         // SSH-only artisan command for non-CLI admins).
         Route::post('/api/backfill-verified-coords', [\App\Http\Controllers\CRM\QurbaniSettingsController::class, 'backfillVerifiedCoords'])->name('qurbani-settings.api.backfill-verified-coords');

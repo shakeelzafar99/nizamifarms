@@ -1926,6 +1926,42 @@ select.wa-mgr-input { background: #fff; cursor: pointer; }
     let searchTimeout = null;
     let convPollTimer = null;
     let msgPollTimer = null;
+    // ─────────────────────────────────────────────────────────────────────
+    // May-2026 — Message-pane pagination state.
+    //
+    // The chat panel always fetches the LATEST N messages from the server
+    // (controller now orders DESC, slices, then reverses to chronological).
+    // For longer threads (>50 msgs) we also need to let the user scroll
+    // BACK in time — that's what the "Load older messages" link at the
+    // top of the message list does. The link existed in the HTML for
+    // months but `loadOlderMessages()` was never defined, so clicking it
+    // threw a silent ReferenceError. These state vars + the function
+    // below close that gap.
+    //
+    //   waMsgs           — flat cumulative array of currently rendered
+    //                      messages (oldest first). Polling + send
+    //                      reset it to the latest N; "Load older"
+    //                      PREPENDS to it.
+    //   waMsgsHasMore    — true if the server hinted there are more
+    //                      OLDER messages available beyond what's in
+    //                      waMsgs. Drives whether the "Load older" link
+    //                      renders at the top.
+    //   waMsgsHistoryMode — set to true once the user has clicked
+    //                      "Load older" at least once for this open
+    //                      conversation. While true, the background
+    //                      polling loop SKIPS the wholesale replace
+    //                      (which would wipe the older history the
+    //                      user is reading) and instead just keeps
+    //                      mark-read in sync. Reset to false when a
+    //                      different conversation is opened.
+    //   waMsgsLoadingOlder — re-entrancy guard so a slow network or
+    //                        double-click can't fire two overlapping
+    //                        pagination requests.
+    // ─────────────────────────────────────────────────────────────────────
+    let waMsgs = [];
+    let waMsgsHasMore = false;
+    let waMsgsHistoryMode = false;
+    let waMsgsLoadingOlder = false;
     let templates = [];
     var _cachedApiTemplates = null;
 
@@ -2636,6 +2672,13 @@ select.wa-mgr-input { background: #fff; cursor: pointer; }
         document.getElementById('waChat').classList.add('visible');
         document.getElementById('waEmptyState').style.display = 'none';
         document.getElementById('waChatMessages').innerHTML = '<div class="wa-loading">Loading...</div>';
+        // May-2026 — opening a different conversation always exits
+        // history-scrollback mode. Polling for the new conversation
+        // should resume its normal "snap to latest N" behaviour.
+        waMsgs = [];
+        waMsgsHasMore = false;
+        waMsgsHistoryMode = false;
+        waMsgsLoadingOlder = false;
         // Phase 4 (May-2026): clear any stale active-delivery banner
         // from the previously-open conversation. loadOrdersPanel()
         // below will repopulate it for the new customer.
@@ -2702,6 +2745,18 @@ select.wa-mgr-input { background: #fff; cursor: pointer; }
         if (msgPollTimer) clearInterval(msgPollTimer);
         msgPollTimer = setInterval(() => {
             if (activeConvId !== id) return;
+            // May-2026 — while the user is scrolled into older history
+            // (after clicking "Load older messages"), the poll must NOT
+            // wholesale-replace the message list. Doing so would yank
+            // the chat back to the latest 50 and wipe whatever older
+            // batch they were reading. We still keep mark-read in sync
+            // so unread counts don't get stuck. The user gets back to
+            // the live tail by clicking the "Jump to latest" pill that
+            // loadOlderMessages() renders.
+            if (waMsgsHistoryMode) {
+                apiFetch('/messages/conversations/' + id + '/mark-read', {method:'POST'});
+                return;
+            }
             apiFetch('/messages/conversations/' + id).then(d => {
                 if (!d.success || activeConvId !== id) return;
                 activeConv = d.conversation;
@@ -2712,9 +2767,26 @@ select.wa-mgr-input { background: #fff; cursor: pointer; }
         }, POLL_INTERVAL);
     };
 
-    function renderMessages(msgs, hasMore) {
+    function renderMessages(msgs, hasMore, preserveHistoryMode) {
         const el = document.getElementById('waChatMessages');
+        // May-2026 — Cache the just-rendered list so loadOlderMessages()
+        // knows the current oldest visible id (waMsgs[0].id) to walk
+        // back from. Polling + send + initial-open all flow through
+        // here. The third arg (preserveHistoryMode) is true ONLY when
+        // loadOlderMessages prepends an older batch — every other path
+        // (initial open, poll, send, template send, invoice send,
+        // jumpToLatest) leaves it falsy so we snap back to the live
+        // tail and stop showing the "Jump to latest" pill.
+        waMsgs = Array.isArray(msgs) ? msgs : [];
+        waMsgsHasMore = !!hasMore;
+        if (!preserveHistoryMode) waMsgsHistoryMode = false;
         let html = '';
+        if (waMsgsHistoryMode) {
+            // While viewing older history, give the user a one-tap
+            // way back to the live tail (also exits history-mode so
+            // the regular poll resumes wholesale refreshes).
+            html += '<div class="wa-load-more"><a onclick="jumpToLatestMessages()" style="color:#16a34a;font-weight:600;">↓ Jump to latest messages</a></div>';
+        }
         if (hasMore) {
             html += '<div class="wa-load-more"><a onclick="loadOlderMessages()">Load older messages</a></div>';
         }
@@ -2880,6 +2952,113 @@ select.wa-mgr-input { background: #fff; cursor: pointer; }
             });
         });
     }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // May-2026 — Older-history pagination.
+    //
+    // Backend contract (mirrors mobile WhatsAppController::getMessages):
+    //   GET /messages/conversations/{id}?before=<id>&limit=50
+    //     → returns up to 50 messages with id < before, oldest first.
+    //     → response.has_more = true if there are still more BEFORE
+    //       that batch.
+    //
+    // The "Load older messages" link in renderMessages() used to call
+    // a function with this name, but the function had never been
+    // defined — clicking threw a silent ReferenceError, so the UI
+    // appeared to do nothing for any conversation over 50 messages.
+    // Defining it here fixes that, AND combined with the controller's
+    // new DESC ordering it means: by default the chat shows the
+    // LATEST 50, click to walk backwards through history 50 at a
+    // time, click "Jump to latest" to come back.
+    // ─────────────────────────────────────────────────────────────────────
+    window.loadOlderMessages = function () {
+        if (waMsgsLoadingOlder) return;
+        if (!waMsgs.length) return;
+        if (!activeConvId) return;
+        // Need the OLDEST currently-rendered id as the upper bound.
+        // waMsgs is chronological (oldest first), so waMsgs[0] is it.
+        const beforeId = waMsgs[0].id;
+        if (!beforeId) return;
+        waMsgsLoadingOlder = true;
+
+        // Capture scroll position relative to bottom so the user stays
+        // visually anchored to the message they were reading after the
+        // older batch is prepended (the new content pushes everything
+        // down, so we just compensate by adjusting scrollTop).
+        const el = document.getElementById('waChatMessages');
+        const distanceFromBottom = el.scrollHeight - el.scrollTop;
+
+        // Show a tiny inline spinner where the "Load older" link was so
+        // the user knows the click registered.
+        const loadMoreLink = el.querySelector('.wa-load-more a');
+        const originalLinkText = loadMoreLink ? loadMoreLink.textContent : null;
+        if (loadMoreLink) {
+            loadMoreLink.textContent = 'Loading older messages…';
+            loadMoreLink.style.pointerEvents = 'none';
+            loadMoreLink.style.opacity = '0.6';
+        }
+
+        apiFetch('/messages/conversations/' + activeConvId + '?before=' + encodeURIComponent(beforeId))
+            .then(function (d) {
+                if (!d || !d.success || activeConvId == null) {
+                    if (loadMoreLink) {
+                        loadMoreLink.textContent = originalLinkText || 'Load older messages';
+                        loadMoreLink.style.pointerEvents = '';
+                        loadMoreLink.style.opacity = '';
+                    }
+                    return;
+                }
+                const older = Array.isArray(d.messages) ? d.messages : [];
+                if (!older.length) {
+                    // No more history — disable further pagination but
+                    // STAY in history mode so the regular poll keeps
+                    // not snapping the user back to the live tail.
+                    waMsgsHistoryMode = true;
+                    renderMessages(waMsgs, false, true);
+                    return;
+                }
+                // Prepend older batch to the cumulative array.
+                const combined = older.concat(waMsgs);
+                waMsgsHistoryMode = true;
+                renderMessages(combined, !!d.has_more, true);
+
+                // Restore visual scroll position so the user stays on
+                // the same message they were reading (renderMessages
+                // ends with scrollTop = scrollHeight which would jump
+                // them to the latest bubble — undo that).
+                requestAnimationFrame(function () {
+                    const el2 = document.getElementById('waChatMessages');
+                    if (el2) el2.scrollTop = el2.scrollHeight - distanceFromBottom;
+                });
+            })
+            .catch(function () {
+                if (loadMoreLink) {
+                    loadMoreLink.textContent = originalLinkText || 'Load older messages';
+                    loadMoreLink.style.pointerEvents = '';
+                    loadMoreLink.style.opacity = '';
+                }
+            })
+            .finally(function () {
+                waMsgsLoadingOlder = false;
+            });
+    };
+
+    window.jumpToLatestMessages = function () {
+        if (!activeConvId) return;
+        // Exit history mode first so the next renderMessages() doesn't
+        // re-show the "Jump to latest" pill and the poll resumes
+        // normal wholesale refreshes.
+        waMsgsHistoryMode = false;
+        waMsgsLoadingOlder = false;
+        const el = document.getElementById('waChatMessages');
+        if (el) el.innerHTML = '<div class="wa-loading">Loading...</div>';
+        apiFetch('/messages/conversations/' + activeConvId).then(function (d) {
+            if (!d || !d.success || activeConvId == null) return;
+            activeConv = d.conversation;
+            if (typeof updateSessionUI === 'function') updateSessionUI(d.conversation);
+            renderMessages(d.messages, d.has_more);
+        });
+    };
 
     // ── Send Message ──
     document.getElementById('waSendBtn').addEventListener('click', sendMessage);

@@ -576,6 +576,13 @@ class QurbaniSettingsController extends Controller
             'ofd_enabled'                          => 'nullable|boolean',
             'ofd_template'                         => 'nullable|string|max:100',
             'ofd_self_collection_template'         => 'nullable|string|max:100',
+            // May-2026 — selects which body-param shape we send to the
+            // delivery template: 'standard' = 3 vars (name/order/time),
+            // 'with_rider' = 5 vars (adds rider name + contact). Must
+            // match the actual Meta-approved template body — picking
+            // with_rider but pointing `ofd_template` at a 3-var template
+            // will cause WhatsApp to reject the send.
+            'ofd_template_variant'                 => 'nullable|in:standard,with_rider',
             'ofd_require_dispatched'               => 'nullable|boolean',
             'ofd_timing_mode'                      => 'nullable|in:after_status,after_dispatch,before_eta_with_buffer',
             'ofd_minutes_after_status'             => 'nullable|integer|min:0|max:240',
@@ -651,6 +658,8 @@ class QurbaniSettingsController extends Controller
             'ofd_template'                  => ['qurbani_wa_ofd_template',                  'Auto-WA OFD trigger: template for delivery items'],
             'ofd_self_collection_template'  => ['qurbani_wa_ofd_self_collection_template',  'Auto-WA OFD trigger: template for self-collection items'],
             'ofd_timing_mode'               => ['qurbani_wa_ofd_timing_mode',               'Auto-WA OFD trigger: which timing rule fires the message'],
+            // May-2026 — see comment in updateWaAuto validation block.
+            'ofd_template_variant'          => ['qurbani_wa_ofd_template_variant',          'Auto-WA OFD trigger: delivery template variant (standard=3-var, with_rider=5-var qurbani_ofd_rider style)'],
         ];
         foreach ($stringFields as $payloadKey => [$cfgKey, $desc]) {
             if (!array_key_exists($payloadKey, $validated)) continue;
@@ -714,6 +723,8 @@ class QurbaniSettingsController extends Controller
             'ofd_enabled'                          => $bool('qurbani_wa_ofd_enabled', false),
             'ofd_template'                         => (string) $get('qurbani_wa_ofd_template', ''),
             'ofd_self_collection_template'         => (string) $get('qurbani_wa_ofd_self_collection_template', ''),
+            // May-2026 — see QurbaniWaAutoSender::buildOfdParams.
+            'ofd_template_variant'                 => (string) $get('qurbani_wa_ofd_template_variant', 'standard'),
             'ofd_require_dispatched'               => $bool('qurbani_wa_ofd_require_dispatched', true),
             'ofd_timing_mode'                      => (string) $get('qurbani_wa_ofd_timing_mode', 'before_eta_with_buffer'),
             'ofd_minutes_after_status'             => $int('qurbani_wa_ofd_minutes_after_status', 0),
@@ -1331,6 +1342,117 @@ class QurbaniSettingsController extends Controller
             'message'    => 'Qurbani rider list updated',
             'rider_ids'  => $valid,
             'dropped'    => array_values(array_diff($rawIds, $valid)),
+        ]);
+    }
+
+    /**
+     * POST /qurbani-settings/api/qurbani-rider-meta
+     *
+     * May-2026 — Saves per-rider extras (region + contact phone) for
+     * the Qurbani rider whitelist. Stored in a SEPARATE config key
+     * (`qurbani_rider_meta`) from the existing `qurbani_rider_ids`
+     * whitelist so:
+     *   • Older code paths that only care about the int[] whitelist
+     *     keep working unchanged (zero blast radius for the existing
+     *     mobile / dispatch / WhatsApp consumers).
+     *   • Removing a rider from the whitelist does NOT erase their
+     *     meta — re-adding them later restores the saved region /
+     *     contact rather than forcing a re-type.
+     *
+     * Shape on disk (JSON):
+     *   { "<user_id>": { "region": "...", "contact": "+92..." }, ... }
+     *
+     * Request body:
+     *   { rider_id: int,
+     *     region:   string|null  (max 80 chars, must match a
+     *                             t_crm_qurbani_field_options
+     *                             qurbani_region option_value when
+     *                             non-empty),
+     *     contact:  string|null  (max 32 chars, light shape check) }
+     *
+     * Why one rider per POST instead of a bulk replace? The settings
+     * UI debounces each text-input change individually — sending the
+     * whole map on every keystroke would race with the next keystroke
+     * if two riders are edited in quick succession. Per-rider posts
+     * merge cleanly on the server.
+     */
+    public function updateQurbaniRiderMeta(Request $request)
+    {
+        $validated = $request->validate([
+            'rider_id' => 'required|integer|min:1',
+            'region'   => 'nullable|string|max:80',
+            'contact'  => 'nullable|string|max:32',
+        ]);
+
+        $riderId = (int) $validated['rider_id'];
+        $region  = isset($validated['region'])  ? trim((string) $validated['region'])  : '';
+        $contact = isset($validated['contact']) ? trim((string) $validated['contact']) : '';
+
+        // Reject unknown rider IDs (defence-in-depth — the UI only
+        // exposes existing users but a hand-crafted POST should not
+        // be able to plant meta for arbitrary IDs).
+        $userExists = DB::table('t_sys_user')->where('id', $riderId)->exists();
+        if (!$userExists) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Rider not found',
+            ], 422);
+        }
+
+        // Validate region against the live qurbani_region options
+        // (same source the mobile and CRM dropdowns use). An empty
+        // region is allowed — it clears the existing assignment.
+        if ($region !== '') {
+            $regionExists = DB::table('t_crm_qurbani_field_options')
+                ->where('field_name', 'qurbani_region')
+                ->where('is_active', 1)
+                ->where('option_value', $region)
+                ->exists();
+            if (!$regionExists) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Region "' . $region . '" is not a valid qurbani region option',
+                ], 422);
+            }
+        }
+
+        // Light contact-number shape check. We don't enforce a strict
+        // E.164 because the field is informational (the OFD template
+        // phase will format it) — just trip on obviously bad inputs.
+        if ($contact !== '' && !preg_match('/^[\+0-9 ()\-]{6,}$/', $contact)) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Contact number contains invalid characters',
+            ], 422);
+        }
+
+        // Load existing map, merge, save.
+        $raw = (string) \App\Models\FIN\ConfigModel::get('qurbani_rider_meta', '{}');
+        $map = json_decode($raw, true);
+        if (!is_array($map)) { $map = []; }
+
+        if ($region === '' && $contact === '') {
+            // Both empty — drop the entry entirely so the map stays
+            // compact (vs storing {"region":"","contact":""}).
+            unset($map[(string) $riderId]);
+        } else {
+            $map[(string) $riderId] = [
+                'region'  => $region,
+                'contact' => $contact,
+            ];
+        }
+
+        \App\Models\FIN\ConfigModel::set(
+            'qurbani_rider_meta',
+            json_encode($map, JSON_UNESCAPED_UNICODE),
+            'Per-Qurbani-rider metadata (region + contact). Region used to sort/group the rider picker in the mobile QurbaniOpenOrdersScreen; contact reserved for the OFD WhatsApp template (next phase).'
+        );
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Rider details saved',
+            'rider_id' => $riderId,
+            'meta'    => $map[(string) $riderId] ?? null,
         ]);
     }
 }
