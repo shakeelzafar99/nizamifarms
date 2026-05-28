@@ -48,8 +48,8 @@ class AppController extends Controller
         return response()->json([
             'success' => true,
             'version' => [
-                'code' => 1050,                                    // Qurbani versionCode - bumped by build script
-                'name' => '10.5.0-qurbani',                        // Qurbani versionName (suffixed by gradle)
+                'code' => 1060,                                    // Qurbani versionCode - bumped by build script
+                'name' => '10.6.0-qurbani',                        // Qurbani versionName (suffixed by gradle)
                 'download_url' => url('/apk/qurbani-latest'),     // Serves com.nizamifarmsmobile.qurbani APK
                 'release_notes' => 'Qurbani companion app updates.',
                 'force_update' => false,                          // Soft prompt - user can postpone
