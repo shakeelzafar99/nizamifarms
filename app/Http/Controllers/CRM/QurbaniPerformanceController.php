@@ -55,6 +55,15 @@ class QurbaniPerformanceController extends Controller
     private const DEFAULT_GRACE_MIN = 10;
 
     /**
+     * Default "very late vs promise" threshold in minutes. Same value
+     * the auto-WA worker uses to detect a customer-facing slip that
+     * needs a delay-update message — so the KPI on this page and the
+     * "send updated time" worker agree on what counts as a real slip.
+     * Configurable via qurbani_wa_ofd_delay_threshold_minutes.
+     */
+    private const DEFAULT_VERY_LATE_PROMISE_MIN = 30;
+
+    /**
      * GET /qurbani/performance
      *
      * Renders the dashboard shell. All numbers + records are loaded
@@ -218,6 +227,26 @@ class QurbaniPerformanceController extends Controller
             ->whereNull('li.qurbani_dispatched_at')
             ->count();
 
+        // KPIs 9a-c (May-2026 — Promise drift). Compares actual
+        // qurbani_delivered_at against the EARLIEST OFD WhatsApp
+        // promise (t_ops_qurbani_wa_log) per line item, falling back
+        // to qurbani_estimated_delivery_at when no WA was sent. Three
+        // buckets:
+        //
+        //   - delivered_on_promise        |drift| ≤ grace
+        //   - delivered_late_promise      grace < drift ≤ very-late
+        //   - delivered_very_late_promise drift > very-late
+        //
+        // Avg drift is reported on the on-promise card's subline so
+        // the manager gets one number that summarises the whole day
+        // without us inflating the KPI count.
+        $veryLatePromiseMin = (int) ConfigModel::get(
+            'qurbani_wa_ofd_delay_threshold_minutes',
+            (string) self::DEFAULT_VERY_LATE_PROMISE_MIN
+        );
+        if ($veryLatePromiseMin < 1) $veryLatePromiseMin = self::DEFAULT_VERY_LATE_PROMISE_MIN;
+        $promiseStats = $this->loadDeliveredPromiseStats($day, $graceMin, $veryLatePromiseMin);
+
         // KPI 9 (May-2026): Unread WhatsApp messages from Qurbani
         // customers. Counts DISTINCT customers in the current day
         // scope who have at least one WhatsApp conversation with
@@ -317,6 +346,19 @@ class QurbaniPerformanceController extends Controller
             'config'     => [
                 'grace_minutes'        => $graceMin,
                 'at_risk_window_min'   => $atRiskWindow,
+                // May-2026 — promise-drift thresholds + headline avg
+                // so the UI can render "avg +Nm" once near the new
+                // KPI cluster without re-deriving the math.
+                'very_late_promise_min' => $veryLatePromiseMin,
+                'promise_drift'         => [
+                    'on_count'        => $promiseStats['on'],
+                    'late_count'      => $promiseStats['late'],
+                    'very_late_count' => $promiseStats['very_late'],
+                    'early_count'     => $promiseStats['early'],
+                    'no_promise_count' => $promiseStats['no_promise'],
+                    'avg_drift'       => $promiseStats['avg'],
+                    'count'           => $promiseStats['count'],
+                ],
             ],
             'kpis' => [
                 [
@@ -383,6 +425,37 @@ class QurbaniPerformanceController extends Controller
                     'value'     => $dispatchGap,
                     'tone'      => $dispatchGap > 0 ? 'warn' : 'muted',
                     'subline'   => 'Slaughtered but not yet dispatched',
+                    'drillable' => true,
+                ],
+                // May-2026 — Promise drift KPIs. Sit beside the slot-
+                // based late counts so management can compare both
+                // questions side-by-side: "did we hit the customer's
+                // chosen slot?" vs "did we hit the time we promised
+                // them at dispatch?".
+                [
+                    'id'        => 'delivered_on_promise',
+                    'label'     => 'Delivered on promise',
+                    'value'     => $promiseStats['on'],
+                    'tone'      => 'success',
+                    'subline'   => $promiseStats['count'] > 0
+                        ? ('Avg drift ' . ($promiseStats['avg'] > 0 ? '+' : '') . $promiseStats['avg'] . 'm across ' . $promiseStats['count'] . ' delivered')
+                        : 'Within ' . $graceMin . 'm of promised ETA',
+                    'drillable' => true,
+                ],
+                [
+                    'id'        => 'delivered_late_promise',
+                    'label'     => 'Delivered late vs promise',
+                    'value'     => $promiseStats['late'],
+                    'tone'      => $promiseStats['late'] > 0 ? 'warn' : 'muted',
+                    'subline'   => 'More than ' . $graceMin . 'm late vs WhatsApp promise',
+                    'drillable' => true,
+                ],
+                [
+                    'id'        => 'delivered_very_late_promise',
+                    'label'     => 'Delivered very late vs promise',
+                    'value'     => $promiseStats['very_late'],
+                    'tone'      => $promiseStats['very_late'] > 0 ? 'danger' : 'muted',
+                    'subline'   => 'More than ' . $veryLatePromiseMin . 'm late vs WhatsApp promise',
                     'drillable' => true,
                 ],
                 // May-2026 — Customer Service Manager KPI. Sits last

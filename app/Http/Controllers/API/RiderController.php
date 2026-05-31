@@ -20646,6 +20646,186 @@ class RiderController extends Controller
     }
 
     /**
+     * May-2026 — Delivered promise-drift enrichment.
+     *
+     * Each delivered bundle is annotated with how its actual delivery
+     * time compares to the "promise" given to the customer. Promise
+     * source priority (mirrors the manager Q&A on May-28 2026):
+     *
+     *   1. WhatsApp OFD message — the EARLIEST row in
+     *      t_ops_qurbani_wa_log with trigger IN (ofd, ofd_delay_update)
+     *      and status='sent' for any line item in the bundle. This is
+     *      the moment the customer was first told a time. Tagged
+     *      promise_source = 'whatsapp'.
+     *
+     *   2. System ETA fallback — qurbani_estimated_delivery_at when
+     *      no WA promise was ever sent (test mode, no phone, template
+     *      off, etc.). Tagged promise_source = 'system_eta' so the UI
+     *      can show "(no WA — fell back to system ETA)".
+     *
+     *   3. None — no promise on record; drift left null.
+     *
+     * Drift buckets use qurbani_late_grace_minutes (config, default 10)
+     * for the on-promise cutoff and a hard-coded 30 min for the very-
+     * late threshold to mirror qurbani_wa_ofd_delay_threshold_minutes
+     * (a 30-min slip is what the auto-WA "needs delay update" worker
+     * already flags as a real problem).
+     *
+     * One batched query for all line item ids in $bundles to keep this
+     * O(1) regardless of how many delivered stops the rider has.
+     */
+    private function enrichDeliveredPromiseDrift(array &$bundles): void
+    {
+        // Collect line_item ids for delivered bundles only — there's
+        // nothing to compare on pending/OFD rows yet.
+        $deliveredLineItemIds = [];
+        foreach ($bundles as $b) {
+            if (empty($b['qurbani_delivered_at'])) continue;
+            foreach (($b['items'] ?? []) as $it) {
+                if (!empty($it['id'])) $deliveredLineItemIds[] = (int) $it['id'];
+            }
+        }
+        $deliveredLineItemIds = array_values(array_unique($deliveredLineItemIds));
+
+        // Per-line-item WA log lookup. We keep the earliest sent OFD
+        // row (the original promise) AND the latest one (so we can
+        // surface revision count + "latest revised promise"). Done in
+        // PHP because a single grouped SQL would lose either end of
+        // the time-ordered list — and the dataset is small (one query,
+        // bounded by the rider's delivered stops for the day).
+        $logByLi = [];
+        if (!empty($deliveredLineItemIds)) {
+            $logRows = \DB::table('t_ops_qurbani_wa_log')
+                ->whereIn('line_item_id', $deliveredLineItemIds)
+                ->whereIn('trigger_event', ['ofd', 'ofd_delay_update'])
+                ->where('status', 'sent')
+                ->whereNotNull('delivery_time_used')
+                ->orderBy('created_at', 'asc')
+                ->select('line_item_id', 'trigger_event', 'delivery_time_used', 'created_at')
+                ->get();
+            foreach ($logRows as $row) {
+                $li = (int) $row->line_item_id;
+                if (!isset($logByLi[$li])) {
+                    $logByLi[$li] = [
+                        'earliest_eta_at'  => (string) $row->delivery_time_used,
+                        'earliest_sent_at' => (string) $row->created_at,
+                        'latest_eta_at'    => (string) $row->delivery_time_used,
+                        'latest_sent_at'   => (string) $row->created_at,
+                        'revisions'        => 0,
+                    ];
+                } else {
+                    $logByLi[$li]['latest_eta_at']  = (string) $row->delivery_time_used;
+                    $logByLi[$li]['latest_sent_at'] = (string) $row->created_at;
+                    if ($row->trigger_event === 'ofd_delay_update') {
+                        $logByLi[$li]['revisions']++;
+                    }
+                }
+            }
+        }
+
+        $grace = (int) \App\Models\FIN\ConfigModel::get('qurbani_late_grace_minutes', '10');
+        if ($grace < 0) $grace = 0;
+        $veryLate = (int) \App\Models\FIN\ConfigModel::get('qurbani_wa_ofd_delay_threshold_minutes', '30');
+        if ($veryLate < 1) $veryLate = 30;
+
+        foreach ($bundles as &$bundle) {
+            $bundle['promise_drift'] = null;
+            $delivered = $bundle['qurbani_delivered_at'] ?? null;
+            if (!$delivered) continue;
+
+            // Bundle-level promise = earliest WA-promise across any of
+            // its items (a bundle delivered together should share one
+            // customer-facing promise; if items somehow got staggered
+            // sends we take the FIRST as the canonical original).
+            $earliestEta = null;
+            $earliestSentAt = null;
+            $latestEta = null;
+            $latestSentAt = null;
+            $revisions = 0;
+            foreach (($bundle['items'] ?? []) as $it) {
+                $li = (int) ($it['id'] ?? 0);
+                if (!$li || !isset($logByLi[$li])) continue;
+                $rec = $logByLi[$li];
+                if ($earliestEta === null
+                    || strtotime($rec['earliest_sent_at']) < strtotime($earliestSentAt)) {
+                    $earliestEta = $rec['earliest_eta_at'];
+                    $earliestSentAt = $rec['earliest_sent_at'];
+                }
+                if ($latestEta === null
+                    || strtotime($rec['latest_sent_at']) > strtotime($latestSentAt)) {
+                    $latestEta = $rec['latest_eta_at'];
+                    $latestSentAt = $rec['latest_sent_at'];
+                }
+                $revisions += (int) $rec['revisions'];
+            }
+
+            // Pick promise source — WA wins, system ETA falls back.
+            $promiseSource = null;
+            $promiseEta = null;
+            if ($earliestEta) {
+                $promiseSource = 'whatsapp';
+                $promiseEta = $earliestEta;
+            } elseif (!empty($bundle['qurbani_estimated_delivery_at'])) {
+                $promiseSource = 'system_eta';
+                $promiseEta = $bundle['qurbani_estimated_delivery_at'];
+            }
+            if (!$promiseEta) continue;
+
+            try {
+                $promiseCarbon = \Carbon\Carbon::parse($promiseEta);
+                $actualCarbon = \Carbon\Carbon::parse($delivered);
+                // Signed minutes — positive = delivered AFTER promise (late);
+                // negative = delivered before promise (early).
+                $driftMin = (int) round($promiseCarbon->diffInMinutes($actualCarbon, false));
+            } catch (\Throwable $e) {
+                continue;
+            }
+
+            // Bucket: on_promise within ±grace; late > grace; very_late
+            // beyond the WA "needs delay update" threshold; early when
+            // negative beyond the grace window.
+            $bucket = 'on_promise';
+            $abs = abs($driftMin);
+            if ($driftMin > $grace) {
+                $bucket = $driftMin > $veryLate ? 'very_late' : 'late';
+            } elseif ($driftMin < -$grace) {
+                $bucket = 'early';
+            }
+
+            // Human-readable status text for the chip.
+            if ($bucket === 'on_promise') {
+                $statusText = $abs <= 1 ? 'On promise' : ($abs . 'm vs promise');
+            } elseif ($bucket === 'early') {
+                $statusText = $abs . 'm before promise';
+            } else {
+                $statusText = $driftMin . 'm late';
+            }
+
+            $bundle['promise_drift'] = [
+                'promise_source'        => $promiseSource,           // whatsapp | system_eta
+                'promised_eta_at'       => (string) $promiseEta,
+                'promised_eta_display'  => $promiseCarbon->format('h:i A'),
+                'promised_sent_at'      => $earliestSentAt,         // when WA went out (null for system_eta fallback)
+                'delivered_at_display'  => $actualCarbon->format('h:i A'),
+                'drift_minutes'         => $driftMin,
+                'drift_bucket'          => $bucket,                  // on_promise | late | very_late | early
+                'status_text'           => $statusText,
+                'grace_minutes'         => $grace,
+                'very_late_threshold'   => $veryLate,
+                // Revision context — populated only when WA delay-
+                // updates were actually sent. Lets the UI render
+                // "(1 revision sent at 2:18 PM → revised 2:45 PM)".
+                'revisions_sent'        => $revisions,
+                'latest_promised_eta_at'      => $revisions > 0 ? $latestEta : null,
+                'latest_promised_eta_display' => ($revisions > 0 && $latestEta)
+                    ? \Carbon\Carbon::parse($latestEta)->format('h:i A') : null,
+                'latest_promised_sent_at'     => $revisions > 0 ? $latestSentAt : null,
+            ];
+        }
+        unset($bundle);
+    }
+
+    /**
      * GET /rider/qurbani/riders
      *
      * Manager view: list every rider that currently has at least one
@@ -20918,6 +21098,11 @@ class RiderController extends Controller
 
             $this->enrichBundleEtaComparison($bundles);
             $this->enrichBundleSlotCompare($bundles);
+            // May-2026 — promise-vs-actual drift on delivered bundles.
+            // Reads t_ops_qurbani_wa_log to pull the original ETA the
+            // customer was told via WhatsApp (or falls back to system
+            // ETA). Used by the rider-route Delivered redesign.
+            $this->enrichDeliveredPromiseDrift($bundles);
 
             $rider = \DB::table('t_sys_user')
                 ->where('id', $riderId)

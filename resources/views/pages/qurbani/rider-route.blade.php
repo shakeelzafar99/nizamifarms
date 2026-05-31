@@ -234,6 +234,92 @@
 }
 
 .qrr-updated-at { font-size: 11px; color: #9CA3AF; }
+
+/* ── Delivered redesign (May-2026) — date → dispatch grouping ──── */
+/* Collapsible section toggle (caret + click target on section head) */
+.qrr-section-head { cursor: default; }
+.qrr-section-head.qrr-sh-collapsible { cursor: pointer; user-select: none; }
+.qrr-section-head .qrr-caret {
+    display: inline-block; width: 14px; text-align: center;
+    transition: transform .15s; font-size: 12px; margin-left: 8px;
+}
+.qrr-section.qrr-collapsed .qrr-section-body { display: none; }
+.qrr-section.qrr-collapsed .qrr-caret { transform: rotate(-90deg); }
+
+/* Date group within Delivered */
+.qrr-date-group {
+    border-bottom: 1px solid #F3F4F6;
+}
+.qrr-date-group:last-child { border-bottom: 0; }
+.qrr-date-head {
+    padding: 10px 16px; background: #F9FAFB;
+    display: flex; justify-content: space-between; align-items: center;
+    gap: 10px; font-size: 13px; font-weight: 700; color: #111827;
+    cursor: pointer; user-select: none;
+    border-bottom: 1px solid #F3F4F6;
+}
+.qrr-date-head:hover { background: #F3F4F6; }
+.qrr-date-head .qrr-date-stats { font-size: 11px; font-weight: 600; color: #6B7280; }
+.qrr-date-group.qrr-collapsed .qrr-date-body { display: none; }
+.qrr-date-group.qrr-collapsed .qrr-caret { transform: rotate(-90deg); }
+.qrr-date-body { padding: 4px 0; }
+
+/* Dispatch sub-group inside a date */
+.qrr-disp-group { padding: 4px 16px 10px; }
+.qrr-disp-head {
+    padding: 8px 0; display: flex; justify-content: space-between; align-items: center;
+    gap: 10px; font-size: 12px; font-weight: 600; color: #374151;
+    border-bottom: 1px dashed #E5E7EB; margin-bottom: 6px;
+}
+.qrr-disp-head .qrr-disp-title { display: flex; align-items: center; gap: 6px; }
+.qrr-disp-head .qrr-disp-stats { font-size: 11px; color: #6B7280; font-weight: 600; }
+
+/* Compact delivered-row body (vs. the heavy OFD-style bundle row).
+   We deliberately drop the address/phone/items unless the row is
+   expanded — managers only need the timing summary on Delivered. */
+.qrr-drow {
+    padding: 8px 0; border-bottom: 1px solid #F9FAFB;
+    display: grid; grid-template-columns: 1fr auto; gap: 8px 14px;
+    align-items: start;
+}
+.qrr-drow:last-child { border-bottom: 0; }
+.qrr-drow-line1 { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.qrr-drow-line1 .qrr-drow-order { font-size: 11px; color: #6B7280; font-weight: 600; }
+.qrr-drow-line1 .qrr-drow-cust { font-size: 13px; color: #111827; font-weight: 700; }
+.qrr-drow-line2 { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; font-size: 11px; color: #4B5563; }
+.qrr-drow-line2 .qrr-drow-times { font-weight: 600; color: #1F2937; }
+.qrr-drow-revisions { font-size: 10px; color: #6B7280; font-style: italic; }
+.qrr-drow-toggle {
+    background: transparent; border: 0; color: #6B7280;
+    font-size: 11px; cursor: pointer; padding: 0;
+    text-decoration: underline; text-underline-offset: 2px;
+}
+.qrr-drow-toggle:hover { color: #1F2937; }
+.qrr-drow-details {
+    grid-column: 1 / -1; padding: 6px 0 0; font-size: 12px; color: #4B5563;
+    border-top: 1px dashed #F3F4F6; margin-top: 4px;
+}
+.qrr-drow-details .qrr-drow-addr a { color: #2563EB; text-decoration: none; }
+.qrr-drow-details .qrr-drow-addr a:hover { text-decoration: underline; }
+.qrr-drow-details .qrr-drow-phone { font-size: 11px; color: #6B7280; }
+.qrr-drow-details .qrr-drow-phone a { color: #6B7280; text-decoration: none; }
+.qrr-drow-details .qrr-drow-phone a:hover { color: #1F2937; text-decoration: underline; }
+
+/* Drift chips */
+.qrr-chip-drift-on    { background: #D1FAE5; color: #065F46; }
+.qrr-chip-drift-late  { background: #FEF3C7; color: #92400E; }
+.qrr-chip-drift-vlate { background: #FEE2E2; color: #991B1B; }
+.qrr-chip-drift-early { background: #DBEAFE; color: #1E40AF; }
+.qrr-chip-drift-none  { background: #F3F4F6; color: #6B7280; }
+.qrr-chip-promise-src { background: #F5F3FF; color: #5B21B6; }
+
+/* Section head with stats line (right-aligned summary above caret) */
+.qrr-section-head-right { display: flex; align-items: center; gap: 10px; }
+.qrr-section-head .qrr-summary {
+    background: rgba(255,255,255,.18); color: #fff;
+    padding: 3px 10px; border-radius: 999px;
+    font-size: 11px; font-weight: 700;
+}
 </style>
 @endpush
 
@@ -584,20 +670,23 @@
     }
 
     // ── Group bundles into sections ───────────────────────────────
-    // Same logic as QurbaniRiderRouteScreen.js — bundles batched by
-    // qurbani_dispatched_at (5-min tolerance), pending grouped under
-    // "Awaiting dispatch", delivered grouped at the bottom.
+    // OFD bundles cluster by qurbani_dispatched_at (5-min tolerance).
+    // Pending = no dispatch yet.
+    // Delivered (May-2026) — two-tier: date(delivered_at) → dispatch
+    // batch (same 5-min window as OFD). Bundles delivered without any
+    // qurbani_dispatched_at go into a dedicated "no dispatch" bucket
+    // at the bottom of each date. This lets management read drift
+    // per dispatch event without us flattening the run together.
     function buildSections(bundles) {
-        const out = { ofdBatches: [], pending: [], delivered: [] };
+        const out = { ofdBatches: [], pending: [], delivered: [], deliveredDates: [] };
         const dispatched = [];
+        const delivered = [];
         bundles.forEach(b => {
-            if (b.bundle_status === 'delivered') out.delivered.push(b);
+            if (b.bundle_status === 'delivered') delivered.push(b);
             else if (b.bundle_dispatch_status === 'dispatched') dispatched.push(b);
             else out.pending.push(b);
         });
 
-        // Cluster dispatched bundles by qurbani_dispatched_at within
-        // a 5-min window (same heuristic the dispatch-map endpoint uses).
         dispatched.sort((a, b) => String(a.qurbani_dispatched_at).localeCompare(String(b.qurbani_dispatched_at)));
         let currentBatch = null;
         dispatched.forEach(b => {
@@ -609,7 +698,6 @@
             currentBatch.bundles.push(b);
         });
 
-        // Sort within each section by priority asc (NULL last).
         const byPri = (a, b) => {
             const pa = a.qurbani_delivery_priority == null ? 9999 : a.qurbani_delivery_priority;
             const pb = b.qurbani_delivery_priority == null ? 9999 : b.qurbani_delivery_priority;
@@ -617,9 +705,235 @@
         };
         out.ofdBatches.forEach(batch => batch.bundles.sort(byPri));
         out.pending.sort(byPri);
-        out.delivered.sort(byPri);
+
+        // ── Delivered: date → dispatch grouping ────────────────────
+        // Date key = local-date of qurbani_delivered_at (YYYY-MM-DD).
+        // Within each date, cluster by qurbani_dispatched_at (5-min
+        // window). Bundles with NULL dispatched_at go into a
+        // dedicated "no_dispatch" bucket per date.
+        delivered.sort((a, b) => String(a.qurbani_delivered_at).localeCompare(String(b.qurbani_delivered_at)));
+        const dateMap = new Map();
+        delivered.forEach(b => {
+            const d = b.qurbani_delivered_at
+                ? new Date(String(b.qurbani_delivered_at).replace(' ', 'T'))
+                : null;
+            const dateKey = d ? d.toISOString().slice(0, 10) : 'unknown';
+            if (!dateMap.has(dateKey)) {
+                dateMap.set(dateKey, {
+                    date_key: dateKey,
+                    date_obj: d,
+                    dispatchBatches: [],   // ordered list of {t0, dispatched_at, bundles[]}
+                    noDispatch: [],
+                    bundles: [],           // flat copy for stats
+                });
+            }
+            dateMap.get(dateKey).bundles.push(b);
+            if (!b.qurbani_dispatched_at) {
+                dateMap.get(dateKey).noDispatch.push(b);
+                return;
+            }
+            const t = new Date(String(b.qurbani_dispatched_at).replace(' ', 'T')).getTime();
+            const dispatchBatches = dateMap.get(dateKey).dispatchBatches;
+            let target = null;
+            for (const batch of dispatchBatches) {
+                if (Math.abs(t - batch.t0) <= 5 * 60 * 1000) { target = batch; break; }
+            }
+            if (!target) {
+                target = { t0: t, dispatched_at: b.qurbani_dispatched_at, bundles: [] };
+                dispatchBatches.push(target);
+            }
+            target.bundles.push(b);
+        });
+
+        // Order: dates DESC (most recent first); dispatch batches ASC
+        // within a date (natural reading order of the day); bundles
+        // within a batch by delivered_at ASC (the order they happened).
+        const byDelivered = (a, b) => String(a.qurbani_delivered_at).localeCompare(String(b.qurbani_delivered_at));
+        const dates = Array.from(dateMap.values());
+        dates.sort((a, b) => String(b.date_key).localeCompare(String(a.date_key)));
+        dates.forEach(date => {
+            date.dispatchBatches.sort((a, b) => a.t0 - b.t0);
+            date.dispatchBatches.forEach(batch => batch.bundles.sort(byDelivered));
+            date.noDispatch.sort(byDelivered);
+        });
+        out.deliveredDates = dates;
+        out.delivered = delivered; // kept for back-compat / counts
         return out;
     }
+
+    // ── Delivered drift stats helpers ─────────────────────────────
+    // bucketStats: walks bundles and aggregates promise_drift into a
+    // single object the UI can render as "N on promise · N late · avg +Nm".
+    function deliveredStats(bundles) {
+        const s = { total: bundles.length, on: 0, late: 0, vlate: 0, early: 0, noPromise: 0, sumDrift: 0, driftN: 0 };
+        bundles.forEach(b => {
+            const pd = b.promise_drift;
+            if (!pd) { s.noPromise++; return; }
+            if (pd.drift_bucket === 'on_promise') s.on++;
+            else if (pd.drift_bucket === 'late')    s.late++;
+            else if (pd.drift_bucket === 'very_late') s.vlate++;
+            else if (pd.drift_bucket === 'early')   s.early++;
+            if (pd.drift_minutes != null) { s.sumDrift += pd.drift_minutes; s.driftN++; }
+        });
+        s.avgDrift = s.driftN > 0 ? Math.round(s.sumDrift / s.driftN) : null;
+        return s;
+    }
+
+    function statsLine(s, { compact } = { compact: false }) {
+        const parts = [];
+        parts.push(s.total + ' stop' + (s.total === 1 ? '' : 's'));
+        if (s.total > 0) {
+            parts.push(s.on + ' on promise');
+            if (s.late + s.vlate > 0)  parts.push((s.late + s.vlate) + ' late');
+            if (!compact && s.early > 0) parts.push(s.early + ' early');
+            if (s.avgDrift != null) {
+                const sign = s.avgDrift > 0 ? '+' : '';
+                parts.push('avg ' + sign + s.avgDrift + 'm');
+            }
+            if (!compact && s.noPromise > 0) parts.push(s.noPromise + ' no promise');
+        }
+        return parts.join(' · ');
+    }
+
+    function dateLabel(dateObj, dateKey) {
+        if (!dateObj || dateKey === 'unknown') return 'Unknown date';
+        const today = new Date(); today.setHours(0,0,0,0);
+        const yesterday = new Date(today); yesterday.setDate(today.getDate() - 1);
+        const d = new Date(dateObj); d.setHours(0,0,0,0);
+        if (d.getTime() === today.getTime())     return 'Today — ' + dateObj.toLocaleDateString([], { weekday: 'short', day: '2-digit', month: 'short' });
+        if (d.getTime() === yesterday.getTime()) return 'Yesterday — ' + dateObj.toLocaleDateString([], { weekday: 'short', day: '2-digit', month: 'short' });
+        return dateObj.toLocaleDateString([], { weekday: 'short', day: '2-digit', month: 'short', year: 'numeric' });
+    }
+
+    function driftChip(b) {
+        const pd = b.promise_drift;
+        if (!pd) {
+            return '<span class="qrr-chip qrr-chip-drift-none" title="No promise on record">— No promise</span>';
+        }
+        const cls = pd.drift_bucket === 'on_promise' ? 'qrr-chip-drift-on'
+                  : pd.drift_bucket === 'late'       ? 'qrr-chip-drift-late'
+                  : pd.drift_bucket === 'very_late'  ? 'qrr-chip-drift-vlate'
+                  : pd.drift_bucket === 'early'      ? 'qrr-chip-drift-early'
+                  : 'qrr-chip-drift-none';
+        const icon = pd.drift_bucket === 'on_promise' ? '✓'
+                   : pd.drift_bucket === 'early'      ? '✓'
+                   : pd.drift_bucket === 'very_late'  ? '⚠'
+                   : '⚠';
+        const tip = pd.promise_source === 'whatsapp'
+            ? ('Promised via WhatsApp at ' + (pd.promised_sent_at || ''))
+            : 'No WhatsApp promise sent — falling back to system ETA';
+        return '<span class="qrr-chip ' + cls + '" title="' + esc(tip) + '">' + icon + ' ' + esc(pd.status_text) + '</span>';
+    }
+
+    function promiseSourceChip(b) {
+        const pd = b.promise_drift;
+        if (!pd) return '';
+        if (pd.promise_source === 'system_eta') {
+            return '<span class="qrr-chip qrr-chip-promise-src" title="No WhatsApp message went out — comparing against the system ETA at delivery time.">⚠ no WA</span>';
+        }
+        return '';
+    }
+
+    function revisionsLine(b) {
+        const pd = b.promise_drift;
+        if (!pd || !pd.revisions_sent) return '';
+        const r = pd.revisions_sent;
+        const latest = pd.latest_promised_eta_display
+            ? (' → revised ' + esc(pd.latest_promised_eta_display))
+            : '';
+        const sentAt = pd.latest_promised_sent_at
+            ? (' (at ' + esc(clockTime(pd.latest_promised_sent_at)) + ')')
+            : '';
+        return '<div class="qrr-drow-revisions">' + r + ' revision' + (r === 1 ? '' : 's') + ' sent' + sentAt + latest + '</div>';
+    }
+
+    function deliveredRow(b) {
+        const pd = b.promise_drift;
+        const promisedHtml = pd
+            ? ('Promised ' + esc(pd.promised_eta_display) + ' → Delivered ' + esc(pd.delivered_at_display))
+            : ('Delivered ' + esc(clockTime(b.qurbani_delivered_at) || '—'));
+        const slotChipHtml = slotCompareChip(b);
+        const promiseSrc = promiseSourceChip(b);
+        const detailsId = 'qrrDet-' + esc(b.bundle_key || (b.order_id + '-' + b.customer_id));
+
+        // Address + phone fallback for the expandable details strip.
+        let addrHtml = esc(b.customer_address || '—');
+        if (b.verified_location_url) {
+            addrHtml = '<a href="' + esc(b.verified_location_url) + '" target="_blank" rel="noopener">' + esc(b.customer_address || 'Verified pin') + '</a>';
+        } else if (b.cust_lat && b.cust_lng) {
+            const url = 'https://www.google.com/maps/search/?api=1&query=' + b.cust_lat + ',' + b.cust_lng;
+            addrHtml = '<a href="' + esc(url) + '" target="_blank" rel="noopener">' + esc(b.customer_address || (b.cust_lat + ', ' + b.cust_lng)) + '</a>';
+        }
+        const phoneHtml = b.customer_phone
+            ? '<div class="qrr-drow-phone">📞 <a href="tel:' + esc(b.customer_phone) + '">' + esc(b.customer_phone) + '</a></div>'
+            : '';
+
+        return ''
+            + '<div class="qrr-drow">'
+            +   '<div>'
+            +     '<div class="qrr-drow-line1">'
+            +       '<span class="qrr-drow-order">' + esc(b.order_number || '') + '</span>'
+            +       '<span class="qrr-drow-cust">' + esc(b.customer_name || 'Unknown') + '</span>'
+            +     '</div>'
+            +     '<div class="qrr-drow-line2">'
+            +       '<span class="qrr-drow-times">' + promisedHtml + '</span>'
+            +       driftChip(b)
+            +       promiseSrc
+            +       slotChipHtml
+            +       (b.bundle_size && b.bundle_size > 1 ? bundleChip(b) : '')
+            +     '</div>'
+            +     revisionsLine(b)
+            +   '</div>'
+            +   '<div>'
+            +     '<button class="qrr-drow-toggle" type="button" onclick="qrrToggleDetails(\'' + esc(detailsId) + '\', this)">▾ Details</button>'
+            +   '</div>'
+            +   '<div class="qrr-drow-details" id="' + esc(detailsId) + '" style="display:none;">'
+            +     '<div class="qrr-drow-addr">' + addrHtml + '</div>'
+            +     phoneHtml
+            +     (b.qurbani_region || b.qurbani_sub_region
+                    ? '<div style="margin-top:4px;">' + regionChip(b) + '</div>'
+                    : '')
+            +   '</div>'
+            + '</div>';
+    }
+
+    window.qrrToggleDetails = function(id, btn) {
+        const el = document.getElementById(id);
+        if (!el) return;
+        const open = el.style.display === 'none';
+        el.style.display = open ? '' : 'none';
+        if (btn) btn.textContent = open ? '▴ Hide' : '▾ Details';
+    };
+
+    // Persisted collapse state — keyed per rider so two browser tabs
+    // viewing different riders don't fight each other.
+    function storageKey(suffix) { return 'qrr.' + RIDER_ID + '.' + suffix; }
+    function getCollapsed(suffix, fallback) {
+        try {
+            const v = localStorage.getItem(storageKey(suffix));
+            if (v === '1') return true;
+            if (v === '0') return false;
+        } catch (e) {}
+        return fallback;
+    }
+    function setCollapsed(suffix, value) {
+        try { localStorage.setItem(storageKey(suffix), value ? '1' : '0'); } catch (e) {}
+    }
+
+    window.qrrToggleSection = function(suffix, el) {
+        const section = el.closest('.qrr-section');
+        if (!section) return;
+        const collapsed = !section.classList.contains('qrr-collapsed');
+        section.classList.toggle('qrr-collapsed', collapsed);
+        setCollapsed(suffix, collapsed);
+    };
+    window.qrrToggleDate = function(suffix, el) {
+        const group = el.closest('.qrr-date-group');
+        if (!group) return;
+        const collapsed = !group.classList.contains('qrr-collapsed');
+        group.classList.toggle('qrr-collapsed', collapsed);
+        setCollapsed(suffix, collapsed);
+    };
 
     function section(headerClass, title, meta, bundles) {
         if (!bundles || !bundles.length) return '';
@@ -631,6 +945,80 @@
             +   '</div>'
             +   '<div class="qrr-section-body">'
             +     bundles.map(renderBundle).join('')
+            +   '</div>'
+            + '</div>';
+    }
+
+    // May-2026 — Delivered redesign. Renders a collapsible section
+    // with three tiers: section → date → dispatch. Default-collapsed
+    // when there are > 10 stops so the manager doesn't get
+    // overwhelmed; persists per-rider in localStorage. Today auto-
+    // expands; older dates collapse.
+    function renderDeliveredSection(deliveredDates, totalDelivered) {
+        if (!deliveredDates || !deliveredDates.length) return '';
+        // Aggregate section-level stats
+        const allDelivered = [];
+        deliveredDates.forEach(d => d.bundles.forEach(b => allDelivered.push(b)));
+        const secStats = deliveredStats(allDelivered);
+
+        const sectionCollapsed = getCollapsed('deliveredOpen', totalDelivered > 10);
+        const sectionClass = sectionCollapsed ? ' qrr-collapsed' : '';
+        const todayKey = (new Date()).toISOString().slice(0, 10);
+
+        let datesHtml = '';
+        deliveredDates.forEach(date => {
+            const stats = deliveredStats(date.bundles);
+            // Today auto-expands by default; older dates collapse by
+            // default; per-date preference overrides via localStorage.
+            const dateDefaultCollapsed = (date.date_key !== todayKey);
+            const dateCollapsed = getCollapsed('deliveredDate.' + date.date_key, dateDefaultCollapsed);
+            const dateClass = dateCollapsed ? ' qrr-collapsed' : '';
+
+            // Build dispatch sub-groups + no-dispatch tail.
+            let bodyHtml = '';
+            date.dispatchBatches.forEach((batch) => {
+                const s = deliveredStats(batch.bundles);
+                bodyHtml += ''
+                    + '<div class="qrr-disp-group">'
+                    +   '<div class="qrr-disp-head">'
+                    +     '<div class="qrr-disp-title">🚀 Dispatched ' + esc(clockTime(batch.dispatched_at) || '') + '</div>'
+                    +     '<div class="qrr-disp-stats">' + esc(statsLine(s, { compact: true })) + '</div>'
+                    +   '</div>'
+                    +   batch.bundles.map(deliveredRow).join('')
+                    + '</div>';
+            });
+            if (date.noDispatch.length) {
+                const s = deliveredStats(date.noDispatch);
+                bodyHtml += ''
+                    + '<div class="qrr-disp-group">'
+                    +   '<div class="qrr-disp-head">'
+                    +     '<div class="qrr-disp-title">⚪ Delivered without dispatch</div>'
+                    +     '<div class="qrr-disp-stats">' + esc(statsLine(s, { compact: true })) + '</div>'
+                    +   '</div>'
+                    +   date.noDispatch.map(deliveredRow).join('')
+                    + '</div>';
+            }
+
+            datesHtml += ''
+                + '<div class="qrr-date-group' + dateClass + '">'
+                +   '<div class="qrr-date-head" onclick="qrrToggleDate(\'deliveredDate.' + esc(date.date_key) + '\', this)">'
+                +     '<div>📅 ' + esc(dateLabel(date.date_obj, date.date_key)) + ' <span class="qrr-caret">▼</span></div>'
+                +     '<div class="qrr-date-stats">' + esc(statsLine(stats, { compact: false })) + '</div>'
+                +   '</div>'
+                +   '<div class="qrr-date-body">' + bodyHtml + '</div>'
+                + '</div>';
+        });
+
+        return ''
+            + '<div class="qrr-section' + sectionClass + '">'
+            +   '<div class="qrr-section-head qrr-sh-delivered qrr-sh-collapsible" onclick="qrrToggleSection(\'deliveredOpen\', this)">'
+            +     '<h2>✓ Delivered <span class="qrr-caret">▼</span></h2>'
+            +     '<div class="qrr-section-head-right">'
+            +       '<span class="qrr-summary">' + esc(statsLine(secStats, { compact: false })) + '</span>'
+            +     '</div>'
+            +   '</div>'
+            +   '<div class="qrr-section-body">'
+            +     datesHtml
             +   '</div>'
             + '</div>';
     }
@@ -654,7 +1042,7 @@
             html += section('qrr-sh-active', title, meta, batch.bundles);
         });
         html += section('qrr-sh-pending', '📋 Awaiting Dispatch', sections.pending.length + ' stop' + (sections.pending.length === 1 ? '' : 's'), sections.pending);
-        html += section('qrr-sh-delivered', '✓ Delivered', sections.delivered.length + ' stop' + (sections.delivered.length === 1 ? '' : 's'), sections.delivered);
+        html += renderDeliveredSection(sections.deliveredDates, sections.delivered.length);
         document.getElementById('qrrBody').innerHTML = html;
     }
 
