@@ -524,10 +524,67 @@ class WhatsAppWebController extends Controller
             }
         }
 
-        $conversations = $convs->map(function ($conv) use ($unreadByConv, $lastMsgByConv, $hasQurbaniCol, $matchByConvId, $labelsByConv, $mentionsByConv, $failedByConv) {
+        // Jun-2026 — Payment-proof flag per customer (does this customer have a
+        // matched WhatsApp screenshot / bank email?). Bulk lookup, no N+1.
+        $proofByCustomer = [];
+        if (config('payment_signals.enabled') && Schema::hasTable('t_fin_payment_signal')) {
+            $custIds = $convs->pluck('customer_id')->filter()->unique()->values()->all();
+            if (!empty($custIds)) {
+                $rows = DB::table('t_fin_payment_signal')
+                    ->whereIn('matched_customer_id', $custIds)
+                    ->whereIn('status', ['matched', 'amount_mismatch'])
+                    ->get(['matched_customer_id', 'matched_order_id', 'source', 'status']);
+                // Drop signals whose order's online approval is already approved —
+                // the badge is an action prompt, not a permanent flag.
+                $settledOrders = array_flip(
+                    \App\Services\Payments\Signals\PaymentProofStatusService::settledOrderIds(
+                        $rows->pluck('matched_order_id')->all()
+                    )
+                );
+                foreach ($rows as $r) {
+                    if ($r->matched_order_id !== null && isset($settledOrders[(int) $r->matched_order_id])) {
+                        continue;
+                    }
+                    $c = $r->matched_customer_id;
+                    $proofByCustomer[$c] ??= ['wa' => false, 'email' => false, 'matched' => false, 'mismatch' => false];
+                    if ($r->source === 'whatsapp') $proofByCustomer[$c]['wa'] = true;
+                    if ($r->source === 'email')    $proofByCustomer[$c]['email'] = true;
+                    if ($r->status === 'matched')  $proofByCustomer[$c]['matched'] = true;
+                    if ($r->status === 'amount_mismatch') $proofByCustomer[$c]['mismatch'] = true;
+                }
+            }
+        }
+
+        $conversations = $convs->map(function ($conv) use ($unreadByConv, $lastMsgByConv, $hasQurbaniCol, $matchByConvId, $labelsByConv, $mentionsByConv, $failedByConv, $proofByCustomer) {
             $lastMsg = $lastMsgByConv[$conv->id] ?? null;
             $unread = $unreadByConv[$conv->id] ?? 0;
             $failed = $failedByConv[$conv->id] ?? null;
+
+            // Payment-proof badge payload for this conversation's customer.
+            $proof = null;
+            $pf = $conv->customer_id ? ($proofByCustomer[$conv->customer_id] ?? null) : null;
+            if ($pf) {
+                if ($pf['wa'] && $pf['email'] && $pf['matched']) {
+                    $pStatus = \App\Services\Payments\Signals\PaymentProofStatusService::VERIFIED;
+                } elseif ($pf['mismatch'] && !$pf['matched']) {
+                    $pStatus = \App\Services\Payments\Signals\PaymentProofStatusService::AMOUNT_MISMATCH;
+                } elseif ($pf['wa']) {
+                    $pStatus = \App\Services\Payments\Signals\PaymentProofStatusService::PROOF_RECEIVED;
+                } elseif ($pf['email']) {
+                    $pStatus = \App\Services\Payments\Signals\PaymentProofStatusService::BANK_CONFIRMED;
+                } else {
+                    $pStatus = \App\Services\Payments\Signals\PaymentProofStatusService::NONE;
+                }
+                if ($pStatus !== \App\Services\Payments\Signals\PaymentProofStatusService::NONE) {
+                    $proof = [
+                        'status'       => $pStatus,
+                        'label'        => \App\Services\Payments\Signals\PaymentProofStatusService::label($pStatus),
+                        'color'        => \App\Services\Payments\Signals\PaymentProofStatusService::color($pStatus),
+                        'has_whatsapp' => $pf['wa'],
+                        'has_email'    => $pf['email'],
+                    ];
+                }
+            }
 
             // Chat-mode extras: when this conversation was pulled in by a
             // content search we ship back the matched snippet + how many
@@ -561,6 +618,8 @@ class WhatsAppWebController extends Controller
                 'last_send_failed' => $failed !== null,
                 'last_send_error'  => $failed['error_message'] ?? null,
                 'last_send_template' => $failed['template_name'] ?? null,
+                // Jun-2026: payment-proof badge (null when none).
+                'payment_proof' => $proof,
             ];
         });
 
@@ -1472,6 +1531,16 @@ class WhatsAppWebController extends Controller
      */
     public function getUnreadCount()
     {
+        // Jun-2026 — Heartbeat for the online-payment auto-matcher (web side).
+        // The header badge polls this regularly, giving a reliable drumbeat to
+        // drive the payment workers on hosts without a working scheduler cron.
+        // Fire-and-forget after the response flushes; self-throttled to ~1/min.
+        try {
+            app(\App\Services\Payments\PaymentSignalAutoRunner::class)->fireFromRequest();
+        } catch (\Throwable $e) {
+            // never affect the unread-count response
+        }
+
         if (!Schema::hasTable('t_wa_conversations')) {
             return response()->json(['success' => true, 'unread_count' => 0]);
         }
@@ -2397,6 +2466,132 @@ class WhatsAppWebController extends Controller
     }
 
     /**
+     * Upload the already-captured invoice PNG straight to Meta's media
+     * endpoint and return its media_id.
+     *
+     * WHY (Jun-2026): the legacy send flow handed Meta a `link` URL
+     * pointing at our /public-storage/{path} route. That route is NOT a
+     * static file — it boots the full Laravel kernel through
+     * FileController::publicStorage() on every hit. When Meta's servers
+     * fetch that link they get a short, unforgiving budget; on shared
+     * hosting (stackcp) a momentary PHP-worker contention spike makes
+     * Meta's fetch time out and the send fails with the intermittent
+     * "media upload error" staff were seeing. There is no storage
+     * symlink in this environment, so every image fetch pays that PHP
+     * cost.
+     *
+     * Pushing the bytes to Meta ourselves removes Meta's need to fetch
+     * anything from us — this is a server→Meta outbound POST (60s
+     * budget, fully under our control), so it is dramatically more
+     * reliable. Meta then references the returned media_id directly in
+     * the template header.
+     *
+     * Returns:
+     *   ['success'=>true,  'media_id'=>..., 'order_number'=>...]
+     *   ['success'=>false, 'needs_capture'=>true, 'message'=>..., 'order_number'=>...]  // file not on disk yet
+     *   ['success'=>false, 'message'=>...]                                              // upload to Meta failed
+     *
+     * Internal — used by buildInvoiceHeaderForSend(). Not a route.
+     */
+    public function uploadInvoiceImageToMetaForSend($orderId): array
+    {
+        try {
+            $dir = 'whatsapp-invoices';
+            $disk = 'public';
+
+            $order = app(\App\Http\Controllers\CRM\OrderController::class)->findOrderPublic($orderId);
+            $orderNum = $order->order_number ?? ('NF-' . str_pad($order->id, 4, '0', STR_PAD_LEFT));
+            $storagePath = $dir . '/Invoice-' . $orderNum . '.png';
+
+            if (!Storage::disk($disk)->exists($storagePath)) {
+                return [
+                    'success' => false,
+                    'needs_capture' => true,
+                    'message' => 'Invoice image not generated yet. Please preview the invoice first.',
+                    'order_number' => $orderNum,
+                ];
+            }
+
+            // Absolute on-disk path for the multipart upload. Meta's
+            // media endpoint wants the raw bytes, not a URL.
+            $localPath = Storage::disk($disk)->path($storagePath);
+            $mediaId = app(WhatsAppService::class)->uploadMediaToWhatsApp($localPath, 'image/png');
+
+            if (!$mediaId) {
+                return [
+                    'success' => false,
+                    'message' => 'Failed to upload invoice image to WhatsApp.',
+                    'order_number' => $orderNum,
+                ];
+            }
+
+            return [
+                'success' => true,
+                'media_id' => $mediaId,
+                'order_number' => $orderNum,
+            ];
+        } catch (\Exception $e) {
+            Log::error('uploadInvoiceImageToMetaForSend failed', ['order_id' => $orderId, 'error' => $e->getMessage()]);
+            return ['success' => false, 'message' => $e->getMessage()];
+        }
+    }
+
+    /**
+     * Build the WhatsApp template header parameters for an invoice send.
+     *
+     * Prefers the robust media-ID upload (bytes pushed to Meta). If that
+     * upload fails for a reason OTHER than the image not being captured
+     * yet (e.g. a transient blip talking to Meta's media endpoint), it
+     * transparently falls back to the legacy `link` header so a send is
+     * never worse off than it was before this change.
+     *
+     * Shared by all three invoice send paths (web sendInvoice, mobile
+     * sendInvoice, payment_reminder_single auto-attach) so they all get
+     * the reliability fix and stay in lock-step.
+     *
+     * Returns:
+     *   ['success'=>true,  'header_params'=>[...], 'order_number'=>...]
+     *   ['success'=>false, 'needs_capture'=>bool, 'message'=>..., 'order_number'=>...]
+     */
+    public function buildInvoiceHeaderForSend($orderId): array
+    {
+        $viaId = $this->uploadInvoiceImageToMetaForSend($orderId);
+        if ($viaId['success'] ?? false) {
+            return [
+                'success' => true,
+                'header_params' => [
+                    ['type' => 'image', 'image' => ['id' => $viaId['media_id']]],
+                ],
+                'order_number' => $viaId['order_number'] ?? null,
+            ];
+        }
+
+        // Nothing on disk yet — there's no link to fall back to either,
+        // so surface needs_capture so the UI shows "preview first".
+        if ($viaId['needs_capture'] ?? false) {
+            return $viaId;
+        }
+
+        // Media upload failed for another reason. Fall back to the
+        // legacy link header so behaviour is no worse than before.
+        $viaLink = $this->readInvoiceImageUrlForSend($orderId);
+        if ($viaLink['success'] ?? false) {
+            Log::warning('Invoice send: media-ID upload failed, fell back to link header', [
+                'order_id' => $orderId,
+            ]);
+            return [
+                'success' => true,
+                'header_params' => [
+                    ['type' => 'image', 'image' => ['link' => $viaLink['image_url']]],
+                ],
+                'order_number' => $viaLink['order_number'] ?? null,
+            ];
+        }
+
+        return $viaLink;
+    }
+
+    /**
      * Receive a base64 PNG from the browser after html2canvas capture.
      */
     public function uploadInvoiceImage(Request $request)
@@ -2462,14 +2657,18 @@ class WhatsAppWebController extends Controller
             $service = app(WhatsAppService::class);
             $phone = $service->formatPhone($request->phone);
 
-            // May-2026: read the freshly-captured file directly from storage
-            // rather than going through getInvoiceImageUrl() (which now
-            // always says needs_capture to force preview re-capture). The
-            // preview flow on every UI page (orders, qurbani, messages,
-            // customers, approvals) auto-captures + uploads BEFORE the
-            // user can click Send, so by the time we get here the file
-            // on disk reflects the order being sent.
-            $imgData = $this->readInvoiceImageUrlForSend($request->order_id);
+            // Jun-2026: upload the freshly-captured invoice PNG straight
+            // to Meta and reference it by media_id, instead of handing
+            // Meta a /public-storage/ link to fetch. That fetch was the
+            // source of the intermittent "media upload error" (Meta's
+            // short fetch budget vs our PHP-served, symlink-less storage
+            // route on shared hosting). See buildInvoiceHeaderForSend().
+            //
+            // The preview flow on every UI page (orders, qurbani,
+            // messages, customers, approvals) auto-captures + uploads
+            // BEFORE the user can click Send, so by the time we get here
+            // the file on disk reflects the order being sent.
+            $imgData = $this->buildInvoiceHeaderForSend($request->order_id);
 
             if (!($imgData['success'] ?? false)) {
                 $isNeedsCapture = $imgData['needs_capture'] ?? false;
@@ -2478,12 +2677,9 @@ class WhatsAppWebController extends Controller
                 return response()->json(['success' => false, 'message' => $message], $statusCode);
             }
 
-            $imageUrl = $imgData['image_url'];
+            $headerParams = $imgData['header_params'];
             $orderNumber = $imgData['order_number'];
 
-            $headerParams = [
-                ['type' => 'image', 'image' => ['link' => $imageUrl]],
-            ];
             $bodyParams = $request->body_params ?? [];
 
             $result = $service->sendTemplateMessage($phone, $request->template_name, 'en', $bodyParams, $headerParams);

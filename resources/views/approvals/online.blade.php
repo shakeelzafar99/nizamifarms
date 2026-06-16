@@ -955,6 +955,7 @@ function renderInvoiceRow(item, isApproved) {
             ${approvalDateStr ? `<span class="invoice-approved-date" style="color: #059669; font-size: 12px; margin-left: 8px;">📅 ${approvalDateStr}</span>` : ''}
             `}
             <span class="invoice-amount">Rs. ${numberFormat(item.amount)}</span>
+            ${renderProofBadges(item)}
             <div class="invoice-actions">
                 ${!isApproved ? `
                 ${item.customer_phone ? `<button class="view-btn" style="background: #ECFDF5; color: #059669; border-color: #A7F3D0;" onclick="sendPaymentReminderForItem(${item.id})" title="Send payment reminder">💬</button>` : ''}
@@ -965,6 +966,86 @@ function renderInvoiceRow(item, isApproved) {
             </div>
         </div>
     `;
+}
+
+// Jun-2026 — Payment-proof badges (WhatsApp screenshot / bank email).
+// p.status: none | proof_received | bank_confirmed | verified | amount_mismatch
+function renderProofBadges(item) {
+    const p = item && item.payment_proof;
+    if (!p || p.status === 'none' || !item.order_id) return '';
+    const waIcon = p.has_whatsapp ? '📷' : '';
+    const mailIcon = p.has_email ? '✉️' : '';
+    return `<span class="proof-badge" onclick="openProofPanel(${item.order_id})"
+        title="${escapeHtml(p.label)} — click to view the proof"
+        style="cursor:pointer; display:inline-block; padding:2px 8px; border-radius:10px; font-size:11px; font-weight:600; background:${p.color}1A; color:${p.color}; border:1px solid ${p.color}55; margin-left:6px; white-space:nowrap;">
+        ${waIcon}${mailIcon} ${escapeHtml(p.label)}</span>`;
+}
+
+// Fetch + show the screenshot / parsed email behind a proof badge.
+async function openProofPanel(orderId) {
+    let overlay = document.getElementById('proofPanelOverlay');
+    if (overlay) overlay.remove();
+    overlay = document.createElement('div');
+    overlay.id = 'proofPanelOverlay';
+    overlay.style.cssText = 'position:fixed; inset:0; background:rgba(0,0,0,0.5); z-index:10000; display:flex; align-items:center; justify-content:center; padding:20px;';
+    overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
+    overlay.innerHTML = '<div style="background:#fff; border-radius:12px; padding:24px; max-width:560px; width:100%; max-height:88vh; overflow:auto;"><div style="text-align:center; color:#9CA3AF;">Loading payment proof…</div></div>';
+    document.body.appendChild(overlay);
+
+    try {
+        const res = await fetch(`/admin/payments/order/${orderId}/signals`, {
+            headers: { 'X-Requested-With': 'XMLHttpRequest', 'Accept': 'application/json' }
+        });
+        const data = await res.json();
+        overlay.querySelector('div').innerHTML = buildProofPanelHtml(data);
+    } catch (e) {
+        overlay.querySelector('div').innerHTML = '<div style="color:#DC2626; text-align:center;">Could not load payment proof.</div>';
+    }
+}
+
+function buildProofPanelHtml(data) {
+    const proof = data.proof || {};
+    let html = `<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
+        <h3 style="margin:0; font-size:1.1rem;">Payment proof — ${escapeHtml(data.order_number || ('#' + data.order_id))}</h3>
+        <button onclick="document.getElementById('proofPanelOverlay').remove()" style="border:none; background:#F3F4F6; border-radius:8px; padding:4px 10px; cursor:pointer; font-size:18px;">×</button>
+    </div>`;
+    html += `<div style="display:inline-block; padding:3px 10px; border-radius:10px; font-size:12px; font-weight:600; background:${proof.color}1A; color:${proof.color}; border:1px solid ${proof.color}55; margin-bottom:14px;">${escapeHtml(proof.label || '')}</div>`;
+
+    if (!data.signals || data.signals.length === 0) {
+        html += '<div style="color:#9CA3AF;">No signal details available.</div>';
+        return html;
+    }
+
+    data.signals.forEach(s => {
+        const isWa = s.source === 'whatsapp';
+        const am = s.agreement || {};
+        const amountColor = am.amount_match === true ? '#16A34A' : (am.amount_match === false ? '#DC2626' : '#9CA3AF');
+        html += `<div style="border:1px solid #E5E7EB; border-radius:10px; padding:14px; margin-bottom:12px;">
+            <div style="font-weight:600; margin-bottom:8px;">${isWa ? '📷 Customer WhatsApp screenshot' : '✉️ Bank confirmation email'}
+                <span style="font-weight:400; color:#9CA3AF; font-size:12px; margin-left:6px;">${escapeHtml(s.received_at || '')}</span></div>`;
+
+        if (isWa && s.image_url) {
+            html += `<a href="${s.image_url}" target="_blank"><img src="${s.image_url}" style="max-width:100%; border-radius:8px; border:1px solid #E5E7EB; margin-bottom:10px;"/></a>`;
+        }
+
+        html += `<table style="width:100%; font-size:13px; border-collapse:collapse;">
+            <tr><td style="color:#6B7280; padding:2px 0; width:140px;">Amount read</td><td style="font-weight:600; color:${amountColor};">Rs. ${s.amount != null ? numberFormat(s.amount) : '—'}${am.amount_match === false ? ' (differs from balance Rs. ' + numberFormat(am.expected) + ')' : (am.amount_match === true ? ' ✓ matches' : '')}</td></tr>
+            <tr><td style="color:#6B7280; padding:2px 0;">Reference</td><td>${escapeHtml(s.reference || '—')}</td></tr>
+            <tr><td style="color:#6B7280; padding:2px 0;">Sender name</td><td>${escapeHtml(s.sender_name || '—')}</td></tr>
+            <tr><td style="color:#6B7280; padding:2px 0;">Sender bank</td><td>${escapeHtml(s.sender_bank || '—')}${s.sender_account ? ' · ' + escapeHtml(s.sender_account) : ''}</td></tr>
+            ${s.to_account ? `<tr><td style="color:#6B7280; padding:2px 0;">To (our bank)</td><td>${escapeHtml(s.to_account)}</td></tr>` : ''}
+            <tr><td style="color:#6B7280; padding:2px 0;">Txn time</td><td>${escapeHtml(s.txn_datetime || '—')}</td></tr>
+            ${s.paired ? `<tr><td style="color:#6B7280; padding:2px 0;">Corroboration</td><td style="color:#16A34A;">✓ matched by the other source too</td></tr>` : ''}
+        </table>`;
+
+        if (!isWa && s.email_body) {
+            html += `<details style="margin-top:8px;"><summary style="cursor:pointer; color:#2563EB; font-size:12px;">Show raw email</summary><pre style="white-space:pre-wrap; font-size:11px; color:#374151; background:#F9FAFB; padding:8px; border-radius:6px; margin-top:6px;">${escapeHtml(s.email_body)}</pre></details>`;
+        }
+        html += `</div>`;
+    });
+
+    html += `<p style="font-size:11px; color:#9CA3AF; margin:6px 0 0;">This is read-only evidence to help you decide. Approving still happens through the normal Approve button.</p>`;
+    return html;
 }
 
 // Selection functions
@@ -1873,7 +1954,24 @@ function showPaymentReminderConfirmation(items, customerName, customerPhone) {
             </tr>`;
     });
 
+    // Jun-2026 — Warn if the customer has already sent payment proof for any
+    // of these invoices, so staff don't nag a customer who already paid.
+    const proofItems = items.filter(i => i.payment_proof && i.payment_proof.status && i.payment_proof.status !== 'none');
+    let proofWarningHtml = '';
+    if (proofItems.length > 0) {
+        const labels = [...new Set(proofItems.map(i => i.payment_proof.label))].join(', ');
+        proofWarningHtml = `
+        <div style="background:#FEE2E2; border:1px solid #FCA5A5; border-radius:10px; padding:12px 16px; margin-bottom:16px; display:flex; align-items:flex-start; gap:10px;">
+            <span style="font-size:18px;">🛑</span>
+            <div style="font-size:13px; color:#991B1B;">
+                <strong>This customer may have already paid.</strong> Payment proof was received (${escapeHtml(labels)}).
+                Please review the proof before sending a reminder — consider skipping this message.
+            </div>
+        </div>`;
+    }
+
     document.getElementById('paymentReminderBody').innerHTML = `
+        ${proofWarningHtml}
         <div style="background: #FEF3C7; border: 1px solid #FCD34D; border-radius: 10px; padding: 12px 16px; margin-bottom: 16px; display: flex; align-items: flex-start; gap: 10px;">
             <span style="font-size: 18px;">⚠️</span>
             <div style="font-size: 13px; color: #92400E;">

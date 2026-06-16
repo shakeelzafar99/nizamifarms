@@ -482,9 +482,65 @@ class WhatsAppController extends Controller
                 }
             }
 
-            $result = $conversations->map(function ($conv) use ($lastMessages, $unreadByConv, $hasQurbaniCol, $matchByConvId, $labelsByConv, $mentionsByConv, $failedByConv) {
+            // Jun-2026 — Payment-proof flag per customer (matched WhatsApp
+            // screenshot / bank email). Bulk lookup, no N+1. Mirrors the web inbox.
+            $proofByCustomer = [];
+            if (config('payment_signals.enabled') && Schema::hasTable('t_fin_payment_signal')) {
+                $custIds = $conversations->pluck('customer_id')->filter()->unique()->values()->all();
+                if (!empty($custIds)) {
+                    $proofRows = DB::table('t_fin_payment_signal')
+                        ->whereIn('matched_customer_id', $custIds)
+                        ->whereIn('status', ['matched', 'amount_mismatch'])
+                        ->get(['matched_customer_id', 'matched_order_id', 'source', 'status']);
+                    // Drop signals whose order's online approval is already approved —
+                    // the badge is an action prompt, not a permanent flag.
+                    $settledOrders = array_flip(
+                        \App\Services\Payments\Signals\PaymentProofStatusService::settledOrderIds(
+                            $proofRows->pluck('matched_order_id')->all()
+                        )
+                    );
+                    foreach ($proofRows as $r) {
+                        if ($r->matched_order_id !== null && isset($settledOrders[(int) $r->matched_order_id])) {
+                            continue;
+                        }
+                        $c = $r->matched_customer_id;
+                        $proofByCustomer[$c] ??= ['wa' => false, 'email' => false, 'matched' => false, 'mismatch' => false];
+                        if ($r->source === 'whatsapp') $proofByCustomer[$c]['wa'] = true;
+                        if ($r->source === 'email')    $proofByCustomer[$c]['email'] = true;
+                        if ($r->status === 'matched')  $proofByCustomer[$c]['matched'] = true;
+                        if ($r->status === 'amount_mismatch') $proofByCustomer[$c]['mismatch'] = true;
+                    }
+                }
+            }
+
+            $result = $conversations->map(function ($conv) use ($lastMessages, $unreadByConv, $hasQurbaniCol, $matchByConvId, $labelsByConv, $mentionsByConv, $failedByConv, $proofByCustomer) {
                 $lastMsg = $lastMessages->get($conv->id);
                 $failed = $failedByConv[$conv->id] ?? null;
+                // Resolve payment-proof badge payload for this customer (null when none).
+                $proof = null;
+                $pf = $conv->customer_id ? ($proofByCustomer[$conv->customer_id] ?? null) : null;
+                if ($pf) {
+                    if ($pf['wa'] && $pf['email'] && $pf['matched']) {
+                        $pStatus = \App\Services\Payments\Signals\PaymentProofStatusService::VERIFIED;
+                    } elseif ($pf['mismatch'] && !$pf['matched']) {
+                        $pStatus = \App\Services\Payments\Signals\PaymentProofStatusService::AMOUNT_MISMATCH;
+                    } elseif ($pf['wa']) {
+                        $pStatus = \App\Services\Payments\Signals\PaymentProofStatusService::PROOF_RECEIVED;
+                    } elseif ($pf['email']) {
+                        $pStatus = \App\Services\Payments\Signals\PaymentProofStatusService::BANK_CONFIRMED;
+                    } else {
+                        $pStatus = \App\Services\Payments\Signals\PaymentProofStatusService::NONE;
+                    }
+                    if ($pStatus !== \App\Services\Payments\Signals\PaymentProofStatusService::NONE) {
+                        $proof = [
+                            'status'       => $pStatus,
+                            'label'        => \App\Services\Payments\Signals\PaymentProofStatusService::label($pStatus),
+                            'color'        => \App\Services\Payments\Signals\PaymentProofStatusService::color($pStatus),
+                            'has_whatsapp' => $pf['wa'],
+                            'has_email'    => $pf['email'],
+                        ];
+                    }
+                }
                 // Chat-mode extras: ship the matched snippet + count
                 // so the mobile UI can render a highlighted preview.
                 $match = $matchByConvId[$conv->id] ?? null;
@@ -514,6 +570,8 @@ class WhatsAppController extends Controller
                     'last_send_failed' => $failed !== null,
                     'last_send_error'  => $failed['error_message'] ?? null,
                     'last_send_template' => $failed['template_name'] ?? null,
+                    // Jun-2026: payment-proof badge (null when none).
+                    'payment_proof' => $proof,
                 ];
             });
 
@@ -994,19 +1052,19 @@ class WhatsAppController extends Controller
             $force = filter_var($request->input('force', false), FILTER_VALIDATE_BOOLEAN);
 
             // Auto-attach invoice image for payment_reminder_single when
-            // the mobile can't generate it client-side. Reads the file
-            // directly (with mtime cache buster) so Meta sees a fresh
-            // URL on each send. Skips silently if the file isn't on
-            // disk yet — the mobile UI's own validation already nudges
-            // the user to preview/send from web first in that case.
+            // the mobile can't generate it client-side. Jun-2026: uploads
+            // the captured PNG straight to Meta and attaches it by
+            // media_id (robust) instead of a /public-storage/ link Meta
+            // has to fetch. Skips silently if the file isn't on disk yet —
+            // the mobile UI's own validation already nudges the user to
+            // preview/send from web first in that case. See
+            // WhatsAppWebController::buildInvoiceHeaderForSend().
             if ($templateName === 'payment_reminder_single' && empty($headerParams) && $request->input('order_id')) {
                 try {
                     $webController = app(\App\Http\Controllers\Web\WhatsAppWebController::class);
-                    $imgData = $webController->readInvoiceImageUrlForSend($request->input('order_id'));
-                    if (($imgData['success'] ?? false) && !empty($imgData['image_url'])) {
-                        $headerParams = [
-                            ['type' => 'image', 'image' => ['link' => $imgData['image_url']]],
-                        ];
+                    $imgData = $webController->buildInvoiceHeaderForSend($request->input('order_id'));
+                    if (($imgData['success'] ?? false) && !empty($imgData['header_params'])) {
+                        $headerParams = $imgData['header_params'];
                     }
                 } catch (\Exception $e) {
                     \Log::warning('Payment reminder: failed to auto-attach invoice image', ['error' => $e->getMessage()]);
@@ -1784,6 +1842,16 @@ class WhatsAppController extends Controller
      */
     public function getUnreadCount(Request $request)
     {
+        // Jun-2026 — Heartbeat for the online-payment auto-matcher. The store
+        // header polls this every ~15s, so it's a reliable drumbeat to drive
+        // the payment workers on hosts without a working scheduler cron.
+        // Fire-and-forget after the response flushes; self-throttled to ~1/min.
+        try {
+            app(\App\Services\Payments\PaymentSignalAutoRunner::class)->fireFromRequest();
+        } catch (\Throwable $e) {
+            // never affect the unread-count response
+        }
+
         try {
             $user = Auth::user();
             $access = $this->resolveWhatsAppAccess($user);
@@ -2382,12 +2450,16 @@ class WhatsAppController extends Controller
 
             $phone = $this->whatsapp->formatPhone($request->input('phone'));
 
-            // May-2026: read directly from storage. The mobile picker
-            // doesn't have html2canvas so it relies on whatever the web
-            // last captured. If it's missing, fail clearly with a 422 so
-            // the mobile UI shows the "preview from web first" hint.
+            // Jun-2026: upload the captured invoice PNG straight to Meta
+            // and reference it by media_id rather than handing Meta a
+            // /public-storage/ link to fetch (the intermittent "media
+            // upload error" root cause). The mobile picker doesn't have
+            // html2canvas so it relies on whatever the web last captured;
+            // if it's missing we still fail clearly with a 422 so the
+            // mobile UI shows the "preview from web first" hint. See
+            // WhatsAppWebController::buildInvoiceHeaderForSend().
             $webController = app(\App\Http\Controllers\Web\WhatsAppWebController::class);
-            $imgData = $webController->readInvoiceImageUrlForSend($request->input('order_id'));
+            $imgData = $webController->buildInvoiceHeaderForSend($request->input('order_id'));
 
             if (!($imgData['success'] ?? false)) {
                 $isNeedsCapture = $imgData['needs_capture'] ?? false;
@@ -2395,12 +2467,9 @@ class WhatsAppController extends Controller
                 return response()->json(['success' => false, 'message' => $imgData['message'] ?? 'Failed to read invoice image'], $statusCode);
             }
 
-            $imageUrl = $imgData['image_url'];
+            $headerParams = $imgData['header_params'];
             $orderNumber = $imgData['order_number'];
 
-            $headerParams = [
-                ['type' => 'image', 'image' => ['link' => $imageUrl]],
-            ];
             $bodyParams = $request->input('body_params', []);
 
             $result = $this->whatsapp->sendTemplateMessage($phone, $request->input('template_name'), 'en', $bodyParams, $headerParams);

@@ -1076,7 +1076,7 @@ class ApprovalController extends Controller
             $items[] = $this->formatOnlineLedgerItem($ledger, 1);
         }
         
-        return $items;
+        return $this->attachProofStatus($items);
     }
 
     /**
@@ -1097,7 +1097,7 @@ class ApprovalController extends Controller
             $items[] = $this->formatOnlineLedgerItem($ledger, 2);
         }
         
-        return $items;
+        return $this->attachProofStatus($items);
     }
 
     /**
@@ -1130,6 +1130,37 @@ class ApprovalController extends Controller
             $items[] = $this->formatOnlineLedgerItem($ledger, null, 'approved');
         }
         
+        return $this->attachProofStatus($items);
+    }
+
+    /**
+     * Jun-2026 — Attach payment-proof status (WhatsApp screenshot / bank email
+     * badges) to each online-approval row in bulk (no N+1). No-op when the
+     * feature switch is off.
+     */
+    private function attachProofStatus(array $items): array
+    {
+        if (empty($items) || !config('payment_signals.enabled')) {
+            return $items;
+        }
+
+        $orderIds = array_values(array_filter(array_map(
+            fn ($i) => $i['order_id'] ?? null,
+            $items
+        )));
+        if (empty($orderIds)) {
+            return $items;
+        }
+
+        $map = app(\App\Services\Payments\Signals\PaymentProofStatusService::class)
+            ->forOrders($orderIds);
+
+        foreach ($items as &$item) {
+            $oid = $item['order_id'] ?? null;
+            $item['payment_proof'] = ($oid && isset($map[$oid])) ? $map[$oid] : null;
+        }
+        unset($item);
+
         return $items;
     }
 

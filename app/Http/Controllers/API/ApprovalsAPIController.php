@@ -308,6 +308,29 @@ class ApprovalsAPIController extends Controller
                 $timings['approved_query'] = round((microtime(true) - $approvedStart) * 1000, 2);
             }
 
+            // Jun-2026 — Attach payment-proof status (WhatsApp screenshot / bank
+            // email) to each item via one bulk lookup. No-op when feature is off.
+            if (config('payment_signals.enabled')) {
+                $proofOrderIds = [];
+                foreach ($items as $it) { if (!empty($it['order_id'])) { $proofOrderIds[] = $it['order_id']; } }
+                foreach ($approvedItems as $it) { if (!empty($it['order_id'])) { $proofOrderIds[] = $it['order_id']; } }
+                $proofOrderIds = array_values(array_unique($proofOrderIds));
+                if (!empty($proofOrderIds)) {
+                    $proofMap = app(\App\Services\Payments\Signals\PaymentProofStatusService::class)
+                        ->forOrders($proofOrderIds);
+                    foreach ($items as &$it) {
+                        $it['payment_proof'] = (!empty($it['order_id']) && isset($proofMap[$it['order_id']]))
+                            ? $proofMap[$it['order_id']] : null;
+                    }
+                    unset($it);
+                    foreach ($approvedItems as &$it) {
+                        $it['payment_proof'] = (!empty($it['order_id']) && isset($proofMap[$it['order_id']]))
+                            ? $proofMap[$it['order_id']] : null;
+                    }
+                    unset($it);
+                }
+            }
+
             // Sort by date descending
             $sortStart = microtime(true);
             usort($items, function($a, $b) {

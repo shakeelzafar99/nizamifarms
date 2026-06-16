@@ -240,6 +240,13 @@ Route::middleware(['auth'])->group(function () {
         Route::post('/remove-polygon', [\App\Http\Controllers\CRM\DeliveryRegionController::class, 'removeRegionPolygon'])->name('regions.remove-polygon');
     });
 
+    // Open Orders → "Get Customer Locations" (bulk WhatsApp location request).
+    // Stateless: recomputes the unverified open list live each time; no tracking table.
+    Route::prefix('orders/location-request')->name('orders.location-request.')->group(function () {
+        Route::get('/eligible', [\App\Http\Controllers\CRM\OpenOrderLocationController::class, 'eligible'])->name('eligible');
+        Route::post('/send', [\App\Http\Controllers\CRM\OpenOrderLocationController::class, 'send'])->name('send');
+    });
+
     // Shift Management
     Route::get('/shifts', [\App\Http\Controllers\Ops\ShiftController::class, 'index'])->name('shifts.index');
     Route::get('/shifts/clear-cache', [\App\Http\Controllers\Ops\ShiftController::class, 'clearCache'])->name('shifts.clear-cache');
@@ -407,6 +414,11 @@ Route::middleware(['auth'])->group(function () {
         Route::get('/performance', [\App\Http\Controllers\CRM\QurbaniPerformanceController::class, 'index'])->name('qurbani.performance');
         Route::get('/api/performance/summary',  [\App\Http\Controllers\CRM\QurbaniPerformanceController::class, 'summary'])->name('qurbani.api.performance.summary');
         Route::get('/api/performance/drill',    [\App\Http\Controllers\CRM\QurbaniPerformanceController::class, 'drill'])->name('qurbani.api.performance.drill');
+        // May-2026 — Slot SLA buckets table (above the per-slot point-
+        // in-time rollup). Returns per-slot counts by signed time-
+        // delta vs slot end for one of: delivered / out_for_delivery
+        // / slaughtered. Delivery-only (self-collection excluded).
+        Route::get('/api/performance/slot-sla', [\App\Http\Controllers\CRM\QurbaniPerformanceController::class, 'slotSla'])->name('qurbani.api.performance.slot-sla');
         Route::post('/api/performance/day-state', [\App\Http\Controllers\CRM\QurbaniPerformanceController::class, 'setDayState'])->name('qurbani.api.performance.day-state');
         // May-2026 — CS Manager quick-action: send slaughter / OFD
         // WhatsApp template for one line item on demand. Bypasses
@@ -689,6 +701,16 @@ Route::middleware(['auth'])->group(function () {
     
     // ⭐ Online Approvals - Dedicated page for online payment approvals
     Route::get('/approvals/online', [\App\Http\Controllers\ApprovalController::class, 'onlineApprovals'])->name('approvals.online');
+
+    // Jun-2026 — Payment auto-matching setup check (password-protected webpage).
+    // Visit /admin/payments/imap-check?key=<PAYMENT_SIGNALS_CHECK_SECRET>
+    Route::get('/admin/payments/imap-check', [\App\Http\Controllers\FIN\PaymentDiagnosticsController::class, 'imapCheck'])
+        ->name('payments.imap-check');
+
+    // Jun-2026 — Payment-proof signals for an order (JSON, feeds badge panels).
+    Route::get('/admin/payments/order/{orderId}/signals', [\App\Http\Controllers\FIN\PaymentSignalsController::class, 'forOrder'])
+        ->whereNumber('orderId')
+        ->name('payments.order-signals');
     
     // ⭐ Online Receiving Accounts CRUD (manage bank accounts for online approvals)
     Route::prefix('online-receiving-accounts')->group(function () {

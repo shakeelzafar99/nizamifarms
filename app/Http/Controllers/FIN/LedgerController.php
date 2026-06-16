@@ -736,6 +736,27 @@ class LedgerController extends Controller
 
             $ledger->save();
 
+            // Jun-2026 — On FINAL approval, learn this customer's bank-account
+            // name from any payment-proof signals matched to the order, so
+            // future bank emails can identify them even without a WhatsApp
+            // screenshot. Read-only learning; never blocks approval.
+            if ($finalApproval && config('payment_signals.enabled') && $ledger->order_id) {
+                try {
+                    $aliasCustomerId = \DB::table('t_crm_prod_order')
+                        ->where('id', $ledger->order_id)->value('customer_id');
+                    app(\App\Services\Payments\Signals\CustomerBankAliasService::class)
+                        ->learnFromApprovedOrder(
+                            (int) $ledger->order_id,
+                            $aliasCustomerId ? (int) $aliasCustomerId : null,
+                            auth()->check() ? (int) auth()->id() : null
+                        );
+                } catch (\Throwable $aliasErr) {
+                    \Log::debug('Payment alias learn on approve skipped (non-fatal)', [
+                        'error' => $aliasErr->getMessage(),
+                    ]);
+                }
+            }
+
             // Reload accounts (in case they were changed)
             $ledger->load(['fromAccount', 'toAccount']);
             $fromAccount = $ledger->fromAccount;

@@ -217,6 +217,45 @@
     .qp-num-link.zero { color: #d1d5db; cursor: default; text-decoration: none; }
     .qp-num-link.zero:hover { background: transparent; }
 
+    /* ── SLA buckets table (May-2026) ─────────────────────────── */
+    .qp-sla-controls {
+        display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+        margin-bottom: 12px;
+    }
+    .qp-sla-control-label {
+        font-size: 12px; font-weight: 700; color: #6b7280;
+        text-transform: uppercase; letter-spacing: 0.3px;
+    }
+    .qp-sla-hint {
+        font-size: 12px; color: #9ca3af;
+    }
+    /* The SLA table reuses qp-slot-table styling for cells/rows but
+       adds tone-aware column headers so the green/amber/red language
+       of the buckets reads at a glance. */
+    .qp-sla-table th.b-success { color: #047857; }
+    .qp-sla-table th.b-warn    { color: #b45309; }
+    .qp-sla-table th.b-danger  { color: #b91c1c; }
+    .qp-sla-table th .b-subline {
+        display: block; font-size: 9px; font-weight: 600;
+        color: #9ca3af; margin-top: 2px;
+        text-transform: none; letter-spacing: 0;
+    }
+    .qp-sla-table td.b-success { background: rgba(16, 185, 129, 0.04); }
+    .qp-sla-table td.b-warn    { background: rgba(245, 158, 11, 0.04); }
+    .qp-sla-table td.b-danger  { background: rgba(239, 68, 68, 0.04); }
+    .qp-sla-table tr:hover td.b-success { background: rgba(16, 185, 129, 0.10); }
+    .qp-sla-table tr:hover td.b-warn    { background: rgba(245, 158, 11, 0.10); }
+    .qp-sla-table tr:hover td.b-danger  { background: rgba(239, 68, 68, 0.10); }
+    /* Number link tone — only override colour on non-zero cells so
+       the click target inherits the bucket's semantic colour. Zero
+       cells stay neutral grey. */
+    .qp-sla-table .qp-num-link.tone-success { color: #047857; }
+    .qp-sla-table .qp-num-link.tone-warn    { color: #b45309; }
+    .qp-sla-table .qp-num-link.tone-danger  { color: #b91c1c; }
+    .qp-sla-table .qp-num-link.tone-success:hover { background: #ecfdf5; }
+    .qp-sla-table .qp-num-link.tone-warn:hover    { background: #fffbeb; }
+    .qp-sla-table .qp-num-link.tone-danger:hover  { background: #fef2f2; }
+
     /* ── Drill-down panel ─────────────────────────────────────── */
     .qp-drill-wrap {
         margin-bottom: 18px;
@@ -493,6 +532,25 @@
     .qp-eta-drift.is-stale    { background: #fee2e2; color: #991b1b; border-color: #ef4444; }
     .qp-eta-drift.is-none     { background: #f3f4f6; color: #6b7280; border-color: #d1d5db; }
 
+    /* May-2026 — Promise drift chip (delivered vs original promise).
+       Same visual language as the slot + ETA drift chips so the
+       three "vs ..." columns read consistently. */
+    .qp-promise-chip {
+        display: inline-block; padding: 2px 8px; border-radius: 999px;
+        font-size: 10.5px; font-weight: 700; letter-spacing: 0.2px;
+        line-height: 1.5; border: 1px solid transparent;
+        font-variant-numeric: tabular-nums;
+    }
+    .qp-promise-chip.is-on_promise { background: #d1fae5; color: #065f46; border-color: #10b981; }
+    .qp-promise-chip.is-early      { background: #dbeafe; color: #1e40af; border-color: #3b82f6; }
+    .qp-promise-chip.is-late       { background: #fef3c7; color: #92400e; border-color: #f59e0b; }
+    .qp-promise-chip.is-very_late  { background: #fee2e2; color: #991b1b; border-color: #ef4444; }
+    .qp-promise-chip.is-no_promise { background: #f3f4f6; color: #6b7280; border-color: #d1d5db; }
+    .qp-promise-src {
+        display: block; font-size: 10px; color: #6b7280; margin-top: 2px;
+        font-weight: 500;
+    }
+
     /* Header-level drift summary pill — sits next to the active-filter
        chip when any row in the current view has a stale ETA. */
     .qp-drift-summary {
@@ -625,6 +683,36 @@
         </div>
     </div>
 
+    {{-- ── Slot SLA buckets (May-2026) ──────────────────────────
+         Retrospective on-time analysis per slot end. Dropdown picks
+         the event being scored (Delivered / OFD / Slaughtered); each
+         row shows the same slots as the rollup below, with 5 columns
+         bucketed by signed time delta vs slot end. Delivery-only —
+         self-collection has no rider SLA so it's excluded server-side.
+         Clicking a count filters the records table further down,
+         exactly like the per-slot rollup. --}}
+    <div class="qp-section">
+        <div class="qp-section-head">
+            <h2 class="qp-section-title">🎯 Slot SLA buckets</h2>
+            <span class="qp-section-hint">How on-time were the events for each slot? Click any count to inspect the rows.</span>
+        </div>
+        <div class="qp-sla-controls">
+            <label class="qp-sla-control-label" for="qpSlaEvent">Score by</label>
+            <select id="qpSlaEvent" class="qp-day-select" style="min-width: 180px;">
+                <option value="delivered">Delivered</option>
+                <option value="out_for_delivery">Out for delivery</option>
+                <option value="slaughtered">Slaughtered</option>
+            </select>
+            <span class="qp-sla-hint" id="qpSlaHint">Delivered: scored against slot end time.</span>
+        </div>
+        <div id="qpSlaWrap">
+            <div class="qp-loading">
+                <span class="qp-spinner"></span>
+                <span>Loading SLA buckets…</span>
+            </div>
+        </div>
+    </div>
+
     {{-- ── Per-slot rollup ──────────────────────────────────── --}}
     {{-- Phase 5b (May-2026) — split into Delivery vs Self Collection
          tabs. Slots differ between the two operational flows
@@ -635,7 +723,7 @@
     <div class="qp-section">
         <div class="qp-section-head">
             <h2 class="qp-section-title">🕒 Per-slot rollup</h2>
-            <span class="qp-section-hint">Counts grouped by slot end time. Click a number to filter the records below.</span>
+            <span class="qp-section-hint">Point-in-time snapshot — current state of each slot. Click a number to filter the records below.</span>
         </div>
         <div class="qp-subtabs">
             <button class="qp-subtab is-active" data-bucket="delivery" type="button">
@@ -723,6 +811,7 @@
     const ENDPOINTS = {
         summary:  '/qurbani/api/performance/summary',
         drill:    '/qurbani/api/performance/drill',
+        slotSla:  '/qurbani/api/performance/slot-sla',
         dayState: '/qurbani/api/performance/day-state',
     };
 
@@ -741,6 +830,7 @@
     let activeSlotEnd = null;
     let activeBucketState = null; // delivery / self_collection / null
     let activeLabel = null;       // pretty label cached for the filter chip
+    let activeSlaBucket = null;   // 0..4 — only set when filtering from the SLA table
 
     // CS search inputs — May-2026 refactor: search is now CLIENT-SIDE
     // on the already-loaded result set. Each keystroke does a cheap
@@ -857,7 +947,10 @@
             // query to keep counts and rows in lock-step. When no
             // metric is active we pull the full day-scope set; when a
             // KPI / slot click is active we re-apply that filter.
-            runDrill(activeMetric, activeSlotEnd, activeBucketState);
+            runDrill(activeMetric, activeSlotEnd, activeBucketState, activeSlaBucket);
+            // SLA table refresh — same cadence as the per-slot rollup
+            // above so all three tables on the page agree.
+            loadSlotSla();
         } catch (e) {
             showError('Failed to load performance summary: ' + e.message);
         }
@@ -1019,19 +1112,155 @@
             slaughtered: 'Slaughtered',
             open: 'Open',
             per_slot_total: 'Slot total',
+            // SLA buckets — label gets enriched with the bucket name
+            // in the click handler, so this just carries the event.
+            sla_delivered:        'Delivered',
+            sla_out_for_delivery: 'Out for delivery',
+            sla_slaughtered:      'Slaughtered',
         };
         return labels[metric] || metric;
+    }
+
+    // ── Slot SLA buckets table (May-2026) ─────────────────────────
+    // Sits above the per-slot rollup. Driven by the #qpSlaEvent
+    // dropdown — switching events re-fetches because the bucket
+    // ranges differ (Delivered uses {within, late buckets}, OFD /
+    // Slaughtered use {2h-before, < 2h before, late buckets}).
+    let _qpSlaEvent = 'delivered';
+    let _qpSlaPayload = null;          // last server payload — used to re-render on resize/etc.
+    let _qpSlaReqId = 0;
+    let _qpSlaAbort = null;
+
+    async function loadSlotSla() {
+        const myId = ++_qpSlaReqId;
+        if (_qpSlaAbort) { try { _qpSlaAbort.abort(); } catch (_) {} }
+        _qpSlaAbort = ('AbortController' in window) ? new AbortController() : null;
+
+        const params = new URLSearchParams();
+        params.set('event', _qpSlaEvent);
+        if (currentDay) params.set('day', currentDay);
+        try {
+            const res = await fetch(ENDPOINTS.slotSla + '?' + params.toString(), {
+                headers: { 'Accept': 'application/json' },
+                signal: _qpSlaAbort ? _qpSlaAbort.signal : undefined,
+            });
+            if (myId !== _qpSlaReqId) return;
+            if (!res.ok) throw new Error('HTTP ' + res.status);
+            const j = await res.json();
+            if (myId !== _qpSlaReqId) return;
+            if (!j.success) throw new Error(j.message || 'Failed to load SLA');
+            _qpSlaPayload = j;
+            renderSlotSla(j);
+        } catch (e) {
+            if (e && e.name === 'AbortError') return;
+            if (myId !== _qpSlaReqId) return;
+            $('#qpSlaWrap').innerHTML = '<div class="qp-error">Failed to load SLA buckets: ' + esc(e.message) + '</div>';
+        }
+    }
+
+    function renderSlotSla(payload) {
+        const wrap = $('#qpSlaWrap');
+        const meta    = payload.meta || {};
+        const buckets = Array.isArray(meta.buckets) ? meta.buckets : [];
+        const rows    = Array.isArray(payload.rows) ? payload.rows : [];
+
+        // Header hint — explains the bucket framing for the active
+        // event so the manager doesn't have to guess what "≥ 2h
+        // before" measures from.
+        const hint = $('#qpSlaHint');
+        if (hint) {
+            if (_qpSlaEvent === 'delivered') {
+                hint.textContent = 'Delivered: time delivered vs slot end. Within = on or before slot end.';
+            } else if (_qpSlaEvent === 'out_for_delivery') {
+                hint.textContent = 'Out for delivery: when each item went OFD vs its slot end. ≥ 2h before = ample runway.';
+            } else {
+                hint.textContent = 'Slaughtered: when each item was slaughtered vs its slot end. ≥ 2h before = ample runway.';
+            }
+        }
+
+        if (rows.length === 0) {
+            wrap.innerHTML = '<div class="qp-drill-empty">No '
+                + esc((meta.event_label || _qpSlaEvent).toLowerCase())
+                + ' rows on this day yet.</div>';
+            return;
+        }
+
+        // Build header cells from the bucket meta so tone classes
+        // line up with the body cells without us hardcoding them
+        // twice (DRY between header colour + cell tint).
+        let thead = '<tr><th>Slot</th><th>End time</th>';
+        buckets.forEach(b => {
+            const tone = 'b-' + (b.tone || 'success');
+            thead += '<th class="num ' + tone + '" title="' + esc(b.subline || '') + '">'
+                + esc(b.label)
+                + (b.subline ? '<span class="b-subline">' + esc(b.subline) + '</span>' : '')
+                + '</th>';
+        });
+        thead += '<th class="num">Total</th></tr>';
+
+        let body = '';
+        rows.forEach(r => {
+            body += '<tr>'
+                + '<td><span class="slot-name">' + esc(r.slot || '—') + '</span></td>'
+                + '<td><span class="slot-end-time">' + esc(r.slot_end_display || '—') + '</span></td>';
+            (r.counts || []).forEach((n, i) => {
+                const tone = (buckets[i] && buckets[i].tone) || 'success';
+                const count = Number(n) || 0;
+                const cellClass = 'num b-' + tone;
+                if (count === 0) {
+                    body += '<td class="' + cellClass + '"><span class="qp-num-link zero">0</span></td>';
+                } else {
+                    body += '<td class="' + cellClass + '">'
+                        + '<a class="qp-num-link tone-' + tone + '"'
+                        + ' data-sla-bucket="' + i + '"'
+                        + ' data-slotend="' + esc(r.slot_end_minute) + '"'
+                        + ' data-bucket-label="' + esc((buckets[i] && buckets[i].label) || '') + '"'
+                        + '>' + esc(count) + '</a></td>';
+                }
+            });
+            body += '<td class="num">' + esc(r.total) + '</td></tr>';
+        });
+
+        wrap.innerHTML = '<div class="qp-drill-scroll"><table class="qp-slot-table qp-sla-table">'
+            + '<thead>' + thead + '</thead>'
+            + '<tbody>' + body + '</tbody>'
+            + '</table></div>';
+
+        // Wire clicks → openDrill. Metric = sla_<event>; sla_bucket
+        // index travels via the dedicated activeSlaBucket channel.
+        const metric = 'sla_' + _qpSlaEvent;
+        const eventLabel = meta.event_label || metricLabel(metric);
+        wrap.querySelectorAll('a.qp-num-link[data-sla-bucket]').forEach(a => {
+            a.addEventListener('click', (ev) => {
+                ev.preventDefault();
+                const bucketIdx = parseInt(a.dataset.slaBucket, 10);
+                const slotEnd   = a.dataset.slotend;
+                const bucketLabel = a.dataset.bucketLabel || '';
+                const row = a.closest('tr');
+                const slotLabel = row?.children[0]?.innerText || '';
+                const endLabel  = row?.children[1]?.innerText || '';
+                openDrill(
+                    metric,
+                    eventLabel + ' · ' + bucketLabel + ' · ' + slotLabel,
+                    'Slot ends at ' + endLabel + ' · bucket: ' + bucketLabel,
+                    slotEnd,
+                    'delivery',     // SLA is delivery-only by design
+                    bucketIdx
+                );
+            });
+        });
     }
 
     // ── Records / filter narrowing (May-2026 CS Manager view) ─────
     // openDrill() used to lazy-create a drill panel. The panel is now
     // always-on, so this function just updates the active filter state
     // + chip + smooth-scrolls into view + reruns the query.
-    async function openDrill(metric, label, subtitle, slotEndMinute, bucket) {
+    async function openDrill(metric, label, subtitle, slotEndMinute, bucket, slaBucket) {
         activeMetric = metric;
         activeSlotEnd = slotEndMinute || null;
         activeBucketState = bucket || null;
         activeLabel = label || metric;
+        activeSlaBucket = (slaBucket === 0 || slaBucket) ? slaBucket : null;
         renderFilterChip();
         // Visually mark which KPI card is currently filtering. Per-slot
         // numbers don't have a kpi card to highlight (they live in the
@@ -1039,7 +1268,7 @@
         document.querySelectorAll('.qp-kpi').forEach(c => {
             c.classList.toggle('is-active', c.dataset.metric === metric && !slotEndMinute);
         });
-        await runDrill(metric, slotEndMinute, activeBucketState);
+        await runDrill(metric, slotEndMinute, activeBucketState, activeSlaBucket);
         // Smooth-scroll the records panel into view so the click feels
         // like it did something even when the table was already showing.
         document.querySelector('.qp-records-panel')?.scrollIntoView({behavior: 'smooth', block: 'start'});
@@ -1066,9 +1295,10 @@
         activeSlotEnd = null;
         activeBucketState = null;
         activeLabel = null;
+        activeSlaBucket = null;
         renderFilterChip();
         document.querySelectorAll('.qp-kpi').forEach(c => c.classList.remove('is-active'));
-        runDrill(null, null, null);
+        runDrill(null, null, null, null);
     };
 
     // ── Backend fetch (May-2026 — no longer takes search params) ───
@@ -1079,7 +1309,7 @@
     // back metric clicks never let a stale response paint the table.
     let _qpDrillReqId = 0;
     let _qpDrillAbort = null;
-    async function runDrill(metric, slotEndMinute, bucket) {
+    async function runDrill(metric, slotEndMinute, bucket, slaBucket) {
         const myId = ++_qpDrillReqId;
         if (_qpDrillAbort) { try { _qpDrillAbort.abort(); } catch (_) {} }
         _qpDrillAbort = ('AbortController' in window) ? new AbortController() : null;
@@ -1090,6 +1320,12 @@
         if (currentDay)    params.set('day', currentDay);
         if (slotEndMinute) params.set('slot_end_minute', String(slotEndMinute));
         if (bucket)        params.set('delivery_type_bucket', bucket);
+        // May-2026 — SLA bucket index forwarded when the click came
+        // from the Slot SLA table. 0 is a valid value so check for
+        // both null and undefined explicitly.
+        if (slaBucket !== null && slaBucket !== undefined) {
+            params.set('sla_bucket', String(slaBucket));
+        }
         try {
             const res = await fetch(ENDPOINTS.drill + '?' + params.toString(), {
                 headers: { 'Accept': 'application/json' },
@@ -1229,6 +1465,42 @@
         if (r.eta_drift_minutes != null) parts.push('Drift: ' + r.eta_drift_minutes + ' min');
         return parts.join(' · ');
     }
+
+    // May-2026 — "Vs promise" chip. Compares the actual
+    // qurbani_delivered_at against the original WhatsApp OFD ETA
+    // (the first time we told the customer when to expect their
+    // order). Falls back to the system ETA when no WA was sent —
+    // tagged in the tooltip so the manager knows the comparison is
+    // against an internal estimate, not a customer-facing promise.
+    function _qpRenderPromiseChip(r) {
+        const pd = r.promise_drift;
+        if (!pd) {
+            // Only show "no promise" badge for delivered rows — for
+            // pending / OFD rows the column is just blank.
+            if (r.qurbani_item_status === 'delivered') {
+                return '<span class="qp-promise-chip is-no_promise" title="No promise on record">— no promise</span>';
+            }
+            return '<span style="color:#d1d5db;">—</span>';
+        }
+        const bucket = pd.drift_bucket || 'on_promise';
+        const drift = pd.drift_minutes;
+        const sign = drift > 0 ? '+' : '';
+        let label;
+        if (bucket === 'on_promise')      label = '✓ on promise';
+        else if (bucket === 'early')      label = '✓ ' + sign + drift + 'm';
+        else if (bucket === 'very_late')  label = '⚠ ' + sign + drift + 'm';
+        else                              label = sign + drift + 'm';
+        const tip = [
+            'Promised ' + (pd.promised_eta_display || pd.promised_eta_at) + ' → Delivered ' + (pd.delivered_at_display || ''),
+            pd.promise_source === 'whatsapp'
+                ? 'Source: WhatsApp OFD message' + (pd.promised_sent_at ? ' (sent ' + pd.promised_sent_at + ')' : '')
+                : 'Source: system ETA fallback — no WhatsApp went out',
+        ].join('\n');
+        const srcBadge = pd.promise_source === 'system_eta'
+            ? '<span class="qp-promise-src">(no WA — system ETA)</span>'
+            : '';
+        return '<span class="qp-promise-chip is-' + bucket + '" title="' + esc(tip) + '">' + esc(label) + '</span>' + srcBadge;
+    }
     // May-2026 — Slaughter / OFD outcome chip rendered under each
     // status timestamp in the drill table. Status comes from the
     // latest t_ops_qurbani_wa_log row for that line item and
@@ -1282,7 +1554,8 @@
             + '<th>OFD</th>'
             + '<th>ETA · Freshness</th>'
             + '<th>Delivered</th>'
-            + '<th>Vs slot</th>'
+            + '<th title="Delivered vs slot end (the time window the customer picked at checkout).">Vs slot</th>'
+            + '<th title="Delivered vs the original WhatsApp ETA we promised the customer at dispatch. Falls back to system ETA when no WA was sent.">Vs promise</th>'
             + '<th>Rider</th>'
             + '<th style="text-align:center;">Actions</th>'
             + '</tr></thead><tbody>';
@@ -1383,6 +1656,7 @@
                 + '</td>'
                 + '<td>' + fmtTime(r.qurbani_delivered_at) + '</td>'
                 + '<td>' + scHtml + '</td>'
+                + '<td>' + _qpRenderPromiseChip(r) + '</td>'
                 + '<td>' + esc(r.rider_name || '—') + '</td>'
                 + '<td><div class="qp-row-actions">' + tlBtn + waBtn + slBtn + ofdBtn + '</div></td>'
                 + '</tr>';
@@ -1458,7 +1732,7 @@
                         // also handle the race if the manager clicks
                         // multiple Send buttons in quick succession).
                         if (typeof runDrill === 'function' && typeof activeMetric !== 'undefined' && activeMetric) {
-                            runDrill(activeMetric, activeSlotEnd, activeBucketState);
+                            runDrill(activeMetric, activeSlotEnd, activeBucketState, activeSlaBucket);
                         }
                     } else {
                         _qpToast('✗ ' + (d?.message || 'Send failed'), 'err');
@@ -1535,10 +1809,27 @@
             activeSlotEnd = null;
             activeBucketState = null;
             activeLabel = null;
+            activeSlaBucket = null;
             renderFilterChip();
         }
         loadSummary();
     });
+
+    // SLA event dropdown — re-fetch the SLA table whenever the user
+    // switches between Delivered / OFD / Slaughtered. We also clear
+    // any active SLA-bucket filter on the records table because the
+    // bucket indices don't correspond between events (b2 of
+    // Delivered ≠ b2 of OFD).
+    const slaSel = document.getElementById('qpSlaEvent');
+    if (slaSel) {
+        slaSel.addEventListener('change', (e) => {
+            _qpSlaEvent = e.target.value || 'delivered';
+            if (activeMetric && typeof activeMetric === 'string' && activeMetric.indexOf('sla_') === 0) {
+                window.qpClearFilter();
+            }
+            loadSlotSla();
+        });
+    }
     $('#qpBtnRefresh').addEventListener('click', loadSummary);
     $('#qpBtnActivate').addEventListener('click', () => {
         const day = parseInt($('#qpActivateDay').value, 10) || 1;

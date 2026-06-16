@@ -221,7 +221,19 @@ class OrderController extends Controller
             $openCount = $openCountQuery->count();
         }
 
-        return view('pages.orders.index', compact('orders', 'source', 'tab', 'shopifyCount', 'approvalsCount', 'otherCount', 'openCount', 'canViewShopify', 'canViewAllOrders', 'user'));
+        // Jun-2026 — Payment-proof status badges (WhatsApp screenshot / bank
+        // email) for the current page of orders. Bulk lookup, no N+1. Empty
+        // map when the feature is off.
+        $paymentProofMap = [];
+        if (config('payment_signals.enabled')) {
+            $orderIds = collect($orders->items())->pluck('id')->filter()->values()->all();
+            if (!empty($orderIds)) {
+                $paymentProofMap = app(\App\Services\Payments\Signals\PaymentProofStatusService::class)
+                    ->forOrders($orderIds);
+            }
+        }
+
+        return view('pages.orders.index', compact('orders', 'source', 'tab', 'shopifyCount', 'approvalsCount', 'otherCount', 'openCount', 'canViewShopify', 'canViewAllOrders', 'user', 'paymentProofMap'));
     }
 
     public function show($id)

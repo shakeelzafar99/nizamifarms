@@ -64,6 +64,102 @@ class QurbaniPerformanceController extends Controller
     private const DEFAULT_VERY_LATE_PROMISE_MIN = 30;
 
     /**
+     * SLA bucket configuration (May-2026) — single source of truth for
+     * the "Slot SLA buckets" table that sits above the per-slot rollup.
+     * Answers the question: "Of the items in slot X, how many hit
+     * status Y on time vs how late?".
+     *
+     * Each event maps to a timestamp column on t_crm_prod_order_line_item
+     * and a 5-bucket ladder measured in **signed minutes** vs the slot
+     * end (`delta = event_time_of_day_minutes - slot_end_minute`).
+     *
+     *   - DELIVERED — the customer cares about being on or before slot
+     *     end. So buckets go {within, 0–1h late, 1–2h late, 2–3h late,
+     *     > 3h late}. No "early before slot end" bucket — everything
+     *     before slot end is just "within slot".
+     *
+     *   - OUT FOR DELIVERY / SLAUGHTERED — operations cares about a
+     *     2-hour pre-slot-end window. ≥ 2h before slot end is ideal
+     *     (rider has a comfortable runway); the last 2h before slot
+     *     end is "cutting it close"; everything after slot end is late.
+     *
+     * Bucket ranges use (min, max] semantics:
+     *   - min=null, max=N   → delta <= N
+     *   - min=N,    max=null → delta >  N
+     *   - both              → delta >  min AND delta <= max
+     * The PHP SQL builder, the drill WHERE, and the JS click handler
+     * all read this constant — keeping the three layers in lock-step
+     * is the whole point.
+     *
+     * Restricted to delivery_type != self (i.e. "Delivery" bucket only)
+     * because the per-slot rollup user already confirmed self-collection
+     * doesn't make sense for SLA — those customers come to us.
+     */
+    private function slaEvents(): array
+    {
+        return [
+            'delivered' => [
+                'label'        => 'Delivered',
+                'event_column' => 'qurbani_delivered_at',
+                'status_clause' => "li.qurbani_item_status = 'delivered' AND li.qurbani_delivered_at IS NOT NULL",
+                'buckets' => [
+                    ['key' => 'within',   'label' => 'Within slot', 'subline' => 'on or before end', 'min' => null,  'max' => 0,    'tone' => 'success'],
+                    ['key' => 'late_1h',  'label' => '0–1h late',   'subline' => 'past slot end',    'min' => 0,     'max' => 60,   'tone' => 'warn'],
+                    ['key' => 'late_2h',  'label' => '1–2h late',   'subline' => '',                  'min' => 60,    'max' => 120,  'tone' => 'warn'],
+                    ['key' => 'late_3h',  'label' => '2–3h late',   'subline' => '',                  'min' => 120,   'max' => 180,  'tone' => 'danger'],
+                    ['key' => 'late_xh',  'label' => '> 3h late',   'subline' => '',                  'min' => 180,   'max' => null, 'tone' => 'danger'],
+                ],
+            ],
+            'out_for_delivery' => [
+                'label'        => 'Out for delivery',
+                'event_column' => 'qurbani_out_for_delivery_at',
+                // Anything with a real OFD timestamp counts — even if
+                // the item has since moved on to delivered, the moment
+                // it went OFD is what we're scoring.
+                'status_clause' => 'li.qurbani_out_for_delivery_at IS NOT NULL',
+                'buckets' => [
+                    ['key' => 'early',    'label' => '≥ 2h before', 'subline' => 'on track',           'min' => null,  'max' => -120, 'tone' => 'success'],
+                    ['key' => 'close',    'label' => '< 2h before', 'subline' => 'cutting it close',   'min' => -120,  'max' => 0,    'tone' => 'warn'],
+                    ['key' => 'late_1h',  'label' => '0–1h late',   'subline' => 'past slot end',      'min' => 0,     'max' => 60,   'tone' => 'warn'],
+                    ['key' => 'late_2h',  'label' => '1–2h late',   'subline' => '',                    'min' => 60,    'max' => 120,  'tone' => 'danger'],
+                    ['key' => 'late_xh',  'label' => '> 2h late',   'subline' => '',                    'min' => 120,   'max' => null, 'tone' => 'danger'],
+                ],
+            ],
+            'slaughtered' => [
+                'label'        => 'Slaughtered',
+                'event_column' => 'qurbani_slaughtered_at',
+                'status_clause' => 'li.qurbani_slaughtered_at IS NOT NULL',
+                'buckets' => [
+                    ['key' => 'early',    'label' => '≥ 2h before', 'subline' => 'on track',           'min' => null,  'max' => -120, 'tone' => 'success'],
+                    ['key' => 'close',    'label' => '< 2h before', 'subline' => 'cutting it close',   'min' => -120,  'max' => 0,    'tone' => 'warn'],
+                    ['key' => 'late_1h',  'label' => '0–1h late',   'subline' => 'past slot end',      'min' => 0,     'max' => 60,   'tone' => 'warn'],
+                    ['key' => 'late_2h',  'label' => '1–2h late',   'subline' => '',                    'min' => 60,    'max' => 120,  'tone' => 'danger'],
+                    ['key' => 'late_xh',  'label' => '> 2h late',   'subline' => '',                    'min' => 120,   'max' => null, 'tone' => 'danger'],
+                ],
+            ],
+        ];
+    }
+
+    /**
+     * Build the SQL fragment that turns one bucket spec into a WHERE
+     * predicate against the signed `delta` expression. Shared by the
+     * /slot-sla aggregate AND the /drill detail query so the two
+     * numbers can never disagree.
+     */
+    private function slaBucketSql(string $deltaExpr, array $bucket): string
+    {
+        $min = $bucket['min'] ?? null;
+        $max = $bucket['max'] ?? null;
+        if ($min === null && $max !== null) {
+            return "{$deltaExpr} <= {$max}";
+        }
+        if ($min !== null && $max === null) {
+            return "{$deltaExpr} > {$min}";
+        }
+        return "{$deltaExpr} > {$min} AND {$deltaExpr} <= {$max}";
+    }
+
+    /**
      * GET /qurbani/performance
      *
      * Renders the dashboard shell. All numbers + records are loaded
@@ -478,6 +574,124 @@ class QurbaniPerformanceController extends Controller
     }
 
     /**
+     * GET /qurbani/api/performance/slot-sla?event=delivered&day=...
+     *
+     * Phase 6 (May-2026) — per-slot SLA bucket counts. Sits above the
+     * per-slot point-in-time rollup and answers "how *on-time* were
+     * the events?" rather than "what state is everything in right now?"
+     *
+     * Event must be one of: delivered, out_for_delivery, slaughtered.
+     * Self-collection is intentionally excluded — those customers come
+     * to us, so the rider SLA framing doesn't apply.
+     *
+     * Returns:
+     *   - meta.event            — echo of the chosen event
+     *   - meta.event_label      — pretty name for the header
+     *   - meta.buckets[]        — full bucket spec (label, subline,
+     *                              tone, range) so the UI can build
+     *                              headers without re-deriving them
+     *   - rows[]                — one per slot end; each carries
+     *                              counts[] (parallel to buckets[])
+     *                              plus a total
+     */
+    public function slotSla(Request $request)
+    {
+        $event = (string) $request->get('event', 'delivered');
+        $events = $this->slaEvents();
+        if (!isset($events[$event])) {
+            return response()->json([
+                'success' => false,
+                'message' => "Unknown event: {$event}. Allowed: " . implode(', ', array_keys($events)),
+            ], 400);
+        }
+        $cfg = $events[$event];
+        $day = $request->get('day');
+
+        // Signed-minute delta between event time-of-day and slot end
+        // minute. Same SIGNED CAST pattern as the existing late-count
+        // SQL — see the `$deliveredLate` comment in summary() for why
+        // both operands MUST cast to SIGNED (qurbani_slot_end_minute
+        // is UNSIGNED, naive subtraction blows up on early events).
+        $col = $cfg['event_column'];
+        $deltaExpr = "(CAST(HOUR(li.{$col}) * 60 + MINUTE(li.{$col}) AS SIGNED) - CAST(li.qurbani_slot_end_minute AS SIGNED))";
+
+        // Build the SUM(CASE...) for each bucket. Order is preserved
+        // so the UI can render the same column order it sees here.
+        $selectFragments = [
+            'li.qurbani_slot',
+            'li.qurbani_slot_end_minute',
+        ];
+        foreach ($cfg['buckets'] as $i => $b) {
+            $cond = $this->slaBucketSql($deltaExpr, $b);
+            $selectFragments[] = DB::raw("SUM(CASE WHEN {$cond} THEN 1 ELSE 0 END) as b{$i}");
+        }
+        $selectFragments[] = DB::raw('COUNT(*) as total');
+
+        // Base query: same exclusions as the rest of the page —
+        // exclude cancelled orders, restrict to Delivery (not self),
+        // require slot-end minute, plus the event-specific status
+        // clause from $cfg.
+        $q = DB::table('t_crm_prod_order_line_item as li')
+            ->join('t_crm_prod_order as o', 'o.id', '=', 'li.order_id')
+            ->where(function ($q2) {
+                $q2->whereNull('o.order_status')
+                   ->orWhereRaw("LOWER(o.order_status) <> 'cancelled'");
+            })
+            // Delivery only — self-collection has no rider SLA.
+            ->where(function ($q2) {
+                $q2->whereNull('li.qurbani_delivery_type')
+                   ->orWhereRaw("LOWER(COALESCE(li.qurbani_delivery_type,'')) NOT LIKE ?", ['%self%']);
+            })
+            ->whereNotNull('li.qurbani_slot_end_minute')
+            ->whereRaw($cfg['status_clause']);
+        if ($day) {
+            $q->where('li.qurbani_day', $day);
+        }
+
+        $rows = $q->select($selectFragments)
+            ->groupBy('li.qurbani_slot', 'li.qurbani_slot_end_minute')
+            ->orderBy('li.qurbani_slot_end_minute')
+            ->get();
+
+        $out = $rows->map(function ($r) use ($cfg) {
+            $counts = [];
+            foreach ($cfg['buckets'] as $i => $b) {
+                $col = 'b' . $i;
+                $counts[] = (int) ($r->{$col} ?? 0);
+            }
+            return [
+                'slot'             => $r->qurbani_slot,
+                'slot_end_minute'  => (int) $r->qurbani_slot_end_minute,
+                'slot_end_display' => QurbaniSlotParser::formatMinutes((int) $r->qurbani_slot_end_minute),
+                'counts'           => $counts,
+                'total'            => (int) $r->total,
+            ];
+        })->all();
+
+        // Strip SQL guts out of bucket meta before exposing to the UI —
+        // the frontend only needs label / subline / tone for rendering.
+        $bucketsMeta = array_map(function ($b) {
+            return [
+                'key'     => $b['key'],
+                'label'   => $b['label'],
+                'subline' => $b['subline'],
+                'tone'    => $b['tone'],
+            ];
+        }, $cfg['buckets']);
+
+        return response()->json([
+            'success' => true,
+            'meta'    => [
+                'event'        => $event,
+                'event_label'  => $cfg['label'],
+                'buckets'      => $bucketsMeta,
+                'filter'       => ['day' => $day],
+            ],
+            'rows' => $out,
+        ]);
+    }
+
+    /**
      * GET /qurbani/api/performance/drill?metric=...&day=...
      *
      * Returns the underlying line-item records for one of the KPIs
@@ -613,6 +827,32 @@ class QurbaniPerformanceController extends Controller
                 . "WHERE l.trigger_event IN ('ofd','ofd_delay_update')"
                 . ") as walo"
             ), 'walo.line_item_id', '=', 'li.id');
+
+            // May-2026 — EARLIEST OFD WhatsApp per line item. This is
+            // the snapshot of "what time we originally told the
+            // customer". Used by the new promise-drift KPIs +
+            // delivered_off_promise drill metrics. Status='sent' only
+            // (a failed send was never seen by the customer, so it
+            // doesn't form a real promise). Mirror MIN(id) join so we
+            // disambiguate when two rows happen to share created_at.
+            $q->leftJoin(DB::raw(
+                "(SELECT l.line_item_id, "
+                . "l.delivery_time_used AS first_messaged_eta_at, "
+                . "l.created_at         AS first_messaged_sent_at "
+                . "FROM t_ops_qurbani_wa_log l "
+                . "INNER JOIN ("
+                . "  SELECT line_item_id, MIN(id) AS mn "
+                . "  FROM t_ops_qurbani_wa_log "
+                . "  WHERE trigger_event IN ('ofd','ofd_delay_update') "
+                . "    AND status = 'sent' "
+                . "    AND delivery_time_used IS NOT NULL "
+                . "  GROUP BY line_item_id"
+                . ") mn ON mn.line_item_id = l.line_item_id AND mn.mn = l.id "
+                . "WHERE l.trigger_event IN ('ofd','ofd_delay_update') "
+                . "  AND l.status = 'sent' "
+                . "  AND l.delivery_time_used IS NOT NULL"
+                . ") as wf"
+            ), 'wf.line_item_id', '=', 'li.id');
         }
         if ($day) {
             $q->where('li.qurbani_day', $day);
@@ -748,6 +988,77 @@ class QurbaniPerformanceController extends Controller
                 }
                 $q->where('wac.wa_unread', '>', 0);
                 break;
+            case 'sla_delivered':
+            case 'sla_out_for_delivery':
+            case 'sla_slaughtered':
+                // Phase 6 (May-2026) — drill into one cell of the
+                // new Slot SLA buckets table. The metric encodes which
+                // event we're scoring; the `sla_bucket` query param
+                // (0-indexed) picks which bucket of that event. Same
+                // SIGNED-cast delta math as slotSla() so a click and
+                // the displayed count always match.
+                $slaKey = substr($metric, 4); // strip "sla_"
+                $events = $this->slaEvents();
+                if (!isset($events[$slaKey])) {
+                    return response()->json(['success' => false, 'message' => "Unknown SLA metric: {$metric}"], 400);
+                }
+                $cfg = $events[$slaKey];
+                $bucketIdx = (int) $request->get('sla_bucket', -1);
+                if ($bucketIdx < 0 || $bucketIdx >= count($cfg['buckets'])) {
+                    return response()->json(['success' => false, 'message' => "Missing/invalid sla_bucket for {$metric}"], 400);
+                }
+                $col = $cfg['event_column'];
+                $delta = "(CAST(HOUR(li.{$col}) * 60 + MINUTE(li.{$col}) AS SIGNED) - CAST(li.qurbani_slot_end_minute AS SIGNED))";
+                $cond = $this->slaBucketSql($delta, $cfg['buckets'][$bucketIdx]);
+                // Delivery only — mirrors the aggregate. Self-collection
+                // bookings are filtered out so this drill list matches
+                // the count the user clicked. We also re-apply the
+                // status clause (e.g. delivered-only) and the slot
+                // narrow that the caller already passed in.
+                $q->where(function ($q2) {
+                    $q2->whereNull('li.qurbani_delivery_type')
+                       ->orWhereRaw("LOWER(COALESCE(li.qurbani_delivery_type,'')) NOT LIKE ?", ['%self%']);
+                })
+                ->whereNotNull('li.qurbani_slot_end_minute')
+                ->whereRaw($cfg['status_clause'])
+                ->whereRaw($cond);
+                break;
+            case 'delivered_on_promise':
+            case 'delivered_late_promise':
+            case 'delivered_very_late_promise':
+                // May-2026 — promise-drift drill cluster. Drift =
+                // delivered_at − (earliest WA OFD promise OR system
+                // ETA fallback). Drift expression mirrors
+                // loadDeliveredPromiseStats() exactly — keep them in
+                // lock-step so the KPI counter and the drill list
+                // never diverge. When the WA log table isn't
+                // deployed we degrade gracefully to system-ETA only.
+                $veryLatePromise = (int) ConfigModel::get(
+                    'qurbani_wa_ofd_delay_threshold_minutes',
+                    (string) self::DEFAULT_VERY_LATE_PROMISE_MIN
+                );
+                if ($veryLatePromise < 1) $veryLatePromise = self::DEFAULT_VERY_LATE_PROMISE_MIN;
+                $driftExpr = $waLogAvailable
+                    ? "TIMESTAMPDIFF(MINUTE, COALESCE(wf.first_messaged_eta_at, li.qurbani_estimated_delivery_at), li.qurbani_delivered_at)"
+                    : "TIMESTAMPDIFF(MINUTE, li.qurbani_estimated_delivery_at, li.qurbani_delivered_at)";
+                $q->where('li.qurbani_item_status', 'delivered')
+                  ->whereNotNull('li.qurbani_delivered_at');
+                if ($waLogAvailable) {
+                    $q->where(function ($q2) {
+                        $q2->whereNotNull('wf.first_messaged_eta_at')
+                           ->orWhereNotNull('li.qurbani_estimated_delivery_at');
+                    });
+                } else {
+                    $q->whereNotNull('li.qurbani_estimated_delivery_at');
+                }
+                if ($metric === 'delivered_on_promise') {
+                    $q->whereRaw("{$driftExpr} BETWEEN ? AND ?", [-$graceMin, $graceMin]);
+                } elseif ($metric === 'delivered_late_promise') {
+                    $q->whereRaw("{$driftExpr} > ? AND {$driftExpr} <= ?", [$graceMin, $veryLatePromise]);
+                } else {
+                    $q->whereRaw("{$driftExpr} > ?", [$veryLatePromise]);
+                }
+                break;
             default:
                 return response()->json(['success' => false, 'message' => "Unknown metric: {$metric}"], 400);
         }
@@ -797,6 +1108,12 @@ class QurbaniPerformanceController extends Controller
             $selects[] = 'walo.ofd_wa_sent_at';
             $selects[] = 'walo.ofd_wa_skip_reason';
             $selects[] = 'walo.ofd_wa_trigger';
+            // May-2026 — EARLIEST OFD WA promise per line item (the
+            // "what we first told the customer" snapshot). Used by
+            // the promise-drift drill renderer to show "Promised X,
+            // Delivered Y, Drift Z".
+            $selects[] = 'wf.first_messaged_eta_at';
+            $selects[] = 'wf.first_messaged_sent_at';
         }
         $rows = $q->select($selects)
             ->orderBy('li.qurbani_slot_end_minute')
@@ -876,6 +1193,54 @@ class QurbaniPerformanceController extends Controller
                 }
             }
 
+            // ── Promise drift (May-2026) ───────────────────────────
+            // Mirrors enrichDeliveredPromiseDrift() in RiderController.
+            // Drift = delivered − earliest WA promise (or system ETA
+            // when no WA was sent). Surfaced on every delivered row so
+            // the records table can show a chip alongside the slot
+            // compare. Pre-computed here so the JS doesn't have to.
+            // first_messaged_eta_at only exists on $r when the WA log
+            // tables are deployed (we conditionally select it above);
+            // the ?? null guard handles dev/test envs without WA.
+            $promiseDrift = null;
+            $firstMessaged = isset($r->first_messaged_eta_at) ? $r->first_messaged_eta_at : null;
+            $deliveredAt = $r->qurbani_delivered_at ?? null;
+            if ($deliveredAt) {
+                $promiseSource = null;
+                $promiseEta = null;
+                if ($firstMessaged) {
+                    $promiseSource = 'whatsapp';
+                    $promiseEta = $firstMessaged;
+                } elseif ($r->qurbani_estimated_delivery_at) {
+                    $promiseSource = 'system_eta';
+                    $promiseEta = $r->qurbani_estimated_delivery_at;
+                }
+                if ($promiseEta) {
+                    try {
+                        $promiseCarbon = Carbon::parse($promiseEta);
+                        $actualCarbon = Carbon::parse($deliveredAt);
+                        $driftMin = (int) round($promiseCarbon->diffInMinutes($actualCarbon, false));
+                        $bucket = 'on_promise';
+                        if ($driftMin > $graceMin) {
+                            $bucket = $driftMin > $driftThreshold ? 'very_late' : 'late';
+                        } elseif ($driftMin < -$graceMin) {
+                            $bucket = 'early';
+                        }
+                        $promiseDrift = [
+                            'promise_source'       => $promiseSource,
+                            'promised_eta_at'      => (string) $promiseEta,
+                            'promised_eta_display' => $promiseCarbon->format('h:i A'),
+                            'delivered_at_display' => $actualCarbon->format('h:i A'),
+                            'promised_sent_at'     => $r->first_messaged_sent_at ?? null,
+                            'drift_minutes'        => $driftMin,
+                            'drift_bucket'         => $bucket,
+                        ];
+                    } catch (\Throwable $e) {
+                        $promiseDrift = null;
+                    }
+                }
+            }
+
             return [
                 'line_item_id'                  => (int) $r->line_item_id,
                 'order_id'                      => (int) $r->order_id,
@@ -902,6 +1267,10 @@ class QurbaniPerformanceController extends Controller
                 'qurbani_dispatched_at'         => $r->qurbani_dispatched_at,
                 'rider_name'                    => $r->rider_name,
                 'slot_compare'                  => $slotCompare,
+                // May-2026 — promise drift snapshot. Null when neither
+                // a WA promise nor a system ETA exists, or row isn't
+                // delivered yet.
+                'promise_drift'                 => $promiseDrift,
                 // May-2026 CS Manager enrichment. Always present in
                 // the response shape so the JS can render the
                 // WhatsApp action unconditionally (it just shows
@@ -1064,5 +1433,115 @@ class QurbaniPerformanceController extends Controller
             'current_day'   => (int) $currentDay,
             'active_since'  => $since ?: null,
         ];
+    }
+
+    /**
+     * May-2026 — Promise-drift aggregator for the Performance summary.
+     *
+     * For every delivered line item in scope (day filter respected),
+     * computes drift between actual delivered_at and the customer-
+     * facing promise. Promise source:
+     *   1. EARLIEST t_ops_qurbani_wa_log.delivery_time_used where
+     *      trigger ∈ (ofd, ofd_delay_update) AND status='sent' AND
+     *      delivery_time_used IS NOT NULL — the first time the
+     *      customer was actually told a delivery time.
+     *   2. Falls back to qurbani_estimated_delivery_at when no WA
+     *      message ever went out (test mode / no phone / template off
+     *      / WA tables not deployed). Counted under no_promise=0 but
+     *      INCLUDED in the buckets so the KPI matches what the rider-
+     *      route Delivered redesign shows.
+     *
+     * Buckets use the same grace + very-late thresholds as the
+     * rider-route enrichDeliveredPromiseDrift() helper so the page
+     * and per-rider view agree on every "on promise / late / very
+     * late" classification.
+     *
+     * Returns: ['on', 'late', 'very_late', 'early', 'no_promise',
+     *           'count', 'avg'].
+     */
+    private function loadDeliveredPromiseStats(?string $day, int $graceMin, int $veryLateMin): array
+    {
+        $out = [
+            'on'         => 0,
+            'late'       => 0,
+            'very_late'  => 0,
+            'early'      => 0,
+            'no_promise' => 0,
+            'count'      => 0,
+            'avg'        => 0,
+        ];
+        $waLogAvailable = Schema::hasTable('t_ops_qurbani_wa_log');
+
+        $q = DB::table('t_crm_prod_order_line_item as li')
+            ->join('t_crm_prod_order as o', 'o.id', '=', 'li.order_id')
+            ->where(function ($q2) {
+                $q2->whereNull('o.order_status')
+                   ->orWhereRaw("LOWER(o.order_status) <> 'cancelled'");
+            })
+            ->where('li.qurbani_item_status', 'delivered')
+            ->whereNotNull('li.qurbani_delivered_at');
+        if ($day) {
+            $q->where('li.qurbani_day', $day);
+        }
+
+        $selects = [
+            'li.id as line_item_id',
+            'li.qurbani_delivered_at',
+            'li.qurbani_estimated_delivery_at',
+        ];
+        if ($waLogAvailable) {
+            // Earliest sent OFD per line item (matches the rider-
+            // route helper's "earliest is the original promise" rule).
+            $q->leftJoin(DB::raw(
+                "(SELECT l.line_item_id, "
+                . "l.delivery_time_used AS first_messaged_eta_at "
+                . "FROM t_ops_qurbani_wa_log l "
+                . "INNER JOIN ("
+                . "  SELECT line_item_id, MIN(id) AS mn "
+                . "  FROM t_ops_qurbani_wa_log "
+                . "  WHERE trigger_event IN ('ofd','ofd_delay_update') "
+                . "    AND status = 'sent' "
+                . "    AND delivery_time_used IS NOT NULL "
+                . "  GROUP BY line_item_id"
+                . ") mn ON mn.line_item_id = l.line_item_id AND mn.mn = l.id "
+                . "WHERE l.trigger_event IN ('ofd','ofd_delay_update') "
+                . "  AND l.status = 'sent' "
+                . "  AND l.delivery_time_used IS NOT NULL"
+                . ") as wf"
+            ), 'wf.line_item_id', '=', 'li.id');
+            $selects[] = 'wf.first_messaged_eta_at';
+        }
+
+        $rows = $q->select($selects)->get();
+        $sum = 0;
+        $countWithDrift = 0;
+        foreach ($rows as $r) {
+            $promiseEta = null;
+            $hasWaPromise = !empty($r->first_messaged_eta_at);
+            if ($hasWaPromise) {
+                $promiseEta = $r->first_messaged_eta_at;
+            } elseif (!empty($r->qurbani_estimated_delivery_at)) {
+                $promiseEta = $r->qurbani_estimated_delivery_at;
+                $out['no_promise']++;   // no WA promise sent — fell back to system ETA
+            } else {
+                continue;               // genuinely no promise on record — exclude
+            }
+            try {
+                $driftMin = (int) round(
+                    Carbon::parse($promiseEta)->diffInMinutes(Carbon::parse($r->qurbani_delivered_at), false)
+                );
+            } catch (\Throwable $e) {
+                continue;
+            }
+            if ($driftMin > $veryLateMin)      $out['very_late']++;
+            elseif ($driftMin > $graceMin)     $out['late']++;
+            elseif ($driftMin < -$graceMin)    $out['early']++;
+            else                               $out['on']++;
+            $sum += $driftMin;
+            $countWithDrift++;
+        }
+        $out['count'] = $countWithDrift;
+        $out['avg'] = $countWithDrift > 0 ? (int) round($sum / $countWithDrift) : 0;
+        return $out;
     }
 }

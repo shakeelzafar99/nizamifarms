@@ -141,4 +141,80 @@ return [
     */
     'first_event_status_override' => 'accepted',
 
+    /*
+    |==========================================================================
+    | PHASE 2 — ETA window + live rider tracking
+    |==========================================================================
+    |
+    | Everything below is additive and safe to ship before the customer-app
+    | backend consumes it. The ETA window rides as an extra optional field on
+    | the existing status webhook (their parser ignores unknown fields). The
+    | tracking endpoint is a passive pull API on our side. The ONLY thing that
+    | actively pushes new data to them is `emit_eta_updates`, which is OFF by
+    | default so it cannot disturb Phase 1 status testing.
+    |
+    */
+
+    /*
+    |--------------------------------------------------------------------------
+    | ETA window (the coarse, human "expectedDeliveryWindow")
+    |--------------------------------------------------------------------------
+    |
+    | When we know an order's Google-route ETA (estimated_delivery_at), we
+    | turn it into a short, already-formatted display string the customer app
+    | shows in the status pill, e.g. "Today, 4-6 PM". This is a coarse
+    | *promise* window, distinct from the precise live `eta` on the tracking
+    | feed.
+    |
+    | band_hours: width of the window built around the point ETA. The window
+    |             is [floor(eta to the hour), +band_hours]. Default 2h.
+    |
+    */
+    'eta_window_enabled'    => env('CUSTOMER_APP_ETA_WINDOW_ENABLED', true),
+    'eta_window_band_hours' => env('CUSTOMER_APP_ETA_WINDOW_BAND_HOURS', 2),
+
+    /*
+    |--------------------------------------------------------------------------
+    | order.eta_updated push (DEFAULT OFF)
+    |--------------------------------------------------------------------------
+    |
+    | When true, recalculating an order's ETA (RiderController::
+    | calculateDeliveryEtas) queues an `order.eta_updated` webhook so the
+    | customer app can refresh the delivery window without us touching the
+    | status timeline.
+    |
+    | Keep this FALSE until the customer-app backend explicitly branches on
+    | event_type === 'order.eta_updated'. If they don't, their generic
+    | status handler could append a duplicate timeline row. Flip to true
+    | only after they confirm they handle it.
+    |
+    */
+    'emit_eta_updates' => env('CUSTOMER_APP_EMIT_ETA_UPDATES', false),
+
+    /*
+    |--------------------------------------------------------------------------
+    | Inbound auth — the live-tracking pull endpoint
+    |--------------------------------------------------------------------------
+    |
+    | The customer-app backend calls
+    |   GET /api/customer-app/orders/{orderNumber}/tracking
+    | server-to-server with `Authorization: Bearer <token>`. This token is a
+    | separate secret from the webhook signing secret, so the signing secret
+    | is never sent in a header. Set it in .env on both sides.
+    |
+    */
+    'inbound_token' => env('CUSTOMER_APP_INBOUND_TOKEN', ''),
+
+    /*
+    |--------------------------------------------------------------------------
+    | Tracking feed freshness
+    |--------------------------------------------------------------------------
+    |
+    | A rider GPS fix older than this many minutes is treated as "no live
+    | fix" — the tracking endpoint returns { "tracking": null } so the app
+    | falls back to the timeline instead of drawing a stale marker.
+    |
+    */
+    'tracking_gps_staleness_minutes' => env('CUSTOMER_APP_TRACKING_STALENESS', 30),
+
 ];

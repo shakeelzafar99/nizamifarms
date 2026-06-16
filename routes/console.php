@@ -64,3 +64,24 @@ Schedule::command('app:dispatch-customer-webhooks')
     ->everyMinute()
     ->withoutOverlapping(5)
     ->runInBackground();
+
+// Jun-2026 — Online payment auto-matching.
+//
+// 1. Read pending WhatsApp bank screenshots through Gemini Vision and match
+//    them to pending online orders. The webhook only inserts a cheap signal
+//    row; this command does the (paid) image read off the request thread.
+// 2. Poll the support@ mailbox for new bank credit-confirmation emails and
+//    match those too.
+//
+// Both self-throttle to a near no-op (one config read) when
+// config('payment_signals.enabled') is false or the relevant credentials are
+// missing, so they cost almost nothing before the feature is configured.
+Schedule::command('payments:process-signals')
+    ->everyMinute()
+    ->withoutOverlapping(5)
+    ->runInBackground();
+
+Schedule::command('payments:poll-bank-emails')
+    ->everyMinute()
+    ->withoutOverlapping(5)
+    ->runInBackground();

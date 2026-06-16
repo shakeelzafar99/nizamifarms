@@ -16,6 +16,11 @@ return Application::configure(basePath: dirname(__DIR__))
         $middleware->validateCsrfTokens(except: [
             'webhook/appsheet/*'
         ]);
+
+        // Server-to-server auth for the customer-app pull endpoints (Phase 2).
+        $middleware->alias([
+            'customer.app' => \App\Http\Middleware\EnsureCustomerAppAuth::class,
+        ]);
     })
     ->withExceptions(function (Exceptions $exceptions) {
         //

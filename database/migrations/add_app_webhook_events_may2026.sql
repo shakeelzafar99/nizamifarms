@@ -41,8 +41,8 @@ CREATE TABLE IF NOT EXISTS `t_app_webhook_events` (
     `order_number`    VARCHAR(64) NULL COMMENT 'NF order_number with prefix (e.g. SH-1234). Mirrors the JSON payload for fast SQL filtering.',
     `payload`         JSON NOT NULL COMMENT 'The exact body that will be sent to the customer-app webhook URL.',
     `target`          VARCHAR(32) NOT NULL DEFAULT 'customer_app' COMMENT 'Future-proofs the outbox for multiple consumers.',
-    `status`          ENUM('pending','sent','failed','dead') NOT NULL DEFAULT 'pending'
-                      COMMENT 'pending = never tried or due for retry. sent = 2xx received. failed = transient failure, will retry. dead = retries exhausted, ops alert.',
+    `status`          ENUM('pending','sent','failed','dead','skipped') NOT NULL DEFAULT 'pending'
+                      COMMENT 'pending = never tried or due for retry. sent = 2xx received. failed = transient failure, will retry. dead = retries exhausted, ops alert. skipped = intentionally not delivered (e.g. stale backlog neutralized by ops).',
     `attempts`        TINYINT UNSIGNED NOT NULL DEFAULT 0,
     `last_error`      TEXT NULL,
     `next_attempt_at` DATETIME NULL COMMENT 'NULL means try on next dispatcher tick. Used by retry backoff.',
@@ -65,3 +65,30 @@ CREATE TABLE IF NOT EXISTS `t_app_webhook_events` (
 -- And that the dispatcher's primary index is in place:
 --
 -- SHOW INDEX FROM t_app_webhook_events WHERE Key_name = 'idx_status_next';
+
+
+-- =====================================================
+-- ONE-TIME MAINTENANCE (run manually on an EXISTING prod table only)
+-- =====================================================
+-- Tables created from THIS file already include 'skipped' in the enum.
+-- Production was created from an earlier version of this file, so on prod
+-- only, add the value first:
+--
+-- ALTER TABLE `t_app_webhook_events`
+--   MODIFY COLUMN `status`
+--   ENUM('pending','sent','failed','dead','skipped') NOT NULL DEFAULT 'pending';
+--
+-- Then neutralize the stale backlog that accumulated before the delivery
+-- mechanism (terminating() drain) went live, so the customer app is not
+-- flooded with old, out-of-date status events. Only NEW status changes from
+-- this point forward will be delivered:
+--
+-- UPDATE `t_app_webhook_events`
+-- SET `status` = 'skipped',
+--     `last_error` = 'Neutralized: stale pre-delivery backlog (not sent)'
+-- WHERE `target` = 'customer_app'
+--   AND `status` = 'pending';
+--
+-- The drain only ever selects status = 'pending', so 'skipped' rows are
+-- permanently ignored (and excluded from replay-by-order too).
+-- =====================================================

@@ -61,6 +61,25 @@ Route::prefix('webhook')->group(function () {
     Route::post('whatsapp', [WhatsAppWebhookController::class, 'receive']);
 });
 
+// Customer App — server-to-server pull endpoints (Phase 2).
+// Authenticated by the `customer.app` middleware (bearer token), NOT by
+// Sanctum. Called by the customer-app (Vercel) backend, which resolves the
+// customer from its own JWT and enforces order ownership before proxying.
+Route::middleware('customer.app')->prefix('customer-app')->group(function () {
+    Route::get('/orders/{orderNumber}/tracking', [\App\Http\Controllers\API\CustomerAppController::class, 'tracking'])
+        ->where('orderNumber', '.*'); // allow SH-1234, 1234, or encoded #1234
+
+    // Phase 3 — full order snapshot. Accepts a bare Shopify number (1234 ->
+    // assumed SH-) or any full NF number (SH-1234, NF-2001, QUR26-045).
+    Route::get('/orders/{orderNumber}', [\App\Http\Controllers\API\CustomerAppController::class, 'orderSnapshot'])
+        ->where('orderNumber', '[^/]+');
+
+    // Phase 3 — order history keyed on the customer's mobile number (any
+    // format; NF normalizes to the last 10 digits before matching).
+    Route::get('/customers/{mobile}/orders', [\App\Http\Controllers\API\CustomerAppController::class, 'customerOrders'])
+        ->where('mobile', '[^/]+');
+});
+
 //Webhook
 
 //Route::get('sendbasicemail', 'MailController@sendEmail');
@@ -187,6 +206,11 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('/store/set-order-region', [\App\Http\Controllers\CRM\DeliveryRegionController::class, 'setOrderRegion']);
     Route::post('/store/set-customer-region', [\App\Http\Controllers\CRM\DeliveryRegionController::class, 'setCustomerRegion']);
     Route::post('/store/auto-assign-riders', [\App\Http\Controllers\CRM\DeliveryRegionController::class, 'autoAssignRiders']);
+
+    // Open Orders → "Get Customer Locations" (mobile). Same controller as web;
+    // stateless live recompute, no tracking table.
+    Route::get('/store/location-request/eligible', [\App\Http\Controllers\CRM\OpenOrderLocationController::class, 'eligible']);
+    Route::post('/store/location-request/send', [\App\Http\Controllers\CRM\OpenOrderLocationController::class, 'send']);
     Route::post('/store/batch-detect-regions', [\App\Http\Controllers\CRM\DeliveryRegionController::class, 'batchDetect']);
     Route::post('/store/redetect-regions', [\App\Http\Controllers\CRM\DeliveryRegionController::class, 'redetectAll']);
     Route::post('/store/save-region-polygon', [\App\Http\Controllers\CRM\DeliveryRegionController::class, 'saveRegionPolygon']);

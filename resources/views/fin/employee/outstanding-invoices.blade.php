@@ -218,10 +218,18 @@
                                     <span class="text-xs text-gray-600 truncate">{{ $order['customer_name'] }}</span>
                                     @if($order['delivery_time'])<span class="text-xs text-gray-400">{{ $order['delivery_time'] }}</span>@endif
                                     <span class="text-xs font-semibold text-gray-800">Rs. {{ number_format($order['amount']) }}</span>
+                                    @php $proof = $order['payment_proof'] ?? null; @endphp
+                                    @if($proof && ($proof['status'] ?? 'none') !== 'none')
+                                    <span class="text-xs font-bold px-2 py-0.5 rounded-full text-white whitespace-nowrap"
+                                          style="background-color: {{ $proof['color'] }};"
+                                          title="{{ $proof['label'] }} — customer has already sent payment proof">
+                                        {{ $proof['has_whatsapp'] ? '📷' : '' }}{{ $proof['has_email'] ? '✉️' : '' }} {{ $proof['label'] }}
+                                    </span>
+                                    @endif
                                 </div>
                                 <button type="button" 
-                                    onclick="sendOnlineWhatsApp({{ $order['id'] }}, '{{ addslashes($order['customer_name']) }}', '{{ $order['customer_phone'] }}', '{{ $order['order_number'] }}', '{{ addslashes($order['rider_name']) }}', '{{ $order['delivery_date'] }}', '{{ $order['delivery_time'] }}')"
-                                    style="background-color: #25D366; min-width: 140px;"
+                                    onclick="sendOnlineWhatsApp({{ $order['id'] }}, '{{ addslashes($order['customer_name']) }}', '{{ $order['customer_phone'] }}', '{{ $order['order_number'] }}', '{{ addslashes($order['rider_name']) }}', '{{ $order['delivery_date'] }}', '{{ $order['delivery_time'] }}', '{{ ($proof && ($proof['status'] ?? 'none') !== 'none') ? addslashes($proof['label']) : '' }}')"
+                                    style="background-color: {{ ($proof && ($proof['status'] ?? 'none') !== 'none') ? '#f59e0b' : '#25D366' }}; min-width: 140px;"
                                     class="text-sm hover:opacity-90 text-white px-4 py-1.5 rounded-lg font-bold transition-all cursor-pointer whitespace-nowrap flex items-center justify-center gap-1.5 ml-3 shadow-sm">
                                     📱 Send WhatsApp
                                 </button>
@@ -560,6 +568,14 @@
                                         <span class="font-medium text-blue-600">#{{ $invoice['order_number'] }}</span>
                                         @if($invoice['customer_name'])
                                             <span class="text-gray-600"> - {{ $invoice['customer_name'] }}</span>
+                                        @endif
+                                        @php $invProof = $invoice['payment_proof'] ?? null; @endphp
+                                        @if($invProof && ($invProof['status'] ?? 'none') !== 'none')
+                                            <span class="text-xs font-bold px-1.5 py-0.5 rounded-full text-white whitespace-nowrap ml-1"
+                                                  style="background-color: {{ $invProof['color'] }};"
+                                                  title="{{ $invProof['label'] }} — customer has sent payment proof">
+                                                {{ $invProof['has_whatsapp'] ? '📷' : '' }}{{ $invProof['has_email'] ? '✉️' : '' }} {{ $invProof['label'] }}
+                                            </span>
                                         @endif
                                     </div>
                                     <span class="font-semibold text-gray-800">Rs. {{ number_format($invoice['amount'], 0) }}</span>
@@ -995,11 +1011,26 @@ function formatPhoneForWhatsApp(phone) {
     return cleaned.startsWith('+') ? cleaned : '+' + cleaned;
 }
 
-function sendOnlineWhatsApp(orderId, customerName, customerPhone, orderNumber, riderName, deliveryDate, deliveryTime) {
+function sendOnlineWhatsApp(orderId, customerName, customerPhone, orderNumber, riderName, deliveryDate, deliveryTime, proofLabel) {
     var formatted = formatPhoneForWhatsApp(customerPhone);
     if (!formatted) {
         alert('No valid phone number available for this customer.');
         return;
+    }
+
+    // Jun-2026 — Warn before sending a payment reminder if this customer has
+    // already sent payment proof (WhatsApp screenshot and/or bank email).
+    if (proofLabel && proofLabel.length > 0) {
+        var ok = confirm(
+            '⚠️ Payment proof already received for order #' + orderNumber + '\n\n'
+            + 'Status: ' + proofLabel + '\n\n'
+            + customerName + ' has already sent proof of payment. Sending a payment '
+            + 'reminder now may confuse the customer.\n\n'
+            + 'Are you sure you still want to send this message?'
+        );
+        if (!ok) {
+            return;
+        }
     }
 
     var timeStr = deliveryTime ? ' at ' + deliveryTime : '';

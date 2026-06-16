@@ -2220,8 +2220,20 @@ class EmployeeCashController extends Controller
             // Group pending settlements by rider (from_account_id)
             $settlementsByRider = $pendingSettlements->groupBy('from_account_id');
             
+            // Jun-2026 — Payment-proof badges (WhatsApp screenshot / bank email),
+            // keyed by order_id. Bulk lookup, no N+1. Empty when feature is off.
+            $paymentProofMap = [];
+            if (config('payment_signals.enabled')) {
+                $proofOrderIds = $displayInvoices->map(fn($inv) => $inv->order?->id)
+                    ->filter()->unique()->values()->all();
+                if (!empty($proofOrderIds)) {
+                    $paymentProofMap = app(\App\Services\Payments\Signals\PaymentProofStatusService::class)
+                        ->forOrders($proofOrderIds);
+                }
+            }
+
             // Group by rider for display
-            $invoicesByRider = $displayInvoices->groupBy('to_account_id')->map(function($riderInvoices) use ($invoiceToPendingSettlement, $settlementsByRider, $statusFilter) {
+            $invoicesByRider = $displayInvoices->groupBy('to_account_id')->map(function($riderInvoices) use ($invoiceToPendingSettlement, $settlementsByRider, $statusFilter, $paymentProofMap) {
                 $account = $riderInvoices->first()->toAccount;
                 $totalOutstanding = $riderInvoices->sum(function($invoice) {
                     return $invoice->amount - ($invoice->settled_amount ?? 0);
@@ -2272,9 +2284,10 @@ class EmployeeCashController extends Controller
                     'account' => $account,
                     'pending_settlements' => $riderSettlements,
                     'invoices_by_date' => $invoicesByDate, // NEW: Grouped by day for settled invoices
-                    'invoices' => $riderInvoices->map(function($invoice) use ($invoiceToPendingSettlement) {
+                    'invoices' => $riderInvoices->map(function($invoice) use ($invoiceToPendingSettlement, $paymentProofMap) {
                         $isPendingApproval = isset($invoiceToPendingSettlement[$invoice->id]);
                         $pendingSettlementId = $isPendingApproval ? $invoiceToPendingSettlement[$invoice->id] : null;
+                        $invoiceOrderId = $invoice->order?->id;
                         
                         // Get settlement breakdown (if settled via short cash)
                         $settlementBreakdown = null;
@@ -2297,6 +2310,7 @@ class EmployeeCashController extends Controller
                         
                         return [
                             'id' => $invoice->id,
+                            'order_id' => $invoiceOrderId, // for payment-proof badge
                             'order_number' => $invoice->order ? $invoice->order->order_number : 'N/A',
                             'customer_name' => $invoice->order ? $invoice->order->customer_name : null, // ✅ Added customer name
                             'transaction_date' => $invoice->transaction_date,
@@ -2308,7 +2322,11 @@ class EmployeeCashController extends Controller
                             'outstanding_amount' => $invoice->amount - ($invoice->settled_amount ?? 0),
                             'settlement_status' => $invoice->settlement_status,
                             'settled_at' => $invoice->settled_at,
-                            'settlement_breakdown' => $settlementBreakdown
+                            'settlement_breakdown' => $settlementBreakdown,
+                            // Jun-2026: payment-proof badge payload (null when none).
+                            'payment_proof' => ($invoiceOrderId && isset($paymentProofMap[$invoiceOrderId]))
+                                ? $paymentProofMap[$invoiceOrderId]
+                                : null,
                         ];
                     }),
                     'total_outstanding' => $totalOutstanding,
@@ -2515,8 +2533,16 @@ class EmployeeCashController extends Controller
             $messageSent = $orders->whereNotNull('online_message_sent_at');
             $messagePending = $orders->whereNull('online_message_sent_at');
             
+            // Jun-2026 — Bulk payment-proof lookup so the daily-closing reminder
+            // flow can warn the user when a customer has already sent proof.
+            $paymentProofMap = [];
+            if (config('payment_signals.enabled')) {
+                $paymentProofMap = app(\App\Services\Payments\Signals\PaymentProofStatusService::class)
+                    ->forOrders($orderIds);
+            }
+            
             // Group by rider
-            $byRider = $orders->groupBy('assigned_rider_user_id')->map(function($riderOrders) use ($deliveryHistory) {
+            $byRider = $orders->groupBy('assigned_rider_user_id')->map(function($riderOrders) use ($deliveryHistory, $paymentProofMap) {
                 $rider = $riderOrders->first()->assignedRider;
                 $riderName = $rider ? $rider->fullname : 'Unknown Rider';
                 
@@ -2534,7 +2560,7 @@ class EmployeeCashController extends Controller
                             'sent_at' => $order->online_message_sent_at ? $order->online_message_sent_at->format('h:i A') : null,
                         ];
                     })->values(),
-                    'message_pending' => $riderOrders->whereNull('online_message_sent_at')->map(function($order) use ($deliveryHistory) {
+                    'message_pending' => $riderOrders->whereNull('online_message_sent_at')->map(function($order) use ($deliveryHistory, $paymentProofMap) {
                         $customerName = trim(($order->address_first_name ?? '') . ' ' . ($order->address_last_name ?? ''))
                             ?: ($order->customer ? trim($order->customer->first_name . ' ' . $order->customer->last_name) : 'N/A');
                         $customerPhone = $order->address_phone ?: ($order->customer ? ($order->customer->phone_original ?? $order->customer->phone ?? '') : '');
@@ -2554,6 +2580,8 @@ class EmployeeCashController extends Controller
                             'delivery_date' => $deliveryDate,
                             'delivery_time' => $deliveryTime,
                             'amount' => round($order->total_price),
+                            // Jun-2026: payment-proof status (null when none received).
+                            'payment_proof' => $paymentProofMap[$order->id] ?? null,
                         ];
                     })->values(),
                 ];

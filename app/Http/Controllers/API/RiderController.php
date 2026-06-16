@@ -1162,7 +1162,21 @@ class RiderController extends Controller
                         'estimated_delivery_at' => $estimatedAt,
                         'eta_calculated_at' => $calculatedAt,
                     ]);
-                
+
+                // Phase 2 (customer app) — push the refreshed ETA + delivery
+                // window. No-op unless config emit_eta_updates is ON and this
+                // is an SH- order. Self-contained + non-fatal; never affects
+                // ETA calculation.
+                try {
+                    app(\App\Services\CustomerAppWebhookEmitter::class)
+                        ->emitEtaUpdate($order->id, $order->order_number, 'out_for_delivery', $estimatedAt);
+                } catch (\Throwable $e) {
+                    \Log::error('CustomerApp emitEtaUpdate hook failed (non-fatal)', [
+                        'order_id' => $order->id,
+                        'error'    => $e->getMessage(),
+                    ]);
+                }
+
                 $updatedOrders[] = [
                     'order_id' => $order->id,
                     'order_number' => $order->order_number,
@@ -7950,8 +7964,14 @@ class RiderController extends Controller
                     ->first(['id', 'code', 'name', 'short_code', 'color_hex']);
             }
             
-            $hasQurbaniMode = in_array('access_qurbani_mode', $permissions);
-            $qurbaniRiderDeliveredEnabled = \App\Models\FIN\ConfigModel::get('qurbani_rider_delivered_enabled', '0') === '1';
+            // Jun-2026: global Qurbani master switch (Operations page →
+            // qurbani_mode_enabled). When OFF, the mobile app must hide the
+            // Qurbani mode button AND the rider Qurbani delivery view. We fold
+            // it into the role-based flags so older app builds also honour it.
+            $qurbaniGlobalEnabled = \App\Models\FIN\ConfigModel::get('qurbani_mode_enabled', '1') === '1';
+            $hasQurbaniMode = in_array('access_qurbani_mode', $permissions) && $qurbaniGlobalEnabled;
+            $qurbaniRiderDeliveredEnabled = $qurbaniGlobalEnabled
+                && \App\Models\FIN\ConfigModel::get('qurbani_rider_delivered_enabled', '0') === '1';
             // Phase D (May-2026) — rider-side ETA auto-refresh.
             // Defaults: enabled, every 3 minutes. Bounded 1..30.
             $etaRefreshEnabled = \App\Models\FIN\ConfigModel::get('qurbani_eta_refresh_enabled', '1') === '1';
@@ -7965,6 +7985,7 @@ class RiderController extends Controller
                 'has_khaas_mode' => $hasKhaasMode,
                 'khaas_business_unit' => $khaasBusinessUnit,
                 'has_qurbani_mode' => $hasQurbaniMode,
+                'qurbani_mode_enabled' => $qurbaniGlobalEnabled,
                 'qurbani_rider_delivered_enabled' => $qurbaniRiderDeliveredEnabled,
                 'qurbani_eta_refresh_enabled' => $etaRefreshEnabled,
                 'qurbani_eta_refresh_minutes' => $etaRefreshMinutes,
@@ -8440,8 +8461,20 @@ class RiderController extends Controller
                 Log::debug('Open orders unread check skipped', ['error' => $e->getMessage()]);
             }
 
+            // Jun-2026 — Payment-proof status for online-payment orders (bulk, no N+1).
+            $paymentProofMap = [];
+            if (config('payment_signals.enabled') && $orderIds->isNotEmpty()) {
+                $onlineProofOrderIds = $orders->filter(function($o) {
+                    return !in_array(strtolower($o->payment_method ?? ''), ['cash', 'cash_on_delivery', 'cod']);
+                })->pluck('id')->all();
+                if (!empty($onlineProofOrderIds)) {
+                    $paymentProofMap = app(\App\Services\Payments\Signals\PaymentProofStatusService::class)
+                        ->forOrders($onlineProofOrderIds);
+                }
+            }
+
             // Format for mobile (lightweight)
-            $formattedOrders = $orders->map(function($order) use ($prepSummaries, $khaasOrderIds, $regionMap, $unreadCustomerIds, $hasWaAccess) {
+            $formattedOrders = $orders->map(function($order) use ($prepSummaries, $khaasOrderIds, $regionMap, $unreadCustomerIds, $hasWaAccess, $paymentProofMap) {
                 // Build customer name
                 $customerName = $order->name ?? 'N/A';
                 if (!$order->name && ($order->address_first_name || $order->address_last_name)) {
@@ -8530,6 +8563,7 @@ class RiderController extends Controller
                     'expected_packets' => $order->expected_packets, // ⭐ Packet info (from manager)
                     'actual_packets' => $order->actual_packets,     // ⭐ Actual packets (from rider, after delivery)
                     'payment_method' => $order->payment_method,     // ⭐ Payment method (cash/online)
+                    'payment_proof' => $paymentProofMap[$order->id] ?? null, // Jun-2026: WhatsApp/email proof status
                     'customer_id' => $order->customer_id, // Added for verified location functionality
                     'customer_name' => $customerName,
                     // Eager address/phone for immediate display on list
@@ -14023,8 +14057,19 @@ class RiderController extends Controller
             // Group pending settlements by rider (from_account_id)
             $settlementsByRider = $pendingSettlements->groupBy('from_account_id');
             
+            // Jun-2026 — Payment-proof badges keyed by order_id (bulk, no N+1).
+            $paymentProofMap = [];
+            if (config('payment_signals.enabled')) {
+                $proofOrderIds = $displayInvoices->map(fn($inv) => $inv->order?->id)
+                    ->filter()->unique()->values()->all();
+                if (!empty($proofOrderIds)) {
+                    $paymentProofMap = app(\App\Services\Payments\Signals\PaymentProofStatusService::class)
+                        ->forOrders($proofOrderIds);
+                }
+            }
+            
             // Group by rider for display
-            $invoicesByRider = $displayInvoices->groupBy('to_account_id')->map(function($riderInvoices) use ($invoiceToPendingSettlement, $settlementsByRider) {
+            $invoicesByRider = $displayInvoices->groupBy('to_account_id')->map(function($riderInvoices) use ($invoiceToPendingSettlement, $settlementsByRider, $paymentProofMap) {
                 $account = $riderInvoices->first()->toAccount;
                 $totalOutstanding = $riderInvoices->sum(function($invoice) {
                     return $invoice->amount - ($invoice->settled_amount ?? 0);
@@ -14050,12 +14095,14 @@ class RiderController extends Controller
                             'total_outstanding' => $settlement->total_outstanding
                         ];
                     })->values(),
-                    'invoices' => $riderInvoices->map(function($invoice) use ($invoiceToPendingSettlement) {
+                    'invoices' => $riderInvoices->map(function($invoice) use ($invoiceToPendingSettlement, $paymentProofMap) {
                         $isPendingApproval = isset($invoiceToPendingSettlement[$invoice->id]);
                         $pendingSettlementId = $isPendingApproval ? $invoiceToPendingSettlement[$invoice->id] : null;
+                        $invoiceOrderId = $invoice->order?->id;
                         
                         return [
                             'id' => $invoice->id,
+                            'order_id' => $invoiceOrderId,
                             'order_number' => $invoice->order ? $invoice->order->order_number : 'N/A',
                             'customer_name' => $invoice->order ? $invoice->order->customer_name : null,
                             'transaction_date' => $invoice->transaction_date->format('Y-m-d'),
@@ -14066,7 +14113,10 @@ class RiderController extends Controller
                             'settled_amount' => $invoice->settled_amount ?? 0,
                             'outstanding_amount' => $invoice->amount - ($invoice->settled_amount ?? 0),
                             'settlement_status' => $invoice->settlement_status,
-                            'settled_at' => $invoice->settled_at ? $invoice->settled_at->format('Y-m-d H:i:s') : null
+                            'settled_at' => $invoice->settled_at ? $invoice->settled_at->format('Y-m-d H:i:s') : null,
+                            'payment_proof' => ($invoiceOrderId && isset($paymentProofMap[$invoiceOrderId]))
+                                ? $paymentProofMap[$invoiceOrderId]
+                                : null,
                         ];
                     })->values(),
                     'total_outstanding' => $totalOutstanding,
@@ -14433,8 +14483,16 @@ class RiderController extends Controller
                         ->keyBy('order_id');
                 }
                 
+                // Jun-2026 — Bulk payment-proof lookup so the app can warn before
+                // sending a reminder to a customer who already sent proof.
+                $paymentProofMap = [];
+                if (config('payment_signals.enabled') && !empty($pendingOrderIds)) {
+                    $paymentProofMap = app(\App\Services\Payments\Signals\PaymentProofStatusService::class)
+                        ->forOrders($pendingOrderIds);
+                }
+                
                 // Group by rider
-                $onlineMessageByRider = $onlineMessageOrders->groupBy('assigned_rider_user_id')->map(function($riderOrders) use ($deliveryHistory) {
+                $onlineMessageByRider = $onlineMessageOrders->groupBy('assigned_rider_user_id')->map(function($riderOrders) use ($deliveryHistory, $paymentProofMap) {
                     $riderUser = $riderOrders->first()->assignedRider ?? null;
                     $riderName = $riderUser ? $riderUser->fullname : 'Unknown';
                     
@@ -14450,7 +14508,7 @@ class RiderController extends Controller
                                 'message_sent_at' => $order->online_message_sent_at ? $order->online_message_sent_at->format('H:i') : null,
                             ];
                         })->values(),
-                        'message_pending' => $riderOrders->whereNull('online_message_sent_at')->map(function($order) use ($deliveryHistory) {
+                        'message_pending' => $riderOrders->whereNull('online_message_sent_at')->map(function($order) use ($deliveryHistory, $paymentProofMap) {
                             $customerName = trim(($order->address_first_name ?? '') . ' ' . ($order->address_last_name ?? '')) ?: ($order->customer ? trim($order->customer->first_name . ' ' . $order->customer->last_name) : 'N/A');
                             $customerPhone = $order->address_phone ?: ($order->customer ? ($order->customer->phone_original ?? $order->customer->phone ?? '') : '');
                             $orderRider = $order->assignedRider;
@@ -14469,6 +14527,7 @@ class RiderController extends Controller
                                 'delivery_date' => $deliveryDate,
                                 'delivery_time' => $deliveryTime,
                                 'amount' => round($order->total_price),
+                                'payment_proof' => $paymentProofMap[$order->id] ?? null,
                             ];
                         })->values(),
                         'sent_count' => $riderOrders->whereNotNull('online_message_sent_at')->count(),

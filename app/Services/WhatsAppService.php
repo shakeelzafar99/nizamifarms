@@ -436,7 +436,7 @@ class WhatsAppService
             }
 
             // Save the message
-            MessageModel::create([
+            $savedMessage = MessageModel::create([
                 'conversation_id' => $conversation->id,
                 'wa_message_id' => $waMessageId,
                 'direction' => 'inbound',
@@ -448,6 +448,22 @@ class WhatsAppService
                 'status' => 'received',
                 'created_at' => $timestamp ? date('Y-m-d H:i:s', (int)$timestamp) : now(),
             ]);
+
+            // Jun-2026 — Online payment auto-matching. If this inbound is an
+            // image (a likely bank-transfer screenshot) from a customer who has
+            // a pending online order, drop a cheap "payment signal" row. The
+            // expensive Gemini read + matching happens later in the scheduled
+            // payments:process-signals command, keeping this webhook fast.
+            // Fully gated by the feature switch; non-fatal on any error.
+            try {
+                $this->maybeQueuePaymentSignal($conversation, $savedMessage, $type, $mediaMimeType, $mediaUrl);
+                // Drive the payment workers off this webhook (after the response
+                // is flushed) since the shared host can't be trusted to run the
+                // scheduler. Self-throttled to ~1 run/min by a Cache lock.
+                app(\App\Services\Payments\PaymentSignalAutoRunner::class)->fireFromRequest();
+            } catch (\Exception $paySigErr) {
+                Log::debug('WhatsApp: payment-signal queue skipped (non-fatal)', ['error' => $paySigErr->getMessage()]);
+            }
 
             // Update conversation
             $conversation->update([
@@ -503,6 +519,23 @@ class WhatsAppService
                         'error' => $locReqErr->getMessage(),
                     ]);
                 }
+
+                // Jun-2026 — Open Orders "Get Customer Locations": auto-save a
+                // native pin onto the customer when their most recent location
+                // request was a regular (non-qurbani) one and they have no pin
+                // yet. Gated inside the service so the qurbani flow is untouched.
+                try {
+                    app(\App\Services\Location\OpenOrderLocationService::class)->autoSaveInbound(
+                        $conversation,
+                        (float) ($msg['location']['latitude'] ?? 0),
+                        (float) ($msg['location']['longitude'] ?? 0),
+                        null
+                    );
+                } catch (\Throwable $ooLocErr) {
+                    Log::debug('WhatsApp: OpenOrderLoc pin auto-save failed (non-fatal)', [
+                        'error' => $ooLocErr->getMessage(),
+                    ]);
+                }
             }
 
             // Phase 6 (May-2026) — Maps-URL fallback. Some customers reply
@@ -527,6 +560,20 @@ class WhatsAppService
                 } catch (\Exception $urlReplyErr) {
                     Log::debug('WhatsApp: QurbaniLocReq URL link failed (non-fatal)', [
                         'error' => $urlReplyErr->getMessage(),
+                    ]);
+                }
+
+                // Jun-2026 — Open Orders "Get Customer Locations": resolve a
+                // Maps URL / plain coordinates sent as text and auto-save it
+                // (same gating as the native-pin path above).
+                try {
+                    app(\App\Services\Location\OpenOrderLocationService::class)->autoSaveInboundText(
+                        $conversation,
+                        (string) $content
+                    );
+                } catch (\Throwable $ooLocTextErr) {
+                    Log::debug('WhatsApp: OpenOrderLoc text auto-save failed (non-fatal)', [
+                        'error' => $ooLocTextErr->getMessage(),
                     ]);
                 }
             }
@@ -571,6 +618,71 @@ class WhatsAppService
                 'message_data' => $msg,
             ]);
         }
+    }
+
+    /**
+     * Jun-2026 — Create a pending "payment signal" row for an inbound image
+     * that is likely a bank-transfer screenshot, so the scheduled
+     * payments:process-signals command can read it with Gemini and match it to
+     * a pending online order.
+     *
+     * Cheap by design: this only INSERTs a row (no Gemini call here). It is
+     * heavily pre-filtered to keep cost down — we skip unless the conversation
+     * is mapped to a customer who has at least one unpaid/partial online order
+     * within the match window. The actual image read is deferred.
+     */
+    protected function maybeQueuePaymentSignal($conversation, $savedMessage, string $type, ?string $mimeType, ?string $mediaUrl): void
+    {
+        if (!config('payment_signals.enabled')) {
+            return;
+        }
+        if (!$savedMessage || !$mediaUrl) {
+            return;
+        }
+
+        // Only images (an image-typed message, or a document whose MIME is an image).
+        $isImage = $type === 'image'
+            || ($type === 'document' && $mimeType && str_starts_with($mimeType, 'image/'));
+        if (!$isImage) {
+            return;
+        }
+
+        // Must be a mapped customer.
+        $customerId = $conversation->customer_id ?? null;
+        if (!$customerId) {
+            return;
+        }
+
+        // Pre-filter: customer must have a pending online order in the window.
+        $windowDays = (int) config('payment_signals.match_window_days', 30);
+        $methods = config('payment_signals.online_payment_methods', ['online', 'bank_transfer']);
+        $openStatuses = config('payment_signals.open_payment_statuses', ['unpaid', 'partial']);
+
+        $hasPendingOnline = \DB::table('t_crm_prod_order')
+            ->where('customer_id', $customerId)
+            ->whereIn('payment_status', $openStatuses)
+            ->whereIn('payment_method', $methods)
+            ->where('order_status', '!=', 'cancelled')
+            ->where('order_date', '>=', now()->subDays($windowDays)->startOfDay())
+            ->exists();
+
+        if (!$hasPendingOnline) {
+            return;
+        }
+
+        // Idempotency: one signal per WhatsApp message.
+        $alreadyQueued = \App\Models\FIN\PaymentSignal::where('wa_message_id', $savedMessage->id)->exists();
+        if ($alreadyQueued) {
+            return;
+        }
+
+        \App\Models\FIN\PaymentSignal::create([
+            'source'             => \App\Models\FIN\PaymentSignal::SOURCE_WHATSAPP,
+            'wa_message_id'      => $savedMessage->id,
+            'wa_conversation_id' => $conversation->id,
+            'image_path'         => $mediaUrl,
+            'status'             => \App\Models\FIN\PaymentSignal::STATUS_NEW,
+        ]);
     }
 
     /**

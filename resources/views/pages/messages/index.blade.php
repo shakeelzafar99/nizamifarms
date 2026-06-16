@@ -2609,11 +2609,16 @@ select.wa-mgr-input { background: #fff; cursor: pointer; }
                         ${c.match_direction === 'outbound' ? '✓ ' : ''}${highlightMatch(c.match_snippet, opts.searchTerm)}${c.match_count > 1 ? ` <span style="color:#6366f1;font-weight:600;">+${c.match_count - 1} more</span>` : ''}
                    </div>`
                 : '';
+            // Jun-2026: payment-proof badge (customer sent bank screenshot / email confirmed).
+            const pp = c.payment_proof;
+            const proofBadge = (pp && pp.status && pp.status !== 'none')
+                ? `<span title="${esc(pp.label)}" style="margin-left:4px; display:inline-flex; align-items:center; padding:0 5px; border-radius:7px; font-size:10px; font-weight:700; background:${pp.color}1A; color:${pp.color}; border:1px solid ${pp.color}55;">${pp.has_whatsapp?'📷':''}${pp.has_email?'✉️':''}</span>`
+                : '';
             return `<div class="${cls}" onclick="openConv(${c.id})" data-id="${c.id}">
                 <div class="wa-avatar">${(c.customer_name||'?')[0].toUpperCase()}</div>
                 <div class="wa-conv-info">
                     <div class="wa-conv-top">
-                        <div class="wa-conv-name">${qBadge}${failBadge}${esc(c.customer_name || c.wa_phone)}</div>
+                        <div class="wa-conv-name">${qBadge}${failBadge}${esc(c.customer_name || c.wa_phone)}${proofBadge}</div>
                         <div class="wa-conv-time">${fmtTime(c.last_message_at)}</div>
                     </div>
                     <div class="wa-conv-bottom">

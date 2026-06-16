@@ -130,6 +130,12 @@
     border: 1px solid #e5e7eb;
     border-radius: 10px;
     box-shadow: 0 10px 30px rgba(0, 0, 0, 0.08), 0 2px 8px rgba(0, 0, 0, 0.04);
+    /* NF: float above the two sticky bars + content, and never let the menu
+       framework cap its height / add an inner scroll that hides lower items
+       (Auto-assign / Get Customer Locations were being cut off near the top). */
+    z-index: 1050;
+    max-height: none !important;
+    overflow: visible !important;
 }
 .nf-more-item {
     width: 100%;
@@ -1017,14 +1023,9 @@ input:focus, select:focus, button:focus {
                         @endif
 
                         <!-- More actions dropdown: Columns (always), Riders Map & Auto-assign (non-shopify) -->
-                        <div class="kt-menu" data-kt-menu="true">
-                            <div class="kt-menu-item"
-                                 data-kt-menu-item-offset="0,8px"
-                                 data-kt-menu-item-placement="bottom-end"
-                                 data-kt-menu-item-placement-rtl="bottom-start"
-                                 data-kt-menu-item-toggle="dropdown"
-                                 data-kt-menu-item-trigger="click">
-                                <button type="button" class="kt-menu-toggle action-btn action-btn-secondary">
+                        <div class="orders-more-wrap" style="position:relative;display:inline-block;">
+                            <div>
+                                <button type="button" id="ordersMoreBtn" onclick="toggleOrdersMore(event)" class="action-btn action-btn-secondary">
                                     <svg class="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"></path>
                                     </svg>
@@ -1033,7 +1034,7 @@ input:focus, select:focus, button:focus {
                                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M19 9l-7 7-7-7"></path>
                                     </svg>
                                 </button>
-                                <div class="kt-menu-dropdown kt-menu-default nf-more-menu" data-kt-menu-dismiss="true">
+                                <div id="ordersMoreMenuTemplate" style="display:none;">
                                     <div class="kt-menu-item">
                                         <button type="button" onclick="openColumnSettings()" class="kt-menu-link nf-more-item">
                                             <span class="kt-menu-icon">
@@ -1066,6 +1067,18 @@ input:focus, select:focus, button:focus {
                                                 </svg>
                                             </span>
                                             <span class="kt-menu-title">Auto-assign Riders</span>
+                                        </button>
+                                    </div>
+
+                                    <div class="kt-menu-item">
+                                        <button type="button" onclick="openGetLocationsModal()" class="kt-menu-link nf-more-item">
+                                            <span class="kt-menu-icon" style="color:#0e7490;">
+                                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z"></path>
+                                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 11a3 3 0 11-6 0 3 3 0 016 0z"></path>
+                                                </svg>
+                                            </span>
+                                            <span class="kt-menu-title">Get Customer Locations</span>
                                         </button>
                                     </div>
                                     @endif
@@ -5410,6 +5423,308 @@ async function runAutoAssign(mode) {
     }
 }
 
+// ===== GET CUSTOMER LOCATIONS (bulk WhatsApp location request) =====
+window._getLoc = { data: null, chunkSize: 20, sending: false };
+
+function _getLocEsc(s) {
+    return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
+        return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+    });
+}
+
+function _getLocStatusPill(n) {
+    if (n.status === 'failed') {
+        return '<span style="background:#fef2f2;color:#991b1b;border:1px solid #fecaca;padding:1px 7px;border-radius:999px;font-size:11px;">⚠ Failed' + (n.last_sent_human ? ' · ' + _getLocEsc(n.last_sent_human) : '') + '</span>';
+    }
+    if (n.status === 'awaiting') {
+        return '<span style="background:#fffbeb;color:#92400e;border:1px solid #fde68a;padding:1px 7px;border-radius:999px;font-size:11px;">⏳ Sent ' + _getLocEsc(n.last_sent_human || '') + ' · awaiting</span>';
+    }
+    return '<span style="background:#f3f4f6;color:#374151;border:1px solid #e5e7eb;padding:1px 7px;border-radius:999px;font-size:11px;">Never sent</span>';
+}
+
+function openGetLocationsModal() {
+    let modal = document.getElementById('getLocationsModal');
+    if (!modal) {
+        modal = document.createElement('div');
+        modal.id = 'getLocationsModal';
+        modal.style.cssText = 'display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.5);z-index:9999;';
+        modal.innerHTML = `<div style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);background:#fff;border-radius:12px;padding:20px;width:620px;max-width:96%;max-height:90vh;overflow:hidden;display:flex;flex-direction:column;box-shadow:0 8px 30px rgba(0,0,0,.2);">
+            <h3 style="margin:0 0 4px;font-size:18px;font-weight:700;">📍 Get Customer Locations</h3>
+            <p style="margin:0 0 12px;font-size:12px;color:#6b7280;">Sends a WhatsApp location request to open-order customers who don't have a verified pin yet. When they reply with a pin or Maps link, it's resolved and saved automatically.</p>
+
+            <div style="display:flex;gap:8px;align-items:center;margin-bottom:10px;flex-wrap:wrap;">
+                <label style="font-size:12px;color:#374151;font-weight:600;">Template:</label>
+                <select id="getLocTemplate" style="flex:1;min-width:180px;padding:6px 8px;border:1px solid #d1d5db;border-radius:8px;font-size:13px;"><option>Loading…</option></select>
+            </div>
+
+            <div id="getLocCounts" style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px;font-size:12px;"></div>
+
+            <div style="display:flex;gap:8px;align-items:center;margin-bottom:6px;">
+                <button type="button" onclick="getLocSelectAll(true)" style="background:#eef2ff;border:1px solid #c7d2fe;color:#3730a3;border-radius:6px;padding:3px 8px;font-size:12px;cursor:pointer;">Select all</button>
+                <button type="button" onclick="getLocSelectAll(false)" style="background:#f9fafb;border:1px solid #e5e7eb;color:#374151;border-radius:6px;padding:3px 8px;font-size:12px;cursor:pointer;">Clear</button>
+                <button type="button" onclick="getLocSelectNeverSent()" style="background:#f9fafb;border:1px solid #e5e7eb;color:#374151;border-radius:6px;padding:3px 8px;font-size:12px;cursor:pointer;">Only never-sent</button>
+                <span id="getLocSelCount" style="margin-left:auto;font-size:12px;color:#6b7280;"></span>
+            </div>
+
+            <div id="getLocList" style="flex:1;overflow:auto;border:1px solid #eef0f2;border-radius:8px;padding:4px;min-height:120px;">Loading…</div>
+
+            <div id="getLocResolved" style="margin-top:10px;"></div>
+
+            <div id="getLocProgressWrap" style="display:none;margin-top:10px;">
+                <div style="height:8px;background:#e5e7eb;border-radius:999px;overflow:hidden;"><div id="getLocProgressBar" style="height:100%;width:0;background:#0e7490;transition:width .2s;"></div></div>
+                <div id="getLocProgressText" style="font-size:12px;color:#6b7280;margin-top:4px;"></div>
+            </div>
+
+            <div id="getLocResult" style="display:none;margin-top:10px;background:#ecfeff;border:1px solid #67e8f9;border-radius:8px;padding:10px;font-size:13px;color:#155e75;"></div>
+
+            <div style="display:flex;gap:8px;margin-top:12px;">
+                <button id="getLocSendBtn" onclick="sendGetLoc()" style="flex:1;padding:10px;background:#0e7490;color:#fff;border:none;border-radius:8px;cursor:pointer;font-size:14px;font-weight:600;">Send to selected</button>
+                <button onclick="document.getElementById('getLocationsModal').style.display='none'" style="padding:10px 16px;background:#f3f4f6;color:#374151;border:none;border-radius:8px;cursor:pointer;font-size:14px;">Close</button>
+            </div>
+            <button onclick="document.getElementById('getLocationsModal').style.display='none'" style="position:absolute;top:12px;right:16px;background:none;border:none;font-size:22px;color:#9ca3af;cursor:pointer;">&times;</button>
+        </div>`;
+        modal.addEventListener('click', (e) => { if (e.target === modal) modal.style.display = 'none'; });
+        document.body.appendChild(modal);
+    }
+    document.getElementById('getLocResult').style.display = 'none';
+    document.getElementById('getLocProgressWrap').style.display = 'none';
+    modal.style.display = 'block';
+    loadGetLocTemplates();
+    loadGetLocEligible();
+}
+
+function loadGetLocTemplates() {
+    const sel = document.getElementById('getLocTemplate');
+    if (!sel) return;
+    fetch('/messages/templates?context=orders,messages,customers', {
+        headers: { 'Accept': 'application/json', 'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]')?.content || '' }
+    }).then(r => r.json()).then(d => {
+        const tpls = (d.templates || []);
+        sel.innerHTML = '';
+        if (tpls.length === 0) { sel.innerHTML = '<option value="">No templates found</option>'; return; }
+        const want = (window._getLoc.data && window._getLoc.data.default_template) || 'location';
+        let defIdx = tpls.findIndex(t => t.name === want);
+        if (defIdx < 0) defIdx = tpls.findIndex(t => /location/i.test(t.name));
+        if (defIdx < 0) defIdx = 0;
+        tpls.forEach((t, i) => {
+            const opt = document.createElement('option');
+            opt.value = t.name;
+            opt.textContent = (t.display_name || t.name) + ' (' + t.variable_count + ' vars)';
+            if (i === defIdx) opt.selected = true;
+            sel.appendChild(opt);
+        });
+    }).catch(() => { sel.innerHTML = '<option value="">Failed to load templates</option>'; });
+}
+
+function loadGetLocEligible() {
+    const list = document.getElementById('getLocList');
+    if (list) list.innerHTML = 'Loading…';
+    fetch('/orders/location-request/eligible', {
+        headers: { 'Accept': 'application/json', 'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]')?.content || '' }
+    }).then(r => r.json()).then(d => {
+        if (!d.success) { if (list) list.innerHTML = '<div style="color:#991b1b;padding:8px;">' + _getLocEsc(d.message || 'Failed to load') + '</div>'; return; }
+        window._getLoc.data = d;
+        window._getLoc.chunkSize = d.chunk_size || 20;
+        renderGetLoc(d);
+    }).catch(e => { if (list) list.innerHTML = '<div style="color:#991b1b;padding:8px;">Error: ' + _getLocEsc(e.message) + '</div>'; });
+}
+
+function renderGetLoc(d) {
+    const counts = d.counts || {};
+    const cEl = document.getElementById('getLocCounts');
+    if (cEl) {
+        cEl.innerHTML =
+            '<span style="background:#f3f4f6;border:1px solid #e5e7eb;border-radius:8px;padding:4px 8px;"><strong>' + (counts.needs || 0) + '</strong> need location</span>' +
+            '<span style="background:#f3f4f6;border:1px solid #e5e7eb;border-radius:8px;padding:4px 8px;">' + (counts.never || 0) + ' never sent</span>' +
+            '<span style="background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:4px 8px;color:#92400e;">' + (counts.awaiting || 0) + ' awaiting</span>' +
+            '<span style="background:#fef2f2;border:1px solid #fecaca;border-radius:8px;padding:4px 8px;color:#991b1b;">' + (counts.failed || 0) + ' failed</span>';
+    }
+
+    const list = document.getElementById('getLocList');
+    const needs = d.needs || [];
+    if (list) {
+        if (needs.length === 0) {
+            list.innerHTML = '<div style="padding:16px;text-align:center;color:#059669;">🎉 Every open-order customer has a verified location.</div>';
+        } else {
+            let html = '';
+            needs.forEach(n => {
+                const orders = (n.order_numbers && n.order_numbers.length) ? n.order_numbers.join(', ') : (n.order_count + ' order(s)');
+                html += '<label style="display:flex;gap:8px;align-items:flex-start;padding:7px 6px;border-bottom:1px solid #f3f4f6;cursor:pointer;">' +
+                    '<input type="checkbox" class="getLocChk" value="' + n.customer_id + '" ' + (n.preselect ? 'checked' : '') + ' onchange="getLocUpdateCount()" style="margin-top:3px;">' +
+                    '<span style="flex:1;min-width:0;">' +
+                        '<span style="font-weight:600;font-size:13px;color:#111827;">' + _getLocEsc(n.customer_name) + '</span>' +
+                        (n.region_name ? '<span style="font-size:11px;color:#6b7280;"> · ' + _getLocEsc(n.region_name) + '</span>' : '') +
+                        '<br><span style="font-size:11px;color:#9ca3af;">' + _getLocEsc(orders) + '</span>' +
+                    '</span>' +
+                    '<span style="flex-shrink:0;">' + _getLocStatusPill(n) + '</span>' +
+                    '</label>';
+            });
+            list.innerHTML = html;
+        }
+    }
+
+    // Recently auto-saved wins.
+    const resolved = d.resolved_recent || [];
+    const rEl = document.getElementById('getLocResolved');
+    if (rEl) {
+        if (resolved.length === 0) {
+            rEl.innerHTML = '';
+        } else {
+            let rhtml = '<details style="border:1px solid #d1fae5;background:#f0fdf4;border-radius:8px;padding:8px;"><summary style="cursor:pointer;font-size:13px;font-weight:600;color:#065f46;">✅ ' + resolved.length + ' location(s) saved recently</summary><div style="margin-top:6px;max-height:140px;overflow:auto;">';
+            resolved.forEach(r => {
+                rhtml += '<div style="display:flex;gap:8px;align-items:center;padding:4px 0;font-size:12px;color:#065f46;border-bottom:1px solid #dcfce7;">' +
+                    '<span style="flex:1;">' + _getLocEsc(r.customer_name) + (r.region_name ? ' · ' + _getLocEsc(r.region_name) : '') +
+                    '<br><span style="color:#6b7280;">' + (r.auto ? 'Auto-saved from reply' : 'Saved by ' + _getLocEsc(r.saved_by_name || 'staff')) + (r.saved_human ? ' · ' + _getLocEsc(r.saved_human) : '') + '</span></span>' +
+                    '<a href="' + _getLocEsc(r.maps_url) + '" target="_blank" style="color:#0e7490;text-decoration:none;flex-shrink:0;">📍 Map</a>' +
+                    '</div>';
+            });
+            rhtml += '</div></details>';
+            rEl.innerHTML = rhtml;
+        }
+    }
+    getLocUpdateCount();
+}
+
+function getLocSelectAll(on) {
+    document.querySelectorAll('.getLocChk').forEach(c => { c.checked = on; });
+    getLocUpdateCount();
+}
+function getLocSelectNeverSent() {
+    const needs = (window._getLoc.data && window._getLoc.data.needs) || [];
+    const neverIds = {};
+    needs.forEach(n => { if (n.status === 'never') neverIds[n.customer_id] = true; });
+    document.querySelectorAll('.getLocChk').forEach(c => { c.checked = !!neverIds[c.value]; });
+    getLocUpdateCount();
+}
+function getLocSelectedIds() {
+    return Array.from(document.querySelectorAll('.getLocChk:checked')).map(c => parseInt(c.value));
+}
+function getLocUpdateCount() {
+    const n = getLocSelectedIds().length;
+    const el = document.getElementById('getLocSelCount');
+    if (el) el.textContent = n + ' selected';
+    const btn = document.getElementById('getLocSendBtn');
+    if (btn && !window._getLoc.sending) { btn.textContent = n > 0 ? 'Send to ' + n + ' customer(s)' : 'Send to selected'; btn.disabled = n === 0; btn.style.opacity = n === 0 ? '0.6' : '1'; }
+}
+
+async function sendGetLoc() {
+    if (window._getLoc.sending) return;
+    const ids = getLocSelectedIds();
+    if (ids.length === 0) return;
+    const tplSel = document.getElementById('getLocTemplate');
+    const templateName = tplSel ? tplSel.value : '';
+    if (!templateName) { alert('Please choose a template.'); return; }
+    if (!confirm('Send the "' + templateName + '" WhatsApp template to ' + ids.length + ' customer(s)?')) return;
+
+    window._getLoc.sending = true;
+    const btn = document.getElementById('getLocSendBtn');
+    btn.disabled = true; btn.textContent = 'Sending…'; btn.style.opacity = '0.8';
+    const pWrap = document.getElementById('getLocProgressWrap');
+    const pBar = document.getElementById('getLocProgressBar');
+    const pText = document.getElementById('getLocProgressText');
+    const resultEl = document.getElementById('getLocResult');
+    pWrap.style.display = 'block';
+    resultEl.style.display = 'none';
+
+    const chunk = window._getLoc.chunkSize || 20;
+    let sent = 0, failed = 0, skipped = 0, done = 0;
+    const errors = [];
+
+    for (let i = 0; i < ids.length; i += chunk) {
+        const slice = ids.slice(i, i + chunk);
+        try {
+            const resp = await fetch('/orders/location-request/send', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'Accept': 'application/json', 'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]')?.content || '' },
+                body: JSON.stringify({ customer_ids: slice, template_name: templateName })
+            });
+            const d = await resp.json();
+            if (d.success) {
+                sent += d.sent || 0; failed += d.failed || 0; skipped += d.skipped || 0;
+                (d.results || []).forEach(r => { if (!r.ok && !r.skipped && r.reason) errors.push(r.reason); });
+            } else {
+                failed += slice.length;
+                if (d.message) errors.push(d.message);
+            }
+        } catch (e) {
+            failed += slice.length;
+            errors.push(e.message);
+        }
+        done += slice.length;
+        const pct = Math.round((done / ids.length) * 100);
+        pBar.style.width = pct + '%';
+        pText.textContent = 'Processed ' + done + ' / ' + ids.length + ' — ' + sent + ' sent, ' + failed + ' failed' + (skipped ? ', ' + skipped + ' skipped' : '');
+    }
+
+    let summary = '<strong>Done.</strong> ' + sent + ' sent';
+    if (skipped) summary += ', ' + skipped + ' skipped (already had a location)';
+    if (failed) summary += ', ' + failed + ' failed';
+    if (errors.length) {
+        const uniq = Array.from(new Set(errors)).slice(0, 4);
+        summary += '<br><span style="color:#991b1b;">' + uniq.map(_getLocEsc).join('<br>') + '</span>';
+    }
+    summary += '<br><span style="color:#6b7280;">Customers will appear under "saved recently" once they reply.</span>';
+    resultEl.innerHTML = summary;
+    resultEl.style.display = 'block';
+
+    window._getLoc.sending = false;
+    btn.disabled = false; btn.style.opacity = '1';
+    loadGetLocEligible(); // refresh the live list (sent ones move to "awaiting")
+}
+
+// ---- "More" dropdown: custom, portaled to <body> so backdrop-filter ancestors
+// (the sticky header / toolbar use backdrop-blur) can't clip the menu. ----
+function toggleOrdersMore(e) {
+    if (e) e.stopPropagation();
+    let menu = document.getElementById('ordersMoreMenu');
+    if (menu && menu.style.display === 'block') { closeOrdersMore(); return; }
+    if (!menu) {
+        menu = document.createElement('div');
+        menu.id = 'ordersMoreMenu';
+        menu.className = 'nf-more-menu';
+        menu.style.position = 'fixed';
+        menu.style.zIndex = '99999';
+        menu.style.display = 'none';
+        menu.innerHTML = document.getElementById('ordersMoreMenuTemplate').innerHTML;
+        document.body.appendChild(menu);
+        menu.addEventListener('click', function (ev) {
+            if (ev.target.closest('.nf-more-item')) { setTimeout(closeOrdersMore, 0); }
+        });
+    }
+    menu.style.display = 'block';
+    positionOrdersMore();
+    setTimeout(function () {
+        document.addEventListener('click', _ordersMoreOutside, true);
+        window.addEventListener('resize', positionOrdersMore);
+        window.addEventListener('scroll', positionOrdersMore, true);
+    }, 0);
+}
+function positionOrdersMore() {
+    const btn = document.getElementById('ordersMoreBtn');
+    const menu = document.getElementById('ordersMoreMenu');
+    if (!btn || !menu) return;
+    const r = btn.getBoundingClientRect();
+    const w = menu.offsetWidth || 230;
+    let left = r.right - w;
+    if (left < 8) left = 8;
+    menu.style.top = (r.bottom + 6) + 'px';
+    menu.style.left = left + 'px';
+}
+function closeOrdersMore() {
+    const menu = document.getElementById('ordersMoreMenu');
+    if (menu) menu.style.display = 'none';
+    document.removeEventListener('click', _ordersMoreOutside, true);
+    window.removeEventListener('resize', positionOrdersMore);
+    window.removeEventListener('scroll', positionOrdersMore, true);
+}
+function _ordersMoreOutside(e) {
+    const menu = document.getElementById('ordersMoreMenu');
+    const btn = document.getElementById('ordersMoreBtn');
+    if (!menu) return;
+    if (menu.contains(e.target) || (btn && btn.contains(e.target))) return;
+    closeOrdersMore();
+}
+
 let _regionListCache = null;
 async function _fetchRegionList() {
     if (_regionListCache) return _regionListCache;
@@ -8785,6 +9100,18 @@ function createNewOrderWithCustomer(customerId) {
 // DUPLICATE FUNCTION REMOVED - Complete version exists later in the file
 // ==================== COLUMN CUSTOMIZATION SYSTEM ====================
 
+// Jun-2026 — Payment-proof status map (order_id -> {status,label,color,has_whatsapp,has_email})
+window.paymentProofMap = @json($paymentProofMap ?? []);
+function renderOrderProofBadge(order) {
+    try {
+        const p = order && order.id ? (window.paymentProofMap || {})[order.id] : null;
+        if (!p || !p.status || p.status === 'none') return '';
+        const wa = p.has_whatsapp ? '📷' : '';
+        const ml = p.has_email ? '✉️' : '';
+        return `<span title="${p.label}" style="margin-left:4px; display:inline-flex; align-items:center; padding:1px 6px; border-radius:8px; font-size:10px; font-weight:700; background:${p.color}1A; color:${p.color}; border:1px solid ${p.color}55; vertical-align:middle;">${wa}${ml}</span>`;
+    } catch (e) { return ''; }
+}
+
 const availableColumns = {
     id: { label: 'ID', width: 'w-16', key: 'id' },
     order_number: { label: 'Order #', width: 'w-24', key: 'order_number' },
@@ -9277,13 +9604,13 @@ function getCellContent_DEPRECATED(order, columnId) {
                             <span class=\"mr-1 text-xs\">${config.icon}</span>
                             ${status.replace(/_/g,' ').replace(/\b\w/g,c=>c.toUpperCase())}
                             <span class=\"ml-1 text-xs\">🔒</span>
-                        </span>`;
+                        </span>${renderOrderProofBadge(order)}`;
             }
             
             return `<button type="button" onclick="event.stopPropagation(); openQuickStatusChange(${order.id}, '${status}')" class="inline-flex items-center px-2 py-1 rounded-md text-xs font-medium border ${config.bg} ${config.border} ${config.text} hover:opacity-80 transition" title="Quick change status">
                         <span class=\"mr-1 text-xs\">${config.icon}</span>
                         ${status.replace(/_/g,' ').replace(/\b\w/g,c=>c.toUpperCase())}
-                    </button>`;
+                    </button>${renderOrderProofBadge(order)}`;
         case 'external_source':
             const source = order.external_source || 'manual';
             const sourceColors = {
