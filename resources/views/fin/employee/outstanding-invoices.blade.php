@@ -221,9 +221,10 @@
                                     @php $proof = $order['payment_proof'] ?? null; @endphp
                                     @if($proof && ($proof['status'] ?? 'none') !== 'none')
                                     <span class="text-xs font-bold px-2 py-0.5 rounded-full text-white whitespace-nowrap"
-                                          style="background-color: {{ $proof['color'] }};"
-                                          title="{{ $proof['label'] }} — customer has already sent payment proof">
-                                        {{ $proof['has_whatsapp'] ? '📷' : '' }}{{ $proof['has_email'] ? '✉️' : '' }} {{ $proof['label'] }}
+                                          style="background-color: {{ $proof['color'] }}; cursor: pointer;"
+                                          onclick="event.stopPropagation(); openProofModal({{ $order['id'] }}, '{{ addslashes($order['order_number']) }}')"
+                                          title="{{ $proof['label'] }} — click to view the screenshot / bank email">
+                                        {{ $proof['has_whatsapp'] ? '📷' : '' }}{{ $proof['has_email'] ? '✉️' : '' }} {{ $proof['label'] }} 🔍
                                     </span>
                                     @endif
                                 </div>
@@ -572,9 +573,10 @@
                                         @php $invProof = $invoice['payment_proof'] ?? null; @endphp
                                         @if($invProof && ($invProof['status'] ?? 'none') !== 'none')
                                             <span class="text-xs font-bold px-1.5 py-0.5 rounded-full text-white whitespace-nowrap ml-1"
-                                                  style="background-color: {{ $invProof['color'] }};"
-                                                  title="{{ $invProof['label'] }} — customer has sent payment proof">
-                                                {{ $invProof['has_whatsapp'] ? '📷' : '' }}{{ $invProof['has_email'] ? '✉️' : '' }} {{ $invProof['label'] }}
+                                                  style="background-color: {{ $invProof['color'] }};{{ !empty($invoice['order_id']) ? ' cursor: pointer;' : '' }}"
+                                                  @if(!empty($invoice['order_id']))onclick="event.stopPropagation(); openProofModal({{ $invoice['order_id'] }}, '{{ addslashes($invoice['order_number']) }}')"@endif
+                                                  title="{{ $invProof['label'] }} — click to view the screenshot / bank email">
+                                                {{ $invProof['has_whatsapp'] ? '📷' : '' }}{{ $invProof['has_email'] ? '✉️' : '' }} {{ $invProof['label'] }}@if(!empty($invoice['order_id'])) 🔍@endif
                                             </span>
                                         @endif
                                     </div>
@@ -964,8 +966,94 @@
 
 </div>
 
+<!-- Payment Proof viewer (screenshot + parsed bank email) -->
+<div id="proofModal" style="display:none; position:fixed; inset:0; z-index:99999; background:rgba(17,24,39,0.6); align-items:center; justify-content:center; padding:16px;" onclick="if(event.target===this)closeProofModal()">
+    <div style="background:#fff; border-radius:14px; max-width:560px; width:100%; max-height:90vh; overflow:auto; box-shadow:0 20px 60px rgba(0,0,0,0.3);">
+        <div style="display:flex; align-items:center; justify-content:space-between; padding:14px 18px; border-bottom:1px solid #eef2f7;">
+            <div style="font-weight:700; color:#111827;">Payment proof <span id="proofModalOrder" style="color:#6b7280; font-weight:600;"></span></div>
+            <button type="button" onclick="closeProofModal()" style="border:0; background:#f3f4f6; width:30px; height:30px; border-radius:8px; cursor:pointer; font-size:16px; color:#374151;">&times;</button>
+        </div>
+        <div id="proofModalBody" style="padding:16px 18px;">
+            <div style="text-align:center; color:#6b7280; padding:24px;">Loading…</div>
+        </div>
+    </div>
+</div>
+
 <!-- JavaScript for Interactive Filters -->
 <script>
+function openProofModal(orderId, orderNumber) {
+    var modal = document.getElementById('proofModal');
+    var body = document.getElementById('proofModalBody');
+    document.getElementById('proofModalOrder').textContent = orderNumber ? ('— ' + orderNumber) : '';
+    body.innerHTML = '<div style="text-align:center; color:#6b7280; padding:24px;">Loading…</div>';
+    modal.style.display = 'flex';
+
+    fetch('/admin/payments/order/' + orderId + '/signals', { headers: { 'Accept': 'application/json' } })
+        .then(function (r) { return r.json(); })
+        .then(function (d) {
+            if (!d || !d.success || !d.signals || d.signals.length === 0) {
+                body.innerHTML = '<div style="text-align:center; color:#6b7280; padding:24px;">No proof details found for this order.</div>';
+                return;
+            }
+            body.innerHTML = d.signals.map(renderProofSignal).join('<hr style="border:0; border-top:1px solid #eef2f7; margin:14px 0;">');
+        })
+        .catch(function () {
+            body.innerHTML = '<div style="text-align:center; color:#dc2626; padding:24px;">Could not load proof details.</div>';
+        });
+}
+
+function renderProofSignal(s) {
+    var esc = function (v) { return v == null ? '' : String(v).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); };
+    var rows = '';
+    var addRow = function (label, val) {
+        if (val === null || val === undefined || val === '') return;
+        rows += '<div style="display:flex; gap:8px; padding:3px 0; font-size:13px;"><span style="color:#6b7280; min-width:120px;">' + label + '</span><span style="color:#111827; font-weight:600;">' + esc(val) + '</span></div>';
+    };
+
+    var head;
+    if (s.source === 'whatsapp') {
+        head = '<div style="font-weight:700; color:#92400e; margin-bottom:8px;">📷 Customer screenshot</div>';
+    } else {
+        head = '<div style="font-weight:700; color:#1d4ed8; margin-bottom:8px;">✉️ Bank email</div>';
+    }
+
+    var img = '';
+    if (s.source === 'whatsapp' && s.image_url) {
+        img = '<a href="' + esc(s.image_url) + '" target="_blank" rel="noopener">'
+            + '<img src="' + esc(s.image_url) + '" alt="payment screenshot" style="max-width:100%; border-radius:10px; border:1px solid #e5e7eb; margin-bottom:10px;"></a>';
+    }
+
+    addRow('Amount', s.amount != null ? ('Rs. ' + s.amount) : null);
+    addRow('Reference', s.reference);
+    addRow('Sender name', s.sender_name);
+    addRow('Sender account', s.sender_account);
+    addRow('Sender bank', s.sender_bank);
+    addRow('Txn time', s.txn_datetime);
+    addRow('Received', s.received_at);
+    if (s.source === 'email') {
+        addRow('From', s.email_from);
+        addRow('Subject', s.email_subject);
+    }
+    var statusLabel = (s.status === 'matched') ? 'Matched to this order'
+        : (s.status === 'amount_mismatch') ? 'Received — amount differs' : s.status;
+    addRow('Status', statusLabel);
+    if (s.agreement && s.agreement.amount_match === false && s.agreement.expected != null) {
+        rows += '<div style="margin-top:6px; font-size:12px; color:#b45309; background:#fffbeb; border:1px solid #fde68a; border-radius:8px; padding:6px 8px;">⚠️ Paid Rs. ' + esc(s.amount) + ' but order balance is Rs. ' + esc(s.agreement.expected) + '.</div>';
+    }
+
+    var emailBody = '';
+    if (s.source === 'email' && s.email_body) {
+        emailBody = '<details style="margin-top:8px;"><summary style="cursor:pointer; color:#6b7280; font-size:12px;">Show raw email text</summary>'
+            + '<pre style="white-space:pre-wrap; font-size:11px; color:#374151; background:#f9fafb; border:1px solid #eef2f7; border-radius:8px; padding:8px; margin-top:6px;">' + esc(s.email_body) + '</pre></details>';
+    }
+
+    return head + img + rows + emailBody;
+}
+
+function closeProofModal() {
+    document.getElementById('proofModal').style.display = 'none';
+}
+
 function filterByStatus(status) {
     document.getElementById('status-filter').value = status;
     document.getElementById('filter-form').submit();

@@ -77,17 +77,7 @@ class ImapBankEmailFetcher
      */
     public function fetchNewSince($conn, int $afterUid, int $limit = 25): array
     {
-        // "UID N:*" returns messages with UID >= N, but IMAP quirk: it always
-        // returns at least the latest message even if its UID < N. So filter.
-        $searchFrom = max($afterUid + 1, 1);
-        $uids = @imap_search($conn, 'UID ' . $searchFrom . ':*', SE_UID);
-        if (!is_array($uids)) {
-            return [];
-        }
-
-        $uids = array_values(array_filter($uids, fn ($u) => (int) $u > $afterUid));
-        sort($uids, SORT_NUMERIC);
-        $uids = array_slice($uids, 0, $limit);
+        $uids = $this->newUids($conn, $afterUid, $limit);
 
         $out = [];
         foreach ($uids as $uid) {
@@ -106,6 +96,43 @@ class ImapBankEmailFetcher
             ];
         }
         return $out;
+    }
+
+    /**
+     * Return the UIDs greater than $afterUid, newest-bounded to $limit.
+     *
+     * Primary path is an IMAP "UID n:*" search. Some shared-hosting IMAP
+     * servers (e.g. certain Dovecot configs) don't honour that range reliably
+     * and return nothing — which would silently wedge the cursor. So when the
+     * search yields nothing we fall back to walking the tail of the mailbox by
+     * sequence number and mapping each to its UID. That always works.
+     *
+     * @return array<int>
+     */
+    private function newUids($conn, int $afterUid, int $limit): array
+    {
+        $searchFrom = max($afterUid + 1, 1);
+        $found = @imap_search($conn, 'UID ' . $searchFrom . ':*', SE_UID);
+        $uids = is_array($found) ? array_map('intval', $found) : [];
+        // IMAP quirk: "UID n:*" can echo the latest message even if its UID < n.
+        $uids = array_values(array_filter($uids, fn ($u) => $u > $afterUid));
+
+        if (empty($uids)) {
+            $total = @imap_num_msg($conn);
+            if ($total > 0) {
+                $scan = min($total, max($limit * 4, 50));
+                for ($seq = $total; $seq > ($total - $scan) && $seq >= 1; $seq--) {
+                    $u = (int) @imap_uid($conn, $seq);
+                    if ($u > $afterUid) {
+                        $uids[] = $u;
+                    }
+                }
+            }
+        }
+
+        $uids = array_values(array_unique($uids));
+        sort($uids, SORT_NUMERIC);
+        return array_slice($uids, 0, $limit);
     }
 
     /** Extract a plain-text body from a message (handles multipart + HTML). */

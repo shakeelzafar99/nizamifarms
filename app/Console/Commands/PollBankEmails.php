@@ -78,17 +78,28 @@ class PollBankEmails extends Command
 
             $maxUid = (int) $cursor->last_seen_uid;
             $created = 0;
+            $skippedRoute = 0;
+            $skippedParse = 0;
+            $skippedDup = 0;
 
             foreach ($emails as $email) {
                 $maxUid = max($maxUid, $email['uid']);
 
                 $route = $router->route($email['from'], $email['subject']);
                 if (!$route) {
+                    $skippedRoute++;
+                    Log::debug('PollBankEmails: email not from a configured bank', [
+                        'uid' => $email['uid'], 'from' => $email['from'], 'subject' => $email['subject'],
+                    ]);
                     continue; // not from a configured bank
                 }
 
                 $parsed = $route['parser']->parse($email['subject'], $email['body']);
                 if (!$parsed) {
+                    $skippedParse++;
+                    Log::debug('PollBankEmails: bank email did not parse as a credit', [
+                        'uid' => $email['uid'], 'from' => $email['from'], 'subject' => $email['subject'],
+                    ]);
                     continue; // recognised sender but not a credit confirmation
                 }
 
@@ -98,6 +109,7 @@ class PollBankEmails extends Command
                     ->where('email_uid', (string) $email['uid'])
                     ->exists();
                 if ($exists) {
+                    $skippedDup++;
                     continue;
                 }
 
@@ -129,9 +141,15 @@ class PollBankEmails extends Command
                 'last_polled_at' => now(),
             ]);
 
-            if ($created > 0) {
-                Log::info('PollBankEmails: created email signals', ['count' => $created]);
-            }
+            Log::info('PollBankEmails: poll summary', [
+                'fetched'       => count($emails),
+                'created'       => $created,
+                'skipped_route' => $skippedRoute,
+                'skipped_parse' => $skippedParse,
+                'skipped_dup'   => $skippedDup,
+                'cursor_from'   => (int) $cursor->last_seen_uid,
+                'cursor_to'     => $maxUid,
+            ]);
         } catch (\Throwable $e) {
             Log::error('PollBankEmails failed', ['error' => $e->getMessage()]);
             return self::SUCCESS; // never crash the scheduler

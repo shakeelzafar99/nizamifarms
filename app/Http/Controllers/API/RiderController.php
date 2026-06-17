@@ -1905,7 +1905,7 @@ class RiderController extends Controller
                 'new_method' => $newPaymentMethod,
                 'order_status' => $order->order_status
             ]);
-            
+
             return response()->json([
                 'success' => true,
                 'message' => 'Payment method changed to ' . ($newPaymentType === 'cash' ? 'Cash' : 'Online/Bank'),
@@ -9530,7 +9530,7 @@ class RiderController extends Controller
                 'new_payment_method' => $newPaymentMethod,
                 'updated_by' => $user->id
             ]);
-            
+
             return response()->json([
                 'success' => true,
                 'message' => 'Payment method updated successfully',
