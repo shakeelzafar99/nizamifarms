@@ -77,8 +77,43 @@ class ImapBankEmailFetcher
      */
     public function fetchNewSince($conn, int $afterUid, int $limit = 25): array
     {
-        $uids = $this->newUids($conn, $afterUid, $limit);
+        return $this->buildEmails($conn, $this->newUids($conn, $afterUid, $limit));
+    }
 
+    /**
+     * Fetch the most recent $limit emails REGARDLESS of the cursor. Used by the
+     * manual/scheduled reconciler to catch emails that were missed earlier
+     * (e.g. while the IMAP search bug was wedging the poller). Ingestion stays
+     * idempotent via the (folder, uid) unique key, so re-scanning is safe.
+     *
+     * @return array<int, array{uid:int, from:string, subject:string, date:?string, body:string}>
+     */
+    public function fetchRecent($conn, int $limit = 50): array
+    {
+        $total = (int) @imap_num_msg($conn);
+        if ($total < 1) {
+            return [];
+        }
+        $start = max(1, $total - $limit + 1);
+        $uids = [];
+        for ($seq = $start; $seq <= $total; $seq++) {
+            $u = (int) @imap_uid($conn, $seq);
+            if ($u > 0) {
+                $uids[] = $u;
+            }
+        }
+        sort($uids, SORT_NUMERIC);
+        return $this->buildEmails($conn, $uids);
+    }
+
+    /**
+     * Turn a list of UIDs into lightweight email arrays (from/subject/date/body).
+     *
+     * @param  array<int>  $uids
+     * @return array<int, array{uid:int, from:string, subject:string, date:?string, body:string}>
+     */
+    private function buildEmails($conn, array $uids): array
+    {
         $out = [];
         foreach ($uids as $uid) {
             $uid = (int) $uid;

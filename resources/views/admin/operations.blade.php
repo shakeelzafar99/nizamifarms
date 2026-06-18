@@ -575,6 +575,114 @@
             <div id="qurbaniFeedback" class="mt-3 hidden"></div>
         </div>
 
+        <!-- Payment Proof Reconciliation Card -->
+        <div class="bg-white border border-gray-200 rounded-lg p-6 shadow-sm">
+            <div class="flex items-center justify-between mb-4">
+                <h2 class="text-lg font-medium text-gray-800">🧾 Find Missed Payment Proofs</h2>
+            </div>
+
+            <div class="mb-4 p-4 bg-indigo-50 border border-indigo-200 rounded-md">
+                <h3 class="text-sm font-semibold text-indigo-800 mb-2">Catch-up scan (safety net)</h3>
+                <div class="text-xs text-indigo-700 space-y-1">
+                    <p>Re-checks <strong>today's</strong> WhatsApp screenshots and recent bank emails, and creates any payment-proof signal the live flow missed — then reads &amp; matches it automatically.</p>
+                    <p class="mt-1"><strong>Safe:</strong> never creates duplicates, never approves anything, never touches the ledger. Use this if a "Proof received" badge didn't show up where you expected.</p>
+                </div>
+            </div>
+
+            <div id="reconcileResult" class="hidden mb-4 p-3 rounded-lg text-sm"></div>
+
+            <button type="button"
+                    id="reconcileBtn"
+                    onclick="runPaymentReconcile()"
+                    class="w-full inline-flex items-center justify-center px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium rounded-md focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500">
+                🔄 Scan for Missed Payment Proofs
+            </button>
+        </div>
+
+        <script>
+        function reconcileStatusBadge(status) {
+            var map = {
+                matched:         ['#dcfce7', '#166534', 'Matched'],
+                amount_mismatch: ['#ffedd5', '#9a3412', 'Amount differs'],
+                unmatched:       ['#fef9c3', '#854d0e', 'No match yet'],
+                irrelevant:      ['#f3f4f6', '#6b7280', 'Not a payment'],
+                duplicate:       ['#f3f4f6', '#6b7280', 'Duplicate'],
+                new:             ['#e0e7ff', '#3730a3', 'Queued']
+            };
+            var s = map[status] || ['#f3f4f6', '#6b7280', status || '—'];
+            return '<span style="background:' + s[0] + '; color:' + s[1] + '; padding:1px 7px; border-radius:9999px; font-size:11px; font-weight:600; white-space:nowrap;">' + s[2] + '</span>';
+        }
+
+        function renderReconcileDetails(title, list) {
+            if (!list || !list.length) return '';
+            var rows = list.map(function (d) {
+                var who = d.customer || d.sender_name || d.phone || 'Unknown';
+                var amt = (d.amount != null && d.amount !== '') ? ('Rs. ' + Number(d.amount).toLocaleString()) : '—';
+                var ord = d.order_number ? (' · ' + d.order_number) : '';
+                return '<div style="display:flex; align-items:center; justify-content:space-between; gap:8px; padding:4px 0; border-top:1px solid #e5e7eb;">'
+                    + '<span style="color:#111827; font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">' + who
+                    + '<span style="color:#6b7280; font-weight:400;">' + ord + '</span></span>'
+                    + '<span style="display:flex; align-items:center; gap:8px; white-space:nowrap;"><span style="color:#374151;">' + amt + '</span>'
+                    + reconcileStatusBadge(d.status) + '</span></div>';
+            }).join('');
+            return '<div class="mt-2 p-2 bg-white border border-gray-200 rounded-md">'
+                + '<div style="font-size:11px; font-weight:700; color:#6b7280; text-transform:uppercase; letter-spacing:.03em; margin-bottom:2px;">' + title + ' (' + list.length + ')</div>'
+                + rows + '</div>';
+        }
+
+        async function runPaymentReconcile() {
+            const btn = document.getElementById('reconcileBtn');
+            const result = document.getElementById('reconcileResult');
+            const original = btn.textContent;
+
+            btn.disabled = true;
+            btn.textContent = '⏳ Scanning… (this can take ~30s)';
+            result.classList.add('hidden');
+
+            try {
+                const response = await fetch('{{ route("payments.reconcile") }}', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Accept': 'application/json',
+                        'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || '{{ csrf_token() }}'
+                    },
+                    body: JSON.stringify({ whatsapp_days: 1, email_lookback: 50 })
+                });
+                const data = await response.json();
+
+                result.classList.remove('hidden');
+                if (data.success) {
+                    const wa = (data.result && data.result.whatsapp) || {};
+                    const em = (data.result && data.result.email) || {};
+                    result.className = 'mb-4 p-3 rounded-lg text-sm bg-green-50 border border-green-200 text-green-800';
+                    result.innerHTML =
+                        '<strong>✅ Done.</strong> ' + (data.message || '') +
+                        '<div class="mt-2 text-xs text-green-700">' +
+                            '📷 WhatsApp — found without signal: <strong>' + (wa.candidates || 0) + '</strong>, ' +
+                            'created &amp; processed: <strong>' + (wa.created || 0) + '</strong>' +
+                            (wa.skipped_no_order ? (', skipped (no open order): ' + wa.skipped_no_order) : '') +
+                            '<br>✉️ Email — scanned: <strong>' + (em.scanned || 0) + '</strong>, ' +
+                            'newly ingested: <strong>' + (em.created || 0) + '</strong>' +
+                            (em.note ? (' (' + em.note + ')') : '') +
+                        '</div>' +
+                        renderReconcileDetails('Detected screenshots', wa.details) +
+                        renderReconcileDetails('Detected bank emails', em.details);
+                } else {
+                    result.className = 'mb-4 p-3 rounded-lg text-sm bg-red-50 border border-red-200 text-red-800';
+                    result.innerHTML = '<strong>⚠️</strong> ' + (data.message || 'Reconcile failed.');
+                }
+            } catch (error) {
+                result.classList.remove('hidden');
+                result.className = 'mb-4 p-3 rounded-lg text-sm bg-red-50 border border-red-200 text-red-800';
+                result.innerHTML = '<strong>❌ Connection error:</strong> ' + error.message;
+            }
+
+            btn.disabled = false;
+            btn.textContent = original;
+        }
+        </script>
+
         <script>
         function toggleQurbaniMode() {
             const btn = document.getElementById('qurbaniToggleButton');

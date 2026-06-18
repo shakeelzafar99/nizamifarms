@@ -4,6 +4,7 @@ namespace App\Http\Controllers\FIN;
 
 use App\Http\Controllers\Controller;
 use App\Services\Payments\Email\ImapBankEmailFetcher;
+use App\Services\Payments\PaymentSignalReconciler;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
@@ -197,6 +198,52 @@ class PaymentDiagnosticsController extends Controller
             'statusCounts'  => $statusCounts,
             'checkSecret'   => $secret,
         ]);
+    }
+
+    /**
+     * Manual catch-up button (Operations page). Finds WhatsApp images and bank
+     * emails the live flow missed today, creates their signals, and runs the
+     * SAME extraction + matcher so the result is identical to a fresh arrival.
+     *
+     * Idempotent and non-interfering: writes only to t_fin_payment_signal,
+     * never touches the IMAP cursor, ledger, or orders. Returns a JSON summary.
+     */
+    public function reconcile(Request $request, PaymentSignalReconciler $reconciler)
+    {
+        if (!config('payment_signals.enabled')) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Payment-proof matching is OFF (PAYMENT_SIGNALS_ENABLED). Nothing ran.',
+            ]);
+        }
+
+        $whatsappDays  = max(0, min(7, (int) $request->input('whatsapp_days', 1)));
+        $emailLookback = max(1, min(200, (int) $request->input('email_lookback', 50)));
+
+        try {
+            $result = $reconciler->run($whatsappDays, $emailLookback);
+
+            $wa = $result['whatsapp'] ?? [];
+            $em = $result['email'] ?? [];
+            $summary = sprintf(
+                'WhatsApp: %d image(s) without a signal found, %d new created. Email: %d scanned, %d new ingested.',
+                (int) ($wa['candidates'] ?? 0),
+                (int) ($wa['created'] ?? 0),
+                (int) ($em['scanned'] ?? 0),
+                (int) ($em['created'] ?? 0)
+            );
+
+            return response()->json([
+                'success' => true,
+                'message' => $summary,
+                'result'  => $result,
+            ]);
+        } catch (\Throwable $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Reconcile failed: ' . $e->getMessage(),
+            ]);
+        }
     }
 
     private function tableExists(string $table): bool

@@ -995,11 +995,28 @@ function openProofModal(orderId, orderNumber) {
                 body.innerHTML = '<div style="text-align:center; color:#6b7280; padding:24px;">No proof details found for this order.</div>';
                 return;
             }
-            body.innerHTML = d.signals.map(renderProofSignal).join('<hr style="border:0; border-top:1px solid #eef2f7; margin:14px 0;">');
+            body.innerHTML = renderCombinedHint(d.combined)
+                + d.signals.map(renderProofSignal).join('<hr style="border:0; border-top:1px solid #eef2f7; margin:14px 0;">');
         })
         .catch(function () {
             body.innerHTML = '<div style="text-align:center; color:#dc2626; padding:24px;">Could not load proof details.</div>';
         });
+}
+
+function renderCombinedHint(c) {
+    if (!c || !c.invoices || c.invoices.length < 2) return '';
+    var fmt = function (n) { return Number(n || 0).toLocaleString(); };
+    var rows = c.invoices.map(function (inv) {
+        return '<div style="display:flex; justify-content:space-between; font-size:12px; padding:2px 0;">'
+            + '<span style="color:#92400e;">' + (inv.order_number || ('#' + inv.order_id)) + '</span>'
+            + '<span style="color:#92400e; font-weight:600;">Rs. ' + fmt(inv.balance) + '</span></div>';
+    }).join('');
+    return '<div style="margin-bottom:12px; padding:10px 12px; background:#fffbeb; border:1px solid #fde68a; border-radius:10px;">'
+        + '<div style="font-weight:700; color:#92400e; margin-bottom:6px;">🔗 Looks like a combined payment</div>'
+        + '<div style="font-size:12px; color:#92400e; margin-bottom:6px;">The paid amount (Rs. ' + fmt(c.amount)
+        + ') matches the total of this customer\'s open invoices (Rs. ' + fmt(c.open_total)
+        + '). It likely covers all of these — apply it across them manually:</div>'
+        + rows + '</div>';
 }
 
 function renderProofSignal(s) {

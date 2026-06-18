@@ -711,6 +711,12 @@ Route::middleware(['auth'])->group(function () {
     Route::get('/admin/payments/order/{orderId}/signals', [\App\Http\Controllers\FIN\PaymentSignalsController::class, 'forOrder'])
         ->whereNumber('orderId')
         ->name('payments.order-signals');
+
+    // Jun-2026 — Manual catch-up: find WhatsApp images / bank emails that were
+    // missed by the live flow, create their signals, and run extraction+match.
+    // Idempotent + non-interfering; powers the Operations page button.
+    Route::post('/admin/payments/reconcile', [\App\Http\Controllers\FIN\PaymentDiagnosticsController::class, 'reconcile'])
+        ->name('payments.reconcile');
     
     // ⭐ Online Receiving Accounts CRUD (manage bank accounts for online approvals)
     Route::prefix('online-receiving-accounts')->group(function () {
