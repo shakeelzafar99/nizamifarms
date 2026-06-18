@@ -85,3 +85,14 @@ Schedule::command('payments:poll-bank-emails')
     ->everyMinute()
     ->withoutOverlapping(5)
     ->runInBackground();
+
+// Jun-2026 — Auto location-request drain worker.
+// Flushes t_crm_location_auto_queue (rows written when a Shopify order is
+// accepted or a new NF order is created). Self-throttles to a no-op when the
+// master switch (location_auto_send_enabled) is off OR when outside the daily
+// send window, so it costs ~1-2 config lookups per minute before/while disabled.
+// Orders queued outside the window are flushed automatically when it next opens.
+Schedule::command('location:auto-process')
+    ->everyMinute()
+    ->withoutOverlapping(2)
+    ->runInBackground();

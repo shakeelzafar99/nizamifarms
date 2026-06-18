@@ -245,6 +245,9 @@ Route::middleware(['auth'])->group(function () {
     Route::prefix('orders/location-request')->name('orders.location-request.')->group(function () {
         Route::get('/eligible', [\App\Http\Controllers\CRM\OpenOrderLocationController::class, 'eligible'])->name('eligible');
         Route::post('/send', [\App\Http\Controllers\CRM\OpenOrderLocationController::class, 'send'])->name('send');
+        // Default template + auto-send automation settings (admin).
+        Route::get('/settings', [\App\Http\Controllers\CRM\OpenOrderLocationController::class, 'settings'])->name('settings');
+        Route::post('/settings', [\App\Http\Controllers\CRM\OpenOrderLocationController::class, 'saveSettings'])->name('settings.save');
     });
 
     // Shift Management

@@ -2525,6 +2525,18 @@ class RiderController extends Controller
                 throw new \Exception("Some selected invoices are invalid or already settled");
             }
 
+            // Guard: prevent the same invoice landing in two pending settlements.
+            // Reject any invoice that is already fully covered by another pending deposit
+            // (root cause of the double-settlement bug). Partial-payment flow is unaffected.
+            $alreadyPending = (new \App\Http\Controllers\FIN\EmployeeCashController())
+                ->getInvoicesAlreadyPending($account->id, $request->invoice_ids);
+            if (!empty($alreadyPending)) {
+                $conflictNumbers = $selectedInvoices->whereIn('id', $alreadyPending)
+                    ->map(fn($inv) => $inv->order ? $inv->order->order_number : "Invoice #{$inv->id}")
+                    ->join(', ');
+                throw new \Exception("These invoice(s) already have a pending settlement awaiting approval: {$conflictNumbers}. Please refresh and try again.");
+            }
+
             // Determine destination based on whether these are qurbani order payments
             $hasQurbaniPayments = $selectedInvoices->contains(function ($inv) {
                 if ($inv->transaction_type !== \App\Models\FIN\LedgerModel::TYPE_ORDER_PAYMENT) return false;
@@ -2667,6 +2679,18 @@ class RiderController extends Controller
 
             if ($selectedInvoices->count() !== count($request->invoice_ids)) {
                 throw new \Exception("Some selected invoices are invalid or already settled");
+            }
+
+            // Guard: prevent the same invoice landing in two pending settlements.
+            // Reject any invoice that is already fully covered by another pending deposit
+            // (root cause of the double-settlement bug). Partial-payment flow is unaffected.
+            $alreadyPending = (new \App\Http\Controllers\FIN\EmployeeCashController())
+                ->getInvoicesAlreadyPending($account->id, $request->invoice_ids);
+            if (!empty($alreadyPending)) {
+                $conflictNumbers = $selectedInvoices->whereIn('id', $alreadyPending)
+                    ->map(fn($inv) => $inv->order ? $inv->order->order_number : "Invoice #{$inv->id}")
+                    ->join(', ');
+                throw new \Exception("These invoice(s) already have a pending settlement awaiting approval: {$conflictNumbers}. Please refresh and try again.");
             }
 
             // Determine destination based on qurbani vs regular
@@ -8427,7 +8451,8 @@ class RiderController extends Controller
                     $q->select('id', 'fullname');
                 }])
                 ->with(['lineItems' => function($q) {
-                    $q->select('id', 'order_id', 'name', 'sku', 'quantity', 'unit_price', 'line_total', 'preparation_status', 'is_free', 'instructions');
+                    $q->select('id', 'order_id', 'product_id', 'name', 'sku', 'quantity', 'unit_price', 'line_total', 'preparation_status', 'is_free', 'instructions')
+                      ->with(['product:id,attribute_1']); // category (attribute_1) for Products-view grouping
                 }])
                 ->with(['discounts']) // ⭐ Load discounts for invoice view
                 ->where(function($q) {
@@ -8748,6 +8773,7 @@ class RiderController extends Controller
                             'preparation_status' => $item->preparation_status,
                             'is_free' => (bool) $item->is_free,
                             'instructions' => $item->instructions,
+                            'category' => optional($item->product)->attribute_1 ?: null, // product category for grouping
                         ];
                     })->values()->toArray(),
                 ];
@@ -8994,8 +9020,8 @@ class RiderController extends Controller
                 ], 403);
             }
             
-            // Get full order with all relationships
-            $order = OrderModel::with(['customer', 'lineItems', 'assignedRider', 'discounts'])
+            // Get full order with all relationships (lineItems.product for category grouping)
+            $order = OrderModel::with(['customer', 'lineItems', 'lineItems.product:id,attribute_1', 'assignedRider', 'discounts'])
                 ->findOrFail($orderId);
             
             // Build customer name
@@ -9109,6 +9135,7 @@ class RiderController extends Controller
                             'preparation_status' => $item->preparation_status,
                             'is_free' => (bool) $item->is_free,
                             'instructions' => $item->instructions,
+                            'category' => optional($item->product)->attribute_1 ?: null, // product category for grouping
                         ];
                     }),
                     'shipping_total' => $order->shipping_total ?? 0,
@@ -9691,6 +9718,14 @@ class RiderController extends Controller
                 $statusFilter = null;
             }
 
+            // ⭐ Dedicated "Prepared" view. When ON, the query shows ONLY prepared
+            //    items (preparation_status = 'preparing') instead of excluding
+            //    them, and additionally hides dispatched (out_for_delivery) orders
+            //    so prepared items drop off once they go out. Everything else
+            //    (excluded statuses, 20-day window, qurbani/shopify rules) is
+            //    identical. Default (no flag) is unchanged.
+            $preparedOnly = filter_var($request->get('prepared_only', false), FILTER_VALIDATE_BOOLEAN);
+
             // Allow explicit hierarchy override (used by mobile fixed-endpoint),
             // otherwise fall back to the dynamic settings used by the web app.
             $overrideHierarchy = $request->get('hierarchy_override');
@@ -9775,13 +9810,28 @@ class RiderController extends Controller
                 ->whereNotIn('o.order_status', $excludedStatuses)
                 ->where('o.order_date', '>=', Carbon::now()->subDays(20))
                 ->where(function($q) {
-                    $q->whereNull('li.preparation_status')
-                      ->orWhere('li.preparation_status', '!=', 'preparing');
-                })
-                ->where(function($q) {
                     $q->whereNull('p.attribute_1')
                       ->orWhereRaw("LOWER(p.attribute_1) != 'qurbani'");
                 });
+
+            // ⭐ Preparation filter — inverted for the dedicated Prepared view.
+            //    Besides showing only prepared items, we must also drop orders
+            //    that have moved PAST preparation. The normal view hides these
+            //    incidentally (their items are prepared, so the "not prepared"
+            //    filter removes them), but the Prepared view shows prepared
+            //    items, so we exclude the terminal/post-prep statuses here.
+            //    NOTE: excluded_statuses (cancelled/refunded/pending) is already
+            //    applied above; delivered/completed/out_for_delivery are NOT in
+            //    that list, so they must be excluded explicitly.
+            if ($preparedOnly) {
+                $query->where('li.preparation_status', 'preparing')
+                      ->whereNotIn('o.order_status', ['out_for_delivery', 'delivered', 'completed']);
+            } else {
+                $query->where(function($q) {
+                    $q->whereNull('li.preparation_status')
+                      ->orWhere('li.preparation_status', '!=', 'preparing');
+                });
+            }
 
             if ($statusFilter) {
                 $query->where('o.order_status', $statusFilter);
@@ -10363,6 +10413,9 @@ class RiderController extends Controller
             }
             
             $statusFilter = $request->get('status_filter'); // Optional status filter
+            // ⭐ Prepared view (see getOpenOrderQuantitiesTree). Only prepared
+            //    items, and hides dispatched orders. Default unchanged.
+            $preparedOnly = filter_var($request->get('prepared_only', false), FILTER_VALIDATE_BOOLEAN);
             
             // Allow mobile to override hierarchy (same as tree endpoint)
             $overrideHierarchy = $request->get('hierarchy_override');
@@ -10434,6 +10487,16 @@ class RiderController extends Controller
             // Apply status filter if provided
             if ($statusFilter) {
                 $query->where('o.order_status', $statusFilter);
+            }
+
+            // ⭐ Prepared view: only prepared items, hide orders that have moved
+            //    past preparation. excluded_statuses (cancelled/refunded/pending)
+            //    is applied above; delivered/completed/out_for_delivery are NOT in
+            //    that list, so exclude them explicitly here (mirrors the tree
+            //    endpoint so the standalone and split views stay consistent).
+            if ($preparedOnly) {
+                $query->where('li.preparation_status', 'preparing')
+                      ->whereNotIn('o.order_status', ['out_for_delivery', 'delivered', 'completed']);
             }
             
             // Default: Only show orders from last 20 days for performance

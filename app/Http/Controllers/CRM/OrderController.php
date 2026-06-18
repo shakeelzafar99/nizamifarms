@@ -2217,6 +2217,19 @@ class OrderController extends Controller
                     ]);
                 }
             }
+
+            // Auto location request: queue this customer if the automation is ON and
+            // they qualify (no-op when the switch is off). Never blocks order creation.
+            if ($order->customer_id) {
+                try {
+                    app(\App\Services\Location\OpenOrderLocationService::class)
+                        ->enqueue((int) $order->customer_id, (int) $order->id, 'nf_create');
+                } catch (\Throwable $e) {
+                    \Log::warning('Auto location-request enqueue failed for new order', [
+                        'order_id' => $order->id, 'error' => $e->getMessage(),
+                    ]);
+                }
+            }
             
             return response()->json([
                 'success' => true,
@@ -2580,6 +2593,19 @@ class OrderController extends Controller
                     \Log::warning('Auto region detection failed for Shopify converted order', [
                         'order_id' => $convertedOrder->id,
                         'error' => $e->getMessage()
+                    ]);
+                }
+            }
+
+            // Auto location request: queue this customer if the automation is ON and
+            // they qualify (no-op when the switch is off). Never blocks conversion.
+            if ($convertedOrder->customer_id) {
+                try {
+                    app(\App\Services\Location\OpenOrderLocationService::class)
+                        ->enqueue((int) $convertedOrder->customer_id, (int) $convertedOrder->id, 'shopify_convert');
+                } catch (\Throwable $e) {
+                    \Log::warning('Auto location-request enqueue failed for converted order', [
+                        'order_id' => $convertedOrder->id, 'error' => $e->getMessage(),
                     ]);
                 }
             }

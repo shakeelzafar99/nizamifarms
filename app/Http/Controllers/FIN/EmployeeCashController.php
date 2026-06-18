@@ -1215,76 +1215,13 @@ class EmployeeCashController extends Controller
         try {
             $employeeAccount = AccountModel::findOrFail($id);
             
-            // Get IDs of invoices that already have pending settlement deposits
-            // Also calculate pending settlement amounts per invoice
-            $pendingSettlementInvoiceIds = [];
-            $pendingSettlementAmounts = []; // Track pending amounts per invoice
-            
-            $pendingDeposits = LedgerModel::where('transaction_type', LedgerModel::TYPE_EMPLOYEE_DEPOSIT)
-                ->where('from_account_id', $employeeAccount->id)
-                ->where('approval_status', LedgerModel::STATUS_PENDING)
-                ->where(function($q) {
-                    $q->where('description', 'LIKE', '%Settlement%')
-                      ->orWhere('description', 'LIKE', '%Partial Payment%');
-                })
-                ->get();
-            
-            foreach ($pendingDeposits as $deposit) {
-                // Try ledger metadata first (NEW), fallback to session (OLD)
-                $settlementData = $deposit->settlement_metadata;
-                if (!$settlementData) {
-                    $sessionKey = "settlement_pending_{$deposit->id}";
-                    $settlementData = \Session::get($sessionKey);
-                }
-                
-                if ($settlementData && isset($settlementData['invoice_ids'])) {
-                    $invoiceIds = $settlementData['invoice_ids'];
-                    $depositAmount = $settlementData['deposit_amount'] ?? 0;
-                    
-                    // Check if this is a short cash or partial payment
-                    $isShortCash = $settlementData['is_short_cash_settlement'] ?? false;
-                    $isPartialPayment = $settlementData['is_partial_payment'] ?? false;
-                    $shortCashAmount = $settlementData['short_cash_amount'] ?? 0;
-                    
-                    // Calculate total settlement amount
-                    if ($isShortCash) {
-                        $totalSettlementAmount = $depositAmount + $shortCashAmount;
-                    } else {
-                        $totalSettlementAmount = $depositAmount;
-                    }
-                    
-                    // Distribute pending amount across invoices (same logic as processInvoiceSettlement)
-                    $invoices = LedgerModel::whereIn('id', $invoiceIds)
-                        ->whereIn('settlement_status', ['open', 'partial'])
-                        ->orderBy('transaction_date', 'asc')
-                        ->get();
-                    
-                    $remainingAmount = $totalSettlementAmount;
-                    foreach ($invoices as $invoice) {
-                        $outstandingForThisInvoice = $invoice->amount - ($invoice->settled_amount ?? 0);
-                        $amountToSettle = min($remainingAmount, $outstandingForThisInvoice);
-                        
-                        if ($amountToSettle > 0) {
-                            if (!isset($pendingSettlementAmounts[$invoice->id])) {
-                                $pendingSettlementAmounts[$invoice->id] = 0;
-                            }
-                            $pendingSettlementAmounts[$invoice->id] += $amountToSettle;
-                            $remainingAmount -= $amountToSettle;
-                        }
-                    }
-                    
-                    // Only exclude invoices that will be fully settled by pending deposits
-                    foreach ($invoices as $invoice) {
-                        $pendingForInvoice = $pendingSettlementAmounts[$invoice->id] ?? 0;
-                        $outstandingAfterPending = ($invoice->amount - ($invoice->settled_amount ?? 0)) - $pendingForInvoice;
-                        
-                        if ($outstandingAfterPending <= 0) {
-                            // Will be fully settled - exclude from list
-                            $pendingSettlementInvoiceIds[] = $invoice->id;
-                        }
-                    }
-                }
-            }
+            // Get IDs of invoices already fully covered by pending settlement deposits
+            // (so they are hidden from the outstanding list) plus the per-invoice
+            // pending amounts. Single source of truth shared with the settlement
+            // create-path duplicate guard (see computePendingSettlementCoverage()).
+            $coverage = $this->computePendingSettlementCoverage($employeeAccount->id);
+            $pendingSettlementInvoiceIds = $coverage['fully_covered_ids'];
+            $pendingSettlementAmounts = $coverage['pending_amounts'];
             
             // Get all open and partial invoices for this rider
             // IMPORTANT: Exclude reversed transactions (e.g., from payment method changes)
@@ -1334,6 +1271,125 @@ class EmployeeCashController extends Controller
     }
 
     /**
+     * Compute pending-settlement coverage for an employee cash account.
+     *
+     * Walks every PENDING settlement / partial-payment deposit for the account and
+     * distributes each deposit's settlement amount across its invoices (oldest first),
+     * mirroring processInvoiceSettlement(). Returns the invoice ledger ids that are
+     * ALREADY fully covered by pending deposits, plus the per-invoice pending amounts.
+     *
+     * This is the single source of truth used by both getOutstandingInvoices()
+     * (to hide fully-covered invoices) and the settlement create paths (to reject
+     * adding an invoice that is already fully spoken-for by another pending deposit).
+     *
+     * @param  int       $employeeAccountId
+     * @param  int|null  $excludeDepositId  Ignore this pending deposit (e.g. when editing it)
+     * @return array{fully_covered_ids: array<int,int>, pending_amounts: array<int,float>}
+     */
+    private function computePendingSettlementCoverage($employeeAccountId, $excludeDepositId = null)
+    {
+        $pendingSettlementInvoiceIds = [];
+        $pendingSettlementAmounts = []; // Track pending amounts per invoice
+
+        $query = LedgerModel::where('transaction_type', LedgerModel::TYPE_EMPLOYEE_DEPOSIT)
+            ->where('from_account_id', $employeeAccountId)
+            ->where('approval_status', LedgerModel::STATUS_PENDING)
+            ->where(function($q) {
+                $q->where('description', 'LIKE', '%Settlement%')
+                  ->orWhere('description', 'LIKE', '%Partial Payment%');
+            });
+
+        if ($excludeDepositId) {
+            $query->where('id', '!=', $excludeDepositId);
+        }
+
+        $pendingDeposits = $query->get();
+
+        foreach ($pendingDeposits as $deposit) {
+            // Try ledger metadata first (NEW), fallback to session (OLD)
+            $settlementData = $deposit->settlement_metadata;
+            if (!$settlementData) {
+                $sessionKey = "settlement_pending_{$deposit->id}";
+                $settlementData = \Session::get($sessionKey);
+            }
+
+            if ($settlementData && isset($settlementData['invoice_ids'])) {
+                $invoiceIds = $settlementData['invoice_ids'];
+                $depositAmount = $settlementData['deposit_amount'] ?? 0;
+
+                // Check if this is a short cash settlement (deposit + expense covers the invoice)
+                $isShortCash = $settlementData['is_short_cash_settlement'] ?? false;
+                $shortCashAmount = $settlementData['short_cash_amount'] ?? 0;
+
+                // Calculate total settlement amount
+                if ($isShortCash) {
+                    $totalSettlementAmount = $depositAmount + $shortCashAmount;
+                } else {
+                    $totalSettlementAmount = $depositAmount;
+                }
+
+                // Distribute pending amount across invoices (same logic as processInvoiceSettlement)
+                $invoices = LedgerModel::whereIn('id', $invoiceIds)
+                    ->whereIn('settlement_status', ['open', 'partial'])
+                    ->orderBy('transaction_date', 'asc')
+                    ->get();
+
+                $remainingAmount = $totalSettlementAmount;
+                foreach ($invoices as $invoice) {
+                    $outstandingForThisInvoice = $invoice->amount - ($invoice->settled_amount ?? 0);
+                    $amountToSettle = min($remainingAmount, $outstandingForThisInvoice);
+
+                    if ($amountToSettle > 0) {
+                        if (!isset($pendingSettlementAmounts[$invoice->id])) {
+                            $pendingSettlementAmounts[$invoice->id] = 0;
+                        }
+                        $pendingSettlementAmounts[$invoice->id] += $amountToSettle;
+                        $remainingAmount -= $amountToSettle;
+                    }
+                }
+
+                // Only flag invoices that will be FULLY settled by pending deposits
+                foreach ($invoices as $invoice) {
+                    $pendingForInvoice = $pendingSettlementAmounts[$invoice->id] ?? 0;
+                    $outstandingAfterPending = ($invoice->amount - ($invoice->settled_amount ?? 0)) - $pendingForInvoice;
+
+                    if ($outstandingAfterPending <= 0) {
+                        $pendingSettlementInvoiceIds[] = $invoice->id;
+                    }
+                }
+            }
+        }
+
+        return [
+            'fully_covered_ids' => array_values(array_unique($pendingSettlementInvoiceIds)),
+            'pending_amounts' => $pendingSettlementAmounts,
+        ];
+    }
+
+    /**
+     * Returns the subset of $invoiceIds that are already FULLY covered by an existing
+     * PENDING settlement deposit for this account.
+     *
+     * Used by every settlement create path to block adding an invoice that is already
+     * fully spoken-for by another pending deposit (root cause of the SH-20621
+     * double-settlement). Partially-pending invoices are intentionally NOT returned,
+     * so the legitimate partial-payment flow ("pay some now, finish on the next
+     * invoice") keeps working unchanged.
+     *
+     * @param  int       $employeeAccountId
+     * @param  array     $invoiceIds
+     * @param  int|null  $excludeDepositId
+     * @return array<int,int>
+     */
+    public function getInvoicesAlreadyPending($employeeAccountId, array $invoiceIds, $excludeDepositId = null)
+    {
+        $coverage = $this->computePendingSettlementCoverage($employeeAccountId, $excludeDepositId);
+        $covered = array_map('intval', $coverage['fully_covered_ids']);
+        $submitted = array_map('intval', $invoiceIds);
+        return array_values(array_intersect($submitted, $covered));
+    }
+
+    /**
      * Record settlement deposit (with invoice selection)
      */
     public function recordSettlementDeposit(Request $request, $id)
@@ -1363,6 +1419,17 @@ class EmployeeCashController extends Controller
 
             if ($selectedInvoices->count() !== count($request->invoice_ids)) {
                 throw new \Exception("Some selected invoices are invalid or already settled");
+            }
+
+            // Guard: prevent the same invoice landing in two pending settlements.
+            // Reject any invoice that is already fully covered by another pending deposit
+            // (root cause of the double-settlement bug). Partial-payment flow is unaffected.
+            $alreadyPending = $this->getInvoicesAlreadyPending($employeeAccount->id, $request->invoice_ids);
+            if (!empty($alreadyPending)) {
+                $conflictNumbers = $selectedInvoices->whereIn('id', $alreadyPending)
+                    ->map(fn($inv) => $inv->order ? $inv->order->order_number : "Invoice #{$inv->id}")
+                    ->join(', ');
+                throw new \Exception("These invoice(s) already have a pending settlement awaiting approval: {$conflictNumbers}. Please refresh the outstanding list and try again.");
             }
 
             // Get destination account - auto-detect for qurbani vs regular if not explicitly specified
@@ -1487,6 +1554,17 @@ class EmployeeCashController extends Controller
 
             if ($selectedInvoices->count() !== count($request->invoice_ids)) {
                 throw new \Exception("Some selected invoices are invalid or already settled");
+            }
+
+            // Guard: prevent the same invoice landing in two pending settlements.
+            // Reject any invoice that is already fully covered by another pending deposit
+            // (root cause of the double-settlement bug). Partial-payment flow is unaffected.
+            $alreadyPending = $this->getInvoicesAlreadyPending($employeeAccount->id, $request->invoice_ids);
+            if (!empty($alreadyPending)) {
+                $conflictNumbers = $selectedInvoices->whereIn('id', $alreadyPending)
+                    ->map(fn($inv) => $inv->order ? $inv->order->order_number : "Invoice #{$inv->id}")
+                    ->join(', ');
+                throw new \Exception("These invoice(s) already have a pending settlement awaiting approval: {$conflictNumbers}. Please refresh the outstanding list and try again.");
             }
 
             // Calculate expected amount and shortage (remaining balance for partial invoices)

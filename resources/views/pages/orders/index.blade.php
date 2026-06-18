@@ -5452,12 +5452,31 @@ function openGetLocationsModal() {
             <h3 style="margin:0 0 4px;font-size:18px;font-weight:700;">📍 Get Customer Locations</h3>
             <p style="margin:0 0 12px;font-size:12px;color:#6b7280;">Sends a WhatsApp location request to open-order customers who don't have a verified pin yet. When they reply with a pin or Maps link, it's resolved and saved automatically.</p>
 
-            <div style="display:flex;gap:8px;align-items:center;margin-bottom:10px;flex-wrap:wrap;">
+            <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px;flex-wrap:wrap;">
                 <label style="font-size:12px;color:#374151;font-weight:600;">Template:</label>
                 <select id="getLocTemplate" style="flex:1;min-width:180px;padding:6px 8px;border:1px solid #d1d5db;border-radius:8px;font-size:13px;"><option>Loading…</option></select>
+                <button type="button" onclick="saveGetLocDefaultTemplate()" title="Use this template as the default for everyone" style="background:#ecfeff;border:1px solid #67e8f9;color:#155e75;border-radius:6px;padding:6px 10px;font-size:12px;cursor:pointer;font-weight:600;">Set as default</button>
             </div>
 
+            <details id="getLocAutoPanel" style="margin-bottom:10px;border:1px solid #eef0f2;border-radius:8px;padding:8px 10px;background:#fafafa;">
+                <summary style="font-size:12px;font-weight:700;color:#374151;cursor:pointer;">⚙️ Automatic sending (when orders are accepted / created)</summary>
+                <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-top:8px;">
+                    <label style="font-size:12px;color:#374151;display:flex;align-items:center;gap:6px;">
+                        <input type="checkbox" id="getLocAutoEnabled"> Enable auto-send
+                    </label>
+                    <label style="font-size:12px;color:#374151;">Window:
+                        <input type="time" id="getLocWindowStart" style="padding:4px 6px;border:1px solid #d1d5db;border-radius:6px;font-size:12px;"> –
+                        <input type="time" id="getLocWindowEnd" style="padding:4px 6px;border:1px solid #d1d5db;border-radius:6px;font-size:12px;">
+                    </label>
+                    <button type="button" onclick="saveGetLocAutoSettings()" style="background:#0e7490;color:#fff;border:none;border-radius:6px;padding:6px 12px;font-size:12px;cursor:pointer;font-weight:600;">Save</button>
+                    <span id="getLocSettingsMsg" style="font-size:11px;color:#6b7280;"></span>
+                </div>
+                <p style="margin:8px 0 0;font-size:11px;color:#9ca3af;">Outside the window, requests are queued and sent automatically when it next opens (Asia/Karachi). Off by default.</p>
+            </details>
+
             <div id="getLocCounts" style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px;font-size:12px;"></div>
+
+            <div id="getLocAutoStats" style="margin-bottom:10px;"></div>
 
             <div style="display:flex;gap:8px;align-items:center;margin-bottom:6px;">
                 <button type="button" onclick="getLocSelectAll(true)" style="background:#eef2ff;border:1px solid #c7d2fe;color:#3730a3;border-radius:6px;padding:3px 8px;font-size:12px;cursor:pointer;">Select all</button>
@@ -5491,6 +5510,7 @@ function openGetLocationsModal() {
     modal.style.display = 'block';
     loadGetLocTemplates();
     loadGetLocEligible();
+    loadGetLocSettings();
 }
 
 function loadGetLocTemplates() {
@@ -5516,6 +5536,47 @@ function loadGetLocTemplates() {
     }).catch(() => { sel.innerHTML = '<option value="">Failed to load templates</option>'; });
 }
 
+function loadGetLocSettings() {
+    fetch('/orders/location-request/settings', {
+        headers: { 'Accept': 'application/json', 'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]')?.content || '' }
+    }).then(r => r.json()).then(d => {
+        if (!d || !d.success) return;
+        const en = document.getElementById('getLocAutoEnabled');
+        const ws = document.getElementById('getLocWindowStart');
+        const we = document.getElementById('getLocWindowEnd');
+        if (en) en.checked = !!d.auto_enabled;
+        if (ws) ws.value = d.window_start || '09:00';
+        if (we) we.value = d.window_end || '18:00';
+    }).catch(() => {});
+}
+
+function saveGetLocDefaultTemplate() {
+    const sel = document.getElementById('getLocTemplate');
+    const msg = document.getElementById('getLocSettingsMsg');
+    if (!sel || !sel.value) { return; }
+    fetch('/orders/location-request/settings', {
+        method: 'POST',
+        headers: { 'Accept': 'application/json', 'Content-Type': 'application/json', 'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]')?.content || '' },
+        body: JSON.stringify({ default_template: sel.value })
+    }).then(r => r.json()).then(d => {
+        if (msg) { msg.textContent = d && d.success ? 'Default template saved for everyone.' : (d.message || 'Failed to save'); msg.style.color = d && d.success ? '#047857' : '#b91c1c'; }
+    }).catch(() => { if (msg) { msg.textContent = 'Failed to save'; msg.style.color = '#b91c1c'; } });
+}
+
+function saveGetLocAutoSettings() {
+    const en = document.getElementById('getLocAutoEnabled');
+    const ws = document.getElementById('getLocWindowStart');
+    const we = document.getElementById('getLocWindowEnd');
+    const msg = document.getElementById('getLocSettingsMsg');
+    fetch('/orders/location-request/settings', {
+        method: 'POST',
+        headers: { 'Accept': 'application/json', 'Content-Type': 'application/json', 'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]')?.content || '' },
+        body: JSON.stringify({ auto_enabled: en ? en.checked : false, window_start: ws ? ws.value : '', window_end: we ? we.value : '' })
+    }).then(r => r.json()).then(d => {
+        if (msg) { msg.textContent = d && d.success ? 'Automation settings saved.' : (d.message || 'Failed to save'); msg.style.color = d && d.success ? '#047857' : '#b91c1c'; }
+    }).catch(() => { if (msg) { msg.textContent = 'Failed to save'; msg.style.color = '#b91c1c'; } });
+}
+
 function loadGetLocEligible() {
     const list = document.getElementById('getLocList');
     if (list) list.innerHTML = 'Loading…';
@@ -5538,6 +5599,39 @@ function renderGetLoc(d) {
             '<span style="background:#f3f4f6;border:1px solid #e5e7eb;border-radius:8px;padding:4px 8px;">' + (counts.never || 0) + ' never sent</span>' +
             '<span style="background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:4px 8px;color:#92400e;">' + (counts.awaiting || 0) + ' awaiting</span>' +
             '<span style="background:#fef2f2;border:1px solid #fecaca;border-radius:8px;padding:4px 8px;color:#991b1b;">' + (counts.failed || 0) + ' failed</span>';
+    }
+
+    // Auto-send daily stats (sent / saved / didn't respond + who to chase).
+    const aEl = document.getElementById('getLocAutoStats');
+    const auto = d.auto_stats || null;
+    if (aEl) {
+        if (auto && (auto.enabled || (auto.sent || 0) > 0)) {
+            let pendingHtml = '';
+            const plist = auto.pending_list || [];
+            if ((auto.pending || 0) > 0 && plist.length) {
+                pendingHtml = '<details style="margin-top:8px;"><summary style="font-size:12px;color:#0e7490;font-weight:700;cursor:pointer;">Show who to contact again (' + auto.pending + ')</summary><div style="margin-top:6px;">';
+                plist.forEach(p => {
+                    pendingHtml += '<div style="display:flex;justify-content:space-between;gap:8px;padding:4px 0;border-top:1px solid #e0f2fe;">' +
+                        '<span style="font-size:12px;color:#111827;font-weight:600;">' + _getLocEsc(p.customer_name || 'Customer') + '</span>' +
+                        '<span style="font-size:11px;color:#6b7280;">' + _getLocEsc((p.phone || '') + (p.order_number ? ' · #' + p.order_number : '')) + '</span>' +
+                        '</div>';
+                });
+                pendingHtml += '</div></details>';
+            }
+            aEl.innerHTML = '<div style="background:#f0f9ff;border:1px solid #bae6fd;border-radius:10px;padding:10px;">' +
+                '<div style="display:flex;justify-content:space-between;align-items:center;">' +
+                    '<strong style="font-size:12px;color:#075985;">🤖 Auto-sent today</strong>' +
+                    '<span style="font-size:11px;font-weight:700;color:' + (auto.enabled ? '#16a34a' : '#9ca3af') + ';">' + (auto.enabled ? 'ON' : 'OFF') + '</span>' +
+                '</div>' +
+                '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px;font-size:12px;">' +
+                    '<span style="background:#e0f2fe;border-radius:8px;padding:4px 8px;color:#075985;"><strong>' + (auto.sent || 0) + '</strong> sent</span>' +
+                    '<span style="background:#dcfce7;border-radius:8px;padding:4px 8px;color:#166534;"><strong>' + (auto.responded || 0) + '</strong> saved</span>' +
+                    '<span style="background:#fef2f2;border-radius:8px;padding:4px 8px;color:#991b1b;"><strong>' + (auto.pending || 0) + '</strong> no response</span>' +
+                '</div>' + pendingHtml +
+                '</div>';
+        } else {
+            aEl.innerHTML = '';
+        }
     }
 
     const list = document.getElementById('getLocList');

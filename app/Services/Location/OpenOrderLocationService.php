@@ -2,6 +2,7 @@
 
 namespace App\Services\Location;
 
+use App\Models\FIN\ConfigModel;
 use App\Models\WhatsApp\ConversationModel;
 use App\Services\WhatsAppService;
 use Illuminate\Support\Carbon;
@@ -123,13 +124,26 @@ class OpenOrderLocationService
         ];
     }
 
-    /** Open, non-shopify, non-qurbani orders whose customer has no verified pin. */
-    protected function openUnverifiedOrders()
+    /** Statuses that are NOT eligible for a location request. */
+    protected function excludedStatuses(): array
+    {
+        // 'pending' is excluded (Jun-2026): we don't ask for a location until the
+        // order is actually confirmed/accepted. Newly accepted Shopify + new NF
+        // orders land as 'new', so they remain eligible.
+        return ['pending', 'delivered', 'completed', 'cancelled', 'refunded'];
+    }
+
+    /**
+     * Base query for open, non-shopify, non-qurbani orders whose customer has no
+     * verified pin. Shared by the snapshot list and the per-customer eligibility
+     * check (so the manual button and the automation use the exact same rule).
+     */
+    protected function baseEligibleQuery()
     {
         return DB::table('t_crm_prod_order as o')
             ->join('t_crm_prod_customer as c', 'c.id', '=', 'o.customer_id')
             ->leftJoin('t_ops_delivery_region as r', 'r.id', '=', 'c.delivery_region_id')
-            ->whereNotIn('o.order_status', ['delivered', 'completed', 'cancelled', 'refunded'])
+            ->whereNotIn('o.order_status', $this->excludedStatuses())
             ->where(function ($w) {
                 $w->whereNull('o.external_source')->orWhere('o.external_source', '!=', 'shopify');
             })
@@ -152,7 +166,13 @@ class OpenOrderLocationService
             })
             ->where(function ($w) {
                 $w->whereNotNull('c.phone')->orWhereNotNull('c.phone_normalized');
-            })
+            });
+    }
+
+    /** Open, non-shopify, non-qurbani orders whose customer has no verified pin. */
+    protected function openUnverifiedOrders()
+    {
+        return $this->baseEligibleQuery()
             ->orderByDesc('o.id')
             ->get([
                 'o.id as order_id',
@@ -166,6 +186,20 @@ class OpenOrderLocationService
                 'c.delivery_region_id',
                 'r.name as region_name',
             ]);
+    }
+
+    /**
+     * Does this customer currently qualify for a location request? (Same rule as
+     * the manual button.) Used by the automation to gate enqueue + send.
+     */
+    public function customerIsEligible(int $customerId): bool
+    {
+        if ($customerId <= 0) {
+            return false;
+        }
+        return $this->baseEligibleQuery()
+            ->where('o.customer_id', $customerId)
+            ->exists();
     }
 
     /**
@@ -377,6 +411,325 @@ class OpenOrderLocationService
         }
 
         return ['results' => $results, 'sent' => $sent, 'failed' => $failed, 'skipped' => $skipped];
+    }
+
+    // ------------------------------------------------------------------
+    // DEFAULT TEMPLATE  (DB-backed, with config-file fallback)
+    // ------------------------------------------------------------------
+
+    /** The global default template, used by both the manual button and the automation. */
+    public function defaultTemplate(): string
+    {
+        $db = trim((string) ConfigModel::get('open_order_location_default_template', ''));
+        if ($db !== '') {
+            return $db;
+        }
+        return (string) $this->cfg('default_template', 'location');
+    }
+
+    /** The global default language for the location-request template. */
+    public function defaultLanguage(): string
+    {
+        $db = trim((string) ConfigModel::get('open_order_location_default_lang', ''));
+        if ($db !== '') {
+            return $db;
+        }
+        return (string) $this->cfg('default_language', 'en');
+    }
+
+    /** True only when an admin/auto-adopt has explicitly set a default (not the file fallback). */
+    public function defaultTemplateIsSet(): bool
+    {
+        return trim((string) ConfigModel::get('open_order_location_default_template', '')) !== '';
+    }
+
+    /**
+     * Persist the global default template if one has not been set yet. Called after
+     * the first manual send so a rider's choice becomes the default without an admin
+     * having to configure it ("marked as default if not set explicitly").
+     */
+    public function adoptDefaultTemplateIfUnset(string $templateName, ?string $language = null): void
+    {
+        if ($templateName === '' || $this->defaultTemplateIsSet()) {
+            return;
+        }
+        ConfigModel::set(
+            'open_order_location_default_template',
+            $templateName,
+            'Global default WhatsApp template for Open Orders location requests (auto-adopted from first send).'
+        );
+        if (!empty($language)) {
+            ConfigModel::set('open_order_location_default_lang', $language);
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // AUTOMATION  (enqueue on order accept/create + scheduled drain)
+    // ------------------------------------------------------------------
+
+    /** Master switch for the auto-send automation (OFF until the owner turns it on). */
+    public function isAutoEnabled(): bool
+    {
+        return (string) ConfigModel::get('location_auto_send_enabled', '0') === '1';
+    }
+
+    /** Timezone the daily send window is evaluated in. */
+    protected function windowTimezone(): string
+    {
+        return 'Asia/Karachi';
+    }
+
+    /** Is "now" inside the configured daily send window? */
+    public function withinSendWindow(?Carbon $now = null): bool
+    {
+        $tz = $this->windowTimezone();
+        $now = $now ? $now->copy()->setTimezone($tz) : Carbon::now($tz);
+
+        [$sh, $sm] = $this->parseHm((string) ConfigModel::get('location_auto_window_start', '09:00'), 9, 0);
+        [$eh, $em] = $this->parseHm((string) ConfigModel::get('location_auto_window_end', '18:00'), 18, 0);
+
+        $start = $now->copy()->setTime($sh, $sm, 0);
+        $end   = $now->copy()->setTime($eh, $em, 0);
+
+        if ($start->lessThanOrEqualTo($end)) {
+            return $now->betweenIncluded($start, $end);
+        }
+        // Overnight window (e.g. 20:00–06:00): inside if after start OR before end.
+        return $now->greaterThanOrEqualTo($start) || $now->lessThanOrEqualTo($end);
+    }
+
+    /** Parse an "HH:MM" string into [hour, minute] with safe fallbacks. */
+    protected function parseHm(string $hm, int $defH, int $defM): array
+    {
+        $parts = explode(':', trim($hm));
+        $h = isset($parts[0]) && is_numeric($parts[0]) ? max(0, min(23, (int) $parts[0])) : $defH;
+        $m = isset($parts[1]) && is_numeric($parts[1]) ? max(0, min(59, (int) $parts[1])) : $defM;
+        return [$h, $m];
+    }
+
+    /** Was this customer sent a location request within the recent-messaged window? */
+    public function recentlyMessaged(int $customerId): bool
+    {
+        $hours = (int) $this->cfg('recently_messaged_hours', 24);
+        if ($hours <= 0) {
+            return false;
+        }
+        $send = $this->lastLocationSendMap([$customerId])[$customerId] ?? null;
+        if (!$send || empty($send->created_at)) {
+            return false;
+        }
+        return Carbon::parse($send->created_at)->greaterThan(now()->subHours($hours));
+    }
+
+    /**
+     * Queue a customer for an automatic location request (called from the order
+     * accept / create hooks). Only queues when the master switch is ON, the
+     * customer currently qualifies (same rule as the manual button), they were
+     * not messaged recently, and they are not already queued.
+     *
+     * @return int|null  queue row id (existing or new), or null when not queued
+     */
+    public function enqueue(int $customerId, ?int $orderId, string $source): ?int
+    {
+        try {
+            if (!$this->isAutoEnabled() || $customerId <= 0) {
+                return null;
+            }
+            if (!$this->customerIsEligible($customerId) || $this->recentlyMessaged($customerId)) {
+                return null;
+            }
+
+            // One pending row per customer.
+            $existing = DB::table('t_crm_location_auto_queue')
+                ->where('customer_id', $customerId)
+                ->where('status', 'queued')
+                ->value('id');
+            if ($existing) {
+                return (int) $existing;
+            }
+
+            $now = now();
+            return (int) DB::table('t_crm_location_auto_queue')->insertGetId([
+                'customer_id'    => $customerId,
+                'order_id'       => $orderId,
+                'trigger_source' => $source,
+                'status'         => 'queued',
+                'attempts'       => 0,
+                'enqueued_at'    => $now,
+                'created_at'     => $now,
+                'updated_at'     => $now,
+            ]);
+        } catch (\Throwable $e) {
+            // Never let the automation break order creation/conversion.
+            Log::warning('OpenOrderLocation: enqueue failed (non-fatal)', [
+                'customer_id' => $customerId, 'order_id' => $orderId, 'error' => $e->getMessage(),
+            ]);
+            return null;
+        }
+    }
+
+    /**
+     * Drain queued auto-send rows. No-op when the switch is off or we're outside
+     * the daily window (rows simply wait for the window to open). Each row is
+     * re-validated live before sending so nothing stale goes out.
+     *
+     * @return array{sent:int, failed:int, skipped:int}
+     */
+    public function processQueue(int $limit = 25): array
+    {
+        $counters = ['sent' => 0, 'failed' => 0, 'skipped' => 0];
+
+        if (!$this->isAutoEnabled() || !$this->withinSendWindow()) {
+            return $counters;
+        }
+
+        $rows = DB::table('t_crm_location_auto_queue')
+            ->where(function ($q) {
+                $q->where('status', 'queued')
+                  ->orWhere(function ($q2) {
+                      $q2->where('status', 'failed')->where('attempts', '<', 3);
+                  });
+            })
+            ->orderBy('enqueued_at', 'asc')
+            ->limit(max(1, $limit))
+            ->get();
+
+        if ($rows->isEmpty()) {
+            return $counters;
+        }
+
+        $template = $this->defaultTemplate();
+        $language = $this->defaultLanguage();
+
+        foreach ($rows as $row) {
+            $cid = (int) $row->customer_id;
+
+            if (!$this->customerIsEligible($cid) || $this->recentlyMessaged($cid)) {
+                DB::table('t_crm_location_auto_queue')->where('id', $row->id)->update([
+                    'status'     => 'skipped',
+                    'last_error' => 'No longer eligible / recently messaged',
+                    'attempts'   => (int) $row->attempts + 1,
+                    'updated_at' => now(),
+                ]);
+                $counters['skipped']++;
+                continue;
+            }
+
+            try {
+                $out = $this->sendBulk([$cid], $template, $language, null);
+                $reason = $out['results'][0]['reason'] ?? null;
+
+                if (!empty($out['sent'])) {
+                    DB::table('t_crm_location_auto_queue')->where('id', $row->id)->update([
+                        'status'        => 'sent',
+                        'template_name' => $template,
+                        'sent_at'       => now(),
+                        'attempts'      => (int) $row->attempts + 1,
+                        'updated_at'    => now(),
+                    ]);
+                    $counters['sent']++;
+                } elseif (!empty($out['skipped'])) {
+                    DB::table('t_crm_location_auto_queue')->where('id', $row->id)->update([
+                        'status'     => 'skipped',
+                        'last_error' => $reason ?: 'Skipped at send',
+                        'attempts'   => (int) $row->attempts + 1,
+                        'updated_at' => now(),
+                    ]);
+                    $counters['skipped']++;
+                } else {
+                    DB::table('t_crm_location_auto_queue')->where('id', $row->id)->update([
+                        'status'     => 'failed',
+                        'last_error' => $reason ?: 'Send failed',
+                        'attempts'   => (int) $row->attempts + 1,
+                        'updated_at' => now(),
+                    ]);
+                    $counters['failed']++;
+                }
+            } catch (\Throwable $e) {
+                DB::table('t_crm_location_auto_queue')->where('id', $row->id)->update([
+                    'status'     => 'failed',
+                    'last_error' => mb_substr($e->getMessage(), 0, 500),
+                    'attempts'   => (int) $row->attempts + 1,
+                    'updated_at' => now(),
+                ]);
+                $counters['failed']++;
+            }
+        }
+
+        return $counters;
+    }
+
+    /**
+     * Daily stats for the auto-send automation, for the Get Locations modal:
+     *   - sent      : customers auto-messaged today
+     *   - responded : of those, how many now have a verified pin (saved)
+     *   - pending   : of those, how many still have no pin (didn't respond)
+     *   - pending_list : the non-responders, so the manager knows who to chase
+     *
+     * "Today" is the app's operational day (matches how sent_at is stored).
+     */
+    public function autoSendStats(): array
+    {
+        $startOfDay = now()->startOfDay();
+
+        $rows = DB::table('t_crm_location_auto_queue as q')
+            ->leftJoin('t_crm_prod_customer as c', 'c.id', '=', 'q.customer_id')
+            ->leftJoin('t_crm_prod_order as o', 'o.id', '=', 'q.order_id')
+            ->where('q.status', 'sent')
+            ->whereNotNull('q.sent_at')
+            ->where('q.sent_at', '>=', $startOfDay)
+            ->orderByDesc('q.sent_at')
+            ->get([
+                'q.customer_id',
+                'q.sent_at',
+                'o.order_number',
+                DB::raw("TRIM(CONCAT(COALESCE(c.first_name,''),' ',COALESCE(c.last_name,''))) as customer_name"),
+                'c.phone',
+                'c.phone_normalized',
+                'c.latitude',
+                'c.longitude',
+                'c.verified_location_url',
+            ]);
+
+        $seen = [];
+        $sent = 0;
+        $responded = 0;
+        $pendingList = [];
+
+        foreach ($rows as $r) {
+            $cid = (int) $r->customer_id;
+            if (isset($seen[$cid])) {
+                continue; // one row per customer per day
+            }
+            $seen[$cid] = true;
+            $sent++;
+
+            $hasPin = $r->latitude && $r->longitude
+                && (float) $r->latitude !== 0.0 && (float) $r->longitude !== 0.0;
+            $verified = $hasPin || !empty($r->verified_location_url);
+
+            if ($verified) {
+                $responded++;
+            } else {
+                $sentAt = $r->sent_at ? Carbon::parse($r->sent_at) : null;
+                $pendingList[] = [
+                    'customer_id'   => $cid,
+                    'customer_name' => trim((string) $r->customer_name) ?: 'Customer',
+                    'phone'         => $r->phone ?: $r->phone_normalized,
+                    'order_number'  => $r->order_number,
+                    'sent_at'       => $sentAt ? $sentAt->toIso8601String() : null,
+                    'sent_human'    => $sentAt ? $sentAt->diffForHumans() : null,
+                ];
+            }
+        }
+
+        return [
+            'enabled'      => $this->isAutoEnabled(),
+            'sent'         => $sent,
+            'responded'    => $responded,
+            'pending'      => count($pendingList),
+            'pending_list' => $pendingList,
+        ];
     }
 
     // ------------------------------------------------------------------

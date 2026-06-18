@@ -211,6 +211,8 @@ Route::middleware('auth:sanctum')->group(function () {
     // stateless live recompute, no tracking table.
     Route::get('/store/location-request/eligible', [\App\Http\Controllers\CRM\OpenOrderLocationController::class, 'eligible']);
     Route::post('/store/location-request/send', [\App\Http\Controllers\CRM\OpenOrderLocationController::class, 'send']);
+    Route::get('/store/location-request/settings', [\App\Http\Controllers\CRM\OpenOrderLocationController::class, 'settings']);
+    Route::post('/store/location-request/settings', [\App\Http\Controllers\CRM\OpenOrderLocationController::class, 'saveSettings']);
     Route::post('/store/batch-detect-regions', [\App\Http\Controllers\CRM\DeliveryRegionController::class, 'batchDetect']);
     Route::post('/store/redetect-regions', [\App\Http\Controllers\CRM\DeliveryRegionController::class, 'redetectAll']);
     Route::post('/store/save-region-polygon', [\App\Http\Controllers\CRM\DeliveryRegionController::class, 'saveRegionPolygon']);
