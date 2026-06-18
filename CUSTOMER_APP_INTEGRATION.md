@@ -805,6 +805,25 @@ client choose an arbitrary number.
                                                (all SH-/NF-/QUR for that number)
 ```
 
+**What to render after the switch (read this — answers the SKU question):**
+Once you've switched, **NF is the source of truth — render the snapshot
+directly, do NOT reconcile against your Shopify line items by SKU.** An
+operator may have edited quantities, added/removed items, or changed prices
+during acceptance, so your Shopify copy can be stale. Specifically:
+
+- Display **`nf_order_number`** (`SH-1234`) as the order number shown to the
+  user — that's our operational number. (`order_number` is the bare `1234`,
+  kept only so you can correlate back to the Shopify order you already have.)
+- Take **quantity, name, unit_price, line_total, and `totals`** straight from
+  the snapshot's `items[]` — these are authoritative.
+- The `sku` on each item is provided **only** so you can *optionally* enrich
+  the row from your own catalog (e.g. product image / description). Never let
+  your catalog override NF's quantity/price/name.
+
+That's also why qty + payment changes already "reflected" for you: your app
+re-pulls this snapshot, which always returns NF's **current** full order — it
+was never SKU-matching, it was pulling the whole authoritative order.
+
 **Cancellation rule (important):**
 - **Before** `accepted`: the order is still Shopify's — if it's cancelled
   pre-acceptance (or NF's operator declines it in the approval queue), NF

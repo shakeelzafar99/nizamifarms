@@ -181,13 +181,21 @@ class PaymentSignalMatcher
         $graceDays = (int) config('payment_signals.match_future_grace_days', 1);
         $until = $anchor->copy()->addDays($graceDays)->endOfDay();
 
-        return DB::table('t_crm_prod_order')
+        $query = DB::table('t_crm_prod_order')
             ->where('customer_id', $customerId)
             ->whereIn('payment_status', $openStatuses)
-            ->whereIn('payment_method', $methods)
             ->where('order_status', '!=', 'cancelled')
             ->where('order_date', '>=', $since)
-            ->where('order_date', '<=', $until)
+            ->where('order_date', '<=', $until);
+
+        // The screenshot/email proves an online payment, so the order's recorded
+        // payment_method is not a reliable gate (see config note). Only restrict
+        // by method when explicitly required.
+        if (config('payment_signals.require_online_payment_method', false)) {
+            $query->whereIn('payment_method', $methods);
+        }
+
+        return $query
             ->orderByDesc('order_date')
             ->orderByDesc('id')
             ->get(['id', 'order_number', 'total_price', 'total_paid', 'order_date']);

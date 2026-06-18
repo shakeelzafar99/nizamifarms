@@ -49,6 +49,16 @@ return [
     // Order payment methods we consider "online" for matching purposes.
     'online_payment_methods' => ['online', 'bank_transfer'],
 
+    // Should a candidate order be REQUIRED to carry an online/bank_transfer
+    // payment_method? Default false: a customer who sends a bank-transfer
+    // screenshot has paid online regardless of how the order was tagged at
+    // creation (many delivered orders are created as the default 'cash' and
+    // only paid online afterwards). When false we match purely on the
+    // outstanding balance + date, which is what actually identifies the order.
+    // Set true only if you want to restrict proof matching to orders already
+    // marked online.
+    'require_online_payment_method' => env('PAYMENT_SIGNALS_REQUIRE_ONLINE_METHOD', false),
+
     // Order payment statuses that are still owed money.
     'open_payment_statuses' => ['unpaid', 'partial'],
 

@@ -422,6 +422,7 @@ Route::middleware('auth:sanctum')->group(function () {
         
         // ⭐ Calculate delivery ETAs for rider's out_for_delivery orders (manual trigger)
         Route::post('/{riderId}/calculate-delivery-etas', [\App\Http\Controllers\API\RiderController::class, 'calculateDeliveryEtas']);
+        Route::post('/{riderId}/cancel-dispatch', [\App\Http\Controllers\API\RiderController::class, 'cancelDispatch']); // ⭐ Clear ETAs to merge dispatch waves
         Route::post('/{riderId}/optimize-route', [\App\Http\Controllers\API\RiderController::class, 'optimizeRoute']);
         Route::post('/{riderId}/route-lock', [\App\Http\Controllers\API\RiderController::class, 'lockRoute']);
         Route::delete('/{riderId}/route-lock', [\App\Http\Controllers\API\RiderController::class, 'unlockRoute']);

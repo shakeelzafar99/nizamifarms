@@ -985,6 +985,28 @@ class RiderController extends Controller
     }
     
     /**
+     * Authorize route / dispatch actions on a rider's orders.
+     *
+     * Two callers are allowed:
+     *   1. Store managers with the 'view_open_orders' mobile permission
+     *      (acting on ANY rider under a pinned-rider view), or
+     *   2. A rider acting on their OWN orders ($user->id === $riderId) —
+     *      this is what powers Rider-Mode dispatch.
+     *
+     * @return bool
+     */
+    private function canManageRiderRoute($user, $riderId): bool
+    {
+        if (!$user) {
+            return false;
+        }
+        if ((int) $user->id === (int) $riderId) {
+            return true; // rider acting on own route
+        }
+        return $user->hasMobilePermission('view_open_orders');
+    }
+
+    /**
      * ⭐ Calculate and save delivery ETAs for a rider's out_for_delivery orders
      * Called when user presses "Get Times" button in pinned rider view
      * 
@@ -999,8 +1021,8 @@ class RiderController extends Controller
         try {
             $user = Auth::user();
             
-            // Check permission
-            if (!$user->hasMobilePermission('view_open_orders')) {
+            // Check permission — store managers (view_open_orders) OR the rider acting on own route
+            if (!$this->canManageRiderRoute($user, $riderId)) {
                 return response()->json([
                     'success' => false,
                     'message' => 'Permission denied'
@@ -1049,12 +1071,20 @@ class RiderController extends Controller
             
             // ⭐ Check if frontend passed explicit order sequence (fixes debounce timing issue)
             $orderSequence = $request->input('order_sequence', []);
-            
+
+            // ⭐ Dispatch scope: 'undispatched' = only orders not yet dispatched
+            //    (the "Next Dispatch" wave) — keeps an already-dispatched batch's
+            //    times frozen. Default 'all' dispatches every OFD order.
+            $scope = $request->input('scope', 'all');
+
             // Get all out_for_delivery orders for this rider
             $ordersQuery = \DB::table('t_crm_prod_order as o')
                 ->leftJoin('t_crm_prod_customer as c', 'c.id', '=', 'o.customer_id')
                 ->where('o.assigned_rider_user_id', $riderId)
                 ->where('o.order_status', 'out_for_delivery')
+                ->when($scope === 'undispatched', function ($q) {
+                    $q->whereNull('o.eta_calculated_at');
+                })
                 ->select([
                     'o.id',
                     'o.order_number',
@@ -1161,6 +1191,7 @@ class RiderController extends Controller
                     ->update([
                         'estimated_delivery_at' => $estimatedAt,
                         'eta_calculated_at' => $calculatedAt,
+                        'eta_calculated_by' => $user->id, // attribution: who dispatched (rider or store)
                     ]);
 
                 // Phase 2 (customer app) — push the refreshed ETA + delivery
@@ -1233,6 +1264,61 @@ class RiderController extends Controller
             return response()->json([
                 'success' => false,
                 'message' => 'Failed to calculate ETAs: ' . $e->getMessage()
+            ], 500);
+        }
+    }
+
+    /**
+     * ⭐ Cancel dispatch for a rider's out_for_delivery orders.
+     *
+     * Clears the dispatch state (estimated_delivery_at, eta_calculated_at,
+     * eta_calculated_by) so any "frozen" dispatched batch and the "Next
+     * Dispatch" wave merge back into a single, undispatched set. Pressing
+     * Dispatch afterwards re-times + re-routes everything together.
+     *
+     * Does NOT touch delivery_priority (the sequence) or order_status.
+     * Authorized for store managers (view_open_orders) OR the rider themselves.
+     *
+     * @param int $riderId
+     */
+    public function cancelDispatch(Request $request, $riderId)
+    {
+        try {
+            $user = Auth::user();
+
+            if (!$this->canManageRiderRoute($user, $riderId)) {
+                return response()->json(['success' => false, 'message' => 'Permission denied'], 403);
+            }
+
+            $affected = \DB::table('t_crm_prod_order')
+                ->where('assigned_rider_user_id', $riderId)
+                ->where('order_status', 'out_for_delivery')
+                ->whereNotNull('eta_calculated_at')
+                ->update([
+                    'estimated_delivery_at' => null,
+                    'eta_calculated_at' => null,
+                    'eta_calculated_by' => null,
+                ]);
+
+            \Log::info('Dispatch cancelled (ETAs cleared)', [
+                'user_id' => $user->id,
+                'rider_id' => $riderId,
+                'orders_cleared' => $affected,
+            ]);
+
+            return response()->json([
+                'success' => true,
+                'message' => "Dispatch cancelled for {$affected} orders",
+                'cleared_count' => $affected,
+            ]);
+        } catch (\Exception $e) {
+            \Log::error('Failed to cancel dispatch', [
+                'rider_id' => $riderId,
+                'error' => $e->getMessage(),
+            ]);
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to cancel dispatch: ' . $e->getMessage(),
             ], 500);
         }
     }
@@ -1352,7 +1438,8 @@ class RiderController extends Controller
         try {
             $user = Auth::user();
 
-            if (!$user->hasMobilePermission('view_open_orders')) {
+            // Store managers (view_open_orders) OR the rider acting on own route
+            if (!$this->canManageRiderRoute($user, $riderId)) {
                 return response()->json(['success' => false, 'message' => 'Permission denied'], 403);
             }
 
@@ -8473,8 +8560,24 @@ class RiderController extends Controller
                 }
             }
 
+            // ⭐ Dispatch attribution names (bulk, no N+1) — resolve who dispatched
+            //    / reordered so the UI can show "Dispatched by <name>".
+            $dispatchActorMap = [];
+            $actorIds = $orders->pluck('eta_calculated_by')
+                ->merge($orders->pluck('delivery_priority_updated_by'))
+                ->filter()
+                ->unique()
+                ->values()
+                ->all();
+            if (!empty($actorIds)) {
+                $dispatchActorMap = \DB::table('t_sys_user')
+                    ->whereIn('id', $actorIds)
+                    ->pluck('fullname', 'id')
+                    ->toArray();
+            }
+
             // Format for mobile (lightweight)
-            $formattedOrders = $orders->map(function($order) use ($prepSummaries, $khaasOrderIds, $regionMap, $unreadCustomerIds, $hasWaAccess, $paymentProofMap) {
+            $formattedOrders = $orders->map(function($order) use ($prepSummaries, $khaasOrderIds, $regionMap, $unreadCustomerIds, $hasWaAccess, $paymentProofMap, $dispatchActorMap) {
                 // Build customer name
                 $customerName = $order->name ?? 'N/A';
                 if (!$order->name && ($order->address_first_name || $order->address_last_name)) {
@@ -8555,11 +8658,27 @@ class RiderController extends Controller
                     'order_status' => $order->order_status,
                     'total_price' => $order->total_price,
                     'delivery_priority' => $order->delivery_priority, // ⭐ Delivery sequence priority
-                    // ⭐ Estimated delivery time (from "Get Times" button)
+                    // ⭐ Estimated delivery time (from "Get Times" / Dispatch)
                     'estimated_delivery_at' => $order->estimated_delivery_at,
                     'estimated_delivery_at_display' => $order->estimated_delivery_at 
                         ? \Carbon\Carbon::parse($order->estimated_delivery_at)->format('h:i A')
                         : null,
+                    // ⭐ Dispatch attribution — lets Store Mode see when a rider (or another
+                    //    manager) reordered / dispatched. is_dispatched = ETAs were calculated.
+                    'is_dispatched' => !empty($order->eta_calculated_at),
+                    'eta_calculated_at' => $order->eta_calculated_at,
+                    'dispatched_at_display' => $order->eta_calculated_at
+                        ? \Carbon\Carbon::parse($order->eta_calculated_at)->format('h:i A')
+                        : null,
+                    'eta_calculated_by' => $order->eta_calculated_by,
+                    'eta_calculated_by_name' => $order->eta_calculated_by
+                        ? ($dispatchActorMap[$order->eta_calculated_by] ?? null)
+                        : null,
+                    'delivery_priority_updated_by' => $order->delivery_priority_updated_by,
+                    'delivery_priority_updated_by_name' => $order->delivery_priority_updated_by
+                        ? ($dispatchActorMap[$order->delivery_priority_updated_by] ?? null)
+                        : null,
+                    'delivery_priority_updated_at' => $order->delivery_priority_updated_at,
                     'expected_packets' => $order->expected_packets, // ⭐ Packet info (from manager)
                     'actual_packets' => $order->actual_packets,     // ⭐ Actual packets (from rider, after delivery)
                     'payment_method' => $order->payment_method,     // ⭐ Payment method (cash/online)
@@ -14916,14 +15035,6 @@ class RiderController extends Controller
         try {
             $user = Auth::user();
             
-            // Check permission - must have store mode access
-            if (!$user->hasMobilePermission('view_open_orders')) {
-                return response()->json([
-                    'success' => false,
-                    'message' => 'You do not have permission to update delivery priorities'
-                ], 403);
-            }
-            
             $validated = $request->validate([
                 'rider_id' => 'required|integer|exists:t_sys_user,id',
                 'priorities' => 'required|array',
@@ -14934,20 +15045,33 @@ class RiderController extends Controller
             $riderId = $validated['rider_id'];
             $priorities = $validated['priorities'];
 
-            // Check route lock
-            $lock = \DB::table('t_crm_route_lock as rl')
-                ->leftJoin('t_sys_user as u', 'u.id', '=', 'rl.locked_by')
-                ->where('rl.rider_id', $riderId)
-                ->select('rl.locked_by', 'u.fullname as locked_by_name', 'rl.locked_at')
-                ->first();
-
-            if ($lock && $lock->locked_by != $user->id) {
+            // Check permission - store managers (view_open_orders) OR the rider acting on own route
+            if (!$this->canManageRiderRoute($user, $riderId)) {
                 return response()->json([
                     'success' => false,
-                    'message' => "Route is locked by {$lock->locked_by_name}. Unlock it first before making changes.",
-                    'route_locked' => true,
-                    'locked_by_name' => $lock->locked_by_name,
-                ], 423);
+                    'message' => 'You do not have permission to update delivery priorities'
+                ], 403);
+            }
+
+            // Route lock: a manager cannot change a route locked by someone else.
+            // The rider ALWAYS wins on their own route (rider-mode dispatch), so we
+            // skip the lock when the caller is the rider themselves.
+            $isRiderSelf = ((int) $user->id === (int) $riderId);
+            if (!$isRiderSelf) {
+                $lock = \DB::table('t_crm_route_lock as rl')
+                    ->leftJoin('t_sys_user as u', 'u.id', '=', 'rl.locked_by')
+                    ->where('rl.rider_id', $riderId)
+                    ->select('rl.locked_by', 'u.fullname as locked_by_name', 'rl.locked_at')
+                    ->first();
+
+                if ($lock && $lock->locked_by != $user->id) {
+                    return response()->json([
+                        'success' => false,
+                        'message' => "Route is locked by {$lock->locked_by_name}. Unlock it first before making changes.",
+                        'route_locked' => true,
+                        'locked_by_name' => $lock->locked_by_name,
+                    ], 423);
+                }
             }
             $updatedCount = 0;
             
@@ -14961,6 +15085,8 @@ class RiderController extends Controller
                 
                 if ($order) {
                     $order->delivery_priority = $item['priority'];
+                    $order->delivery_priority_updated_by = $user->id; // attribution: who set the sequence
+                    $order->delivery_priority_updated_at = now();
                     $order->save();
                     $updatedCount++;
                 }

@@ -3029,8 +3029,21 @@ class OrderController extends Controller
                     ->toArray();
             } catch (\Exception $e) {}
 
+            // ⭐ Resolve who dispatched each order (bulk, no N+1) so the rider can
+            //    see "Dispatched by <name>" when a store manager dispatched it.
+            $dispatcherNames = [];
+            try {
+                $dispatcherIds = $orders->pluck('eta_calculated_by')->filter()->unique()->values()->all();
+                if (!empty($dispatcherIds)) {
+                    $dispatcherNames = \DB::table('t_sys_user')
+                        ->whereIn('id', $dispatcherIds)
+                        ->pluck('fullname', 'id')
+                        ->toArray();
+                }
+            } catch (\Exception $e) {}
+
             // Add customer order count and region info to each order
-            $orders->transform(function($order) use ($customerOrderCounts, $regionMap) {
+            $orders->transform(function($order) use ($customerOrderCounts, $regionMap, $dispatcherNames) {
                 $orderCount = $customerOrderCounts[$order->customer_id] ?? 0;
                 $isNewCustomer = $orderCount <= 1;
                 
@@ -3040,6 +3053,9 @@ class OrderController extends Controller
                 $custRegionId = $order->customer->delivery_region_id ?? null;
                 $order->delivery_region_id = $custRegionId;
                 $order->delivery_region_name = $custRegionId ? ($regionMap[$custRegionId] ?? null) : null;
+                $order->eta_calculated_by_name = $order->eta_calculated_by
+                    ? ($dispatcherNames[$order->eta_calculated_by] ?? null)
+                    : null;
                 
                 return $order;
             });

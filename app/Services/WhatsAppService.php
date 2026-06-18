@@ -636,37 +636,60 @@ class WhatsAppService
         if (!config('payment_signals.enabled')) {
             return;
         }
-        if (!$savedMessage || !$mediaUrl) {
+        if (!$savedMessage) {
             return;
         }
 
-        // Only images (an image-typed message, or a document whose MIME is an image).
+        // Only images (an image-typed message, or a document whose MIME is an
+        // image). Non-images are silently ignored (no log — far too noisy).
         $isImage = $type === 'image'
             || ($type === 'document' && $mimeType && str_starts_with($mimeType, 'image/'));
         if (!$isImage) {
             return;
         }
 
-        // Must be a mapped customer.
-        $customerId = $conversation->customer_id ?? null;
-        if (!$customerId) {
+        // From here on we KNOW it's an image, so every skip is worth a one-line
+        // debug note — this is what makes "why didn't X get a signal?" instantly
+        // answerable from the log.
+        $logCtx = ['wa_message_id' => $savedMessage->id, 'conversation_id' => $conversation->id];
+
+        // The media must have downloaded (image_path is required for the Gemini read).
+        if (!$mediaUrl) {
+            Log::debug('PaymentSignal: image skipped — media download failed (no image_path)', $logCtx);
             return;
         }
 
-        // Pre-filter: customer must have a pending online order in the window.
+        // Must be a mapped customer (the conversation has to resolve to a customer).
+        $customerId = $conversation->customer_id ?? null;
+        if (!$customerId) {
+            Log::debug('PaymentSignal: image skipped — conversation not mapped to a customer', $logCtx);
+            return;
+        }
+
+        // Pre-filter: customer must have a still-owed order in the window.
         $windowDays = (int) config('payment_signals.match_window_days', 30);
         $methods = config('payment_signals.online_payment_methods', ['online', 'bank_transfer']);
         $openStatuses = config('payment_signals.open_payment_statuses', ['unpaid', 'partial']);
 
-        $hasPendingOnline = \DB::table('t_crm_prod_order')
+        $pendingQuery = \DB::table('t_crm_prod_order')
             ->where('customer_id', $customerId)
             ->whereIn('payment_status', $openStatuses)
-            ->whereIn('payment_method', $methods)
             ->where('order_status', '!=', 'cancelled')
-            ->where('order_date', '>=', now()->subDays($windowDays)->startOfDay())
-            ->exists();
+            ->where('order_date', '>=', now()->subDays($windowDays)->startOfDay());
 
-        if (!$hasPendingOnline) {
+        // A bank screenshot is itself proof of an online payment, so by default
+        // we do NOT require the order to already be tagged online/bank_transfer
+        // (delivered orders are often created as 'cash' and paid online later).
+        if (config('payment_signals.require_online_payment_method', false)) {
+            $pendingQuery->whereIn('payment_method', $methods);
+        }
+
+        if (!$pendingQuery->exists()) {
+            Log::debug('PaymentSignal: image skipped — no unpaid/partial order in window for customer', $logCtx + [
+                'customer_id' => $customerId,
+                'window_days' => $windowDays,
+                'require_online_method' => (bool) config('payment_signals.require_online_payment_method', false),
+            ]);
             return;
         }
 
@@ -683,6 +706,8 @@ class WhatsAppService
             'image_path'         => $mediaUrl,
             'status'             => \App\Models\FIN\PaymentSignal::STATUS_NEW,
         ]);
+
+        Log::info('PaymentSignal: queued WhatsApp image for matching', $logCtx + ['customer_id' => $customerId]);
     }
 
     /**

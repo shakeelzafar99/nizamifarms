@@ -155,7 +155,12 @@ class PollBankEmails extends Command
             return self::SUCCESS; // never crash the scheduler
         } finally {
             if ($conn) {
+                // Drain the IMAP error/alert stacks before and after closing so
+                // the extension doesn't re-emit them at PHP shutdown (which
+                // Laravel logs as "PHP Request Shutdown: ..." ErrorExceptions).
+                $fetcher->drainErrors();
                 @imap_close($conn);
+                $fetcher->drainErrors();
             }
         }
 
