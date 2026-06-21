@@ -5455,8 +5455,9 @@ function openGetLocationsModal() {
             <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px;flex-wrap:wrap;">
                 <label style="font-size:12px;color:#374151;font-weight:600;">Template:</label>
                 <select id="getLocTemplate" style="flex:1;min-width:180px;padding:6px 8px;border:1px solid #d1d5db;border-radius:8px;font-size:13px;"><option>Loading…</option></select>
-                <button type="button" onclick="saveGetLocDefaultTemplate()" title="Use this template as the default for everyone" style="background:#ecfeff;border:1px solid #67e8f9;color:#155e75;border-radius:6px;padding:6px 10px;font-size:12px;cursor:pointer;font-weight:600;">Set as default</button>
+                <button type="button" id="getLocSetDefaultBtn" onclick="saveGetLocDefaultTemplate()" title="Use this template as the default for everyone" style="background:#ecfeff;border:1px solid #67e8f9;color:#155e75;border-radius:6px;padding:6px 10px;font-size:12px;cursor:pointer;font-weight:600;">Set as default</button>
             </div>
+            <div id="getLocDefaultMsg" style="font-size:11px;color:#6b7280;margin:-2px 0 8px;min-height:14px;"></div>
 
             <details id="getLocAutoPanel" style="margin-bottom:10px;border:1px solid #eef0f2;border-radius:8px;padding:8px 10px;background:#fafafa;">
                 <summary style="font-size:12px;font-weight:700;color:#374151;cursor:pointer;">⚙️ Automatic sending (when orders are accepted / created)</summary>
@@ -5552,15 +5553,33 @@ function loadGetLocSettings() {
 
 function saveGetLocDefaultTemplate() {
     const sel = document.getElementById('getLocTemplate');
-    const msg = document.getElementById('getLocSettingsMsg');
-    if (!sel || !sel.value) { return; }
+    // Feedback lives next to the button now (the old span was hidden inside the
+    // collapsed "Automatic sending" panel, so saves looked like they did nothing).
+    const msg = document.getElementById('getLocDefaultMsg');
+    const btn = document.getElementById('getLocSetDefaultBtn');
+    if (!sel || !sel.value) {
+        if (msg) { msg.textContent = 'Pick a template first.'; msg.style.color = '#b91c1c'; }
+        return;
+    }
+    if (msg) { msg.textContent = 'Saving…'; msg.style.color = '#6b7280'; }
+    if (btn) { btn.disabled = true; }
     fetch('/orders/location-request/settings', {
         method: 'POST',
         headers: { 'Accept': 'application/json', 'Content-Type': 'application/json', 'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]')?.content || '' },
         body: JSON.stringify({ default_template: sel.value })
     }).then(r => r.json()).then(d => {
-        if (msg) { msg.textContent = d && d.success ? 'Default template saved for everyone.' : (d.message || 'Failed to save'); msg.style.color = d && d.success ? '#047857' : '#b91c1c'; }
-    }).catch(() => { if (msg) { msg.textContent = 'Failed to save'; msg.style.color = '#b91c1c'; } });
+        if (btn) { btn.disabled = false; }
+        if (d && d.success) {
+            // Remember it so re-opening the modal keeps this template pre-selected.
+            if (window._getLoc && window._getLoc.data) { window._getLoc.data.default_template = sel.value; }
+            if (msg) { msg.textContent = '✓ "' + sel.options[sel.selectedIndex].text + '" is now the default for everyone.'; msg.style.color = '#047857'; }
+        } else {
+            if (msg) { msg.textContent = (d && d.message) ? d.message : 'Failed to save'; msg.style.color = '#b91c1c'; }
+        }
+    }).catch(() => {
+        if (btn) { btn.disabled = false; }
+        if (msg) { msg.textContent = 'Failed to save (network/permission).'; msg.style.color = '#b91c1c'; }
+    });
 }
 
 function saveGetLocAutoSettings() {

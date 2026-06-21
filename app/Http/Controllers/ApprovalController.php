@@ -1046,12 +1046,18 @@ class ApprovalController extends Controller
         // ⭐ Load receiving accounts for bank selection dropdown
         $receivingAccounts = \App\Models\FIN\OnlineReceivingAccountModel::active()->ordered()
             ->get(['id', 'name', 'short_code', 'color_hex']);
+
+        // Only the "Taimur" role may revert an accidental approval back to pending.
+        $isTaimur = $user->roles()
+            ->whereRaw('LOWER(urole_name) = ?', ['taimur'])
+            ->exists();
         
         return view('approvals.online', compact(
             'summaries',
             'hasLevel1Rights',
             'hasLevel2Rights',
-            'receivingAccounts'
+            'receivingAccounts',
+            'isTaimur'
         ));
     }
 

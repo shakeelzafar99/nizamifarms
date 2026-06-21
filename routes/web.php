@@ -915,6 +915,8 @@ Route::middleware(['auth'])->group(function () {
             Route::post('/{id}/approve', [\App\Http\Controllers\FIN\LedgerController::class, 'approve'])->name('approve');
             Route::post('/{id}/approve-l1-only', [\App\Http\Controllers\FIN\LedgerController::class, 'approveAtL1Only'])->name('approve-l1-only');
             Route::post('/{id}/reject', [\App\Http\Controllers\FIN\LedgerController::class, 'reject'])->name('reject');
+            // Revert an accidentally-approved online invoice back to pending (Taimur-only; enforced in controller)
+            Route::post('/{id}/revert-to-pending', [\App\Http\Controllers\FIN\LedgerController::class, 'revertToPending'])->name('revert-to-pending');
             
             // Ledger Adjustments (for order modifications after delivery)
             Route::prefix('adjustments')->name('adjustments.')->group(function () {

@@ -690,6 +690,8 @@ let groupedItems = [];
 let searchTimeout;
 // ⭐ Receiving bank accounts for dropdown
 const receivingAccounts = @json($receivingAccounts ?? []);
+// Only the Taimur role can revert an accidental approval back to pending.
+const canRevertApprovals = @json($isTaimur ?? false);
 
 // Initialize
 document.addEventListener('DOMContentLoaded', function() {
@@ -962,6 +964,7 @@ function renderInvoiceRow(item, isApproved) {
                 <button class="view-btn" onclick="openApprovalModal(${item.id}, ${item.level})">Review</button>
                 ` : `
                 <a href="${orderViewUrl}" target="_blank" class="view-btn">View Order</a>
+                ${canRevertApprovals ? `<button class="view-btn" style="background: #FEF2F2; color: #B91C1C; border-color: #FECACA;" onclick="revertToPending(${item.id}, '${escapeHtml(item.order_number || item.number || ('#' + item.id))}', ${item.amount || 0})" title="Send this approved payment back to pending approval">↩ Revert</button>` : ''}
                 `}
             </div>
         </div>
@@ -1313,6 +1316,54 @@ async function doApprove(ledgerId, approvalType) {
     } catch (error) {
         console.error('Approval error:', error);
         showToast('Error approving. Please try again.', 'error');
+    }
+}
+
+// =============================================
+// REVERT TO PENDING (Taimur-only, individual)
+// =============================================
+// Sends an accidentally-approved online invoice back to the pending queue.
+// Always confirms first; operates on ONE transaction at a time. Balances are
+// reversed server-side using the exact inverse of approval.
+async function revertToPending(ledgerId, label, amount) {
+    if (!canRevertApprovals) {
+        showToast('You do not have permission to revert approvals.', 'error');
+        return;
+    }
+
+    const amountStr = amount ? `Rs. ${numberFormat(amount)}` : 'this payment';
+    const confirmed = confirm(
+        `Revert ${label} (${amountStr}) back to PENDING approval?\n\n` +
+        `• The approval will be undone and it returns to the L1 approval queue.\n` +
+        `• Account balances will be reversed exactly.\n` +
+        `• This affects only this single transaction.\n\n` +
+        `Continue?`
+    );
+    if (!confirmed) return;
+
+    try {
+        const response = await fetch(`/finance/ledger/${ledgerId}/revert-to-pending`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').content,
+                'Accept': 'application/json'
+            },
+            body: JSON.stringify({ reason: 'Reverted from Online Approvals web' })
+        });
+
+        const data = await response.json();
+
+        if (response.ok && data.success) {
+            showToast(data.message || 'Reverted to pending.', 'success');
+            loadData();      // Refresh current tab (item leaves the Approved list)
+            refreshStats();  // Refresh counts (L1 +1, Approved -1)
+        } else {
+            showToast(data.message || 'Failed to revert.', 'error');
+        }
+    } catch (error) {
+        console.error('Revert error:', error);
+        showToast('Error reverting. Please try again.', 'error');
     }
 }
 

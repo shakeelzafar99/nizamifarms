@@ -1160,6 +1160,143 @@ class LedgerController extends Controller
     }
 
     /**
+     * Revert an APPROVED online invoice back to "pending approval" (Level 1).
+     *
+     * Purpose: undo an accidental approval of an online payment so it returns
+     * to the approval queue, with balances corrected exactly. This is the
+     * precise inverse of approve() and reuses reject()'s balance-reversal
+     * logic (the app's own, production-tested inverse of approve()).
+     *
+     * SAFETY GUARDS (intentionally strict — do not loosen without re-checking
+     * the balance math for the new case):
+     *  - Only the "Taimur" role may call this.
+     *  - Single transaction only (route takes one id; no bulk).
+     *  - Only transactions that are currently APPROVED.
+     *  - Only ONLINE INVOICE transactions. These are guaranteed to have been
+     *    approved through the pending queue (invoice_approval has no
+     *    auto-approve threshold, so the balance was always applied via
+     *    approve() — from(income) += amount, to(asset) += amount). That makes
+     *    reject()'s reversal the correct inverse. Order payments / deposits /
+     *    expenses / transfers are deliberately excluded because their approval
+     *    has different (or settlement) side-effects.
+     *  - Refused if any invoice-settlement rows reference this ledger.
+     */
+    public function revertToPending(Request $request, $id)
+    {
+        $request->validate([
+            'reason' => 'nullable|string|max:500',
+        ]);
+
+        // --- Authorization: ONLY the "Taimur" role may revert an approval ---
+        $user = auth()->user();
+        $isTaimur = $user && $user->roles()
+            ->whereRaw('LOWER(urole_name) = ?', ['taimur'])
+            ->exists();
+        if (!$isTaimur) {
+            $msg = 'Only the Taimur role can revert an approved transaction.';
+            if ($request->ajax() || $request->wantsJson()) {
+                return response()->json(['success' => false, 'message' => $msg], 403);
+            }
+            return back()->with('error', $msg);
+        }
+
+        try {
+            DB::beginTransaction();
+
+            $ledger = LedgerModel::with(['fromAccount', 'toAccount'])->findOrFail($id);
+
+            // Guard 1: must currently be approved.
+            if ($ledger->approval_status !== LedgerModel::STATUS_APPROVED) {
+                throw new \Exception('Only approved transactions can be reverted to pending.');
+            }
+
+            // Guard 2: scope strictly to ONLINE INVOICE transactions.
+            if ($ledger->transaction_type !== LedgerModel::TYPE_INVOICE
+                || $ledger->mode !== LedgerModel::MODE_ONLINE) {
+                throw new \Exception('Only online invoice payments can be reverted from here.');
+            }
+
+            // Guard 3: never touch anything tied to invoice settlements
+            // (defensive — online invoices are not settlement deposits, but be
+            // safe). The junction links a settling deposit (settlement_deposit_id)
+            // to the invoice it settled (invoice_ledger_id); refuse if this
+            // ledger appears as either side.
+            $hasSettlements = DB::table('t_fin_invoice_settlements')
+                ->where('settlement_deposit_id', $ledger->id)
+                ->orWhere('invoice_ledger_id', $ledger->id)
+                ->exists();
+            if ($hasSettlements) {
+                throw new \Exception('This transaction has linked settlements and cannot be reverted here.');
+            }
+
+            // Reverse the balances EXACTLY like reject() (the canonical inverse
+            // of approve()). Only when they were actually applied.
+            if ($ledger->balance_updated) {
+                $fromAccount = $ledger->fromAccount;
+                $toAccount = $ledger->toAccount;
+
+                if ($fromAccount && $toAccount) {
+                    if ($fromAccount->account_type === 'asset') {
+                        $fromAccount->current_balance += $ledger->amount;
+                    } else {
+                        $fromAccount->current_balance -= $ledger->amount;
+                    }
+                    $fromAccount->save();
+
+                    if ($toAccount->account_type === 'asset') {
+                        $toAccount->current_balance -= $ledger->amount;
+                    } else {
+                        $toAccount->current_balance += $ledger->amount;
+                    }
+                    $toAccount->save();
+
+                    $ledger->balance_updated = 0;
+                } else {
+                    throw new \Exception('Linked accounts are missing; cannot safely reverse balances.');
+                }
+            }
+
+            // Send it back to the start of the approval queue (Level 1). This
+            // restores the exact post-creation state: pending_l1, no balance
+            // applied, no approver. Re-approving later re-applies the balance.
+            $reason = trim((string) $request->input('reason'));
+            $ledger->approval_status = LedgerModel::STATUS_PENDING_L1;
+            $ledger->approved_by = null;
+            $ledger->approval_date = null;
+            $ledger->comments = ($ledger->comments ? $ledger->comments . "\n" : '')
+                . 'Approval reverted to pending (L1) by ' . ($user->fullname ?? $user->name ?? ('User ID ' . $user->id))
+                . ' on ' . now()->toDateTimeString()
+                . ($reason !== '' ? ' — Reason: ' . $reason : '');
+            $ledger->save();
+
+            DB::commit();
+
+            $msg = 'Transaction reverted to pending approval.';
+            if ($request->ajax() || $request->wantsJson()) {
+                $updatedToAccount = $ledger->to_account_id ? AccountModel::find($ledger->to_account_id) : null;
+                return response()->json([
+                    'success' => true,
+                    'message' => $msg,
+                    'new_balance' => $updatedToAccount ? $updatedToAccount->current_balance : null,
+                ]);
+            }
+
+            return back()->with('success', $msg);
+        } catch (\Exception $e) {
+            DB::rollBack();
+            Log::error('Error reverting transaction to pending: ' . $e->getMessage(), ['ledger_id' => $id]);
+
+            if ($request->ajax() || $request->wantsJson()) {
+                return response()->json([
+                    'success' => false,
+                    'message' => $e->getMessage(),
+                ], 422);
+            }
+            return back()->with('error', 'Error reverting transaction: ' . $e->getMessage());
+        }
+    }
+
+    /**
      * Process invoice settlement when deposit is approved
      * 
      * @param LedgerModel $depositLedger The approved deposit transaction
