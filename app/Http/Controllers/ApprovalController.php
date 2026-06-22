@@ -1247,6 +1247,7 @@ class ApprovalController extends Controller
         $tab = $request->input('tab', 'l1'); // 'l1', 'l2', 'approved'
         $search = $request->input('search');
         $sort = $request->input('sort', 'date'); // 'date', 'name', 'approved_date'
+        $proof = $request->input('proof', 'all'); // 'all', 'received', 'verified', 'mismatch'
         
         // Select items based on tab
         $items = [];
@@ -1273,6 +1274,22 @@ class ApprovalController extends Controller
                        strpos(strtolower($item['requester'] ?? ''), $searchLower) !== false ||
                        strpos(strtolower($item['title'] ?? ''), $searchLower) !== false;
             });
+        }
+
+        // Filter by payment-proof status (Jun-2026: bulk-approve by WhatsApp/email proof)
+        if ($proof && $proof !== 'all') {
+            $proofStatuses = [
+                'received' => ['proof_received', 'bank_confirmed'],
+                'verified' => ['verified'],
+                'mismatch' => ['amount_mismatch'],
+            ];
+            $allowed = $proofStatuses[$proof] ?? [];
+            if (!empty($allowed)) {
+                $items = array_filter($items, function($item) use ($allowed) {
+                    $status = $item['payment_proof']['status'] ?? null;
+                    return $status !== null && in_array($status, $allowed, true);
+                });
+            }
         }
         
         // Sort items

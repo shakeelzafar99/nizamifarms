@@ -471,11 +471,29 @@
                         <option value="approved_date" id="sortApprovedOption" style="display: none;">✅ By Approved Date</option>
                     </select>
                 </div>
+
+                <!-- Payment proof filter (Jun-2026: bulk-approve by WhatsApp/email proof) -->
+                <div class="flex items-center gap-2">
+                    <label class="text-sm font-medium text-gray-600">Proof:</label>
+                    <div id="proofFilter" class="inline-flex rounded-lg border border-gray-300 overflow-hidden">
+                        <button type="button" data-proof="all" class="proof-chip px-3 py-2 text-sm font-medium bg-blue-600 text-white" onclick="selectProofFilter('all')">All</button>
+                        <button type="button" data-proof="received" class="proof-chip px-3 py-2 text-sm font-medium bg-white text-gray-700 border-l border-gray-300 hover:bg-gray-50" onclick="selectProofFilter('received')">📥 Received</button>
+                        <button type="button" data-proof="verified" class="proof-chip px-3 py-2 text-sm font-medium bg-white text-gray-700 border-l border-gray-300 hover:bg-gray-50" onclick="selectProofFilter('verified')">✅ Verified</button>
+                        <button type="button" data-proof="mismatch" class="proof-chip px-3 py-2 text-sm font-medium bg-white text-gray-700 border-l border-gray-300 hover:bg-gray-50" onclick="selectProofFilter('mismatch')">⚠️ Mismatch</button>
+                    </div>
+                </div>
             </div>
 
-            <div class="text-sm text-gray-600">
-                <span id="totalCount">0</span> invoices • 
-                <span class="font-semibold text-red-600">Rs. <span id="totalAmount">0</span></span>
+            <div class="flex items-center gap-4">
+                <button type="button"
+                        id="selectAllBtn"
+                        onclick="selectAllFiltered()"
+                        class="px-3 py-2 text-sm font-medium border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50"
+                        style="display: none;">☑ Select all</button>
+                <div class="text-sm text-gray-600">
+                    <span id="totalCount">0</span> invoices • 
+                    <span class="font-semibold text-red-600">Rs. <span id="totalAmount">0</span></span>
+                </div>
             </div>
         </div>
     </div>
@@ -684,6 +702,7 @@
 <script>
 // State
 let currentTab = 'l1';
+let currentProof = 'all'; // 'all', 'received', 'verified', 'mismatch'
 let selectedItems = new Set();
 let allItems = [];
 let groupedItems = [];
@@ -724,8 +743,43 @@ function selectTab(tab) {
             document.getElementById('sortSelect').value = 'date';
         }
     }
+
+    // Select-all is only meaningful for pending queues (approved can't be bulk-approved).
+    const selectAllBtn = document.getElementById('selectAllBtn');
+    if (selectAllBtn) selectAllBtn.style.display = (tab === 'approved') ? 'none' : 'inline-flex';
     
     loadData();
+}
+
+// Payment-proof filter selection
+function selectProofFilter(proof) {
+    currentProof = proof;
+    selectedItems.clear();
+    updateSelectionBar();
+
+    document.querySelectorAll('#proofFilter .proof-chip').forEach(chip => {
+        const isActive = chip.dataset.proof === proof;
+        chip.classList.toggle('bg-blue-600', isActive);
+        chip.classList.toggle('text-white', isActive);
+        chip.classList.toggle('bg-white', !isActive);
+        chip.classList.toggle('text-gray-700', !isActive);
+    });
+
+    loadData();
+}
+
+// Select every currently-listed (filtered) pending item for one-tap bulk approve.
+function selectAllFiltered() {
+    if (currentTab === 'approved') return;
+    const allSelected = allItems.length > 0 &&
+        allItems.every(item => selectedItems.has(`${item.type}_${item.id}`));
+    if (allSelected) {
+        // Acts as a toggle: a second click clears the selection.
+        selectedItems.clear();
+    } else {
+        allItems.forEach(item => selectedItems.add(`${item.type}_${item.id}`));
+    }
+    updateSelectionUI();
 }
 
 // Load data from server
@@ -740,7 +794,7 @@ async function loadData() {
     const sort = document.getElementById('sortSelect').value;
     
     try {
-        const response = await fetch(`{{ route('approvals.online') }}?tab=${currentTab}&search=${encodeURIComponent(search)}&sort=${sort}`, {
+        const response = await fetch(`{{ route('approvals.online') }}?tab=${currentTab}&search=${encodeURIComponent(search)}&sort=${sort}&proof=${currentProof}`, {
             headers: {
                 'X-Requested-With': 'XMLHttpRequest',
                 'Accept': 'application/json'

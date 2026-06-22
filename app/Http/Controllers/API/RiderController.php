@@ -6881,8 +6881,13 @@ class RiderController extends Controller
             } elseif ($undispatched->count() > 0) {
                 if ($atOffice) {
                     $status = 'waiting_at_office';
-                } elseif ($gpsFresh) {
+                } elseif ($gpsFresh && $officeLat && $officeLng
+                    && $this->riderWasAtOfficeToday((int) $rid, $officeLat, $officeLng, $radiusMeters)) {
+                    // Genuinely left the office (was here earlier today, now away).
                     $status = 'left_without_dispatch';
+                } elseif ($gpsFresh) {
+                    // Away with fresh GPS but never came to the office today.
+                    $status = 'away_unknown';
                 } else {
                     $status = 'away_unknown';
                 }
@@ -7088,15 +7093,28 @@ class RiderController extends Controller
                 ];
             }
 
+            // Riders currently CHECKED IN (attendance login today, not yet
+            // logged out) — lets the board show only riders who are working,
+            // instead of every rider that has open orders assigned.
+            $checkedIn = \DB::table('t_ops_attendance')
+                ->whereDate('attendance_date', now()->format('Y-m-d'))
+                ->whereNotNull('login_time')
+                ->whereNull('logout_time')
+                ->pluck('user_id')
+                ->map(fn($v) => (int) $v)
+                ->values()
+                ->all();
+
             return response()->json([
                 'success' => true,
                 'gps' => $gps,
                 'dispatch' => $dispatch,
+                'checked_in' => $checkedIn,
                 'timestamp' => now()->toIso8601String(),
             ]);
         } catch (\Throwable $e) {
             \Log::warning('getRidersLiveStatus failed (non-fatal)', ['error' => $e->getMessage()]);
-            return response()->json(['success' => false, 'gps' => [], 'dispatch' => []]);
+            return response()->json(['success' => false, 'gps' => [], 'dispatch' => [], 'checked_in' => []]);
         }
     }
 
@@ -9521,13 +9539,40 @@ class RiderController extends Controller
                 $dist = $this->haversineDistance($officeLat, $officeLng, (float) $pt->latitude, (float) $pt->longitude);
                 $entry['distance_meters'] = (int) round($dist);
                 if ($dist > $radiusMeters) {
-                    $entry['flagged'] = true;
+                    // Only flag a genuine "left the office" transition: the rider
+                    // must have been AT the office earlier today. A rider who
+                    // started the day away (e.g. from home) is not "forgot".
+                    $entry['was_at_office_today'] = $this->riderWasAtOfficeToday($rid, $officeLat, $officeLng, $radiusMeters);
+                    if ($entry['was_at_office_today']) {
+                        $entry['flagged'] = true;
+                    }
                 }
             }
             $result[$rid] = $entry;
         }
 
         return $result;
+    }
+
+    /**
+     * Did the rider have a GPS fix AT the primary office earlier today?
+     *
+     * Used to assert a genuine "left the office" transition for the
+     * left-without-dispatch warning — a rider who started the day away from
+     * the office (e.g. from home) should NOT be flagged just for being away.
+     * Uses a square bounding box (slightly larger than the circle) so the
+     * check is a single cheap indexed existence query, no haversine in SQL.
+     */
+    private function riderWasAtOfficeToday(int $riderId, float $officeLat, float $officeLng, int $radiusMeters = 300): bool
+    {
+        $latDelta = $radiusMeters / 111320.0;
+        $lngDelta = $radiusMeters / (111320.0 * max(0.1, cos(deg2rad($officeLat))));
+        return \DB::table('t_ops_rider_location')
+            ->where('user_id', $riderId)
+            ->whereDate('captured_at', now()->format('Y-m-d'))
+            ->whereBetween('latitude', [$officeLat - $latDelta, $officeLat + $latDelta])
+            ->whereBetween('longitude', [$officeLng - $lngDelta, $officeLng + $lngDelta])
+            ->exists();
     }
 
     /**

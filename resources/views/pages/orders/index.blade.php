@@ -6,24 +6,28 @@
 
 @push('custom_css')
 <style>
-/* Sticky Action Toolbar - Always Visible */
+/* Action Toolbar — now sits inline next to the tabs, compact and borderless
+   (no floating pill) so it matches the tab height and doesn't look odd. */
 .sticky-action-toolbar {
-    position: sticky;
-    top: 0;
-    right: 0;
-    z-index: 30;
-    display: flex;
+    position: static;
+    display: inline-flex;
     align-items: center;
-    gap: 12px;
+    gap: 6px;
     flex-wrap: wrap;
-    background: linear-gradient(135deg, #ffffff 0%, #f8fafc 100%);
-    padding: 12px 16px;
-    border-radius: 12px;
-    box-shadow: 0 2px 12px rgba(0, 0, 0, 0.08), 0 4px 24px rgba(0, 0, 0, 0.04);
-    border: 1px solid rgba(226, 232, 240, 0.8);
-    backdrop-filter: blur(10px);
-    margin-bottom: 16px;
+    background: none;
+    padding: 0;
+    border: none;
+    box-shadow: none;
+    margin: 0;
 }
+/* Compact buttons to roughly match the tab pill size (px-3 py-1.5 text-sm). */
+.sticky-action-toolbar .action-btn,
+.sticky-action-toolbar .select-multiple-btn {
+    padding: 6px 12px;
+    font-size: 13px;
+    box-shadow: none;
+}
+.sticky-action-toolbar .action-btn:hover { transform: none; }
 
 /* Action Button Base Styles */
 .action-btn {
@@ -211,6 +215,38 @@
 #ridersCards {
     display: {{ $source === 'other' && ($tab ?? 'all') === 'riders' ? 'block' : 'none' }};
 }
+
+/* Rider Live Board — 4-column quick-view table (Open Orders tab).
+   Columns kept compact so all 4 fit without horizontal scrolling. */
+.riderboard-row {
+    display: grid;
+    grid-template-columns: minmax(72px, 1.3fr) 50px minmax(84px, 1.4fr) minmax(64px, 0.9fr);
+    align-items: center;
+    gap: 6px;
+    padding: 5px 8px;
+    border-bottom: 1px solid #f3f4f6;
+}
+/* Show ~5 rider rows, then scroll for the rest. */
+#riderLiveBoardBody { max-height: 176px; }
+.riderboard-head {
+    position: sticky;
+    top: 0;
+    background: #f8fafc;
+    font-size: 10px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: .03em;
+    color: #94a3b8;
+    border-bottom: 1px solid #e5e7eb;
+}
+.riderboard-row.riderboard-data { cursor: pointer; }
+.riderboard-row.riderboard-data:hover { background: #f9fafb; }
+.riderboard-cell-name { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.riderboard-cell-name .nm { font-size: 12px; font-weight: 600; color: #1f2937; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.riderboard-dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
+.riderboard-gps { font-size: 10px; color: #94a3b8; white-space: nowrap; }
+.riderboard-status { font-size: 11px; line-height: 1.25; min-width: 0; }
+.riderboard-back { font-size: 11px; font-weight: 600; color: #0369a1; white-space: nowrap; }
 
 /* Status cards container - horizontal scroll on smaller screens */
 #statusCardsContainer {
@@ -954,8 +990,14 @@ input:focus, select:focus, button:focus {
             <div class="py-1">
                 <h1 class="sr-only">{{ $source === 'shopify' ? 'Shopify Orders' : 'Orders' }}</h1>
 
-                <!-- Tabs and Actions Row -->
-                <div class="flex items-center justify-between">
+                {{-- NF: two-column header — left = tabs (with compact toolbar) + status/rider cards,
+                     right = Rider Live Board (Open Orders tab only). --}}
+                <div class="flex items-start gap-3">
+                  {{-- left column sizes to its content (flex-initial) so the board
+                       sits right after the toolbar with no empty gap between them. --}}
+                  <div class="flex-initial min-w-0">
+                <!-- Tabs Row (tabs + compact action toolbar, left-aligned together) -->
+                <div class="flex items-center justify-start gap-2 flex-wrap">
                     <div class="flex space-x-1 bg-gray-100 rounded-lg p-1">
                         @if($source === 'shopify')
                             <!-- Shopify page tabs -->
@@ -997,11 +1039,9 @@ input:focus, select:focus, button:focus {
                             @endif
                         @endif
                     </div>
-                    
-                    {{-- NF: Phase 2A — Toolbar collapsed to [Create order] + [Select Multiple] + [More ▾].
-                         All original IDs, classes, permission guards, and onclick handlers preserved verbatim
-                         so toggleSelectMultipleMode(), openColumnSettings(), openAllRidersMapModal(),
-                         and openAutoAssignModal() continue to work exactly as before. --}}
+
+                    {{-- NF: action toolbar — compact, inline next to the tabs.
+                         All original IDs / handlers preserved verbatim. --}}
                     <div class="sticky-action-toolbar">
                         @if($user->hasPermission('create_orders'))
                         <button onclick="createNewOrder()" class="action-btn action-btn-primary">
@@ -1116,6 +1156,25 @@ input:focus, select:focus, button:focus {
                         </div>
                     </div>
                 </div>
+                  </div> {{-- /left column --}}
+
+                  {{-- NF: Rider Live Board — quick-glance per-rider status above the table.
+                       Open Orders tab only; scrollable; click a row for full detail. --}}
+                  <div id="riderLiveBoardCol"
+                       class="flex-col flex-shrink-0 border border-gray-200 rounded-xl bg-white shadow-sm overflow-hidden"
+                       style="flex:0 1 430px; min-width:360px; max-width:44vw; max-height:236px; display:none;">
+                      <div class="flex items-center justify-between px-3 py-1.5 border-b border-gray-100 bg-gray-50">
+                          <span class="text-xs font-bold text-gray-700">🏍️ Riders — Live</span>
+                          <span id="riderLiveBoardMeta" class="text-[10px] text-gray-400"></span>
+                      </div>
+                      <div class="riderboard-row riderboard-head">
+                          <span>Rider</span><span>GPS</span><span>Status</span><span>Back to office</span>
+                      </div>
+                      <div id="riderLiveBoardBody" class="flex-1 overflow-y-auto">
+                          <div class="px-3 py-3 text-xs text-gray-400">Loading…</div>
+                      </div>
+                  </div>
+                </div> {{-- /two-column header --}}
             </div>
         </div>
     </div>
@@ -10516,6 +10575,9 @@ document.addEventListener('DOMContentLoaded', function() {
             }, 200);
         }
     }
+
+    // Rider Live Board — show on initial load if we're on the Open Orders tab.
+    setTimeout(() => { updateRiderLiveBoardVisibility(); }, 250);
     
     // Load rider cards for riders tab
     const ridersCardsSection = document.getElementById('ridersCards');
@@ -12309,6 +12371,9 @@ function updateTabsForOpenOrders(data) {
     if (ridersCards) {
         ridersCards.style.display = 'none';
     }
+
+    // Rider Live Board — only on the Open Orders tab.
+    updateRiderLiveBoardVisibility();
 }
 
 // Load and display open orders status cards
@@ -13375,6 +13440,9 @@ function updateTabsForRiders(data) {
     const statusCards = document.getElementById('openOrdersStatusCards');
     if (ridersCards) ridersCards.style.display = 'block';
     if (statusCards) statusCards.style.display = 'none';
+
+    // Hide the Open-Orders Rider Live Board on other tabs.
+    updateRiderLiveBoardVisibility();
 }
 
 /**
@@ -13602,6 +13670,166 @@ function formatLiveDispatchStatus(d) {
     }
 }
 
+/* ============ Rider Live Board (Open Orders tab quick-glance) ============ */
+let _riderBoardInterval = null;
+
+function riderBoardShouldShow() {
+    const params = new URLSearchParams(window.location.search);
+    const onOpen = (params.get('source') === 'other' && (params.get('tab') || 'all') === 'open');
+    return onOpen && window.innerWidth >= 1024;
+}
+
+function updateRiderLiveBoardVisibility() {
+    const col = document.getElementById('riderLiveBoardCol');
+    if (!col) return;
+    if (riderBoardShouldShow()) {
+        col.style.display = 'flex';
+        loadRiderLiveBoard();
+        startRiderBoardAutoRefresh();
+    } else {
+        col.style.display = 'none';
+        if (_riderBoardInterval) { clearInterval(_riderBoardInterval); _riderBoardInterval = null; }
+    }
+}
+
+function startRiderBoardAutoRefresh() {
+    if (_riderBoardInterval) clearInterval(_riderBoardInterval);
+    _riderBoardInterval = setInterval(() => {
+        const col = document.getElementById('riderLiveBoardCol');
+        if (!col || col.style.display === 'none' || document.hidden) return;
+        loadRiderLiveBoard();
+    }, 30000);
+}
+
+async function loadRiderLiveBoard() {
+    const body = document.getElementById('riderLiveBoardBody');
+    const meta = document.getElementById('riderLiveBoardMeta');
+    if (!body) return;
+    try {
+        const [countsRes, liveRes] = await Promise.all([
+            fetch('/orders/rider-counts', { headers: {'Accept':'application/json','X-Requested-With':'XMLHttpRequest'}, credentials:'same-origin' }),
+            fetch('/orders/riders-map/live-status', { headers: {'Accept':'application/json','X-Requested-With':'XMLHttpRequest'}, credentials:'same-origin' }),
+        ]);
+        const counts = await countsRes.json();
+        const live = await liveRes.json();
+        if (!counts || !counts.success) { body.innerHTML = '<div class="px-3 py-3 text-xs text-gray-400">No rider data.</div>'; return; }
+        const gps = (live && live.gps) || {};
+        const disp = (live && live.dispatch) || {};
+        // Only show riders who are CHECKED IN today (keeps the list short and relevant).
+        const checkedIn = new Set((live && live.checked_in ? live.checked_in : []).map(String));
+        let riders = (counts.riders || []).filter(r => checkedIn.has(String(r.rider_id)));
+        if (riders.length === 0) {
+            body.innerHTML = '<div class="px-3 py-3 text-xs text-gray-400">No riders checked in right now.</div>';
+            if (meta) meta.textContent = '';
+            return;
+        }
+        // Sort so the riders that need attention surface first:
+        //   0 = left office without dispatching, 1 = lost GPS while mid-delivery,
+        //   then the normal flow (waiting → returning → on route → at office).
+        const sorted = riders.slice().sort((a, b) => {
+            const pa = riderBoardPriority(gps[a.rider_id], disp[a.rider_id]);
+            const pb = riderBoardPriority(gps[b.rider_id], disp[b.rider_id]);
+            return pa - pb;
+        });
+        body.innerHTML = sorted.map(r => renderRiderBoardRow(r, gps[r.rider_id], disp[r.rider_id])).join('');
+        if (meta) meta.textContent = 'updated ' + new Date().toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
+    } catch (e) {
+        body.innerHTML = '<div class="px-3 py-3 text-xs text-gray-400">Live status unavailable.</div>';
+    }
+}
+
+// True when a rider is actively delivering (on a dispatch) but his GPS has
+// gone stale — i.e. he "lost GPS" mid-delivery. We treat >15 min old, or no
+// fix at all, as lost.
+function riderGpsLostMidDelivery(gps, dispatch) {
+    const status = (dispatch || {}).status;
+    if (status !== 'on_route') return false;
+    const ageMin = (gps && gps.age_minutes !== null && gps.age_minutes !== undefined) ? gps.age_minutes : null;
+    return (ageMin === null) || (ageMin > 15);
+}
+
+// Lower number = higher up the board (needs attention first).
+function riderBoardPriority(gps, dispatch) {
+    const status = (dispatch || {}).status;
+    if (status === 'left_without_dispatch') return 0;
+    if (riderGpsLostMidDelivery(gps, dispatch)) return 1;
+    const rank = { waiting_at_office: 3, returning: 4, on_route: 5, at_office: 6, away_unknown: 7 };
+    return rank[status] ?? 9;
+}
+
+function renderRiderBoardRow(rider, gps, dispatch) {
+    const id = rider.rider_id;
+    const name = (rider.rider_name || ('Rider #' + id));
+    const safeName = name.replace(/'/g, "\\'");
+    const status = (dispatch || {}).status;
+
+    const leftNoDispatch = (status === 'left_without_dispatch');
+    const gpsLost = riderGpsLostMidDelivery(gps, dispatch);
+
+    // GPS column
+    const ageMin = (gps && gps.age_minutes !== null && gps.age_minutes !== undefined) ? gps.age_minutes : null;
+    let dotColor = '#9ca3af', gpsTxt = 'Not active';
+    if (gps && gps.is_fresh) { dotColor = '#10b981'; gpsTxt = 'now'; }
+    else if (ageMin !== null && ageMin <= 60) { dotColor = '#f59e0b'; gpsTxt = gps.age_text || (ageMin + 'm ago'); }
+    // A rider who dropped GPS while delivering gets a red GPS cell so it's obvious.
+    if (gpsLost) { dotColor = '#ef4444'; gpsTxt = (ageMin === null) ? 'GPS lost' : ('lost · ' + (gps.age_text || (ageMin + 'm ago'))); }
+
+    // Status column (without the return-ETA — that gets its own column)
+    let statusHtml = dispatch ? formatBoardStatus(dispatch) : '';
+    if (!statusHtml) statusHtml = '<span style="color:#9ca3af;">No active dispatch</span>';
+
+    // Back-to-office column
+    const rto = dispatch && dispatch.return_to_office;
+    const backHtml = rto
+        ? `🏠 ${rto.arrival_display}<div style="font-size:9px;font-weight:500;color:#94a3b8;">~${rto.minutes} min</div>`
+        : '<span style="color:#cbd5e1;">—</span>';
+
+    // Row highlight: red for left-without-dispatch, amber for lost-GPS.
+    let rowStyle = '', nameStyle = '';
+    if (leftNoDispatch) { rowStyle = 'background:#fef2f2;box-shadow:inset 3px 0 0 #ef4444;'; nameStyle = 'color:#b91c1c;font-weight:700;'; }
+    else if (gpsLost) { rowStyle = 'background:#fff7ed;box-shadow:inset 3px 0 0 #f59e0b;'; nameStyle = 'color:#b45309;font-weight:700;'; }
+
+    return `
+      <div class="riderboard-row riderboard-data" style="${rowStyle}" onclick="openRiderDispatchPopup(${id}, '${safeName}')" title="Open dispatch tracker">
+        <div class="riderboard-cell-name">
+          <span class="riderboard-dot" style="background:${dotColor};"></span>
+          <span class="nm" style="${nameStyle}">${name}</span>
+        </div>
+        <div class="riderboard-gps"${gpsLost ? ' style="color:#ef4444;font-weight:600;"' : ''}>${gpsTxt}</div>
+        <div class="riderboard-status">${statusHtml}</div>
+        <div class="riderboard-back">${backHtml}</div>
+      </div>`;
+}
+
+/**
+ * Status text for the board's Status column — same wording as the card status
+ * line but WITHOUT the return-ETA (the board shows that in its own column).
+ */
+function formatBoardStatus(d) {
+    switch (d.status) {
+        case 'left_without_dispatch':
+            return `<span style="color:#dc2626;">⚠️ Left w/o dispatch · ${d.undispatched_count}</span>`;
+        case 'waiting_at_office':
+            return `<span style="color:#b45309;">🏠 At office · ${d.undispatched_count} to dispatch</span>`;
+        case 'on_route':
+            return `<span style="color:#15803d;">🚚 On route · ${d.dispatched_count} left</span>`;
+        case 'returning':
+            return `<span style="color:#0369a1;">↩️ Returning${d.undispatched_count > 0 ? ` · ${d.undispatched_count} to dispatch` : ''}</span>`;
+        case 'at_office':
+            return `<span style="color:#6b7280;">🏠 At office</span>`;
+        case 'away_unknown':
+            return `<span style="color:#6b7280;">📍 Away</span>`;
+        default:
+            return '';
+    }
+}
+
+let _riderBoardResizeTimer = null;
+window.addEventListener('resize', () => {
+    clearTimeout(_riderBoardResizeTimer);
+    _riderBoardResizeTimer = setTimeout(updateRiderLiveBoardVisibility, 250);
+});
+
 /**
  * Per-rider Dispatch Tracker popup — reuses the dispatch-report data
  * (live ongoing + today's delivered summary).
@@ -13795,6 +14023,9 @@ function hideAllCardSections() {
     const statusCards = document.getElementById('openOrdersStatusCards');
     if (ridersCards) ridersCards.style.display = 'none';
     if (statusCards) statusCards.style.display = 'none';
+    const board = document.getElementById('riderLiveBoardCol');
+    if (board) board.style.display = 'none';
+    if (_riderBoardInterval) { clearInterval(_riderBoardInterval); _riderBoardInterval = null; }
 }
 
 </script>
