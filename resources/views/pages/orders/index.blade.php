@@ -13473,21 +13473,256 @@ function renderRiderCards(data) {
     // Add individual rider cards
     riders.forEach(rider => {
         const breakdownText = formatStatusBreakdown(rider.status_breakdown);
+        const safeName = (rider.rider_name || '').replace(/'/g, "\\'");
         cardsHtml += `
             <div class="rider-card" onclick="filterByRider(${rider.rider_id})">
-                <div class="flex items-center justify-between p-4 bg-white rounded-lg border border-gray-200 shadow-sm hover:shadow-md hover:border-blue-300 transition-all duration-200 cursor-pointer min-w-[180px]">
-                    <div class="flex-1">
+                <div class="relative flex items-center justify-between p-4 bg-white rounded-lg border border-gray-200 shadow-sm hover:shadow-md hover:border-blue-300 transition-all duration-200 cursor-pointer min-w-[200px]" data-rider-live-id="${rider.rider_id}">
+                    <div class="flex-1 pr-6">
                         <div class="text-2xl font-bold text-gray-800">${rider.total_count}</div>
-                        <div class="text-sm font-semibold text-gray-900">${rider.rider_name}</div>
-                        ${breakdownText ? `<div class="text-xs text-gray-500 mt-1.5 leading-relaxed">${breakdownText}</div>` : ''}
+                        <div class="text-sm font-semibold text-gray-900 flex items-center gap-1">
+                            <span id="gpsDot_${rider.rider_id}" class="inline-block w-2 h-2 rounded-full bg-gray-300" title="GPS status"></span>
+                            <span>${rider.rider_name}</span>
+                            <span id="gpsAge_${rider.rider_id}" class="text-[10px] font-normal text-gray-400"></span>
+                        </div>
+                        ${breakdownText ? `<div class="text-xs text-gray-500 mt-1 leading-relaxed">${breakdownText}</div>` : ''}
+                        <div id="dispatchStatus_${rider.rider_id}" class="text-[11px] font-semibold mt-1 leading-tight"></div>
                     </div>
-                    <div class="text-2xl ml-2">🏍️</div>
+                    <button onclick="event.stopPropagation(); openRiderDispatchPopup(${rider.rider_id}, '${safeName}')"
+                            class="absolute top-2 right-2 text-base leading-none hover:scale-110 transition-transform"
+                            title="Open dispatch tracker for ${rider.rider_name}">🚀</button>
                 </div>
             </div>
         `;
     });
 
     container.innerHTML = cardsHtml;
+
+    // ⭐ Enrich cards with live GPS freshness + dispatch status (non-blocking).
+    enrichRiderCardsLive();
+    // ⭐ Keep them fresh silently (no full page / card re-render).
+    startRiderLiveAutoRefresh();
+}
+
+/**
+ * Silent auto-refresh of the live GPS + dispatch status on the rider cards.
+ * Only updates the small live elements in place (dot / age / status line) so
+ * there is no flicker or full re-render. Pauses when the cards are off-screen
+ * (different tab) or the browser tab is hidden.
+ */
+function startRiderLiveAutoRefresh() {
+    if (window._riderLiveInterval) clearInterval(window._riderLiveInterval);
+    window._riderLiveInterval = setInterval(() => {
+        const container = document.getElementById('ridersCardsContainer');
+        if (!container || container.offsetParent === null) return; // hidden / other tab
+        if (document.hidden) return;                                 // browser tab not visible
+        if (!document.querySelector('[data-rider-live-id]')) return; // no rider cards rendered
+        enrichRiderCardsLive();
+    }, 30000);
+}
+
+/**
+ * Fetch live per-rider GPS freshness + dispatch status and update the cards
+ * in place. Reuses the same logic as the Dispatch Tracker (backend).
+ */
+async function enrichRiderCardsLive() {
+    try {
+        const res = await fetch('/orders/riders-map/live-status', {
+            headers: { 'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+            credentials: 'same-origin'
+        });
+        const data = await res.json();
+        if (!data || !data.success) return;
+        document.querySelectorAll('[data-rider-live-id]').forEach(el => {
+            const id = el.getAttribute('data-rider-live-id');
+            updateRiderCardLive(id, (data.gps || {})[id], (data.dispatch || {})[id]);
+        });
+    } catch (e) {
+        /* non-fatal — cards still work without live status */
+    }
+}
+
+function updateRiderCardLive(id, gps, dispatch) {
+    const dot = document.getElementById('gpsDot_' + id);
+    const age = document.getElementById('gpsAge_' + id);
+    // "Active" = we have a GPS fix within the last hour. No GPS, or older than
+    // an hour, is shown as "Not active" so every rider stays trackable.
+    const ageMin = (gps && gps.age_minutes !== null && gps.age_minutes !== undefined) ? gps.age_minutes : null;
+    const isFresh = !!(gps && gps.is_fresh);
+    const isActive = ageMin !== null && ageMin <= 60;
+
+    if (dot) {
+        if (isFresh) {
+            dot.style.background = '#10b981'; // green — live GPS
+            dot.title = 'GPS active · ' + (gps.age_text || '');
+        } else if (isActive) {
+            dot.style.background = '#f59e0b'; // amber — seen within the hour
+            dot.title = 'GPS · ' + (gps.age_text || '');
+        } else {
+            dot.style.background = '#9ca3af'; // grey — not active
+            dot.title = gps ? ('GPS · ' + (gps.age_text || '')) : 'No GPS signal';
+        }
+    }
+    if (age) {
+        if (isFresh) {
+            age.textContent = 'now';
+            age.style.color = '#16a34a';
+        } else if (isActive) {
+            age.textContent = gps.age_text || '';
+            age.style.color = '#9ca3af';
+        } else {
+            age.textContent = 'Not active';
+            age.style.color = '#9ca3af';
+        }
+    }
+
+    const statusEl = document.getElementById('dispatchStatus_' + id);
+    if (statusEl) statusEl.innerHTML = dispatch ? formatLiveDispatchStatus(dispatch) : '';
+}
+
+/**
+ * One-line dispatch status for a rider card.
+ */
+function formatLiveDispatchStatus(d) {
+    const rto = d.return_to_office;
+    switch (d.status) {
+        case 'left_without_dispatch':
+            return `<span style="color:#dc2626;">⚠️ Left without dispatch · ${d.undispatched_count} order${d.undispatched_count !== 1 ? 's' : ''}</span>`;
+        case 'waiting_at_office':
+            return `<span style="color:#b45309;">🏠 At office · ${d.undispatched_count} to dispatch</span>`;
+        case 'on_route':
+            return `<span style="color:#15803d;">🚚 On route · ${d.dispatched_count} left</span>`;
+        case 'returning':
+            return `<span style="color:#0369a1;">🏠 Back by ${rto ? rto.arrival_display : '—'}${rto ? ` (~${rto.minutes} min)` : ''}${d.undispatched_count > 0 ? ` · ${d.undispatched_count} to dispatch` : ''}</span>`;
+        case 'at_office':
+            return `<span style="color:#6b7280;">🏠 At office</span>`;
+        case 'away_unknown':
+            return `<span style="color:#6b7280;">📍 Away</span>`;
+        default:
+            return '';
+    }
+}
+
+/**
+ * Per-rider Dispatch Tracker popup — reuses the dispatch-report data
+ * (live ongoing + today's delivered summary).
+ */
+async function openRiderDispatchPopup(riderId, riderName) {
+    let modal = document.getElementById('riderDispatchModal');
+    if (!modal) {
+        modal = document.createElement('div');
+        modal.id = 'riderDispatchModal';
+        modal.style.cssText = 'position:fixed; inset:0; background:rgba(0,0,0,0.5); z-index:9999; display:flex; align-items:center; justify-content:center; padding:16px;';
+        modal.onclick = (e) => { if (e.target === modal) closeRiderDispatchPopup(); };
+        modal.innerHTML = '<div id="riderDispatchModalBox" style="background:#fff; border-radius:12px; max-width:680px; width:100%; max-height:85vh; overflow:auto; box-shadow:0 20px 50px rgba(0,0,0,0.3);"></div>';
+        document.body.appendChild(modal);
+    }
+    const box = document.getElementById('riderDispatchModalBox');
+    box.innerHTML = `<div style="padding:40px; text-align:center; color:#6b7280;">Loading dispatch tracker for ${riderName}...</div>`;
+    modal.style.display = 'flex';
+
+    try {
+        const today = new Date().toISOString().slice(0, 10);
+        const res = await fetch(`/orders/riders-map/dispatch-report?date=${today}`, {
+            headers: { 'Accept': 'application/json', 'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').getAttribute('content') }
+        });
+        const data = await res.json();
+        if (!data.success) throw new Error(data.message || 'Failed');
+        const ongoing = (data.ongoing || []).find(o => String(o.rider_id) === String(riderId)) || null;
+        const delivered = (data.riders || []).find(r => String(r.id) === String(riderId)) || null;
+        box.innerHTML = renderRiderDispatchPopup(riderId, riderName, ongoing, delivered);
+    } catch (err) {
+        box.innerHTML = `<div style="padding:24px;"><div style="color:#ef4444;">Failed to load: ${err.message}</div><div style="text-align:right; margin-top:12px;"><button onclick="closeRiderDispatchPopup()" style="padding:6px 14px; border:1px solid #d1d5db; border-radius:6px; background:#fff; cursor:pointer;">Close</button></div></div>`;
+    }
+}
+
+function closeRiderDispatchPopup() {
+    const modal = document.getElementById('riderDispatchModal');
+    if (modal) modal.style.display = 'none';
+}
+
+function renderRiderDispatchPopup(riderId, riderName, ongoing, delivered) {
+    const meta = {
+        left_without_dispatch: { label: '⚠️ Left without dispatch', color: '#991b1b', bg: '#fee2e2' },
+        waiting_at_office:     { label: '🏠 Waiting at office',      color: '#854d0e', bg: '#fef9c3' },
+        returning:             { label: '🏠 Returning to office',    color: '#075985', bg: '#e0f2fe' },
+        on_route:              { label: '🚚 On route',               color: '#166534', bg: '#dcfce7' },
+        at_office:             { label: '🏠 At office',              color: '#374151', bg: '#f3f4f6' },
+        away_unknown:          { label: '📍 Away (GPS stale)',       color: '#6b7280', bg: '#f3f4f6' },
+        idle:                  { label: '• Idle',                    color: '#6b7280', bg: '#f3f4f6' },
+    };
+    const badge = (txt, color, bg) => `<span style="background:${bg}; color:${color}; padding:3px 8px; border-radius:6px; font-size:11px; font-weight:700;">${txt}</span>`;
+
+    let liveHtml;
+    if (ongoing) {
+        const m = meta[ongoing.status] || meta.idle;
+        const rto = ongoing.return_to_office;
+        const officeEta = rto ? badge(`🏠 Back in ~${rto.minutes} min · by ${rto.arrival_display}${rto.source !== 'google_maps' ? ' (approx)' : ''}`, '#075985', '#e0f2fe') : '';
+        const dist = ongoing.distance_to_office_display ? badge(`📍 ${ongoing.distance_to_office_display} from office`, '#374151', '#f3f4f6') : '';
+        const agm = (ongoing.gps_age_minutes !== null && ongoing.gps_age_minutes !== undefined) ? ongoing.gps_age_minutes : null;
+        const gpsBadge = agm === null
+            ? badge('⚪ No GPS', '#6b7280', '#f3f4f6')
+            : (agm <= 6 ? badge('🟢 GPS now', '#166534', '#dcfce7')
+            : (agm <= 60 ? badge(`🟠 GPS ${ongoing.gps_age_text || (agm + ' min ago')}`, '#854d0e', '#fef9c3')
+            : badge(`⚪ GPS ${ongoing.gps_age_text || (agm + ' min ago')}`, '#6b7280', '#f3f4f6')));
+        const waves = (ongoing.dispatch_batches || []).map(b => {
+            const orders = (b.orders || []).map(o => `
+                <div style="display:flex; justify-content:space-between; gap:8px; padding:4px 0; border-bottom:1px dashed #f0f0f0; font-size:12px;">
+                    <span style="color:#374151;">${o.priority ? `<b>${o.priority}.</b> ` : ''}${o.order_number} — ${o.customer_name}</span>
+                    <span style="white-space:nowrap; color:${o.payment_type === 'cash' ? '#166534' : '#1d4ed8'};">${o.eta_window ? `🕒 ${o.eta_window}` : ''}</span>
+                </div>`).join('');
+            return `<div style="margin-top:8px; border:1px solid #e5e7eb; border-radius:8px; overflow:hidden;">
+                <div style="background:#f9fafb; padding:6px 10px; font-size:12px; font-weight:600; color:#374151; display:flex; justify-content:space-between;">
+                    <span>🚀 Dispatched ${b.dispatch_time_display}</span>
+                    <span style="color:#6b7280;">${b.delivered_count}/${b.total_count} delivered · ${b.pending_count} pending</span>
+                </div>
+                <div style="padding:4px 10px;">${orders}</div>
+            </div>`;
+        }).join('');
+        let undisp = '';
+        if ((ongoing.undispatched_orders || []).length > 0) {
+            const list = ongoing.undispatched_orders.map(o => `
+                <div style="display:flex; justify-content:space-between; gap:8px; padding:4px 0; border-bottom:1px dashed #fde0e0; font-size:12px;">
+                    <span style="color:#7f1d1d;">${o.priority ? `<b>${o.priority}.</b> ` : ''}${o.order_number} — ${o.customer_name}</span>
+                    <span style="color:${o.payment_type === 'cash' ? '#166534' : '#1d4ed8'};">Rs. ${Math.round(o.amount).toLocaleString()}</span>
+                </div>`).join('');
+            undisp = `<div style="margin-top:8px; border:1px solid #fca5a5; border-radius:8px; overflow:hidden;">
+                <div style="background:#fef2f2; padding:6px 10px; font-size:12px; font-weight:700; color:#991b1b;">📋 Not dispatched yet · ${ongoing.undispatched_orders.length}</div>
+                <div style="padding:4px 10px;">${list}</div>
+            </div>`;
+        }
+        liveHtml = `<div style="padding:12px 16px;">
+            <div style="display:flex; gap:6px; flex-wrap:wrap; align-items:center; margin-bottom:4px;">
+                ${badge(m.label, m.color, m.bg)}${gpsBadge}${dist}${officeEta}${badge(`📦 ${ongoing.ofd_total} out for delivery`, '#374151', '#f3f4f6')}
+            </div>
+            ${waves || ''}${undisp || ''}
+            ${(!waves && !undisp && ongoing.status === 'returning') ? `<div style="font-size:12px; color:#6b7280; margin-top:6px;">✅ All dispatched orders delivered — heading back to office.</div>` : ''}
+        </div>`;
+    } else {
+        liveHtml = `<div style="padding:16px; font-size:13px; color:#6b7280;">No active dispatch right now.</div>`;
+    }
+
+    let deliveredHtml = '';
+    if (delivered) {
+        deliveredHtml = `<div style="padding:10px 16px; border-top:1px solid #f3f4f6; display:flex; gap:6px; flex-wrap:wrap;">
+            ${badge(`📦 ${delivered.total_orders} orders`, '#1e40af', '#dbeafe')}
+            ${badge(`${delivered.dispatch_compliance_pct}% dispatched`, '#374151', '#f3f4f6')}
+            ${delivered.eta_accuracy_pct !== null ? badge(`⏱️ ${delivered.eta_on_time}/${delivered.eta_total} on-time`, '#166534', '#dcfce7') : ''}
+            ${badge(`💵 Rs.${Math.round(delivered.cash_total).toLocaleString()}`, '#166534', '#dcfce7')}
+            ${badge(`💳 Rs.${Math.round(delivered.online_total).toLocaleString()}`, '#1e40af', '#dbeafe')}
+        </div>`;
+    }
+
+    return `
+        <div style="position:sticky; top:0; background:#fff; display:flex; justify-content:space-between; align-items:center; padding:14px 16px; border-bottom:1px solid #eee; z-index:1;">
+            <div style="font-weight:700; font-size:15px; color:#1f2937;">🏍️ ${riderName} — Dispatch Tracker</div>
+            <button onclick="closeRiderDispatchPopup()" style="background:none; border:none; font-size:20px; cursor:pointer; color:#6b7280; line-height:1;">✕</button>
+        </div>
+        ${liveHtml}
+        ${deliveredHtml}
+        <div style="padding:10px 16px; text-align:right; border-top:1px solid #f3f4f6;">
+            <a href="/riders-map" style="font-size:12px; color:#2563eb; text-decoration:none;">Open full Dispatch Tracker →</a>
+        </div>
+    `;
 }
 
 /**

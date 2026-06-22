@@ -69,6 +69,11 @@ Route::middleware('customer.app')->prefix('customer-app')->group(function () {
     Route::get('/orders/{orderNumber}/tracking', [\App\Http\Controllers\API\CustomerAppController::class, 'tracking'])
         ->where('orderNumber', '.*'); // allow SH-1234, 1234, or encoded #1234
 
+    // Phase 4 — invoice image for an order (returns a URL to the rendered PNG,
+    // or available:false if it hasn't been generated on the web side yet).
+    Route::get('/orders/{orderNumber}/invoice', [\App\Http\Controllers\API\CustomerAppController::class, 'orderInvoice'])
+        ->where('orderNumber', '[^/]+');
+
     // Phase 3 — full order snapshot. Accepts a bare Shopify number (1234 ->
     // assumed SH-) or any full NF number (SH-1234, NF-2001, QUR26-045).
     Route::get('/orders/{orderNumber}', [\App\Http\Controllers\API\CustomerAppController::class, 'orderSnapshot'])
@@ -77,6 +82,17 @@ Route::middleware('customer.app')->prefix('customer-app')->group(function () {
     // Phase 3 — order history keyed on the customer's mobile number (any
     // format; NF normalizes to the last 10 digits before matching).
     Route::get('/customers/{mobile}/orders', [\App\Http\Controllers\API\CustomerAppController::class, 'customerOrders'])
+        ->where('mobile', '[^/]+');
+
+    // Phase 4 — customer existence + profile + verified pin (login/register
+    // check). Bare {mobile} (no /orders suffix) hits this.
+    Route::get('/customers/{mobile}', [\App\Http\Controllers\API\CustomerAppController::class, 'customerProfile'])
+        ->where('mobile', '[^/]+');
+
+    // Phase 4 — customer writes/updates their own verified pin. Creates a
+    // minimal customer row if the number is brand-new. Attribution is stamped
+    // with the customer sentinel id (-9999).
+    Route::post('/customers/{mobile}/location', [\App\Http\Controllers\API\CustomerAppController::class, 'saveCustomerLocation'])
         ->where('mobile', '[^/]+');
 });
 

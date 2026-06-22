@@ -293,11 +293,13 @@ class CustomerAppWebhookEmitter
 
     /**
      * Turn a point ETA into a short, already-formatted display window such as
-     * "Today, 4-6 PM" / "Tomorrow, 10 AM-12 PM" / "Jun 17, 4-6 PM".
+     * "Today, 4:10-4:40 PM" / "Tomorrow, 11:50 AM-12:20 PM" / "Jun 17, 4:10-4:40 PM".
      *
-     * The window is [floor(eta to the hour) .. + band_hours]. Uses a plain
-     * hyphen (no em dash) per the customer-app spec. Returns null on any
-     * parse failure so we never send a malformed/placeholder string.
+     * The start is floored to the nearest `round_to_minutes` (default 10), then
+     * the window is `[start .. start + band_minutes]` (default 30). So an ETA of
+     * 11:57 -> "11:50 AM-12:20 PM". Uses a plain hyphen (no em dash) per the
+     * customer-app spec. Returns null on any parse failure so we never send a
+     * malformed/placeholder string.
      */
     private function buildEtaWindow($estimatedDeliveryAt): ?string
     {
@@ -306,11 +308,16 @@ class CustomerAppWebhookEmitter
         }
 
         try {
-            $band  = (int) config('customer_app.eta_window_band_hours', 2);
-            $band  = $band > 0 ? $band : 2;
+            $band = (int) config('customer_app.eta_window_band_minutes', 30);
+            $band = $band > 0 ? $band : 30;
 
-            $start = \Carbon\Carbon::parse($estimatedDeliveryAt)->copy()->minute(0)->second(0);
-            $end   = $start->copy()->addHours($band);
+            $round = (int) config('customer_app.eta_window_round_to_minutes', 10);
+            $round = $round > 0 ? $round : 10;
+
+            $eta           = \Carbon\Carbon::parse($estimatedDeliveryAt)->copy()->second(0);
+            $flooredMinute = intdiv($eta->minute, $round) * $round;
+            $start         = $eta->copy()->minute($flooredMinute)->second(0);
+            $end           = $start->copy()->addMinutes($band);
 
             $dayQualifier = '';
             if ($start->isToday()) {
@@ -321,16 +328,16 @@ class CustomerAppWebhookEmitter
                 $dayQualifier = $start->format('M j') . ', ';
             }
 
-            // Collapse a shared AM/PM meridiem: "4-6 PM" rather than
-            // "4 PM-6 PM"; keep both when they differ: "11 AM-1 PM".
+            // Collapse a shared AM/PM meridiem: "4:00-4:30 PM" rather than
+            // "4:00 PM-4:30 PM"; keep both when they differ: "11:30 AM-12:00 PM".
             $startMer = $start->format('A');
             $endMer   = $end->format('A');
-            $startHr  = $start->format('g');
-            $endHr    = $end->format('g');
+            $startT   = $start->format('g:i');
+            $endT     = $end->format('g:i');
 
             $window = $startMer === $endMer
-                ? "{$startHr}-{$endHr} {$endMer}"
-                : "{$startHr} {$startMer}-{$endHr} {$endMer}";
+                ? "{$startT}-{$endT} {$endMer}"
+                : "{$startT} {$startMer}-{$endT} {$endMer}";
 
             return $dayQualifier . $window;
         } catch (\Throwable $e) {

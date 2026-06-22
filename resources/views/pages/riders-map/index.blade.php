@@ -625,6 +625,7 @@
                 <span id="dtDateLabel" style="font-size:14px; font-weight:600; color:#1f2937; margin-left:8px;"></span>
             </div>
             <div id="dtSummaryBar" class="dt-summary-bar"></div>
+            <div id="dtOngoingContainer"></div>
             <div id="dtRidersContainer"></div>
         </div>
     </div>
@@ -841,18 +842,23 @@ function renderRiderCard(rider, isHistoryView) {
             statusBadge = `<div style="background: #f3f4f6; color: #6b7280; padding: 4px 8px; border-radius: 6px; font-size: 11px; font-weight: 500;">${rider.orders_today.delivered} delivered</div>`;
         }
     } else {
-        let isOnline = false, isAway = false, lastSeenText = 'Never', lastSeenMinutes = null;
+        // ⭐ Show GPS-heartbeat freshness as the primary "Last seen" signal
+        //    (this reflects how fresh the rider's location actually is). Only
+        //    fall back to app-sync time when there is no GPS data at all.
+        let isOnline = false, isAway = false, lastSeenText = 'Never', lastSeenMinutes = null, freshnessSource = null;
         
-        if (hasSync && rider.last_sync.age_minutes !== null) {
-            lastSeenMinutes = rider.last_sync.age_minutes;
-            lastSeenText = rider.last_sync.age || 'Unknown';
-            isOnline = lastSeenMinutes <= 2;
-            isAway = lastSeenMinutes > 2 && lastSeenMinutes <= 10;
-        } else if (hasLocation && rider.last_location.age_minutes !== null) {
+        if (hasLocation && rider.last_location.age_minutes !== null) {
             lastSeenMinutes = rider.last_location.age_minutes;
             lastSeenText = rider.last_location.age || 'Unknown';
+            freshnessSource = 'gps';
             isOnline = lastSeenMinutes <= 6;
             isAway = lastSeenMinutes > 6 && lastSeenMinutes <= 15;
+        } else if (hasSync && rider.last_sync.age_minutes !== null) {
+            lastSeenMinutes = rider.last_sync.age_minutes;
+            lastSeenText = rider.last_sync.age || 'Unknown';
+            freshnessSource = 'app';
+            isOnline = lastSeenMinutes <= 2;
+            isAway = lastSeenMinutes > 2 && lastSeenMinutes <= 10;
         }
         
         if (!isOnDuty) {
@@ -869,14 +875,15 @@ function renderRiderCard(rider, isHistoryView) {
             statusText = '⚫ Offline';
         }
         
+        const freshLabel = freshnessSource === 'gps' ? '📍 GPS' : '📲 App';
         if (isOnline) {
-            statusBadge = `<div style="background: #d1fae5; color: #065f46; padding: 4px 8px; border-radius: 6px; font-size: 11px; font-weight: 500;">● Active now</div>`;
+            statusBadge = `<div style="background: #d1fae5; color: #065f46; padding: 4px 8px; border-radius: 6px; font-size: 11px; font-weight: 500;">${freshnessSource === 'gps' ? '📍 GPS live' : '● Active now'}</div>`;
         } else if (lastSeenMinutes !== null) {
             const bg = lastSeenMinutes <= 10 ? '#fef3c7' : '#fee2e2';
             const color = lastSeenMinutes <= 10 ? '#92400e' : '#991b1b';
-            statusBadge = `<div style="background: ${bg}; color: ${color}; padding: 4px 8px; border-radius: 6px; font-size: 11px; font-weight: 500;">Last: ${lastSeenText}</div>`;
+            statusBadge = `<div style="background: ${bg}; color: ${color}; padding: 4px 8px; border-radius: 6px; font-size: 11px; font-weight: 500;">${freshLabel}: ${lastSeenText}</div>`;
         } else {
-            statusBadge = `<div style="background: #f3f4f6; color: #6b7280; padding: 4px 8px; border-radius: 6px; font-size: 11px; font-weight: 500;">No activity</div>`;
+            statusBadge = `<div style="background: #f3f4f6; color: #6b7280; padding: 4px 8px; border-radius: 6px; font-size: 11px; font-weight: 500;">No GPS activity</div>`;
         }
     }
     
@@ -1691,11 +1698,117 @@ async function loadDispatchReport(date) {
         document.getElementById('dtDateLabel').textContent = data.date_display;
 
         dtRenderSummary(data.summary);
+        dtRenderOngoing(data.ongoing || []);
         dtRenderRiders(data.riders);
     } catch (err) {
         console.error('Dispatch report error:', err);
         container.innerHTML = `<div style="padding:40px; text-align:center; color:#ef4444;">Failed to load: ${err.message}</div>`;
+        document.getElementById('dtOngoingContainer').innerHTML = '';
     }
+}
+
+// ⭐ LIVE ongoing-dispatch tracking (today only). Shows each rider's current
+//    state: on route (by dispatch wave w/ ETA windows), waiting at office,
+//    returning to office (approx ETA), or left without dispatching.
+function dtRenderOngoing(ongoing) {
+    const wrap = document.getElementById('dtOngoingContainer');
+    if (!ongoing || ongoing.length === 0) { wrap.innerHTML = ''; return; }
+
+    const meta = {
+        left_without_dispatch: {label: '⚠️ Left without dispatch', bg: '#fee2e2', color: '#991b1b', border: '#fca5a5'},
+        waiting_at_office:     {label: '🏠 Waiting at office',      bg: '#fef9c3', color: '#854d0e', border: '#fde68a'},
+        returning:             {label: '↩️ Returning to office',    bg: '#e0f2fe', color: '#075985', border: '#bae6fd'},
+        on_route:              {label: '🚚 On route',               bg: '#dcfce7', color: '#166534', border: '#bbf7d0'},
+        at_office:             {label: '🏠 At office',              bg: '#f3f4f6', color: '#374151', border: '#e5e7eb'},
+        away_unknown:          {label: '📍 Away (GPS stale)',       bg: '#f3f4f6', color: '#6b7280', border: '#e5e7eb'},
+        idle:                  {label: '• Idle',                    bg: '#f3f4f6', color: '#6b7280', border: '#e5e7eb'},
+    };
+
+    const cards = ongoing.map(r => {
+        const m = meta[r.status] || meta.idle;
+        const dist = r.distance_to_office_display ? `<span class="dt-badge gray">📍 ${r.distance_to_office_display} from office</span>` : '';
+        // GPS freshness badge (now / minutes ago / stale / none)
+        const ageMin = (r.gps_age_minutes !== null && r.gps_age_minutes !== undefined) ? r.gps_age_minutes : null;
+        let gpsBadge = '';
+        if (ageMin === null) {
+            gpsBadge = `<span class="dt-badge gray">⚪ No GPS</span>`;
+        } else if (ageMin <= 6) {
+            gpsBadge = `<span class="dt-badge green">🟢 GPS now</span>`;
+        } else if (ageMin <= 60) {
+            gpsBadge = `<span class="dt-badge amber">🟠 GPS ${r.gps_age_text || (ageMin + ' min ago')}</span>`;
+        } else {
+            gpsBadge = `<span class="dt-badge gray">⚪ GPS ${r.gps_age_text || (ageMin + ' min ago')}</span>`;
+        }
+        let officeEta = '';
+        if (r.return_to_office) {
+            const rto = r.return_to_office;
+            const approx = rto.source !== 'google_maps' ? ' (approx)' : '';
+            officeEta = `<span class="dt-badge blue">🏠 Back in ~${rto.minutes} min · by ${rto.arrival_display}${approx}</span>`;
+        } else if (r.eta_to_office_min && r.status === 'returning') {
+            officeEta = `<span class="dt-badge blue">↩️ ~${r.eta_to_office_min} min to office (approx)</span>`;
+        }
+
+        // Dispatched waves with ETA windows + progress
+        const waves = (r.dispatch_batches || []).map(b => {
+            const orders = (b.orders || []).map(o => `
+                <div style="display:flex; justify-content:space-between; gap:8px; padding:4px 0; border-bottom:1px dashed #f0f0f0; font-size:12px;">
+                    <span style="color:#374151;">${o.priority ? `<b>${o.priority}.</b> ` : ''}${o.order_number} — ${o.customer_name}${o.customer_city ? ` <span style="color:#9ca3af;">(${o.customer_city})</span>` : ''}</span>
+                    <span style="white-space:nowrap; color:${o.payment_type === 'cash' ? '#166534' : '#1d4ed8'};">${o.eta_window ? `🕒 ${o.eta_window}` : ''}</span>
+                </div>`).join('');
+            return `
+                <div style="margin-top:8px; border:1px solid #e5e7eb; border-radius:8px; overflow:hidden;">
+                    <div style="background:#f9fafb; padding:6px 10px; font-size:12px; font-weight:600; color:#374151; display:flex; justify-content:space-between;">
+                        <span>🚀 Dispatched ${b.dispatch_time_display}</span>
+                        <span style="color:#6b7280;">${b.delivered_count}/${b.total_count} delivered · ${b.pending_count} pending</span>
+                    </div>
+                    <div style="padding:4px 10px;">${orders}</div>
+                </div>`;
+        }).join('');
+
+        // Undispatched (forgot / next dispatch) group
+        let undispatchedHtml = '';
+        if ((r.undispatched_orders || []).length > 0) {
+            const list = r.undispatched_orders.map(o => `
+                <div style="display:flex; justify-content:space-between; gap:8px; padding:4px 0; border-bottom:1px dashed #fde0e0; font-size:12px;">
+                    <span style="color:#7f1d1d;">${o.priority ? `<b>${o.priority}.</b> ` : ''}${o.order_number} — ${o.customer_name}${o.customer_city ? ` <span style="color:#b45309;">(${o.customer_city})</span>` : ''}</span>
+                    <span style="white-space:nowrap; color:${o.payment_type === 'cash' ? '#166534' : '#1d4ed8'};">Rs. ${Math.round(o.amount).toLocaleString()}</span>
+                </div>`).join('');
+            undispatchedHtml = `
+                <div style="margin-top:8px; border:1px solid #fca5a5; border-radius:8px; overflow:hidden;">
+                    <div style="background:#fef2f2; padding:6px 10px; font-size:12px; font-weight:700; color:#991b1b;">
+                        📋 Not dispatched yet · ${r.undispatched_orders.length} order${r.undispatched_orders.length !== 1 ? 's' : ''}
+                    </div>
+                    <div style="padding:4px 10px;">${list}</div>
+                </div>`;
+        }
+
+        return `
+            <div style="border:1px solid ${m.border}; border-radius:10px; margin-bottom:10px; overflow:hidden;">
+                <div style="background:${m.bg}; padding:10px 14px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
+                    <div style="font-weight:700; color:#1f2937;">🏍️ ${r.rider_name}</div>
+                    <div style="display:flex; gap:6px; flex-wrap:wrap; align-items:center;">
+                        <span class="dt-badge" style="background:${m.bg}; color:${m.color}; border:1px solid ${m.border};">${m.label}</span>
+                        ${gpsBadge}
+                        ${dist}
+                        ${officeEta}
+                        <span class="dt-badge gray">📦 ${r.ofd_total} out for delivery</span>
+                    </div>
+                </div>
+                <div style="padding:8px 14px;">
+                    ${waves || ''}
+                    ${undispatchedHtml}
+                    ${(!waves && !undispatchedHtml) ? `<div style="font-size:12px; color:#6b7280;">${r.status === 'returning' ? `✅ All dispatched orders delivered${r.delivered_today ? ` (${r.delivered_today} today)` : ''} — heading back to office.` : 'No active stops.'}</div>` : ''}
+                </div>
+            </div>`;
+    }).join('');
+
+    wrap.innerHTML = `
+        <div style="margin: 4px 0 16px;">
+            <div style="font-size:13px; font-weight:700; color:#374151; margin-bottom:8px; display:flex; align-items:center; gap:6px;">
+                🔴 LIVE — In Progress Now (${ongoing.length} rider${ongoing.length !== 1 ? 's' : ''})
+            </div>
+            ${cards}
+        </div>`;
 }
 
 function dtRenderSummary(s) {
@@ -1741,7 +1854,8 @@ function dtRenderRiders(riders) {
     const container = document.getElementById('dtRidersContainer');
 
     if (!riders || riders.length === 0) {
-        container.innerHTML = '<div style="padding:60px; text-align:center; color:#6b7280;"><div style="font-size:48px; margin-bottom:12px;">📭</div>No delivered orders for this date</div>';
+        const isToday = dtCurrentDate === new Date().toISOString().slice(0, 10);
+        container.innerHTML = `<div style="padding:60px; text-align:center; color:#6b7280;"><div style="font-size:48px; margin-bottom:12px;">📭</div>${isToday ? 'No delivered orders yet today' : 'No delivered orders for this date'}</div>`;
         return;
     }
 

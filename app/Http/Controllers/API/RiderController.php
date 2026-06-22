@@ -428,7 +428,7 @@ class RiderController extends Controller
                             'longitude' => $order->customer->longitude ? (float)$order->customer->longitude : null,
                             'url' => $order->customer->verified_location_url ?? null,
                             'google_maps_url' => $order->customer->verified_location_url ?: ($order->customer->latitude && $order->customer->longitude ? "https://www.google.com/maps?q={$order->customer->latitude},{$order->customer->longitude}" : null),
-                            'saved_by' => $order->customer->verified_location_saved_by ? \DB::table('t_sys_user')->where('id', $order->customer->verified_location_saved_by)->value('fullname') : null,
+                            'saved_by' => \App\Models\CRM\CustomerModel::verifierLabel($order->customer->verified_location_saved_by),
                             'saved_at' => $order->customer->verified_location_saved_at,
                         ] : null,
                     ],
@@ -1077,6 +1077,14 @@ class RiderController extends Controller
             //    times frozen. Default 'all' dispatches every OFD order.
             $scope = $request->input('scope', 'all');
 
+            // ⭐ Start grace offset (minutes): pushes the whole route's start
+            //    time forward before the first leg. Rider Mode sends 5 so the
+            //    rider gets time to reach his motorbike (e.g. dispatch at 10:00
+            //    → first ETA is computed from 10:05). Store Mode omits it (0),
+            //    so existing store behaviour is unchanged. Clamped for safety.
+            $startOffsetMinutes = (int) $request->input('start_offset_minutes', 0);
+            $startOffsetMinutes = max(0, min(30, $startOffsetMinutes));
+
             // Get all out_for_delivery orders for this rider
             $ordersQuery = \DB::table('t_crm_prod_order as o')
                 ->leftJoin('t_crm_prod_customer as c', 'c.id', '=', 'o.customer_id')
@@ -1174,7 +1182,10 @@ class RiderController extends Controller
             $stopTimeMinutes = 10; // Time spent at each stop
             $now = now();
             $calculatedAt = $now->copy();
-            $cumulativeMinutes = 0;
+            // Seed with the start grace so every ETA is shifted by the offset
+            // (e.g. 5 min in Rider Mode). The 10-min gap between stops below is
+            // unaffected — it's still added after each stop.
+            $cumulativeMinutes = $startOffsetMinutes;
             $updatedOrders = [];
             
             foreach ($ordersWithLocation as $index => $order) {
@@ -1243,6 +1254,7 @@ class RiderController extends Controller
                 ],
                 'calculated_at' => $calculatedAt->toIso8601String(),
                 'stop_time_minutes' => $stopTimeMinutes,
+                'start_offset_minutes' => $startOffsetMinutes,
                 'orders' => $updatedOrders,
                 'unverified_orders' => $unverifiedOrders,
                 'no_location_orders' => $noLocationOrders,
@@ -6680,11 +6692,19 @@ class RiderController extends Controller
                 }
             }
 
+            // ⭐ LIVE ongoing-dispatch tracking — only meaningful for "today".
+            //    Additive; the delivered report above is unchanged.
+            $ongoing = [];
+            if ($date === now()->format('Y-m-d')) {
+                $ongoing = $this->buildOngoingDispatchTracking($officeLat, $officeLng, $officeRadiusMeters);
+            }
+
             return response()->json([
                 'success' => true,
                 'date' => $date,
                 'date_display' => \Carbon\Carbon::parse($date)->format('D, M j, Y'),
                 'riders' => $riders,
+                'ongoing' => $ongoing,
                 'summary' => [
                     'total_delivered' => $totalDelivered,
                     'total_dispatched' => $totalDispatched,
@@ -6712,6 +6732,371 @@ class RiderController extends Controller
                 'success' => false,
                 'message' => 'Failed to load dispatch report'
             ], 500);
+        }
+    }
+
+    /**
+     * Build the LIVE "ongoing dispatch" tracking for the Dispatch Tracker.
+     *
+     * Covers every angle the store needs while deliveries are in progress:
+     *   - on_route               : has dispatched OFD orders still out
+     *   - waiting_at_office      : has undispatched OFD orders, GPS within office
+     *   - left_without_dispatch  : has undispatched OFD orders, fresh GPS > office radius (the warning)
+     *   - returning              : currently away but moving toward office (approx ETA to office shown)
+     *   - at_office / away_unknown / idle : fallbacks
+     *
+     * Orders are grouped by their dispatch wave (eta_calculated_at). Each
+     * dispatched stop shows its 10-min ETA window; per-wave delivered/total
+     * progress is included. Distances use the PRIMARY office (haversine);
+     * the office ETA is a cheap distance/speed approximation (no extra Google
+     * calls) — labelled approximate on the UI.
+     *
+     * Purely additive: only computed for "today"; never touches the delivered
+     * report logic.
+     */
+    private function buildOngoingDispatchTracking(?float $officeLat, ?float $officeLng, int $radiusMeters = 300): array
+    {
+        // Current out_for_delivery orders are inherently "now".
+        $ofd = \DB::table('t_crm_prod_order as o')
+            ->leftJoin('t_sys_user as u', 'u.id', '=', 'o.assigned_rider_user_id')
+            ->leftJoin('t_crm_prod_customer as c', 'c.id', '=', 'o.customer_id')
+            ->where('o.order_status', 'out_for_delivery')
+            ->whereNotNull('o.assigned_rider_user_id')
+            ->select([
+                'o.id', 'o.order_number', 'o.total_price', 'o.payment_method',
+                'o.assigned_rider_user_id as rider_id', 'u.fullname as rider_name',
+                'o.delivery_priority', 'o.estimated_delivery_at', 'o.eta_calculated_at',
+                \DB::raw('CONCAT(COALESCE(c.first_name, ""), " ", COALESCE(c.last_name, "")) as customer_name'),
+                'c.city as customer_city',
+            ])
+            ->get();
+
+        if ($ofd->isEmpty()) {
+            return [];
+        }
+
+        $riderIds = $ofd->pluck('rider_id')->unique()->filter()->values()->all();
+
+        // Latest fresh GPS points (last 15 min), newest first per rider.
+        $gpsByRider = [];
+        if (!empty($riderIds)) {
+            $pts = \DB::table('t_ops_rider_location')
+                ->whereIn('user_id', $riderIds)
+                ->where('captured_at', '>=', now()->subMinutes(15))
+                ->orderBy('captured_at', 'desc')
+                ->select('user_id', 'latitude', 'longitude', 'captured_at')
+                ->get();
+            foreach ($pts as $p) {
+                $gpsByRider[$p->user_id][] = $p;
+            }
+        }
+
+        // Latest heartbeat per rider in the last 24h — for GPS freshness display
+        // ("now" / "15 min ago" / stale), independent of the 15-min fresh window
+        // used for status logic above.
+        $lastSeenByRider = [];
+        if (!empty($riderIds)) {
+            $hb = \DB::table('t_ops_rider_location')
+                ->select('user_id', \DB::raw('MAX(captured_at) as last_at'))
+                ->whereIn('user_id', $riderIds)
+                ->where('captured_at', '>=', now()->subHours(24))
+                ->groupBy('user_id')
+                ->get();
+            foreach ($hb as $h) {
+                $t = \Carbon\Carbon::parse($h->last_at);
+                $age = abs(now()->diffInMinutes($t));
+                $lastSeenByRider[$h->user_id] = [
+                    'gps_age_minutes' => $age,
+                    'gps_age_text' => $t->diffForHumans(),
+                    'gps_is_fresh' => $age <= 6,
+                ];
+            }
+        }
+
+        // Delivered-today counts per dispatch wave (rider + eta_calculated_at) → progress.
+        $today = now()->format('Y-m-d');
+        $deliveredByWave = [];
+        if (!empty($riderIds)) {
+            $delivered = \DB::table('t_crm_prod_order as o')
+                ->join('t_crm_order_status_history as osh', function ($j) use ($today) {
+                    $j->on('o.id', '=', 'osh.order_id')
+                      ->where('osh.status_code', '=', 'delivered')
+                      ->whereDate('osh.changed_at', $today);
+                })
+                ->whereIn('o.assigned_rider_user_id', $riderIds)
+                ->whereNotNull('o.eta_calculated_at')
+                ->select('o.assigned_rider_user_id as rid', 'o.eta_calculated_at as calc_at',
+                    \DB::raw('COUNT(DISTINCT o.id) as c'))
+                ->groupBy('o.assigned_rider_user_id', 'o.eta_calculated_at')
+                ->get();
+            foreach ($delivered as $d) {
+                $deliveredByWave[$d->rid][(string) $d->calc_at] = (int) $d->c;
+            }
+        }
+
+        $isCashMethod = fn($m) => in_array(strtolower($m ?? 'cash'), ['cash', 'cash_on_delivery', 'cod']);
+
+        $out = [];
+        foreach ($ofd->groupBy('rider_id') as $rid => $orders) {
+            $riderName = $orders->first()->rider_name ?: "Rider #{$rid}";
+            $dispatched = $orders->filter(fn($o) => !empty($o->eta_calculated_at));
+            $undispatched = $orders->filter(fn($o) => empty($o->eta_calculated_at));
+
+            // Distance to office + approach detection + approx office ETA.
+            $distance = null; $approaching = null; $gpsFresh = false; $etaToOfficeMin = null;
+            $latest = $gpsByRider[$rid][0] ?? null;
+            if ($latest && $officeLat && $officeLng) {
+                $gpsFresh = true;
+                $distance = (int) round($this->haversineDistance($officeLat, $officeLng, (float) $latest->latitude, (float) $latest->longitude));
+                // Compare against an earlier fresh point to infer direction.
+                $prev = null;
+                foreach (($gpsByRider[$rid] ?? []) as $pp) {
+                    if ($pp->captured_at !== $latest->captured_at) { $prev = $pp; break; }
+                }
+                if ($prev) {
+                    $prevDist = $this->haversineDistance($officeLat, $officeLng, (float) $prev->latitude, (float) $prev->longitude);
+                    $approaching = $distance < ($prevDist - 30); // moving >30 m closer
+                }
+                if ($distance > $radiusMeters) {
+                    // ~22 km/h average city speed (approximation, no Google call).
+                    $etaToOfficeMin = max(1, (int) round(($distance / 1000) / 22 * 60));
+                }
+            }
+
+            $atOffice = ($distance !== null && $distance <= $radiusMeters);
+
+            // "Returning to office" — a single cached Google ETA, only when the
+            // rider has finished the orders in their current dispatch (the
+            // helper enforces: no pending dispatched OFD + >=1 dispatched
+            // delivered today + away + fresh GPS).
+            $returnInfo = null;
+            if ($gpsFresh && !$atOffice) {
+                $returnInfo = $this->getReturnToOfficeInfo((int) $rid, $officeLat, $officeLng, $radiusMeters);
+            }
+
+            // Status priority: returning > warnings/waits > on route.
+            $status = 'idle';
+            if ($returnInfo) {
+                $status = 'returning';
+            } elseif ($undispatched->count() > 0) {
+                if ($atOffice) {
+                    $status = 'waiting_at_office';
+                } elseif ($gpsFresh) {
+                    $status = 'left_without_dispatch';
+                } else {
+                    $status = 'away_unknown';
+                }
+            } elseif ($dispatched->count() > 0) {
+                $status = $atOffice ? 'at_office' : 'on_route';
+            }
+
+            // Dispatched OFD orders grouped by wave (eta_calculated_at).
+            $batches = [];
+            foreach ($dispatched->groupBy('eta_calculated_at') as $calcAt => $bo) {
+                $bo = $bo->sortBy(fn($o) => $o->delivery_priority ?? 999)->values();
+                $deliveredCnt = $deliveredByWave[$rid][(string) $calcAt] ?? 0;
+                $batches[] = [
+                    'dispatch_time' => $calcAt,
+                    'dispatch_time_display' => \Carbon\Carbon::parse($calcAt)->format('h:i A'),
+                    'pending_count' => $bo->count(),
+                    'delivered_count' => $deliveredCnt,
+                    'total_count' => $bo->count() + $deliveredCnt,
+                    'orders' => $bo->map(function ($o) use ($isCashMethod) {
+                        $eta = $o->estimated_delivery_at ? \Carbon\Carbon::parse($o->estimated_delivery_at) : null;
+                        return [
+                            'order_number' => $o->order_number,
+                            'customer_name' => trim($o->customer_name) ?: 'Unknown',
+                            'customer_city' => $o->customer_city,
+                            'priority' => $o->delivery_priority,
+                            'amount' => (float) $o->total_price,
+                            'payment_type' => $isCashMethod($o->payment_method) ? 'cash' : 'online',
+                            'eta_window' => $eta
+                                ? ($eta->format('h:i A') . ' – ' . $eta->copy()->addMinutes(10)->format('h:i A'))
+                                : null,
+                        ];
+                    })->values()->all(),
+                ];
+            }
+            usort($batches, fn($a, $b) => strcmp((string) $a['dispatch_time'], (string) $b['dispatch_time']));
+
+            // Undispatched OFD orders (the "forgot / next dispatch" group).
+            $undispatchedList = $undispatched
+                ->sortBy(fn($o) => $o->delivery_priority ?? 999)
+                ->values()
+                ->map(function ($o) use ($isCashMethod) {
+                    return [
+                        'order_number' => $o->order_number,
+                        'customer_name' => trim($o->customer_name) ?: 'Unknown',
+                        'customer_city' => $o->customer_city,
+                        'priority' => $o->delivery_priority,
+                        'amount' => (float) $o->total_price,
+                        'payment_type' => $isCashMethod($o->payment_method) ? 'cash' : 'online',
+                    ];
+                })->all();
+
+            $out[] = [
+                'rider_id' => $rid,
+                'rider_name' => $riderName,
+                'status' => $status,
+                'ofd_total' => $orders->count(),
+                'dispatched_count' => $dispatched->count(),
+                'undispatched_count' => $undispatched->count(),
+                'distance_to_office_m' => $distance,
+                'distance_to_office_display' => $distance !== null
+                    ? ($distance < 1000 ? $distance . ' m' : round($distance / 1000, 1) . ' km')
+                    : null,
+                'approaching_office' => $approaching,
+                'gps_fresh' => $gpsFresh,
+                'gps_age_minutes' => $lastSeenByRider[$rid]['gps_age_minutes'] ?? null,
+                'gps_age_text' => $lastSeenByRider[$rid]['gps_age_text'] ?? null,
+                'eta_to_office_min' => $etaToOfficeMin,
+                'return_to_office' => $returnInfo,
+                'dispatch_batches' => $batches,
+                'undispatched_orders' => $undispatchedList,
+            ];
+        }
+
+        // ⭐ Riders who finished EVERYTHING (delivered their dispatch, no OFD
+        //    orders left) but are still away — show their return-to-office ETA
+        //    so the store knows when they'll be back. They aren't in the OFD
+        //    loop above, so add them here.
+        $ofdRiderIds = $ofd->pluck('rider_id')->unique()->filter()->map(fn($v) => (int) $v)->all();
+        $finishedDispatchRiders = \DB::table('t_crm_prod_order as o')
+            ->join('t_crm_order_status_history as osh', function ($j) use ($today) {
+                $j->on('o.id', '=', 'osh.order_id')
+                  ->where('osh.status_code', '=', 'delivered')
+                  ->whereDate('osh.changed_at', $today);
+            })
+            ->leftJoin('t_sys_user as u', 'u.id', '=', 'o.assigned_rider_user_id')
+            ->whereNotNull('o.eta_calculated_at')
+            ->whereNotNull('o.assigned_rider_user_id')
+            ->select('o.assigned_rider_user_id as rid', 'u.fullname as rider_name',
+                \DB::raw('COUNT(DISTINCT o.id) as delivered_count'))
+            ->groupBy('o.assigned_rider_user_id', 'u.fullname')
+            ->get();
+        // GPS freshness for finished riders (they pass the fresh-GPS gate in
+        // getReturnToOfficeInfo, but fetch the exact last-seen for display).
+        $finishedSeenByRider = [];
+        $finishedIds = $finishedDispatchRiders->pluck('rid')->filter()->map(fn($v) => (int) $v)->all();
+        if (!empty($finishedIds)) {
+            $hb2 = \DB::table('t_ops_rider_location')
+                ->select('user_id', \DB::raw('MAX(captured_at) as last_at'))
+                ->whereIn('user_id', $finishedIds)
+                ->where('captured_at', '>=', now()->subHours(24))
+                ->groupBy('user_id')
+                ->get();
+            foreach ($hb2 as $h) {
+                $t = \Carbon\Carbon::parse($h->last_at);
+                $age = abs(now()->diffInMinutes($t));
+                $finishedSeenByRider[$h->user_id] = [
+                    'gps_age_minutes' => $age,
+                    'gps_age_text' => $t->diffForHumans(),
+                ];
+            }
+        }
+        foreach ($finishedDispatchRiders as $fr) {
+            $frid = (int) $fr->rid;
+            if (in_array($frid, $ofdRiderIds, true)) {
+                continue; // Already covered (still has OFD orders).
+            }
+            $returnInfo = $this->getReturnToOfficeInfo($frid, $officeLat, $officeLng, $radiusMeters);
+            if (!$returnInfo) {
+                continue; // At office / not fresh / not eligible.
+            }
+            $out[] = [
+                'rider_id' => $frid,
+                'rider_name' => $fr->rider_name ?: "Rider #{$frid}",
+                'status' => 'returning',
+                'ofd_total' => 0,
+                'dispatched_count' => 0,
+                'undispatched_count' => 0,
+                'delivered_today' => (int) $fr->delivered_count,
+                'distance_to_office_m' => $returnInfo['distance_meters'],
+                'distance_to_office_display' => $returnInfo['distance_display'],
+                'approaching_office' => null,
+                'gps_fresh' => true,
+                'gps_age_minutes' => $finishedSeenByRider[$frid]['gps_age_minutes'] ?? null,
+                'gps_age_text' => $finishedSeenByRider[$frid]['gps_age_text'] ?? null,
+                'eta_to_office_min' => $returnInfo['minutes'],
+                'return_to_office' => $returnInfo,
+                'dispatch_batches' => [],
+                'undispatched_orders' => [],
+            ];
+        }
+
+        // Order: warnings first, then biggest workload.
+        $rank = [
+            'left_without_dispatch' => 0, 'waiting_at_office' => 1, 'returning' => 2,
+            'on_route' => 3, 'at_office' => 4, 'away_unknown' => 5, 'idle' => 6,
+        ];
+        usort($out, function ($a, $b) use ($rank) {
+            $ra = $rank[$a['status']] ?? 9;
+            $rb = $rank[$b['status']] ?? 9;
+            if ($ra !== $rb) return $ra <=> $rb;
+            return $b['ofd_total'] <=> $a['ofd_total'];
+        });
+
+        return $out;
+    }
+
+    /**
+     * Lightweight per-rider LIVE status for the Orders → Riders tab cards.
+     *
+     * Returns two maps keyed by rider id:
+     *   - gps:      { age_minutes, age_text, is_fresh }  (GPS heartbeat freshness)
+     *   - dispatch: { status, ofd_total, dispatched_count, undispatched_count,
+     *                 distance_to_office_display, return_to_office }
+     *
+     * Reuses buildOngoingDispatchTracking() so the status (on_route /
+     * waiting_at_office / left_without_dispatch / returning + office ETA) is
+     * identical to the Dispatch Tracker. Cheap + cached Google call inside.
+     */
+    public function getRidersLiveStatus(Request $request)
+    {
+        try {
+            $office = $this->getPrimaryOfficeCoords();
+            $officeLat = $office['lat'] ?? null;
+            $officeLng = $office['lng'] ?? null;
+
+            $ongoing = $this->buildOngoingDispatchTracking($officeLat, $officeLng, 300);
+            $dispatch = [];
+            foreach ($ongoing as $o) {
+                $dispatch[$o['rider_id']] = [
+                    'status' => $o['status'],
+                    'ofd_total' => $o['ofd_total'],
+                    'dispatched_count' => $o['dispatched_count'],
+                    'undispatched_count' => $o['undispatched_count'],
+                    'distance_to_office_display' => $o['distance_to_office_display'] ?? null,
+                    'return_to_office' => $o['return_to_office'] ?? null,
+                ];
+            }
+
+            // GPS freshness — latest heartbeat per rider in last 24h.
+            $gps = [];
+            $rows = \DB::table('t_ops_rider_location')
+                ->select('user_id', \DB::raw('MAX(captured_at) as last_at'))
+                ->where('captured_at', '>=', now()->subHours(24))
+                ->groupBy('user_id')
+                ->get();
+            foreach ($rows as $r) {
+                $t = \Carbon\Carbon::parse($r->last_at);
+                $age = abs(now()->diffInMinutes($t));
+                $gps[$r->user_id] = [
+                    'age_minutes' => $age,
+                    'age_text' => $t->diffForHumans(),
+                    'is_fresh' => $age <= 6,
+                ];
+            }
+
+            return response()->json([
+                'success' => true,
+                'gps' => $gps,
+                'dispatch' => $dispatch,
+                'timestamp' => now()->toIso8601String(),
+            ]);
+        } catch (\Throwable $e) {
+            \Log::warning('getRidersLiveStatus failed (non-fatal)', ['error' => $e->getMessage()]);
+            return response()->json(['success' => false, 'gps' => [], 'dispatch' => []]);
         }
     }
 
@@ -8641,13 +9026,8 @@ class RiderController extends Controller
                             $googleMapsUrl = "https://www.google.com/maps?q={$lat},{$lng}";
                         }
                         
-                        // ⭐ Get saved_by user name if available
-                        $savedByName = null;
-                        if ($order->customer->verified_location_saved_by) {
-                            $savedByName = \DB::table('t_sys_user')
-                                ->where('id', $order->customer->verified_location_saved_by)
-                                ->value('fullname');
-                        }
+                        // ⭐ Get saved_by label (staff name, or "Customer" for app-set pins)
+                        $savedByName = \App\Models\CRM\CustomerModel::verifierLabel($order->customer->verified_location_saved_by);
                         
                         $verifiedLocation = [
                             'latitude' => $lat,
@@ -8813,6 +9193,38 @@ class RiderController extends Controller
                 'orders' => $formattedOrders,
                 'total_count' => $formattedOrders->count()
             ];
+
+            // ⭐ Store-wide "left office without dispatching" watch (for the
+            //    dismissible banner shown to all store users). Only checks
+            //    riders who actually have undispatched OFD orders, so it's
+            //    cheap and self-clearing.
+            try {
+                $candidateRiderIds = \DB::table('t_crm_prod_order')
+                    ->where('order_status', 'out_for_delivery')
+                    ->whereNull('eta_calculated_at')
+                    ->whereNotNull('assigned_rider_user_id')
+                    ->distinct()
+                    ->pluck('assigned_rider_user_id')
+                    ->toArray();
+                $leftRiders = [];
+                if (!empty($candidateRiderIds)) {
+                    foreach ($this->detectLeftWithoutDispatch($candidateRiderIds) as $rid => $info) {
+                        if (!empty($info['flagged'])) {
+                            $leftRiders[] = [
+                                'rider_id' => $rid,
+                                'rider_name' => $info['rider_name'] ?: "Rider #{$rid}",
+                                'undispatched_count' => $info['undispatched_count'],
+                                'distance_meters' => $info['distance_meters'],
+                            ];
+                        }
+                    }
+                }
+                $response['left_without_dispatch_riders'] = $leftRiders;
+            } catch (\Throwable $e) {
+                // Never let the watch break the orders feed.
+                $response['left_without_dispatch_riders'] = [];
+                \Log::warning('left_without_dispatch watch failed (non-fatal)', ['error' => $e->getMessage()]);
+            }
             
             // Single rider summary (backward compatible)
             if ($riderSummary) {
@@ -8976,6 +9388,11 @@ class RiderController extends Controller
                         : null,
                 ] : null,
                 'route_lock' => $this->getRouteLockInfo($riderId),
+                // ⭐ "Left office without dispatching" flag (live; auto-clears).
+                'left_without_dispatch' => $this->detectLeftWithoutDispatch([$riderId])[$riderId] ?? null,
+                // ⭐ "Returning to office" ETA (single Google call, cached) once
+                //    the rider has delivered the last order in their dispatch.
+                'return_to_office' => $this->getReturnToOfficeInfo($riderId),
             ];
             
         } catch (\Exception $e) {
@@ -8985,6 +9402,263 @@ class RiderController extends Controller
             ]);
             return null;
         }
+    }
+
+    /**
+     * Detect riders who have left the PRIMARY office without pressing Dispatch.
+     *
+     * A rider is flagged when ALL of these hold:
+     *   - has >= 1 out_for_delivery order that is NOT dispatched (eta_calculated_at IS NULL)
+     *   - their latest GPS heartbeat is fresh (<= 15 min old)
+     *   - that GPS is > 300 m from the PRIMARY office (t_ops_company_locations.is_primary)
+     *
+     * It clears itself once they dispatch, return within 300 m, or have no
+     * undispatched OFD orders left — nothing is persisted, so it never lingers.
+     *
+     * Uses the single primary office for ALL riders (per requirement), NOT the
+     * per-rider assigned base. Batched (a handful of queries total) so it can
+     * cover many riders cheaply.
+     *
+     * @param int[] $riderIds
+     * @return array<int, array{flagged:bool,undispatched_count:int,distance_meters:?int,gps_fresh:bool,rider_name:?string}>
+     */
+    private function detectLeftWithoutDispatch(array $riderIds): array
+    {
+        $result = [];
+        $riderIds = array_values(array_unique(array_filter(array_map('intval', $riderIds), fn($v) => $v > 0)));
+        if (empty($riderIds)) {
+            return $result;
+        }
+
+        // Primary office — single source of truth for all dispatch checks.
+        $office = \DB::table('t_ops_company_locations')
+            ->where('is_primary', 1)
+            ->where('is_active', 1)
+            ->select('latitude', 'longitude')
+            ->first();
+        if (!$office || !$office->latitude || !$office->longitude) {
+            return $result; // Cannot assert "left office" without office coords.
+        }
+        $officeLat = (float) $office->latitude;
+        $officeLng = (float) $office->longitude;
+        $radiusMeters = 300;
+        $freshCutoff = now()->subMinutes(15);
+
+        // Undispatched OFD order counts per rider.
+        $undispatched = \DB::table('t_crm_prod_order')
+            ->whereIn('assigned_rider_user_id', $riderIds)
+            ->where('order_status', 'out_for_delivery')
+            ->whereNull('eta_calculated_at')
+            ->select('assigned_rider_user_id as rider_id', \DB::raw('COUNT(*) as cnt'))
+            ->groupBy('assigned_rider_user_id')
+            ->pluck('cnt', 'rider_id')
+            ->toArray();
+
+        // Pending DISPATCHED OFD counts — a rider mid-delivery isn't "forgot".
+        $pendingDispatched = \DB::table('t_crm_prod_order')
+            ->whereIn('assigned_rider_user_id', $riderIds)
+            ->where('order_status', 'out_for_delivery')
+            ->whereNotNull('eta_calculated_at')
+            ->select('assigned_rider_user_id as rider_id', \DB::raw('COUNT(*) as cnt'))
+            ->groupBy('assigned_rider_user_id')
+            ->pluck('cnt', 'rider_id')
+            ->toArray();
+
+        // Dispatched orders delivered TODAY — a rider who already completed a
+        // dispatch and is away is "returning for next dispatch", not "forgot".
+        $today = now()->format('Y-m-d');
+        $deliveredDispatched = \DB::table('t_crm_prod_order as o')
+            ->join('t_crm_order_status_history as osh', function ($j) use ($today) {
+                $j->on('o.id', '=', 'osh.order_id')
+                  ->where('osh.status_code', '=', 'delivered')
+                  ->whereDate('osh.changed_at', $today);
+            })
+            ->whereIn('o.assigned_rider_user_id', $riderIds)
+            ->whereNotNull('o.eta_calculated_at')
+            ->select('o.assigned_rider_user_id as rider_id', \DB::raw('COUNT(DISTINCT o.id) as cnt'))
+            ->groupBy('o.assigned_rider_user_id')
+            ->pluck('cnt', 'rider_id')
+            ->toArray();
+
+        // Latest fresh GPS point per rider (desc order → first seen = latest).
+        $latestByRider = [];
+        $gpsPoints = \DB::table('t_ops_rider_location')
+            ->whereIn('user_id', $riderIds)
+            ->where('captured_at', '>=', $freshCutoff)
+            ->orderBy('captured_at', 'desc')
+            ->select('user_id', 'latitude', 'longitude')
+            ->get();
+        foreach ($gpsPoints as $pt) {
+            if (!isset($latestByRider[$pt->user_id])) {
+                $latestByRider[$pt->user_id] = $pt;
+            }
+        }
+
+        // Names (only needed for flagged riders, but cheap to fetch all).
+        $names = \DB::table('t_sys_user')
+            ->whereIn('id', $riderIds)
+            ->pluck('fullname', 'id')
+            ->toArray();
+
+        foreach ($riderIds as $rid) {
+            $cnt = (int) ($undispatched[$rid] ?? 0);
+            $entry = [
+                'flagged' => false,
+                'undispatched_count' => $cnt,
+                'distance_meters' => null,
+                'gps_fresh' => isset($latestByRider[$rid]),
+                'rider_name' => $names[$rid] ?? null,
+            ];
+            // Only the pure "forgot to dispatch" case: has undispatched orders,
+            // but has NOT dispatched anything yet today (no pending dispatched
+            // OFD and none delivered from a dispatch). Riders who already
+            // dispatched/delivered a wave and are away are "returning", handled
+            // separately by the return-to-office logic.
+            $hasPendingDispatched = (int) ($pendingDispatched[$rid] ?? 0) > 0;
+            $hasDeliveredDispatched = (int) ($deliveredDispatched[$rid] ?? 0) > 0;
+            if ($cnt > 0 && !$hasPendingDispatched && !$hasDeliveredDispatched && isset($latestByRider[$rid])) {
+                $pt = $latestByRider[$rid];
+                $dist = $this->haversineDistance($officeLat, $officeLng, (float) $pt->latitude, (float) $pt->longitude);
+                $entry['distance_meters'] = (int) round($dist);
+                if ($dist > $radiusMeters) {
+                    $entry['flagged'] = true;
+                }
+            }
+            $result[$rid] = $entry;
+        }
+
+        return $result;
+    }
+
+    /**
+     * Primary office coordinates (single source for all dispatch checks).
+     * Cached for the lifetime of the request to avoid repeat lookups.
+     */
+    private function getPrimaryOfficeCoords(): ?array
+    {
+        static $cached = null; // null = not loaded, false = none, array = coords
+        if ($cached !== null) {
+            return $cached ?: null;
+        }
+        $o = \DB::table('t_ops_company_locations')
+            ->where('is_primary', 1)
+            ->where('is_active', 1)
+            ->select('latitude', 'longitude')
+            ->first();
+        if ($o && $o->latitude && $o->longitude) {
+            return $cached = ['lat' => (float) $o->latitude, 'lng' => (float) $o->longitude];
+        }
+        $cached = false;
+        return null;
+    }
+
+    /**
+     * Compute a rider's "return to office" ETA with a SINGLE Google call.
+     *
+     * Only returns a value when the rider has FINISHED the orders in their
+     * dispatch — i.e. the last order in the dispatch has been delivered:
+     *   - no pending dispatched OFD orders still out, AND
+     *   - >= 1 dispatched order was delivered today, AND
+     *   - GPS is fresh (<= 15 min), AND
+     *   - they are away from the primary office (> radius).
+     * Otherwise null (still delivering / already at office / no GPS).
+     *
+     * The Google Directions result is cached per rider for 3 minutes, so
+     * repeated store/tracker polls never trigger more than ~1 call per rider
+     * per window. Falls back to a distance/speed approximation if Google is
+     * unavailable. Reuses getMultiStopEtaFromGoogle (monthly cap + usage
+     * counter handled there).
+     *
+     * @return array{minutes:int,arrival_at:string,arrival_display:string,distance_meters:int,distance_display:string,source:string}|null
+     */
+    private function getReturnToOfficeInfo(int $riderId, ?float $officeLat = null, ?float $officeLng = null, int $radiusMeters = 300): ?array
+    {
+        if ($officeLat === null || $officeLng === null) {
+            $office = $this->getPrimaryOfficeCoords();
+            if (!$office) {
+                return null;
+            }
+            $officeLat = $office['lat'];
+            $officeLng = $office['lng'];
+        }
+
+        // Latest fresh GPS point.
+        $loc = \DB::table('t_ops_rider_location')
+            ->where('user_id', $riderId)
+            ->where('captured_at', '>=', now()->subMinutes(15))
+            ->orderBy('captured_at', 'desc')
+            ->select('latitude', 'longitude')
+            ->first();
+        if (!$loc || !$loc->latitude || !$loc->longitude) {
+            return null;
+        }
+
+        $distance = $this->haversineDistance($officeLat, $officeLng, (float) $loc->latitude, (float) $loc->longitude);
+        if ($distance <= $radiusMeters) {
+            return null; // Already at / near office — nothing to estimate.
+        }
+        // Sanity guard: a fix more than 60 km from the office is almost
+        // certainly a stale/cross-city GPS glitch (common in dev), not a real
+        // "coming back soon" — skip it so we never show absurd ETAs.
+        if ($distance > 60000) {
+            return null;
+        }
+
+        // Must have NO pending dispatched OFD orders (the dispatch is done).
+        $pendingDispatched = \DB::table('t_crm_prod_order')
+            ->where('assigned_rider_user_id', $riderId)
+            ->where('order_status', 'out_for_delivery')
+            ->whereNotNull('eta_calculated_at')
+            ->count();
+        if ($pendingDispatched > 0) {
+            return null; // Still delivering the current dispatch.
+        }
+
+        // Must have delivered at least one DISPATCHED order today (i.e. there
+        // genuinely was a dispatch that has now been completed).
+        $today = now()->format('Y-m-d');
+        $deliveredDispatched = \DB::table('t_crm_prod_order as o')
+            ->join('t_crm_order_status_history as osh', function ($j) use ($today) {
+                $j->on('o.id', '=', 'osh.order_id')
+                  ->where('osh.status_code', '=', 'delivered')
+                  ->whereDate('osh.changed_at', $today);
+            })
+            ->where('o.assigned_rider_user_id', $riderId)
+            ->whereNotNull('o.eta_calculated_at')
+            ->count();
+        if ($deliveredDispatched < 1) {
+            return null; // No completed dispatch today.
+        }
+
+        // Single Google call, cached 3 min per rider (-1 sentinel = no result,
+        // so failures don't hammer the API on every poll).
+        $lat = (float) $loc->latitude;
+        $lng = (float) $loc->longitude;
+        $cached = \Cache::remember("return_office_eta:{$riderId}", 180, function () use ($lat, $lng, $officeLat, $officeLng) {
+            $eta = $this->getMultiStopEtaFromGoogle([
+                ['lat' => $lat, 'lng' => $lng],
+                ['lat' => $officeLat, 'lng' => $officeLng],
+            ]);
+            return $eta['legs'][0] ?? -1;
+        });
+
+        $source = 'google_maps';
+        $minutes = (is_numeric($cached) && $cached >= 0) ? (int) round($cached) : null;
+        if ($minutes === null) {
+            // Fallback approximation (~22 km/h average city speed).
+            $minutes = max(1, (int) round(($distance / 1000) / 22 * 60));
+            $source = 'approx';
+        }
+
+        $arrival = now()->addMinutes($minutes);
+        return [
+            'minutes' => $minutes,
+            'arrival_at' => $arrival->toIso8601String(),
+            'arrival_display' => $arrival->format('h:i A'),
+            'distance_meters' => (int) round($distance),
+            'distance_display' => $distance < 1000 ? ((int) round($distance)) . ' m' : round($distance / 1000, 1) . ' km',
+            'source' => $source,
+        ];
     }
 
     private function getRouteLockInfo($riderId)
@@ -19224,6 +19898,8 @@ class RiderController extends Controller
                     ->whereIn('id', array_unique($verifierIds))
                     ->pluck('fullname', 'id')
                     ->toArray();
+                // Customer-app pins are stamped with the sentinel id -> "Customer".
+                $names[\App\Models\CRM\CustomerModel::VERIFIED_PIN_CUSTOMER_ID] = 'Customer';
                 foreach ($payload as &$p) {
                     $vid = $p['verified_location_saved_by'] ?? null;
                     $p['verified_location_saved_by_name'] = ($vid && isset($names[$vid])) ? $names[$vid] : null;
@@ -20654,6 +21330,8 @@ class RiderController extends Controller
                 ->pluck('fullname', 'id')
                 ->toArray();
         }
+        // Customer-app pins are stamped with the sentinel id -> "Customer".
+        $verifierNames[\App\Models\CRM\CustomerModel::VERIFIED_PIN_CUSTOMER_ID] = 'Customer';
 
         // Sort items inside each bundle by packet position + finalize
         // status fields used by the manager planner.

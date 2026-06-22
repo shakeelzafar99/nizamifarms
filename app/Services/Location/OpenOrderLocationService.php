@@ -297,7 +297,9 @@ class OpenOrderLocationService
                 'region_name'   => $r->region_name,
                 // No saver = saved automatically from the WhatsApp reply.
                 'auto'          => empty($r->verified_location_saved_by),
-                'saved_by_name' => $r->saved_by_name ?: null,
+                'saved_by_name' => ((int) $r->verified_location_saved_by === \App\Models\CRM\CustomerModel::VERIFIED_PIN_CUSTOMER_ID)
+                    ? 'Customer'
+                    : ($r->saved_by_name ?: null),
                 'saved_at'      => $savedAt ? $savedAt->toIso8601String() : null,
                 'saved_human'   => $savedAt ? $savedAt->diffForHumans() : null,
                 'maps_url'      => 'https://www.google.com/maps/search/?api=1&query=' . $r->latitude . ',' . $r->longitude,

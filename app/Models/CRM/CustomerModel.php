@@ -15,6 +15,14 @@ class CustomerModel extends BaseModel
     protected $primaryKey = 'id';
     public $timestamps = true;
 
+    /**
+     * Sentinel stored in verified_location_saved_by when the CUSTOMER set the
+     * pin from the customer app (not an ops/staff user). The column is a
+     * signed INT, so this negative value is safe and never collides with a
+     * real t_sys_user id. verifierLabel() renders it as "Customer".
+     */
+    public const VERIFIED_PIN_CUSTOMER_ID = -9999;
+
     protected $fillable = [
         'phone',
         'phone_normalized',
@@ -182,6 +190,22 @@ class CustomerModel extends BaseModel
                 return $value;
             }
         }
+    }
+
+    /**
+     * Map a verified_location_saved_by id to a human display label.
+     * Returns "Customer" for the customer-app sentinel, the staff member's
+     * fullname for a real user id, or null when unset.
+     */
+    public static function verifierLabel($savedById): ?string
+    {
+        if ($savedById === null || $savedById === '') {
+            return null;
+        }
+        if ((int) $savedById === self::VERIFIED_PIN_CUSTOMER_ID) {
+            return 'Customer';
+        }
+        return \DB::table('t_sys_user')->where('id', $savedById)->value('fullname');
     }
 
     /**

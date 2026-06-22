@@ -275,8 +275,7 @@ class OrderController extends Controller
                         'google_maps_url' => $order->customer->verified_location_url ?: 
                             ($order->customer->latitude && $order->customer->longitude ? 
                                 "https://www.google.com/maps?q={$order->customer->latitude},{$order->customer->longitude}" : null),
-                        'saved_by' => $order->customer->verified_location_saved_by ? 
-                            \DB::table('t_sys_user')->where('id', $order->customer->verified_location_saved_by)->value('fullname') : null,
+                        'saved_by' => \App\Models\CRM\CustomerModel::verifierLabel($order->customer->verified_location_saved_by),
                         'saved_at' => $order->customer->verified_location_saved_at,
                     ];
                 }

@@ -19,6 +19,13 @@ use Illuminate\Support\Facades\Log;
 class CustomerAppController extends Controller
 {
     /**
+     * Sentinel stored in verified_location_saved_by when the CUSTOMER (not an
+     * ops/staff user) set the pin from the customer app. Single source of
+     * truth lives on CustomerModel so web/ops screens render it identically.
+     */
+    private const CUSTOMER_PIN_SAVED_BY = CustomerModel::VERIFIED_PIN_CUSTOMER_ID;
+
+    /**
      * Live rider tracking for an out-for-delivery order.
      *
      * GET /api/customer-app/orders/{orderNumber}/tracking
@@ -295,6 +302,254 @@ class CustomerAppController extends Controller
     }
 
     /**
+     * Customer existence + profile + verified pin (Phase 4).
+     *
+     * GET /api/customer-app/customers/{mobile}
+     *
+     * Used by the customer app at login/register to decide "do we know this
+     * number?". Returns exists=false (200, not 404) for an unknown number so
+     * the app can route to registration. The bare {mobile} path hits this;
+     * {mobile}/orders is the separate history endpoint.
+     */
+    public function customerProfile(Request $request, string $mobile)
+    {
+        try {
+            $normalized = CustomerModel::normalizePhone(urldecode($mobile))['normalized'] ?? '';
+
+            if ($normalized === '' || $normalized === str_repeat('0', 10)) {
+                return response()->json([
+                    'success' => true, 'matched_phone' => '', 'exists' => false, 'customer' => null,
+                ], 200);
+            }
+
+            $customerId = $this->resolveCustomerIdByPhone($normalized);
+            if (!$customerId) {
+                return response()->json([
+                    'success' => true, 'matched_phone' => $normalized, 'exists' => false, 'customer' => null,
+                ], 200);
+            }
+
+            $c = DB::table('t_crm_prod_customer')
+                ->where('id', $customerId)
+                ->select([
+                    'id', 'first_name', 'last_name', 'email', 'phone_original',
+                    'total_orders', 'total_spent', 'first_order_date', 'last_order_date',
+                    'is_active', 'created_at',
+                    'latitude', 'longitude', 'geocoded_latitude', 'geocoded_longitude',
+                    'verified_location_url', 'verified_location_saved_by', 'verified_location_saved_at',
+                ])
+                ->first();
+
+            if (!$c) {
+                return response()->json([
+                    'success' => true, 'matched_phone' => $normalized, 'exists' => false, 'customer' => null,
+                ], 200);
+            }
+
+            return response()->json([
+                'success'       => true,
+                'matched_phone' => $normalized,
+                'exists'        => true,
+                'customer'      => [
+                    'name'             => trim(($c->first_name ?? '') . ' ' . ($c->last_name ?? '')) ?: null,
+                    'first_name'       => $c->first_name,
+                    'last_name'        => $c->last_name,
+                    'email'            => $c->email,
+                    'phone'            => $c->phone_original,
+                    'total_orders'     => (int) $c->total_orders,
+                    'total_spent'      => (float) $c->total_spent,
+                    'is_active'        => (bool) $c->is_active,
+                    'customer_since'   => $c->created_at
+                        ? \Carbon\Carbon::parse($c->created_at)->toIso8601String() : null,
+                    'first_order_date' => $c->first_order_date
+                        ? \Carbon\Carbon::parse($c->first_order_date)->toIso8601String() : null,
+                    'last_order_date'  => $c->last_order_date
+                        ? \Carbon\Carbon::parse($c->last_order_date)->toIso8601String() : null,
+                    'verified_pin'     => $this->buildPin($c),
+                ],
+            ], 200);
+        } catch (\Throwable $e) {
+            Log::error('CustomerAppController::customerProfile failed', ['error' => $e->getMessage()]);
+            return response()->json([
+                'success' => false, 'matched_phone' => '', 'exists' => false, 'customer' => null,
+            ], 500);
+        }
+    }
+
+    /**
+     * Customer writes/updates their own verified pin (Phase 4).
+     *
+     * POST /api/customer-app/customers/{mobile}/location
+     * body: { latitude, longitude, url?, first_name?, last_name? }
+     *
+     * If the number is brand-new (no NF customer yet) a minimal customer row
+     * is created so the pin has a home — this is the "new customer registers
+     * and drops a pin" case. Attribution is stamped with the customer sentinel
+     * (-9999), which reads back as "saved_by": "Customer". The pin overwrites
+     * any existing one (per current business decision).
+     */
+    public function saveCustomerLocation(Request $request, string $mobile)
+    {
+        try {
+            $validated = $request->validate([
+                'latitude'   => 'required|numeric|between:-90,90',
+                'longitude'  => 'required|numeric|between:-180,180',
+                'url'        => 'nullable|string|max:500',
+                'first_name' => 'nullable|string|max:100',
+                'last_name'  => 'nullable|string|max:100',
+            ]);
+
+            $norm       = CustomerModel::normalizePhone(urldecode($mobile));
+            $normalized = $norm['normalized'] ?? '';
+
+            if ($normalized === '' || $normalized === str_repeat('0', 10)) {
+                return response()->json(['success' => false, 'message' => 'Invalid mobile number.'], 422);
+            }
+
+            $customerId = $this->resolveCustomerIdByPhone($normalized);
+            $created    = false;
+
+            if (!$customerId) {
+                $customer = CustomerModel::create([
+                    'phone'            => $normalized,
+                    'phone_normalized' => $normalized,
+                    'phone_original'   => $norm['original'] ?? $normalized,
+                    'first_name'       => $validated['first_name'] ?? null,
+                    'last_name'        => $validated['last_name'] ?? null,
+                    'country'          => 'Pakistan',
+                    'is_active'        => 1,
+                    'created_by'       => self::CUSTOMER_PIN_SAVED_BY,
+                ]);
+                $customerId = $customer->id;
+                $created    = true;
+            }
+
+            $update = [
+                'latitude'                   => $validated['latitude'],
+                'longitude'                  => $validated['longitude'],
+                'verified_location_saved_by' => self::CUSTOMER_PIN_SAVED_BY,
+                'verified_location_saved_at' => now(),
+                'updated_by'                 => self::CUSTOMER_PIN_SAVED_BY,
+                // A coordinate pin is canonical; drop any stale URL unless one is supplied.
+                'verified_location_url'      => !empty($validated['url']) ? $validated['url'] : null,
+            ];
+
+            DB::table('t_crm_prod_customer')->where('id', $customerId)->update($update);
+
+            $c = DB::table('t_crm_prod_customer')
+                ->where('id', $customerId)
+                ->select([
+                    'latitude', 'longitude', 'geocoded_latitude', 'geocoded_longitude',
+                    'verified_location_url', 'verified_location_saved_by', 'verified_location_saved_at',
+                ])
+                ->first();
+
+            return response()->json([
+                'success'          => true,
+                'matched_phone'    => $normalized,
+                'created_customer' => $created,
+                'verified_pin'     => $this->buildPin($c),
+            ], 200);
+        } catch (\Illuminate\Validation\ValidationException $e) {
+            return response()->json([
+                'success' => false, 'message' => 'Validation failed.', 'errors' => $e->errors(),
+            ], 422);
+        } catch (\Throwable $e) {
+            Log::error('CustomerAppController::saveCustomerLocation failed', ['error' => $e->getMessage()]);
+            return response()->json(['success' => false, 'message' => 'Failed to save location.'], 500);
+        }
+    }
+
+    /**
+     * Invoice image for an order (Phase 4).
+     *
+     * GET /api/customer-app/orders/{orderNumber}/invoice
+     *
+     * Returns a URL to the rendered invoice PNG (the same image NF sends over
+     * WhatsApp), or available=false if it hasn't been generated on the web
+     * side yet (an operator must preview/send it once to capture it). The
+     * customer-app developer handles the display optics ("Invoice ready" etc).
+     */
+    public function orderInvoice(Request $request, string $orderNumber)
+    {
+        try {
+            $nfOrderNumber = $this->resolveAnyOrderNumber($orderNumber);
+
+            $order = DB::table('t_crm_prod_order')
+                ->where('order_number', $nfOrderNumber)
+                ->select(['id', 'order_number'])
+                ->first();
+
+            if (!$order) {
+                return response()->json(['success' => false, 'available' => false, 'image_url' => null], 404);
+            }
+
+            $result = app(\App\Http\Controllers\Web\WhatsAppWebController::class)
+                ->readInvoiceImageUrlForSend($order->id);
+
+            $available = !empty($result['success']) && !empty($result['image_url']);
+
+            return response()->json([
+                'success'         => true,
+                'available'       => $available,
+                'order_number'    => $this->stripShopifyPrefix($order->order_number),
+                'nf_order_number' => $order->order_number,
+                'image_url'       => $available ? $result['image_url'] : null,
+            ], 200);
+        } catch (\Throwable $e) {
+            Log::error('CustomerAppController::orderInvoice failed', [
+                'order_number' => $orderNumber,
+                'error'        => $e->getMessage(),
+            ]);
+            return response()->json(['success' => false, 'available' => false, 'image_url' => null], 500);
+        }
+    }
+
+    /**
+     * Build the verified-pin block for a customer row. Prefers explicit
+     * verified coords, falls back to geocoded. Returns null when we have
+     * neither coords nor a URL. Translates the customer sentinel to a
+     * "Customer" label.
+     */
+    private function buildPin(object $c): ?array
+    {
+        $explicitLat = $c->latitude;
+        $explicitLng = $c->longitude;
+        $hasExplicit = !($explicitLat === null || $explicitLat === '' || $explicitLng === null || $explicitLng === '');
+
+        $lat = $hasExplicit ? $explicitLat : ($c->geocoded_latitude ?? null);
+        $lng = $hasExplicit ? $explicitLng : ($c->geocoded_longitude ?? null);
+        $hasCoords = !($lat === null || $lng === null || $lat === '' || $lng === '');
+
+        if (!$hasCoords && empty($c->verified_location_url)) {
+            return null;
+        }
+
+        $savedById      = (int) ($c->verified_location_saved_by ?? 0);
+        $savedByCustomer = $savedById === self::CUSTOMER_PIN_SAVED_BY;
+
+        if ($savedByCustomer) {
+            $savedBy = 'Customer';
+        } elseif ($savedById > 0) {
+            $savedBy = DB::table('t_sys_user')->where('id', $savedById)->value('fullname');
+        } else {
+            $savedBy = null;
+        }
+
+        return [
+            'lat'               => $hasCoords ? (float) $lat : null,
+            'lng'               => $hasCoords ? (float) $lng : null,
+            'is_verified'       => $hasExplicit || !empty($c->verified_location_url),
+            'google_maps_url'   => $c->verified_location_url
+                ?: ($hasCoords ? "https://www.google.com/maps?q={$lat},{$lng}" : null),
+            'saved_by'          => $savedBy,
+            'saved_by_customer' => $savedByCustomer,
+            'saved_at'          => $c->verified_location_saved_at
+                ? \Carbon\Carbon::parse($c->verified_location_saved_at)->toIso8601String() : null,
+        ];
+    }
+
+    /**
      * Resolve the primary customer id for a normalized phone, following the
      * merged-customer chain so merged duplicates still return the surviving
      * customer's full history. Returns null when no customer matches.
@@ -374,17 +629,23 @@ class CustomerAppController extends Controller
             return null;
         }
         try {
-            $band  = (int) config('customer_app.eta_window_band_hours', 2);
-            $band  = $band > 0 ? $band : 2;
-            $start = \Carbon\Carbon::parse($order->estimated_delivery_at)->copy()->minute(0)->second(0);
-            $end   = $start->copy()->addHours($band);
+            $band = (int) config('customer_app.eta_window_band_minutes', 30);
+            $band = $band > 0 ? $band : 30;
+
+            $round = (int) config('customer_app.eta_window_round_to_minutes', 10);
+            $round = $round > 0 ? $round : 10;
+
+            $eta           = \Carbon\Carbon::parse($order->estimated_delivery_at)->copy()->second(0);
+            $flooredMinute = intdiv($eta->minute, $round) * $round;
+            $start         = $eta->copy()->minute($flooredMinute)->second(0);
+            $end           = $start->copy()->addMinutes($band);
 
             $day = $start->isToday() ? 'Today, '
                  : ($start->isTomorrow() ? 'Tomorrow, ' : $start->format('M j') . ', ');
 
             $window = $start->format('A') === $end->format('A')
-                ? $start->format('g') . '-' . $end->format('g') . ' ' . $end->format('A')
-                : $start->format('g A') . '-' . $end->format('g A');
+                ? $start->format('g:i') . '-' . $end->format('g:i') . ' ' . $end->format('A')
+                : $start->format('g:i A') . '-' . $end->format('g:i A');
 
             return $day . $window;
         } catch (\Throwable $e) {

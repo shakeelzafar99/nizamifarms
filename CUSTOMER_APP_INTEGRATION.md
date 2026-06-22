@@ -3,7 +3,8 @@
 **Phase 1 — Order status webhooks (outbound, LIVE)**
 **Phase 2 — ETA window + live rider tracking (BUILT, opt-in)**
 **Phase 3 — Full order snapshot + order history by mobile number (BUILT, section 15)**
-**Last updated:** June 16, 2026
+**Phase 4 — Customer profile/existence check, verified pin (read+write), invoice image (BUILT, section 16)**
+**Last updated:** June 21, 2026
 
 This is the only document the customer-app (Vercel) developer needs.
 NF pushes order status changes to a single endpoint on your side, and
@@ -409,15 +410,15 @@ field inside `data`:
 "data": {
   "order_number": "1234",
   "status": "out_for_delivery",
-  "eta_window": "Today, 4-6 PM",   // <- new optional field; may be null
+  "eta_window": "Today, 4:10-4:40 PM",   // <- new optional field; may be null
   "...": "..."
 }
 ```
 
 - It's a short, **already-formatted display string** — do not parse it.
   Drop it straight into your status pill / `expectedDeliveryWindow`.
-- Format examples: `"Today, 4-6 PM"`, `"Tomorrow, 10 AM-12 PM"`,
-  `"Jun 17, 11 AM-1 PM"`. Plain hyphen, no em dash, short.
+- Format examples: `"Today, 4:10-4:40 PM"`, `"Tomorrow, 11:50 AM-12:20 PM"`,
+  `"Jun 17, 4:10-4:40 PM"`. Plain hyphen, no em dash, short.
 - It is `null` until NF has computed a route ETA. In practice it's
   usually `null` on the `out_for_delivery` transition itself, because
   our dispatcher computes the route ETA a moment later — which is why
@@ -425,15 +426,18 @@ field inside `data`:
 - Adding this field does not require any change on your side; ignore it
   until you wire up `expectedDeliveryWindow`.
 
-### 10b. The window is a 2-hour band around our route ETA
+### 10b. The window is a 30-minute band around our route ETA
 
-NF derives the window from the rider's Google-route ETA, rounded to a
-`[hour .. hour+2h]` band. It is a *promise window*, not the precise
-live ETA (that's on the tracking feed, section 12).
+NF derives the window from the rider's Google-route ETA. The start is floored
+to the nearest 10 minutes, then a 30-minute band is added — so an ETA of
+11:57 AM becomes `"11:50 AM-12:20 PM"`, and 4:12 PM becomes `"4:10-4:40 PM"`.
+It is a *promise window*, not the precise live ETA (that's on the tracking
+feed, section 12).
 
-> **Assumption flag:** the 2-hour band width is a business-rule default.
-> If you'd prefer a different band (e.g. 1h or 3h), tell me and I'll
-> change one config value.
+> **Assumption flag:** the 30-minute band width
+> (`CUSTOMER_APP_ETA_WINDOW_BAND_MINUTES`) and the 10-minute rounding
+> (`CUSTOMER_APP_ETA_WINDOW_ROUND_TO_MINUTES`) are business-rule defaults. If
+> you'd prefer different values, tell me and I'll change one config value each.
 
 ---
 
@@ -452,8 +456,8 @@ out-for-delivery, NF can send a follow-up event when the ETA is
     "order_number": "1234",
     "nf_order_number": "SH-1234",
     "status": "out_for_delivery",
-    "eta": "2026-06-15T16:32:00Z",   // precise ISO
-    "eta_window": "Today, 4-6 PM",   // coarse string
+    "eta": "2026-06-15T16:32:00Z",         // precise ISO
+    "eta_window": "Today, 4:30-5:00 PM",   // coarse string (ETA 4:32 -> floor 4:30 +30m)
     "changed_at": "2026-06-15T16:05:00Z"
   }
 }
@@ -689,7 +693,7 @@ must accept them all.) For a bare number with no prefix, NF assumes the
     "order_number": "1234",
     "nf_order_number": "SH-1234",
     "status": "out_for_delivery",       // same vocabulary as the webhook
-    "eta_window": "Today, 4-6 PM",       // may be null
+    "eta_window": "Today, 4:10-4:40 PM", // may be null
     "placed_at": "2026-06-15T07:42:10Z",
     "currency": "PKR",
     "payment_method": "cash",            // normalized
@@ -838,7 +842,187 @@ before (Shopify) or after (NF) acceptance.
 
 ---
 
-## 16. Still out of scope (later phases)
+## 16. Phase 4 — customer profile, verified pin, invoice image (BUILT)
+
+Three new endpoints. **All use the SAME `CUSTOMER_APP_INBOUND_TOKEN` and the
+same base URL** as the Phase 2/3 pull endpoints — no new credentials. As
+before, NF authenticates *your backend*, not the end user; you MUST scope
+every call to the **authenticated user's own verified mobile number**.
+
+### 16.1 Customer existence + profile — `GET /customers/{mobile}`
+
+Use this at **login/registration** to decide "does NF already know this
+number?". Returns `exists:false` with `200` (not 404) for an unknown number,
+so you can route a new user straight to registration; if `exists:true`, pull
+their history with `GET /customers/{mobile}/orders` (section 15.3) as you
+already do.
+
+```
+GET https://app.nizamifarms.com/api/customer-app/customers/{mobile}
+Authorization: Bearer <CUSTOMER_APP_INBOUND_TOKEN>
+```
+
+```jsonc
+// 200 — known customer
+{
+  "success": true,
+  "matched_phone": "3001234567",
+  "exists": true,
+  "customer": {
+    "name": "Ali Raza", "first_name": "Ali", "last_name": "Raza",
+    "email": "…", "phone": "+92 300 1234567",
+    "total_orders": 7, "total_spent": 28400,
+    "is_active": true,
+    "customer_since": "2025-11-02T10:14:00Z",
+    "first_order_date": "2025-11-02T10:14:00Z",
+    "last_order_date": "2026-06-15T07:42:10Z",
+    "verified_pin": {
+      "lat": 24.8607, "lng": 67.0011,
+      "is_verified": true,
+      "google_maps_url": "https://www.google.com/maps?q=24.8607,67.0011",
+      "saved_by": "Ali Raza staff name | \"Customer\"",
+      "saved_by_customer": false,
+      "saved_at": "2026-05-10T12:00:00Z"
+    }
+  }
+}
+
+// 200 — unknown number → send them to registration
+{ "success": true, "matched_phone": "3001234567", "exists": false, "customer": null }
+```
+
+- `verified_pin` is `null` if we have no pin for them yet.
+- `saved_by_customer:true` (and `saved_by:"Customer"`) means the pin was set
+  by the customer via your app; otherwise it's an NF staff name.
+- Phone is normalized to the last 10 digits exactly like section 15.3.
+
+### 16.2 Save / update the verified pin — `POST /customers/{mobile}/location`
+
+The customer sets or moves their own pin (e.g. a map picker at registration
+or in profile). If the number is **brand-new** (no NF customer yet), NF
+**creates a minimal customer row** so the pin has a home — that's the
+"new customer drops a pin during registration" case. The pin **overwrites**
+any existing one.
+
+```
+POST https://app.nizamifarms.com/api/customer-app/customers/{mobile}/location
+Authorization: Bearer <CUSTOMER_APP_INBOUND_TOKEN>
+Content-Type: application/json
+
+{
+  "latitude": 24.8607,         // required
+  "longitude": 67.0011,        // required
+  "url": "https://maps.app.goo.gl/…",  // optional Google Maps URL
+  "first_name": "Ali",         // optional — only used if we create a new row
+  "last_name": "Raza"          // optional
+}
+```
+
+```jsonc
+// 200
+{
+  "success": true,
+  "matched_phone": "3001234567",
+  "created_customer": false,            // true if we created the row just now
+  "verified_pin": { "lat": 24.8607, "lng": 67.0011, "is_verified": true,
+    "saved_by": "Customer", "saved_by_customer": true, "saved_at": "…",
+    "google_maps_url": "…" }
+}
+
+// 422 — bad/missing coordinates
+{ "success": false, "message": "Validation failed.", "errors": { … } }
+```
+
+- Attribution: NF stamps the pin as **saved by the customer** (internally a
+  reserved sentinel id), which is why it reads back as `"saved_by":"Customer"`
+  / `"saved_by_customer":true`. Your ops team can see at a glance that the
+  customer set it.
+- Send `latitude`+`longitude` from your map picker. `url` is optional extra.
+
+### 16.3 Invoice image — `GET /orders/{orderNumber}/invoice`
+
+Returns a URL to the rendered invoice PNG (the exact image NF sends over
+WhatsApp). You decide the optics — e.g. show an "Invoice ready" chip that
+opens the image.
+
+```
+GET https://app.nizamifarms.com/api/customer-app/orders/{orderNumber}/invoice
+Authorization: Bearer <CUSTOMER_APP_INBOUND_TOKEN>
+```
+
+`{orderNumber}` accepts a bare Shopify number (`1234` → `SH-1234`) or any full
+NF number, same as the snapshot.
+
+```jsonc
+// 200 — image exists
+{
+  "success": true, "available": true,
+  "order_number": "1234", "nf_order_number": "SH-1234",
+  "image_url": "https://app.nizamifarms.com/public-storage/whatsapp-invoices/Invoice-SH-1234.png?v=1718972400"
+}
+
+// 200 — not generated yet
+{ "success": true, "available": false,
+  "order_number": "1234", "nf_order_number": "SH-1234", "image_url": null }
+```
+
+- **`available:false` until an NF operator has previewed/sent the invoice at
+  least once** — that's the moment the PNG is captured. Poll again later, or
+  re-check when the order reaches a later status.
+- The `?v=…` suffix is a cache-buster keyed to the file's last-modified time:
+  if the invoice is edited and re-rendered, the URL changes, so always use the
+  latest `image_url` rather than caching the path.
+- The image is served through NF (no CDN). Fine for normal app traffic; just
+  don't hot-loop it.
+
+### 16.4 Linking multiple numbers (one account → several numbers)
+
+You want a user to log in with their own number and also see the orders of, say,
+2 family members' numbers they've added. **The cleanest design is for the
+customer app to own this relationship — NF needs no new endpoint or table.**
+You already verify each added number over WhatsApp; NF cannot verify that
+consent, so ownership/verification stays on your side.
+
+**How to do it with the existing APIs:**
+
+1. **Verify** each child number on your side (WhatsApp OTP) before linking it —
+   only ever query numbers the logged-in user has proven they own.
+2. **Existence/profile:** call `GET /customers/{mobile}` (16.1) per number.
+3. **History:** call `GET /customers/{mobile}/orders` (15.3) once per number
+   (primary + children), then **merge and sort by `placed_at` desc** in your
+   backend. Each order row already carries `nf_order_number` + `source`, so you
+   can also badge which number an order belongs to.
+4. **Detail / tracking / invoice:** unchanged — `GET /orders/{n}` (15.2),
+   `/orders/{n}/tracking` (12), `/orders/{n}/invoice` (16.3) work the same
+   regardless of which linked number the order came from.
+
+**Important — these are NOT merged in NF.** Each number is its own NF customer
+with its own history; you're simply *grouping* them for one viewer. NF has a
+separate "merge customers" concept that collapses duplicates — that's **not**
+what this is, and you should not assume two linked numbers share a record.
+
+**UI guidance (please build it this way):**
+
+- **Mark one number as PRIMARY.** Let the user pick a primary/default number;
+  use it as the default profile, the default verified pin, and the default
+  "place order as" identity.
+- **On a new order with multiple linked numbers, ASK which number it's for.**
+  Prompt "Which number is this order for?" and create the Shopify order under
+  that number. This matters because NF files each order in history **by the
+  number on the order** — so attributing it correctly at creation time is what
+  makes it show under the right person later.
+- Optionally show a small chip on each history row indicating which linked
+  number it belongs to, so a combined list stays readable.
+
+**When to graduate to an NF-owned table (later, optional):** only if you want NF
+to be the system of record for these links (e.g. server-side enforcement of a
+max, shared across multiple client surfaces, or a single combined-history
+call). Until then, Option above needs zero NF changes. Ask Shabib if you want
+this.
+
+---
+
+## 17. Still out of scope (later phases)
 
 - Customer-driven payment-method change (inbound write API).
 - **Status webhooks** for `NF-`/`QUR` orders. NF only *pushes* live status

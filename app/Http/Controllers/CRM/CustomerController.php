@@ -225,8 +225,7 @@ class CustomerController extends Controller
                     'google_maps_url' => $customer->verified_location_url ?: 
                         ($customer->latitude && $customer->longitude ? 
                             "https://www.google.com/maps?q={$customer->latitude},{$customer->longitude}" : null),
-                    'saved_by' => $customer->verified_location_saved_by ? 
-                        \DB::table('t_sys_user')->where('id', $customer->verified_location_saved_by)->value('fullname') : null,
+                    'saved_by' => \App\Models\CRM\CustomerModel::verifierLabel($customer->verified_location_saved_by),
                     'saved_at' => $customer->verified_location_saved_at,
                 ];
             }

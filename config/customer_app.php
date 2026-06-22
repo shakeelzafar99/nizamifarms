@@ -162,16 +162,21 @@ return [
     |
     | When we know an order's Google-route ETA (estimated_delivery_at), we
     | turn it into a short, already-formatted display string the customer app
-    | shows in the status pill, e.g. "Today, 4-6 PM". This is a coarse
+    | shows in the status pill, e.g. "Today, 4:00-4:30 PM". This is a coarse
     | *promise* window, distinct from the precise live `eta` on the tracking
     | feed.
     |
-    | band_hours: width of the window built around the point ETA. The window
-    |             is [floor(eta to the hour), +band_hours]. Default 2h.
+    | band_minutes:     width of the window built around the point ETA.
+    |                    Default 30 minutes.
+    | round_to_minutes: the start is floored to the nearest this-many minutes
+    |                    (NOT to the band). Default 10, so an ETA of 11:57
+    |                    floors to 11:50 and the window is "11:50 AM-12:20 PM"
+    |                    (start 11:50 + 30-min band). An ETA of 4:12 -> "4:10-4:40 PM".
     |
     */
-    'eta_window_enabled'    => env('CUSTOMER_APP_ETA_WINDOW_ENABLED', true),
-    'eta_window_band_hours' => env('CUSTOMER_APP_ETA_WINDOW_BAND_HOURS', 2),
+    'eta_window_enabled'        => env('CUSTOMER_APP_ETA_WINDOW_ENABLED', true),
+    'eta_window_band_minutes'   => env('CUSTOMER_APP_ETA_WINDOW_BAND_MINUTES', 30),
+    'eta_window_round_to_minutes' => env('CUSTOMER_APP_ETA_WINDOW_ROUND_TO_MINUTES', 10),
 
     /*
     |--------------------------------------------------------------------------

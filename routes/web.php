@@ -139,6 +139,7 @@ Route::middleware(['auth'])->group(function () {
     Route::get('/orders/riders-map/all-open-orders', [\App\Http\Controllers\API\RiderController::class, 'getAllOpenOrdersForMap'])->name('orders.riders-map.all-open');
     Route::get('/orders/riders-map/delivery-history', [\App\Http\Controllers\API\RiderController::class, 'getDeliveryHistory'])->name('orders.riders-map.history');
     Route::get('/orders/riders-map/dispatch-report', [\App\Http\Controllers\API\RiderController::class, 'getDateDeliveryReport'])->name('orders.riders-map.dispatch-report');
+    Route::get('/orders/riders-map/live-status', [\App\Http\Controllers\API\RiderController::class, 'getRidersLiveStatus'])->name('orders.riders-map.live-status');
     Route::get('/orders/riders-map/riders-for-history', [\App\Http\Controllers\API\RiderController::class, 'getRidersForHistory'])->name('orders.riders-map.riders-for-history');
     Route::get('/orders/riders-map/rider-history/{riderId}', [\App\Http\Controllers\API\RiderController::class, 'getRiderDeliveryHistory'])->name('orders.riders-map.rider-delivery-history');
     Route::get('/orders/riders-map/{riderId}/location-history', [\App\Http\Controllers\API\RiderController::class, 'getRiderLocationHistory'])->name('orders.riders-map.rider-history');

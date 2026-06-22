@@ -1441,6 +1441,8 @@ class QurbaniWebController extends Controller
         $verifierNames = $verifierIds
             ? DB::table('t_sys_user')->whereIn('id', $verifierIds)->pluck('fullname', 'id')->toArray()
             : [];
+        // Customer-app pins are stamped with the sentinel id -> "Customer".
+        $verifierNames[\App\Models\CRM\CustomerModel::VERIFIED_PIN_CUSTOMER_ID] = 'Customer';
 
         // Phase C (May-2026) — pre-load latest GPS reading for every
         // assigned rider so each item card can show a small GPS pill
