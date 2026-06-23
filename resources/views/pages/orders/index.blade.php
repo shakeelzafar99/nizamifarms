@@ -2048,6 +2048,17 @@ function normalizePaymentMethodDisplay(paymentMethod) {
     return displayMap[method] || 'Cash'; // Default to Cash if unknown
 }
 
+// Build the GET /orders/{id} detail URL. The Shopify approval queue
+// (t_crm_shopify_order) and the live orders table (t_crm_prod_order) have
+// overlapping ids, so the backend can't guess which one we mean — we must tell
+// it explicitly based on which screen we're on. Shopify Approvals view sets
+// window.currentSource='shopify'; everywhere else reads live production orders.
+function ordersDetailUrl(orderId) {
+    const src = (window.currentSource || '').toLowerCase();
+    const base = '/orders/' + encodeURIComponent(orderId);
+    return src === 'shopify' ? base + '?source=shopify' : base;
+}
+
 // View Order Details
 function viewOrderDetails(orderId) {
     console.log('View order details clicked for order:', orderId);
@@ -2060,7 +2071,7 @@ function viewOrderDetails(orderId) {
     modal.style.display = 'block';
     
     // Fetch order details via AJAX
-    fetch('/orders/' + orderId, {
+    fetch(ordersDetailUrl(orderId), {
         method: 'GET',
         headers: {
             'Accept': 'application/json',
@@ -3789,7 +3800,7 @@ function editOrderDetails(orderId) {
     modal.style.display = 'block';
     
     // Fetch order details for editing
-    fetch('/orders/' + orderId, {
+    fetch(ordersDetailUrl(orderId), {
         method: 'GET',
         headers: {
             'Accept': 'application/json',
@@ -7208,8 +7219,9 @@ function saveAndCloseOrder(orderId) {
         }
     }
     
-    // Submit to existing update endpoint
-    fetch(`/orders/${orderId}`, {
+    // Submit to existing update endpoint (carry source so a Shopify-staging edit
+    // saves to the staging table, not the colliding live order id).
+    fetch(ordersDetailUrl(orderId), {
         method: 'PUT',
         headers: {
             'Content-Type': 'application/json',
@@ -7584,7 +7596,7 @@ function popoutOrder() {
                 sync_to_customer: formData.get('sync_to_customer') === '1' ? true : false
             };
             
-            fetch(currentOrigin + '/orders/' + orderId, {
+            fetch(currentOrigin + ordersDetailUrl(orderId), {
                 method: 'PUT',
                 headers: {
                     'Content-Type': 'application/json',
@@ -7702,7 +7714,7 @@ function initPopoutNotification(orderId) {
     popoutNotificationState.originalTitle = document.title;
     
     // Fetch order details to check status
-    fetch('/orders/' + orderId, {
+    fetch(ordersDetailUrl(orderId), {
         method: 'GET',
         headers: {
             'Accept': 'application/json',
@@ -12056,6 +12068,7 @@ function showCustomerResults(customers) {
             phone: c.phone || '',
             email: c.email || '',
             notes: c.notes || '',
+            customer_type: c.customer_type || 'regular',
             address: c.address || {}
         };
         
@@ -12105,6 +12118,24 @@ function selectCustomerFromData(customerData) {
 
     // Show detailed customer information after selection
     showSelectedCustomerDetails(customerData);
+
+    // ⭐ Shop customers settle online — default the Create-Order payment method
+    // to "online" when a shop customer is picked (user can still change it).
+    if (customerData.customer_type === 'shop') {
+        try {
+            // Scope to the form holding the customer search (the Create-Order form)
+            // so we don't touch unrelated/hidden payment_method selects.
+            const scope = (searchInput && searchInput.closest('form')) || document;
+            const pmSelect = scope.querySelector('select[name="payment_method"]');
+            if (pmSelect) {
+                const opt = Array.from(pmSelect.options).find(o => o.value === 'online');
+                if (opt) {
+                    pmSelect.value = 'online';
+                    Array.from(pmSelect.options).forEach(o => { o.selected = (o.value === 'online'); });
+                }
+            }
+        } catch (e) { /* non-fatal */ }
+    }
 
     // Pre-fill address fields if visible
     if (customerData.address) {

@@ -30,6 +30,7 @@ class CustomerModel extends BaseModel
         'first_name',
         'last_name',
         'company',
+        'customer_type',
         'email',
         'address1',
         'address2',
@@ -77,6 +78,17 @@ class CustomerModel extends BaseModel
         'is_active' => 'boolean',
         'total_orders' => 'integer'
     ];
+
+    // Customer type constants. Shop customers settle online invoices via
+    // incremental payments instead of a single full-invoice approval.
+    public const TYPE_REGULAR = 'regular';
+    public const TYPE_SHOP    = 'shop';
+
+    /** True when this customer is a shop (payment-cycle billing for online orders). */
+    public function isShop(): bool
+    {
+        return $this->customer_type === self::TYPE_SHOP;
+    }
 
     // Relationships
     public function orders(): HasMany

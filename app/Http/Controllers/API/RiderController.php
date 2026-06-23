@@ -20683,6 +20683,8 @@ class RiderController extends Controller
         try {
             $user = Auth::user();
             $order = OrderModel::findOrFail($orderId);
+            // Needed to decide shop vs regular billing behaviour below.
+            $order->loadMissing('customer');
 
             $validated = $request->validate([
                 'amount' => 'required|numeric|min:0.01',
@@ -20777,7 +20779,11 @@ class RiderController extends Controller
 
             $customerName = $order->name ?? trim(($order->address_first_name ?? '') . ' ' . ($order->address_last_name ?? '')) ?: 'Customer';
             $isQurbaniOrder = str_starts_with($order->order_number ?? '', 'QUR') || !empty($order->qurbani_day);
-            $description = ($isQurbaniOrder ? "Qurbani" : "Order") . " Payment #{$order->order_number} - Rs. " . number_format($amount) . " ({$customerName})";
+            // Shop customers settle online orders via incremental payments (no
+            // full invoice was posted), exactly like the web addShopPayment.
+            $isShopOrder = $order->customer && $order->customer->isShop();
+            $label = $isQurbaniOrder ? 'Qurbani' : ($isShopOrder ? 'Shop' : 'Order');
+            $description = "{$label} Payment #{$order->order_number} - Rs. " . number_format($amount) . " ({$customerName})";
 
             if ($isOnline) {
                 $toAccount = $isQurbaniOrder
@@ -20794,7 +20800,14 @@ class RiderController extends Controller
                 // trusted roles. Regular riders still flow through the
                 // invoice_approval rules below — i.e. Qurbani online payments
                 // they enter will land in the L1 queue as before.
-                if ($isQurbaniOrder && $isManager) {
+                //
+                // Jun-2026: Shop online payments behave like Qurbani — they are
+                // a settlement against an order that never got a full invoice
+                // posting, so they auto-approve instead of creating a pending
+                // invoice row. We auto-approve shop payments regardless of role
+                // because the Regular approval queue deliberately excludes shop
+                // customers, so a pending shop row would otherwise be orphaned.
+                if (($isQurbaniOrder && $isManager) || $isShopOrder) {
                     $approvalStatus = LedgerModel::STATUS_APPROVED;
                 } else {
                     $invoiceCategory = \App\Models\Request\RequestCategoryModel::getByCode('invoice_approval');

@@ -876,6 +876,11 @@ Authorization: Bearer <CUSTOMER_APP_INBOUND_TOKEN>
     "customer_since": "2025-11-02T10:14:00Z",
     "first_order_date": "2025-11-02T10:14:00Z",
     "last_order_date": "2026-06-15T07:42:10Z",
+    "address": {
+      "line1": "House 12, Street 4", "line2": "DHA Phase 5",
+      "city": "Karachi", "province": "Sindh",
+      "postal_code": "75500", "country": "Pakistan"
+    },
     "verified_pin": {
       "lat": 24.8607, "lng": 67.0011,
       "is_verified": true,
@@ -891,6 +896,9 @@ Authorization: Bearer <CUSTOMER_APP_INBOUND_TOKEN>
 { "success": true, "matched_phone": "3001234567", "exists": false, "customer": null }
 ```
 
+- `customer` carries everything you need to pre-fill the app on login:
+  name, email, phone, `address` (postal), and `verified_pin` (map location).
+  Any field may be `null` if NF doesn't have it.
 - `verified_pin` is `null` if we have no pin for them yet.
 - `saved_by_customer:true` (and `saved_by:"Customer"`) means the pin was set
   by the customer via your app; otherwise it's an NF staff name.

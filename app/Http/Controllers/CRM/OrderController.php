@@ -561,6 +561,201 @@ class OrderController extends Controller
     }
 
     /**
+     * Record an incremental payment against a SHOP customer's online order.
+     *
+     * Shop customers don't get a single full-invoice ledger posting at
+     * delivery (see LedgerPostingService guard). Instead each payment they
+     * make is recorded here exactly like a Qurbani payment: an auto-approved
+     * `order_payment` ledger entry that moves money into the ONLINE bank
+     * account. Partial and full payments are both supported — the order's
+     * payment_status (unpaid/partial/paid) is recalculated each time.
+     *
+     * Reuses getQurbaniPayments() for listing and deleteQurbaniPayment() for
+     * voiding (both are account-agnostic / generic). Only the destination
+     * account + description differ, which is what recordImmediateOrderPayment
+     * handles via the 'shop' context.
+     */
+    public function addShopPayment(\Illuminate\Http\Request $request, $id)
+    {
+        try {
+            $user = \Auth::user();
+            if (!$user) {
+                return response()->json(['success' => false, 'message' => 'Unauthorized'], 401);
+            }
+
+            $order = $this->findOrder($id);
+
+            // Guard: this path is only for shop customers. A regular customer's
+            // online order is settled through the normal approval flow, so we
+            // refuse here to avoid creating order_payment rows that would
+            // double-count against an already-posted invoice.
+            if (!$order->customer || !$order->customer->isShop()) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'This order does not belong to a shop customer.',
+                ], 422);
+            }
+
+            $validated = $request->validate([
+                'amount' => 'required|numeric|min:0.01',
+                // Shop payments are online only — cash shop orders settle via
+                // the standard rider flow. We still accept the field for
+                // payload symmetry but pin it to online.
+                'payment_method' => 'nullable|string|in:online',
+                'payment_date'   => 'nullable|date|before_or_equal:today',
+                'reference' => 'nullable|string|max:255',
+                'notes' => 'nullable|string|max:1000',
+                'receiving_account_id' => 'nullable|integer|exists:t_fin_online_receiving_accounts,id',
+                'sending_bank'    => 'nullable|string|max:100',
+                'stamp_date'      => 'nullable|date',
+                'stamp_ref_mode'  => 'nullable|string|in:reference,customer_name,blank',
+            ]);
+            $validated['payment_method'] = 'online';
+
+            $amount = (float) $validated['amount'];
+            $currentPaid = (float) ($order->total_paid ?? 0);
+            $totalPrice = (float) $order->total_price;
+            $remaining = max(0, $totalPrice - $currentPaid);
+
+            if ($amount > $remaining + 0.01) {
+                return response()->json(['success' => false, 'message' => 'Amount exceeds remaining balance of Rs. ' . number_format($remaining, 2)], 422);
+            }
+
+            \DB::beginTransaction();
+            try {
+                $result = $this->recordImmediateOrderPayment($order, $validated, $user, 'shop');
+                \DB::commit();
+            } catch (\Exception $inner) {
+                \DB::rollBack();
+                throw $inner;
+            }
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Payment of Rs. ' . number_format($amount, 2) . ' recorded successfully',
+                'payment' => $result['payment'],
+                'order'   => [
+                    'total_paid'        => (float) $order->total_paid,
+                    'payment_status'    => $order->payment_status,
+                    'balance_remaining' => max(0, (float) $order->total_price - (float) $order->total_paid),
+                ],
+            ]);
+        } catch (\Illuminate\Validation\ValidationException $e) {
+            return response()->json(['success' => false, 'message' => $e->errors()], 422);
+        } catch (\Exception $e) {
+            \Log::error('Failed to add shop payment', ['order_id' => $id, 'error' => $e->getMessage()]);
+            return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
+        }
+    }
+
+    /**
+     * Shared core for "immediate" order payments (currently the Shop online
+     * flow). Records the payment row + PAID-stamp metadata, posts a paired
+     * auto-approved `order_payment` ledger entry, applies account balances,
+     * links payment->ledger, and recalculates the order payment status.
+     *
+     * $context selects the destination account + description label:
+     *   - 'shop'    : ONLINE bank account, "Shop payment"
+     *   - 'qurbani' : Qurbani cash/online accounts, "Qurbani payment"
+     *
+     * Throws \RuntimeException on missing account configuration; callers wrap
+     * this in a transaction and translate the error to a JSON 500.
+     *
+     * @return array{payment: \App\Models\CRM\OrderPaymentModel, ledger: \App\Models\FIN\LedgerModel}
+     */
+    private function recordImmediateOrderPayment(\App\Models\CRM\OrderModel $order, array $v, $user, string $context): array
+    {
+        $amount = (float) $v['amount'];
+        $paymentMethod = $v['payment_method'];
+        $paymentDate = !empty($v['payment_date'])
+            ? \Carbon\Carbon::parse($v['payment_date'])->toDateString()
+            : now()->toDateString();
+        $receivingAccountId = $paymentMethod === 'online'
+            ? ($v['receiving_account_id'] ?? null)
+            : null;
+
+        $salesAccount = \App\Models\FIN\ConfigModel::getSalesRevenueAccount();
+        if (!$salesAccount) {
+            throw new \RuntimeException('Sales revenue account not configured');
+        }
+
+        if ($context === 'shop') {
+            $toAccount = \App\Models\FIN\ConfigModel::getOnlineBankAccount();
+            $label = 'Shop payment';
+            if (!$toAccount) {
+                throw new \RuntimeException('Online bank account not configured');
+            }
+        } else {
+            $toAccount = $paymentMethod === 'cash'
+                ? \App\Models\FIN\ConfigModel::getQurbaniCashAccount()
+                : \App\Models\FIN\ConfigModel::getQurbaniOnlineAccount();
+            $label = 'Qurbani payment';
+            if (!$toAccount) {
+                throw new \RuntimeException('Qurbani payment account not configured');
+            }
+        }
+
+        $payment = \App\Models\CRM\OrderPaymentModel::create([
+            'order_id' => $order->id,
+            'amount' => $amount,
+            'payment_method' => $paymentMethod,
+            'receiving_account_id' => $receivingAccountId,
+            'payment_date' => $paymentDate,
+            'reference' => $v['reference'] ?? null,
+            'notes' => $v['notes'] ?? null,
+            'status' => 'active',
+            'created_by' => $user->id,
+        ]);
+
+        // PAID-stamp metadata — identical semantics to the Qurbani add flow.
+        $stampUpdates = [];
+        if (array_key_exists('sending_bank', $v)) {
+            $stampUpdates['paid_stamp_sending_bank'] = $v['sending_bank'];
+        }
+        if (array_key_exists('stamp_date', $v)) {
+            $stampUpdates['paid_stamp_date'] = $v['stamp_date'];
+        } else {
+            $stampUpdates['paid_stamp_date'] = $paymentDate;
+        }
+        if (array_key_exists('stamp_ref_mode', $v)) {
+            $stampUpdates['paid_stamp_ref_mode'] = $v['stamp_ref_mode'];
+        }
+        if (!empty($stampUpdates)) {
+            $order->fill($stampUpdates)->save();
+        }
+
+        $ledger = \App\Models\FIN\LedgerModel::create([
+            'transaction_date' => $paymentDate,
+            'transaction_type' => \App\Models\FIN\LedgerModel::TYPE_ORDER_PAYMENT,
+            'description' => "{$label} for order #{$order->order_number} - Rs. " . number_format($amount, 2) . " ({$paymentMethod}) by {$user->fullname}",
+            'from_account_id' => $salesAccount->id,
+            'to_account_id' => $toAccount->id,
+            'amount' => $amount,
+            'mode' => $paymentMethod === 'cash' ? 'cash' : 'online',
+            'approval_status' => \App\Models\FIN\LedgerModel::STATUS_APPROVED,
+            'balance_updated' => 1,
+            'settlement_status' => 'settled',
+            'settled_amount' => $amount,
+            'settled_at' => now(),
+            'approval_date' => now(),
+            'approved_by' => $user->id,
+            'order_id' => $order->id,
+            'created_by' => $user->id,
+        ]);
+
+        $payment->ledger_transaction_id = $ledger->id;
+        $payment->save();
+
+        $toAccount->current_balance += $amount;
+        $toAccount->save();
+        $salesAccount->current_balance -= $amount;
+        $salesAccount->save();
+        $order->recalculatePaymentStatus();
+
+        return ['payment' => $payment, 'ledger' => $ledger];
+    }
+
+    /**
      * Amend non-financial metadata on an existing qurbani payment.
      *
      * Deliberately narrow: this only lets the caller edit the receiving
@@ -2827,9 +3022,26 @@ class OrderController extends Controller
     }
 
     /**
-     * Helper method to find order from either Shopify or main orders table
+     * Helper method to resolve an order by id from the correct table.
+     *
+     * ⚠️ CRITICAL: the Shopify approval queue (t_crm_shopify_order) and the live
+     * orders table (t_crm_prod_order) have INDEPENDENT, OVERLAPPING auto-increment
+     * id sequences. The same numeric id routinely exists in BOTH tables as two
+     * completely unrelated orders (e.g. staging id 6488 = a brand-new Shopify
+     * order, while prod id 6488 = an old delivered order for a different
+     * customer). We therefore must NOT "guess" by probing one table then the
+     * other — doing so previously caused a live order detail page to render the
+     * wrong Shopify order, and a status change to mutate the wrong live order.
+     *
+     * The caller's CONTEXT is authoritative and is passed via the `source`
+     * request param (set by the front-end based on which screen you're on):
+     *   - source=shopify → Shopify Approvals screen → staging table ONLY
+     *   - anything else  → live production orders     → prod table ONLY
+     *
+     * The two screens never overlap, so there is intentionally no cross-table
+     * fallback.
      */
-    private function findOrder($id, $withRelations = ['customer', 'lineItems', 'assignedRider', 'discounts'])
+    private function findOrder($id, $withRelations = ['customer', 'lineItems', 'assignedRider', 'discounts'], $source = null)
     {
         if (!in_array('lineItems', $withRelations, true)) {
             $withRelations[] = 'lineItems';
@@ -2837,17 +3049,18 @@ class OrderController extends Controller
         if (!in_array('lineItems.variant', $withRelations, true)) {
             $withRelations[] = 'lineItems.variant';
         }
-        // First try to find in Shopify orders table
-        // Shopify orders are temporary (before conversion) so they don't have assignedRider
-        $shopifyRelations = array_diff($withRelations, ['assignedRider']); // Remove assignedRider for Shopify
-        $order = \App\Models\CRM\ShopifyOrderModel::with($shopifyRelations)->find($id);
-        
-        // If not found in Shopify table, try the main orders table (with all relations)
-        if (!$order) {
-            $order = \App\Models\CRM\OrderModel::with($withRelations)->findOrFail($id);
+
+        if ($source === null) {
+            $source = request()->query('source');
         }
-        
-        return $order;
+
+        if ($source === 'shopify') {
+            // Shopify staging orders are temporary (before conversion) and have no rider.
+            $shopifyRelations = array_diff($withRelations, ['assignedRider']);
+            return \App\Models\CRM\ShopifyOrderModel::with($shopifyRelations)->findOrFail($id);
+        }
+
+        return \App\Models\CRM\OrderModel::with($withRelations)->findOrFail($id);
     }
 
     private function getQurbaniInvoiceFields(): array

@@ -54,6 +54,12 @@ class CustomerController extends Controller
         } elseif ($activity === '90day') {
             $query->where('last_order_date', '>=', now()->subDays(90));
         }
+
+        // Filter by customer type (regular / shop). Default (empty) = all.
+        $customerType = $request->get('customer_type', '');
+        if (in_array($customerType, [CustomerModel::TYPE_REGULAR, CustomerModel::TYPE_SHOP], true)) {
+            $query->where('customer_type', $customerType);
+        }
         
         // Sorting: support sort_by (last_order_date, total_spent) and sort_dir (asc, desc)
         $sortBy = $request->get('sort_by', 'last_order_date');
@@ -311,6 +317,7 @@ class CustomerController extends Controller
                     'email' => $customer->email,
                     'phone' => $customer->phone_original,
                     'notes' => $customer->notes,
+                    'customer_type' => $customer->customer_type, // regular | shop (drives default online payment)
                     'address' => [
                         'first_name' => $customer->first_name,
                         'last_name' => $customer->last_name,
@@ -387,6 +394,12 @@ class CustomerController extends Controller
                 $query->where('last_order_date', '>=', now()->subDays(30));
             } elseif ($activity === '90day') {
                 $query->where('last_order_date', '>=', now()->subDays(90));
+            }
+
+            // Apply customer type filter (regular / shop). Default (empty) = all.
+            $customerType = $request->get('customer_type', '');
+            if (in_array($customerType, [CustomerModel::TYPE_REGULAR, CustomerModel::TYPE_SHOP], true)) {
+                $query->where('customer_type', $customerType);
             }
             
             // Sorting
@@ -672,6 +685,7 @@ class CustomerController extends Controller
                 'phone' => 'required|string|max:50',
                 'email' => 'nullable|email|max:255',
                 'company' => 'nullable|string|max:255',
+                'customer_type' => 'nullable|string|in:regular,shop',
                 'address1' => 'nullable|string|max:500',
                 'address2' => 'nullable|string|max:500',
                 'city' => 'nullable|string|max:100',
@@ -713,6 +727,7 @@ class CustomerController extends Controller
                 'phone_original' => $originalPhone,
                 'email' => $validated['email'] ?? null,
                 'company' => $validated['company'] ?? null,
+                'customer_type' => $validated['customer_type'] ?? CustomerModel::TYPE_REGULAR,
                 'address1' => $validated['address1'] ?? null,
                 'address2' => $validated['address2'] ?? null,
                 'city' => $validated['city'] ?? null,
@@ -743,6 +758,7 @@ class CustomerController extends Controller
                     'phone_normalized' => $customer->phone_normalized,
                     'email' => $customer->email,
                     'company' => $customer->company,
+                    'customer_type' => $customer->customer_type,
                     'address1' => $customer->address1,
                     'address2' => $customer->address2,
                     'city' => $customer->city,
@@ -872,6 +888,7 @@ class CustomerController extends Controller
             'email' => 'nullable|email|max:255',
             'phone' => 'required|string|max:20',
             'company' => 'nullable|string|max:255',
+            'customer_type' => 'nullable|string|in:regular,shop',
             'address1' => 'nullable|string|max:255',
             'address2' => 'nullable|string|max:255',
             'city' => 'nullable|string|max:100',
@@ -884,7 +901,22 @@ class CustomerController extends Controller
         
         try {
             $customer = CustomerModel::findOrFail($id);
+            $previousType = $customer->customer_type;
             $payload = $request->all();
+
+            // Guard: don't allow flipping a shop back to regular while it still
+            // has in-progress (partially paid) shop orders — that would leave
+            // orders mid-cycle on the wrong billing basis.
+            if ($request->filled('customer_type')
+                && $previousType === CustomerModel::TYPE_SHOP
+                && $request->input('customer_type') === CustomerModel::TYPE_REGULAR
+                && $this->shopHasInProgressPayments($customer->id)) {
+                $msg = 'This shop has orders with partial payments in progress. Settle or void them before switching back to regular.';
+                if ($request->expectsJson()) {
+                    return response()->json(['success' => false, 'message' => $msg], 422);
+                }
+                return redirect()->back()->with('error', $msg);
+            }
 
             // Phone is stored across THREE columns: phone (legacy, holds the
             // normalized 10-digit form), phone_normalized (used for dedup
@@ -933,11 +965,22 @@ class CustomerController extends Controller
 
             $customer->update($payload);
 
+            // If the customer was just flipped regular -> shop, convert their
+            // existing PENDING online invoices into the shop payment flow so
+            // they leave the regular approval queue and appear in the Shop tab.
+            $convertedCount = 0;
+            if ($request->filled('customer_type')
+                && $previousType !== CustomerModel::TYPE_SHOP
+                && $customer->customer_type === CustomerModel::TYPE_SHOP) {
+                $convertedCount = $this->convertPendingOnlineInvoicesToShopFlow($customer);
+            }
+
             // Handle both AJAX and regular form submissions
             if ($request->expectsJson()) {
                 return response()->json([
                     'success' => true,
-                    'message' => 'Customer updated successfully!'
+                    'message' => 'Customer updated successfully!',
+                    'converted_invoices' => $convertedCount,
                 ]);
             }
             
@@ -952,6 +995,118 @@ class CustomerController extends Controller
             
             return redirect()->back()->with('error', 'Error updating customer: ' . $e->getMessage());
         }
+    }
+
+    /**
+     * True if this (shop) customer has any order with active payments recorded
+     * but not yet fully paid — i.e. a billing cycle in progress that must not
+     * be abandoned by flipping back to regular.
+     */
+    private function shopHasInProgressPayments($customerId): bool
+    {
+        return \App\Models\CRM\OrderModel::where('customer_id', $customerId)
+            ->where('payment_status', 'partial')
+            ->exists();
+    }
+
+    /**
+     * Convert a newly-flagged shop customer's PENDING online invoices out of
+     * the regular approval queue and into the shop payment flow.
+     *
+     * For each of the customer's online orders that still has a *pending*
+     * invoice ledger row (mode=online, transaction_type=invoice, not approved/
+     * rejected): reverse any balances already applied at L1, delete the invoice
+     * ledger row, and clear order.ledger_transaction_id. The order (delivered +
+     * now outstanding) then surfaces in the Shop tab to be settled by payments.
+     *
+     * Approved invoices are left untouched — that revenue is already booked.
+     * Returns the number of invoices converted.
+     */
+    private function convertPendingOnlineInvoicesToShopFlow(CustomerModel $customer): int
+    {
+        $converted = 0;
+
+        // Only truly PRE-L1 invoices get converted to the shop flow. Once an
+        // invoice clears L1 (status pending_l2) the amount has already been
+        // posted to the ledger, so we treat it as booked/approved and LEAVE IT
+        // ALONE — deleting it here would both reverse a legitimate balance and
+        // make the order resurface in the Shop tab as "unpaid". The shop-tab
+        // query already excludes pending_l2 / approved invoices.
+        $pendingStatuses = [
+            \App\Models\FIN\LedgerModel::STATUS_PENDING,
+            \App\Models\FIN\LedgerModel::STATUS_PENDING_L1,
+        ];
+
+        // Pending online invoice ledger rows for this customer's orders.
+        $invoices = \App\Models\FIN\LedgerModel::query()
+            ->where('mode', \App\Models\FIN\LedgerModel::MODE_ONLINE)
+            ->where('transaction_type', \App\Models\FIN\LedgerModel::TYPE_INVOICE)
+            ->whereIn('approval_status', $pendingStatuses)
+            ->whereNull('request_id')
+            ->whereIn('order_id', function ($q) use ($customer) {
+                $q->select('id')->from('t_crm_prod_order')->where('customer_id', $customer->id);
+            })
+            ->get();
+
+        foreach ($invoices as $invoice) {
+            \DB::beginTransaction();
+            try {
+                // If L1 already posted balances (balance_updated=1), reverse them
+                // so we don't double count once payments start posting.
+                if ((int) $invoice->balance_updated === 1) {
+                    $fromAccount = \App\Models\FIN\AccountModel::find($invoice->from_account_id);
+                    $toAccount   = \App\Models\FIN\AccountModel::find($invoice->to_account_id);
+                    $amount = (float) $invoice->amount;
+                    if ($fromAccount) {
+                        // Mirror-reverse of the approve() posting logic.
+                        if ($fromAccount->account_type === 'asset') {
+                            $fromAccount->current_balance += $amount;
+                        } else {
+                            $fromAccount->current_balance -= $amount;
+                        }
+                        $fromAccount->save();
+                    }
+                    if ($toAccount) {
+                        if ($toAccount->account_type === 'asset') {
+                            $toAccount->current_balance -= $amount;
+                        } else {
+                            $toAccount->current_balance += $amount;
+                        }
+                        $toAccount->save();
+                    }
+                }
+
+                $orderId = $invoice->order_id;
+                $invoice->delete();
+
+                // Clear the order's invoice link so it isn't treated as posted
+                // and can be settled via the shop payment flow instead.
+                if ($orderId) {
+                    \DB::table('t_crm_prod_order')
+                        ->where('id', $orderId)
+                        ->update(['ledger_transaction_id' => null]);
+                }
+
+                \DB::commit();
+                $converted++;
+            } catch (\Exception $e) {
+                \DB::rollBack();
+                \Log::error('Failed to convert pending invoice to shop flow', [
+                    'customer_id' => $customer->id,
+                    'ledger_id' => $invoice->id ?? null,
+                    'error' => $e->getMessage(),
+                ]);
+            }
+        }
+
+        if ($converted > 0) {
+            \Log::info('Converted pending online invoices to shop flow', [
+                'customer_id' => $customer->id,
+                'converted' => $converted,
+            ]);
+        }
+
+        return $converted;
     }
 
     public function addNote(Request $request, $id)

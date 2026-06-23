@@ -335,6 +335,7 @@ class CustomerAppController extends Controller
                     'id', 'first_name', 'last_name', 'email', 'phone_original',
                     'total_orders', 'total_spent', 'first_order_date', 'last_order_date',
                     'is_active', 'created_at',
+                    'address1', 'address2', 'city', 'province', 'postal_code', 'country',
                     'latitude', 'longitude', 'geocoded_latitude', 'geocoded_longitude',
                     'verified_location_url', 'verified_location_saved_by', 'verified_location_saved_at',
                 ])
@@ -365,6 +366,14 @@ class CustomerAppController extends Controller
                         ? \Carbon\Carbon::parse($c->first_order_date)->toIso8601String() : null,
                     'last_order_date'  => $c->last_order_date
                         ? \Carbon\Carbon::parse($c->last_order_date)->toIso8601String() : null,
+                    'address'          => [
+                        'line1'       => $c->address1,
+                        'line2'       => $c->address2,
+                        'city'        => $c->city,
+                        'province'    => $c->province,
+                        'postal_code' => $c->postal_code,
+                        'country'     => $c->country,
+                    ],
                     'verified_pin'     => $this->buildPin($c),
                 ],
             ], 200);

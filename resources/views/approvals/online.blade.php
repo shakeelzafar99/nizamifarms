@@ -443,6 +443,13 @@
             <div class="count" id="count-approved">{{ $summaries['approved']['count'] }}</div>
             <div class="amount" id="amount-approved">Rs. {{ number_format($summaries['approved']['amount'], 0) }}</div>
         </div>
+
+        {{-- Shop customers — order-based outstanding list (settled via incremental payments) --}}
+        <div class="tab-card shop" id="tab-shop" data-tab="shop" onclick="selectTab('shop')" style="border-left: 4px solid #F59E0B;">
+            <div class="title">🏪 Shop</div>
+            <div class="count" id="count-shop">{{ $summaries['shop']['count'] ?? 0 }}</div>
+            <div class="amount" id="amount-shop">Rs. {{ number_format($summaries['shop']['amount'] ?? 0, 0) }}</div>
+        </div>
     </div>
 
     <!-- Search and Sort Row -->
@@ -744,9 +751,10 @@ function selectTab(tab) {
         }
     }
 
-    // Select-all is only meaningful for pending queues (approved can't be bulk-approved).
+    // Select-all is only meaningful for the regular pending queues. Approved
+    // can't be bulk-approved, and Shop is an order-based payment list.
     const selectAllBtn = document.getElementById('selectAllBtn');
-    if (selectAllBtn) selectAllBtn.style.display = (tab === 'approved') ? 'none' : 'inline-flex';
+    if (selectAllBtn) selectAllBtn.style.display = (tab === 'approved' || tab === 'shop') ? 'none' : 'inline-flex';
     
     loadData();
 }
@@ -809,6 +817,16 @@ async function loadData() {
             renderItems(data.grouped);
             document.getElementById('totalCount').textContent = data.count;
             document.getElementById('totalAmount').textContent = numberFormat(data.total_amount);
+
+            // Keep the Shop tab badge in sync (outstanding count + balance).
+            if (currentTab === 'shop') {
+                const outstanding = (data.items || []).filter(i => (parseFloat(i.balance_remaining) || 0) > 0.01);
+                const balSum = (data.items || []).reduce((s, i) => s + (parseFloat(i.balance_remaining) || 0), 0);
+                const cEl = document.getElementById('count-shop');
+                const aEl = document.getElementById('amount-shop');
+                if (cEl) cEl.textContent = outstanding.length;
+                if (aEl) aEl.textContent = `Rs. ${numberFormat(balSum)}`;
+            }
         }
     } catch (error) {
         console.error('Error loading data:', error);
@@ -928,10 +946,41 @@ function renderItems(groups) {
         }
     }
     
+    const isShopTab = currentTab === 'shop';
+
     groups.forEach((group, index) => {
         const colorClass = index % 2 === 0 ? 'blue' : 'yellow';
         const isApproved = currentTab === 'approved';
-        
+
+        // Shop tab: order-based outstanding list — no bulk-approve, no
+        // checkboxes. Each row offers Add Payment / View payments instead.
+        if (isShopTab) {
+            const outstanding = group.items.reduce((s, it) => s + (parseFloat(it.balance_remaining) || 0), 0);
+            html += `
+            <div class="customer-group">
+                <div class="customer-group-header ${colorClass}">
+                    <div class="customer-info">
+                        <span class="customer-icon">🏪</span>
+                        <span class="customer-name">${escapeHtml(group.customer)}</span>
+                        <span class="customer-badge">${group.items.length} order${group.items.length > 1 ? 's' : ''}</span>
+                    </div>
+                    <div class="customer-actions">
+                        <span class="customer-total" title="Outstanding balance">Outstanding: Rs. ${numberFormat(outstanding)}</span>
+                        ${group.customer_phone && formatPhoneForWhatsApp(group.customer_phone) ? `
+                        <a href="https://wa.me/${formatPhoneForWhatsApp(group.customer_phone)}" target="_blank"
+                           class="approve-group-btn" style="background: #25D366; text-decoration: none; display: inline-flex; align-items: center; gap: 4px; color: white;"
+                           title="WhatsApp ${escapeHtml(group.customer)}">💬</a>
+                        ` : ''}
+                        <button class="approve-group-btn" style="background: #EEF2FF; color: #4F46E5; border: 1px solid #C7D2FE;" onclick="openCustomerReport('${escapeHtml(group.customer)}')" title="Generate report for ${escapeHtml(group.customer)}">📋</button>
+                    </div>
+                </div>
+                <div class="customer-items">
+                    ${group.items.map(item => renderShopRow(item)).join('')}
+                </div>
+            </div>`;
+            return;
+        }
+
         html += `
             <div class="customer-group">
                 <div class="customer-group-header ${colorClass}">
@@ -1023,6 +1072,213 @@ function renderInvoiceRow(item, isApproved) {
             </div>
         </div>
     `;
+}
+
+// Render a single Shop-tab order row (order-based, not ledger-based).
+function renderShopRow(item) {
+    const total = parseFloat(item.amount) || 0;
+    const paid = parseFloat(item.total_paid) || 0;
+    const remaining = parseFloat(item.balance_remaining) || 0;
+    const status = item.payment_status || 'unpaid';
+    const statusStyles = {
+        paid:    {bg: '#ECFDF5', color: '#059669', label: 'Paid'},
+        partial: {bg: '#FFFBEB', color: '#B45309', label: 'Partial'},
+        unpaid:  {bg: '#FEF2F2', color: '#B91C1C', label: 'Unpaid'},
+    };
+    const st = statusStyles[status] || statusStyles.unpaid;
+    const orderViewUrl = item.order_id ? `/orders?edit_order_id=${item.order_id}` : '#';
+
+    return `
+        <div class="invoice-row" data-item-key="shop_order_${item.id}">
+            <a href="${orderViewUrl}" target="_blank" class="invoice-number" title="View order details">${item.number}</a>
+            <span class="invoice-date">📅 ${formatDate(item.date)}</span>
+            <span style="display:inline-block; padding:2px 8px; border-radius:10px; font-size:11px; font-weight:600; background:${st.bg}; color:${st.color}; border:1px solid ${st.color}40;">${st.label}</span>
+            <span class="invoice-amount" title="Paid of total">Rs. ${numberFormat(paid)} / ${numberFormat(total)}</span>
+            ${remaining > 0.01 ? `<span style="color:#B91C1C; font-size:12px; font-weight:600; margin-left:6px;">Bal: Rs. ${numberFormat(remaining)}</span>` : ''}
+            ${renderProofBadges(item)}
+            <div class="invoice-actions">
+                ${remaining > 0.01 ? `<button class="view-btn" style="background:#ECFDF5; color:#059669; border-color:#A7F3D0;" onclick="openShopPaymentModal(${item.order_id}, '${escapeHtml(item.number)}', ${total}, ${paid})">＋ Add payment</button>` : ''}
+                <button class="view-btn" onclick="openShopPaymentsList(${item.order_id}, '${escapeHtml(item.number)}')">Payments</button>
+            </div>
+        </div>
+    `;
+}
+
+// Shop tab — add an incremental payment against a shop order.
+function openShopPaymentModal(orderId, orderNumber, total, paid) {
+    const remaining = Math.max(0, (parseFloat(total) || 0) - (parseFloat(paid) || 0));
+    let overlay = document.getElementById('shopPayOverlay');
+    if (overlay) overlay.remove();
+    overlay = document.createElement('div');
+    overlay.id = 'shopPayOverlay';
+    overlay.style.cssText = 'position:fixed; inset:0; background:rgba(0,0,0,0.5); z-index:10000; display:flex; align-items:center; justify-content:center; padding:20px;';
+    overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
+
+    const today = new Date().toISOString().slice(0, 10);
+    const bankOptions = (receivingAccounts || []).map(a =>
+        `<option value="${a.id}">${escapeHtml(a.name)}${a.short_code ? ' (' + escapeHtml(a.short_code) + ')' : ''}</option>`
+    ).join('');
+
+    overlay.innerHTML = `
+      <div style="background:#fff; border-radius:12px; padding:24px; max-width:440px; width:100%;">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
+          <h3 style="margin:0; font-size:1.1rem;">Add payment — ${escapeHtml(orderNumber)}</h3>
+          <button onclick="document.getElementById('shopPayOverlay').remove()" style="border:none; background:#F3F4F6; border-radius:8px; padding:4px 10px; cursor:pointer; font-size:18px;">×</button>
+        </div>
+        <div style="font-size:13px; color:#6B7280; margin-bottom:14px;">Remaining balance: <span style="font-weight:700; color:#B91C1C;">Rs. ${numberFormat(remaining)}</span></div>
+        <div style="display:flex; flex-direction:column; gap:12px;">
+          <label style="font-size:13px; font-weight:600; color:#374151;">Amount (Rs.)
+            <input id="shopPayAmount" type="number" step="0.01" min="0.01" max="${remaining}" value="${remaining}" style="margin-top:4px; width:100%; padding:8px; border:1px solid #D1D5DB; border-radius:8px;">
+          </label>
+          <label style="font-size:13px; font-weight:600; color:#374151;">Payment date
+            <input id="shopPayDate" type="date" value="${today}" max="${today}" style="margin-top:4px; width:100%; padding:8px; border:1px solid #D1D5DB; border-radius:8px;">
+          </label>
+          <label style="font-size:13px; font-weight:600; color:#374151;">Receiving bank
+            <select id="shopPayBank" style="margin-top:4px; width:100%; padding:8px; border:1px solid #D1D5DB; border-radius:8px;">
+              <option value="">— Select bank —</option>
+              ${bankOptions}
+            </select>
+          </label>
+          <label style="font-size:13px; font-weight:600; color:#374151;">Reference (optional)
+            <input id="shopPayRef" type="text" maxlength="255" style="margin-top:4px; width:100%; padding:8px; border:1px solid #D1D5DB; border-radius:8px;">
+          </label>
+          <label style="font-size:13px; font-weight:600; color:#374151;">Notes (optional)
+            <textarea id="shopPayNotes" rows="2" maxlength="1000" style="margin-top:4px; width:100%; padding:8px; border:1px solid #D1D5DB; border-radius:8px;"></textarea>
+          </label>
+        </div>
+        <div id="shopPayError" style="color:#DC2626; font-size:13px; margin-top:10px; display:none;"></div>
+        <div style="display:flex; gap:10px; justify-content:flex-end; margin-top:18px;">
+          <button onclick="document.getElementById('shopPayOverlay').remove()" style="padding:8px 16px; border:1px solid #D1D5DB; background:#fff; border-radius:8px; cursor:pointer;">Cancel</button>
+          <button id="shopPaySubmit" onclick="submitShopPayment(${orderId})" style="padding:8px 16px; border:none; background:#059669; color:#fff; border-radius:8px; cursor:pointer; font-weight:600;">Record payment</button>
+        </div>
+      </div>`;
+    document.body.appendChild(overlay);
+}
+
+async function submitShopPayment(orderId) {
+    const errBox = document.getElementById('shopPayError');
+    const btn = document.getElementById('shopPaySubmit');
+    errBox.style.display = 'none';
+    const amount = parseFloat(document.getElementById('shopPayAmount').value);
+    if (!amount || amount <= 0) {
+        errBox.textContent = 'Enter a valid amount.';
+        errBox.style.display = 'block';
+        return;
+    }
+    const payload = {
+        amount: amount,
+        payment_method: 'online',
+        payment_date: document.getElementById('shopPayDate').value || null,
+        receiving_account_id: document.getElementById('shopPayBank').value || null,
+        reference: document.getElementById('shopPayRef').value || null,
+        notes: document.getElementById('shopPayNotes').value || null,
+    };
+    btn.disabled = true;
+    btn.textContent = 'Saving…';
+    try {
+        const res = await fetch(`/orders/${orderId}/shop-payments`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-Requested-With': 'XMLHttpRequest',
+                'Accept': 'application/json',
+                'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').content,
+            },
+            body: JSON.stringify(payload),
+        });
+        const data = await res.json();
+        if (data.success) {
+            document.getElementById('shopPayOverlay').remove();
+            loadData();
+            refreshStats();
+        } else {
+            errBox.textContent = typeof data.message === 'string' ? data.message : 'Could not record payment.';
+            errBox.style.display = 'block';
+            btn.disabled = false;
+            btn.textContent = 'Record payment';
+        }
+    } catch (e) {
+        errBox.textContent = 'Network error. Please try again.';
+        errBox.style.display = 'block';
+        btn.disabled = false;
+        btn.textContent = 'Record payment';
+    }
+}
+
+// Shop tab — list payments already recorded against a shop order (with void).
+async function openShopPaymentsList(orderId, orderNumber) {
+    let overlay = document.getElementById('shopPayListOverlay');
+    if (overlay) overlay.remove();
+    overlay = document.createElement('div');
+    overlay.id = 'shopPayListOverlay';
+    overlay.style.cssText = 'position:fixed; inset:0; background:rgba(0,0,0,0.5); z-index:10000; display:flex; align-items:center; justify-content:center; padding:20px;';
+    overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
+    overlay.innerHTML = '<div style="background:#fff; border-radius:12px; padding:24px; max-width:560px; width:100%; max-height:88vh; overflow:auto;"><div style="text-align:center; color:#9CA3AF;">Loading payments…</div></div>';
+    document.body.appendChild(overlay);
+
+    try {
+        const res = await fetch(`/orders/${orderId}/shop-payments`, {
+            headers: { 'X-Requested-With': 'XMLHttpRequest', 'Accept': 'application/json' }
+        });
+        const data = await res.json();
+        overlay.querySelector('div').innerHTML = buildShopPaymentsHtml(orderId, orderNumber, data);
+    } catch (e) {
+        overlay.querySelector('div').innerHTML = '<div style="color:#DC2626; text-align:center;">Could not load payments.</div>';
+    }
+}
+
+function buildShopPaymentsHtml(orderId, orderNumber, data) {
+    const payments = data.payments || [];
+    let html = `<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
+        <h3 style="margin:0; font-size:1.1rem;">Payments — ${escapeHtml(orderNumber)}</h3>
+        <button onclick="document.getElementById('shopPayListOverlay').remove()" style="border:none; background:#F3F4F6; border-radius:8px; padding:4px 10px; cursor:pointer; font-size:18px;">×</button>
+    </div>`;
+    html += `<div style="font-size:13px; color:#374151; margin-bottom:12px;">
+        Total: <b>Rs. ${numberFormat(data.total_price || 0)}</b> •
+        Paid: <b style="color:#059669;">Rs. ${numberFormat(data.total_paid || 0)}</b> •
+        Balance: <b style="color:#B91C1C;">Rs. ${numberFormat(data.balance_remaining || 0)}</b></div>`;
+
+    if (payments.length === 0) {
+        html += '<div style="color:#9CA3AF;">No payments recorded yet.</div>';
+        return html;
+    }
+    html += '<div style="display:flex; flex-direction:column; gap:8px;">';
+    payments.forEach(p => {
+        const bank = p.receiving_account_name ? ` • ${escapeHtml(p.receiving_account_name)}` : '';
+        html += `<div style="display:flex; justify-content:space-between; align-items:center; padding:10px 12px; border:1px solid #E5E7EB; border-radius:8px;">
+            <div>
+                <div style="font-weight:700;">Rs. ${numberFormat(p.amount)}</div>
+                <div style="font-size:12px; color:#6B7280;">📅 ${formatDate(p.payment_date)}${bank}${p.reference ? ' • Ref: ' + escapeHtml(p.reference) : ''}</div>
+            </div>
+            <button onclick="voidShopPayment(${orderId}, ${p.id}, '${escapeHtml(orderNumber)}')" style="border:1px solid #FECACA; background:#FEF2F2; color:#B91C1C; border-radius:8px; padding:6px 10px; cursor:pointer; font-size:12px;">Void</button>
+        </div>`;
+    });
+    html += '</div>';
+    return html;
+}
+
+async function voidShopPayment(orderId, paymentId, orderNumber) {
+    if (!confirm('Void this payment? This reverses its ledger entry.')) return;
+    try {
+        const res = await fetch(`/orders/${orderId}/shop-payments/${paymentId}`, {
+            method: 'DELETE',
+            headers: {
+                'X-Requested-With': 'XMLHttpRequest',
+                'Accept': 'application/json',
+                'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').content,
+            },
+        });
+        const data = await res.json();
+        if (data.success) {
+            openShopPaymentsList(orderId, orderNumber);
+            loadData();
+            refreshStats();
+        } else {
+            alert(data.message || 'Could not void payment.');
+        }
+    } catch (e) {
+        alert('Network error. Please try again.');
+    }
 }
 
 // Jun-2026 — Payment-proof badges (WhatsApp screenshot / bank email).

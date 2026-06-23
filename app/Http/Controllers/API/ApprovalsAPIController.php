@@ -151,6 +151,9 @@ class ApprovalsAPIController extends Controller
                 ->whereIn('approval_status', ['pending', 'pending_l1', 'pending_l2'])
                 ->whereNull('request_id') // Exclude ledger entries linked to requests
                 ->where('mode', 'online') // ⭐ Simplified: Only online mode (most common case)
+                // Shop customers settle via the Shop tab (order-based), so keep
+                // their orders out of the Regular pending list.
+                ->whereDoesntHave('order.customer', fn ($c) => $c->where('customer_type', \App\Models\CRM\CustomerModel::TYPE_SHOP))
                 ->with([
                     'order:id,order_number,order_date,customer_id,order_status', // ⭐ Added order_status for delivery_date accessor
                     'order.customer:id,first_name,last_name,company,phone,phone_original', // ⭐ Added phone_original for WhatsApp
@@ -227,6 +230,7 @@ class ApprovalsAPIController extends Controller
                     ->whereNull('request_id')
                     ->where('mode', 'online')
                     ->where('approval_date', '>=', $thirtyDaysAgo)
+                    ->whereDoesntHave('order.customer', fn ($c) => $c->where('customer_type', \App\Models\CRM\CustomerModel::TYPE_SHOP))
                     ->with([
                         'order:id,order_number,order_date,customer_id,order_status', // ⭐ Added order_status for delivery_date accessor
                         'order.customer:id,first_name,last_name,company,phone,phone_original',
@@ -357,9 +361,19 @@ class ApprovalsAPIController extends Controller
             $onlineAccount = \App\Models\FIN\AccountModel::where('account_code', 'ONLINE')->first();
             $onlineBalance = $onlineAccount ? $onlineAccount->current_balance : 0;
 
+            // Shop tab — order-based outstanding list for shop customers. These
+            // orders don't have an invoice ledger row; ops settles them with
+            // incremental payments via the shop-payments endpoints.
+            $shopItems = $this->buildShopOnlineItems();
+
             $responseData = [
                 'items' => $items,
                 'count' => count($items),
+                'shop_items' => $shopItems,
+                'shop_summary' => [
+                    'count' => count(array_filter($shopItems, fn ($i) => ($i['balance_remaining'] ?? 0) > 0.01)),
+                    'amount' => array_sum(array_map(fn ($i) => $i['balance_remaining'] ?? 0, $shopItems)),
+                ],
                 'summary' => [
                     'total' => count($items),
                     'total_amount' => array_sum(array_column($items, 'amount')),
@@ -402,6 +416,103 @@ class ApprovalsAPIController extends Controller
                 'message' => 'An error occurred while loading online approvals'
             ], 500);
         }
+    }
+
+    /**
+     * Build the Shop tab list for the mobile online-approvals screen.
+     *
+     * Shop customers' delivered online orders, ordered outstanding-first, each
+     * carrying total / paid / remaining + payment_status so the app can show
+     * progress and offer "Add payment". Mirrors the web ApprovalController
+     * Shop tab. Attaches payment-proof badges in bulk when the feature is on.
+     */
+    private function buildShopOnlineItems(): array
+    {
+        $onlineMethods = ['online', 'Online', 'bank_transfer', 'card', 'online_payment'];
+
+        $orders = \App\Models\CRM\OrderModel::query()
+            ->select(['id', 'order_number', 'order_date', 'customer_id', 'order_status', 'total_price', 'total_paid', 'payment_status'])
+            ->whereHas('customer', fn ($c) => $c->where('customer_type', \App\Models\CRM\CustomerModel::TYPE_SHOP))
+            ->whereIn('payment_method', $onlineMethods)
+            ->where('order_status', 'delivered')
+            // Orders whose online invoice was already booked under the regular
+            // flow are considered paid and must NOT reappear in the shop queue.
+            // This covers both fully APPROVED (L2) invoices and those that have
+            // cleared L1 only (status pending_l2): once L1 passes, the amount is
+            // posted to the ledger, so an L1-approved invoice counts as booked
+            // even if it never reached L2 (and even for older records created
+            // before the post-L1 posting rule existed — balances can be
+            // reconciled manually if needed).
+            ->whereNotExists(function ($q) {
+                $q->select(\DB::raw(1))
+                    ->from('t_fin_ledger')
+                    ->whereColumn('t_fin_ledger.order_id', 't_crm_prod_order.id')
+                    ->where('t_fin_ledger.transaction_type', \App\Models\FIN\LedgerModel::TYPE_INVOICE)
+                    ->whereIn('t_fin_ledger.approval_status', [
+                        \App\Models\FIN\LedgerModel::STATUS_APPROVED,
+                        \App\Models\FIN\LedgerModel::STATUS_PENDING_L2,
+                    ]);
+            })
+            ->with('customer:id,first_name,last_name,company,phone,phone_original')
+            ->orderByRaw('CASE WHEN payment_status = ? THEN 0 WHEN payment_status = ? THEN 1 ELSE 2 END', ['unpaid', 'partial'])
+            // NOTE: delivery_date is a computed accessor (from status history),
+            // not a real column — order by the real order_date column instead.
+            ->orderBy('order_date', 'desc')
+            ->get();
+
+        $items = [];
+        foreach ($orders as $order) {
+            $customer = $order->customer;
+            $totalPrice = (float) $order->total_price;
+            $paid = (float) ($order->total_paid ?? 0);
+            $remaining = max(0, $totalPrice - $paid);
+
+            $requester = 'Unknown';
+            $customerPhone = null;
+            if ($customer) {
+                $fullName = trim(($customer->first_name ?? '') . ' ' . ($customer->last_name ?? ''));
+                $requester = $fullName ?: ($customer->company ?: ($customer->phone ?: 'Unknown'));
+                $customerPhone = $customer->phone_original ?? $customer->phone ?? null;
+            }
+
+            $deliveryDate = $order->delivery_date;
+            $displayDate = $deliveryDate
+                ?? ($order->order_date ? $order->order_date->format('Y-m-d') : null);
+
+            $items[] = [
+                'id' => $order->id,
+                'type' => 'shop_order',
+                'number' => $order->order_number,
+                'title' => 'Shop Order',
+                'description' => "Shop order #{$order->order_number}",
+                'amount' => $totalPrice,
+                'total_paid' => $paid,
+                'balance_remaining' => $remaining,
+                'payment_status' => $order->payment_status ?? 'unpaid',
+                'date' => $displayDate,
+                'area' => 'online',
+                'requester' => $requester,
+                'customer_phone' => $customerPhone,
+                'category' => 'Shop',
+                'category_color' => '#FEF3C7',
+                'order_id' => $order->id,
+            ];
+        }
+
+        // Attach payment-proof badges in one bulk lookup (no-op when off).
+        if (config('payment_signals.enabled') && !empty($items)) {
+            $orderIds = array_values(array_filter(array_column($items, 'order_id')));
+            if (!empty($orderIds)) {
+                $proofMap = app(\App\Services\Payments\Signals\PaymentProofStatusService::class)
+                    ->forOrders($orderIds);
+                foreach ($items as &$it) {
+                    $it['payment_proof'] = isset($proofMap[$it['order_id']]) ? $proofMap[$it['order_id']] : null;
+                }
+                unset($it);
+            }
+        }
+
+        return $items;
     }
 
     /**

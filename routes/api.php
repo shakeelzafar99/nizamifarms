@@ -185,6 +185,10 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('/', [\App\Http\Controllers\API\ApprovalsAPIController::class, 'index']);
         Route::get('/summaries', [\App\Http\Controllers\API\ApprovalsAPIController::class, 'summaries']);
         Route::get('/online', [\App\Http\Controllers\API\ApprovalsAPIController::class, 'onlineOnly']); // ⭐ Fast endpoint for online only
+        // Read-only payment-proof detail (WhatsApp screenshot / bank email) for an
+        // order — powers the proof popup in the mobile Online Approvals screen,
+        // mirroring the web /admin/payments/order/{id}/signals panel.
+        Route::get('/order/{orderId}/payment-signals', [\App\Http\Controllers\FIN\PaymentSignalsController::class, 'forOrder']);
     });
     
     // Mobile Permissions

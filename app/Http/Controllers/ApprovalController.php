@@ -1021,6 +1021,9 @@ class ApprovalController extends Controller
         
         // Get approved online items (last 30 days)
         $approvedItems = $this->getOnlineApprovedItems($request->input('approved_from'), $request->input('approved_to'));
+
+        // Shop tab — order-based outstanding list for shop customers.
+        $shopItems = $this->getOnlineShopItems($request);
         
         // Calculate summaries
         $summaries = [
@@ -1036,11 +1039,17 @@ class ApprovalController extends Controller
                 'count' => count($approvedItems),
                 'amount' => $this->sumAmounts($approvedItems),
             ],
+            'shop' => [
+                // Count only those still outstanding so the badge reflects
+                // action needed; amount is the total remaining balance.
+                'count' => count(array_filter($shopItems, fn ($i) => ($i['balance_remaining'] ?? 0) > 0.01)),
+                'amount' => array_sum(array_map(fn ($i) => $i['balance_remaining'] ?? 0, $shopItems)),
+            ],
         ];
         
         // If AJAX request, return filtered data
         if ($request->ajax()) {
-            return $this->getOnlineFilteredData($request, $l1Items, $l2Items, $approvedItems);
+            return $this->getOnlineFilteredData($request, $l1Items, $l2Items, $approvedItems, $shopItems);
         }
 
         // ⭐ Load receiving accounts for bank selection dropdown
@@ -1074,6 +1083,7 @@ class ApprovalController extends Controller
             ])
             ->whereNull('request_id')
             ->where('mode', 'online') // ⭐ Only online mode
+            ->where(fn ($q) => $this->excludeShopCustomers($q)) // Shop orders live in the Shop tab
             ->with(['fromAccount', 'toAccount', 'createdBy', 'order.customer', 'receivingAccount'])
             ->orderBy('transaction_date', 'desc')
             ->get();
@@ -1095,6 +1105,7 @@ class ApprovalController extends Controller
         $pendingLedger = LedgerModel::where('approval_status', LedgerModel::STATUS_PENDING_L2)
             ->whereNull('request_id')
             ->where('mode', 'online') // ⭐ Only online mode
+            ->where(fn ($q) => $this->excludeShopCustomers($q)) // Shop orders live in the Shop tab
             ->with(['fromAccount', 'toAccount', 'createdBy', 'order.customer', 'receivingAccount'])
             ->orderBy('transaction_date', 'desc')
             ->get();
@@ -1128,6 +1139,7 @@ class ApprovalController extends Controller
             ->whereBetween('approval_date', [$dateFrom, $dateTo])
             ->whereNull('request_id')
             ->where('mode', 'online') // ⭐ Only online mode
+            ->where(fn ($q) => $this->excludeShopCustomers($q)) // Shop payments live in the Shop tab
             ->with(['fromAccount', 'toAccount', 'createdBy', 'order.customer', 'approvedBy', 'receivingAccount'])
             ->orderBy('approval_date', 'desc')
             ->get();
@@ -1136,6 +1148,101 @@ class ApprovalController extends Controller
             $items[] = $this->formatOnlineLedgerItem($ledger, null, 'approved');
         }
         
+        return $this->attachProofStatus($items);
+    }
+
+    /**
+     * Constrain an online-ledger query to the REGULAR tab by removing any
+     * ledger whose order belongs to a shop customer. Pure ledgers (no order /
+     * no customer) and regular-customer ledgers are kept. Shop orders are
+     * billed via the Shop tab's payment flow instead.
+     */
+    private function excludeShopCustomers($query)
+    {
+        $query->whereDoesntHave('order.customer', function ($c) {
+            $c->where('customer_type', \App\Models\CRM\CustomerModel::TYPE_SHOP);
+        });
+    }
+
+    /**
+     * Shop tab data (Jun-2026). Unlike the Regular tab — which is driven by
+     * pending invoice ledger rows — shop customers don't get a full-invoice
+     * posting. Their delivered online orders sit here as an order-based
+     * outstanding list that ops settles via incremental payments (the
+     * order_payment flow). Each row carries total / paid / remaining so the
+     * UI can show progress and offer "Add payment".
+     */
+    private function getOnlineShopItems($request)
+    {
+        $onlineMethods = ['online', 'Online', 'bank_transfer', 'card', 'online_payment'];
+
+        $orders = \App\Models\CRM\OrderModel::query()
+            ->whereHas('customer', function ($c) {
+                $c->where('customer_type', \App\Models\CRM\CustomerModel::TYPE_SHOP);
+            })
+            ->whereIn('payment_method', $onlineMethods)
+            ->where('order_status', 'delivered')
+            // Orders whose online invoice was already booked under the regular
+            // flow are considered paid and must NOT reappear in the shop queue.
+            // This covers both fully APPROVED (L2) invoices and those that have
+            // cleared L1 only (status pending_l2): once L1 passes, the amount is
+            // posted to the ledger, so an L1-approved invoice counts as booked
+            // even if it never reached L2 (and even for older records created
+            // before the post-L1 posting rule existed — balances can be
+            // reconciled manually if needed).
+            ->whereNotExists(function ($q) {
+                $q->select(\DB::raw(1))
+                    ->from('t_fin_ledger')
+                    ->whereColumn('t_fin_ledger.order_id', 't_crm_prod_order.id')
+                    ->where('t_fin_ledger.transaction_type', \App\Models\FIN\LedgerModel::TYPE_INVOICE)
+                    ->whereIn('t_fin_ledger.approval_status', [
+                        \App\Models\FIN\LedgerModel::STATUS_APPROVED,
+                        \App\Models\FIN\LedgerModel::STATUS_PENDING_L2,
+                    ]);
+            })
+            ->with('customer')
+            ->orderByRaw('CASE WHEN payment_status = ? THEN 0 WHEN payment_status = ? THEN 1 ELSE 2 END', ['unpaid', 'partial'])
+            // NOTE: delivery_date is a computed accessor (from status history),
+            // not a real column — order by the real order_date column instead.
+            ->orderBy('order_date', 'desc')
+            ->get();
+
+        $items = [];
+        foreach ($orders as $order) {
+            $customer = $order->customer;
+            $totalPrice = (float) $order->total_price;
+            $paid = (float) ($order->total_paid ?? 0);
+            $remaining = max(0, $totalPrice - $paid);
+
+            $name = 'Unknown';
+            $phone = null;
+            if ($customer) {
+                $name = trim($customer->full_name ?? '') ?: ($customer->company ?: ($customer->phone ?: 'Unknown'));
+                $phone = $customer->phone_original ?? $customer->phone ?? null;
+            }
+
+            $displayDate = $order->delivery_date
+                ?: ($order->order_date ? $order->order_date->format('Y-m-d') : null);
+
+            $items[] = [
+                'type' => 'shop_order',
+                'id' => $order->id,
+                'order_id' => $order->id,
+                'number' => $order->order_number,
+                'order_number' => $order->order_number,
+                'requester' => $name,
+                'customer_phone' => $phone,
+                'title' => "Order #{$order->order_number}",
+                'description' => "Shop order #{$order->order_number}",
+                'amount' => $totalPrice,
+                'total_paid' => $paid,
+                'balance_remaining' => $remaining,
+                'payment_status' => $order->payment_status ?? 'unpaid',
+                'date' => $displayDate,
+                'view_url' => route('fin.ledger.index'),
+            ];
+        }
+
         return $this->attachProofStatus($items);
     }
 
@@ -1242,9 +1349,9 @@ class ApprovalController extends Controller
     /**
      * Get filtered data for AJAX requests (Online Approvals)
      */
-    private function getOnlineFilteredData($request, $l1Items, $l2Items, $approvedItems)
+    private function getOnlineFilteredData($request, $l1Items, $l2Items, $approvedItems, $shopItems = [])
     {
-        $tab = $request->input('tab', 'l1'); // 'l1', 'l2', 'approved'
+        $tab = $request->input('tab', 'l1'); // 'l1', 'l2', 'approved', 'shop'
         $search = $request->input('search');
         $sort = $request->input('sort', 'date'); // 'date', 'name', 'approved_date'
         $proof = $request->input('proof', 'all'); // 'all', 'received', 'verified', 'mismatch'
@@ -1260,6 +1367,9 @@ class ApprovalController extends Controller
                 break;
             case 'approved':
                 $items = $approvedItems;
+                break;
+            case 'shop': // Shop customers — order-based outstanding list
+                $items = $shopItems;
                 break;
             case 'all': // All pending (L1 + L2)
                 $items = array_merge($l1Items, $l2Items);

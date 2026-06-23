@@ -44,6 +44,20 @@ class LedgerPostingService
                 $order->load('customer');
             }
 
+            // Shop customers settle their ONLINE invoices via incremental
+            // payments (like Qurbani), so we never post a full invoice for them.
+            // Cash shop orders fall through to the normal rider-settlement
+            // invoice flow, exactly like a regular customer.
+            if ($order->customer
+                && $order->customer->isShop()
+                && in_array($order->payment_method, ['online', 'Online', 'bank_transfer', 'card', 'online_payment'], true)) {
+                Log::info("Skipping invoice posting - shop customer online order (settled via payments)", [
+                    'order_id' => $order->id,
+                    'order_number' => $order->order_number,
+                ]);
+                return ['success' => true, 'message' => 'Shop online order — invoice settled via payments, posting skipped'];
+            }
+
             DB::beginTransaction();
 
             $salesAccount = ConfigModel::getSalesRevenueAccount();

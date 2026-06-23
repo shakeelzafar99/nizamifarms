@@ -175,6 +175,12 @@ Route::middleware(['auth'])->group(function () {
     // Void a previously-added payment. Soft-deletes the row and reverses the
     // paired ledger/account-balance entries so finance stays consistent.
     Route::delete('/orders/{id}/qurbani-payments/{paymentId}', [OrderController::class, 'deleteQurbaniPayment'])->name('orders.qurbani-payments.delete');
+    // Shop customer incremental payments. Listing + void reuse the generic
+    // (account-agnostic) Qurbani handlers; only the add path differs (online
+    // only, posts into the ONLINE bank instead of the Qurbani accounts).
+    Route::get('/orders/{id}/shop-payments', [OrderController::class, 'getQurbaniPayments'])->name('orders.shop-payments');
+    Route::post('/orders/{id}/shop-payments', [OrderController::class, 'addShopPayment'])->name('orders.shop-payments.add');
+    Route::delete('/orders/{id}/shop-payments/{paymentId}', [OrderController::class, 'deleteQurbaniPayment'])->name('orders.shop-payments.delete');
     // Save PAID-stamp overrides (sending bank, stamp date, ref mode) without
     // touching any payment row. Used by the "✏️ Edit stamp" popover on
     // invoice.blade.

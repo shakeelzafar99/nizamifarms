@@ -786,9 +786,19 @@ window.editCustomer = function(id) {
                         <label style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 8px;">Phone</label>
                         <input type="text" name="phone" value="${customer.phone_original || customer.phone || ''}" style="width: 100%; padding: 8px; border: 1px solid #d1d5db; border-radius: 4px; font-size: 14px;">
                     </div>
-                    <div style="margin-bottom: 16px;">
-                        <label style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 8px;">Company</label>
-                        <input type="text" name="company" value="${customer.company || ''}" style="width: 100%; padding: 8px; border: 1px solid #d1d5db; border-radius: 4px; font-size: 14px;">
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 16px;">
+                        <div>
+                            <label style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 8px;">Company</label>
+                            <input type="text" name="company" value="${customer.company || ''}" style="width: 100%; padding: 8px; border: 1px solid #d1d5db; border-radius: 4px; font-size: 14px;">
+                        </div>
+                        <div>
+                            <label style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 8px;">Customer Type</label>
+                            <select name="customer_type" style="width: 100%; padding: 8px; border: 1px solid #d1d5db; border-radius: 4px; font-size: 14px;">
+                                <option value="regular" ${(customer.customer_type || 'regular') === 'regular' ? 'selected' : ''}>Regular</option>
+                                <option value="shop" ${customer.customer_type === 'shop' ? 'selected' : ''}>🏪 Shop</option>
+                            </select>
+                            <p style="margin: 4px 0 0 0; font-size: 11px; color: #6b7280;">Shop: online invoices settled via payments (Shop tab in approvals).</p>
+                        </div>
                     </div>
                     <div style="margin-bottom: 16px;">
                         <label style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 8px;">Address Line 1</label>
@@ -904,6 +914,8 @@ function fetchFilteredCustomers() {
     const searchTerm = document.getElementById('customerSearchInput').value.trim();
     const regionFilter = document.getElementById('customerRegionFilter').value;
     const activityFilter = document.getElementById('customerActivityFilter').value;
+    const typeFilterEl = document.getElementById('customerTypeFilter');
+    const customerTypeFilter = typeFilterEl ? typeFilterEl.value : '';
     const { sortBy, sortDir } = parseSortValue(document.getElementById('customerSortFilter').value);
     
     // Show loading state
@@ -914,6 +926,7 @@ function fetchFilteredCustomers() {
     if (searchTerm) params.append('search', searchTerm);
     if (regionFilter) params.append('region', regionFilter);
     if (activityFilter) params.append('activity', activityFilter);
+    if (customerTypeFilter) params.append('customer_type', customerTypeFilter);
     if (sortBy) params.append('sort_by', sortBy);
     if (sortDir) params.append('sort_dir', sortDir);
     
@@ -1010,7 +1023,11 @@ function getCustomerCellContent(customer, columnId) {
             
         case 'name':
             let nameHtml = '<div class="flex flex-col">';
-            nameHtml += '<span class="text-sm font-medium text-gray-900">' + customer.first_name + ' ' + customer.last_name + '</span>';
+            nameHtml += '<span class="text-sm font-medium text-gray-900">' + customer.first_name + ' ' + customer.last_name;
+            if (customer.customer_type === 'shop') {
+                nameHtml += ' <span style="display:inline-block; padding:1px 6px; border-radius:8px; font-size:10px; font-weight:700; background:#FEF3C7; color:#B45309; border:1px solid #FCD34D;">🏪 Shop</span>';
+            }
+            nameHtml += '</span>';
             if (customer.company) {
                 nameHtml += '<span class="text-xs text-gray-500">' + customer.company + '</span>';
             }
@@ -1229,6 +1246,14 @@ document.addEventListener('DOMContentLoaded', function() {
     sortFilter.addEventListener('change', function() {
         navigateWithFilters();
     });
+
+    // Customer type filter (regular / shop) - navigate with URL params
+    const typeFilter = document.getElementById('customerTypeFilter');
+    if (typeFilter) {
+        typeFilter.addEventListener('change', function() {
+            navigateWithFilters();
+        });
+    }
 });
 
 // Navigate to the same page with updated URL params (server-side for proper pagination)
@@ -1238,11 +1263,14 @@ function navigateWithFilters() {
     const search = document.getElementById('customerSearchInput').value.trim();
     const region = document.getElementById('customerRegionFilter').value;
     const activity = document.getElementById('customerActivityFilter').value;
+    const typeEl = document.getElementById('customerTypeFilter');
+    const customerType = typeEl ? typeEl.value : '';
     const { sortBy, sortDir } = parseSortValue(document.getElementById('customerSortFilter').value);
     
     if (search) params.set('search', search);
     if (region) params.set('region', region);
     if (activity) params.set('activity', activity);
+    if (customerType) params.set('customer_type', customerType);
     
     // Only add sort params if not the default
     if (sortBy !== 'last_order_date' || sortDir !== 'desc') {
@@ -2570,6 +2598,12 @@ function removePromoImage() {
                         <option value="" {{ !request('activity') ? 'selected' : '' }}>All Customers</option>
                         <option value="30day" {{ request('activity') == '30day' ? 'selected' : '' }}>30-Day Active</option>
                         <option value="90day" {{ request('activity') == '90day' ? 'selected' : '' }}>90-Day Active</option>
+                    </select>
+
+                    <select name="customer_type" class="select select-sm w-32 text-xs" id="customerTypeFilter">
+                        <option value="" {{ !request('customer_type') ? 'selected' : '' }}>All Types</option>
+                        <option value="regular" {{ request('customer_type') == 'regular' ? 'selected' : '' }}>Regular</option>
+                        <option value="shop" {{ request('customer_type') == 'shop' ? 'selected' : '' }}>🏪 Shop</option>
                     </select>
                     
                     <select name="sort" class="select select-sm w-44 text-xs" id="customerSortFilter">
