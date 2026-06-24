@@ -28,8 +28,10 @@ return [
     'check_secret' => env('PAYMENT_SIGNALS_CHECK_SECRET', ''),
 
     // How many days back to look when matching a payment to the customer's
-    // unpaid/partial online orders. Per product decision: 30 days.
-    'match_window_days' => env('PAYMENT_SIGNALS_MATCH_WINDOW_DAYS', 30),
+    // unpaid/partial online orders. Widened to 200 days so a payment can match
+    // against effectively any still-open (unpaid/partial) order, not just the
+    // last month. Override per-environment via PAYMENT_SIGNALS_MATCH_WINDOW_DAYS.
+    'match_window_days' => env('PAYMENT_SIGNALS_MATCH_WINDOW_DAYS', 200),
 
     // A payment can only belong to an order that already EXISTED when the
     // money was sent. We therefore never match a payment to an order whose

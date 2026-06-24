@@ -536,7 +536,7 @@ Field mapping to your `LiveDelivery` shape (section 5 of your doc) is
 | `updated_at` | `updatedAt` |
 
 Notes:
-- `rider` is the **server-provided rider GPS** (heartbeat ~every few
+- `rider` is the **server-provided rider GPS** (heartbeat ~every 5
   minutes), not the user's device GPS.
 - `destination` is the customer's verified pin (geocoded fallback).
 - We return `tracking: null` (not an error) when there's no fresh rider
@@ -545,6 +545,27 @@ Notes:
   just draws without it.
 - Poll us at your existing adaptive cadence (~10-30s while
   out-for-delivery and foregrounded). That's well within our limits.
+
+#### GPS freshness — `updated_at` (read this for the "live" indicator)
+
+`updated_at` is **the exact timestamp NF captured that rider GPS fix** (ISO
+8601, UTC). It is your freshness signal — derive age as `now − updated_at` and
+drive your "live / X min ago / reconnecting" indicator from it.
+
+- The rider app reports a GPS heartbeat **roughly every 5 minutes**, so on a
+  healthy delivery `updated_at` advances every few minutes. Don't expect
+  second-by-second movement — interpolate/smooth on your side if you want.
+- **NF enforces a staleness cutoff before it ever sends you a fix.** Any fix
+  older than `CUSTOMER_APP_TRACKING_STALENESS` minutes (**default 30**) is
+  suppressed and you get `tracking: null` instead. So **every `rider` fix you
+  receive is already guaranteed to be ≤ 30 min old**, and `updated_at` tells
+  you precisely how old within that window.
+- Practical UI rule of thumb: `updated_at` within ~6 min → "Live"; older but
+  still returned → "Updated N min ago"; `tracking: null` → fall back to the
+  timeline / "locating rider".
+- `eta` and `updated_at` are independent: `eta` is the predicted arrival time;
+  `updated_at` is when we last *saw* the rider. A fix can be fresh while the
+  ETA is still minutes out.
 
 ---
 

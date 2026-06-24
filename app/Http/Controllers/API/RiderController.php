@@ -6754,7 +6754,7 @@ class RiderController extends Controller
      * Purely additive: only computed for "today"; never touches the delivered
      * report logic.
      */
-    private function buildOngoingDispatchTracking(?float $officeLat, ?float $officeLng, int $radiusMeters = 300): array
+    private function buildOngoingDispatchTracking(?float $officeLat, ?float $officeLng, int $radiusMeters = 300, bool $useGoogleEta = true): array
     {
         // Current out_for_delivery orders are inherently "now".
         $ofd = \DB::table('t_crm_prod_order as o')
@@ -6871,7 +6871,7 @@ class RiderController extends Controller
             // delivered today + away + fresh GPS).
             $returnInfo = null;
             if ($gpsFresh && !$atOffice) {
-                $returnInfo = $this->getReturnToOfficeInfo((int) $rid, $officeLat, $officeLng, $radiusMeters);
+                $returnInfo = $this->getReturnToOfficeInfo((int) $rid, $officeLat, $officeLng, $radiusMeters, $useGoogleEta);
             }
 
             // Status priority: returning > warnings/waits > on route.
@@ -7058,26 +7058,32 @@ class RiderController extends Controller
      */
     public function getRidersLiveStatus(Request $request)
     {
+        // IMPORTANT: each block below is independently guarded. The board's core
+        // data — who's CHECKED IN and their GPS freshness — comes from two cheap,
+        // reliable queries. Previously these shared ONE try/catch with the much
+        // heavier dispatch tracking (which makes an external Google ETA call), so
+        // any timeout/exception there returned checked_in=[] and the board showed
+        // "No riders checked in" even though riders were checked in. We now keep
+        // the cheap data intact regardless of what happens to dispatch tracking.
+
+        // 1) Checked-in riders (attendance login today, not yet logged out).
+        $checkedIn = [];
         try {
-            $office = $this->getPrimaryOfficeCoords();
-            $officeLat = $office['lat'] ?? null;
-            $officeLng = $office['lng'] ?? null;
+            $checkedIn = \DB::table('t_ops_attendance')
+                ->whereDate('attendance_date', now()->format('Y-m-d'))
+                ->whereNotNull('login_time')
+                ->whereNull('logout_time')
+                ->pluck('user_id')
+                ->map(fn($v) => (int) $v)
+                ->values()
+                ->all();
+        } catch (\Throwable $e) {
+            \Log::warning('getRidersLiveStatus: checked_in query failed', ['error' => $e->getMessage()]);
+        }
 
-            $ongoing = $this->buildOngoingDispatchTracking($officeLat, $officeLng, 300);
-            $dispatch = [];
-            foreach ($ongoing as $o) {
-                $dispatch[$o['rider_id']] = [
-                    'status' => $o['status'],
-                    'ofd_total' => $o['ofd_total'],
-                    'dispatched_count' => $o['dispatched_count'],
-                    'undispatched_count' => $o['undispatched_count'],
-                    'distance_to_office_display' => $o['distance_to_office_display'] ?? null,
-                    'return_to_office' => $o['return_to_office'] ?? null,
-                ];
-            }
-
-            // GPS freshness — latest heartbeat per rider in last 24h.
-            $gps = [];
+        // 2) GPS freshness — latest heartbeat per rider in last 24h.
+        $gps = [];
+        try {
             $rows = \DB::table('t_ops_rider_location')
                 ->select('user_id', \DB::raw('MAX(captured_at) as last_at'))
                 ->where('captured_at', '>=', now()->subHours(24))
@@ -7092,30 +7098,75 @@ class RiderController extends Controller
                     'is_fresh' => $age <= 6,
                 ];
             }
-
-            // Riders currently CHECKED IN (attendance login today, not yet
-            // logged out) — lets the board show only riders who are working,
-            // instead of every rider that has open orders assigned.
-            $checkedIn = \DB::table('t_ops_attendance')
-                ->whereDate('attendance_date', now()->format('Y-m-d'))
-                ->whereNotNull('login_time')
-                ->whereNull('logout_time')
-                ->pluck('user_id')
-                ->map(fn($v) => (int) $v)
-                ->values()
-                ->all();
-
-            return response()->json([
-                'success' => true,
-                'gps' => $gps,
-                'dispatch' => $dispatch,
-                'checked_in' => $checkedIn,
-                'timestamp' => now()->toIso8601String(),
-            ]);
         } catch (\Throwable $e) {
-            \Log::warning('getRidersLiveStatus failed (non-fatal)', ['error' => $e->getMessage()]);
-            return response()->json(['success' => false, 'gps' => [], 'dispatch' => [], 'checked_in' => []]);
+            \Log::warning('getRidersLiveStatus: gps query failed', ['error' => $e->getMessage()]);
         }
+
+        // 3) Dispatch status + "back to office" ETA. This is the heavier part and
+        //    is the part that reuses the cached Google Directions estimate (the
+        //    same single-estimate model used when an order is dispatched — NOT a
+        //    per-second live call). It's isolated in its own try/catch so any
+        //    failure here degrades only the status/ETA columns and can NEVER blank
+        //    out the checked-in roster computed above.
+        //
+        //    useGoogleEta=false on this hot path means: reuse the WARM cached
+        //    Google ETA if it's already there, otherwise show a quick distance
+        //    approximation — we never fire a fresh (blocking, up-to-15s) Google
+        //    call inside this 30s-polling request. The precise Google value is
+        //    instead computed out-of-band below, so it appears on the next poll.
+        $dispatch = [];
+        try {
+            $office = $this->getPrimaryOfficeCoords();
+            $officeLat = $office['lat'] ?? null;
+            $officeLng = $office['lng'] ?? null;
+
+            $ongoing = $this->buildOngoingDispatchTracking($officeLat, $officeLng, 300, false);
+            $warmRiderIds = [];
+            foreach ($ongoing as $o) {
+                $dispatch[$o['rider_id']] = [
+                    'status' => $o['status'],
+                    'ofd_total' => $o['ofd_total'],
+                    'dispatched_count' => $o['dispatched_count'],
+                    'undispatched_count' => $o['undispatched_count'],
+                    'distance_to_office_display' => $o['distance_to_office_display'] ?? null,
+                    'return_to_office' => $o['return_to_office'] ?? null,
+                ];
+                // source 'approx' means the precise Google ETA isn't cached yet —
+                // queue this rider to be warmed after the response is sent.
+                $rto = $o['return_to_office'] ?? null;
+                if (is_array($rto) && ($rto['source'] ?? null) === 'approx') {
+                    $warmRiderIds[] = (int) $o['rider_id'];
+                }
+            }
+
+            // Warm the precise Google "back to office" ETA OUT OF BAND (after the
+            // response is flushed) and cache it, so it surfaces on the next 30s
+            // poll and persists for the cache window. Same cached single-estimate
+            // approach used at dispatch time — no blocking on this request, and no
+            // per-second live polling. Fully non-fatal.
+            if (!empty($warmRiderIds) && $officeLat && $officeLng) {
+                $idsToWarm = array_values(array_unique($warmRiderIds));
+                app()->terminating(function () use ($idsToWarm, $officeLat, $officeLng) {
+                    foreach ($idsToWarm as $rid) {
+                        try {
+                            $this->getReturnToOfficeInfo($rid, $officeLat, $officeLng, 300, true);
+                        } catch (\Throwable $e) {
+                            // non-fatal — the board keeps showing the approximation
+                        }
+                    }
+                });
+            }
+        } catch (\Throwable $e) {
+            \Log::warning('getRidersLiveStatus: dispatch tracking failed (non-fatal)', ['error' => $e->getMessage()]);
+        }
+
+        return response()->json([
+            'success' => true,
+            'gps' => $gps,
+            'dispatch' => $dispatch,
+            'checked_in' => $checkedIn,
+            'timestamp' => now()->toIso8601String(),
+        ]);
     }
 
     /**
@@ -9616,7 +9667,7 @@ class RiderController extends Controller
      *
      * @return array{minutes:int,arrival_at:string,arrival_display:string,distance_meters:int,distance_display:string,source:string}|null
      */
-    private function getReturnToOfficeInfo(int $riderId, ?float $officeLat = null, ?float $officeLng = null, int $radiusMeters = 300): ?array
+    private function getReturnToOfficeInfo(int $riderId, ?float $officeLat = null, ?float $officeLng = null, int $radiusMeters = 300, bool $useGoogleEta = true): ?array
     {
         if ($officeLat === null || $officeLng === null) {
             $office = $this->getPrimaryOfficeCoords();
@@ -9675,17 +9726,28 @@ class RiderController extends Controller
             return null; // No completed dispatch today.
         }
 
-        // Single Google call, cached 3 min per rider (-1 sentinel = no result,
-        // so failures don't hammer the API on every poll).
+        // Precise ETA needs one (cached) Google Directions call. The live board
+        // polls every 30s and must NEVER block on an external call — Google can
+        // take up to 15s per rider on a cold cache (or stall entirely if the
+        // production server has no/limited outbound), which is exactly what made
+        // the board fail to load intermittently. Callers that only need a glance
+        // pass $useGoogleEta=false: we reuse a warm cached value if present,
+        // otherwise fall back to a distance-based approximation — without ever
+        // firing a fresh Google request on the board's hot path.
         $lat = (float) $loc->latitude;
         $lng = (float) $loc->longitude;
-        $cached = \Cache::remember("return_office_eta:{$riderId}", 180, function () use ($lat, $lng, $officeLat, $officeLng) {
-            $eta = $this->getMultiStopEtaFromGoogle([
-                ['lat' => $lat, 'lng' => $lng],
-                ['lat' => $officeLat, 'lng' => $officeLng],
-            ]);
-            return $eta['legs'][0] ?? -1;
-        });
+        if ($useGoogleEta) {
+            $cached = \Cache::remember("return_office_eta:{$riderId}", 180, function () use ($lat, $lng, $officeLat, $officeLng) {
+                $eta = $this->getMultiStopEtaFromGoogle([
+                    ['lat' => $lat, 'lng' => $lng],
+                    ['lat' => $officeLat, 'lng' => $officeLng],
+                ]);
+                return $eta['legs'][0] ?? -1;
+            });
+        } else {
+            // Board path: only use an already-warm cached value; no API call.
+            $cached = \Cache::get("return_office_eta:{$riderId}");
+        }
 
         $source = 'google_maps';
         $minutes = (is_numeric($cached) && $cached >= 0) ? (int) round($cached) : null;

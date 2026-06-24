@@ -13705,8 +13705,16 @@ function formatLiveDispatchStatus(d) {
 let _riderBoardInterval = null;
 
 function riderBoardShouldShow() {
+    // The default /orders landing renders the Open Orders tab server-side WITHOUT
+    // any ?source/?tab query params, so reading the URL alone wrongly hides the
+    // board on a fresh load / hard refresh. Trust the runtime context
+    // (window.currentSource / window.currentTab) which is set from the server on
+    // first render and kept in sync on every client-side tab switch; fall back to
+    // the URL params only if those globals are somehow missing.
     const params = new URLSearchParams(window.location.search);
-    const onOpen = (params.get('source') === 'other' && (params.get('tab') || 'all') === 'open');
+    const source = window.currentSource || params.get('source') || 'other';
+    const tab = window.currentTab || params.get('tab') || 'open';
+    const onOpen = (source === 'other' && tab === 'open');
     return onOpen && window.innerWidth >= 1024;
 }
 
