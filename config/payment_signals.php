@@ -44,9 +44,15 @@ return [
     // transaction time within this many days of each other.
     'pair_window_days' => env('PAYMENT_SIGNALS_PAIR_WINDOW_DAYS', 3),
 
-    // Amount tolerance (in PKR) for an "exact" balance match. Bank rounding
-    // and tip handling can cause sub-rupee differences.
-    'amount_tolerance' => env('PAYMENT_SIGNALS_AMOUNT_TOLERANCE', 1.00),
+    // Amount tolerance (in PKR) for treating a payment as matching an order's
+    // balance. Widened to 10 PKR (Jun-2026): customers routinely round or
+    // over/under-pay by a few rupees, and bank receipts carry small fee/rounding
+    // differences. A payment within ±10 of a single invoice's balance — OR within
+    // ±10 of the COMBINED total of several open invoices — is treated as a clean
+    // match (so it reads "Proof received"/"Verified", not "amount differs").
+    // Applies to single-invoice matching, combined/bulk matching, and the
+    // WhatsApp⇄bank-email pairing. Override per-environment via the env key.
+    'amount_tolerance' => env('PAYMENT_SIGNALS_AMOUNT_TOLERANCE', 10.00),
 
     // Order payment methods we consider "online" for matching purposes.
     'online_payment_methods' => ['online', 'bank_transfer'],

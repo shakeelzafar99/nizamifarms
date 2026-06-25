@@ -731,6 +731,11 @@ Route::middleware(['auth'])->group(function () {
         ->whereNumber('orderId')
         ->name('payments.order-signals');
 
+    // Jun-2026 — Dismiss an auto-detected combined (bulk) payment for an order.
+    Route::post('/admin/payments/order/{orderId}/uncombine', [\App\Http\Controllers\FIN\PaymentSignalsController::class, 'uncombine'])
+        ->whereNumber('orderId')
+        ->name('payments.order-uncombine');
+
     // Jun-2026 — Manual catch-up: find WhatsApp images / bank emails that were
     // missed by the live flow, create their signals, and run extraction+match.
     // Idempotent + non-interfering; powers the Operations page button.

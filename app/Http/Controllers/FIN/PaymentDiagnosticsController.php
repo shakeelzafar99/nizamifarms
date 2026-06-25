@@ -225,12 +225,15 @@ class PaymentDiagnosticsController extends Controller
 
             $wa = $result['whatsapp'] ?? [];
             $em = $result['email'] ?? [];
+            $rm = $result['rematch'] ?? [];
             $summary = sprintf(
-                'WhatsApp: %d image(s) without a signal found, %d new created. Email: %d scanned, %d new ingested.',
+                'WhatsApp: %d image(s) without a signal found, %d new created. Email: %d scanned, %d new ingested. Re-evaluated %d existing proof(s), %d now match.',
                 (int) ($wa['candidates'] ?? 0),
                 (int) ($wa['created'] ?? 0),
                 (int) ($em['scanned'] ?? 0),
-                (int) ($em['created'] ?? 0)
+                (int) ($em['created'] ?? 0),
+                (int) ($rm['rematched'] ?? 0),
+                (int) ($rm['now_matched'] ?? 0)
             );
 
             return response()->json([

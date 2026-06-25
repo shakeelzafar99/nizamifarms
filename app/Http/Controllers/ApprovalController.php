@@ -1354,7 +1354,7 @@ class ApprovalController extends Controller
         $tab = $request->input('tab', 'l1'); // 'l1', 'l2', 'approved', 'shop'
         $search = $request->input('search');
         $sort = $request->input('sort', 'date'); // 'date', 'name', 'approved_date'
-        $proof = $request->input('proof', 'all'); // 'all', 'received', 'verified', 'mismatch'
+        $proof = $request->input('proof', 'all'); // 'all', 'pending', 'received', 'verified', 'mismatch'
         
         // Select items based on tab
         $items = [];
@@ -1388,17 +1388,28 @@ class ApprovalController extends Controller
 
         // Filter by payment-proof status (Jun-2026: bulk-approve by WhatsApp/email proof)
         if ($proof && $proof !== 'all') {
-            $proofStatuses = [
-                'received' => ['proof_received', 'bank_confirmed'],
-                'verified' => ['verified'],
-                'mismatch' => ['amount_mismatch'],
-            ];
-            $allowed = $proofStatuses[$proof] ?? [];
-            if (!empty($allowed)) {
-                $items = array_filter($items, function($item) use ($allowed) {
+            if ($proof === 'pending') {
+                // "No proof yet" — invoices with no actionable payment proof, i.e.
+                // the complement of received/verified/mismatch (status none or null,
+                // including when the signals feature is off / the order is settled).
+                $withProof = ['proof_received', 'bank_confirmed', 'verified', 'amount_mismatch'];
+                $items = array_filter($items, function($item) use ($withProof) {
                     $status = $item['payment_proof']['status'] ?? null;
-                    return $status !== null && in_array($status, $allowed, true);
+                    return $status === null || !in_array($status, $withProof, true);
                 });
+            } else {
+                $proofStatuses = [
+                    'received' => ['proof_received', 'bank_confirmed'],
+                    'verified' => ['verified'],
+                    'mismatch' => ['amount_mismatch'],
+                ];
+                $allowed = $proofStatuses[$proof] ?? [];
+                if (!empty($allowed)) {
+                    $items = array_filter($items, function($item) use ($allowed) {
+                        $status = $item['payment_proof']['status'] ?? null;
+                        return $status !== null && in_array($status, $allowed, true);
+                    });
+                }
             }
         }
         

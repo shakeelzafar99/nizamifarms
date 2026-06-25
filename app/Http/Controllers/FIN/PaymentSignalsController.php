@@ -17,8 +17,20 @@ class PaymentSignalsController extends Controller
     /** GET /admin/payments/order/{orderId}/signals */
     public function forOrder(Request $request, int $orderId)
     {
+        // Include signals tied to this order DIRECTLY and via a combined (bulk)
+        // payment link, so an older invoice in a bundle still shows the proof.
+        $linkedSignalIds = \DB::table('t_fin_payment_signal_order')
+            ->where('order_id', $orderId)
+            ->pluck('signal_id')
+            ->all();
+
         $signals = PaymentSignal::query()
-            ->where('matched_order_id', $orderId)
+            ->where(function ($q) use ($orderId, $linkedSignalIds) {
+                $q->where('matched_order_id', $orderId);
+                if (!empty($linkedSignalIds)) {
+                    $q->orWhereIn('id', $linkedSignalIds);
+                }
+            })
             ->whereIn('status', [PaymentSignal::STATUS_MATCHED, PaymentSignal::STATUS_AMOUNT_MISMATCH])
             ->orderByDesc('id')
             ->get();
@@ -27,11 +39,29 @@ class PaymentSignalsController extends Controller
         $order = \DB::table('t_crm_prod_order')->where('id', $orderId)
             ->first(['total_price', 'total_paid', 'order_number']);
         $expected = $order ? round((float) $order->total_price - (float) ($order->total_paid ?? 0), 2) : null;
-        $tolerance = (float) config('payment_signals.amount_tolerance', 1.0);
+        $tolerance = (float) config('payment_signals.amount_tolerance', 10.0);
 
-        $payload = $signals->map(function (PaymentSignal $s) use ($expected, $tolerance) {
-            $amountMatch = ($expected !== null && $s->extracted_amount !== null)
-                ? abs((float) $s->extracted_amount - $expected) <= $tolerance
+        // For a combined (bulk) signal the agreement must compare the transfer
+        // against the GROUP total (sum of every covered invoice's balance), not
+        // this single invoice — otherwise an older invoice would look mismatched.
+        $combinedInfo = collect();
+        $signalIds = $signals->pluck('id')->all();
+        if (!empty($signalIds)) {
+            $combinedInfo = \DB::table('t_fin_payment_signal_order')
+                ->whereIn('signal_id', $signalIds)
+                ->selectRaw('signal_id, COUNT(*) AS c, SUM(balance_at_match) AS total')
+                ->groupBy('signal_id')
+                ->get()
+                ->keyBy('signal_id');
+        }
+
+        $payload = $signals->map(function (PaymentSignal $s) use ($expected, $tolerance, $combinedInfo) {
+            $combo       = $combinedInfo->get($s->id);
+            $isCombined  = $combo && (int) $combo->c > 1;
+            $compareBase = $isCombined ? (float) $combo->total : $expected;
+
+            $amountMatch = ($compareBase !== null && $s->extracted_amount !== null)
+                ? abs((float) $s->extracted_amount - $compareBase) <= $tolerance
                 : null;
 
             return [
@@ -57,9 +87,12 @@ class PaymentSignalsController extends Controller
                                     ? mb_substr((string) $s->extraction_raw_text, 0, 4000)
                                     : null,
                 'paired'         => (bool) $s->paired_signal_id,
+                'is_combined'    => $isCombined,
+                'combined_count' => $isCombined ? (int) $combo->c : null,
+                'combined_total' => $isCombined ? (float) $combo->total : null,
                 'agreement'      => [
                     'amount_match'  => $amountMatch,
-                    'expected'      => $expected,
+                    'expected'      => $compareBase,
                 ],
             ];
         });
@@ -82,6 +115,46 @@ class PaymentSignalsController extends Controller
      */
     private function combinedPaymentHint($signals): ?array
     {
+        // Prefer the authoritative combined links if any of these signals carry
+        // them — list exactly the invoices the bundle was tied to.
+        $signalIds = $signals->pluck('id')->all();
+        if (!empty($signalIds)) {
+            $rows = \DB::table('t_fin_payment_signal_order as l')
+                ->join('t_crm_prod_order as o', 'o.id', '=', 'l.order_id')
+                ->whereIn('l.signal_id', $signalIds)
+                ->get(['l.order_id', 'o.order_number', 'o.total_price', 'o.total_paid', 'l.balance_at_match']);
+
+            $byOrder = $rows->groupBy('order_id');
+            if ($byOrder->count() >= 2) {
+                $sum  = 0.0;
+                $list = [];
+                foreach ($byOrder as $orderId => $grp) {
+                    $inv = $grp->first();
+                    $bal = $inv->balance_at_match !== null
+                        ? (float) $inv->balance_at_match
+                        : round((float) $inv->total_price - (float) ($inv->total_paid ?? 0), 2);
+                    $sum += $bal;
+                    $list[] = [
+                        'order_id'     => (int) $orderId,
+                        'order_number' => $inv->order_number,
+                        'balance'      => $bal,
+                    ];
+                }
+                $amount = (float) optional(
+                    $signals->first(fn (PaymentSignal $s) => $s->extracted_amount !== null)
+                )->extracted_amount;
+
+                return [
+                    'amount'     => $amount,
+                    'open_total' => round($sum, 2),
+                    'invoices'   => $list,
+                    'confirmed'  => true,
+                ];
+            }
+        }
+
+        // Fallback: legacy heuristic for a bulk-flagged-but-unlinked signal
+        // (e.g. an ambiguous bundle) — show the customer's open invoices.
         $bulk = $signals->first(fn (PaymentSignal $s) => str_contains((string) $s->match_reason, 'bulk'));
         if (!$bulk || !$bulk->matched_customer_id || !$bulk->extracted_amount) {
             return null;
@@ -125,5 +198,47 @@ class PaymentSignalsController extends Controller
             'open_total' => round($sum, 2),
             'invoices'   => $list,
         ];
+    }
+
+    /**
+     * POST /admin/payments/order/{orderId}/uncombine
+     *
+     * Reversibility for an auto-detected combined payment. Drops the bulk links
+     * for the signal(s) covering this order (and their paired opposite-source
+     * signal) and reverts those signals to `amount_mismatch`, so the "Combined"
+     * badges clear. Read-feature only — touches no ledger / payment / balance.
+     */
+    public function uncombine(Request $request, int $orderId)
+    {
+        $signalIds = \DB::table('t_fin_payment_signal_order')
+            ->where('order_id', $orderId)
+            ->pluck('signal_id')
+            ->unique()
+            ->values()
+            ->all();
+
+        if (empty($signalIds)) {
+            return response()->json(['success' => true, 'changed' => 0]);
+        }
+
+        // Revert the whole WhatsApp+email group together.
+        $pairedIds = PaymentSignal::query()
+            ->whereIn('id', $signalIds)
+            ->pluck('paired_signal_id')
+            ->filter()
+            ->all();
+        $allIds = array_values(array_unique(array_merge($signalIds, $pairedIds)));
+
+        \DB::table('t_fin_payment_signal_order')->whereIn('signal_id', $allIds)->delete();
+
+        PaymentSignal::query()
+            ->whereIn('id', $allIds)
+            ->where('status', PaymentSignal::STATUS_MATCHED)
+            ->update([
+                'status'       => PaymentSignal::STATUS_AMOUNT_MISMATCH,
+                'match_reason' => 'combined_dismissed',
+            ]);
+
+        return response()->json(['success' => true, 'changed' => count($allIds)]);
     }
 }

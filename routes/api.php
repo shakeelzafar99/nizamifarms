@@ -94,6 +94,14 @@ Route::middleware('customer.app')->prefix('customer-app')->group(function () {
     // with the customer sentinel id (-9999).
     Route::post('/customers/{mobile}/location', [\App\Http\Controllers\API\CustomerAppController::class, 'saveCustomerLocation'])
         ->where('mobile', '[^/]+');
+
+    // Phase 5 — customer-app write-back. The app pushes profile edits made on
+    // its side so NF stays the source of truth. Same auth/token + last-10-digit
+    // mobile matching + create-if-new + customer-set attribution as the pin.
+    Route::post('/customers/{mobile}/address', [\App\Http\Controllers\API\CustomerAppController::class, 'saveCustomerAddress'])
+        ->where('mobile', '[^/]+');
+    Route::post('/customers/{mobile}/profile', [\App\Http\Controllers\API\CustomerAppController::class, 'saveCustomerProfile'])
+        ->where('mobile', '[^/]+');
 });
 
 //Webhook
@@ -282,8 +290,9 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/expenses/fund-transfers', [\App\Http\Controllers\API\RiderController::class, 'getFundTransfers']);
     Route::get('/expenses/payment-sources', [\App\Http\Controllers\API\RiderController::class, 'getPaymentSources']);
     Route::post('/expenses/set-default-account', [\App\Http\Controllers\API\RiderController::class, 'setBuDefaultExpenseAccount']); // ⭐ Set default expense account for a BU
-    Route::get('/expenses/categories', [\App\Http\Controllers\API\RiderController::class, 'getExpenseCategoriesFromConfig']); // Fetch expense types from config
+    Route::get('/expenses/categories', [\App\Http\Controllers\API\RiderController::class, 'getExpenseCategoriesFromConfig']); // Fetch expense types from config (+ admin "bubbles")
     Route::post('/expenses/categories', [\App\Http\Controllers\FIN\ExpenseCategoryController::class, 'store']); // Create new expense category (reuses web controller)
+    Route::post('/expenses/bubbles', [\App\Http\Controllers\API\RiderController::class, 'saveExpenseBubbles']); // Admin: choose/order the quick-select expense-type bubbles
     Route::post('/expenses/{id}/approve', [\App\Http\Controllers\API\RiderController::class, 'approveExpense']);
     Route::post('/expenses/{id}/reject', [\App\Http\Controllers\API\RiderController::class, 'rejectExpense']);
     Route::post('/expenses/{id}/settle', [\App\Http\Controllers\API\RiderController::class, 'settleExpense']);

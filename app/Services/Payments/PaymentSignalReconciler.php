@@ -57,7 +57,68 @@ class PaymentSignalReconciler
 
         $email = $this->reconcileEmail($emailLookback);
 
-        return ['whatsapp' => $whatsapp, 'email' => $email];
+        // Re-evaluate recent unresolved proofs under the CURRENT rules (e.g. a
+        // widened amount tolerance), so existing "amount differs" rows can flip to
+        // matched/verified without re-sending the screenshot.
+        $rematch = $this->rematchUnresolved();
+
+        return ['whatsapp' => $whatsapp, 'email' => $email, 'rematch' => $rematch];
+    }
+
+    /**
+     * Re-run the matcher over recent signals that are still `amount_mismatch`,
+     * applying the current rules. Skips human-dismissed combinations and processes
+     * each WhatsApp⇄email pair once. Writes only to the signal tables.
+     *
+     * @return array{candidates:int, rematched:int, now_matched:int}
+     */
+    public function rematchUnresolved(int $sinceDays = 30, int $limit = 300): array
+    {
+        if (!config('payment_signals.enabled')) {
+            return ['candidates' => 0, 'rematched' => 0, 'now_matched' => 0, 'disabled' => true];
+        }
+
+        $since = now()->subDays(max(0, $sinceDays))->startOfDay();
+
+        $signals = PaymentSignal::query()
+            ->where('status', PaymentSignal::STATUS_AMOUNT_MISMATCH)
+            // Never resurrect a combination a human explicitly rejected.
+            ->where(function ($q) {
+                $q->whereNull('match_reason')
+                    ->orWhere('match_reason', '!=', 'combined_dismissed');
+            })
+            ->where('created_at', '>=', $since)
+            ->orderByDesc('id')
+            ->limit($limit)
+            ->get();
+
+        $done       = [];   // signal ids already handled (skip a pair's other side)
+        $rematched  = 0;
+        $nowMatched = 0;
+
+        foreach ($signals as $signal) {
+            if (isset($done[$signal->id])) {
+                continue;
+            }
+            $done[$signal->id] = true;
+            if ($signal->paired_signal_id) {
+                $done[$signal->paired_signal_id] = true;
+            }
+
+            try {
+                $result = $this->matcher->rematch($signal->fresh());
+                $rematched++;
+                if ($result && $result->status === PaymentSignal::STATUS_MATCHED) {
+                    $nowMatched++;
+                }
+            } catch (\Throwable $e) {
+                Log::warning('Reconciler: rematch skipped', [
+                    'signal_id' => $signal->id, 'error' => $e->getMessage(),
+                ]);
+            }
+        }
+
+        return ['candidates' => $signals->count(), 'rematched' => $rematched, 'now_matched' => $nowMatched];
     }
 
     // ------------------------------------------------------------------

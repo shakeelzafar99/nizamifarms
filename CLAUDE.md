@@ -100,6 +100,19 @@ is derived). Don't `orderBy`/`where` on accessors at the SQL level — check the
   `ordersDetailUrl()` helper that appends `?source=shopify` when in Shopify mode.
 - **Rule going forward:** never look up an order by raw id without the source context. A regression
   here previously caused a Shopify order to overwrite an unrelated live order's status.
+- **Frontend invariant (Jun 2026 fix):** every id-based order URL on the orders page MUST carry the
+  source. Use the helpers near the top of `orders/index.blade.php`: `ordersDetailUrl()` (AJAX
+  detail/save), `editOrderTabUrl()` (pop-out / "open in tab"), `ordersInvoiceUrl()` (print/PDF/PNG).
+  All read `currentOrderSource()` (runtime `window.currentSource` → URL `?source` fallback).
+  - `window.currentSource` / `window.currentTab` are initialized on **every** page load by the
+    `initOrdersSourceContext()` IIFE from the server `$source`/`$tab`. Do NOT rely on the older
+    assignment lower in the file (~line 9626) — it sits inside a commented-out `/* ... */` block and
+    never runs; it was the root cause of two wrong-order bugs (a popped-out Shopify approval order
+    resolving against production because `window.currentSource` was `undefined`).
+  - Bug symptom to recognize: opening a Shopify approval order's detail/print shows a different
+    customer (a production order sharing the same id). Root cause is always a dropped `source` param.
+- **Not affected:** the mobile app and customer app — they keep Shopify and production in separate
+  screens/endpoints and never resolve a Shopify id against the production order table.
 
 ### Approvals (web: `ApprovalController` + `approvals/online.blade.php`; mobile: `API/ApprovalsAPIController`)
 - **Online approvals** has **Regular** and **Shop** tabs (driven by `customer_type`).

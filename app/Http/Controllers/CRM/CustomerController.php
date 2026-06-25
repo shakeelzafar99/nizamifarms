@@ -235,7 +235,20 @@ class CustomerController extends Controller
                     'saved_at' => $customer->verified_location_saved_at,
                 ];
             }
-            
+
+            // Attribution for the postal address + name/email when the customer
+            // app last wrote them (so an operator can see "the customer changed
+            // this"). Mirrors the verified-location pattern; verifierLabel()
+            // turns the customer sentinel into "Customer", else the ops user.
+            $addressAttribution = $customer->address_saved_by ? [
+                'saved_by' => \App\Models\CRM\CustomerModel::verifierLabel($customer->address_saved_by),
+                'saved_at' => $customer->address_saved_at,
+            ] : null;
+            $profileAttribution = $customer->profile_saved_by ? [
+                'saved_by' => \App\Models\CRM\CustomerModel::verifierLabel($customer->profile_saved_by),
+                'saved_at' => $customer->profile_saved_at,
+            ] : null;
+
             // =========================================
             // Get customers that were MERGED INTO this one
             // =========================================
@@ -267,6 +280,8 @@ class CustomerController extends Controller
                 'success' => true,
                 'customer' => $customer,
                 'verified_location' => $verifiedLocation,
+                'address_attribution' => $addressAttribution,
+                'profile_attribution' => $profileAttribution,
                 'merged_customers' => $mergedCustomers,
                 'delivery_region_name' => $deliveryRegionName,
                 'stats_breakdown' => [

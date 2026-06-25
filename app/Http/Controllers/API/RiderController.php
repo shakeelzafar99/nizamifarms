@@ -2413,20 +2413,130 @@ class RiderController extends Controller
                 ->pluck('config_value')
                 ->toArray();
 
+            // Jun-2026 — quick-select "bubbles": the admin-chosen ordered subset
+            // shown as chips above the Expense Type dropdown. Stored per
+            // (business unit + request category). Falls back to the first few
+            // until an admin customises it. (The full list is still `categories`.)
+            $bubbleKey = $this->expenseBubbleConfigKey($businessUnitId, $requestCategoryCode);
+            $saved = json_decode((string) \App\Models\FIN\ConfigModel::get($bubbleKey, ''), true);
+            $saved = is_array($saved) ? $saved : [];
+            // Keep only names that still exist, preserving the saved order.
+            $bubbles = array_values(array_intersect($saved, $categories));
+            if (empty($bubbles)) {
+                $bubbles = array_slice($categories, 0, 7); // sensible default count
+            }
+
             return response()->json([
                 'success' => true,
                 'categories' => $categories,
+                'bubbles' => $bubbles,
             ]);
         } catch (\Exception $e) {
             \Log::error('Failed to get expense categories from config', [
                 'error' => $e->getMessage(),
             ]);
-            
+
             return response()->json([
                 'success' => false,
                 'message' => 'Failed to load categories: ' . $e->getMessage(),
             ], 500);
         }
+    }
+
+    /**
+     * Build the scoped config_key that stores the expense-type "bubbles" (the
+     * admin-chosen quick-select chips) for a given business unit + request
+     * category. GET and POST must normalise identically so the key matches.
+     */
+    private function expenseBubbleConfigKey($businessUnitId, $requestCategoryCode): string
+    {
+        $bu  = $businessUnitId ? (int) $businessUnitId : 1;
+        $rcc = strtoupper(preg_replace('/[^A-Za-z0-9]+/', '_', (string) ($requestCategoryCode ?: 'expense')));
+        return "EXPENSE_BUBBLES__{$rcc}__{$bu}";
+    }
+
+    /**
+     * The expense-type names available for a (business unit + request category)
+     * scope — same filter as getExpenseCategoriesFromConfig, used to VALIDATE a
+     * saved bubble list (so we never store a name that isn't a real category).
+     */
+    private function expenseCategoryNamesForScope($businessUnitId, $requestCategoryCode): array
+    {
+        $query = \App\Models\FIN\ConfigModel::where('config_key', 'LIKE', 'EXPENSE_CATEGORY_%');
+
+        if ($businessUnitId) {
+            if ($businessUnitId == 1) {
+                $query->where(function ($q) {
+                    $q->where('business_unit_id', 1)->orWhereNull('business_unit_id');
+                });
+            } else {
+                $query->where('business_unit_id', $businessUnitId);
+            }
+        }
+
+        if ($requestCategoryCode) {
+            $isOriginalType = in_array($requestCategoryCode, ['expense', 'khaas_expense']);
+            if ($isOriginalType) {
+                $query->where(function ($q) use ($requestCategoryCode) {
+                    $q->whereNull('request_category_code')
+                      ->orWhere('request_category_code', $requestCategoryCode);
+                });
+            } else {
+                $query->where('request_category_code', $requestCategoryCode);
+            }
+        }
+
+        return $query->orderBy('config_value')->pluck('config_value')->toArray();
+    }
+
+    /**
+     * POST /rider/expenses/bubbles — admin-only.
+     *
+     * Save which expense types (and in what order) show as quick-select bubbles
+     * above the Expense Type dropdown, for a given business unit + request
+     * category. Gated by the `configure_expense_bubbles` mobile permission.
+     * Writes ONLY a t_fin_config row (no money/schema impact).
+     */
+    public function saveExpenseBubbles(Request $request)
+    {
+        $user = Auth::user();
+        if (!$user || !method_exists($user, 'hasMobilePermission')
+            || !$user->hasMobilePermission('configure_expense_bubbles')) {
+            return response()->json([
+                'success' => false,
+                'message' => 'You do not have permission to configure expense bubbles.',
+            ], 403);
+        }
+
+        $businessUnitId      = $request->input('business_unit_id');
+        $requestCategoryCode = $request->input('request_category_code');
+        $bubbles             = $request->input('bubbles', []);
+        if (!is_array($bubbles)) {
+            $bubbles = [];
+        }
+
+        // Keep only real category names for this scope, preserve submitted order,
+        // drop blanks/dupes.
+        $valid = $this->expenseCategoryNamesForScope($businessUnitId, $requestCategoryCode);
+        $clean = [];
+        foreach ($bubbles as $name) {
+            $name = is_string($name) ? trim($name) : '';
+            if ($name !== '' && in_array($name, $valid, true) && !in_array($name, $clean, true)) {
+                $clean[] = $name;
+            }
+        }
+
+        $key = $this->expenseBubbleConfigKey($businessUnitId, $requestCategoryCode);
+        \App\Models\FIN\ConfigModel::set(
+            $key,
+            json_encode(array_values($clean)),
+            'Expense quick-select bubbles (' . ($requestCategoryCode ?: 'expense') . ' / BU ' . ($businessUnitId ?: 1) . ')'
+        );
+
+        return response()->json([
+            'success' => true,
+            'bubbles' => array_values($clean),
+        ]);
     }
 
     /**

@@ -9,10 +9,10 @@
         background: white;
         border: 2px solid #e5e7eb;
         border-radius: 12px;
-        padding: 16px 20px;
+        padding: 10px 16px;
         cursor: pointer;
         transition: all 0.2s;
-        min-width: 160px;
+        min-width: 132px;
     }
 
     .tab-card:hover {
@@ -44,14 +44,14 @@
     }
 
     .tab-card .count {
-        font-size: 28px;
+        font-size: 22px;
         font-weight: 800;
         color: #111827;
-        margin: 8px 0 4px;
+        margin: 4px 0 2px;
     }
 
     .tab-card .amount {
-        font-size: 14px;
+        font-size: 13px;
         font-weight: 600;
         color: #059669;
     }
@@ -412,7 +412,7 @@
     </div>
 
     <!-- Tab Cards -->
-    <div class="flex gap-4 mb-6 flex-wrap">
+    <div class="flex gap-3 mb-4 flex-wrap">
         {{-- All Pending (L1 + L2 combined) --}}
         @if($hasLevel1Rights || $hasLevel2Rights)
         <div class="tab-card all-pending" id="tab-all" data-tab="all" onclick="selectTab('all')" style="border-left: 4px solid #8B5CF6;">
@@ -454,18 +454,19 @@
 
     <!-- Search and Sort Row -->
     <div class="bg-white rounded-lg shadow-sm border border-gray-200 p-4 mb-6">
-        <div class="flex items-center justify-between gap-4">
-            <div class="flex items-center gap-4">
+        <!-- Row 1: search + sort (left), select-all + counts (right) -->
+        <div class="flex items-center justify-between gap-4 flex-wrap">
+            <div class="flex items-center gap-4 flex-wrap">
                 <!-- Search -->
                 <div class="relative">
-                    <input type="text" 
-                           id="searchInput" 
+                    <input type="text"
+                           id="searchInput"
                            placeholder="🔍 Search customer or invoice..."
                            class="pl-4 pr-10 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 w-[280px]"
                            oninput="onSearchInput()">
-                    <button type="button" 
-                            id="clearSearchBtn" 
-                            onclick="clearSearch()" 
+                    <button type="button"
+                            id="clearSearchBtn"
+                            onclick="clearSearch()"
                             class="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 hidden">✕</button>
                 </div>
 
@@ -478,17 +479,6 @@
                         <option value="approved_date" id="sortApprovedOption" style="display: none;">✅ By Approved Date</option>
                     </select>
                 </div>
-
-                <!-- Payment proof filter (Jun-2026: bulk-approve by WhatsApp/email proof) -->
-                <div class="flex items-center gap-2">
-                    <label class="text-sm font-medium text-gray-600">Proof:</label>
-                    <div id="proofFilter" class="inline-flex rounded-lg border border-gray-300 overflow-hidden">
-                        <button type="button" data-proof="all" class="proof-chip px-3 py-2 text-sm font-medium bg-blue-600 text-white" onclick="selectProofFilter('all')">All</button>
-                        <button type="button" data-proof="received" class="proof-chip px-3 py-2 text-sm font-medium bg-white text-gray-700 border-l border-gray-300 hover:bg-gray-50" onclick="selectProofFilter('received')">📥 Received</button>
-                        <button type="button" data-proof="verified" class="proof-chip px-3 py-2 text-sm font-medium bg-white text-gray-700 border-l border-gray-300 hover:bg-gray-50" onclick="selectProofFilter('verified')">✅ Verified</button>
-                        <button type="button" data-proof="mismatch" class="proof-chip px-3 py-2 text-sm font-medium bg-white text-gray-700 border-l border-gray-300 hover:bg-gray-50" onclick="selectProofFilter('mismatch')">⚠️ Mismatch</button>
-                    </div>
-                </div>
             </div>
 
             <div class="flex items-center gap-4">
@@ -498,9 +488,21 @@
                         class="px-3 py-2 text-sm font-medium border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50"
                         style="display: none;">☑ Select all</button>
                 <div class="text-sm text-gray-600">
-                    <span id="totalCount">0</span> invoices • 
+                    <span id="totalCount">0</span> invoices •
                     <span class="font-semibold text-red-600">Rs. <span id="totalAmount">0</span></span>
                 </div>
+            </div>
+        </div>
+
+        <!-- Row 2: payment-proof filter (Jun-2026: bulk-approve by WhatsApp/email proof) -->
+        <div class="flex items-center gap-2 mt-3 pt-3 border-t border-gray-100 flex-wrap">
+            <label class="text-sm font-medium text-gray-600">Proof:</label>
+            <div id="proofFilter" class="inline-flex rounded-lg border border-gray-300 overflow-hidden">
+                <button type="button" data-proof="all" class="proof-chip px-3 py-2 text-sm font-medium bg-blue-600 text-white" onclick="selectProofFilter('all')">All</button>
+                <button type="button" data-proof="pending" class="proof-chip px-3 py-2 text-sm font-medium bg-white text-gray-700 border-l border-gray-300 hover:bg-gray-50" onclick="selectProofFilter('pending')">🕓 No proof</button>
+                <button type="button" data-proof="received" class="proof-chip px-3 py-2 text-sm font-medium bg-white text-gray-700 border-l border-gray-300 hover:bg-gray-50" onclick="selectProofFilter('received')">📥 Received</button>
+                <button type="button" data-proof="verified" class="proof-chip px-3 py-2 text-sm font-medium bg-white text-gray-700 border-l border-gray-300 hover:bg-gray-50" onclick="selectProofFilter('verified')">✅ Verified</button>
+                <button type="button" data-proof="mismatch" class="proof-chip px-3 py-2 text-sm font-medium bg-white text-gray-700 border-l border-gray-300 hover:bg-gray-50" onclick="selectProofFilter('mismatch')">⚠️ Mismatch</button>
             </div>
         </div>
     </div>
@@ -709,7 +711,7 @@
 <script>
 // State
 let currentTab = 'l1';
-let currentProof = 'all'; // 'all', 'received', 'verified', 'mismatch'
+let currentProof = 'all'; // 'all', 'pending', 'received', 'verified', 'mismatch'
 let selectedItems = new Set();
 let allItems = [];
 let groupedItems = [];
@@ -1283,15 +1285,21 @@ async function voidShopPayment(orderId, paymentId, orderNumber) {
 
 // Jun-2026 — Payment-proof badges (WhatsApp screenshot / bank email).
 // p.status: none | proof_received | bank_confirmed | verified | amount_mismatch
+// p.is_combined: this invoice was paid as part of ONE transfer covering
+// p.combined_count invoices (a combined / bulk payment).
 function renderProofBadges(item) {
     const p = item && item.payment_proof;
     if (!p || p.status === 'none' || !item.order_id) return '';
     const waIcon = p.has_whatsapp ? '📷' : '';
     const mailIcon = p.has_email ? '✉️' : '';
+    const combinedPrefix = p.is_combined ? '🧩 ' : '';
+    const combinedSuffix = (p.is_combined && p.combined_count) ? ` · combined of ${p.combined_count}` : '';
+    const combinedTitle = (p.is_combined && p.combined_count)
+        ? ` — one transfer covering ${p.combined_count} invoices` : '';
     return `<span class="proof-badge" onclick="openProofPanel(${item.order_id})"
-        title="${escapeHtml(p.label)} — click to view the proof"
+        title="${escapeHtml(p.label)}${combinedTitle} — click to view the proof"
         style="cursor:pointer; display:inline-block; padding:2px 8px; border-radius:10px; font-size:11px; font-weight:600; background:${p.color}1A; color:${p.color}; border:1px solid ${p.color}55; margin-left:6px; white-space:nowrap;">
-        ${waIcon}${mailIcon} ${escapeHtml(p.label)}</span>`;
+        ${combinedPrefix}${waIcon}${mailIcon} ${escapeHtml(p.label)}${combinedSuffix}</span>`;
 }
 
 // Fetch + show the screenshot / parsed email behind a proof badge.
@@ -1316,6 +1324,31 @@ async function openProofPanel(orderId) {
     }
 }
 
+// Dismiss a wrongly-detected combined payment: clear the bulk links + refresh.
+async function uncombinePayment(orderId) {
+    if (!confirm('Mark this as NOT a combined payment? The "combined" badges on these invoices will clear.')) return;
+    try {
+        const res = await fetch(`/admin/payments/order/${orderId}/uncombine`, {
+            method: 'POST',
+            headers: {
+                'X-Requested-With': 'XMLHttpRequest',
+                'Accept': 'application/json',
+                'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').content,
+            }
+        });
+        const data = await res.json();
+        const overlay = document.getElementById('proofPanelOverlay');
+        if (overlay) overlay.remove();
+        if (data && data.success) {
+            loadData(); // refresh so the combined badges clear
+        } else {
+            alert('Could not update the payment.');
+        }
+    } catch (e) {
+        alert('Could not update the payment.');
+    }
+}
+
 function buildProofPanelHtml(data) {
     const proof = data.proof || {};
     let html = `<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
@@ -1323,6 +1356,24 @@ function buildProofPanelHtml(data) {
         <button onclick="document.getElementById('proofPanelOverlay').remove()" style="border:none; background:#F3F4F6; border-radius:8px; padding:4px 10px; cursor:pointer; font-size:18px;">×</button>
     </div>`;
     html += `<div style="display:inline-block; padding:3px 10px; border-radius:10px; font-size:12px; font-weight:600; background:${proof.color}1A; color:${proof.color}; border:1px solid ${proof.color}55; margin-bottom:14px;">${escapeHtml(proof.label || '')}</div>`;
+
+    // 🧩 Combined payment — one transfer covering several invoices. Show what it
+    // covers and offer a one-click dismissal if the auto-match got it wrong.
+    if (data.combined && data.combined.invoices && data.combined.invoices.length >= 2) {
+        const c = data.combined;
+        const rows = c.invoices.map(inv =>
+            `<tr><td style="padding:2px 0;">${escapeHtml(inv.order_number || ('#' + inv.order_id))}</td>
+                 <td style="text-align:right;">Rs. ${numberFormat(inv.balance)}</td></tr>`).join('');
+        const totalsMatch = Math.abs((c.amount || 0) - (c.open_total || 0)) <= 1;
+        html += `<div style="border:1px solid #C7D2FE; background:#EEF2FF; border-radius:10px; padding:12px; margin-bottom:14px;">
+            <div style="font-weight:700; color:#4338CA; margin-bottom:6px;">🧩 Combined payment — covers ${c.invoices.length} invoices</div>
+            <table style="width:100%; font-size:13px; border-collapse:collapse;">${rows}
+                <tr><td style="padding-top:6px; font-weight:600; border-top:1px solid #C7D2FE;">Total of these invoices</td><td style="text-align:right; padding-top:6px; font-weight:600; border-top:1px solid #C7D2FE;">Rs. ${numberFormat(c.open_total)}</td></tr>
+                <tr><td style="font-weight:600; color:${totalsMatch ? '#16A34A' : '#DC2626'};">Amount transferred</td><td style="text-align:right; font-weight:600; color:${totalsMatch ? '#16A34A' : '#DC2626'};">Rs. ${numberFormat(c.amount)}${totalsMatch ? ' ✓' : ''}</td></tr>
+            </table>
+            ${(data.proof && data.proof.is_combined) ? `<button onclick="uncombinePayment(${data.order_id})" style="margin-top:10px; background:#FEF2F2; color:#B91C1C; border:1px solid #FECACA; border-radius:8px; padding:6px 12px; font-size:12px; cursor:pointer;">✕ Not a combined payment</button>` : ''}
+        </div>`;
+    }
 
     if (!data.signals || data.signals.length === 0) {
         html += '<div style="color:#9CA3AF;">No signal details available.</div>';

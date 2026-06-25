@@ -98,9 +98,13 @@ window.viewCustomer = function(id) {
                                 <label style="font-size: 12px; color: #6b7280; text-transform: uppercase; font-weight: 500;">Company</label>
                                 <p style="margin: 4px 0 0 0;">${customer.company || 'N/A'}</p>
                             </div>
+                            ${data.profile_attribution && data.profile_attribution.saved_by ? `
+                            <div style="margin-top: 12px; padding-top: 10px; border-top: 1px dashed #e5e7eb;">
+                                <span style="font-size: 11px; color: #2563eb;"><i class="fas fa-user"></i> Name/email saved by: <strong>${data.profile_attribution.saved_by}</strong>${data.profile_attribution.saved_at ? ' · ' + new Date(data.profile_attribution.saved_at).toLocaleDateString() : ''}</span>
+                            </div>` : ''}
                         </div>
                     </div>
-                    
+
                     <div>
                         <h4 style="font-weight: 600; color: #374151; margin: 0 0 16px 0;">Address Information</h4>
                         <div style="background-color: #f9fafb; padding: 16px; border-radius: 8px;">
@@ -121,6 +125,10 @@ window.viewCustomer = function(id) {
                                 <label style="font-size: 12px; color: #6b7280; text-transform: uppercase; font-weight: 500;">Postal Code</label>
                                 <p style="margin: 4px 0 0 0;">${customer.postal_code || 'N/A'}</p>
                             </div>
+                            ${data.address_attribution && data.address_attribution.saved_by ? `
+                            <div style="margin-top: 12px; padding-top: 10px; border-top: 1px dashed #e5e7eb;">
+                                <span style="font-size: 11px; color: #2563eb;"><i class="fas fa-user"></i> Address saved by: <strong>${data.address_attribution.saved_by}</strong>${data.address_attribution.saved_at ? ' · ' + new Date(data.address_attribution.saved_at).toLocaleDateString() : ''}</span>
+                            </div>` : ''}
                         </div>
                     </div>
                 </div>

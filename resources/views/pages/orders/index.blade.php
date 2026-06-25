@@ -2048,15 +2048,70 @@ function normalizePaymentMethodDisplay(paymentMethod) {
     return displayMap[method] || 'Cash'; // Default to Cash if unknown
 }
 
+// Initialize the runtime source/tab context from the server-rendered values on
+// EVERY page load. This is critical: the intended assignment further down in
+// this file lives inside a commented-out /* ... */ block (dead code), so the
+// only other place that set window.currentSource ran on a manual tab switch.
+// That meant a freshly loaded page (including a popped-out edit tab opened at
+// /orders?edit_order_id=ID&source=shopify) had window.currentSource === undefined,
+// so ordersDetailUrl() dropped ?source=shopify and resolved the id against the
+// LIVE production table — showing/editing a completely unrelated order, because
+// the Shopify approval queue (t_crm_shopify_order) and the live orders table
+// (t_crm_prod_order) share overlapping ids.
+(function initOrdersSourceContext() {
+    try {
+        var params = new URLSearchParams(window.location.search);
+        var serverSource = @json($source ?? 'other');
+        var serverTab = @json($tab ?? 'all');
+        window.currentSource = serverSource || params.get('source') || 'other';
+        window.currentTab = serverTab || params.get('tab') || 'all';
+    } catch (e) {}
+})();
+
+// Resolve the current source robustly: prefer the runtime context, but fall
+// back to the URL param so we never accidentally resolve a Shopify order
+// against the production table even if the global wasn't set yet.
+function currentOrderSource() {
+    var src = (window.currentSource || '').toLowerCase();
+    if (!src) {
+        try { src = (new URLSearchParams(window.location.search).get('source') || '').toLowerCase(); } catch (e) {}
+    }
+    return src;
+}
+
 // Build the GET /orders/{id} detail URL. The Shopify approval queue
 // (t_crm_shopify_order) and the live orders table (t_crm_prod_order) have
 // overlapping ids, so the backend can't guess which one we mean — we must tell
 // it explicitly based on which screen we're on. Shopify Approvals view sets
 // window.currentSource='shopify'; everywhere else reads live production orders.
 function ordersDetailUrl(orderId) {
-    const src = (window.currentSource || '').toLowerCase();
     const base = '/orders/' + encodeURIComponent(orderId);
-    return src === 'shopify' ? base + '?source=shopify' : base;
+    return currentOrderSource() === 'shopify' ? base + '?source=shopify' : base;
+}
+
+// Build the full-page pop-out / "open in tab" URL while PRESERVING the current
+// source. Shopify staging orders and live production orders share overlapping
+// ids, so a bare /orders?edit_order_id=ID would re-open the page in production
+// mode and resolve the id against the WRONG table (showing an unrelated order).
+// Carrying &source=shopify makes the popped-out page boot in Shopify mode so the
+// auto-opened edit form fetches /orders/ID?source=shopify (the staging row).
+function editOrderTabUrl(orderId) {
+    const base = '/orders?edit_order_id=' + encodeURIComponent(String(orderId));
+    return currentOrderSource() === 'shopify' ? base + '&source=shopify' : base;
+}
+
+// Build the /orders/{id}/invoice URL (print / PDF / PNG) carrying the current
+// source. Without this, printing from a Shopify approval order's edit pop-out
+// would render the unrelated PRODUCTION order that happens to share the id —
+// i.e. the wrong customer's invoice. `query` is an optional extra query string
+// (e.g. 'print_pdf=1') without a leading '?'.
+function ordersInvoiceUrl(orderId, query) {
+    let url = '/orders/' + encodeURIComponent(orderId) + '/invoice';
+    const parts = [];
+    if (query) parts.push(query);
+    if (currentOrderSource() === 'shopify') parts.push('source=shopify');
+    if (parts.length) url += '?' + parts.join('&');
+    return url;
 }
 
 // View Order Details
@@ -2695,7 +2750,7 @@ let currentOrderId = null;
 
 function viewInvoice() {
     if (currentOrderId) {
-        window.open('/orders/' + currentOrderId + '/invoice', '_blank');
+        window.open(ordersInvoiceUrl(currentOrderId), '_blank');
     } else {
         console.error('No order ID available for invoice');
     }
@@ -2710,7 +2765,7 @@ function downloadInvoicePdf() {
         button.disabled = true;
         
         // Use the same approach as PNG but for PDF - open invoice page with auto-PDF generation
-        window.open('/orders/' + currentOrderId + '/invoice?print_pdf=1', '_blank');
+        window.open(ordersInvoiceUrl(currentOrderId, 'print_pdf=1'), '_blank');
         
         // Reset button after download attempt
         setTimeout(() => {
@@ -2733,7 +2788,7 @@ function downloadInvoiceImage() {
         
         // Open web invoice and auto-generate a PNG from the DOM for exact visual match
         // Use 'view_and_download_png=1' instead of 'auto_png=1' to keep page open
-        window.open('/orders/' + currentOrderId + '/invoice?view_and_download_png=1', '_blank');
+        window.open(ordersInvoiceUrl(currentOrderId, 'view_and_download_png=1'), '_blank');
         
         // Reset button after download attempt
         setTimeout(() => {
@@ -2748,7 +2803,7 @@ function downloadInvoiceImage() {
 function printInvoicePdf() {
     if (currentOrderId) {
         // Open invoice page in new tab - it has download options
-        window.open('/orders/' + currentOrderId + '/invoice', '_blank');
+        window.open(ordersInvoiceUrl(currentOrderId), '_blank');
     } else {
         console.error('No order ID available for PDF printing');
     }
@@ -2765,7 +2820,7 @@ function printInvoiceWithoutUnit() {
         
         // Open invoice with hide_unit_price=1 and view_and_download_png=1 
         // This will render and auto-download PNG without unit price column
-        window.open('/orders/' + currentOrderId + '/invoice?hide_unit_price=1&view_and_download_png=1', '_blank');
+        window.open(ordersInvoiceUrl(currentOrderId, 'hide_unit_price=1&view_and_download_png=1'), '_blank');
         
         // Reset button after download attempt
         setTimeout(() => {
@@ -7774,7 +7829,7 @@ function popoutOrder() {
 // Open edit in a full Orders tab (loads entire app and auto-opens edit modal)
 function openEditInTab() {
     if (currentOrderId) {
-        const url = '/orders?edit_order_id=' + encodeURIComponent(String(currentOrderId));
+        const url = editOrderTabUrl(currentOrderId);
         window.open(url, '_blank');
     }
 }
@@ -7808,7 +7863,7 @@ function openInBackground(url) {
 // ⭐ Pop out order directly from table row (opens in background tab - doesn't navigate away)
 function popOutOrder(orderId) {
     if (orderId) {
-        openInBackground('/orders?edit_order_id=' + encodeURIComponent(String(orderId)));
+        openInBackground(editOrderTabUrl(orderId));
     }
 }
 
@@ -10084,7 +10139,7 @@ function getCellContent_DEPRECATED(order, columnId) {
                             title="Edit Order">
                         <i class="ki-filled ki-notepad-edit text-sm"></i>
                     </button>
-                    <button onclick="window.open('/orders/$${'{'}order.id${'}'}/invoice', '_blank')" 
+                    <button onclick="window.open(ordersInvoiceUrl($${'{'}order.id${'}'}), '_blank')" 
                             class="inline-flex items-center p-1.5 border border-green-300 rounded-md text-green-600 hover:text-green-700 hover:bg-green-50 transition-colors duration-150" 
                             title="View Invoice">
                         <i class="ki-filled ki-file-sheet text-sm"></i>
@@ -10650,7 +10705,7 @@ function getCellContent(order, columnId) {
                     <button onclick="event.stopPropagation(); viewOrderDetails(${order.id})" class="inline-flex items-center justify-center w-7 h-7 text-blue-600 bg-blue-50 border border-blue-200 rounded hover:bg-blue-100 hover:border-blue-300 transition-all duration-200" title="View Order Details">
                         <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/></svg>
                     </button>
-                    <button onclick="event.stopPropagation(); openInBackground('/orders/${order.id}/invoice')" class="inline-flex items-center justify-center w-7 h-7 text-emerald-600 bg-emerald-50 border border-emerald-200 rounded hover:bg-emerald-100 hover:border-emerald-300 transition-all duration-200" title="View Invoice (PDF)">
+                    <button onclick="event.stopPropagation(); openInBackground(ordersInvoiceUrl(${order.id}))" class="inline-flex items-center justify-center w-7 h-7 text-emerald-600 bg-emerald-50 border border-emerald-200 rounded hover:bg-emerald-100 hover:border-emerald-300 transition-all duration-200" title="View Invoice (PDF)">
                         <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
                     </button>
                     <button onclick="event.stopPropagation(); quickSendInvoiceWhatsApp(${order.id}, '${(order.order_number||'').replace(/'/g,"\\'")}', ${parseFloat(order.total_price||0)}, '${(order.name || (order.customer ? ((order.customer.first_name||'')+' '+(order.customer.last_name||'')).trim() : '') || ((order.address_first_name||'')+' '+(order.address_last_name||'')).trim() || '').replace(/'/g,"\\'")}', '${(order.customer_phone||order.address_phone||'').replace(/'/g,"\\'")}' )" class="inline-flex items-center justify-center w-7 h-7 text-green-600 bg-green-50 border border-green-200 rounded hover:bg-green-100 hover:border-green-300 transition-all duration-200" title="Send Invoice via WhatsApp">

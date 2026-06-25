@@ -28,19 +28,9 @@ class PaymentProofStatusService
     /** Build the status payload for a single order id. */
     public function forOrder(int $orderId): array
     {
-        // Once the order's online payment has been approved the badge is no
-        // longer an action item — hide it until the next order.
-        if (in_array($orderId, self::settledOrderIds([$orderId]), true)) {
-            return $this->summarise(collect());
-        }
-
-        $signals = PaymentSignal::query()
-            ->where('matched_order_id', $orderId)
-            ->whereIn('status', [PaymentSignal::STATUS_MATCHED, PaymentSignal::STATUS_AMOUNT_MISMATCH])
-            ->orderByDesc('id')
-            ->get();
-
-        return $this->summarise($signals);
+        // Delegate to the bulk path so combined-payment links are handled in one
+        // place (an order can carry a proof either directly or via a bulk link).
+        return $this->forOrders([$orderId])[$orderId] ?? $this->summarise(collect());
     }
 
     /**
@@ -88,22 +78,71 @@ class PaymentProofStatusService
             return [];
         }
 
-        $byOrder = PaymentSignal::query()
+        $statuses = [PaymentSignal::STATUS_MATCHED, PaymentSignal::STATUS_AMOUNT_MISMATCH];
+
+        // 1) Signals tied DIRECTLY to these orders (the normal single-invoice case).
+        $direct = PaymentSignal::query()
             ->whereIn('matched_order_id', $orderIds)
-            ->whereIn('status', [PaymentSignal::STATUS_MATCHED, PaymentSignal::STATUS_AMOUNT_MISMATCH])
+            ->whereIn('status', $statuses)
             ->orderByDesc('id')
-            ->get()
-            ->groupBy('matched_order_id');
+            ->get();
+
+        // 2) Signals tied to these orders via a COMBINED (bulk) payment link.
+        $links = \DB::table('t_fin_payment_signal_order')
+            ->whereIn('order_id', $orderIds)
+            ->get(['signal_id', 'order_id']);
+
+        $linkSignalIds = $links->pluck('signal_id')->unique()->values();
+        $linkedSignals = $linkSignalIds->isNotEmpty()
+            ? PaymentSignal::query()
+                ->whereIn('id', $linkSignalIds)
+                ->whereIn('status', $statuses)
+                ->get()
+                ->keyBy('id')
+            : collect();
+
+        // How many invoices each linked signal covers → drives the "(1 of N)" badge.
+        $groupCounts = $linkSignalIds->isNotEmpty()
+            ? \DB::table('t_fin_payment_signal_order')
+                ->whereIn('signal_id', $linkSignalIds)
+                ->selectRaw('signal_id, COUNT(*) AS c')
+                ->groupBy('signal_id')
+                ->pluck('c', 'signal_id')
+            : collect();
+
+        // Build per-order signal collections (direct + linked), de-duped by id.
+        $byOrder = [];
+        foreach ($direct as $s) {
+            $byOrder[(int) $s->matched_order_id][$s->id] = $s;
+        }
+        foreach ($links as $l) {
+            $sig = $linkedSignals->get($l->signal_id);
+            if ($sig) {
+                $byOrder[(int) $l->order_id][$sig->id] = $sig;
+            }
+        }
 
         $settled = array_flip(self::settledOrderIds($orderIds));
 
         $out = [];
         foreach ($orderIds as $id) {
-            if (isset($settled[(int) $id])) {
+            $key = (int) $id;
+            if (isset($settled[$key])) {
                 $out[$id] = $this->summarise(collect());
                 continue;
             }
-            $out[$id] = $this->summarise($byOrder->get($id) ?? collect());
+
+            $sigs    = collect($byOrder[$key] ?? [])->values();
+            $payload = $this->summarise($sigs);
+
+            // Mark combined when any contributing signal covers more than one invoice.
+            $combinedSig = $sigs->first(fn ($s) => (int) ($groupCounts[$s->id] ?? 1) > 1);
+            if ($combinedSig) {
+                $payload['is_combined']    = true;
+                $payload['combined_count'] = (int) $groupCounts[$combinedSig->id];
+            }
+
+            $out[$id] = $payload;
         }
         return $out;
     }

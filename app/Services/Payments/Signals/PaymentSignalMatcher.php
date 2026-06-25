@@ -41,6 +41,63 @@ class PaymentSignalMatcher
         }
     }
 
+    /**
+     * Re-evaluate an ALREADY-processed signal under the CURRENT rules (e.g. after
+     * the amount tolerance was widened), so existing "amount differs" proofs can
+     * be promoted to matched/verified without re-sending the screenshot. Safe and
+     * idempotent.
+     *
+     * It re-runs the NORMAL matcher on the WhatsApp side of the pair and lets
+     * corroboration propagate the verdict (and any combined links) to the email
+     * side — so it never trips the duplicate-ref guard or double-links. A signal a
+     * human explicitly dismissed (`combined_dismissed`) is left untouched.
+     */
+    public function rematch(PaymentSignal $signal): PaymentSignal
+    {
+        try {
+            if ($signal->match_reason === 'combined_dismissed') {
+                return $signal;
+            }
+
+            $partner = $signal->paired_signal_id
+                ? PaymentSignal::find($signal->paired_signal_id)
+                : null;
+
+            // Re-run through the side that resolves the customer reliably — the
+            // WhatsApp screenshot (the email usually only inherits via pairing).
+            $primary = $signal;
+            if ($signal->source !== PaymentSignal::SOURCE_WHATSAPP
+                && $partner && $partner->source === PaymentSignal::SOURCE_WHATSAPP) {
+                $primary = $partner;
+                $partner = $signal;
+            }
+
+            // Detach the pair so the matcher re-pairs + re-propagates cleanly. We
+            // clear only the match RESULT (the extracted facts stay), and never
+            // reset status to 'new' — that would make the Gemini worker re-extract.
+            $this->clearLinks($primary->id);
+            $primary->paired_signal_id = null;
+            $primary->save();
+
+            if ($partner) {
+                $this->clearLinks($partner->id);
+                $partner->matched_order_id = null;
+                $partner->paired_signal_id = null;
+                $partner->match_reason     = null;
+                $partner->match_confidence = null;
+                $partner->save();
+            }
+
+            return $this->doMatch($primary->fresh());
+        } catch (\Throwable $e) {
+            Log::error('PaymentSignalMatcher rematch failed', [
+                'signal_id' => $signal->id,
+                'error'     => $e->getMessage(),
+            ]);
+            return $signal;
+        }
+    }
+
     private function doMatch(PaymentSignal $signal): PaymentSignal
     {
         // Duplicate guard: same reference already linked on another signal.
@@ -76,7 +133,7 @@ class PaymentSignalMatcher
         }
 
         $candidates = $this->candidateOrders($customerId, $signal);
-        $tolerance = (float) config('payment_signals.amount_tolerance', 1.0);
+        $tolerance = (float) config('payment_signals.amount_tolerance', 10.0);
 
         // Step 2: most-recent order balance match.
         $latest = $candidates->first();
@@ -97,25 +154,29 @@ class PaymentSignalMatcher
             return $this->link($signal, $balanceMatches->first(), 0.45, 'multiple_candidates');
         }
 
-        // Step 5: bulk hint — amount equals sum of >1 pending balances.
-        if ($this->looksLikeBulk($candidates, $amount, $tolerance)) {
-            $signal->status = PaymentSignal::STATUS_AMOUNT_MISMATCH;
-            $signal->match_reason = 'bulk_sum_hint';
-            $signal->match_confidence = 0.30;
-            // Attach to the most-recent so it still surfaces on an order row.
-            $signal->matched_order_id = $latest?->id;
-            $signal->save();
-            $this->pair($signal);
-            return $signal;
+        // Step 5: combined / bulk payment — ONE transfer that settles SEVERAL
+        // open invoices. Anchored on the NEWEST invoice (the customer pays the
+        // latest, then tops up older ones), preferring a contiguous run. When a
+        // set is found we mark the signal MATCHED and link it to every covered
+        // invoice (see findCombinedSet) so all of them show the proof.
+        $combined = $this->findCombinedSet($candidates, $amount, $tolerance);
+        if (is_array($combined) && !empty($combined['orders'])) {
+            return $this->linkCombined($signal, $combined['orders'], $combined['confidence'], $combined['reason']);
         }
 
         // Step 6: proof received but nothing fits. Still attach to the most
         // recent pending order so the approver sees the screenshot in context.
+        // (If we saw an ambiguous bulk — two different invoice sets sum to the
+        // same amount — we don't auto-pick one; the proof panel shows the open
+        // invoices so the manager can decide.)
+        $ambiguousBulk = is_array($combined) && !empty($combined['ambiguous']);
         $signal->status = PaymentSignal::STATUS_AMOUNT_MISMATCH;
-        $signal->match_reason = 'amount_differs';
-        $signal->match_confidence = 0.20;
+        $signal->match_reason = $ambiguousBulk ? 'bulk_ambiguous' : 'amount_differs';
+        $signal->match_confidence = $ambiguousBulk ? 0.30 : 0.20;
         $signal->matched_order_id = $latest?->id;
         $signal->save();
+        // No combined set survived — make sure no stale links remain on re-match.
+        $this->clearLinks($signal->id);
         $this->pair($signal);
         return $signal;
     }
@@ -211,13 +272,176 @@ class PaymentSignalMatcher
         return abs($a - $b) <= $tol;
     }
 
-    private function looksLikeBulk($candidates, float $amount, float $tol): bool
+    /**
+     * Find the set of open invoices a single transfer settles, anchored on the
+     * NEWEST invoice. Returns one of:
+     *   ['orders' => [Order, ...], 'confidence' => float, 'reason' => 'bulk_combined']
+     *   ['orders' => [], 'ambiguous' => true]   (two distinct sets tie — don't auto-pick)
+     *   null                                    (not a combined payment)
+     *
+     * Strategy: the newest invoice is always included (the customer is paying
+     * the latest first). We then look for a CONTIGUOUS run of the next-newest
+     * invoices that covers the remainder (most intuitive, deterministic). If no
+     * contiguous run fits, we fall back to any single subset of the older
+     * invoices — but if more than one distinct subset matches the same amount we
+     * report it ambiguous instead of guessing.
+     */
+    private function findCombinedSet($candidates, float $amount, float $tol): ?array
     {
-        $sum = 0.0;
-        foreach ($candidates as $o) {
-            $sum += $this->balance($o);
+        $orders = $candidates->values();
+        if ($orders->count() < 2) {
+            return null;
         }
-        return $candidates->count() > 1 && $this->within($sum, $amount, $tol);
+
+        $newest    = $orders->first();
+        $newestBal = $this->balance($newest);
+
+        // If the newest invoice alone already exceeds the transfer, this isn't a
+        // "latest + older" combination — let it fall through to mismatch.
+        if ($newestBal - $amount > $tol) {
+            return null;
+        }
+
+        $target = $amount - $newestBal;                 // remainder for older invoices
+        $older  = $orders->slice(1)->values();
+
+        // 1) Preferred: a contiguous run from the next-newest invoice onward.
+        //    Balances are non-negative, so the running sum is monotonic — exactly
+        //    one run length can hit the target, and we stop once we overshoot.
+        $running = 0.0;
+        $run     = [$newest];
+        foreach ($older as $o) {
+            $running += $this->balance($o);
+            $run[]    = $o;
+            if ($this->within($running, $target, $tol)) {
+                return ['orders' => $run, 'confidence' => 0.75, 'reason' => 'bulk_combined'];
+            }
+            if ($running - $target > $tol) {
+                break;
+            }
+        }
+
+        // 2) Fall back to any subset of the older invoices (bounded search).
+        $olderArr = $older->all();
+        if (count($olderArr) > 14) {
+            return null; // too many to enumerate safely; contiguous already tried
+        }
+        $subsets = $this->subsetsSummingTo($olderArr, $target, $tol);
+        if (count($subsets) === 1) {
+            return [
+                'orders'     => array_merge([$newest], $subsets[0]),
+                'confidence' => 0.55,
+                'reason'     => 'bulk_combined',
+            ];
+        }
+        if (count($subsets) > 1) {
+            return ['orders' => [], 'ambiguous' => true];
+        }
+
+        return null;
+    }
+
+    /**
+     * Every non-empty subset of $orders whose balances sum to $target (±$tol).
+     * Bounded by the caller to a small N, so the 2^N scan is cheap.
+     *
+     * @return array<int, array> list of order-sets
+     */
+    private function subsetsSummingTo(array $orders, float $target, float $tol): array
+    {
+        $n      = count($orders);
+        $result = [];
+        $total  = 1 << $n;
+        for ($mask = 1; $mask < $total; $mask++) {
+            $sum = 0.0;
+            $set = [];
+            for ($i = 0; $i < $n; $i++) {
+                if ($mask & (1 << $i)) {
+                    $sum  += $this->balance($orders[$i]);
+                    $set[] = $orders[$i];
+                }
+            }
+            if ($this->within($sum, $target, $tol)) {
+                $result[] = $set;
+            }
+        }
+        return $result;
+    }
+
+    /**
+     * Mark a signal as a combined match: status MATCHED, matched_order_id = the
+     * newest invoice (backward-compatible single link), plus a link row for
+     * EVERY covered invoice so all of them surface the proof. Idempotent.
+     *
+     * @param  array  $orders  newest-first list of covered orders
+     */
+    private function linkCombined(PaymentSignal $signal, array $orders, float $confidence, string $reason): PaymentSignal
+    {
+        $newest = $orders[0];
+        $signal->matched_order_id = $newest->id;
+        $signal->match_confidence = $confidence;
+        $signal->match_reason     = $reason;
+        $signal->status           = PaymentSignal::STATUS_MATCHED;
+        $signal->save();
+
+        $this->writeLinks($signal, $orders);
+
+        if ($signal->source === PaymentSignal::SOURCE_EMAIL && $signal->extracted_sender_name) {
+            $this->bumpAliasUsage($signal);
+        }
+
+        $this->pair($signal);
+        return $signal;
+    }
+
+    /** Replace a signal's covered-invoice links with exactly $orders. */
+    private function writeLinks(PaymentSignal $signal, array $orders): void
+    {
+        $this->clearLinks($signal->id);
+
+        $now  = now();
+        $rows = [];
+        foreach ($orders as $o) {
+            $rows[] = [
+                'signal_id'        => $signal->id,
+                'order_id'         => $o->id,
+                'balance_at_match' => $this->balance($o),
+                'created_at'       => $now,
+                'updated_at'       => $now,
+            ];
+        }
+        if (!empty($rows)) {
+            DB::table('t_fin_payment_signal_order')->insert($rows);
+        }
+    }
+
+    /** Remove all covered-invoice links for a signal (keeps re-matching clean). */
+    private function clearLinks(int $signalId): void
+    {
+        DB::table('t_fin_payment_signal_order')->where('signal_id', $signalId)->delete();
+    }
+
+    /** Mirror one signal's combined links onto another (WhatsApp ⇄ email). */
+    private function copyLinks(PaymentSignal $from, PaymentSignal $to): void
+    {
+        $links = DB::table('t_fin_payment_signal_order')->where('signal_id', $from->id)->get();
+        if ($links->isEmpty()) {
+            return;
+        }
+
+        $this->clearLinks($to->id);
+        $now  = now();
+        $rows = [];
+        foreach ($links as $l) {
+            $rows[] = [
+                'signal_id'        => $to->id,
+                'order_id'         => $l->order_id,
+                'balance_at_match' => $l->balance_at_match,
+                'created_at'       => $now,
+                'updated_at'       => $now,
+            ];
+        }
+        DB::table('t_fin_payment_signal_order')->insert($rows);
     }
 
     private function isDuplicateRef(PaymentSignal $signal): bool
@@ -291,7 +515,7 @@ class PaymentSignalMatcher
         if ($signal->extracted_amount === null) {
             return null;
         }
-        $tol = (float) config('payment_signals.amount_tolerance', 1.0);
+        $tol = (float) config('payment_signals.amount_tolerance', 10.0);
         $windowDays = (int) config('payment_signals.pair_window_days', 3);
         $time = $this->paymentTime($signal);
         $from = $time->copy()->subDays($windowDays);
@@ -358,6 +582,13 @@ class PaymentSignalMatcher
         }
 
         $dst->save();
+
+        // If the source is a combined (bulk) match, mirror its covered-invoice
+        // links onto the corroborating signal so EVERY invoice in the group
+        // shows both the screenshot and the email (→ "Verified" across them all).
+        if ($src->status === PaymentSignal::STATUS_MATCHED) {
+            $this->copyLinks($src, $dst);
+        }
     }
 
     private function bindPair(PaymentSignal $a, PaymentSignal $b): void

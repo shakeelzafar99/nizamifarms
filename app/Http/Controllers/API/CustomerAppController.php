@@ -145,24 +145,42 @@ class CustomerAppController extends Controller
         try {
             $nfOrderNumber = $this->resolveAnyOrderNumber($orderNumber);
 
+            // Columns shared by both the live and history order tables.
+            $snapshotCols = [
+                'id', 'order_number', 'order_status', 'order_date',
+                'currency', 'payment_method',
+                'subtotal_price', 'discount_total', 'shipping_total',
+                'total_tax', 'tip_amount', 'total_price',
+                'name', 'address_phone', 'address_line1', 'address_line2',
+                'address_city', 'address_province', 'address_postal_code',
+                'address_country',
+            ];
+
+            // Live order first — it carries estimated_delivery_at for the ETA window.
             $order = DB::table('t_crm_prod_order')
                 ->where('order_number', $nfOrderNumber)
-                ->select([
-                    'id', 'order_number', 'order_status', 'order_date',
-                    'currency', 'payment_method', 'estimated_delivery_at',
-                    'subtotal_price', 'discount_total', 'shipping_total',
-                    'total_tax', 'tip_amount', 'total_price',
-                    'name', 'address_phone', 'address_line1', 'address_line2',
-                    'address_city', 'address_province', 'address_postal_code',
-                    'address_country',
-                ])
+                ->select(array_merge($snapshotCols, ['estimated_delivery_at']))
                 ->first();
+            $isHistory = false;
+
+            // Fall back to a historical (CSV-imported) order so the customer can
+            // open older orders for detail. History order numbers are unique and
+            // don't collide with live ones, so matching by the raw or resolved
+            // number is safe. History rows have no live ETA.
+            if (!$order) {
+                $rawNumber = ltrim(trim(urldecode($orderNumber)), '#');
+                $order = DB::table('t_crm_history_order')
+                    ->whereIn('order_number', array_values(array_unique([$nfOrderNumber, $rawNumber])))
+                    ->select($snapshotCols)
+                    ->first();
+                $isHistory = (bool) $order;
+            }
 
             if (!$order) {
                 return response()->json(['success' => false, 'order' => null], 404);
             }
 
-            $items = DB::table('t_crm_prod_order_line_item')
+            $items = DB::table($isHistory ? 't_crm_history_order_line_item' : 't_crm_prod_order_line_item')
                 ->where('order_id', $order->id)
                 ->select(['sku', 'name', 'quantity', 'unit_price', 'line_total'])
                 ->get()
@@ -179,7 +197,7 @@ class CustomerAppController extends Controller
                 'nf_order_number' => $order->order_number,
                 'source'          => $this->sourceFromOrderNumber($order->order_number),
                 'status'          => $order->order_status,
-                'eta_window'      => $this->etaWindowFor($order),
+                'eta_window'      => $isHistory ? null : $this->etaWindowFor($order),
                 'placed_at'       => $order->order_date
                     ? \Carbon\Carbon::parse($order->order_date)->toIso8601String() : null,
                 'currency'        => $order->currency ?: 'PKR',
@@ -253,23 +271,48 @@ class CustomerAppController extends Controller
             $limit = (int) $request->query('limit', 20);
             $limit = max(1, min($limit, 50));
 
-            $orders = DB::table('t_crm_prod_order')
+            // Combine live (production) + historical (CSV-imported) orders so the
+            // customer sees their full history. We UNION the two base tables
+            // directly rather than the v_crm_all_orders view: that view carries a
+            // prod-only MySQL DEFINER that isn't portable (it errors on a fresh
+            // local DB), and reading the tables keeps this customer-facing
+            // endpoint decoupled from the analytics view. `id` is NOT unique
+            // across the two tables, so every per-order lookup below is keyed on
+            // (source_type, id), never id alone.
+            $cols  = ['id', 'order_number', 'order_status', 'order_date', 'total_price', 'currency'];
+            $prodQ = DB::table('t_crm_prod_order')
                 ->where('customer_id', $customerId)
+                ->select(array_merge([DB::raw("'production' as source_type")], $cols));
+            $histQ = DB::table('t_crm_history_order')
+                ->where('customer_id', $customerId)
+                ->select(array_merge([DB::raw("'history' as source_type")], $cols));
+            $orders = $prodQ->unionAll($histQ)
                 ->orderByDesc('order_date')
                 ->orderByDesc('id')
                 ->limit($limit)
-                ->select(['id', 'order_number', 'order_status', 'order_date', 'total_price', 'currency'])
                 ->get();
 
-            // One grouped query for item counts across the page.
-            $counts = [];
-            if ($orders->isNotEmpty()) {
-                $counts = DB::table('t_crm_prod_order_line_item')
-                    ->whereIn('order_id', $orders->pluck('id')->all())
+            // Item counts, fetched per source from the matching line-item table
+            // and keyed by "source_type:id" to avoid the prod/history id clash.
+            $counts  = [];
+            $prodIds = $orders->where('source_type', 'production')->pluck('id')->all();
+            $histIds = $orders->where('source_type', 'history')->pluck('id')->all();
+
+            if (!empty($prodIds)) {
+                DB::table('t_crm_prod_order_line_item')
+                    ->whereIn('order_id', $prodIds)
                     ->groupBy('order_id')
                     ->selectRaw('order_id, COUNT(*) as c')
-                    ->pluck('c', 'order_id')
-                    ->all();
+                    ->get()
+                    ->each(function ($r) use (&$counts) { $counts['production:' . $r->order_id] = (int) $r->c; });
+            }
+            if (!empty($histIds)) {
+                DB::table('t_crm_history_order_line_item')
+                    ->whereIn('order_id', $histIds)
+                    ->groupBy('order_id')
+                    ->selectRaw('order_id, COUNT(*) as c')
+                    ->get()
+                    ->each(function ($r) use (&$counts) { $counts['history:' . $r->order_id] = (int) $r->c; });
             }
 
             $rows = $orders->map(fn ($o) => [
@@ -281,7 +324,7 @@ class CustomerAppController extends Controller
                     ? \Carbon\Carbon::parse($o->order_date)->toIso8601String() : null,
                 'total'           => (float) $o->total_price,
                 'currency'        => $o->currency ?: 'PKR',
-                'item_count'      => (int) ($counts[$o->id] ?? 0),
+                'item_count'      => (int) ($counts[$o->source_type . ':' . $o->id] ?? 0),
             ])->values();
 
             return response()->json([
@@ -336,6 +379,7 @@ class CustomerAppController extends Controller
                     'total_orders', 'total_spent', 'first_order_date', 'last_order_date',
                     'is_active', 'created_at',
                     'address1', 'address2', 'city', 'province', 'postal_code', 'country',
+                    'address_saved_by', 'address_saved_at', 'profile_saved_by', 'profile_saved_at',
                     'latitude', 'longitude', 'geocoded_latitude', 'geocoded_longitude',
                     'verified_location_url', 'verified_location_saved_by', 'verified_location_saved_at',
                 ])
@@ -367,13 +411,22 @@ class CustomerAppController extends Controller
                     'last_order_date'  => $c->last_order_date
                         ? \Carbon\Carbon::parse($c->last_order_date)->toIso8601String() : null,
                     'address'          => [
-                        'line1'       => $c->address1,
-                        'line2'       => $c->address2,
-                        'city'        => $c->city,
-                        'province'    => $c->province,
-                        'postal_code' => $c->postal_code,
-                        'country'     => $c->country,
+                        'line1'             => $c->address1,
+                        'line2'             => $c->address2,
+                        'city'              => $c->city,
+                        'province'          => $c->province,
+                        'postal_code'       => $c->postal_code,
+                        'country'           => $c->country,
+                        'saved_by'          => $this->attributionLabel($c->address_saved_by),
+                        'saved_by_customer' => ((int) $c->address_saved_by) === self::CUSTOMER_PIN_SAVED_BY,
+                        'saved_at'          => $c->address_saved_at
+                            ? \Carbon\Carbon::parse($c->address_saved_at)->toIso8601String() : null,
                     ],
+                    // Attribution for name/email edits (parallel to address.saved_by).
+                    'profile_saved_by'          => $this->attributionLabel($c->profile_saved_by),
+                    'profile_saved_by_customer' => ((int) $c->profile_saved_by) === self::CUSTOMER_PIN_SAVED_BY,
+                    'profile_saved_at'          => $c->profile_saved_at
+                        ? \Carbon\Carbon::parse($c->profile_saved_at)->toIso8601String() : null,
                     'verified_pin'     => $this->buildPin($c),
                 ],
             ], 200);
@@ -470,6 +523,233 @@ class CustomerAppController extends Controller
     }
 
     /**
+     * Customer writes/updates their postal address (Phase 5 — write-back).
+     *
+     * POST /api/customer-app/customers/{mobile}/address
+     * body: { line1*, city*, line2?, province?, postal_code?, country? }
+     *
+     * Mirrors saveCustomerLocation: creates a minimal customer row if the
+     * number is brand-new, overwrites the CRM address (customer-edit-wins per
+     * business decision), and stamps attribution with the customer sentinel so
+     * it reads back as "saved_by": "Customer" (vs an ops user's name).
+     *
+     * NOTE: this writes only the postal-address TEXT. It does NOT touch the
+     * delivery pin (latitude/longitude / verified_location_*) — the rider drop
+     * point stays whatever the pin says, so editing the address never silently
+     * moves a delivery.
+     */
+    public function saveCustomerAddress(Request $request, string $mobile)
+    {
+        try {
+            $validated = $request->validate([
+                'line1'       => 'required|string|max:255',
+                'city'        => 'required|string|max:255',
+                'line2'       => 'nullable|string|max:255',
+                'province'    => 'nullable|string|max:255',
+                'postal_code' => 'nullable|string|max:50',
+                'country'     => 'nullable|string|max:100',
+            ]);
+
+            $norm       = CustomerModel::normalizePhone(urldecode($mobile));
+            $normalized = $norm['normalized'] ?? '';
+
+            if ($normalized === '' || $normalized === str_repeat('0', 10)) {
+                return response()->json(['success' => false, 'message' => 'Invalid mobile number.'], 422);
+            }
+
+            $customerId = $this->resolveCustomerIdByPhone($normalized);
+            $created    = false;
+
+            if (!$customerId) {
+                $customer = CustomerModel::create([
+                    'phone'            => $normalized,
+                    'phone_normalized' => $normalized,
+                    'phone_original'   => $norm['original'] ?? $normalized,
+                    'country'          => 'Pakistan',
+                    'is_active'        => 1,
+                    'created_by'       => self::CUSTOMER_PIN_SAVED_BY,
+                ]);
+                $customerId = $customer->id;
+                $created    = true;
+            }
+
+            $update = [
+                'address1'         => $validated['line1'],
+                'address2'         => $validated['line2'] ?? null,
+                'city'             => $validated['city'],
+                'province'         => $validated['province'] ?? null,
+                'postal_code'      => $validated['postal_code'] ?? null,
+                'country'          => $validated['country'] ?? 'Pakistan',
+                'address_saved_by' => self::CUSTOMER_PIN_SAVED_BY,
+                'address_saved_at' => now(),
+                'updated_by'       => self::CUSTOMER_PIN_SAVED_BY,
+            ];
+
+            DB::table('t_crm_prod_customer')->where('id', $customerId)->update($update);
+
+            $c = DB::table('t_crm_prod_customer')
+                ->where('id', $customerId)
+                ->select([
+                    'address1', 'address2', 'city', 'province', 'postal_code', 'country',
+                    'address_saved_by', 'address_saved_at',
+                ])
+                ->first();
+
+            return response()->json([
+                'success'          => true,
+                'matched_phone'    => $normalized,
+                'created_customer' => $created,
+                'address'          => [
+                    'line1'             => $c->address1,
+                    'line2'             => $c->address2,
+                    'city'              => $c->city,
+                    'province'          => $c->province,
+                    'postal_code'       => $c->postal_code,
+                    'country'           => $c->country,
+                    'saved_by'          => $this->attributionLabel($c->address_saved_by),
+                    'saved_by_customer' => ((int) $c->address_saved_by) === self::CUSTOMER_PIN_SAVED_BY,
+                    'saved_at'          => $c->address_saved_at
+                        ? \Carbon\Carbon::parse($c->address_saved_at)->toIso8601String() : null,
+                ],
+            ], 200);
+        } catch (\Illuminate\Validation\ValidationException $e) {
+            return response()->json([
+                'success' => false, 'message' => 'Validation failed.', 'errors' => $e->errors(),
+            ], 422);
+        } catch (\Throwable $e) {
+            Log::error('CustomerAppController::saveCustomerAddress failed', ['error' => $e->getMessage()]);
+            return response()->json(['success' => false, 'message' => 'Failed to save address.'], 500);
+        }
+    }
+
+    /**
+     * Customer writes/updates their name / email (Phase 5 — write-back).
+     *
+     * POST /api/customer-app/customers/{mobile}/profile
+     * body: { first_name?, last_name?, email? }  (any subset)
+     *
+     * - Only fields actually present in the request are written; the rest are
+     *   left untouched (so a name edit never wipes the email and vice-versa).
+     * - The mobile number is the immutable identity key and is never written.
+     * - email is NOT unique in t_crm_prod_customer, so a clash can't hard-fail;
+     *   instead, if the email already belongs to ANOTHER customer we skip
+     *   writing it and return email_taken:true (soft), per the dev's request.
+     * - Same create-if-new + customer-set attribution as the address write.
+     */
+    public function saveCustomerProfile(Request $request, string $mobile)
+    {
+        try {
+            $validated = $request->validate([
+                'first_name' => 'nullable|string|max:100',
+                'last_name'  => 'nullable|string|max:100',
+                'email'      => 'nullable|email|max:255',
+            ]);
+
+            $hasFirst = $request->has('first_name');
+            $hasLast  = $request->has('last_name');
+            $hasEmail = $request->has('email');
+
+            if (!$hasFirst && !$hasLast && !$hasEmail) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Nothing to update — send at least one of first_name, last_name, email.',
+                ], 422);
+            }
+
+            $norm       = CustomerModel::normalizePhone(urldecode($mobile));
+            $normalized = $norm['normalized'] ?? '';
+
+            if ($normalized === '' || $normalized === str_repeat('0', 10)) {
+                return response()->json(['success' => false, 'message' => 'Invalid mobile number.'], 422);
+            }
+
+            $customerId = $this->resolveCustomerIdByPhone($normalized);
+            $created    = false;
+
+            if (!$customerId) {
+                // Create with name only; email is handled below (collision-checked).
+                $customer = CustomerModel::create([
+                    'phone'            => $normalized,
+                    'phone_normalized' => $normalized,
+                    'phone_original'   => $norm['original'] ?? $normalized,
+                    'first_name'       => $hasFirst ? ($validated['first_name'] ?? null) : null,
+                    'last_name'        => $hasLast ? ($validated['last_name'] ?? null) : null,
+                    'country'          => 'Pakistan',
+                    'is_active'        => 1,
+                    'created_by'       => self::CUSTOMER_PIN_SAVED_BY,
+                ]);
+                $customerId = $customer->id;
+                $created    = true;
+            }
+
+            $update     = [];
+            $emailTaken = false;
+
+            if ($hasFirst) {
+                $update['first_name'] = $validated['first_name'] ?? null;
+            }
+            if ($hasLast) {
+                $update['last_name'] = $validated['last_name'] ?? null;
+            }
+            if ($hasEmail) {
+                $email = $validated['email'] ?? null;
+                if (!empty($email)) {
+                    $clash = DB::table('t_crm_prod_customer')
+                        ->where('email', $email)
+                        ->where('id', '<>', $customerId)
+                        ->exists();
+                    if ($clash) {
+                        $emailTaken = true; // skip writing — soft flag back to the app
+                    } else {
+                        $update['email'] = $email;
+                    }
+                } else {
+                    $update['email'] = null; // explicit clear
+                }
+            }
+
+            if (!empty($update)) {
+                $update['profile_saved_by'] = self::CUSTOMER_PIN_SAVED_BY;
+                $update['profile_saved_at'] = now();
+                $update['updated_by']       = self::CUSTOMER_PIN_SAVED_BY;
+                DB::table('t_crm_prod_customer')->where('id', $customerId)->update($update);
+            }
+
+            $c = DB::table('t_crm_prod_customer')
+                ->where('id', $customerId)
+                ->select(['first_name', 'last_name', 'email', 'profile_saved_by', 'profile_saved_at'])
+                ->first();
+
+            $response = [
+                'success'          => true,
+                'matched_phone'    => $normalized,
+                'created_customer' => $created,
+                'customer'         => [
+                    'first_name'        => $c->first_name,
+                    'last_name'         => $c->last_name,
+                    'email'             => $c->email,
+                    'saved_by'          => $this->attributionLabel($c->profile_saved_by),
+                    'saved_by_customer' => ((int) $c->profile_saved_by) === self::CUSTOMER_PIN_SAVED_BY,
+                    'saved_at'          => $c->profile_saved_at
+                        ? \Carbon\Carbon::parse($c->profile_saved_at)->toIso8601String() : null,
+                ],
+            ];
+            if ($emailTaken) {
+                $response['email_taken'] = true;
+            }
+
+            return response()->json($response, 200);
+        } catch (\Illuminate\Validation\ValidationException $e) {
+            return response()->json([
+                'success' => false, 'message' => 'Validation failed.', 'errors' => $e->errors(),
+            ], 422);
+        } catch (\Throwable $e) {
+            Log::error('CustomerAppController::saveCustomerProfile failed', ['error' => $e->getMessage()]);
+            return response()->json(['success' => false, 'message' => 'Failed to save profile.'], 500);
+        }
+    }
+
+    /**
      * Invoice image for an order (Phase 4).
      *
      * GET /api/customer-app/orders/{orderNumber}/invoice
@@ -556,6 +836,23 @@ class CustomerAppController extends Controller
             'saved_at'          => $c->verified_location_saved_at
                 ? \Carbon\Carbon::parse($c->verified_location_saved_at)->toIso8601String() : null,
         ];
+    }
+
+    /**
+     * Translate a *_saved_by id into a human label, the same way buildPin does:
+     * the customer sentinel reads as "Customer", a real ops user id resolves to
+     * their name, anything else is null. Used for address/profile attribution.
+     */
+    private function attributionLabel($savedById): ?string
+    {
+        $id = (int) ($savedById ?? 0);
+        if ($id === self::CUSTOMER_PIN_SAVED_BY) {
+            return 'Customer';
+        }
+        if ($id > 0) {
+            return DB::table('t_sys_user')->where('id', $id)->value('fullname');
+        }
+        return null;
     }
 
     /**
