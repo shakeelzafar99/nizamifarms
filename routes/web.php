@@ -124,6 +124,15 @@ Route::middleware(['auth'])->group(function () {
     Route::get('/logs/test', [LogController::class, 'testLogging']);
     // Operations dashboard page (imports, bulk delivery status)
     Route::get('/admin/operations', function () { return view('admin.operations'); })->name('admin.operations');
+
+    // Line-item quick-note presets (chips shown next to the per-line-item
+    // "Add note" box). Shared team-wide list; same controller backs the mobile
+    // API routes in routes/api.php. Kept off the /orders/* path so the
+    // /orders/{id} wildcard never swallows it.
+    Route::get('/line-item-quick-notes', [\App\Http\Controllers\CRM\LineItemQuickNoteController::class, 'index'])->name('line-item-quick-notes.index');
+    Route::post('/line-item-quick-notes', [\App\Http\Controllers\CRM\LineItemQuickNoteController::class, 'store'])->name('line-item-quick-notes.store');
+    Route::delete('/line-item-quick-notes/{id}', [\App\Http\Controllers\CRM\LineItemQuickNoteController::class, 'destroy'])->name('line-item-quick-notes.destroy');
+
     Route::get('/orders', [OrderController::class, 'index'])->name('orders.index');
     Route::get('/orders/filter', [OrderController::class, 'filter'])->name('orders.filter');
     Route::get('/orders/sync-status', [OrderController::class, 'syncStatus'])->name('orders.sync-status'); // ⭐ SMART SYNC (must be before {id})

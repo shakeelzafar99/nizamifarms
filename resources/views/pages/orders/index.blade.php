@@ -4346,6 +4346,7 @@ function loadEditForm(order) {
                                         <input type="text" name="items[${index}][instructions]" value="" placeholder="Type instructions..." style="width:100%; padding:4px 8px; border:1px solid #FCD34D; border-radius:4px; font-size:12px; color:#374151; background:#FFFBEB;" onblur="collapseInstructions(${index})">
                                     </div>`
                                 }
+                                <div class="quick-note-chips" data-index="${index}" style="display:flex; flex-wrap:wrap; gap:4px; margin-top:5px; align-items:center;">${quickNoteChipsHtml(index)}</div>
                             </div>
                         </div>
                         `).join('') : 
@@ -5045,6 +5046,131 @@ function collapseInstructions(index) {
         inputWrap.style.display = 'none';
     }, 200);
 }
+
+// ── Line-item quick notes (preset chips next to "Add note") ───────────────
+// Shared team-wide presets fetched once from /line-item-quick-notes. Tapping a
+// chip just fills the instructions input (replace) and reuses the existing
+// save path — it does NOT save on its own. "📌 Pin" promotes the typed note
+// to the shared list so it shows up everywhere (web + mobile).
+window.__quickNotes = window.__quickNotes || [];
+
+function escapeQuickNote(str) {
+    return String(str == null ? '' : str)
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+function quickNoteChipsHtml(index) {
+    var chips = (window.__quickNotes || []).map(function (n) {
+        var safe = escapeQuickNote(n.note_text);
+        var attr = safe.replace(/`/g, '&#96;');
+        // Each chip = label (tap to apply) + × (tap to remove from the list).
+        return '<span style="display:inline-flex; align-items:center; background:#FFFBEB; border:1px solid #FCD34D; border-radius:12px; overflow:hidden; line-height:1.4;">'
+            + '<button type="button" onclick="applyQuickNote(' + index + ', this.getAttribute(\'data-note\'))" data-note="' + attr + '" '
+            + 'style="cursor:pointer; font-size:11px; color:#92400E; background:transparent; border:none; padding:2px 5px 2px 9px;">'
+            + safe + '</button>'
+            + '<span onclick="removeQuickNote(' + n.id + ', event)" title="Remove this quick note from the list" '
+            + 'style="cursor:pointer; font-size:13px; color:#B45309; padding:1px 8px 1px 3px;">&times;</span>'
+            + '</span>';
+    }).join('');
+    // "Pin current note" affordance
+    chips += '<button type="button" onclick="pinCurrentQuickNote(' + index + ')" title="Save the typed note as a reusable quick note" '
+        + 'style="cursor:pointer; font-size:11px; color:#2563eb; background:transparent; border:1px dashed #93c5fd; border-radius:12px; padding:2px 9px; line-height:1.4;">📌 Pin</button>';
+    return chips;
+}
+
+function renderAllQuickNoteChips() {
+    document.querySelectorAll('.quick-note-chips').forEach(function (box) {
+        var idx = box.getAttribute('data-index');
+        box.innerHTML = quickNoteChipsHtml(idx);
+    });
+}
+
+function loadQuickNotes() {
+    return fetch('/line-item-quick-notes', { headers: { 'Accept': 'application/json' } })
+        .then(function (r) { return r.ok ? r.json() : { data: [] }; })
+        .then(function (res) {
+            window.__quickNotes = (res && res.data) ? res.data : [];
+            renderAllQuickNoteChips();
+        })
+        .catch(function () { /* non-fatal: chips just stay as the Pin button */ });
+}
+
+// Apply a preset to a line item's note: fill the input (replace), then let the
+// existing collapse logic show the yellow badge. Save still happens on the
+// normal "Save" action.
+function applyQuickNote(index, text) {
+    var wrapper = document.querySelector('.instructions-wrapper[data-index="' + index + '"]');
+    if (!wrapper) return;
+    var inputWrap = wrapper.querySelector('.instructions-input-wrap');
+    var inp = inputWrap ? inputWrap.querySelector('input') : null;
+    if (!inp) return;
+    inp.value = text;
+    // Notify any change listeners (keeps unsaved-changes tracking honest).
+    inp.dispatchEvent(new Event('input', { bubbles: true }));
+    // collapseInstructions reads the (now-filled) input and renders the badge.
+    collapseInstructions(index);
+}
+
+function pinCurrentQuickNote(index) {
+    var wrapper = document.querySelector('.instructions-wrapper[data-index="' + index + '"]');
+    if (!wrapper) return;
+    var inputWrap = wrapper.querySelector('.instructions-input-wrap');
+    var inp = inputWrap ? inputWrap.querySelector('input') : null;
+    var text = inp ? inp.value.trim() : '';
+    if (!text) {
+        alert('Type a note in the box first, then tap 📌 Pin to save it as a reusable quick note.');
+        return;
+    }
+    fetch('/line-item-quick-notes', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'Accept': 'application/json',
+            'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]')?.content || ''
+        },
+        body: JSON.stringify({ note_text: text })
+    })
+    .then(function (r) { return r.json(); })
+    .then(function (res) {
+        if (res && res.success && res.data) {
+            var exists = (window.__quickNotes || []).some(function (n) { return n.id === res.data.id; });
+            if (!exists) window.__quickNotes.push(res.data);
+            renderAllQuickNoteChips();
+        } else {
+            alert((res && res.message) ? res.message : 'Could not pin this quick note.');
+        }
+    })
+    .catch(function () { alert('Could not pin this quick note (network error).'); });
+}
+
+// Remove (unpin) a preset from the shared list. Does NOT change any note
+// already saved on an order — it only removes the chip going forward.
+function removeQuickNote(id, ev) {
+    if (ev) ev.stopPropagation();
+    if (!confirm('Remove this quick note from the list? Notes already saved on orders are not affected.')) return;
+    fetch('/line-item-quick-notes/' + id, {
+        method: 'DELETE',
+        headers: {
+            'Accept': 'application/json',
+            'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]')?.content || ''
+        }
+    })
+    .then(function (r) { return r.json(); })
+    .then(function (res) {
+        if (res && res.success) {
+            window.__quickNotes = (window.__quickNotes || []).filter(function (n) { return n.id !== id; });
+            renderAllQuickNoteChips();
+        } else {
+            alert((res && res.message) ? res.message : 'Could not remove this quick note.');
+        }
+    })
+    .catch(function () { alert('Could not remove this quick note (network error).'); });
+}
+
+// Load the preset list once the page is ready. renderAllQuickNoteChips() is
+// also called whenever line items re-render (chips read window.__quickNotes).
+document.addEventListener('DOMContentLoaded', loadQuickNotes);
 
 function toggleFreeItem(index) {
     const item = document.querySelector(`.line-item[data-index="${index}"]`);

@@ -379,6 +379,12 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/qurbani/riders/{riderId}/delay-impacted',  [\App\Http\Controllers\API\RiderController::class, 'getQurbaniDelayImpacted']);
     Route::post('/qurbani/riders/{riderId}/send-delay-update', [\App\Http\Controllers\API\RiderController::class, 'sendQurbaniDelayUpdate']);
     Route::put('/orders/{orderId}/line-items/{lineItemId}/instructions', [\App\Http\Controllers\API\RiderController::class, 'updateLineItemInstructions']);
+    // Line-item quick-note presets (chips next to the "Add note" box).
+    // Shared team-wide list; same controller backs the web routes in
+    // routes/web.php so there is one source of truth.
+    Route::get('/line-item-quick-notes', [\App\Http\Controllers\CRM\LineItemQuickNoteController::class, 'index']);
+    Route::post('/line-item-quick-notes', [\App\Http\Controllers\CRM\LineItemQuickNoteController::class, 'store']);
+    Route::delete('/line-item-quick-notes/{id}', [\App\Http\Controllers\CRM\LineItemQuickNoteController::class, 'destroy']);
     Route::get('/orders/{id}/payments', [\App\Http\Controllers\API\RiderController::class, 'getOrderPayments']);
     Route::post('/orders/{id}/payments', [\App\Http\Controllers\API\RiderController::class, 'addOrderPayment']);
     // Amend non-financial metadata (receiving bank, reference, notes, stamp
