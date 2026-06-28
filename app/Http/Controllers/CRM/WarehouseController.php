@@ -3260,11 +3260,21 @@ class WarehouseController extends Controller
     }
 
     /**
-     * Create a new production demand (Taimur/admin only)
+     * Create a new production demand. Gated by the dedicated
+     * `create_production_demand` permission (distinct from approve_khaas_transfer,
+     * which is intentionally broad — store-mode users can accept transfers).
      */
     public function createDemand(Request $request)
     {
         try {
+            $user = auth()->user();
+            if (!$user || !$user->hasMobilePermission('create_production_demand')) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'You do not have permission to create a production plan.',
+                ], 403);
+            }
+
             $request->validate([
                 'business_unit_id' => 'required|integer',
                 'demand_date' => 'required|date',

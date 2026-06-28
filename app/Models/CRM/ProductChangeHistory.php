@@ -47,6 +47,7 @@ class ProductChangeHistory extends Model
     const TYPE_INVENTORY_CHANGE = 'inventory_change';
     const TYPE_WEIGHT_FACTOR_CHANGE = 'weight_factor_change';
     const TYPE_LEAN_STATUS_CHANGE = 'lean_status_change';
+    const TYPE_CZERLOP_CHANGE = 'czerlop_change';
     const TYPE_PRODUCT_CREATED = 'product_created';
     const TYPE_VARIANT_CREATED = 'variant_created';
     const TYPE_VARIANT_DELETED = 'variant_deleted';
@@ -160,6 +161,7 @@ class ProductChangeHistory extends Model
             self::TYPE_INVENTORY_CHANGE => 'Inventory Changed',
             self::TYPE_WEIGHT_FACTOR_CHANGE => 'Weight Factor Changed',
             self::TYPE_LEAN_STATUS_CHANGE => 'Lean Status Changed',
+            self::TYPE_CZERLOP_CHANGE => 'Czerlop ID Changed',
             self::TYPE_PRODUCT_CREATED => 'Product Created',
             self::TYPE_VARIANT_CREATED => 'Variant Added',
             self::TYPE_VARIANT_DELETED => 'Variant Removed',

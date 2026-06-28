@@ -9015,8 +9015,8 @@ class RiderController extends Controller
                     $q->select('id', 'fullname');
                 }])
                 ->with(['lineItems' => function($q) {
-                    $q->select('id', 'order_id', 'product_id', 'name', 'sku', 'quantity', 'unit_price', 'line_total', 'preparation_status', 'is_free', 'instructions')
-                      ->with(['product:id,attribute_1']); // category (attribute_1) for Products-view grouping
+                    $q->select('id', 'order_id', 'product_id', 'variant_id', 'name', 'sku', 'quantity', 'unit_price', 'line_total', 'preparation_status', 'is_free', 'instructions', 'quantity_source', 'quantity_updated_at', 'quantity_updated_by')
+                      ->with(['product:id,attribute_1', 'qtyUpdater:id,fullname']); // category + barcode-qty updater
                 }])
                 ->with(['discounts']) // ⭐ Load discounts for invoice view
                 ->where(function($q) {
@@ -9043,7 +9043,20 @@ class RiderController extends Controller
             
             // Order by date
             $orders = $query->orderBy('order_date', 'desc')->get();
-            
+
+            // Barcode-qty: batch-resolve Czerlop ids (sku -> variant -> product) for all line items,
+            // so the list view can match scans + show the weighed badge without a detail fetch.
+            $allSkus = $orders->pluck('lineItems')->flatten(1)->pluck('sku')->filter()->unique()->values()->all();
+            $skuCzerlop = [];
+            if (!empty($allSkus)) {
+                foreach (\DB::table('t_crm_prod_product_variant as v')
+                    ->join('t_crm_prod_product as p', 'p.id', '=', 'v.product_id')
+                    ->whereIn('v.sku', $allSkus)->whereNotNull('p.czerlop_product_id')
+                    ->select('v.sku', 'p.czerlop_product_id')->get() as $row) {
+                    $skuCzerlop[$row->sku] = (int) $row->czerlop_product_id;
+                }
+            }
+
             // Get preparation summaries in single query (avoid N+1)
             $prepSummaries = \DB::table('t_crm_prod_order_line_item')
                 ->whereIn('order_id', $orders->pluck('id'))
@@ -9166,7 +9179,7 @@ class RiderController extends Controller
             }
 
             // Format for mobile (lightweight)
-            $formattedOrders = $orders->map(function($order) use ($prepSummaries, $khaasOrderIds, $regionMap, $unreadCustomerIds, $hasWaAccess, $paymentProofMap, $dispatchActorMap) {
+            $formattedOrders = $orders->map(function($order) use ($prepSummaries, $khaasOrderIds, $regionMap, $unreadCustomerIds, $hasWaAccess, $paymentProofMap, $dispatchActorMap, $skuCzerlop) {
                 // Build customer name
                 $customerName = $order->name ?? 'N/A';
                 if (!$order->name && ($order->address_first_name || $order->address_last_name)) {
@@ -9319,13 +9332,19 @@ class RiderController extends Controller
                             'discount_type' => $discount->discount_type,
                         ];
                     })->toArray() : [],
-                    'line_items' => $order->lineItems->map(function($item) {
+                    'line_items' => $order->lineItems->map(function($item) use ($skuCzerlop) {
+                        $liSku = trim((string) ($item->sku ?? ''));
                         return [
                             'id' => $item->id,
                             'name' => $item->name ?? 'N/A',
                             'product_name' => $item->name ?? 'N/A',
                             'variant_name' => $item->sku ?? '',
+                            'sku' => $item->sku ?? '',
+                            'czerlop_product_id' => ($liSku !== '' && isset($skuCzerlop[$liSku])) ? $skuCzerlop[$liSku] : null,
                             'quantity' => (float) $item->quantity,
+                            'quantity_source' => $item->quantity_source ?? null,
+                            'quantity_updated_at' => $item->quantity_updated_at ? $item->quantity_updated_at->toIso8601String() : null,
+                            'quantity_updated_by_name' => optional($item->qtyUpdater)->fullname,
                             'unit_price' => (float) $item->unit_price,
                             'unit_price_formatted' => $item->unit_price ? 'Rs. ' . number_format($item->unit_price, 0) : null,
                             'line_total' => (float) $item->line_total,
@@ -9912,7 +9931,7 @@ class RiderController extends Controller
             }
             
             // Get full order with all relationships (lineItems.product for category grouping)
-            $order = OrderModel::with(['customer', 'lineItems', 'lineItems.product:id,attribute_1', 'assignedRider', 'discounts'])
+            $order = OrderModel::with(['customer', 'lineItems', 'lineItems.product:id,attribute_1', 'lineItems.qtyUpdater:id,fullname', 'assignedRider', 'discounts'])
                 ->findOrFail($orderId);
             
             // Build customer name
@@ -9964,7 +9983,34 @@ class RiderController extends Controller
             // Generate invoice URLs
             $invoiceImageUrl = route('orders.invoice.pdf', ['id' => $order->id, 'download_image' => 1]);
             $invoicePdfUrl = route('orders.invoice.pdf', ['id' => $order->id, 'force_pdf' => 1]);
-            
+
+            // ⭐ Barcode-qty: resolve each line item's Czerlop product id by SKU
+            // (sku -> variant -> product). SKU is the reliable key — the line item's
+            // own product_id is an EXTERNAL id and does not map to t_crm_prod_product.
+            // variant_id is a secondary fallback for the rare empty-sku line.
+            $liSkus = $order->lineItems->pluck('sku')->filter()->unique()->values()->all();
+            $liVariantIds = $order->lineItems->pluck('variant_id')->filter()->unique()->values()->all();
+            $skuCzerlop = [];
+            $variantCzerlop = [];
+            if (!empty($liSkus)) {
+                foreach (\DB::table('t_crm_prod_product_variant as v')
+                    ->join('t_crm_prod_product as p', 'p.id', '=', 'v.product_id')
+                    ->whereIn('v.sku', $liSkus)
+                    ->whereNotNull('p.czerlop_product_id')
+                    ->select('v.sku', 'p.czerlop_product_id')->get() as $row) {
+                    $skuCzerlop[$row->sku] = (int) $row->czerlop_product_id;
+                }
+            }
+            if (!empty($liVariantIds)) {
+                foreach (\DB::table('t_crm_prod_product_variant as v')
+                    ->join('t_crm_prod_product as p', 'p.id', '=', 'v.product_id')
+                    ->whereIn('v.id', $liVariantIds)
+                    ->whereNotNull('p.czerlop_product_id')
+                    ->select('v.id', 'p.czerlop_product_id')->get() as $row) {
+                    $variantCzerlop[(int) $row->id] = (int) $row->czerlop_product_id;
+                }
+            }
+
             return response()->json([
                 'success' => true,
                 'order' => [
@@ -10012,12 +10058,25 @@ class RiderController extends Controller
                     'items_summary' => $order->lineItems->map(function($item) {
                         return $item->name . ' (x' . $item->quantity . ')';
                     })->join(', '),
-                    'line_items' => $order->lineItems->map(function($item) {
+                    'line_items' => $order->lineItems->map(function($item) use ($skuCzerlop, $variantCzerlop) {
+                        // Resolve Czerlop id: SKU first (reliable), variant_id as fallback.
+                        $czerlop = null;
+                        $liSku = trim((string) ($item->sku ?? ''));
+                        if ($liSku !== '' && isset($skuCzerlop[$liSku])) {
+                            $czerlop = $skuCzerlop[$liSku];
+                        } elseif ($item->variant_id && isset($variantCzerlop[(int) $item->variant_id])) {
+                            $czerlop = $variantCzerlop[(int) $item->variant_id];
+                        }
                         return [
                             'id' => $item->id,
                             'product_name' => $item->name ?? 'N/A',
                             'variant_name' => $item->sku ?? '',
+                            'sku' => $item->sku ?? '',                       // explicit SKU (barcode match key)
+                            'czerlop_product_id' => $czerlop,               // for matching a scanned PLU
                             'quantity' => $item->quantity,
+                            'quantity_source' => $item->quantity_source ?? null, // 'barcode' | 'manual' | null
+                            'quantity_updated_at' => $item->quantity_updated_at ? $item->quantity_updated_at->toIso8601String() : null,
+                            'quantity_updated_by_name' => optional($item->qtyUpdater)->fullname,
                             'unit_price' => $item->unit_price,
                             'unit_price_formatted' => 'Rs. ' . number_format($item->unit_price, 0),
                             'line_total' => $item->line_total,
@@ -19526,6 +19585,51 @@ class RiderController extends Controller
         } catch (\Exception $e) {
             return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
         }
+    }
+
+    /**
+     * Barcode-qty feature: set an open order's line-item quantity (in place,
+     * stable id) from a scanned weight barcode. Mirrors a manual qty edit's
+     * side effects via LineItemQuantityService (line total, order totals,
+     * inventory delta) and stamps the source as 'barcode' so web + mobile can
+     * show a badge. Open orders only; refuses invoiced/delivered orders.
+     */
+    public function updateLineItemQuantity(Request $request, $orderId, $lineItemId)
+    {
+        $user = Auth::user();
+        if (!$user || !$user->hasMobilePermission('scan_line_item_qty')) {
+            return response()->json(['success' => false, 'message' => 'You do not have permission to update quantities by scan'], 403);
+        }
+
+        $validated = $request->validate([
+            'quantity' => 'required|numeric|min:0.001|max:100000',
+            'source' => 'nullable|string|in:barcode,manual',
+            'scanned_barcode' => 'nullable|string|max:20',
+        ]);
+
+        $order = \App\Models\CRM\OrderModel::find($orderId);
+        if (!$order) {
+            return response()->json(['success' => false, 'message' => 'Order not found'], 404);
+        }
+
+        $lineItem = \App\Models\CRM\OrderLineItemModel::where('id', $lineItemId)
+            ->where('order_id', $orderId)
+            ->first();
+        if (!$lineItem) {
+            return response()->json(['success' => false, 'message' => 'Line item not found in this order'], 404);
+        }
+
+        $service = new \App\Services\CRM\LineItemQuantityService();
+        $result = $service->setQuantity(
+            $order,
+            $lineItem,
+            (float) $validated['quantity'],
+            $validated['source'] ?? 'barcode',
+            $user->id,
+            $validated['scanned_barcode'] ?? null
+        );
+
+        return response()->json($result, $result['success'] ? 200 : 422);
     }
 
     // =========================================================================

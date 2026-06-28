@@ -57,6 +57,7 @@ class ProductModel extends BaseModel
         'is_lean',
         'is_lean_override',
         'weight_factor',
+        'czerlop_product_id', // ⭐ Scale PLU embedded in the weight barcode (barcode-qty feature)
         'seo_title',
         'seo_description',
         'featured_image',
@@ -83,6 +84,7 @@ class ProductModel extends BaseModel
         'track_inventory' => 'boolean',
         'is_active' => 'boolean',
         'weight_factor' => 'decimal:2',
+        'czerlop_product_id' => 'integer',
         'images' => 'json',
         'tags' => 'json',
         'options' => 'json'
@@ -241,6 +243,7 @@ class ProductModel extends BaseModel
         'status' => ['type' => ProductChangeHistory::TYPE_STATUS_CHANGE, 'label' => 'Status'],
         'weight_factor' => ['type' => ProductChangeHistory::TYPE_WEIGHT_FACTOR_CHANGE, 'label' => 'Weight Factor'],
         'is_lean' => ['type' => ProductChangeHistory::TYPE_LEAN_STATUS_CHANGE, 'label' => 'Lean Product'],
+        'czerlop_product_id' => ['type' => ProductChangeHistory::TYPE_CZERLOP_CHANGE, 'label' => 'Czerlop Product ID'],
     ];
 
     private static $trackedVariantFields = [

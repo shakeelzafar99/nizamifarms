@@ -61,6 +61,16 @@
                                  class="w-full ps-8 pe-2 py-1.5 text-[12px] bg-gray-50 border border-gray-200 rounded-md focus:outline-none focus:border-blue-500 focus:bg-white transition-colors" />
                       </div>
                       @endif
+                  @php
+                      // Computed here too (before the main role block below) so the
+                      // "supervisor" / "supervisor 2" invoices-only logins also hide Dashboards.
+                      $isInvoicesOnly = auth()->check() && \DB::table('t_sys_user_role as ur')
+                          ->join('t_sys_role as r', 'r.id', '=', 'ur.role_id')
+                          ->where('ur.user_id', auth()->id())
+                          ->whereRaw('LOWER(r.urole_name) IN (?, ?)', ['supervisor', 'supervisor 2'])
+                          ->exists();
+                  @endphp
+                  @if(!$isInvoicesOnly)
                    <div class="kt-menu-item" data-kt-menu-item-toggle="accordion" data-kt-menu-item-trigger="click">
                        <a href="/dashboard">
                            <div class="kt-menu-link flex items-center grow cursor-pointer border border-transparent gap-[10px] ps-[10px] pe-[10px] py-[6px] hover:bg-gray-200 rounded-md transition-colors duration-200 group" tabindex="0">
@@ -75,11 +85,13 @@
                            </div>
                       </a>
                   </div>
+                  @endif{{-- /Dashboards (hidden for the invoices-only role) --}}
                   
                   <!-- Get User Role -->
                   @php
                       $userRole = null;
                       $isTaimurRole = false;
+                      $isInvoicesOnly = false;
                       if (auth()->check()) {
                           $userRole = \DB::table('t_sys_user_role as ur')
                               ->join('t_sys_role as r', 'r.id', '=', 'ur.role_id')
@@ -90,9 +102,40 @@
                               ->where('ur.user_id', auth()->id())
                               ->whereRaw('LOWER(r.urole_name) = ?', ['taimur'])
                               ->exists();
+                          // Jun-2026 — the "supervisor" and "supervisor 2" roles are invoices-only
+                          // WEB logins: show ONLY the Invoices menu item below and hide the rest of
+                          // the sidebar. Keyed by exact role names so no other role is affected.
+                          // (Web sidebar only — the mobile app does not use this file.)
+                          $isInvoicesOnly = \DB::table('t_sys_user_role as ur')
+                              ->join('t_sys_role as r', 'r.id', '=', 'ur.role_id')
+                              ->where('ur.user_id', auth()->id())
+                              ->whereRaw('LOWER(r.urole_name) IN (?, ?)', ['supervisor', 'supervisor 2'])
+                              ->exists();
                       }
                   @endphp
                   
+                  @if($isInvoicesOnly)
+                  {{-- supervisor / supervisor 2 = invoices-only web logins: show just Orders ▸ Invoices,
+                       then fall through to the Logout section (outside this wrapper). --}}
+                  <div class="kt-menu-item pt-2.25 pb-px">
+                      <span class="kt-menu-heading uppercase text-xs font-medium text-gray-500 ps-[10px] pe-[10px]">
+                          Orders
+                      </span>
+                  </div>
+                  <div class="kt-menu-item" data-kt-menu-item-toggle="accordion" data-kt-menu-item-trigger="click">
+                      <a href="/orders">
+                          <div class="kt-menu-link flex items-center grow cursor-pointer border border-transparent gap-[10px] ps-[10px] pe-[10px] py-[6px] hover:bg-gray-200 rounded-md transition-colors duration-200 group" tabindex="0">
+                              <span class="kt-menu-icon items-start text-gray-600 group-hover:text-gray-900 w-[20px]">
+                                  <i class="ki-filled ki-security-user text-lg"></i>
+                              </span>
+                              <span class="kt-menu-title text-sm font-medium text-gray-900 group-hover:text-gray-900">
+                                  Invoices
+                              </span>
+                          </div>
+                      </a>
+                  </div>
+                  @else
+
                   <!-- Attendance Section -->
                   @if($userRole === 'rider')
                   <div class="kt-menu-item" data-kt-menu-item-toggle="accordion" data-kt-menu-item-trigger="click">
@@ -903,6 +946,7 @@
                     </div>
                     @endif
                 </div>{{-- /#nf-admin-items --}}
+                @endif{{-- /$isInvoicesOnly: end of the full menu --}}
 
                     <!-- Logout Section -->
                     @if(auth()->check())

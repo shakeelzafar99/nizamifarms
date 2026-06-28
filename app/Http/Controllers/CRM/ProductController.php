@@ -900,7 +900,30 @@ class ProductController extends Controller
             $query->where('business_unit_id', $businessUnitId);
         }
 
+        // Filter by Czerlop tagging status (barcode-qty readiness): untagged | tagged
+        if ($request->filled('czerlop')) {
+            if ($request->czerlop === 'untagged') {
+                $query->whereNull('czerlop_product_id');
+            } elseif ($request->czerlop === 'tagged') {
+                $query->whereNotNull('czerlop_product_id');
+            }
+        }
+
         $products = $query->orderBy('title')->paginate(20);
+
+        // Czerlop coverage summary (barcode-scan readiness). "Sellable" = active + listed.
+        // Scoped only by business unit so the headline number is stable across other filters.
+        $czerlopBase = ProductModel::where('status', 'active')->where('is_active', 1);
+        if ($businessUnitId) {
+            $czerlopBase->where('business_unit_id', $businessUnitId);
+        }
+        $czerlopSellableTotal = (clone $czerlopBase)->count();
+        $czerlopUntaggedCount = (clone $czerlopBase)->whereNull('czerlop_product_id')->count();
+        $czerlopCoverage = [
+            'sellable_total' => $czerlopSellableTotal,
+            'untagged' => $czerlopUntaggedCount,
+            'tagged' => $czerlopSellableTotal - $czerlopUntaggedCount,
+        ];
 
         // Get filter options based on CURRENT filters (cascading/dependent filters)
         // For each filter dropdown, we build a query that applies all OTHER active filters
@@ -1114,14 +1137,15 @@ class ProductController extends Controller
                     'attribute_2s' => $attribute2s->values()->toArray(),
                     'attribute_3s' => $attribute3s->values()->toArray(),
                     'sync_statuses' => $syncStatuses->values()->toArray()
-                ]
+                ],
+                'czerlop_coverage' => $czerlopCoverage,
             ]);
         }
 
         // Get attribute labels for display
         $attributeLabels = $this->readAttributeLabels();
-        
-        return view('pages.products.index', compact('products', 'syncStatuses', 'productTypes', 'vendors', 'attribute1s', 'attribute2s', 'attribute3s', 'attributeLabels'));
+
+        return view('pages.products.index', compact('products', 'syncStatuses', 'productTypes', 'vendors', 'attribute1s', 'attribute2s', 'attribute3s', 'attributeLabels', 'czerlopCoverage'));
     }
 
     /**
@@ -2340,8 +2364,9 @@ class ProductController extends Controller
                 'is_lean' => 'nullable|boolean',
                 'is_active' => 'nullable|boolean',
                 'weight_factor' => 'nullable|numeric|min:0.01',
+                'czerlop_product_id' => 'nullable|integer|min:1|max:99999',
                 'business_unit_id' => 'nullable|exists:t_fin_business_units,id',
-                
+
                 // Variants
                 'variants' => 'required|array|min:1',
                 'variants.*.title' => 'nullable|string|max:255',
@@ -2354,7 +2379,7 @@ class ProductController extends Controller
                 'variants.*.weight_unit' => 'nullable|string|in:g,kg,oz,lb',
                 'variants.*.barcode' => 'nullable|string|max:100',
             ]);
-            
+
             // Check for duplicate SKUs
             foreach ($validated['variants'] as $index => $variant) {
                 if (!empty($variant['sku'])) {
@@ -2502,8 +2527,9 @@ class ProductController extends Controller
                 'is_lean' => 'nullable|boolean',
                 'is_active' => 'nullable|boolean',
                 'weight_factor' => 'nullable|numeric|min:0.01',
+                'czerlop_product_id' => 'nullable|integer|min:1|max:99999',
                 'business_unit_id' => 'nullable|exists:t_fin_business_units,id',
-                
+
                 // Variants
                 'variants' => 'required|array|min:1',
                 'variants.*.id' => 'nullable|integer|exists:t_crm_prod_product_variant,id',
@@ -2670,7 +2696,11 @@ class ProductController extends Controller
             'track_inventory' => filter_var($validated['track_inventory'] ?? true, FILTER_VALIDATE_BOOLEAN),
             'is_lean' => filter_var($validated['is_lean'] ?? false, FILTER_VALIDATE_BOOLEAN),
             'weight_factor' => $validated['weight_factor'] ?? 1.00,
-            
+            // ⭐ Czerlop scale PLU (barcode-qty feature). Null = not on the scale / untagged.
+            'czerlop_product_id' => isset($validated['czerlop_product_id']) && $validated['czerlop_product_id'] !== ''
+                ? (int) $validated['czerlop_product_id']
+                : null,
+
             // SEO
             'seo_title' => $validated['seo_title'] ?? null,
             'seo_description' => $validated['seo_description'] ?? null,

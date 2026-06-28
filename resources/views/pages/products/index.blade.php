@@ -293,6 +293,46 @@ tr.bg-indigo-50:hover {
         </div>
     </div>
 
+    <!-- Czerlop barcode-readiness banner -->
+    @isset($czerlopCoverage)
+    @php
+        $czUntagged = (int) ($czerlopCoverage['untagged'] ?? 0);
+        $czSellable = (int) ($czerlopCoverage['sellable_total'] ?? 0);
+        $czTagged = (int) ($czerlopCoverage['tagged'] ?? 0);
+        $czPct = $czSellable > 0 ? round($czTagged / $czSellable * 100) : 100;
+        $czActive = request('czerlop');
+    @endphp
+    <div style="margin: 0 0 16px; padding: 12px 16px; border-radius: 12px; display: flex; flex-wrap: wrap; align-items: center; gap: 12px;
+                background: {{ $czUntagged > 0 ? '#FFFBEB' : '#ECFDF5' }};
+                border: 1px solid {{ $czUntagged > 0 ? '#FDE68A' : '#A7F3D0' }};">
+        <div style="display: flex; align-items: center; gap: 10px; flex: 1; min-width: 240px;">
+            <i class="ki-filled ki-barcode" style="font-size: 20px; color: {{ $czUntagged > 0 ? '#B45309' : '#047857' }};"></i>
+            <div style="font-size: 13px; line-height: 1.5; color: #374151;">
+                <strong style="color: {{ $czUntagged > 0 ? '#92400E' : '#065F46' }};">Barcode scanning readiness</strong>
+                — {{ $czTagged }} of {{ $czSellable }} sellable products tagged with a Czerlop ID ({{ $czPct }}%).
+                @if($czUntagged > 0)
+                    <span style="color: #92400E;">{{ $czUntagged }} still untagged won't work with the scanner.</span>
+                @else
+                    <span style="color: #065F46;">All sellable products are ready.</span>
+                @endif
+            </div>
+        </div>
+        <div style="display: flex; align-items: center; gap: 8px;">
+            @if($czActive === 'untagged')
+                <a href="{{ request()->fullUrlWithQuery(['czerlop' => null, 'page' => 1]) }}"
+                   style="font-size: 12px; padding: 6px 12px; border-radius: 8px; background: #fff; border: 1px solid #D1D5DB; color: #374151; text-decoration: none;">
+                    Show all products
+                </a>
+            @elseif($czUntagged > 0)
+                <a href="{{ request()->fullUrlWithQuery(['czerlop' => 'untagged', 'page' => 1]) }}"
+                   style="font-size: 12px; padding: 6px 12px; border-radius: 8px; background: #B45309; border: 1px solid #B45309; color: #fff; text-decoration: none;">
+                    Show untagged products
+                </a>
+            @endif
+        </div>
+    </div>
+    @endisset
+
     <!-- Search and Filters Section -->
     <div class="products-filters-section">
         <form method="GET" id="productSearchForm">
@@ -1033,6 +1073,7 @@ const availableColumns = {
     'variants_count': { label: 'Variants', width: 'w-[70px]', order: 11, cssClass: 'col-variants' },
     'total_inventory': { label: 'Inventory', width: 'w-[85px]', order: 12, cssClass: 'col-inventory' },
     'weight_factor': { label: 'Weight Factor', width: 'w-[95px]', order: 13, cssClass: 'col-weight-factor' },
+    'czerlop_id': { label: 'Czerlop ID', width: 'w-[90px]', order: 13.5, cssClass: 'col-czerlop' },
     'business_unit': { label: 'Business Unit', width: 'w-[110px]', order: 14, cssClass: 'col-bu' },
     'is_lean': { label: 'Lean', width: 'w-[75px]', order: 15, cssClass: 'col-lean' },
     'last_synced_at': { label: 'Last sync', width: 'w-[95px]', order: 16, cssClass: 'col-sync' },
@@ -1048,17 +1089,17 @@ let totalMatchingProducts = {{ $products->total() }}; // Total products matching
 let quickEditPricesEnabled = false;
 
 // Default visible columns
-const defaultColumns = ['checkbox', 'image', 'title', 'skus', 'status', 'vendor', 'price_range', 'variants_count', 'total_inventory', 'is_lean', 'last_synced_at', 'actions'];
+const defaultColumns = ['checkbox', 'image', 'title', 'skus', 'status', 'vendor', 'price_range', 'variants_count', 'total_inventory', 'czerlop_id', 'is_lean', 'last_synced_at', 'actions'];
 
 // All available columns (including attributes for column selector)
-const allColumns = ['checkbox', 'image', 'title', 'skus', 'status', 'vendor', 'product_type', 'attribute_1', 'attribute_2', 'attribute_3', 'price_range', 'variants_count', 'total_inventory', 'weight_factor', 'business_unit', 'is_lean', 'last_synced_at', 'actions'];
+const allColumns = ['checkbox', 'image', 'title', 'skus', 'status', 'vendor', 'product_type', 'attribute_1', 'attribute_2', 'attribute_3', 'price_range', 'variants_count', 'total_inventory', 'weight_factor', 'czerlop_id', 'business_unit', 'is_lean', 'last_synced_at', 'actions'];
 
 // Load column settings from localStorage with migration support for new columns
 let visibleColumns = JSON.parse(localStorage.getItem('products_visible_columns') || 'null');
 let columnOrder = JSON.parse(localStorage.getItem('products_column_order') || 'null');
 
 // Track migration version to only run migrations once for truly new columns
-const COLUMN_MIGRATION_VERSION = 4; // Increment this when adding new columns (v4 = business_unit column)
+const COLUMN_MIGRATION_VERSION = 5; // Increment this when adding new columns (v5 = czerlop_id column)
 const savedMigrationVersion = parseInt(localStorage.getItem('products_column_migration_version') || '0');
 
 // If no saved preferences exist, use defaults
@@ -1427,7 +1468,10 @@ function performSearch() {
     if (attr1Value) params.set('attribute_1', attr1Value);
     if (attr2Value) params.set('attribute_2', attr2Value);
     if (attr3Value) params.set('attribute_3', attr3Value);
-    
+    // Preserve the Czerlop barcode-readiness filter across searches
+    const czSearch = new URLSearchParams(window.location.search).get('czerlop');
+    if (czSearch) params.set('czerlop', czSearch);
+
     // Show loading state
     showLoadingState();
     
@@ -1541,7 +1585,10 @@ function getCurrentFilterParams() {
     if (attr1Value) params.set('attribute_1', attr1Value);
     if (attr2Value) params.set('attribute_2', attr2Value);
     if (attr3Value) params.set('attribute_3', attr3Value);
-    
+    // Preserve the Czerlop barcode-readiness filter across pagination
+    const czParam = new URLSearchParams(window.location.search).get('czerlop');
+    if (czParam) params.set('czerlop', czParam);
+
     return params;
 }
 
@@ -1817,7 +1864,13 @@ function getCellContent(columnKey, product) {
             const weightFactor = parseFloat(product.weight_factor || 1.00).toFixed(2);
             const isDefaultFactor = weightFactor === '1.00';
             return `<span class="${isDefaultFactor ? 'text-gray-500' : 'font-semibold text-blue-600'}">${weightFactor}</span>`;
-            
+
+        case 'czerlop_id':
+            if (product.czerlop_product_id) {
+                return `<span class="inline-flex items-center px-2 py-1 rounded-lg text-xs font-medium" style="background:#ECFDF5; color:#047857;">#${product.czerlop_product_id}</span>`;
+            }
+            return `<span class="inline-flex items-center px-2 py-1 rounded-lg text-xs font-medium" style="background:#FFFBEB; color:#B45309;">Not set</span>`;
+
         case 'business_unit':
             if (product.business_unit) {
                 const bu = product.business_unit;
@@ -3678,6 +3731,12 @@ function renderProductDetails(product) {
                             <span style="color: ${(parseFloat(product.weight_factor || 1.00) !== 1.00) ? '#2563eb' : '#111827'}; font-size: 14px; font-weight: ${(parseFloat(product.weight_factor || 1.00) !== 1.00) ? '600' : '500'};">
                                 ${parseFloat(product.weight_factor || 1.00).toFixed(2)}
                             </span>
+                        </div>
+                        <div style="display: flex; justify-content: space-between;">
+                            <span style="color: #6b7280; font-size: 14px;">Czerlop ID:</span>
+                            ${product.czerlop_product_id ?
+                                `<span style="color: #15803d; font-size: 14px; font-weight: 600;">#${product.czerlop_product_id}</span>` :
+                                `<span style="color: #b45309; font-size: 13px; font-weight: 600;">Not set — won't scan</span>`}
                         </div>
                         <div style="display: flex; justify-content: space-between;">
                             <span style="color: #6b7280; font-size: 14px;">Last Sync:</span>

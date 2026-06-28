@@ -189,6 +189,31 @@
                         <span class="form-hint text-danger">{{ $message }}</span>
                     @enderror
                 </div>
+
+                <!-- Czerlop Product ID (scale barcode) -->
+                <div class="flex flex-col gap-2 mt-5 p-4 bg-amber-50 border border-amber-200 rounded-lg">
+                    <label class="form-label text-sm font-medium flex items-center gap-2">
+                        🏷️ Czerlop Product ID
+                        <span class="text-xs text-gray-500 font-normal">(Scale barcode — enables barcode quantity scanning)</span>
+                    </label>
+                    <input type="number" step="1" min="1" name="czerlop_product_id" class="form-control"
+                           value="{{ old('czerlop_product_id', $product->czerlop_product_id) }}"
+                           style="max-width: 200px;"
+                           placeholder="e.g. 2">
+                    <div class="text-xs text-gray-600 mt-1">
+                        The product number on the weighing scale (the digits inside the printed barcode). When a label
+                        for this product is scanned in the app, the system uses this ID to update the order quantity.
+                        Leave blank if this product is not weighed on the scale.
+                    </div>
+                    @empty($product->czerlop_product_id)
+                    <div class="text-xs text-amber-700 mt-1 flex items-center gap-1">
+                        ⚠️ Not tagged yet — this product won't work with barcode scanning until a Czerlop ID is added.
+                    </div>
+                    @endempty
+                    @error('czerlop_product_id')
+                        <span class="form-hint text-danger">{{ $message }}</span>
+                    @enderror
+                </div>
             </div>
         </div>
 

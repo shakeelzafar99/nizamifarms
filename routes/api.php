@@ -28,7 +28,10 @@ Route::group([
         $exitCode2 = Artisan::call('view:clear');
         $exitCode3 = Artisan::call('route:clear');
         $exitCode4 = Artisan::call('config:cache');
-        dd('CACHE-CLEARED, VIEW-CLEARED, ROUTE-CLEARED & CONFIG-CACHED WAS SUCCESSFUL!');
+        // Also reset the PHP opcode cache so freshly-uploaded PHP (new routes/
+        // controllers) is actually loaded on shared hosting that caches bytecode.
+        $opcache = function_exists('opcache_reset') ? (@opcache_reset() ? 'reset' : 'reset-failed') : 'unavailable';
+        dd('CACHE-CLEARED, VIEW-CLEARED, ROUTE-CLEARED & CONFIG-CACHED WAS SUCCESSFUL! OPCACHE: ' . $opcache);
     });
 });
 
@@ -388,6 +391,8 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/qurbani/riders/{riderId}/delay-impacted',  [\App\Http\Controllers\API\RiderController::class, 'getQurbaniDelayImpacted']);
     Route::post('/qurbani/riders/{riderId}/send-delay-update', [\App\Http\Controllers\API\RiderController::class, 'sendQurbaniDelayUpdate']);
     Route::put('/orders/{orderId}/line-items/{lineItemId}/instructions', [\App\Http\Controllers\API\RiderController::class, 'updateLineItemInstructions']);
+    // Barcode-qty: set an open order's line-item quantity from a scanned weight barcode.
+    Route::put('/orders/{orderId}/line-items/{lineItemId}/quantity', [\App\Http\Controllers\API\RiderController::class, 'updateLineItemQuantity']);
     // Line-item quick-note presets (chips next to the "Add note" box).
     // Shared team-wide list; same controller backs the web routes in
     // routes/web.php so there is one source of truth.

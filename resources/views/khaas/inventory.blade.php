@@ -138,6 +138,7 @@
             <div class="text-sm text-gray-600">
                 <span class="font-medium text-gray-900">{{ $demands->count() }}</span> active production plan{{ $demands->count() !== 1 ? 's' : '' }}
             </div>
+            @if($canCreateDemand ?? false)
             <button onclick="document.getElementById('createDemandModal').classList.remove('hidden')"
                 class="inline-flex items-center gap-2 px-5 py-2.5 text-sm font-semibold rounded-lg shadow-sm transition-colors"
                 style="background-color: #D97706; color: white;"
@@ -145,6 +146,7 @@
                 onmouseout="this.style.backgroundColor='#D97706'">
                 + New Production Plan
             </button>
+            @endif
         </div>
 
         @if($demands->count() === 0)

@@ -2423,7 +2423,8 @@ function viewOrderDetails(orderId) {
                     }
                     
                     var lineTotalDisplay = isFreeItem ? '<span style="color: #16a34a; font-weight: 700;">FREE</span>' : formatCurrency(lineTotal, order.currency);
-                    html += '<td style="padding: 8px; border-bottom: 1px solid #f3f4f6; text-align:right;">' + qty + '</td>' +
+                    var qtySrcBadge = it.quantity_source === 'barcode' ? ' <span title="Set by barcode scan" style="display:inline-block; padding:1px 5px; background:#dcfce7; color:#15803d; border-radius:3px; font-size:9px; font-weight:700;">🔖</span>' : it.quantity_source === 'manual' ? ' <span title="Set manually" style="display:inline-block; padding:1px 5px; background:#f1f5f9; color:#64748b; border-radius:3px; font-size:9px; font-weight:700;">✏️</span>' : '';
+                    html += '<td style="padding: 8px; border-bottom: 1px solid #f3f4f6; text-align:right;">' + qty + qtySrcBadge + '</td>' +
                         '<td style="padding: 8px; border-bottom: 1px solid #f3f4f6; text-align:right;">' + (isFreeItem ? '<s style="color:#9ca3af;">' + formatCurrency(unit, order.currency) + '</s>' : formatCurrency(unit, order.currency)) + '</td>' +
                         '<td style="padding: 8px; border-bottom: 1px solid #f3f4f6; text-align:right; font-weight:600;">' + lineTotalDisplay + '</td>' +
                     '</tr>';
@@ -3887,6 +3888,9 @@ function editOrderDetails(orderId) {
             
             // Store order globally for ledger adjustment detection
             window.currentOrder = order;
+            // ⭐ Remember the order's updated_at at load time — used to detect if a barcode
+            // scan (or anyone) changed quantities before this page is saved (concurrencyGate).
+            window.editOrderLoadedUpdatedAt = order.updated_at || null;
             loadEditForm(order);
             
             // Initialize notification tracking AFTER loadEditForm sets the title
@@ -4331,6 +4335,11 @@ function loadEditForm(order) {
                                     ×
                                 </button>
                             </div>
+                            ${item.quantity_source ? `<div style="grid-column: 2 / -1; margin-top: 2px; font-size: 11px; display: flex; align-items: center; gap: 5px; flex-wrap: wrap;">
+                                <span style="font-weight: 600; color: ${item.quantity_source === 'barcode' ? '#15803d' : '#64748b'};">${item.quantity_source === 'barcode' ? '🔖 Qty set by barcode scan' : '✏️ Qty set manually'}</span>
+                                ${item.quantity_updated_at ? `<span style="color:#9ca3af;">· ${new Date(item.quantity_updated_at).toLocaleString('en-GB',{day:'2-digit',month:'short',year:'numeric',hour:'2-digit',minute:'2-digit'})}</span>` : ''}
+                                ${(item.qty_updater && item.qty_updater.fullname) ? `<span style="color:#9ca3af;">· by ${item.qty_updater.fullname}</span>` : ''}
+                            </div>` : ''}
                             ${(item.qurbani_day || item.qurbani_slot || item.qurbani_region || item.qurbani_sub_region || item.qurbani_delivery_type || item.qurbani_type || item.qurbani_paya || order.is_qurbani) ? `
                             <div class="qurbani-item-fields" style="grid-column: 1 / -1; display: grid; grid-template-columns: repeat(7, 1fr) auto; gap: 8px; padding: 8px; background: #fffbeb; border-radius: 6px; border: 1px solid #fcd34d;" data-item-index="${index}">
                                 <div>
@@ -6932,7 +6941,78 @@ function openQuickStatusChange(orderId, currentStatus) {
         }
     })();
 }
-function saveOrderChanges(orderId) {
+// ⭐ Concurrency guard (barcode-qty): before saving an existing order, re-fetch it and
+// detect line-item quantities changed (e.g. by a mobile barcode scan) since this page
+// loaded. Two cases:
+//   • "scan won"  — the DB qty changed but the user did NOT touch that line here:
+//                   adopt the scanned value into the form (so we don't overwrite it)
+//                   and show a NON-blocking heads-up.
+//   • "conflict"  — the user changed the SAME line a scan changed: BLOCK and offer reload.
+// Returns 'proceed' or 'blocked'. On any fetch trouble it returns 'proceed' (the backend
+// optimistic guard is the safety net).
+async function concurrencyGate(orderId) {
+    if (!orderId) return 'proceed';
+    let fresh;
+    try {
+        const resp = await fetch(ordersDetailUrl(orderId), {
+            method: 'GET',
+            headers: {'Accept': 'application/json', 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest'}
+        });
+        fresh = await resp.json();
+    } catch (e) {
+        return 'proceed';
+    }
+    if (!fresh || !fresh.success || !fresh.order) return 'proceed';
+    const dbItems = fresh.lineItems || (fresh.order && fresh.order.line_items) || [];
+    const dbById = {};
+    dbItems.forEach(li => { dbById[String(li.id)] = li; });
+    // Sync the load timestamp to the freshest value so the save's optimistic check passes
+    // for everything we've now seen; only a change AFTER this point will 409.
+    window.editOrderLoadedUpdatedAt = (fresh.order.updated_at) || window.editOrderLoadedUpdatedAt;
+
+    const conflicts = [];
+    const scanWon = [];
+    document.querySelectorAll('.line-item').forEach((row) => {
+        const idInput = row.querySelector('input[name*="[id]"]');
+        const id = idInput ? String(idInput.value || '') : '';
+        if (!id) return; // newly-added line, nothing to compare
+        const qtyInput = row.querySelector('input[name*="[quantity]"]');
+        if (!qtyInput) return;
+        const db = dbById[id];
+        if (!db) return; // line removed in DB elsewhere — let the normal save handle it
+        const loaded = parseFloat(qtyInput.getAttribute('data-db-original-value'));
+        const current = parseFloat(qtyInput.value);
+        const dbQty = parseFloat(db.quantity);
+        if (isNaN(loaded) || isNaN(dbQty)) return;
+        if (Math.abs(dbQty - loaded) <= 0.0005) return; // DB unchanged since load
+        const userChanged = !isNaN(current) && Math.abs(current - loaded) > 0.0005;
+        const name = db.product_name || db.name || row.getAttribute('data-product-name') || 'item';
+        if (userChanged && Math.abs(current - dbQty) > 0.0005) {
+            conflicts.push({name, yours: current, scanned: dbQty});
+        } else if (!userChanged) {
+            // scan won — adopt the scanned value so the save keeps it (not the stale value)
+            qtyInput.value = dbQty;
+            qtyInput.setAttribute('data-db-original-value', String(dbQty));
+            try { updateLineTotal(parseInt(row.getAttribute('data-index'))); } catch (e) {}
+            scanWon.push({name, scanned: dbQty});
+        }
+    });
+
+    if (conflicts.length) {
+        const lines = conflicts.map(c => `• ${c.name}: you set ${c.yours}, scanned ${c.scanned}`).join('\n');
+        const reload = confirm(`⚠️ These items were changed since you opened this page (e.g. by a barcode scan), and you also edited them here:\n\n${lines}\n\nYour edits can't be saved over the newer values. Reload to see the latest, then redo your changes?`);
+        if (reload) { editOrderDetails(orderId); }
+        return 'blocked';
+    }
+    if (scanWon.length) {
+        const lines = scanWon.map(s => `• ${s.name} → ${s.scanned} kg`).join('\n');
+        const go = confirm(`ℹ️ These quantities were updated since you opened this page (e.g. by a barcode scan):\n\n${lines}\n\nThe newer values will be kept (your other changes will still be saved).\n\nContinue saving?`);
+        if (!go) return 'blocked';
+    }
+    return 'proceed';
+}
+
+async function saveOrderChanges(orderId) {
     const form = document.getElementById('editOrderForm');
     const formData = new FormData(form);
     const submitBtn = form.querySelector('button[type="submit"]');
@@ -6993,7 +7073,17 @@ function saveOrderChanges(orderId) {
     submitBtn.textContent = 'Saving...';
     submitBtn.disabled = true;
     }
-    
+
+    // ⭐ Concurrency guard for existing orders — keep any quantity changed by a barcode
+    // scan since this page loaded (and block true conflicts) before we overwrite anything.
+    if (orderId) {
+        const gate = await concurrencyGate(orderId);
+        if (gate === 'blocked') {
+            if (submitBtn) { submitBtn.textContent = 'Save'; submitBtn.disabled = false; }
+            return;
+        }
+    }
+
     // Collect line items (including per-item qurbani fields)
     const items = [];
     document.querySelectorAll('.line-item').forEach((item) => {
@@ -7197,6 +7287,9 @@ function saveOrderChanges(orderId) {
         orderData.customer_notes = formData.get('customer_notes');
     }
     
+    // ⭐ Optimistic concurrency: tell the backend which order version this form is based on.
+    if (!isNewOrder) { orderData.expected_updated_at = window.editOrderLoadedUpdatedAt || null; }
+
     // Submit to appropriate endpoint
     fetch(endpoint, {
         method: method,
@@ -7241,14 +7334,20 @@ function saveOrderChanges(orderId) {
         submitBtn.disabled = false;
     });
 }
-function saveAndCloseOrder(orderId) {
+async function saveAndCloseOrder(orderId) {
     const form = document.getElementById('editOrderForm');
     const formData = new FormData(form);
     const saveAndCloseBtn = event.target;
-    
+
     saveAndCloseBtn.textContent = 'Saving...';
     saveAndCloseBtn.disabled = true;
-    
+
+    // ⭐ Concurrency guard — keep barcode-scanned quantities; block true conflicts.
+    if (orderId) {
+        const gate = await concurrencyGate(orderId);
+        if (gate === 'blocked') { saveAndCloseBtn.textContent = 'Save & Close'; saveAndCloseBtn.disabled = false; return; }
+    }
+
     // Collect line items (reuse same logic as saveOrderChanges)
     const items = [];
     document.querySelectorAll('.line-item').forEach((item) => {
@@ -7400,6 +7499,9 @@ function saveAndCloseOrder(orderId) {
         }
     }
     
+    // ⭐ Optimistic concurrency: tell the backend which order version this form is based on.
+    orderData.expected_updated_at = window.editOrderLoadedUpdatedAt || null;
+
     // Submit to existing update endpoint (carry source so a Shopify-staging edit
     // saves to the staging table, not the colliding live order id).
     fetch(ordersDetailUrl(orderId), {

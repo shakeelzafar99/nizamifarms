@@ -24,6 +24,10 @@ class OrderLineItemModel extends BaseModel
         'name',
         'vendor',
         'quantity',
+        'quantity_source',            // 'manual' | 'barcode' (barcode-qty feature)
+        'quantity_updated_by',
+        'quantity_updated_at',
+        'quantity_scanned_barcode',
         'unit_price',
         'line_subtotal',
         'discount_amount',
@@ -56,7 +60,8 @@ class OrderLineItemModel extends BaseModel
         'line_subtotal' => 'decimal:2',
         'discount_amount' => 'decimal:2',
         'tax_amount' => 'decimal:2',
-        'line_total' => 'decimal:2'
+        'line_total' => 'decimal:2',
+        'quantity_updated_at' => 'datetime'
     ];
 
     // Relationships
@@ -73,6 +78,12 @@ class OrderLineItemModel extends BaseModel
     public function variant(): BelongsTo
     {
         return $this->belongsTo(ProductVariantModel::class, 'variant_id');
+    }
+
+    /** Who last set the quantity (barcode-qty feature). Serializes as `qty_updater`. */
+    public function qtyUpdater(): BelongsTo
+    {
+        return $this->belongsTo(\App\Models\SysAdmin\UserModel::class, 'quantity_updated_by');
     }
 
     public function getDisplaySkuAttribute(): string

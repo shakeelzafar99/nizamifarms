@@ -352,6 +352,9 @@ class OrderController extends Controller
                     ->get();
             }
 
+            // Who last set each line-item quantity (barcode-qty badge: source + when + who)
+            $order->load('lineItems.qtyUpdater:id,fullname');
+
             return response()->json([
                 'success' => true,
                 'order' => $order,
@@ -1264,7 +1267,26 @@ class OrderController extends Controller
     {
         try {
             $order = $this->findOrder($id, []);
-            
+
+            // ⭐ Optimistic concurrency guard (barcode-qty): reject a web save based on
+            // stale data — e.g. a barcode scan changed a line quantity AFTER this edit
+            // form loaded. Opt-in: only fires when the web client sends
+            // expected_updated_at (mobile/webhook callers don't, so they're unaffected).
+            // The web client also re-checks + prompts before reaching here; this is the
+            // race safety net so a scanned quantity is never silently overwritten.
+            if ($order && $request->filled('expected_updated_at') && !$request->boolean('_skip_ledger_adjustment')) {
+                try {
+                    $clientSeen = \Carbon\Carbon::parse($request->input('expected_updated_at'));
+                    if ($order->updated_at && $order->updated_at->gt($clientSeen->copy()->addSeconds(2))) {
+                        return response()->json([
+                            'success' => false,
+                            'conflict' => true,
+                            'message' => 'This order was updated since you opened it (a quantity may have been changed by a barcode scan). Please reload the order to see the latest values, then save again.',
+                        ], 409);
+                    }
+                } catch (\Throwable $e) { /* unparseable timestamp — skip the guard */ }
+            }
+
             // ================================================================
             // PARTIAL UPDATE DETECTION (Pop-out Mode)
             // ================================================================
@@ -1804,8 +1826,27 @@ class OrderController extends Controller
                         $oldItem = $existingLineItems->get($matchKey);
                         // Preserve preparation_status from old item (but NOT inventory_deducted)
                         $lineItem['preparation_status'] = $oldItem->preparation_status;
+
+                        // ⭐ Barcode-qty: keep the "barcode vs manual" badge correct across this
+                        // delete-and-recreate. If the quantity is UNCHANGED, carry the old source
+                        // + audit stamps over (so a barcode-set qty keeps its badge). If the
+                        // quantity CHANGED in this save, it's a manual edit -> mark 'manual'
+                        // (webhook/sync updates just clear it rather than claim 'manual').
+                        $oldQty = (float) ($oldItem->quantity ?? 0);
+                        $newQty = (float) ($lineItem['quantity'] ?? 0);
+                        if (abs($oldQty - $newQty) < 0.0005) {
+                            $lineItem['quantity_source'] = $oldItem->quantity_source;
+                            $lineItem['quantity_updated_by'] = $oldItem->quantity_updated_by;
+                            $lineItem['quantity_updated_at'] = $oldItem->quantity_updated_at;
+                            $lineItem['quantity_scanned_barcode'] = $oldItem->quantity_scanned_barcode;
+                        } elseif (!$isWebhookUpdate) {
+                            $lineItem['quantity_source'] = 'manual';
+                            $lineItem['quantity_updated_by'] = auth()->check() ? auth()->id() : null;
+                            $lineItem['quantity_updated_at'] = now();
+                            $lineItem['quantity_scanned_barcode'] = null;
+                        }
                     }
-                    
+
                     $lineItemModels[] = new \App\Models\CRM\OrderLineItemModel($lineItem);
                 }
                 

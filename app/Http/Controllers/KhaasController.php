@@ -1823,10 +1823,13 @@ class KhaasController extends Controller
                 ->toArray();
         }
 
+        // Whether this user may create a production plan (gates the New Plan button).
+        $canCreateDemand = optional(auth()->user())->hasMobilePermission('create_production_demand') ?? false;
+
         return view('khaas.inventory', compact(
             'khaasBU', 'activeTab', 'stockItems', 'demands', 'demandHistory', 'pendingDemandCount',
             'demandProducts', 'recipes', 'khaasProducts', 'storageProductsForRecipe',
-            'customMaterials', 'availableProducts', 'configuredProductIds'
+            'customMaterials', 'availableProducts', 'configuredProductIds', 'canCreateDemand'
         ));
     }
 
@@ -1835,8 +1838,10 @@ class KhaasController extends Controller
      */
     public function createDemand(Request $request)
     {
-        if (!$this->hasKhaasAccess()) {
-            abort(403);
+        // Dedicated create-plan permission (separate from approving transfers).
+        if (!$this->hasKhaasAccess()
+            || !optional(auth()->user())->hasMobilePermission('create_production_demand')) {
+            abort(403, 'You do not have permission to create a production plan.');
         }
 
         $khaasBU = $this->getKhaasBU();

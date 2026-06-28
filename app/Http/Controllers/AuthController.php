@@ -80,6 +80,27 @@ class AuthController extends Controller
                 : back()->withErrors(['email' => 'Invalid credentials'])->withInput();
         }
 
+        // ⭐ Block DEACTIVATED accounts. Credentials are valid, but the account is
+        // inactive → reject BEFORE issuing any token / web session, so neither the
+        // mobile app nor the web can log in. NOTE: `is_active` is a legacy string
+        // column whose ACTIVE values include '1' AND 'Y' (and NULL); we therefore
+        // block ONLY the explicit inactive value ('0'/0/false) so no active user is
+        // ever locked out. (Does not affect already-logged-in tokens — that's the
+        // separate per-request enforcement, deferred.)
+        if (in_array($user->is_active, ['0', 0, false], true)) {
+            $blockedLog = new LogModel([
+                'user_id'  => $user->id,
+                'terminal' => $request->ip(),
+                'status'   => 'inactive-blocked',
+            ]);
+            $blockedLog->save();
+
+            $inactiveMsg = 'Your account is inactive. Please contact an administrator.';
+            return $request->expectsJson()
+                ? response()->json(['isError' => true, 'message' => $inactiveMsg], 403)
+                : back()->withErrors(['email' => $inactiveMsg])->withInput();
+        }
+
         // Create log model for successful login
         $userLog = new LogModel([
             'user_id' => $user->id,
@@ -108,8 +129,8 @@ class AuthController extends Controller
         Auth::guard('web')->login($user);
         $request->session()->regenerate();
 
-        // ⭐ Redirect based on user's mode access (priority: main dashboard > khaas dashboard)
-        // Khaas-only users go directly to the Khaas dashboard
+        // ⭐ Default web landing = Orders/Invoices for everyone; Khaas-only users land
+        // on the Khaas dashboard. (The main dashboard stays reachable via menu / URL.)
         $user->load(['roles.mobilePermissions']);
         $webPermissions = $user->getMobilePermissions();
         $hasKhaasWeb = in_array('access_khaas_mode', $webPermissions);
@@ -120,7 +141,7 @@ class AuthController extends Controller
             return redirect()->intended('khaas');
         }
 
-        return redirect()->intended('dashboard');
+        return redirect()->intended('orders');
     }
 
 
