@@ -78,6 +78,7 @@ class WhatsAppWebController extends Controller
                   ->where('r.user_id', '=', $userId);
             })
             ->where('m.direction', 'inbound')
+                ->where('m.created_at', '>=', \App\Models\FIN\ConfigModel::get('wa_unread_floor_date', '2026-06-28'))
             ->where(function ($w) {
                 $w->whereNull('r.last_read_at')
                   ->orWhereColumn('m.created_at', '>', 'r.last_read_at');
@@ -85,7 +86,7 @@ class WhatsAppWebController extends Controller
             ->whereRaw('NOT EXISTS (
                 SELECT 1 FROM t_wa_messages m2
                 WHERE m2.conversation_id = m.conversation_id
-                  AND m2.direction = \'outbound\'
+                  AND m2.direction = \'outbound\' AND m2.sent_by IS NOT NULL
                   AND m2.created_at > m.created_at
             )');
 
@@ -391,6 +392,7 @@ class WhatsAppWebController extends Controller
                     })
                     ->whereIn('m.conversation_id', $convIds)
                     ->where('m.direction', 'inbound')
+                ->where('m.created_at', '>=', \App\Models\FIN\ConfigModel::get('wa_unread_floor_date', '2026-06-28'))
                     ->where(function ($w) {
                         $w->whereNull('r.last_read_at')
                           ->orWhereColumn('m.created_at', '>', 'r.last_read_at');
@@ -398,7 +400,7 @@ class WhatsAppWebController extends Controller
                     ->whereRaw('NOT EXISTS (
                         SELECT 1 FROM t_wa_messages m2
                         WHERE m2.conversation_id = m.conversation_id
-                          AND m2.direction = \'outbound\'
+                          AND m2.direction = \'outbound\' AND m2.sent_by IS NOT NULL
                           AND m2.created_at > m.created_at
                     )');
 
@@ -1572,6 +1574,7 @@ class WhatsAppWebController extends Controller
                   ->where('r.user_id', '=', $userId);
             })
             ->where('m.direction', 'inbound')
+                ->where('m.created_at', '>=', \App\Models\FIN\ConfigModel::get('wa_unread_floor_date', '2026-06-28'))
             ->where(function ($w) {
                 $w->whereNull('r.last_read_at')
                   ->orWhereColumn('m.created_at', '>', 'r.last_read_at');
@@ -1579,7 +1582,7 @@ class WhatsAppWebController extends Controller
             ->whereRaw('NOT EXISTS (
                 SELECT 1 FROM t_wa_messages m2
                 WHERE m2.conversation_id = m.conversation_id
-                  AND m2.direction = \'outbound\'
+                  AND m2.direction = \'outbound\' AND m2.sent_by IS NOT NULL
                   AND m2.created_at > m.created_at
             )');
 

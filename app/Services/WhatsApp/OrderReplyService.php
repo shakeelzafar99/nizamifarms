@@ -110,6 +110,90 @@ class OrderReplyService
         }
     }
 
+    /**
+     * Resolve which ORDER a button reply answers, from the `context.id` WhatsApp
+     * includes on the tap (= the wa_message_id of the template they tapped). We
+     * map that to the order-received automation's log row (which records both the
+     * sent wa_message_id and the order_id) and return the order's order_number.
+     *
+     * order-received fires for SHOPIFY orders, so order_id is a t_crm_shopify_order
+     * id; we return its order_number (unique → id-collision-safe). Returns null on
+     * anything missing — the caller then falls back to per-customer matching.
+     */
+    public static function resolveOrderForReplyContext(?string $contextWaMessageId): ?string
+    {
+        if (empty($contextWaMessageId) || !Schema::hasTable('t_wa_automation_log')) {
+            return null;
+        }
+        try {
+            $log = DB::table('t_wa_automation_log')
+                ->where('wa_message_id', $contextWaMessageId)
+                ->whereNotNull('order_id')
+                ->orderByDesc('id')
+                ->first(['order_id', 'rule_key']);
+            if (!$log || empty($log->order_id)) {
+                return null;
+            }
+            // order-received → shopify staging table; any other rule → prod.
+            $table = str_starts_with((string) ($log->rule_key ?? ''), 'order_received')
+                ? 't_crm_shopify_order'
+                : 't_crm_prod_order';
+            $num = DB::table($table)->where('id', (int) $log->order_id)->value('order_number');
+            return $num ? (string) $num : null;
+        } catch (\Throwable $e) {
+            return null;
+        }
+    }
+
+    /**
+     * Latest button reply per ORDER (by order_number), for the per-order marker
+     * on the Shopify approval list. Returns [] when the linkage column is absent
+     * so callers transparently fall back to latestReplyForCustomers().
+     *
+     * @param string[] $orderNumbers
+     * @return array<string, array{text:string, button_id:?string, at:?string}>
+     *         keyed by order_number; only orders WITH a linked reply appear.
+     */
+    public static function latestReplyForOrders(array $orderNumbers, ?int $sinceDays = 60): array
+    {
+        $orderNumbers = array_values(array_unique(array_filter(array_map(
+            fn($n) => trim((string) $n), $orderNumbers
+        ))));
+        if (empty($orderNumbers)
+            || !Schema::hasTable('t_wa_messages')
+            || !Schema::hasColumn('t_wa_messages', 'related_order_number')) {
+            return [];
+        }
+
+        try {
+            $q = DB::table('t_wa_messages as m')
+                ->whereIn('m.related_order_number', $orderNumbers)
+                ->where('m.direction', 'inbound')
+                ->whereIn('m.type', self::REPLY_TYPES);
+            if ($sinceDays) {
+                $q->where('m.created_at', '>=', now()->subDays($sinceDays));
+            }
+            $rows = $q->orderByDesc('m.created_at')
+                ->get(['m.related_order_number', 'm.content', 'm.metadata', 'm.created_at']);
+
+            $out = [];
+            foreach ($rows as $r) {
+                $key = (string) $r->related_order_number;
+                if ($key === '' || isset($out[$key])) {
+                    continue; // newest-first → first seen is the latest.
+                }
+                $out[$key] = [
+                    'text'      => (string) $r->content,
+                    'button_id' => self::buttonId($r->metadata),
+                    'at'        => $r->created_at,
+                ];
+            }
+            return $out;
+        } catch (\Throwable $e) {
+            return [];
+        }
+    }
+
     /** Pull the button id/payload out of a t_wa_messages.metadata JSON blob. */
     protected static function buttonId($metadata): ?string
     {

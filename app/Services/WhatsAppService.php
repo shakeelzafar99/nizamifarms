@@ -449,6 +449,28 @@ class WhatsAppService
                 'created_at' => $timestamp ? date('Y-m-d H:i:s', (int)$timestamp) : now(),
             ]);
 
+            // Jun-2026 — link a quick-reply button/list tap back to the SPECIFIC
+            // order it answers (Confirm / Split / Cancel on an order-received
+            // template). WhatsApp gives us context.id (the template they tapped);
+            // we map it to the order via the automation log and stamp the
+            // order_number so the Shopify approval view shows the choice on the
+            // exact order. Fully guarded + non-fatal (falls back to per-customer).
+            if (in_array($type, ['button', 'interactive'], true) && $savedMessage) {
+                try {
+                    $ctxId = $msg['context']['id'] ?? null;
+                    if ($ctxId && \Illuminate\Support\Facades\Schema::hasColumn('t_wa_messages', 'related_order_number')) {
+                        $orderNo = \App\Services\WhatsApp\OrderReplyService::resolveOrderForReplyContext($ctxId);
+                        if ($orderNo) {
+                            \Illuminate\Support\Facades\DB::table('t_wa_messages')
+                                ->where('id', $savedMessage->id)
+                                ->update(['related_order_number' => $orderNo]);
+                        }
+                    }
+                } catch (\Throwable $linkErr) {
+                    Log::debug('WhatsApp: reply→order link skipped (non-fatal)', ['error' => $linkErr->getMessage()]);
+                }
+            }
+
             // Jun-2026 — Online payment auto-matching. If this inbound is an
             // image (a likely bank-transfer screenshot) from a customer who has
             // a pending online order, drop a cheap "payment signal" row. The

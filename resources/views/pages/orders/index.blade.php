@@ -3736,7 +3736,13 @@ async function saveOrderCustRegion(customerId) {
 
 // Edit Order Details
 function convertOrder(orderId) {
-    if (!confirm('Are you sure you want to convert this Shopify order to a webapp invoice? This will match SKUs with your products and recalculate prices based on your rates.')) {
+    // Surface the customer's WhatsApp button choice (Confirm / Split / Cancel) in
+    // the approve prompt so the approver acts on what the customer actually chose.
+    var _coOrder = (window.ordersData || []).find(function(o){ return o.id === orderId; });
+    var _coReply = (_coOrder && _coOrder.customer_reply && _coOrder.customer_reply.text) ? _coOrder.customer_reply.text : '';
+    var _coMsg = (_coReply ? ('💬 Customer chose: "' + _coReply + '"\n\n') : '')
+        + 'Are you sure you want to convert this Shopify order to a webapp invoice? This will match SKUs with your products and recalculate prices based on your rates.';
+    if (!confirm(_coMsg)) {
         return;
     }
     
@@ -10892,9 +10898,15 @@ function getCellContent(order, columnId) {
                 // Jun-2026: "options received" marker — the customer's latest WhatsApp
                 // button reply (Confirm/Split/Cancel). Tooltip shows the exact text;
                 // the full reply also appears in the order detail/approve modal.
-                const replyMarker = order.customer_reply
-                    ? `<span title="Customer replied: ${String(order.customer_reply.text||'').replace(/[<>&"]/g, c=>({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;'}[c]))}" style="display:inline-flex;align-items:center;gap:3px;padding:2px 7px;background:#dcfce7;border:1px solid #86efac;border-radius:10px;font-size:10px;color:#166534;font-weight:700;cursor:help;white-space:nowrap;">💬 Reply</span>`
-                    : '';
+                let replyMarker = '';
+                if (order.customer_reply && order.customer_reply.text) {
+                    const _escRt = s => String(s||'').replace(/[<>&"]/g, c=>({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;'}[c]));
+                    const _rt = String(order.customer_reply.text);
+                    const _short = _rt.length > 28 ? _rt.slice(0, 26) + '…' : _rt;
+                    // Show the EXACT choice on the chip (e.g. "Split: Chicken Wed / Meat Thu"),
+                    // full text in the tooltip — a button action needs to be read, not guessed.
+                    replyMarker = `<span title="Customer chose: ${_escRt(_rt)}" style="display:inline-flex;align-items:center;gap:3px;padding:2px 7px;background:#dcfce7;border:1px solid #86efac;border-radius:10px;font-size:10px;color:#166534;font-weight:700;cursor:help;white-space:nowrap;max-width:190px;overflow:hidden;text-overflow:ellipsis;">💬 ${_escRt(_short)}</span>`;
+                }
 
                 if (isConverted || isIgnored) {
                     // Already processed - show only view details

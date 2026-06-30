@@ -352,14 +352,27 @@ class OrderController extends Controller
                     ->get();
             }
 
-            // Who last set each line-item quantity (barcode-qty badge: source + when + who)
-            $order->load('lineItems.qtyUpdater:id,fullname');
+            // Who last set each line-item quantity (barcode-qty badge: source +
+            // when + who). Only PRODUCTION line items define this relation —
+            // Shopify staging line items (ShopifyOrderLineItemModel) do not, so
+            // eager-loading it on a staging order throws RelationNotFoundException,
+            // which the catch below would mask as a misleading "Order not found"
+            // (this is exactly what broke the Shopify approval detail view).
+            if (!($order instanceof \App\Models\CRM\ShopifyOrderModel)) {
+                $order->load('lineItems.qtyUpdater:id,fullname');
+            }
 
             // Jun-2026: the customer's latest WhatsApp button reply (Confirm /
             // Split / Cancel) so the approve/detail modal can show exactly what
             // they chose. Null when there's none. Never throws.
             $customerReply = null;
-            if ($order->customer_id) {
+            // Prefer the reply linked to THIS exact order (button tap → context.id),
+            // fall back to the customer's latest button reply.
+            if (!empty($order->order_number)) {
+                $orderMap = \App\Services\WhatsApp\OrderReplyService::latestReplyForOrders([$order->order_number], 90);
+                $customerReply = $orderMap[$order->order_number] ?? null;
+            }
+            if (!$customerReply && $order->customer_id) {
                 $replyMap = \App\Services\WhatsApp\OrderReplyService::latestReplyForCustomers([$order->customer_id], 60);
                 $customerReply = $replyMap[$order->customer_id] ?? null;
             }
@@ -384,6 +397,14 @@ class OrderController extends Controller
                 'customer_reply' => $customerReply,
             ]);
         } catch (\Exception $e) {
+            // Log the real cause — this generic "Order not found" has historically
+            // masked unrelated exceptions (e.g. eager-loading a relation that a
+            // Shopify staging order lacks), making such bugs hard to diagnose.
+            \Log::error('OrderController::show failed', [
+                'order_id' => $id,
+                'source'   => request()->query('source'),
+                'error'    => $e->getMessage(),
+            ]);
             return response()->json([
                 'success' => false,
                 'message' => 'Order not found'
@@ -3343,15 +3364,23 @@ class OrderController extends Controller
             // converting. Shopify-source only (that's where the button templates
             // go out); one service call for the whole page; never throws.
             $customerReplyMap = [];
+            $orderReplyMap = [];
             if ($source === 'shopify') {
                 $replyCustomerIds = $orders->pluck('customer_id')->filter()->unique()->values()->all();
                 if (!empty($replyCustomerIds)) {
                     $customerReplyMap = \App\Services\WhatsApp\OrderReplyService::latestReplyForCustomers($replyCustomerIds);
                 }
+                // Per-ORDER replies (button tap linked to the exact order via the
+                // template's context.id). Preferred over the per-customer map; the
+                // map is empty (→ silent fallback) until the linkage column exists.
+                $replyOrderNumbers = $orders->pluck('order_number')->filter()->unique()->values()->all();
+                if (!empty($replyOrderNumbers)) {
+                    $orderReplyMap = \App\Services\WhatsApp\OrderReplyService::latestReplyForOrders($replyOrderNumbers);
+                }
             }
 
             // Add customer order count and region info to each order
-            $orders->transform(function($order) use ($customerOrderCounts, $regionMap, $dispatcherNames, $customerReplyMap) {
+            $orders->transform(function($order) use ($customerOrderCounts, $regionMap, $dispatcherNames, $customerReplyMap, $orderReplyMap) {
                 $orderCount = $customerOrderCounts[$order->customer_id] ?? 0;
                 $isNewCustomer = $orderCount <= 1;
 
@@ -3364,7 +3393,10 @@ class OrderController extends Controller
                 $order->eta_calculated_by_name = $order->eta_calculated_by
                     ? ($dispatcherNames[$order->eta_calculated_by] ?? null)
                     : null;
-                $order->customer_reply = $customerReplyMap[$order->customer_id] ?? null;
+                // Prefer the exact per-order reply; fall back to the customer's latest.
+                $perOrderReply = (!empty($order->order_number) && isset($orderReplyMap[$order->order_number]))
+                    ? $orderReplyMap[$order->order_number] : null;
+                $order->customer_reply = $perOrderReply ?? ($customerReplyMap[$order->customer_id] ?? null);
 
                 return $order;
             });
