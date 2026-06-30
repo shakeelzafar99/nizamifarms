@@ -2337,7 +2337,22 @@ function viewOrderDetails(orderId) {
                 html += '<p style="margin: 0; color: #4b5563; font-size: 13px; line-height: 1.5;">' + escapeHtml(data.order_note) + '</p>';
                 html += '</div>';
             }
-            
+
+            // ⭐ Customer WhatsApp reply (Confirm / Split / Cancel) — Jun-2026.
+            // The exact button the customer tapped, so the approver knows what to do.
+            if (data.customer_reply && data.customer_reply.text) {
+                html += '<div style="margin-top: 12px; padding: 12px; background-color: #ecfdf5; border-radius: 8px; border-left: 4px solid #10b981;">';
+                html += '<div style="display: flex; align-items: center; gap: 6px; margin-bottom: 6px;">';
+                html += '<span style="font-size: 14px;">💬</span>';
+                html += '<strong style="color: #065f46; font-size: 13px;">Customer reply</strong>';
+                html += '</div>';
+                html += '<p style="margin: 0; color: #047857; font-size: 14px; font-weight: 600; line-height: 1.5;">' + escapeHtml(data.customer_reply.text) + '</p>';
+                if (data.customer_reply.at) {
+                    html += '<p style="margin: 6px 0 0 0; font-size: 11px; color: #6b7280;">Received ' + escapeHtml(String(data.customer_reply.at)) + '</p>';
+                }
+                html += '</div>';
+            }
+
             html += '</div>';
             html += '</div>';
             // Line Items with preparation status (only for open orders, not Shopify)
@@ -2861,6 +2876,14 @@ function quickSendInvoiceWhatsApp(orderId, orderNum, total, custName, custPhone)
 // ──────────────────────────────────────────────────────────────────────────
 let _regWaCustName = '';
 let _regWaOrderNum = '';
+// Jun-2026: the delivery ETA window (e.g. "Today, 4:10-4:40 PM") for the
+// with-ETA invoice templates. Filled from the server send-plan when the dialog
+// opens; blank when the order isn't out-for-delivery yet. NOTE the ETA string
+// contains a comma, so it can NEVER be round-tripped through a naive
+// comma-split — see the structured-params handling in sendInvoiceWhatsApp().
+let _regWaEta = '';
+let _regWaOrderId = '';
+let _regWaOrderSource = '';
 
 function openSendInvoiceWhatsApp() {
     if (!currentOrderId) { alert('No order selected'); return; }
@@ -2871,6 +2894,13 @@ function openSendInvoiceWhatsApp() {
     const orderNum = order?.order_number || '';
     _regWaCustName = custName;
     _regWaOrderNum = orderNum;
+    _regWaEta = '';
+    _regWaOrderId = currentOrderId;
+    // Source-aware (Shopify-staging vs prod id collision): the send-plan must
+    // resolve the order from the right table. currentOrderSource() reads
+    // window.currentSource (set on every page load by initOrdersSourceContext())
+    // with a ?source= URL fallback.
+    _regWaOrderSource = (typeof currentOrderSource === 'function') ? currentOrderSource() : (window.currentSource || '');
 
     let existing = document.getElementById('waInvoiceDialog');
     if (existing) existing.remove();
@@ -2963,7 +2993,7 @@ function openSendInvoiceWhatsApp() {
     document.body.appendChild(dialog);
     dialog.addEventListener('click', function(e) { if (e.target === dialog) dialog.remove(); });
 
-    regWaLoadInvoiceTemplates();
+    regWaLoadInvoiceTemplates(order && order.payment_method ? order.payment_method : '');
     regWaLoadOtherTemplates();
 
     // Auto-preview invoice on open so users always see what they're sending,
@@ -2992,7 +3022,7 @@ function regWaSwitchTab(tab) {
     }
 }
 
-function regWaLoadInvoiceTemplates() {
+function regWaLoadInvoiceTemplates(paymentMethod) {
     window._regInvoiceTemplates = [];
     fetch('/messages/templates?context=invoice', {
         headers: {'Accept': 'application/json', 'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]')?.content || ''}
@@ -3017,10 +3047,67 @@ function regWaLoadInvoiceTemplates() {
             sel.appendChild(opt);
         });
         onRegularInvoiceTemplateChange();
+        // Jun-2026: pre-select the online/cash invoice template by this order's
+        // payment method. Pure pre-select — the user can still change it.
+        regWaPreselectInvoiceByPayment(paymentMethod, sel, tpls);
     }).catch(function() {
         var sel = document.getElementById('waInvTemplate');
         if (sel) sel.innerHTML = '<option value="">Failed to load templates</option>';
     });
+}
+
+// Classify a (possibly messy) payment_method string into 'cash' | 'online' | ''.
+// Mirrors the server-side grouping; handles free-text values like
+// "Regular Meat: Direct Bank Transfer" and "Cash on Delivery (COD)".
+function waClassifyPayment(pm) {
+    pm = String(pm || '').toLowerCase();
+    if (!pm) return '';
+    if (pm.indexOf('cash') !== -1 || pm.indexOf('cod') !== -1) return 'cash';
+    if (pm.indexOf('bank') !== -1 || pm.indexOf('online') !== -1 || pm.indexOf('transfer') !== -1 || pm.indexOf('card') !== -1) return 'online';
+    return '';
+}
+
+// Pre-select the configured invoice template for this order and pre-fill its
+// body variables. Uses the server "send plan" which resolves online-vs-cash by
+// payment method AND with-ETA-vs-no-ETA by whether the delivery window exists
+// yet (out for delivery), returning the exact body params [name, order#, ETA].
+// Falls back to the lighter online/cash map if the plan can't be fetched. Pure
+// pre-fill — never breaks the picker; the operator can still change anything.
+function regWaPreselectInvoiceByPayment(paymentMethod, sel, tpls) {
+    if (!sel) return;
+    var orderId = _regWaOrderId;
+    if (!orderId) { regWaPreselectInvoiceFallback(paymentMethod, sel, tpls); return; }
+    var src = _regWaOrderSource || '';
+    var url = '/messages/automations/invoice-send-plan/' + encodeURIComponent(orderId)
+        + (src ? ('?source=' + encodeURIComponent(src)) : '');
+    fetch(url, { headers: { 'Accept': 'application/json' } })
+        .then(function(r){ return r.json(); })
+        .then(function(d){
+            if (!d || !d.success || !d.template) { regWaPreselectInvoiceFallback(paymentMethod, sel, tpls); return; }
+            // Remember the resolved delivery window so onRegularInvoiceTemplateChange
+            // can fill it in for 3-var templates (now and on any later template switch).
+            _regWaEta = d.eta || '';
+            var found = (tpls || []).some(function(t){ return t.name === d.template; });
+            if (found) { sel.value = d.template; }
+            // Re-fill the body vars for whatever template is now selected.
+            onRegularInvoiceTemplateChange();
+        }).catch(function(){ regWaPreselectInvoiceFallback(paymentMethod, sel, tpls); });
+}
+
+// Lighter pre-select used when the send-plan isn't reachable: just picks the
+// no-ETA online/cash template by payment method (the previous behaviour).
+function regWaPreselectInvoiceFallback(paymentMethod, sel, tpls) {
+    var kind = waClassifyPayment(paymentMethod);
+    if (!kind || !sel) return;
+    fetch('/messages/automations/invoice-template-map', { headers: { 'Accept': 'application/json' } })
+        .then(function(r){ return r.json(); })
+        .then(function(d){
+            if (!d || !d.success) return;
+            var want = kind === 'cash' ? d.cash : d.online;
+            if (!want) return;
+            var found = (tpls || []).some(function(t){ return t.name === want; });
+            if (found) { sel.value = want; onRegularInvoiceTemplateChange(); }
+        }).catch(function(){});
 }
 
 // Load non-invoice templates that are allowed on regular order pages. The
@@ -3149,16 +3236,33 @@ function onRegularInvoiceTemplateChange() {
     var varCount = parseInt(selectedOpt?.dataset?.varCount || '0');
     var custName = _regWaCustName || '';
     var orderNum = _regWaOrderNum || '';
+    var eta = _regWaEta || '';
+    // Build the body variables in the order the invoice templates expect:
+    //   1 var  -> Name
+    //   2 vars -> Name, Order#                (online/cash no-ETA templates)
+    //   3 vars -> Name, Order#, ETA window    (with-ETA templates, out for delivery)
+    var parts;
     if (varCount === 0) {
-        paramsInput.value = '';
+        parts = [];
         if (hintEl) hintEl.textContent = 'This template has no variables';
     } else if (varCount === 1) {
-        paramsInput.value = custName;
+        parts = [custName];
         if (hintEl) hintEl.textContent = '1 variable: Name';
+    } else if (varCount === 2) {
+        parts = [custName, orderNum];
+        if (hintEl) hintEl.textContent = '2 variables: Name, Order#';
     } else {
-        paramsInput.value = custName + ', ' + orderNum;
-        if (hintEl) hintEl.textContent = varCount + ' variables: e.g. Name, Order#' + (varCount > 2 ? ', ...' : '');
+        parts = [custName, orderNum, eta];
+        if (hintEl) hintEl.textContent = eta
+            ? '3 variables: Name, Order#, ETA (delivery window)'
+            : '3 variables: Name, Order#, ETA — not out for delivery yet, fill the window in';
     }
+    // Stash the exact array so the send can use it verbatim. The ETA window
+    // contains a comma ("Today, 4:10-4:40 PM"), so a naive comma-split of the
+    // visible text would shatter it into extra params — the send prefers this
+    // structured copy whenever the operator hasn't hand-edited the field.
+    paramsInput.dataset.structured = JSON.stringify(parts);
+    paramsInput.value = parts.join(', ');
 }
 
 function captureInvoiceImageOrders(invoiceUrl, orderId) {
@@ -3242,12 +3346,28 @@ function previewInvoiceWhatsApp() {
 function sendInvoiceWhatsApp() {
     const phone = document.getElementById('waInvPhone').value.trim();
     const templateName = document.getElementById('waInvTemplate').value.trim();
-    const bodyParamsStr = document.getElementById('waInvBodyParams').value.trim();
+    const bodyParamsInput = document.getElementById('waInvBodyParams');
+    const bodyParamsStr = bodyParamsInput.value.trim();
 
     if (!phone) { alert('Please enter a phone number'); return; }
     if (!templateName) { alert('Please select an invoice template'); return; }
 
-    const bodyParams = bodyParamsStr ? bodyParamsStr.split(',').map(s => s.trim()) : [];
+    // Prefer the structured params array stashed by onRegularInvoiceTemplateChange:
+    // the ETA window ("Today, 4:10-4:40 PM") contains a comma, so a naive split of
+    // the visible text would shatter it into two params. Only when the operator has
+    // hand-edited the field (so it no longer matches the structured copy) do we fall
+    // back to splitting the text they typed.
+    let bodyParams;
+    try {
+        const structured = bodyParamsInput.dataset.structured ? JSON.parse(bodyParamsInput.dataset.structured) : null;
+        if (Array.isArray(structured) && structured.join(', ') === bodyParamsStr) {
+            bodyParams = structured;
+        } else {
+            bodyParams = bodyParamsStr ? bodyParamsStr.split(',').map(s => s.trim()) : [];
+        }
+    } catch (e) {
+        bodyParams = bodyParamsStr ? bodyParamsStr.split(',').map(s => s.trim()) : [];
+    }
 
     // Pull the human-readable labels off the body-params input (the
     // dialog seeds it as "Customer Name, ORDER#" — see waInvBodyParams
@@ -5714,25 +5834,23 @@ function openGetLocationsModal() {
 
             <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px;flex-wrap:wrap;">
                 <label style="font-size:12px;color:#374151;font-weight:600;">Template:</label>
-                <select id="getLocTemplate" style="flex:1;min-width:180px;padding:6px 8px;border:1px solid #d1d5db;border-radius:8px;font-size:13px;"><option>Loading…</option></select>
-                <button type="button" id="getLocSetDefaultBtn" onclick="saveGetLocDefaultTemplate()" title="Use this template as the default for everyone" style="background:#ecfeff;border:1px solid #67e8f9;color:#155e75;border-radius:6px;padding:6px 10px;font-size:12px;cursor:pointer;font-weight:600;">Set as default</button>
+                <select id="getLocTemplate" disabled style="flex:1;min-width:180px;padding:6px 8px;border:1px solid #d1d5db;border-radius:8px;font-size:13px;background:#f3f4f6;"><option>Loading…</option></select>
             </div>
-            <div id="getLocDefaultMsg" style="font-size:11px;color:#6b7280;margin:-2px 0 8px;min-height:14px;"></div>
+            <div id="getLocDefaultMsg" style="font-size:11px;color:#9ca3af;margin:-2px 0 8px;min-height:14px;">Set the location template in <b>Messages → 🤖 → Order actions</b>. Manual sends below use that same template.</div>
 
             <details id="getLocAutoPanel" style="margin-bottom:10px;border:1px solid #eef0f2;border-radius:8px;padding:8px 10px;background:#fafafa;">
-                <summary style="font-size:12px;font-weight:700;color:#374151;cursor:pointer;">⚙️ Automatic sending (when orders are accepted / created)</summary>
-                <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-top:8px;">
+                <summary style="font-size:12px;font-weight:700;color:#374151;cursor:pointer;">⚙️ Automatic sending <span style="font-weight:400;color:#9ca3af;">(read-only — configured in Messages → 🤖)</span></summary>
+                <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-top:8px;opacity:0.85;">
                     <label style="font-size:12px;color:#374151;display:flex;align-items:center;gap:6px;">
-                        <input type="checkbox" id="getLocAutoEnabled"> Enable auto-send
+                        <input type="checkbox" id="getLocAutoEnabled" disabled> Enable auto-send
                     </label>
                     <label style="font-size:12px;color:#374151;">Window:
-                        <input type="time" id="getLocWindowStart" style="padding:4px 6px;border:1px solid #d1d5db;border-radius:6px;font-size:12px;"> –
-                        <input type="time" id="getLocWindowEnd" style="padding:4px 6px;border:1px solid #d1d5db;border-radius:6px;font-size:12px;">
+                        <input type="time" id="getLocWindowStart" disabled style="padding:4px 6px;border:1px solid #d1d5db;border-radius:6px;font-size:12px;background:#f3f4f6;"> –
+                        <input type="time" id="getLocWindowEnd" disabled style="padding:4px 6px;border:1px solid #d1d5db;border-radius:6px;font-size:12px;background:#f3f4f6;">
                     </label>
-                    <button type="button" onclick="saveGetLocAutoSettings()" style="background:#0e7490;color:#fff;border:none;border-radius:6px;padding:6px 12px;font-size:12px;cursor:pointer;font-weight:600;">Save</button>
                     <span id="getLocSettingsMsg" style="font-size:11px;color:#6b7280;"></span>
                 </div>
-                <p style="margin:8px 0 0;font-size:11px;color:#9ca3af;">Outside the window, requests are queued and sent automatically when it next opens (Asia/Karachi). Off by default.</p>
+                <p style="margin:8px 0 0;font-size:11px;color:#9ca3af;">⚙️ Manage auto-send (enable, template &amp; window) in <b>Messages → 🤖 → Order actions → "Order accepted → send location request"</b>. Shown here read-only so there's a single place to change it. Outside the window, requests are queued and sent automatically when it next opens (Asia/Karachi).</p>
             </details>
 
             <div id="getLocCounts" style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px;font-size:12px;"></div>
@@ -10771,11 +10889,18 @@ function getCellContent(order, columnId) {
                 // For Shopify orders, check if already converted/approved
                 const isConverted = order.converted && order.converted !== 0 && order.converted !== 3;
                 const isIgnored = order.converted === 2;
-                
+                // Jun-2026: "options received" marker — the customer's latest WhatsApp
+                // button reply (Confirm/Split/Cancel). Tooltip shows the exact text;
+                // the full reply also appears in the order detail/approve modal.
+                const replyMarker = order.customer_reply
+                    ? `<span title="Customer replied: ${String(order.customer_reply.text||'').replace(/[<>&"]/g, c=>({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;'}[c]))}" style="display:inline-flex;align-items:center;gap:3px;padding:2px 7px;background:#dcfce7;border:1px solid #86efac;border-radius:10px;font-size:10px;color:#166534;font-weight:700;cursor:help;white-space:nowrap;">💬 Reply</span>`
+                    : '';
+
                 if (isConverted || isIgnored) {
                     // Already processed - show only view details
                     return `
                         <div class="action-buttons flex items-center gap-1">
+                            ${replyMarker}
                             <button onclick="event.stopPropagation(); viewOrderDetails(${order.id})" class="inline-flex items-center justify-center w-7 h-7 text-blue-600 bg-blue-50 border border-blue-200 rounded hover:bg-blue-100 hover:border-blue-300 transition-all duration-200" title="View Order Details">
                                 <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/></svg>
                             </button>
@@ -10787,6 +10912,7 @@ function getCellContent(order, columnId) {
                     // Pending approval - show approve/ignore/view
                 return `
                     <div class="action-buttons flex items-center gap-1">
+                        ${replyMarker}
                         <button onclick="event.stopPropagation(); convertOrder(${order.id})" class="inline-flex items-center justify-center w-7 h-7 text-emerald-600 bg-emerald-50 border border-emerald-200 rounded hover:bg-emerald-100 hover:border-emerald-300 transition-all duration-200" title="Approve (Convert)">
                             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>
                         </button>

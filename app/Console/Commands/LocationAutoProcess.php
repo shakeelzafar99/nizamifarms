@@ -4,7 +4,6 @@ namespace App\Console\Commands;
 
 use App\Services\Location\OpenOrderLocationService;
 use Illuminate\Console\Command;
-use Illuminate\Support\Facades\Cache;
 
 /**
  * location:auto-process — Jun-2026
@@ -31,20 +30,14 @@ class LocationAutoProcess extends Command
 
     public function handle(OpenOrderLocationService $svc): int
     {
-        $lockKey = 'location:auto-process:lock';
-        $ttl     = 55; // seconds — slightly less than the 1-min cron tick
-
-        $lock = Cache::lock($lockKey, $ttl);
-        if (!$lock->get()) {
-            $this->info('Another auto location worker is already running, skipping.');
-            return self::SUCCESS;
-        }
-
         try {
             $limit = (int) ($this->option('limit') ?: 25);
 
             $started = microtime(true);
-            $counters = $svc->processQueue($limit);
+            // drainWithLock() owns the 55s mutex now — shared with the
+            // request-time terminating hook (mobile/web open-orders poll) so
+            // the two trigger paths can never double-fire on the same rows.
+            $counters = $svc->drainWithLock($limit);
             $elapsed = round((microtime(true) - $started) * 1000);
 
             $this->info(sprintf(
@@ -64,8 +57,6 @@ class LocationAutoProcess extends Command
                 'trace' => $e->getTraceAsString(),
             ]);
             return self::FAILURE;
-        } finally {
-            optional($lock)->release();
         }
     }
 }

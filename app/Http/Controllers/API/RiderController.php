@@ -843,7 +843,7 @@ class RiderController extends Controller
             return null;
         }
         
-        $apiKey = env('GOOGLE_MAPS_DIRECTIONS_API_KEY');
+        $apiKey = config('services.google_maps.directions_key');
         if (empty($apiKey)) {
             \Log::warning('Google Maps API key not configured');
             return null;
@@ -1361,7 +1361,7 @@ class RiderController extends Controller
             return null;
         }
         
-        $apiKey = env('GOOGLE_MAPS_DIRECTIONS_API_KEY');
+        $apiKey = config('services.google_maps.directions_key');
         if (empty($apiKey)) {
             \Log::warning('Google Maps API key not configured');
             return null;
@@ -1614,7 +1614,7 @@ class RiderController extends Controller
             ];
         }
 
-        $apiKey = env('GOOGLE_MAPS_DIRECTIONS_API_KEY');
+        $apiKey = config('services.google_maps.directions_key');
         if (empty($apiKey)) return null;
 
         $monthKey = date('Y-m');
@@ -8803,10 +8803,15 @@ class RiderController extends Controller
                     'message' => 'You do not have permission to view open orders'
                 ], 403);
             }
-            
+
+            // Flush any queued auto location-requests off this store poll (no-op
+            // when the location automation is off). This is the "send in the
+            // morning" trigger — the queue drains on the sync, not the cron.
+            $this->fireLocationAutoDrain();
+
             // Get status filter if provided
             $statusFilter = $request->get('status', null);
-            
+
             // Build query - same logic as webapp OrderController::index with tab='open'
             $query = OrderModel::with(['customer', 'lineItems', 'assignedRider', 'discounts'])
                 ->where(function($q) {
@@ -9002,10 +9007,13 @@ class RiderController extends Controller
                     'message' => 'You do not have permission to view open orders'
                 ], 403);
             }
-            
+
+            // Flush queued auto location-requests off this poll (no-op when off).
+            $this->fireLocationAutoDrain();
+
             // Get status filter if provided
             $statusFilter = $request->get('status', null);
-            
+
             // Build optimized query - load line items for immediate "mark prepared" functionality
             // Note: Not using select() to avoid column name issues - optimization is in relationships
             $query = OrderModel::with(['customer' => function($q) {
@@ -9048,12 +9056,16 @@ class RiderController extends Controller
             // so the list view can match scans + show the weighed badge without a detail fetch.
             $allSkus = $orders->pluck('lineItems')->flatten(1)->pluck('sku')->filter()->unique()->values()->all();
             $skuCzerlop = [];
+            $skuWeightFactor = []; // sku -> product weight_factor (for scan/manual qty division; default 1)
             if (!empty($allSkus)) {
                 foreach (\DB::table('t_crm_prod_product_variant as v')
                     ->join('t_crm_prod_product as p', 'p.id', '=', 'v.product_id')
-                    ->whereIn('v.sku', $allSkus)->whereNotNull('p.czerlop_product_id')
-                    ->select('v.sku', 'p.czerlop_product_id')->get() as $row) {
-                    $skuCzerlop[$row->sku] = (int) $row->czerlop_product_id;
+                    ->whereIn('v.sku', $allSkus)
+                    ->select('v.sku', 'p.czerlop_product_id', 'p.weight_factor')->get() as $row) {
+                    if ($row->czerlop_product_id !== null) {
+                        $skuCzerlop[$row->sku] = (int) $row->czerlop_product_id;
+                    }
+                    $skuWeightFactor[$row->sku] = (float) ($row->weight_factor ?? 1.0);
                 }
             }
 
@@ -9179,7 +9191,7 @@ class RiderController extends Controller
             }
 
             // Format for mobile (lightweight)
-            $formattedOrders = $orders->map(function($order) use ($prepSummaries, $khaasOrderIds, $regionMap, $unreadCustomerIds, $hasWaAccess, $paymentProofMap, $dispatchActorMap, $skuCzerlop) {
+            $formattedOrders = $orders->map(function($order) use ($prepSummaries, $khaasOrderIds, $regionMap, $unreadCustomerIds, $hasWaAccess, $paymentProofMap, $dispatchActorMap, $skuCzerlop, $skuWeightFactor) {
                 // Build customer name
                 $customerName = $order->name ?? 'N/A';
                 if (!$order->name && ($order->address_first_name || $order->address_last_name)) {
@@ -9332,7 +9344,7 @@ class RiderController extends Controller
                             'discount_type' => $discount->discount_type,
                         ];
                     })->toArray() : [],
-                    'line_items' => $order->lineItems->map(function($item) use ($skuCzerlop) {
+                    'line_items' => $order->lineItems->map(function($item) use ($skuCzerlop, $skuWeightFactor) {
                         $liSku = trim((string) ($item->sku ?? ''));
                         return [
                             'id' => $item->id,
@@ -9341,6 +9353,7 @@ class RiderController extends Controller
                             'variant_name' => $item->sku ?? '',
                             'sku' => $item->sku ?? '',
                             'czerlop_product_id' => ($liSku !== '' && isset($skuCzerlop[$liSku])) ? $skuCzerlop[$liSku] : null,
+                            'weight_factor' => ($liSku !== '' && isset($skuWeightFactor[$liSku])) ? $skuWeightFactor[$liSku] : 1.0,
                             'quantity' => (float) $item->quantity,
                             'quantity_source' => $item->quantity_source ?? null,
                             'quantity_updated_at' => $item->quantity_updated_at ? $item->quantity_updated_at->toIso8601String() : null,
@@ -9992,22 +10005,28 @@ class RiderController extends Controller
             $liVariantIds = $order->lineItems->pluck('variant_id')->filter()->unique()->values()->all();
             $skuCzerlop = [];
             $variantCzerlop = [];
+            $skuWeightFactor = [];     // sku -> weight_factor (default 1)
+            $variantWeightFactor = []; // variant_id -> weight_factor (fallback, default 1)
             if (!empty($liSkus)) {
                 foreach (\DB::table('t_crm_prod_product_variant as v')
                     ->join('t_crm_prod_product as p', 'p.id', '=', 'v.product_id')
                     ->whereIn('v.sku', $liSkus)
-                    ->whereNotNull('p.czerlop_product_id')
-                    ->select('v.sku', 'p.czerlop_product_id')->get() as $row) {
-                    $skuCzerlop[$row->sku] = (int) $row->czerlop_product_id;
+                    ->select('v.sku', 'p.czerlop_product_id', 'p.weight_factor')->get() as $row) {
+                    if ($row->czerlop_product_id !== null) {
+                        $skuCzerlop[$row->sku] = (int) $row->czerlop_product_id;
+                    }
+                    $skuWeightFactor[$row->sku] = (float) ($row->weight_factor ?? 1.0);
                 }
             }
             if (!empty($liVariantIds)) {
                 foreach (\DB::table('t_crm_prod_product_variant as v')
                     ->join('t_crm_prod_product as p', 'p.id', '=', 'v.product_id')
                     ->whereIn('v.id', $liVariantIds)
-                    ->whereNotNull('p.czerlop_product_id')
-                    ->select('v.id', 'p.czerlop_product_id')->get() as $row) {
-                    $variantCzerlop[(int) $row->id] = (int) $row->czerlop_product_id;
+                    ->select('v.id', 'p.czerlop_product_id', 'p.weight_factor')->get() as $row) {
+                    if ($row->czerlop_product_id !== null) {
+                        $variantCzerlop[(int) $row->id] = (int) $row->czerlop_product_id;
+                    }
+                    $variantWeightFactor[(int) $row->id] = (float) ($row->weight_factor ?? 1.0);
                 }
             }
 
@@ -10058,7 +10077,7 @@ class RiderController extends Controller
                     'items_summary' => $order->lineItems->map(function($item) {
                         return $item->name . ' (x' . $item->quantity . ')';
                     })->join(', '),
-                    'line_items' => $order->lineItems->map(function($item) use ($skuCzerlop, $variantCzerlop) {
+                    'line_items' => $order->lineItems->map(function($item) use ($skuCzerlop, $variantCzerlop, $skuWeightFactor, $variantWeightFactor) {
                         // Resolve Czerlop id: SKU first (reliable), variant_id as fallback.
                         $czerlop = null;
                         $liSku = trim((string) ($item->sku ?? ''));
@@ -10067,12 +10086,20 @@ class RiderController extends Controller
                         } elseif ($item->variant_id && isset($variantCzerlop[(int) $item->variant_id])) {
                             $czerlop = $variantCzerlop[(int) $item->variant_id];
                         }
+                        // Resolve weight factor with the same priority (SKU first, variant fallback).
+                        $wf = 1.0;
+                        if ($liSku !== '' && isset($skuWeightFactor[$liSku])) {
+                            $wf = $skuWeightFactor[$liSku];
+                        } elseif ($item->variant_id && isset($variantWeightFactor[(int) $item->variant_id])) {
+                            $wf = $variantWeightFactor[(int) $item->variant_id];
+                        }
                         return [
                             'id' => $item->id,
                             'product_name' => $item->name ?? 'N/A',
                             'variant_name' => $item->sku ?? '',
                             'sku' => $item->sku ?? '',                       // explicit SKU (barcode match key)
                             'czerlop_product_id' => $czerlop,               // for matching a scanned PLU
+                            'weight_factor' => $wf,                          // qty divisor for scan/manual (default 1)
                             'quantity' => $item->quantity,
                             'quantity_source' => $item->quantity_source ?? null, // 'barcode' | 'manual' | null
                             'quantity_updated_at' => $item->quantity_updated_at ? $item->quantity_updated_at->toIso8601String() : null,
@@ -19632,6 +19659,42 @@ class RiderController extends Controller
         return response()->json($result, $result['success'] ? 200 : 422);
     }
 
+    /**
+     * Barcode-qty feature: set MULTIPLE open-order line-item quantities in ONE
+     * request (the mobile multi-row manual "Save all"). Atomic — all rows are
+     * validated and applied in a single transaction, totals recomputed once
+     * (see LineItemQuantityService::setQuantitiesBatch). Open orders only.
+     *
+     * PUT /api/rider/orders/{orderId}/line-items/quantities
+     * Body: { items: [ { line_item_id, quantity, source?, scanned_barcode? }, ... ] }
+     * The quantity is already weight-factor-adjusted by the client (same as web).
+     */
+    public function updateLineItemQuantitiesBatch(Request $request, $orderId)
+    {
+        $user = Auth::user();
+        if (!$user || !$user->hasMobilePermission('scan_line_item_qty')) {
+            return response()->json(['success' => false, 'message' => 'You do not have permission to update quantities by scan'], 403);
+        }
+
+        $validated = $request->validate([
+            'items' => 'required|array|min:1|max:200',
+            'items.*.line_item_id' => 'required|integer',
+            'items.*.quantity' => 'required|numeric|min:0.001|max:100000',
+            'items.*.source' => 'nullable|string|in:barcode,manual',
+            'items.*.scanned_barcode' => 'nullable|string|max:20',
+        ]);
+
+        $order = \App\Models\CRM\OrderModel::find($orderId);
+        if (!$order) {
+            return response()->json(['success' => false, 'message' => 'Order not found'], 404);
+        }
+
+        $service = new \App\Services\CRM\LineItemQuantityService();
+        $result = $service->setQuantitiesBatch($order, $validated['items'], $user->id);
+
+        return response()->json($result, $result['success'] ? 200 : 422);
+    }
+
     // =========================================================================
     // QURBANI: Per-line-item status & rider assignment (May-2026)
     //
@@ -22261,6 +22324,23 @@ class RiderController extends Controller
             // Some exotic environments (testing) can't register
             // terminating callbacks — silently no-op there too.
             \Log::debug('QurbaniWaAutoSender hook skipped', ['error' => $e->getMessage()]);
+        }
+    }
+
+    /**
+     * Auto location-request drain — same "fire off the manager poll" pattern as
+     * fireQurbaniWaAutoSender(). Registers an app()->terminating() drain of the
+     * t_crm_location_auto_queue so queued requests (written on order accept /
+     * create) go out on the mobile/web open-orders sync rather than depending on
+     * the cron. No-op when the location automation is off; lock-protected so it
+     * never double-fires with the cron.
+     */
+    private function fireLocationAutoDrain(): void
+    {
+        try {
+            app(\App\Services\Location\OpenOrderLocationService::class)->fireFromRequest();
+        } catch (\Throwable $e) {
+            \Log::debug('LocationAutoDrain hook skipped', ['error' => $e->getMessage()]);
         }
     }
 

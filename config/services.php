@@ -35,5 +35,14 @@ return [
         ],
     ],
 
+    // Google Maps Directions API (rider dispatch / multi-stop ETAs).
+    // IMPORTANT: read this key via config('services.google_maps.directions_key'),
+    // NEVER via env('GOOGLE_MAPS_DIRECTIONS_API_KEY') directly in app code.
+    // When config is cached (php artisan config:cache), env() returns null
+    // outside config files, which silently breaks dispatch ETAs. Keeping the
+    // env() read here (inside a config file) is cache-safe.
+    'google_maps' => [
+        'directions_key' => env('GOOGLE_MAPS_DIRECTIONS_API_KEY'),
+    ],
 
 ];

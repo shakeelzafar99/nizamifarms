@@ -2412,6 +2412,40 @@ class WhatsAppController extends Controller
     }
 
     /**
+     * GET /api/whatsapp/invoice-send-plan/{orderId}
+     *
+     * Resolves which invoice template + body variables the mobile Send-Invoice
+     * action should use for this LIVE order — online vs cash by payment method,
+     * with-ETA vs no-ETA by whether the delivery window exists yet. Uses the
+     * SAME InvoiceSendPlanService the web Send-Invoice dialog uses, so mobile
+     * and web can never pick different templates. Live (prod) orders only.
+     */
+    public function invoiceSendPlan(Request $request, $orderId)
+    {
+        try {
+            $user = Auth::user();
+            if (!$user->hasMobilePermission('send_whatsapp_messages')) {
+                return response()->json(['success' => false, 'message' => 'No permission'], 403);
+            }
+
+            $plan = \App\Services\WhatsApp\InvoiceSendPlanService::for($orderId, false);
+            if (!$plan) {
+                return response()->json(['success' => false, 'message' => 'Order not found'], 404);
+            }
+
+            return response()->json([
+                'success'      => true,
+                'template'     => $plan['template'],
+                'body_params'  => $plan['body_params'],
+                'eta'          => $plan['eta'],
+                'payment_kind' => $plan['payment_kind'],
+            ]);
+        } catch (\Exception $e) {
+            return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
+        }
+    }
+
+    /**
      * Upload invoice image captured by client
      */
     public function uploadInvoiceImage(Request $request)

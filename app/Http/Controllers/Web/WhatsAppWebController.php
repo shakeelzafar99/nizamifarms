@@ -1708,6 +1708,11 @@ class WhatsAppWebController extends Controller
                     'end_time'       => $r->end_time,
                     'specific_dates' => $r->specific_dates ? (json_decode($r->specific_dates, true) ?: []) : [],
                     'cooldown_hours' => (int) $r->cooldown_hours,
+                    // Jun-2026 cooldown/active-window fix. `?? null` tolerates a
+                    // pre-migration schema (columns absent → sane defaults).
+                    'cooldown_mode'  => $r->cooldown_mode ?? 'daily',
+                    'active_from'    => $r->active_from ?? null,
+                    'active_to'      => $r->active_to ?? null,
                 ];
             })
             ->values();
@@ -1769,6 +1774,9 @@ class WhatsAppWebController extends Controller
             'specific_dates' => 'nullable|array',
             'specific_dates.*' => 'date_format:Y-m-d',
             'cooldown_hours' => 'sometimes|integer|min:0|max:168',
+            'cooldown_mode'  => 'sometimes|in:rolling,daily,once',
+            'active_from'    => 'nullable|date_format:Y-m-d',
+            'active_to'      => 'nullable|date_format:Y-m-d',
         ]);
 
         // Normalize days_of_week: drop anything that isn't 0..6, dedupe,
@@ -1801,6 +1809,17 @@ class WhatsAppWebController extends Controller
             'cooldown_hours' => (int) $request->input('cooldown_hours', 6),
             'updated_at'     => now(),
         ];
+
+        // Jun-2026 cooldown/active-window columns. Added conditionally so an
+        // upload-before-SQL can't 500 the save — the keys are only written when
+        // the columns exist (after add_wa_auto_reply_cooldown_fix_jun2026.sql).
+        if (Schema::hasColumn('t_wa_auto_replies', 'cooldown_mode')) {
+            $payload['cooldown_mode'] = $request->input('cooldown_mode', 'daily');
+        }
+        if (Schema::hasColumn('t_wa_auto_replies', 'active_from')) {
+            $payload['active_from'] = $request->filled('active_from') ? $request->input('active_from') : null;
+            $payload['active_to']   = $request->filled('active_to') ? $request->input('active_to') : null;
+        }
 
         if ($id) {
             $affected = DB::table('t_wa_auto_replies')->where('id', $id)->update($payload);

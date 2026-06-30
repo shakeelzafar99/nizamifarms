@@ -6,6 +6,7 @@ use App\Models\FIN\ConfigModel;
 use App\Models\WhatsApp\ConversationModel;
 use App\Services\WhatsAppService;
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
@@ -24,6 +25,10 @@ use Illuminate\Support\Facades\Log;
  */
 class OpenOrderLocationService
 {
+    /** Shared global drain lock — the cron command and the request-time
+     *  terminating hook both acquire this so they can't double-fire. */
+    public const LOCK_KEY = 'location:auto-process:lock';
+
     public function __construct(protected WhatsAppService $wa, protected LocationUrlResolver $resolver)
     {
     }
@@ -659,6 +664,73 @@ class OpenOrderLocationService
         }
 
         return $counters;
+    }
+
+    /**
+     * Drain the queue under a short global lock so the request-time terminating
+     * hook (mobile/web open-orders poll) and the every-minute cron can't
+     * double-fire on the same rows. Shares ONE lock key with the cron command,
+     * so whichever fires first wins the ~55s window. Cheap no-op when the
+     * automation is off.
+     *
+     * @return array{sent:int, failed:int, skipped:int}
+     */
+    public function drainWithLock(int $limit = 25): array
+    {
+        $noop = ['sent' => 0, 'failed' => 0, 'skipped' => 0];
+
+        if (!$this->isAutoEnabled()) {
+            return $noop;
+        }
+
+        try {
+            $lock = Cache::lock(self::LOCK_KEY, 55);
+            if (!$lock->get()) {
+                return $noop; // another drain is already running this window
+            }
+        } catch (\Throwable $e) {
+            // Cache lock store unavailable — fall back to draining without the
+            // lock. processQueue() re-validates + flips each row to 'sent'
+            // immediately, and recentlyMessaged() guards repeats, so the worst
+            // case is a rare benign retry, never a silent crash.
+            Log::warning('OpenOrderLocation: lock unavailable, draining unlocked', ['error' => $e->getMessage()]);
+            return $this->processQueue($limit);
+        }
+
+        try {
+            return $this->processQueue($limit);
+        } finally {
+            optional($lock)->release();
+        }
+    }
+
+    /**
+     * Register an app()->terminating() callback that drains the auto
+     * location-request queue AFTER the response is flushed — so a manager poll
+     * (mobile store open-orders, web "Get Locations") flushes queued requests
+     * without depending on the cron. This is what makes an order queued at 11pm
+     * go out the next morning the moment the store app starts polling inside the
+     * send window. Fire-and-forget; never throws; registers nothing when the
+     * automation is off so it costs one config read on a normal poll.
+     */
+    public function fireFromRequest(): void
+    {
+        try {
+            if (!$this->isAutoEnabled()) {
+                return;
+            }
+            app()->terminating(function () {
+                try {
+                    app(self::class)->drainWithLock();
+                } catch (\Throwable $e) {
+                    Log::warning('OpenOrderLocation: terminating drain failed', ['error' => $e->getMessage()]);
+                }
+            });
+        } catch (\Throwable $e) {
+            // Some environments (e.g. console/testing) can't register terminating
+            // callbacks — the every-minute cron is the fallback there.
+            Log::debug('OpenOrderLocation: fireFromRequest skipped', ['error' => $e->getMessage()]);
+        }
     }
 
     /**

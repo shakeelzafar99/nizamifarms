@@ -763,8 +763,41 @@ class OrderModel extends BaseModel
             }
 
             DB::commit();
+
+            // WhatsApp "order received" automation (Jun-2026). Fire ONLY for a
+            // brand-new order arrival — never on an update, and never on the
+            // Shopify->prod conversion ($forceProdOrder), which has its own
+            // accept/location automation. SCOPE (owner, Jun-2026): SHOPIFY-
+            // received orders only — orders created in our own open-orders
+            // system are intentionally excluded (the `$isShopify` guard). To
+            // also cover those later, drop the `$isShopify` guard (and add a
+            // per-rule source option if both are wanted). Deferred to app
+            // terminating so the WhatsApp send never blocks order creation, and
+            // fully isolated so it can never affect the committed order. Dormant
+            // unless the operator has enabled an order-received rule + master switch.
+            if ($existingOrder === null && empty($forceProdOrder) && $isShopify) {
+                try {
+                    $createdOrder = $order->load(['customer', 'lineItems']);
+                    $createdIsShopify = $isShopify;
+                    app()->terminating(function () use ($createdOrder, $createdIsShopify) {
+                        try {
+                            app(\App\Services\WhatsApp\Automation\WhatsAppAutomationService::class)
+                                ->dispatch('order.created', [
+                                    'order'      => $createdOrder,
+                                    'order_id'   => $createdOrder->id,
+                                    'is_shopify' => $createdIsShopify,
+                                ]);
+                        } catch (\Throwable $e) {
+                            \Log::warning('WA order.created automation failed', ['error' => $e->getMessage()]);
+                        }
+                    });
+                } catch (\Throwable $e) {
+                    \Log::warning('WA order.created scheduling failed', ['error' => $e->getMessage()]);
+                }
+            }
+
             return $order->load(['customer', 'lineItems']);
-            
+
         } catch (\Exception $e) {
             DB::rollBack();
             throw $e;

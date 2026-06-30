@@ -355,6 +355,15 @@ class OrderController extends Controller
             // Who last set each line-item quantity (barcode-qty badge: source + when + who)
             $order->load('lineItems.qtyUpdater:id,fullname');
 
+            // Jun-2026: the customer's latest WhatsApp button reply (Confirm /
+            // Split / Cancel) so the approve/detail modal can show exactly what
+            // they chose. Null when there's none. Never throws.
+            $customerReply = null;
+            if ($order->customer_id) {
+                $replyMap = \App\Services\WhatsApp\OrderReplyService::latestReplyForCustomers([$order->customer_id], 60);
+                $customerReply = $replyMap[$order->customer_id] ?? null;
+            }
+
             return response()->json([
                 'success' => true,
                 'order' => $order,
@@ -372,6 +381,7 @@ class OrderController extends Controller
                 'delivery_region_id' => $custRegionId,
                 'is_qurbani' => $isQurbani,
                 'qurbani_payments' => $qurbaniPayments,
+                'customer_reply' => $customerReply,
             ]);
         } catch (\Exception $e) {
             return response()->json([
@@ -2457,8 +2467,11 @@ class OrderController extends Controller
             // they qualify (no-op when the switch is off). Never blocks order creation.
             if ($order->customer_id) {
                 try {
-                    app(\App\Services\Location\OpenOrderLocationService::class)
-                        ->enqueue((int) $order->customer_id, (int) $order->id, 'nf_create');
+                    $locSvc = app(\App\Services\Location\OpenOrderLocationService::class);
+                    $locSvc->enqueue((int) $order->customer_id, (int) $order->id, 'nf_create');
+                    // Inside the window this sends instantly (drain fires off-request,
+                    // never blocks); outside it no-ops and the row waits for the morning.
+                    $locSvc->fireFromRequest();
                 } catch (\Throwable $e) {
                     \Log::warning('Auto location-request enqueue failed for new order', [
                         'order_id' => $order->id, 'error' => $e->getMessage(),
@@ -2836,8 +2849,11 @@ class OrderController extends Controller
             // they qualify (no-op when the switch is off). Never blocks conversion.
             if ($convertedOrder->customer_id) {
                 try {
-                    app(\App\Services\Location\OpenOrderLocationService::class)
-                        ->enqueue((int) $convertedOrder->customer_id, (int) $convertedOrder->id, 'shopify_convert');
+                    $locSvc = app(\App\Services\Location\OpenOrderLocationService::class);
+                    $locSvc->enqueue((int) $convertedOrder->customer_id, (int) $convertedOrder->id, 'shopify_convert');
+                    // Inside the window this sends instantly (drain fires off-request,
+                    // never blocks); outside it no-ops and the row waits for the morning.
+                    $locSvc->fireFromRequest();
                 } catch (\Throwable $e) {
                     \Log::warning('Auto location-request enqueue failed for converted order', [
                         'order_id' => $convertedOrder->id, 'error' => $e->getMessage(),
@@ -3321,11 +3337,24 @@ class OrderController extends Controller
                 }
             } catch (\Exception $e) {}
 
+            // Jun-2026: batch-load each customer's latest WhatsApp button reply
+            // ("Confirm Wednesday" / "Split delivery" / "Cancel order" etc.) so the
+            // Shopify approval queue can show an "options received" marker before
+            // converting. Shopify-source only (that's where the button templates
+            // go out); one service call for the whole page; never throws.
+            $customerReplyMap = [];
+            if ($source === 'shopify') {
+                $replyCustomerIds = $orders->pluck('customer_id')->filter()->unique()->values()->all();
+                if (!empty($replyCustomerIds)) {
+                    $customerReplyMap = \App\Services\WhatsApp\OrderReplyService::latestReplyForCustomers($replyCustomerIds);
+                }
+            }
+
             // Add customer order count and region info to each order
-            $orders->transform(function($order) use ($customerOrderCounts, $regionMap, $dispatcherNames) {
+            $orders->transform(function($order) use ($customerOrderCounts, $regionMap, $dispatcherNames, $customerReplyMap) {
                 $orderCount = $customerOrderCounts[$order->customer_id] ?? 0;
                 $isNewCustomer = $orderCount <= 1;
-                
+
                 $order->customer_order_count = $orderCount;
                 $order->customer_is_new = $isNewCustomer;
                 $order->customer_badge = $isNewCustomer ? 'NEW' : "{$orderCount} orders";
@@ -3335,7 +3364,8 @@ class OrderController extends Controller
                 $order->eta_calculated_by_name = $order->eta_calculated_by
                     ? ($dispatcherNames[$order->eta_calculated_by] ?? null)
                     : null;
-                
+                $order->customer_reply = $customerReplyMap[$order->customer_id] ?? null;
+
                 return $order;
             });
 

@@ -25,6 +25,11 @@ class OpenOrderLocationController extends Controller
             return response()->json(['success' => false, 'message' => 'Feature disabled'], 404);
         }
 
+        // Pressing "Get Locations" also flushes any queued auto-requests off this
+        // request (no-op when the automation is off; lock-shared with the cron),
+        // so the stats below reflect a fresh drain.
+        $this->service->fireFromRequest();
+
         $snapshot = $this->service->snapshot();
 
         return response()->json([

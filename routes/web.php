@@ -539,6 +539,20 @@ Route::middleware(['auth'])->group(function () {
         Route::post('/auto-reply/rules',          [\App\Http\Controllers\Web\WhatsAppWebController::class, 'saveAutoReplyRule'])->name('messages.autoReply.create');
         Route::post('/auto-reply/rules/{id}',     [\App\Http\Controllers\Web\WhatsAppWebController::class, 'saveAutoReplyRule'])->name('messages.autoReply.update');
         Route::delete('/auto-reply/rules/{id}',   [\App\Http\Controllers\Web\WhatsAppWebController::class, 'deleteAutoReplyRule'])->name('messages.autoReply.delete');
+
+        // Event-triggered automations (order / invoice) — Jun 2026, Phase 1.
+        // Settings only; the dispatcher (WhatsAppAutomationService) does the
+        // sending from order/invoice seams wired in Phases 2 & 3. Gated on
+        // manage_wa_auto_reply inside the controller. See create_wa_automations_jun2026.sql.
+        Route::get('/automations',              [\App\Http\Controllers\Web\WhatsAppAutomationController::class, 'index'])->name('messages.automations.get');
+        Route::post('/automations/toggle',      [\App\Http\Controllers\Web\WhatsAppAutomationController::class, 'toggle'])->name('messages.automations.toggle');
+        Route::post('/automations/test-phone',  [\App\Http\Controllers\Web\WhatsAppAutomationController::class, 'saveTestPhone'])->name('messages.automations.testPhone');
+        Route::post('/automations/rules/{key}', [\App\Http\Controllers\Web\WhatsAppAutomationController::class, 'saveRule'])->name('messages.automations.saveRule');
+        Route::get('/automations/log',          [\App\Http\Controllers\Web\WhatsAppAutomationController::class, 'log'])->name('messages.automations.log');
+        // Non-gated: lets the Send-Invoice dialogs pre-fill online/cash template by payment method.
+        Route::get('/automations/invoice-template-map', [\App\Http\Controllers\Web\WhatsAppAutomationController::class, 'invoiceTemplateMap'])->name('messages.automations.invoiceTemplateMap');
+        // Non-gated: full Send-Invoice plan for one order (template + body vars + ETA).
+        Route::get('/automations/invoice-send-plan/{orderId}', [\App\Http\Controllers\Web\WhatsAppAutomationController::class, 'invoiceSendPlan'])->name('messages.automations.invoiceSendPlan');
     });
 
     // Campaign Management Routes

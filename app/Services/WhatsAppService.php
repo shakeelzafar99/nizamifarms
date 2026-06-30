@@ -1195,24 +1195,46 @@ class WhatsAppService
             return;
         }
 
-        // Per-conversation cooldown applies across ALL rules so that if the
-        // operator stacks multiple rules (e.g. weekday-late + weekend-all-day)
-        // the customer never gets pelted with replies. We look at the most
-        // recent outbound auto-reply on this conversation regardless of which
-        // rule generated it.
-        $cooldownHours = (int) ($rule->cooldown_hours ?? 0);
-        if ($cooldownHours > 0 && \Illuminate\Support\Facades\Schema::hasColumn('t_wa_messages', 'auto_reply_rule_id')) {
-            $cutoff = now()->subHours($cooldownHours);
-            $recent = \Illuminate\Support\Facades\DB::table('t_wa_messages')
-                ->where('conversation_id', $conversation->id)
-                ->whereNotNull('auto_reply_rule_id')
-                ->where('created_at', '>=', $cutoff)
-                ->exists();
-            if ($recent) {
-                Log::debug('WhatsApp auto-reply: cooldown active, skipping', [
+        // Per-conversation throttle so a customer is never pelted with the same
+        // auto-reply (Jun-2026 fix). THREE modes — see cooldown_mode on the rule:
+        //   - 'daily'   : at most one auto-reply to this conversation per
+        //                 calendar day. The safe default for out-of-hours /
+        //                 holiday rules and the fix for the "same message every
+        //                 few hours across a multi-day holiday" complaint.
+        //   - 'rolling' : at most one auto-reply every N hours. Legacy behaviour;
+        //                 N is floored at 1 so a mis-set 0 can NEVER disable the
+        //                 throttle (the old code skipped the throttle entirely
+        //                 when cooldown_hours was 0).
+        //   - 'once'    : at most one auto-reply for THIS rule per active period
+        //                 (since active_from, else ever) — e.g. a single holiday
+        //                 greeting per customer.
+        // 'daily'/'rolling' look across ALL rules (stacked rules can't double
+        // send); 'once' is scoped to this rule. Defaults to 'daily' when the
+        // column is absent, so behaviour is sane even before the SQL is run.
+        if (\Illuminate\Support\Facades\Schema::hasColumn('t_wa_messages', 'auto_reply_rule_id')) {
+            $mode = $rule->cooldown_mode ?? 'daily';
+            $throttleQ = \Illuminate\Support\Facades\DB::table('t_wa_messages')
+                ->where('conversation_id', $conversation->id);
+
+            if ($mode === 'once') {
+                $throttleQ->where('auto_reply_rule_id', (int) $rule->id);
+                if (!empty($rule->active_from)) {
+                    $throttleQ->where('created_at', '>=', \Carbon\Carbon::parse($rule->active_from)->startOfDay());
+                }
+            } elseif ($mode === 'rolling') {
+                $hours = max(1, (int) ($rule->cooldown_hours ?? 6));
+                $throttleQ->whereNotNull('auto_reply_rule_id')
+                          ->where('created_at', '>=', now()->subHours($hours));
+            } else { // 'daily' (default)
+                $throttleQ->whereNotNull('auto_reply_rule_id')
+                          ->where('created_at', '>=', now()->startOfDay());
+            }
+
+            if ($throttleQ->exists()) {
+                Log::debug('WhatsApp auto-reply: throttled, skipping', [
                     'conversation_id' => $conversation->id,
                     'rule_id'         => $rule->id,
-                    'cooldown_hours'  => $cooldownHours,
+                    'cooldown_mode'   => $mode,
                 ]);
                 return;
             }
@@ -1321,6 +1343,21 @@ class WhatsAppService
      */
     public function autoReplyRuleMatches($rule, \Carbon\Carbon $now): bool
     {
+        // Universal active-window gate (Jun-2026) — applies to EVERY match_mode.
+        // Lets a holiday rule auto-expire instead of firing forever, which was
+        // the root cause of an "always" Eid rule replying every day until it
+        // was manually disabled. Dates are inclusive; NULL = unbounded on that
+        // side. substr(0,10) tolerates either DATE or DATETIME storage.
+        $today = $now->toDateString();
+        $from = !empty($rule->active_from) ? substr((string) $rule->active_from, 0, 10) : null;
+        $to   = !empty($rule->active_to)   ? substr((string) $rule->active_to,   0, 10) : null;
+        if ($from && $today < $from) {
+            return false;
+        }
+        if ($to && $today > $to) {
+            return false;
+        }
+
         $mode = $rule->match_mode ?? 'time_window';
 
         if ($mode === 'always') {

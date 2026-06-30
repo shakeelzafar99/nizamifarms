@@ -8,6 +8,8 @@ use Illuminate\Support\Facades\Blade;
 use Illuminate\Support\ServiceProvider;
 use App\Models\CRM\OrderStatusHistory;
 use App\Observers\OrderStatusHistoryObserver;
+use App\Models\CRM\OrderModel;
+use App\Observers\OrderPaymentChangeObserver;
 
 class AppServiceProvider extends ServiceProvider
 {
@@ -26,7 +28,11 @@ class AppServiceProvider extends ServiceProvider
     {
         // Register observers for model events
         OrderStatusHistory::observe(OrderStatusHistoryObserver::class);
-        
+        // Jun-2026: "bank details on switch to online" automation — catches all
+        // payment_method change paths via one OrderModel `updated` hook. Fully
+        // guarded + off-by-default; see OrderPaymentChangeObserver.
+        OrderModel::observe(OrderPaymentChangeObserver::class);
+
         //
         Builder::macro('whereLike', function ($attributes, string $searchTerm) {
             if($searchTerm != ""){

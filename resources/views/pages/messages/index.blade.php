@@ -1606,6 +1606,16 @@ select.wa-mgr-input { background: #fff; cursor: pointer; }
             <button class="wa-modal-x" onclick="closeAutoReplySettings()">✕</button>
         </div>
         <div class="wa-modal-body" style="padding:0;display:flex;flex-direction:column;flex:1;min-height:0;">
+            {{-- ═══ Tab bar (Jun-2026): Out-of-office | Order actions | Invoice ═══ --}}
+            <div style="display:flex;gap:2px;padding:8px 12px 0;border-bottom:1px solid #e5e7eb;background:#fff;">
+                <button type="button" id="waTabBtn-ooo" onclick="switchAutoTab('ooo')" style="background:none;border:none;border-bottom:2px solid #16a34a;color:#166534;font-weight:600;font-size:13px;padding:8px 12px;cursor:pointer;">Out-of-office</button>
+                <button type="button" id="waTabBtn-order" onclick="switchAutoTab('order')" style="background:none;border:none;border-bottom:2px solid transparent;color:#6b7280;font-weight:500;font-size:13px;padding:8px 12px;cursor:pointer;">Order actions</button>
+                <button type="button" id="waTabBtn-invoice" onclick="switchAutoTab('invoice')" style="background:none;border:none;border-bottom:2px solid transparent;color:#6b7280;font-weight:500;font-size:13px;padding:8px 12px;cursor:pointer;">Invoice &amp; dispatch</button>
+                <button type="button" id="waTabBtn-templates" onclick="waOpenTemplatesTab()" style="background:none;border:none;border-bottom:2px solid transparent;color:#6b7280;font-weight:500;font-size:13px;padding:8px 12px;cursor:pointer;margin-left:auto;">📄 Templates</button>
+            </div>
+
+            {{-- ═══ PANEL: Out-of-office (the existing auto-reply UI) ═══ --}}
+            <div id="waTab-ooo" style="display:flex;flex-direction:column;flex:1;min-height:0;">
             {{-- Help strip + master toggle. Help text is intentionally short
                  (one line) so it doesn't push the rule list off the screen. --}}
             <div style="padding:12px 16px;border-bottom:1px solid #e5e7eb;background:#fafafa;display:flex;align-items:center;gap:14px;flex-wrap:wrap;">
@@ -1662,9 +1672,32 @@ select.wa-mgr-input { background: #fff; cursor: pointer; }
                                 <div style="font-size:11px;color:#9ca3af;margin-top:3px;">Lower runs first.</div>
                             </div>
                             <div style="flex:1;">
-                                <label style="display:block;font-size:12px;font-weight:600;color:#374151;margin-bottom:4px;">Cooldown (hours)</label>
-                                <input type="number" id="arCooldown" min="0" max="168" value="6" style="width:100%;padding:8px 10px;border:1px solid #e5e7eb;border-radius:6px;font-size:13px;box-sizing:border-box;" />
-                                <div style="font-size:11px;color:#9ca3af;margin-top:3px;">Per customer.</div>
+                                <label style="display:block;font-size:12px;font-weight:600;color:#374151;margin-bottom:4px;">Send how often</label>
+                                <select id="arCooldownMode" onchange="onArCooldownModeChange()" style="width:100%;padding:8px 10px;border:1px solid #e5e7eb;border-radius:6px;font-size:13px;background:white;">
+                                    <option value="daily">Once per customer / day</option>
+                                    <option value="once">Once per customer (whole period)</option>
+                                    <option value="rolling">Every N hours</option>
+                                </select>
+                                <div id="arCooldownHoursWrap" style="display:none;margin-top:6px;">
+                                    <input type="number" id="arCooldown" min="1" max="168" value="6" placeholder="hours" style="width:100%;padding:8px 10px;border:1px solid #e5e7eb;border-radius:6px;font-size:13px;box-sizing:border-box;" />
+                                    <div style="font-size:11px;color:#9ca3af;margin-top:3px;">Hours between replies.</div>
+                                </div>
+                            </div>
+                        </div>
+
+                        {{-- Active date range (optional). Lets a holiday rule auto-expire
+                             instead of firing forever — the fix for the "always" Eid trap. --}}
+                        <div style="display:flex;gap:12px;margin-bottom:12px;">
+                            <div style="flex:1;">
+                                <label style="display:block;font-size:12px;font-weight:600;color:#374151;margin-bottom:4px;">Active from</label>
+                                <input type="date" id="arActiveFrom" style="width:100%;padding:8px 10px;border:1px solid #e5e7eb;border-radius:6px;font-size:13px;box-sizing:border-box;" />
+                            </div>
+                            <div style="flex:1;">
+                                <label style="display:block;font-size:12px;font-weight:600;color:#374151;margin-bottom:4px;">Active until</label>
+                                <input type="date" id="arActiveTo" style="width:100%;padding:8px 10px;border:1px solid #e5e7eb;border-radius:6px;font-size:13px;box-sizing:border-box;" />
+                            </div>
+                            <div style="flex:1;display:flex;align-items:flex-end;">
+                                <div style="font-size:11px;color:#9ca3af;line-height:1.4;">Optional. Blank = runs indefinitely. Set an end date for holidays so the rule stops itself.</div>
                             </div>
                         </div>
 
@@ -1722,6 +1755,32 @@ select.wa-mgr-input { background: #fff; cursor: pointer; }
                         </div>
                     </div>
                 </div>
+            </div>
+            </div>{{-- /#waTab-ooo --}}
+
+            {{-- ═══ PANEL: Order actions ═══ --}}
+            <div id="waTab-order" style="display:none;flex:1;overflow-y:auto;padding:16px;">
+                <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:14px;padding:10px 12px;background:#f9fafb;border:1px solid #e5e7eb;border-radius:8px;">
+                    <label style="display:flex;align-items:center;gap:8px;padding:5px 10px;background:#ecfdf5;border:1px solid #86efac;border-radius:8px;cursor:pointer;font-weight:600;color:#166534;font-size:13px;">
+                        <input type="checkbox" id="waAutoMaster" onchange="toggleAutoMaster(this.checked)" /> <span id="waAutoMasterLabel">Automations: Off</span>
+                    </label>
+                    <div style="display:flex;align-items:center;gap:6px;font-size:12px;color:#6b7280;">
+                        <span>🧪 Test to my number:</span>
+                        <input type="text" id="waAutoTestPhone" placeholder="blank = real customers" style="padding:6px 8px;border:1px solid #e5e7eb;border-radius:6px;font-size:12px;width:150px;" />
+                        <button class="wa-btn wa-btn-gray" style="padding:5px 10px;font-size:12px;" onclick="saveAutoTestPhone()">Save</button>
+                    </div>
+                    <button class="wa-btn wa-btn-gray" style="margin-left:auto;padding:5px 10px;font-size:12px;" onclick="toggleAutoLog()">📋 Activity</button>
+                </div>
+                <div id="waAutoLog" style="display:none;margin-bottom:14px;"></div>
+                <div style="font-size:12px;color:#6b7280;background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:8px 12px;margin-bottom:12px;line-height:1.4;">
+                    <strong>Note:</strong> the order-received rules currently fire for <strong>Shopify-received orders only</strong> — not orders you create in your own open-orders system. (We can extend them to those later.)
+                </div>
+                <div id="waAutoOrderCards"><div style="color:#9ca3af;font-size:13px;padding:30px;text-align:center;">Loading…</div></div>
+            </div>
+
+            {{-- ═══ PANEL: Invoice & dispatch ═══ --}}
+            <div id="waTab-invoice" style="display:none;flex:1;overflow-y:auto;padding:16px;">
+                <div id="waAutoInvoiceCards"><div style="color:#9ca3af;font-size:13px;padding:30px;text-align:center;">Loading…</div></div>
             </div>
         </div>
     </div>
@@ -1815,6 +1874,7 @@ select.wa-mgr-input { background: #fff; cursor: pointer; }
                         <label style="display:flex;align-items:center;gap:4px;font-size:13px;cursor:pointer;"><input type="checkbox" id="tplShowShopify" checked /> Shopify</label>
                         <label style="display:flex;align-items:center;gap:4px;font-size:13px;cursor:pointer;background:#fffbeb;padding:2px 6px;border-radius:4px;border:1px solid #fde68a;margin-top:4px;"><input type="checkbox" id="tplShowInvoice" /> 📄 Regular Invoice</label>
                         <label style="display:flex;align-items:center;gap:4px;font-size:13px;cursor:pointer;background:#fef3c7;padding:2px 6px;border-radius:4px;border:1px solid #f59e0b;margin-top:4px;"><input type="checkbox" id="tplShowQurbaniInvoice" /> 🐄 Qurbani Invoice</label>
+                        <label style="display:flex;align-items:center;gap:4px;font-size:13px;cursor:pointer;background:#ede9fe;padding:2px 6px;border-radius:4px;border:1px solid #c4b5fd;margin-top:4px;" title="Used by automations only. Check this alone (uncheck the others) to hide it from the manual Send/Manage pickers."><input type="checkbox" id="tplShowAutomation" /> 🤖 Automation only</label>
                     </div>
                 </div>
                 <div style="margin-bottom:12px;">
@@ -1855,7 +1915,7 @@ select.wa-mgr-input { background: #fff; cursor: pointer; }
                 </div>
                 <div style="margin-bottom:12px;">
                     <label style="display:flex;align-items:center;gap:6px;font-size:13px;cursor:pointer;"><input type="checkbox" id="tplIsDefault" /> ⭐ Set as default invoice template</label>
-                    <div style="font-size:11px;color:#9ca3af;margin-top:2px;">Default template auto-selects when sending invoices</div>
+                    <div style="font-size:11px;color:#9ca3af;margin-top:2px;">Used for <b>Qurbani</b> invoices. For <b>regular</b> invoices the template is set in 🤖 Automations → Invoice &amp; dispatch (online/cash + ETA) — that's the single source of truth, so this star doesn't affect regular invoice sends.</div>
                 </div>
                 <div style="display:flex;gap:8px;">
                     <button id="tplSaveBtn" onclick="saveTemplateForm()" class="wa-mgr-save" style="flex:1;">Save Template</button>
@@ -2097,6 +2157,7 @@ select.wa-mgr-input { background: #fff; cursor: pointer; }
         if (!modal) return;
         modal.style.display = 'flex';
         document.getElementById('arStatus').textContent = '';
+        if (window.switchAutoTab) switchAutoTab('ooo');
         loadAutoReplyRules();
     };
     window.closeAutoReplySettings = function() {
@@ -2170,6 +2231,9 @@ select.wa-mgr-input { background: #fff; cursor: pointer; }
         document.getElementById('arMatchMode').value = r.match_mode || 'time_window';
         document.getElementById('arPriority').value = r.priority != null ? r.priority : 100;
         document.getElementById('arCooldown').value = r.cooldown_hours != null ? r.cooldown_hours : 6;
+        document.getElementById('arCooldownMode').value = r.cooldown_mode || 'daily';
+        document.getElementById('arActiveFrom').value = r.active_from ? String(r.active_from).slice(0,10) : '';
+        document.getElementById('arActiveTo').value = r.active_to ? String(r.active_to).slice(0,10) : '';
         document.getElementById('arEnabled').checked = !!r.enabled;
         const days = r.days_of_week ? r.days_of_week.split(',').map(s => parseInt(s,10)) : [];
         document.querySelectorAll('.ar-day').forEach(cb => {
@@ -2180,6 +2244,7 @@ select.wa-mgr-input { background: #fff; cursor: pointer; }
         document.getElementById('arSpecificDates').value = (r.specific_dates || []).join('\n');
         document.getElementById('arDeleteBtn').style.display = '';
         onArMatchModeChange();
+        onArCooldownModeChange();
         document.getElementById('arStatus').textContent = '';
         renderAutoReplyRuleList();
     };
@@ -2194,6 +2259,9 @@ select.wa-mgr-input { background: #fff; cursor: pointer; }
         document.getElementById('arMatchMode').value = 'time_window';
         document.getElementById('arPriority').value = 100;
         document.getElementById('arCooldown').value = 6;
+        document.getElementById('arCooldownMode').value = 'daily';
+        document.getElementById('arActiveFrom').value = '';
+        document.getElementById('arActiveTo').value = '';
         document.getElementById('arEnabled').checked = true;
         document.querySelectorAll('.ar-day').forEach(cb => { cb.checked = false; });
         document.getElementById('arStart').value = '';
@@ -2201,6 +2269,7 @@ select.wa-mgr-input { background: #fff; cursor: pointer; }
         document.getElementById('arSpecificDates').value = '';
         document.getElementById('arDeleteBtn').style.display = 'none';
         onArMatchModeChange();
+        onArCooldownModeChange();
         document.getElementById('arStatus').textContent = '';
         renderAutoReplyRuleList();
     };
@@ -2216,6 +2285,12 @@ select.wa-mgr-input { background: #fff; cursor: pointer; }
         const mode = document.getElementById('arMatchMode').value;
         document.getElementById('arTimeWindowFields').style.display = (mode === 'time_window') ? '' : 'none';
         document.getElementById('arSpecificDatesFields').style.display = (mode === 'specific_dates') ? '' : 'none';
+    };
+
+    window.onArCooldownModeChange = function() {
+        const mode = document.getElementById('arCooldownMode').value;
+        // The "hours between replies" input only matters for the rolling mode.
+        document.getElementById('arCooldownHoursWrap').style.display = (mode === 'rolling') ? '' : 'none';
     };
 
     window.toggleAutoReplyMaster = function(checked) {
@@ -2270,6 +2345,9 @@ select.wa-mgr-input { background: #fff; cursor: pointer; }
             start_time: (mode === 'time_window' ? document.getElementById('arStart').value : '') || null,
             end_time:   (mode === 'time_window' ? document.getElementById('arEnd').value   : '') || null,
             specific_dates: mode === 'specific_dates' ? specificDates : [],
+            cooldown_mode: document.getElementById('arCooldownMode').value,
+            active_from: document.getElementById('arActiveFrom').value || null,
+            active_to: document.getElementById('arActiveTo').value || null,
         };
 
         btn.disabled = true; status.style.color = '#6b7280'; status.textContent = 'Saving...';
@@ -2306,6 +2384,401 @@ select.wa-mgr-input { background: #fff; cursor: pointer; }
                 }
             })
             .catch(() => alert('Failed to delete.'));
+    };
+
+    // ═════════════════════════════════════════════════════════════════════
+    // Order / Invoice automations (Jun-2026, Phase 2). Shares apiFetch + CSRF
+    // with the auto-reply code above. Rules + their on/off come from
+    // /messages/automations (registry-driven, off by default).
+    // ═════════════════════════════════════════════════════════════════════
+    let _waAutoLoaded = false;
+    let _waAutoRules = [];
+    let _waAutoTemplates = null;
+
+    function waEsc(s){ return String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+
+    window.switchAutoTab = function(tab){
+        // Restore each panel's REAL display when active (ooo is a flex column;
+        // the others are simple scroll panes) — never '' which would drop the
+        // out-of-office flex layout back to block.
+        const disp = { ooo:'flex', order:'block', invoice:'block' };
+        ['ooo','order','invoice'].forEach(t => {
+            const panel = document.getElementById('waTab-'+t);
+            if (panel) panel.style.display = (t===tab) ? disp[t] : 'none';
+            const btn = document.getElementById('waTabBtn-'+t);
+            if (btn){
+                btn.style.borderBottom = (t===tab) ? '2px solid #16a34a' : '2px solid transparent';
+                btn.style.color = (t===tab) ? '#166534' : '#6b7280';
+                btn.style.fontWeight = (t===tab) ? '600' : '500';
+            }
+        });
+        if ((tab==='order' || tab==='invoice') && !_waAutoLoaded) loadAutomations();
+    };
+
+    // "Templates" tab: opens the existing Template Manager (list + create/edit +
+    // show-in + delete). We preload the template list first so the 👁 message
+    // previews in the manager resolve.
+    window.waOpenTemplatesTab = function(){
+        ensureAutoTemplates().then(function(){ if (window.openTemplateManager) openTemplateManager(); });
+    };
+
+    function ensureAutoTemplates(){
+        if (_waAutoTemplates) return Promise.resolve(_waAutoTemplates);
+        return apiFetch('/messages/templates').then(d => { _waAutoTemplates = d.templates || []; return _waAutoTemplates; })
+            .catch(() => { _waAutoTemplates = []; return []; });
+    }
+
+    function autoTemplateOptions(selected){
+        selected = selected || '';
+        let opts = '<option value="">— choose template —</option>';
+        const list = _waAutoTemplates || [];
+        if (!list.length) opts += '<option value="" disabled>No templates yet — create in Meta + add to the system</option>';
+        let found = false;
+        list.forEach(t => {
+            if (t.name === selected) found = true;
+            opts += `<option value="${waEsc(t.name)}" ${t.name===selected?'selected':''}>${waEsc(t.display_name||t.name)} (${t.variable_count||0} vars)</option>`;
+        });
+        if (selected && !found) opts += `<option value="${waEsc(selected)}" selected>${waEsc(selected)} (not in list)</option>`;
+        return opts;
+    }
+
+    // ── "View message" preview ────────────────────────────────────────────────
+    // Shows the actual WhatsApp copy a rule will send, with example values filled
+    // in. Reads body_text off the registered template (run the template seed so
+    // the automation templates carry their text). Buttons render as chips.
+    function waPreviewExample(body){
+        return String(body || '')
+            .replace(/\{\{\s*1\s*\}\}/g, 'Ali')
+            .replace(/\{\{\s*2\s*\}\}/g, 'NF-12345')
+            .replace(/\{\{\s*3\s*\}\}/g, 'Today, 4:10-4:40 PM');
+    }
+    window.waShowTemplatePreview = function(name){
+        if (!name){ alert('Pick a template first.'); return; }
+        const t = (_waAutoTemplates || []).find(x => x.name === name);
+        const old = document.getElementById('waTplPreviewModal'); if (old) old.remove();
+        let inner;
+        if (!t){
+            inner = `<div style="color:#b91c1c;font-size:13px;line-height:1.5;">"${waEsc(name)}" isn't registered in the app yet, so there's no saved copy to preview.<br><br>Run <code>seed_wa_templates_register_jun2026.sql</code> and clear cache to register the automation templates, then reopen this.</div>`;
+        } else {
+            const body = waPreviewExample(t.body_text || '(no message body saved for this template)');
+            let btns = [];
+            if (t.has_buttons && t.button_labels){
+                btns = Array.isArray(t.button_labels) ? t.button_labels : (function(){ try { return JSON.parse(t.button_labels); } catch(e){ return []; } })();
+            }
+            const btnHtml = btns.length
+                ? `<div style="margin-top:10px;display:flex;gap:6px;flex-wrap:wrap;">${btns.map(b=>`<span style="border:1px solid #25D366;color:#128C7E;border-radius:14px;padding:3px 10px;font-size:12px;">${waEsc(b)}</span>`).join('')}</div>`
+                : '';
+            inner = `<div style="font-size:11px;color:#6b7280;margin-bottom:6px;">${waEsc(t.display_name||t.name)} · ${t.variable_count||0} vars</div>
+                <div style="white-space:pre-wrap;font-size:13px;color:#111827;background:#f0f7f4;border:1px solid #d6e9df;border-radius:8px;padding:12px;line-height:1.5;">${waEsc(body)}</div>
+                ${btnHtml}
+                <div style="font-size:11px;color:#9ca3af;margin-top:8px;">Preview with example values — name, order # and ETA fill in automatically when sent.</div>`;
+        }
+        const modal = document.createElement('div');
+        modal.id = 'waTplPreviewModal';
+        modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.45);z-index:10000;display:flex;align-items:center;justify-content:center;padding:20px;';
+        modal.innerHTML = `<div style="background:#fff;border-radius:14px;max-width:460px;width:100%;max-height:80vh;overflow:auto;padding:18px;box-shadow:0 12px 40px rgba(0,0,0,0.2);">
+            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;">
+                <div style="font-weight:600;font-size:15px;color:#111827;">📄 Message preview</div>
+                <button type="button" onclick="document.getElementById('waTplPreviewModal').remove()" style="background:none;border:none;font-size:20px;cursor:pointer;color:#6b7280;">&times;</button>
+            </div>
+            ${inner}
+        </div>`;
+        modal.addEventListener('click', e => { if (e.target === modal) modal.remove(); });
+        document.body.appendChild(modal);
+    }
+    window.waPreviewSelectById = function(id){ const el = document.getElementById(id); window.waShowTemplatePreview(el ? el.value : ''); };
+    window.waPreviewRowTpl = function(btn){ const row = btn.closest('.wa-sched-row'); const sel = row ? row.querySelector('.wsr-tpl') : null; window.waShowTemplatePreview(sel ? sel.value : ''); };
+
+    // ── Plain-English schedule summary (read-only; the editable rows live below) ──
+    function waFmtTime(t){
+        if (!t) return null;
+        const m = /^(\d{1,2}):(\d{2})/.exec(t); if (!m) return t;
+        let h = parseInt(m[1], 10); const mm = m[2];
+        const ap = h >= 12 ? 'PM' : 'AM'; let h12 = h % 12; if (h12 === 0) h12 = 12;
+        return h12 + ':' + mm + ' ' + ap;
+    }
+    function waSummaryDays(days){
+        const names = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+        if (!Array.isArray(days) || !days.length) return 'any day';
+        return days.map(d => names[d] || '?').join(', ');
+    }
+    function waSummaryComp(c){
+        return ({chicken_only:'chicken only', mixed:'chicken + red meat', red_meat_only:'red meat only'})[c] || '';
+    }
+    function waTplDisplayName(name){
+        const t = (_waAutoTemplates || []).find(x => x.name === name);
+        return t ? (t.display_name || t.name) : (name || '(none)');
+    }
+    function waScheduleSummary(cfg){
+        cfg = cfg || {};
+        const rows = Array.isArray(cfg.rows) ? cfg.rows : [];
+        const order = [], groups = {};
+        rows.forEach(r => {
+            const n = r.template || '(none chosen)';
+            if (!groups[n]){ groups[n] = []; order.push(n); }
+            const start = waFmtTime(r.start), end = waFmtTime(r.end);
+            const when = (start && end) ? (start + '–' + end) : 'all day';
+            const comp = waSummaryComp(r.composition);
+            groups[n].push(waSummaryDays(r.days) + ' ' + when + (comp ? (' (' + comp + ')') : ''));
+        });
+        // Inline 👁 preview per template so the operator can see exactly what each
+        // line sends (the Default included — handy to confirm it's a real template).
+        const eye = (name) => (name && name !== '(none chosen)')
+            ? ` <span onclick="window.waShowTemplatePreview('${waEsc(name)}')" title="View message" style="cursor:pointer;color:#2563eb;">👁</span>`
+            : '';
+        const items = order.map(n =>
+            `<li style="margin-bottom:4px;"><b>${waEsc(waTplDisplayName(n))}</b>${eye(n)} — ${groups[n].map(waEsc).join('; ')}</li>`);
+        if (cfg.default_template){
+            items.push(`<li style="margin-bottom:4px;"><b>Default → ${waEsc(waTplDisplayName(cfg.default_template))}</b>${eye(cfg.default_template)} — any other time</li>`);
+        }
+        if (!items.length) return '<div style="font-size:12px;color:#9ca3af;padding:6px 0;">No schedule rows yet — open Edit schedule below to add one.</div>';
+        return `<div style="background:#f8fafc;border:1px solid #eef2f7;border-radius:8px;padding:10px 12px;margin-bottom:8px;font-size:12px;color:#374151;">
+            <div style="font-weight:600;margin-bottom:5px;">📨 What this sends <span style="font-weight:400;color:#9ca3af;">(first match wins, top to bottom)</span></div>
+            <ul style="margin:0;padding-left:18px;line-height:1.5;">${items.join('')}</ul></div>`;
+    }
+    window.waToggleSchedEditor = function(key){
+        const el = document.getElementById('waSchedEditor-' + key);
+        const btn = document.getElementById('waSchedEditBtn-' + key);
+        if (!el) return;
+        const open = el.style.display === 'none';
+        el.style.display = open ? '' : 'none';
+        if (btn) btn.textContent = open ? '▲ Hide schedule editor' : '✏️ Edit schedule';
+    };
+
+    function loadAutomations(){
+        apiFetch('/messages/automations').then(d => {
+            if (!d.success){
+                document.getElementById('waAutoOrderCards').innerHTML =
+                    '<div style="color:#ef4444;padding:16px;font-size:13px;">'+(d.message||'Failed to load.')+'</div>';
+                return;
+            }
+            _waAutoLoaded = true;
+            _waAutoRules = d.rules || [];
+            const m = document.getElementById('waAutoMaster');
+            if (m){ m.checked = !!d.enabled; document.getElementById('waAutoMasterLabel').textContent = 'Automations: '+(d.enabled?'On':'Off'); }
+            const tp = document.getElementById('waAutoTestPhone'); if (tp) tp.value = d.test_phone || '';
+            ensureAutoTemplates().then(renderAutoCards);
+        }).catch(() => {
+            document.getElementById('waAutoOrderCards').innerHTML = '<div style="color:#ef4444;padding:16px;font-size:13px;">Failed to load.</div>';
+        });
+    }
+
+    function renderAutoCards(){
+        const order = _waAutoRules.filter(r => r.tab==='order_actions');
+        const invoice = _waAutoRules.filter(r => r.tab==='invoice');
+        document.getElementById('waAutoOrderCards').innerHTML = order.map(renderAutoCard).join('') || '<div style="color:#9ca3af;padding:16px;">No order rules.</div>';
+        const inv = document.getElementById('waAutoInvoiceCards');
+        if (inv) inv.innerHTML = invoice.map(renderAutoCard).join('') || '<div style="color:#9ca3af;padding:16px;">No invoice rules.</div>';
+    }
+
+    function schedRowHtml(key, row){
+        row = row || {};
+        const days = Array.isArray(row.days) ? row.days.map(Number) : [];
+        const dayBoxes = [['Su',0],['Mo',1],['Tu',2],['We',3],['Th',4],['Fr',5],['Sa',6]].map(d =>
+            `<label style="display:inline-flex;align-items:center;gap:2px;font-size:11px;"><input type="checkbox" class="wsd" data-day="${d[1]}" ${days.includes(d[1])?'checked':''}/> ${d[0]}</label>`).join('');
+        const comp = row.composition || 'any';
+        const compOpts = [['any','Any items'],['chicken_only','Chicken only'],['mixed','Chicken + red meat'],['red_meat_only','Red meat only']]
+            .map(o => `<option value="${o[0]}" ${comp===o[0]?'selected':''}>${o[1]}</option>`).join('');
+        return `<div class="wa-sched-row" style="border:1px solid #eef2f7;border-radius:8px;padding:8px;margin-bottom:6px;">
+            <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:6px;">${dayBoxes}
+                <button type="button" onclick="this.closest('.wa-sched-row').remove()" style="margin-left:auto;background:none;border:none;color:#b91c1c;cursor:pointer;font-size:13px;">✕</button>
+            </div>
+            <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;">
+                <input type="time" class="wsr-start" value="${waEsc(row.start||'')}" style="padding:5px;border:1px solid #e5e7eb;border-radius:6px;font-size:12px;"/>
+                <span style="color:#9ca3af;font-size:12px;">to</span>
+                <input type="time" class="wsr-end" value="${waEsc(row.end||'')}" style="padding:5px;border:1px solid #e5e7eb;border-radius:6px;font-size:12px;"/>
+                <select class="wsr-comp" style="padding:5px;border:1px solid #e5e7eb;border-radius:6px;font-size:12px;">${compOpts}</select>
+                <select class="wsr-tpl" style="flex:1;min-width:150px;padding:5px;border:1px solid #e5e7eb;border-radius:6px;font-size:12px;">${autoTemplateOptions(row.template||'')}</select>
+                <button type="button" onclick="waPreviewRowTpl(this)" title="View message" style="background:none;border:none;cursor:pointer;font-size:15px;padding:2px 4px;">👁</button>
+            </div>
+        </div>`;
+    }
+
+    function renderScheduleEditor(r){
+        const cfg = r.config || {};
+        const rows = Array.isArray(cfg.rows) ? cfg.rows : [];
+        const rowsHtml = rows.map(row => schedRowHtml(r.key, row)).join('');
+        const key = waEsc(r.key);
+        // Read-only summary up top (grouped by template); the precise editable
+        // rows are collapsed below so the card reads cleanly at a glance.
+        return `<div style="margin-top:10px;border-top:1px dashed #e5e7eb;padding-top:10px;">
+            ${waScheduleSummary(cfg)}
+            <button type="button" id="waSchedEditBtn-${key}" class="wa-btn wa-btn-gray" style="padding:4px 10px;font-size:12px;" onclick="waToggleSchedEditor('${key}')">✏️ Edit schedule</button>
+            <div id="waSchedEditor-${key}" style="display:none;margin-top:10px;">
+                <div style="font-size:12px;font-weight:600;color:#374151;margin-bottom:6px;">Pick a template by when the order arrives (first match wins)</div>
+                <div id="waSchedRows-${key}">${rowsHtml}</div>
+                <button type="button" class="wa-btn wa-btn-gray" style="padding:4px 10px;font-size:12px;margin-top:4px;" onclick="addSchedRow('${key}')">+ Add rule</button>
+                <div style="margin-top:10px;">
+                    <label style="font-size:12px;font-weight:600;color:#374151;">Default template (if nothing above matches)
+                        <span onclick="waPreviewSelectById('waSchedDefault-${key}')" title="View message" style="cursor:pointer;font-weight:400;color:#2563eb;font-size:11px;margin-left:4px;">👁 view</span></label>
+                    <select id="waSchedDefault-${key}" style="width:100%;padding:7px 9px;border:1px solid #e5e7eb;border-radius:6px;font-size:13px;margin-top:4px;">${autoTemplateOptions(cfg.default_template||'')}</select>
+                </div>
+                <div style="font-size:11px;color:#9ca3af;margin-top:6px;">🔒 Customer name and order number fill in automatically. Composition (chicken vs red meat) is read from the order. The summary above refreshes after you Save.</div>
+            </div>
+        </div>`;
+    }
+
+    function renderAutoCard(r){
+        const avail = !!r.available;
+        const badge = avail
+            ? (r.enabled ? '<span style="background:#dcfce7;color:#166534;font-size:11px;padding:2px 8px;border-radius:10px;">On</span>'
+                         : '<span style="background:#f3f4f6;color:#6b7280;font-size:11px;padding:2px 8px;border-radius:10px;">Off</span>')
+            : '<span style="background:#fef3c7;color:#92400e;font-size:11px;padding:2px 8px;border-radius:10px;">Coming soon</span>';
+        let body = '';
+        if (!avail){
+            body = '<div style="font-size:12px;color:#9ca3af;padding:8px 0;">This automation ships in a later update.</div>';
+        } else if ((r.editable||[]).includes('schedule')){
+            body = renderScheduleEditor(r);
+        } else if ((r.editable||[]).includes('templates_online_cash')){
+            const cfg = r.config || {};
+            const k = waEsc(r.key);
+            const sel = (id, label, val) => `<div style="flex:1;min-width:170px;">
+                <label style="font-size:11px;font-weight:600;color:#6b7280;">${label}
+                    <span onclick="waPreviewSelectById('${id}')" title="View message" style="cursor:pointer;font-weight:400;color:#2563eb;margin-left:4px;">👁</span></label>
+                <select id="${id}" style="width:100%;padding:7px 9px;border:1px solid #e5e7eb;border-radius:6px;font-size:13px;margin-top:3px;">${autoTemplateOptions(val)}</select>
+            </div>`;
+            body = `<div style="margin-top:10px;border-top:1px dashed #e5e7eb;padding-top:10px;">
+                <div style="font-size:12px;font-weight:600;color:#374151;margin-bottom:5px;">Online / bank-transfer invoice</div>
+                <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:10px;">
+                    ${sel('waInvOnlineEta-'+k, 'with delivery ETA (3 vars)', cfg.online_eta_template)}
+                    ${sel('waInvOnlineNoeta-'+k, 'without ETA (2 vars)', cfg.online_noeta_template)}
+                </div>
+                <div style="font-size:12px;font-weight:600;color:#374151;margin-bottom:5px;">Cash invoice</div>
+                <div style="display:flex;gap:10px;flex-wrap:wrap;">
+                    ${sel('waInvCashEta-'+k, 'with delivery ETA (3 vars)', cfg.cash_eta_template)}
+                    ${sel('waInvCashNoeta-'+k, 'without ETA (2 vars)', cfg.cash_noeta_template)}
+                </div>
+                <div style="font-size:11px;color:#9ca3af;margin-top:6px;">The Send Invoice button auto-picks online vs cash by payment method, and the with-ETA version once the delivery time is known (you can still change it before sending).</div>
+            </div>`;
+        } else if ((r.editable||[]).includes('template')){
+            const tk = waEsc(r.key);
+            let tplBody = `<div style="margin-top:10px;border-top:1px dashed #e5e7eb;padding-top:10px;">
+                <label style="font-size:12px;font-weight:600;color:#374151;">Template
+                    <span onclick="waPreviewSelectById('waTpl-${tk}')" title="View message" style="cursor:pointer;font-weight:400;color:#2563eb;font-size:11px;margin-left:4px;">👁 view</span></label>
+                <select id="waTpl-${tk}" style="width:100%;padding:7px 9px;border:1px solid #e5e7eb;border-radius:6px;font-size:13px;margin-top:4px;">${autoTemplateOptions(r.template_name)}</select>
+            </div>`;
+            // Daily send window (location rule) — configured here so the whole
+            // automation lives on one screen.
+            if ((r.editable||[]).includes('location_window')){
+                const cfg = r.config || {};
+                const ws = waEsc(cfg.window_start || '09:00');
+                const we = waEsc(cfg.window_end || '18:00');
+                tplBody += `<div style="margin-top:10px;">
+                    <label style="font-size:12px;font-weight:600;color:#374151;">Send only during these hours (Asia/Karachi)</label>
+                    <div style="display:flex;gap:8px;align-items:center;margin-top:4px;">
+                        <input type="time" id="waLocWinStart-${tk}" value="${ws}" style="padding:6px 8px;border:1px solid #e5e7eb;border-radius:6px;font-size:13px;">
+                        <span style="color:#9ca3af;font-size:12px;">to</span>
+                        <input type="time" id="waLocWinEnd-${tk}" value="${we}" style="padding:6px 8px;border:1px solid #e5e7eb;border-radius:6px;font-size:13px;">
+                    </div>
+                    <div style="font-size:11px;color:#9ca3af;margin-top:4px;">Orders accepted outside these hours are queued and sent automatically when the window next opens.</div>
+                </div>`;
+            }
+            body = tplBody;
+        }
+        // The on/off toggle only shows for rules that expose 'enabled' (order +
+        // location). The invoice card has no auto toggle yet (sending is manual).
+        const toggle = (avail && (r.editable||[]).includes('enabled'))
+            ? `<label style="display:flex;align-items:center;gap:6px;font-size:12px;cursor:pointer;"><input type="checkbox" id="waEn-${waEsc(r.key)}" ${r.enabled?'checked':''}/> Enabled</label>`
+            : '';
+        const saveBtn = avail ? `<button type="button" class="wa-btn wa-btn-green" style="padding:6px 14px;font-size:12px;" onclick="saveAutoRule('${waEsc(r.key)}')">Save</button>` : '';
+        return `<div style="border:1px solid #e5e7eb;border-radius:12px;padding:14px;margin-bottom:12px;background:#fff;">
+            <div style="font-size:14px;font-weight:600;color:#111827;display:flex;align-items:center;gap:8px;">${waEsc(r.label)} ${badge}</div>
+            <div style="font-size:12px;color:#6b7280;margin-top:4px;line-height:1.45;">${waEsc(r.description)}</div>
+            <div style="font-size:11px;color:#9ca3af;margin-top:4px;">⏱ ${waEsc(r.trigger_summary)}</div>
+            ${body}
+            <div style="display:flex;align-items:center;gap:12px;margin-top:12px;">${toggle}<div style="margin-left:auto;">${saveBtn}</div></div>
+        </div>`;
+    }
+
+    window.addSchedRow = function(key){
+        const host = document.getElementById('waSchedRows-'+key);
+        if (host) host.insertAdjacentHTML('beforeend', schedRowHtml(key, {}));
+    };
+
+    function gatherSchedule(key){
+        const rows = [];
+        const host = document.getElementById('waSchedRows-'+key);
+        if (host){
+            host.querySelectorAll('.wa-sched-row').forEach(div => {
+                const days = Array.from(div.querySelectorAll('.wsd')).filter(c => c.checked).map(c => parseInt(c.dataset.day,10));
+                rows.push({
+                    days: days,
+                    start: div.querySelector('.wsr-start').value || null,
+                    end: div.querySelector('.wsr-end').value || null,
+                    composition: div.querySelector('.wsr-comp').value,
+                    template: div.querySelector('.wsr-tpl').value,
+                });
+            });
+        }
+        const def = document.getElementById('waSchedDefault-'+key);
+        return { rows: rows, default_template: def ? def.value : '' };
+    }
+
+    window.saveAutoRule = function(key){
+        const r = _waAutoRules.find(x => x.key===key);
+        if (!r) return;
+        const enabled = !!(document.getElementById('waEn-'+key) && document.getElementById('waEn-'+key).checked);
+        const payload = { enabled: enabled };
+        if ((r.editable||[]).includes('schedule')) payload.config = gatherSchedule(key);
+        else if ((r.editable||[]).includes('templates_online_cash')) payload.config = {
+            online_eta_template:   (document.getElementById('waInvOnlineEta-'+key) || {}).value || '',
+            online_noeta_template: (document.getElementById('waInvOnlineNoeta-'+key) || {}).value || '',
+            cash_eta_template:     (document.getElementById('waInvCashEta-'+key) || {}).value || '',
+            cash_noeta_template:   (document.getElementById('waInvCashNoeta-'+key) || {}).value || '',
+        };
+        else if ((r.editable||[]).includes('template')) {
+            payload.template_name = (document.getElementById('waTpl-'+key) || {}).value || null;
+            if ((r.editable||[]).includes('location_window')) {
+                payload.config = {
+                    window_start: (document.getElementById('waLocWinStart-'+key) || {}).value || '',
+                    window_end:   (document.getElementById('waLocWinEnd-'+key) || {}).value || '',
+                };
+            }
+        }
+        apiFetch('/messages/automations/rules/'+encodeURIComponent(key), { method:'POST', body: JSON.stringify(payload) })
+            .then(d => {
+                if (d.success){ if (d.blocked) alert('This automation is not available yet.'); loadAutomations(); }
+                else alert(d.message || 'Failed to save.');
+            }).catch(() => alert('Failed to save.'));
+    };
+
+    window.toggleAutoMaster = function(checked){
+        document.getElementById('waAutoMasterLabel').textContent = 'Automations: '+(checked?'On':'Off');
+        apiFetch('/messages/automations/toggle', { method:'POST', body: JSON.stringify({ enabled: checked }) })
+            .then(d => { if (!d.success){ document.getElementById('waAutoMaster').checked = !checked; document.getElementById('waAutoMasterLabel').textContent = 'Automations: '+(!checked?'On':'Off'); alert(d.message||'Failed.'); } })
+            .catch(() => { document.getElementById('waAutoMaster').checked = !checked; alert('Failed.'); });
+    };
+
+    window.saveAutoTestPhone = function(){
+        const phone = document.getElementById('waAutoTestPhone').value.trim();
+        apiFetch('/messages/automations/test-phone', { method:'POST', body: JSON.stringify({ phone: phone }) })
+            .then(d => { if (d.success) alert(phone ? ('Test mode ON — automation sends go to '+(d.test_phone||phone)) : 'Test mode off — sends go to real customers.'); else alert(d.message||'Failed.'); })
+            .catch(() => alert('Failed.'));
+    };
+
+    window.toggleAutoLog = function(){
+        const box = document.getElementById('waAutoLog');
+        if (box.style.display !== 'none'){ box.style.display = 'none'; return; }
+        box.style.display = '';
+        box.innerHTML = '<div style="color:#9ca3af;font-size:12px;padding:10px;">Loading…</div>';
+        apiFetch('/messages/automations/log').then(d => {
+            if (!d.success){ box.innerHTML = '<div style="color:#ef4444;font-size:12px;padding:10px;">Failed to load log.</div>'; return; }
+            const c = d.counts || {};
+            const head = `<div style="display:flex;gap:8px;margin-bottom:8px;font-size:12px;flex-wrap:wrap;">
+                <span style="background:#dcfce7;color:#166534;padding:2px 8px;border-radius:10px;">Sent ${c.sent||0}</span>
+                <span style="background:#fee2e2;color:#b91c1c;padding:2px 8px;border-radius:10px;">Failed ${c.failed||0}</span>
+                <span style="background:#f3f4f6;color:#6b7280;padding:2px 8px;border-radius:10px;">Skipped ${c.skipped||0}</span>
+                <span style="color:#9ca3af;align-self:center;">last 7 days</span></div>`;
+            const rows = (d.log||[]).slice(0,50).map(l => {
+                const color = l.status==='sent' ? '#166534' : (l.status==='failed' ? '#b91c1c' : '#6b7280');
+                const detail = l.skip_reason || l.error_message || l.template_name || '';
+                return `<div style="display:flex;gap:8px;font-size:12px;padding:4px 0;border-bottom:1px solid #f3f4f6;">
+                    <span style="color:${color};font-weight:600;width:62px;">${waEsc(l.status)}</span>
+                    <span style="color:#374151;flex:1;">${waEsc(l.rule_key)}${l.order_id?(' · #'+waEsc(l.order_id)):''}${detail?(' · '+waEsc(detail)):''}</span>
+                    <span style="color:#9ca3af;white-space:nowrap;">${l.created_at?waEsc(String(l.created_at).slice(0,16).replace('T',' ')):''}</span></div>`;
+            }).join('') || '<div style="color:#9ca3af;font-size:12px;padding:10px;">No activity yet.</div>';
+            box.innerHTML = `<div style="border:1px solid #e5e7eb;border-radius:8px;padding:10px;background:#fafafa;">${head}${rows}</div>`;
+        }).catch(() => { box.innerHTML = '<div style="color:#ef4444;font-size:12px;padding:10px;">Failed to load log.</div>'; });
     };
 
     function apiFetch(url, opts = {}) {
@@ -3457,6 +3930,9 @@ select.wa-mgr-input { background: #fff; cursor: pointer; }
     // ── Template Manager ──
     window.openTemplateManager = function() {
         document.getElementById('waTemplateManager').style.display = 'flex';
+        // Warm the template cache so the per-row 👁 message previews resolve
+        // regardless of how the manager was opened (tab or the ⚙ gear).
+        if (typeof ensureAutoTemplates === 'function') ensureAutoTemplates();
         resetTemplateForm();
         loadExistingTemplates();
     };
@@ -3481,7 +3957,7 @@ select.wa-mgr-input { background: #fff; cursor: pointer; }
             _existingTemplatesById = {};
             tpls.forEach(t => { _existingTemplatesById[t.id] = t; });
             if (!tpls.length) { el.innerHTML = '<p style="color:#9ca3af;font-size:13px;">No templates added yet.</p>'; return; }
-            el.innerHTML = tpls.map(t => {
+            const renderRow = (t) => {
                 const si = (t.show_in || 'messages,orders,customers').split(',');
                 const tagStyle = 'display:inline-block;padding:1px 6px;border-radius:4px;font-size:10px;font-weight:500;margin-right:3px;';
                 const tags = [
@@ -3490,7 +3966,8 @@ select.wa-mgr-input { background: #fff; cursor: pointer; }
                     {key:'customers',label:'Customers',bg:'#d1fae5',fg:'#065f46'},
                     {key:'shopify',label:'Shopify',bg:'#ede9fe',fg:'#5b21b6'},
                     {key:'invoice',label:'📄 Invoice',bg:'#fff7ed',fg:'#9a3412'},
-                    {key:'qurbani_invoice',label:'🐄 Qurbani Invoice',bg:'#fef3c7',fg:'#b45309'}
+                    {key:'qurbani_invoice',label:'🐄 Qurbani Invoice',bg:'#fef3c7',fg:'#b45309'},
+                    {key:'automation',label:'🤖 Automation',bg:'#ede9fe',fg:'#5b21b6'}
                 ].filter(x => si.includes(x.key)).map(x => `<span style="${tagStyle}background:${x.bg};color:${x.fg};">${x.label}</span>`).join('');
                 const defaultBadge = t.is_default ? `<span style="${tagStyle}background:#dcfce7;color:#166534;border:1px solid #86efac;">⭐ Default</span>` : '';
                 const qurbaniOnlyBadge = t.is_qurbani_only ? `<span style="${tagStyle}background:#fef3c7;color:#b45309;border:1px solid #fde68a;">🐄 Qurbani only</span>` : '';
@@ -3515,14 +3992,36 @@ select.wa-mgr-input { background: #fff; cursor: pointer; }
                         <div style="margin-top:4px;">${inactiveBadge}${qurbaniOnlyBadge}${regularOnlyBadge}${commonBadge}${defaultBadge}${tags}</div>
                     </div>
                     <div style="display:flex;gap:6px;align-items:center;">
+                        <button onclick="window.waShowTemplatePreview('${esc(t.name)}')" style="padding:4px 10px;background:#f0f7f4;border:1px solid #d6e9df;color:#128C7E;border-radius:6px;font-size:11px;cursor:pointer;" title="View message">👁</button>
                         <button onclick="toggleTemplateActive(${t.id})" style="${toggleBtnStyle}" title="${isActive ? 'Hide this template from pickers' : 'Show this template in pickers again'}">${toggleBtnLabel}</button>
                         <button onclick="editFullTemplate(${t.id})" style="${editBtnStyle}">${isEditingThis ? 'Editing…' : 'Edit'}</button>
                         <button onclick="deleteTemplate(${t.id})" class="wa-mgr-del">Delete</button>
                     </div>
                 </div>`;
-            }).join('');
+            };
+            // Segregate automation-only templates (show_in='automation') into a
+            // collapsed section so they don't clutter the main list.
+            const isAuto = (t) => String(t.show_in || '').split(',').map(s => s.trim()).includes('automation');
+            const pageTpls = tpls.filter(t => !isAuto(t));
+            const autoTpls = tpls.filter(isAuto);
+            let html = pageTpls.length ? pageTpls.map(renderRow).join('') : '<p style="color:#9ca3af;font-size:13px;">No page templates yet.</p>';
+            if (autoTpls.length){
+                html += `<div style="margin-top:14px;border-top:1px dashed #e5e7eb;padding-top:10px;">
+                    <div onclick="waToggleAutoTplSection()" style="cursor:pointer;font-size:12px;font-weight:600;color:#6b7280;display:flex;align-items:center;gap:6px;"><span id="waAutoTplCaret">▶</span> 🤖 Automation templates (${autoTpls.length}) — hidden from manual pickers</div>
+                    <div id="waAutoTplSection" style="display:none;margin-top:8px;">${autoTpls.map(renderRow).join('')}</div>
+                </div>`;
+            }
+            el.innerHTML = html;
         });
     }
+    window.waToggleAutoTplSection = function(){
+        const s = document.getElementById('waAutoTplSection');
+        const c = document.getElementById('waAutoTplCaret');
+        if (!s) return;
+        const open = s.style.display === 'none';
+        s.style.display = open ? '' : 'none';
+        if (c) c.textContent = open ? '▼' : '▶';
+    };
 
     // Quick toggle for is_active right from the list (no need to open edit).
     window.toggleTemplateActive = function(id) {
@@ -3569,6 +4068,7 @@ select.wa-mgr-input { background: #fff; cursor: pointer; }
         document.getElementById('tplShowShopify').checked = si.includes('shopify');
         document.getElementById('tplShowInvoice').checked = si.includes('invoice');
         document.getElementById('tplShowQurbaniInvoice').checked = si.includes('qurbani_invoice');
+        document.getElementById('tplShowAutomation').checked = si.includes('automation');
         document.getElementById('tplIsDefault').checked = !!t.is_default;
         document.getElementById('tplIsActive').checked = (typeof t.is_active === 'undefined') ? true : !!t.is_active;
         setTemplateScope(
@@ -3607,6 +4107,7 @@ select.wa-mgr-input { background: #fff; cursor: pointer; }
         document.getElementById('tplShowShopify').checked = true;
         document.getElementById('tplShowInvoice').checked = false;
         document.getElementById('tplShowQurbaniInvoice').checked = false;
+        document.getElementById('tplShowAutomation').checked = false;
         document.getElementById('tplIsDefault').checked = false;
         document.getElementById('tplIsActive').checked = true;
         setTemplateScope('common');
@@ -3653,6 +4154,7 @@ select.wa-mgr-input { background: #fff; cursor: pointer; }
         if (document.getElementById('tplShowShopify').checked) parts.push('shopify');
         if (document.getElementById('tplShowInvoice').checked) parts.push('invoice');
         if (document.getElementById('tplShowQurbaniInvoice').checked) parts.push('qurbani_invoice');
+        if (document.getElementById('tplShowAutomation').checked) parts.push('automation');
         return parts.length ? parts.join(',') : 'messages';
     }
 
@@ -4277,12 +4779,33 @@ select.wa-mgr-input { background: #fff; cursor: pointer; }
             </div>
             <div id="waInvPickerStatus" style="margin-top:8px;font-size:13px;text-align:center;display:none;"></div>`;
 
-        apiFetch('/messages/templates?context=invoice').then(d => {
+        // Resolve the right invoice template + body variables (online vs cash,
+        // with-ETA vs no-ETA by whether the order is out for delivery) from the
+        // server send-plan. Chat orders are always live (prod) orders, so no
+        // source param is needed. The ETA window contains a comma, so we stash a
+        // structured copy for comma-safe sending. Falls back to the first invoice
+        // template if the plan can't be fetched.
+        const fallbackInvTpl = () => apiFetch('/messages/templates?context=invoice').then(d => {
             if (d.success && d.templates && d.templates.length) {
                 const el = document.getElementById('waInvTplName');
                 if (el && !el.value) el.value = d.templates[0].name;
             }
         }).catch(() => {});
+        apiFetch('/messages/automations/invoice-send-plan/' + orderId).then(d => {
+            if (!d || !d.success || !d.template) { return fallbackInvTpl(); }
+            const nameEl = document.getElementById('waInvTplName');
+            if (nameEl) nameEl.value = d.template;
+            const parsEl = document.getElementById('waInvTplParams');
+            if (parsEl) {
+                // Keep the conversation's customer name (prior behaviour); add the
+                // ETA window as the 3rd var when the plan resolved one. The ETA
+                // contains a comma, so stash a structured copy for comma-safe send.
+                const nm = custName || (Array.isArray(d.body_params) ? (d.body_params[0] || '') : '') || '';
+                const parts = d.eta ? [nm, String(orderNum), d.eta] : [nm, String(orderNum)];
+                parsEl.dataset.structured = JSON.stringify(parts);
+                parsEl.value = parts.join(', ');
+            }
+        }).catch(() => { fallbackInvTpl(); });
 
         // Auto-generate the preview image on order select so the user sees
         // the invoice immediately and the Send button activates. Without
@@ -4348,8 +4871,22 @@ select.wa-mgr-input { background: #fff; cursor: pointer; }
     window.sendInvPicker = function(orderId) {
         const tplName = document.getElementById('waInvTplName').value.trim();
         if (!tplName) { alert('Please enter the template name'); return; }
-        const paramsStr = document.getElementById('waInvTplParams').value.trim();
-        const bodyParams = paramsStr ? paramsStr.split(',').map(s => s.trim()) : [];
+        const parsEl = document.getElementById('waInvTplParams');
+        const paramsStr = parsEl.value.trim();
+        // Prefer the structured params (set from the send-plan): the ETA window
+        // contains a comma, so a naive split would shatter it. Only fall back to
+        // splitting when the operator has hand-edited the field.
+        let bodyParams;
+        try {
+            const structured = parsEl.dataset.structured ? JSON.parse(parsEl.dataset.structured) : null;
+            if (Array.isArray(structured) && structured.join(', ') === paramsStr) {
+                bodyParams = structured;
+            } else {
+                bodyParams = paramsStr ? paramsStr.split(',').map(s => s.trim()) : [];
+            }
+        } catch (e) {
+            bodyParams = paramsStr ? paramsStr.split(',').map(s => s.trim()) : [];
+        }
         const phone = activeConv ? activeConv.wa_phone : '';
         if (!phone) { alert('No phone number'); return; }
 

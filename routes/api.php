@@ -393,6 +393,8 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::put('/orders/{orderId}/line-items/{lineItemId}/instructions', [\App\Http\Controllers\API\RiderController::class, 'updateLineItemInstructions']);
     // Barcode-qty: set an open order's line-item quantity from a scanned weight barcode.
     Route::put('/orders/{orderId}/line-items/{lineItemId}/quantity', [\App\Http\Controllers\API\RiderController::class, 'updateLineItemQuantity']);
+    // Barcode-qty: set MANY line-item quantities in one atomic request (manual "Save all").
+    Route::put('/orders/{orderId}/line-items/quantities', [\App\Http\Controllers\API\RiderController::class, 'updateLineItemQuantitiesBatch']);
     // Line-item quick-note presets (chips next to the "Add note" box).
     // Shared team-wide list; same controller backs the web routes in
     // routes/web.php so there is one source of truth.
@@ -692,6 +694,7 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::post('/test-notification', [WhatsAppController::class, 'testNotification']);
         Route::get('/customer-orders/{customerId}', [WhatsAppController::class, 'getCustomerOrders']);
         Route::get('/invoice-image/{orderId}', [WhatsAppController::class, 'getInvoiceImageUrl']);
+        Route::get('/invoice-send-plan/{orderId}', [WhatsAppController::class, 'invoiceSendPlan']);
         Route::post('/upload-invoice-image', [WhatsAppController::class, 'uploadInvoiceImage']);
         Route::post('/send-invoice', [WhatsAppController::class, 'sendInvoice']);
 

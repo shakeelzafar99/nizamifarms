@@ -292,28 +292,37 @@ class CustomerAppController extends Controller
                 ->limit($limit)
                 ->get();
 
-            // Item counts, fetched per source from the matching line-item table
-            // and keyed by "source_type:id" to avoid the prod/history id clash.
-            $counts  = [];
-            $prodIds = $orders->where('source_type', 'production')->pluck('id')->all();
-            $histIds = $orders->where('source_type', 'history')->pluck('id')->all();
+            // Item count + a small SKU sample per order, fetched per source from
+            // the matching line-item table in ONE grouped query each (no extra
+            // round-trips — the SKU concat rides on the same query that already
+            // produced the counts). Keyed by "source_type:id" to avoid the
+            // prod/history id clash. SKUs let the app show product thumbnails in
+            // the summary list without firing the detail endpoint per order.
+            // Capped to the first few distinct SKUs so a large order can't bloat
+            // the row (and so we never lean on group_concat_max_len).
+            $counts = [];
+            $skus   = [];
+            $skuCap = 6;
 
-            if (!empty($prodIds)) {
-                DB::table('t_crm_prod_order_line_item')
-                    ->whereIn('order_id', $prodIds)
+            $collectLineMeta = function ($table, $ids, $sourceType) use (&$counts, &$skus, $skuCap) {
+                if (empty($ids)) {
+                    return;
+                }
+                DB::table($table)
+                    ->whereIn('order_id', $ids)
                     ->groupBy('order_id')
-                    ->selectRaw('order_id, COUNT(*) as c')
+                    ->selectRaw("order_id, COUNT(*) as c, GROUP_CONCAT(DISTINCT NULLIF(sku, '')) as skus")
                     ->get()
-                    ->each(function ($r) use (&$counts) { $counts['production:' . $r->order_id] = (int) $r->c; });
-            }
-            if (!empty($histIds)) {
-                DB::table('t_crm_history_order_line_item')
-                    ->whereIn('order_id', $histIds)
-                    ->groupBy('order_id')
-                    ->selectRaw('order_id, COUNT(*) as c')
-                    ->get()
-                    ->each(function ($r) use (&$counts) { $counts['history:' . $r->order_id] = (int) $r->c; });
-            }
+                    ->each(function ($r) use (&$counts, &$skus, $sourceType, $skuCap) {
+                        $key          = $sourceType . ':' . $r->order_id;
+                        $counts[$key] = (int) $r->c;
+                        $list         = array_values(array_filter(array_map('trim', explode(',', (string) $r->skus))));
+                        $skus[$key]   = array_slice($list, 0, $skuCap);
+                    });
+            };
+
+            $collectLineMeta('t_crm_prod_order_line_item', $orders->where('source_type', 'production')->pluck('id')->all(), 'production');
+            $collectLineMeta('t_crm_history_order_line_item', $orders->where('source_type', 'history')->pluck('id')->all(), 'history');
 
             $rows = $orders->map(fn ($o) => [
                 'order_number'    => $this->stripShopifyPrefix($o->order_number),
@@ -325,6 +334,7 @@ class CustomerAppController extends Controller
                 'total'           => (float) $o->total_price,
                 'currency'        => $o->currency ?: 'PKR',
                 'item_count'      => (int) ($counts[$o->source_type . ':' . $o->id] ?? 0),
+                'skus'            => $skus[$o->source_type . ':' . $o->id] ?? [],
             ])->values();
 
             return response()->json([
