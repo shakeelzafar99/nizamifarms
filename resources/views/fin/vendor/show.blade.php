@@ -680,7 +680,7 @@
                                     $isSelected = $vendorDefaultPaymentSourceId == $source->id;
                                     $requiresApproval = $source->account_code === 'ONLINE';
                                 @endphp
-                                <option value="{{ $source->id }}" {{ $isSelected ? 'selected' : '' }}>
+                                <option value="{{ $source->id }}" data-account-category="{{ $source->account_category }}" {{ $isSelected ? 'selected' : '' }}>
                                     {{ $source->account_name }} (Rs. {{ number_format($source->current_balance, 2) }})
                                     @if($requiresApproval) - Requires Approval @endif
                                 </option>
@@ -690,7 +690,15 @@
                             ⚠️ Online payments require approval
                         </p>
                     </div>
-                    
+
+                    <!-- ⭐ Receiving bank — mandatory when paying from an ONLINE bank account -->
+                    <div id="vendorBankField" style="display: none; padding: 12px; background: #EFF6FF; border: 2px solid #BFDBFE; border-radius: 8px;">
+                        <label class="block text-sm font-medium text-gray-800 mb-2">🏦 Paid from Bank <span class="text-red-500">*</span></label>
+                        <div id="vendorBankChips" style="display: flex; flex-wrap: wrap; gap: 6px;"></div>
+                        <input type="hidden" name="receiving_account_id" id="vendor_receiving_account_id">
+                        <p style="font-size: 11px; color: #1D4ED8; margin: 6px 0 0 0;">Which bank this online payment leaves from — keeps per-bank balances correct.</p>
+                    </div>
+
                     <!-- Description -->
                     <div>
                         <label class="block text-sm font-medium text-gray-700 mb-1.5">Description (Optional)</label>
@@ -1094,7 +1102,69 @@ function openPaymentModalWithDate(transactionDate, payableAmount = 0) {
             amountInput.value = '0.00'; // Reset to 0 when no payable amount
         }
     }
+
+    // ⭐ Refresh the receiving-bank picker for the currently selected source.
+    renderVendorBankPicker();
 }
+
+// ============================================================
+// ⭐ Receiving-bank picker for ONLINE vendor payments
+// Shown (and required) only when the selected Pay-From account is a
+// bank-category account. Chips show each bank's computed balance.
+// ============================================================
+const vendorReceivingBanks = @json($receivingBanks ?? []);
+
+function vendorPaySourceIsOnline() {
+    const sel = document.getElementById('payment_source_account_id');
+    if (!sel) return false;
+    const opt = sel.options[sel.selectedIndex];
+    return !!(opt && opt.dataset && opt.dataset.accountCategory === 'bank');
+}
+
+function selectVendorBank(id) {
+    document.getElementById('vendor_receiving_account_id').value = id;
+    renderVendorBankPicker();
+}
+
+function renderVendorBankPicker() {
+    const field = document.getElementById('vendorBankField');
+    const chips = document.getElementById('vendorBankChips');
+    const hidden = document.getElementById('vendor_receiving_account_id');
+    if (!field || !chips || !hidden) return;
+
+    if (!vendorPaySourceIsOnline() || vendorReceivingBanks.length === 0) {
+        field.style.display = 'none';
+        hidden.value = '';
+        return;
+    }
+    field.style.display = 'block';
+    const current = hidden.value;
+    chips.innerHTML = vendorReceivingBanks.map(b => {
+        const active = String(current) === String(b.id);
+        const color = b.color_hex || '#3B82F6';
+        const bal = (b.balance !== undefined && b.balance !== null)
+            ? ` · Rs ${Math.round(Number(b.balance)).toLocaleString()}`
+            : '';
+        return `<button type="button" onclick="selectVendorBank(${b.id})" style="padding:6px 14px; border-radius:16px; border:1px solid ${active ? color : '#CBD5E1'}; background:${active ? color : '#F1F5F9'}; color:${active ? '#fff' : '#475569'}; font-size:13px; font-weight:600; cursor:pointer;">${(b.short_code || b.name)}<span style="font-weight:500; opacity:0.85;">${bal}</span></button>`;
+    }).join('');
+}
+
+document.addEventListener('DOMContentLoaded', function() {
+    const paySel = document.getElementById('payment_source_account_id');
+    if (paySel) {
+        paySel.addEventListener('change', renderVendorBankPicker);
+    }
+    // Block submit when an online source is chosen but no bank picked.
+    const payForm = document.getElementById('paymentForm');
+    if (payForm) {
+        payForm.addEventListener('submit', function(e) {
+            if (vendorPaySourceIsOnline() && !document.getElementById('vendor_receiving_account_id').value) {
+                e.preventDefault();
+                alert('Select which bank this online payment is made from.');
+            }
+        });
+    }
+});
 
 function closePaymentModal() {
     const modal = document.getElementById('paymentModal');

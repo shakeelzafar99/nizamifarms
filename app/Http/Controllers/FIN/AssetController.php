@@ -76,15 +76,28 @@ class AssetController extends Controller
                                            $q->whereIn('account_code', ['NF_CASH', 'ONLINE', 'EXP_FUND'])
                                              ->orWhere('account_code', 'LIKE', 'NF_FOOD%');
                                        })
-                                       ->get(['id', 'account_name', 'account_code']);
+                                       ->get(['id', 'account_name', 'account_code', 'account_category']);
         $vendors = VendorModel::where('is_active', 1)
                               ->orderBy('vendor_name')
                               ->get(['id', 'vendor_name']);
         $users = UserModel::where('is_active', 1)
                           ->orderBy('fullname')
                           ->get(['id', 'fullname']);
-        
-        return view('fin.asset.create', compact('businessUnits', 'categories', 'paymentAccounts', 'vendors', 'users'));
+
+        // Receiving banks (with computed balances) for the mandatory bank picker
+        // shown when the payment mode is online.
+        $bankBalances = app(\App\Services\FIN\BankBalanceService::class)->balancesByBank();
+        $receivingBanks = \App\Models\FIN\OnlineReceivingAccountModel::active()->ordered()
+            ->get(['id', 'name', 'short_code', 'color_hex', 'opening_balance'])
+            ->map(fn ($acc) => [
+                'id' => $acc->id,
+                'name' => $acc->name,
+                'short_code' => $acc->short_code,
+                'color_hex' => $acc->color_hex,
+                'balance' => $bankBalances[(int) $acc->id]['balance'] ?? (float) $acc->opening_balance,
+            ])->values();
+
+        return view('fin.asset.create', compact('businessUnits', 'categories', 'paymentAccounts', 'vendors', 'users', 'receivingBanks'));
     }
 
     /**
@@ -100,6 +113,9 @@ class AssetController extends Controller
             'purchase_amount' => 'required|numeric|min:0',
             'payment_account_id' => 'required|exists:t_fin_accounts,id',
             'payment_mode' => 'required|in:cash,online',
+            // Which of OUR banks an ONLINE asset purchase is paid from —
+            // mandatory when payment_mode is online (per-bank balance tracking).
+            'receiving_account_id' => 'required_if:payment_mode,online|nullable|integer|exists:t_fin_online_receiving_accounts,id',
             'purchased_by' => 'required|exists:t_sys_user,id',
             'vendor_id' => 'nullable|exists:t_fin_vendors,id',
             'serial_number' => 'nullable|string|max:100',
@@ -109,11 +125,13 @@ class AssetController extends Controller
             'description' => 'nullable|string',
             'notes' => 'nullable|string',
             'bill_image' => 'nullable|image|mimes:jpeg,png,jpg,gif|max:5120'
+        ], [
+            'receiving_account_id.required_if' => 'Select which bank this online purchase is paid from.',
         ]);
 
         try {
             DB::beginTransaction();
-            
+
             // Generate asset code
             $assetCode = AssetModel::generateAssetCode();
             
@@ -151,7 +169,16 @@ class AssetController extends Controller
             // Create ledger entry: Payment Account → Fixed Assets
             $purchasedByUser = UserModel::find($request->purchased_by);
             $description = "Asset Purchase: {$request->asset_name} (by {$purchasedByUser->fullname})";
-            
+
+            // Name the bank in the description for the ledger listing.
+            $assetBankId = $request->payment_mode === 'online' ? $request->receiving_account_id : null;
+            if ($assetBankId) {
+                $assetBankShort = \App\Models\FIN\OnlineReceivingAccountModel::find($assetBankId)?->short_code;
+                if ($assetBankShort) {
+                    $description .= " · via {$assetBankShort}";
+                }
+            }
+
             $ledger = LedgerModel::create([
                 'transaction_date' => $request->purchase_date,
                 'transaction_type' => 'asset_purchase',
@@ -160,6 +187,9 @@ class AssetController extends Controller
                 'to_account_id' => $fixedAssetsAccount->id,
                 'amount' => $request->purchase_amount,
                 'mode' => $request->payment_mode,
+                // Which of OUR banks the online purchase left from (null for cash)
+                // — keeps per-bank balances reconciled.
+                'receiving_account_id' => $assetBankId,
                 'business_unit_id' => $request->business_unit_id,
                 'approval_status' => LedgerModel::STATUS_APPROVED,
                 'approved_by' => auth()->id(),
@@ -167,12 +197,12 @@ class AssetController extends Controller
                 'created_by' => auth()->id(),
                 'comments' => "Asset: {$assetCode}"
             ]);
-            
+
             // Update account balances
             // Decrease payment account
             $paymentAccount->current_balance -= $request->purchase_amount;
             $paymentAccount->save();
-            
+
             // Increase fixed assets account
             $fixedAssetsAccount->current_balance += $request->purchase_amount;
             $fixedAssetsAccount->save();
@@ -427,8 +457,13 @@ class AssetController extends Controller
             'purchase_amount' => 'required|numeric|min:0',
             'payment_account_id' => 'required|exists:t_fin_accounts,id',
             'payment_mode' => 'required|in:cash,online',
+            // Which of OUR banks an ONLINE asset purchase is paid from (per-bank
+            // balance tracking) — mandatory when payment_mode is online.
+            'receiving_account_id' => 'required_if:payment_mode,online|nullable|integer|exists:t_fin_online_receiving_accounts,id',
             'purchased_by' => 'required|exists:t_sys_user,id',
             'condition' => 'required|in:new,good,fair,poor'
+        ], [
+            'receiving_account_id.required_if' => 'Select which bank this online purchase is paid from.',
         ]);
 
         try {
@@ -452,7 +487,16 @@ class AssetController extends Controller
             
             // Create ledger entry
             $description = "Asset Purchase: {$request->asset_name} (by {$purchasedByUser->fullname})";
-            
+
+            // Name the bank in the description for the ledger listing.
+            $assetBankId = $request->payment_mode === 'online' ? $request->receiving_account_id : null;
+            if ($assetBankId) {
+                $assetBankShort = \App\Models\FIN\OnlineReceivingAccountModel::find($assetBankId)?->short_code;
+                if ($assetBankShort) {
+                    $description .= " · via {$assetBankShort}";
+                }
+            }
+
             $ledger = LedgerModel::create([
                 'transaction_date' => $request->purchase_date,
                 'transaction_type' => 'asset_purchase',
@@ -461,6 +505,8 @@ class AssetController extends Controller
                 'to_account_id' => $fixedAssetsAccount->id,
                 'amount' => $request->purchase_amount,
                 'mode' => $request->payment_mode,
+                // Which of OUR banks the online purchase left from (null for cash).
+                'receiving_account_id' => $assetBankId,
                 'business_unit_id' => $request->business_unit_id,
                 'approval_status' => LedgerModel::STATUS_APPROVED,
                 'approved_by' => auth()->id(),
@@ -468,7 +514,7 @@ class AssetController extends Controller
                 'created_by' => auth()->id(),
                 'comments' => "Asset: {$assetCode}"
             ]);
-            
+
             // Update balances
             $paymentAccount->current_balance -= $request->purchase_amount;
             $paymentAccount->save();

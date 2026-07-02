@@ -133,7 +133,7 @@ class PaymentSignalMatcher
         }
 
         $candidates = $this->candidateOrders($customerId, $signal);
-        $tolerance = (float) config('payment_signals.amount_tolerance', 10.0);
+        $tolerance = PaymentProofStatusService::amountTolerance();
 
         // Step 2: most-recent order balance match.
         $latest = $candidates->first();
@@ -515,7 +515,7 @@ class PaymentSignalMatcher
         if ($signal->extracted_amount === null) {
             return null;
         }
-        $tol = (float) config('payment_signals.amount_tolerance', 10.0);
+        $tol = PaymentProofStatusService::amountTolerance();
         $windowDays = (int) config('payment_signals.pair_window_days', 3);
         $time = $this->paymentTime($signal);
         $from = $time->copy()->subDays($windowDays);

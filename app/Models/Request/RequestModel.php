@@ -30,6 +30,7 @@ class RequestModel extends BaseModel
         'petrol_rate',
         'attendance_id',
         'payment_source_account_id',
+        'receiving_account_id', // Which of OUR banks an ONLINE expense is paid from
         'business_unit_id', // ⭐ Business unit for this expense
         'leave_start_date',
         'leave_end_date',

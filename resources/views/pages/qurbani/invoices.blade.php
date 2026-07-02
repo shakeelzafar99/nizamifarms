@@ -1680,6 +1680,12 @@ function submitQurbaniPayment() {
         return;
     }
 
+    // Bank is mandatory for online payments (per-bank balance tracking).
+    if (method === 'online' && !_qurbaniPaymentReceivingId) {
+        alert('Select which bank received this online payment.');
+        return;
+    }
+
     const btn = document.getElementById('qPaySubmitBtn');
     btn.disabled = true; btn.textContent = 'Saving...';
     const paymentDateEl = document.getElementById('qPayPaymentDate');

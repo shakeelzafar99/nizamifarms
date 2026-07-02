@@ -43,14 +43,14 @@
                 <!-- From Account -->
                 <div>
                     <label class="block text-sm font-medium text-gray-700 mb-2">From Account *</label>
-                    <select name="from_account_id" required
+                    <select name="from_account_id" id="from_account_id" required onchange="renderTransferBankPicker()"
                             class="w-full px-4 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500">
                         <option value="">-- Select Source Account --</option>
                         @foreach($accounts as $type => $typeAccounts)
                             <optgroup label="{{ ucfirst(str_replace('_', ' ', $type)) }}">
                                 @foreach($typeAccounts as $account)
-                                    <option value="{{ $account->id }}" {{ old('from_account_id') == $account->id ? 'selected' : '' }}>
-                                        {{ $account->account_name }} 
+                                    <option value="{{ $account->id }}" data-account-category="{{ $account->account_category }}" {{ old('from_account_id') == $account->id ? 'selected' : '' }}>
+                                        {{ $account->account_name }}
                                         (Balance: Rs. {{ number_format($account->current_balance, 2) }})
                                     </option>
                                 @endforeach
@@ -63,13 +63,13 @@
                 <!-- To Account -->
                 <div>
                     <label class="block text-sm font-medium text-gray-700 mb-2">To Account *</label>
-                    <select name="to_account_id" required
+                    <select name="to_account_id" id="to_account_id" required onchange="renderTransferBankPicker()"
                             class="w-full px-4 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500">
                         <option value="">-- Select Destination Account --</option>
                         @foreach($accounts as $type => $typeAccounts)
                             <optgroup label="{{ ucfirst(str_replace('_', ' ', $type)) }}">
                                 @foreach($typeAccounts as $account)
-                                    <option value="{{ $account->id }}" {{ old('to_account_id') == $account->id ? 'selected' : '' }}>
+                                    <option value="{{ $account->id }}" data-account-category="{{ $account->account_category }}" {{ old('to_account_id') == $account->id ? 'selected' : '' }}>
                                         {{ $account->account_name }}
                                         (Balance: Rs. {{ number_format($account->current_balance, 2) }})
                                     </option>
@@ -78,6 +78,14 @@
                         @endforeach
                     </select>
                     <p class="mt-1 text-xs text-gray-500">Money will be added to this account</p>
+                </div>
+
+                <!-- ⭐ Receiving bank — mandatory when the transfer touches an ONLINE bank account -->
+                <div id="transferBankField" style="display: none;">
+                    <label class="block text-sm font-medium text-gray-700 mb-2">🏦 Which bank? <span class="text-red-500">*</span></label>
+                    <div id="transferBankChips" style="display:flex; flex-wrap:wrap; gap:6px;"></div>
+                    <input type="hidden" name="receiving_account_id" id="transfer_receiving_account_id" value="{{ old('receiving_account_id') }}">
+                    <p class="mt-1 text-xs text-gray-500">The physical bank this transfer goes through — keeps per-bank balances correct.</p>
                 </div>
 
                 <!-- Amount -->
@@ -142,5 +150,63 @@
         </ul>
     </div>
 </div>
+
+<script>
+// ⭐ Receiving-bank picker — shown (and required) when either side of the
+// transfer is an ONLINE bank-category account. Chips show computed balances.
+const transferReceivingBanks = @json($receivingBanks ?? []);
+
+function transferTouchesBank() {
+    const fromSel = document.getElementById('from_account_id');
+    const toSel = document.getElementById('to_account_id');
+    const cat = sel => {
+        const opt = sel && sel.options[sel.selectedIndex];
+        return (opt && opt.dataset && opt.dataset.accountCategory) || '';
+    };
+    return cat(fromSel) === 'bank' || cat(toSel) === 'bank';
+}
+
+function selectTransferBank(id) {
+    document.getElementById('transfer_receiving_account_id').value = id;
+    renderTransferBankPicker();
+}
+
+function renderTransferBankPicker() {
+    const field = document.getElementById('transferBankField');
+    const chips = document.getElementById('transferBankChips');
+    const hidden = document.getElementById('transfer_receiving_account_id');
+    if (!field || !chips || !hidden) return;
+
+    if (!transferTouchesBank() || transferReceivingBanks.length === 0) {
+        field.style.display = 'none';
+        hidden.value = '';
+        return;
+    }
+    field.style.display = 'block';
+    const current = hidden.value;
+    chips.innerHTML = transferReceivingBanks.map(b => {
+        const active = String(current) === String(b.id);
+        const color = b.color_hex || '#3B82F6';
+        const bal = (b.balance !== undefined && b.balance !== null)
+            ? ` · Rs ${Math.round(Number(b.balance)).toLocaleString()}`
+            : '';
+        return `<button type="button" onclick="selectTransferBank(${b.id})" style="padding:6px 14px; border-radius:16px; border:1px solid ${active ? color : '#CBD5E1'}; background:${active ? color : '#F1F5F9'}; color:${active ? '#fff' : '#475569'}; font-size:13px; font-weight:600; cursor:pointer;">${(b.short_code || b.name)}<span style="font-weight:500; opacity:0.85;">${bal}</span></button>`;
+    }).join('');
+}
+
+document.addEventListener('DOMContentLoaded', function() {
+    renderTransferBankPicker(); // handle old() values after a validation error
+
+    const form = document.querySelector('form[action*="transfer"]');
+    if (form) {
+        form.addEventListener('submit', function(e) {
+            if (transferTouchesBank() && !document.getElementById('transfer_receiving_account_id').value) {
+                e.preventDefault();
+                alert('Select which bank this transfer goes through.');
+            }
+        });
+    }
+});
+</script>
 @endsection
 

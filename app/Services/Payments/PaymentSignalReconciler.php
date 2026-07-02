@@ -3,6 +3,7 @@
 namespace App\Services\Payments;
 
 use App\Models\FIN\PaymentSignal;
+use App\Services\Payments\BankTagBackfillService;
 use App\Services\Payments\Email\BankEmailRouter;
 use App\Services\Payments\Email\ImapBankEmailFetcher;
 use App\Services\Payments\Signals\PaymentSignalMatcher;
@@ -62,7 +63,13 @@ class PaymentSignalReconciler
         // matched/verified without re-sending the screenshot.
         $rematch = $this->rematchUnresolved();
 
-        return ['whatsapp' => $whatsapp, 'email' => $email, 'rematch' => $rematch];
+        // Receiving-bank HISTORY backfill: re-read pending-approval proofs that
+        // were extracted before the receiver-account prompt existed, so they
+        // gain a bank tag. Button-triggered only (this run) — never automatic.
+        // Batch-capped per click; the summary reports how many remain.
+        $bankTags = app(BankTagBackfillService::class)->run();
+
+        return ['whatsapp' => $whatsapp, 'email' => $email, 'rematch' => $rematch, 'bank_tags' => $bankTags];
     }
 
     /**

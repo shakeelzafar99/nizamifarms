@@ -943,14 +943,33 @@ class QurbaniWebController extends Controller
 
     public function toggleQurbaniMode(Request $request)
     {
-        $current = ConfigModel::get('qurbani_mode_enabled', '1');
+        // Jul-2026: web and mobile visibility are now INDEPENDENT.
+        //   web    → qurbani_mode_enabled_web    (falls back to the legacy
+        //            qurbani_mode_enabled so the current web state is preserved
+        //            until the owner first touches the web toggle)
+        //   mobile → qurbani_mode_enabled_mobile (defaults OFF — mobile qurbani
+        //            mode + the rider qurbani view stay hidden unless enabled)
+        $scope = in_array($request->input('scope'), ['web', 'mobile'], true)
+            ? $request->input('scope')
+            : 'web';
+
+        if ($scope === 'mobile') {
+            $key = 'qurbani_mode_enabled_mobile';
+            $default = '0';
+        } else {
+            $key = 'qurbani_mode_enabled_web';
+            $default = ConfigModel::get('qurbani_mode_enabled', '1');
+        }
+
+        $current = ConfigModel::get($key, $default);
         $newState = $current === '1' ? '0' : '1';
-        ConfigModel::set('qurbani_mode_enabled', $newState, 'Enable/disable Qurbani section in web sidebar and mobile');
+        ConfigModel::set($key, $newState, "Qurbani section visibility ({$scope})");
 
         return response()->json([
             'success' => true,
+            'scope' => $scope,
             'enabled' => $newState === '1',
-            'message' => $newState === '1' ? 'Qurbani mode enabled' : 'Qurbani mode disabled',
+            'message' => ($scope === 'web' ? 'Web' : 'Mobile') . ' Qurbani ' . ($newState === '1' ? 'enabled' : 'disabled'),
         ]);
     }
 

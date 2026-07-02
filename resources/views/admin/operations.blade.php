@@ -532,46 +532,60 @@
             </div>
         </div>
 
-        <!-- Qurbani Mode Toggle Card -->
+        <!-- Qurbani Mode Toggle Card (independent Web + Mobile) -->
         <div class="bg-white border border-gray-200 rounded-lg p-6 shadow-sm">
             <div class="flex items-center justify-between mb-4">
                 <h2 class="text-lg font-medium text-gray-800">🐄 Qurbani Mode</h2>
             </div>
-            
+
             <div class="mb-4 p-4 bg-amber-50 border border-amber-200 rounded-md">
                 <h3 class="text-sm font-semibold text-amber-800 mb-2">Qurbani Section Visibility</h3>
                 <div class="text-xs text-amber-700 space-y-1">
-                    <p>Controls whether the Qurbani section appears in the web sidebar menu and mobile app.</p>
-                    <p><strong>When enabled:</strong> Qurbani Orders and Settings links appear in sidebar.</p>
-                    <p><strong>When disabled:</strong> Qurbani section is hidden from sidebar.</p>
+                    <p>Controls the Qurbani section separately for web and mobile.</p>
+                    <p><strong>Web:</strong> shows/hides Qurbani links in the sidebar.</p>
+                    <p><strong>Mobile:</strong> shows/hides the Qurbani mode button and the rider Qurbani delivery view. Starts OFF until enabled.</p>
                 </div>
             </div>
-            
+
             @php
-                $qurbaniModeEnabled = \App\Models\FIN\ConfigModel::get('qurbani_mode_enabled', '1') === '1';
+                $qurbaniWebEnabled = \App\Models\FIN\ConfigModel::get('qurbani_mode_enabled_web', \App\Models\FIN\ConfigModel::get('qurbani_mode_enabled', '1')) === '1';
+                $qurbaniMobileEnabled = \App\Models\FIN\ConfigModel::get('qurbani_mode_enabled_mobile', '0') === '1';
             @endphp
-            
+
+            {{-- Web toggle --}}
+            <div class="p-4 bg-gray-50 rounded-lg mb-3">
+                <div class="flex items-center justify-between mb-3">
+                    <div>
+                        <h3 class="text-sm font-semibold text-gray-900">🖥️ Qurbani on Web</h3>
+                        <p class="text-xs text-gray-600 mt-1">Sidebar visibility:</p>
+                    </div>
+                    <span id="qurbaniWebBadge" class="px-4 py-2 rounded-full text-sm font-bold {{ $qurbaniWebEnabled ? 'bg-green-100 text-green-800' : 'bg-gray-100 text-gray-800' }}">
+                        {{ $qurbaniWebEnabled ? 'ENABLED' : 'DISABLED' }}
+                    </span>
+                </div>
+                <button type="button" id="qurbaniWebButton" onclick="toggleQurbaniMode('web')"
+                        class="w-full px-4 py-3 text-sm font-semibold rounded-lg transition-colors duration-200 {{ $qurbaniWebEnabled ? 'bg-red-600 hover:bg-red-700 text-white' : 'bg-green-600 hover:bg-green-700 text-white' }}">
+                    {{ $qurbaniWebEnabled ? 'Disable on Web' : 'Enable on Web' }}
+                </button>
+            </div>
+
+            {{-- Mobile toggle --}}
             <div class="p-4 bg-gray-50 rounded-lg mb-4">
                 <div class="flex items-center justify-between mb-3">
                     <div>
-                        <h3 class="text-sm font-semibold text-gray-900">Current Status</h3>
-                        <p class="text-xs text-gray-600 mt-1">Qurbani mode is currently:</p>
+                        <h3 class="text-sm font-semibold text-gray-900">📱 Qurbani on Mobile</h3>
+                        <p class="text-xs text-gray-600 mt-1">App mode + rider view:</p>
                     </div>
-                    <span id="qurbaniStatusBadge" class="px-4 py-2 rounded-full text-sm font-bold {{ $qurbaniModeEnabled ? 'bg-green-100 text-green-800' : 'bg-gray-100 text-gray-800' }}">
-                        {{ $qurbaniModeEnabled ? 'ENABLED' : 'DISABLED' }}
+                    <span id="qurbaniMobileBadge" class="px-4 py-2 rounded-full text-sm font-bold {{ $qurbaniMobileEnabled ? 'bg-green-100 text-green-800' : 'bg-gray-100 text-gray-800' }}">
+                        {{ $qurbaniMobileEnabled ? 'ENABLED' : 'DISABLED' }}
                     </span>
                 </div>
-                
-                <div class="mt-4">
-                    <button type="button" 
-                            id="qurbaniToggleButton" 
-                            onclick="toggleQurbaniMode()"
-                            class="w-full px-4 py-3 text-sm font-semibold rounded-lg transition-colors duration-200 {{ $qurbaniModeEnabled ? 'bg-red-600 hover:bg-red-700 text-white' : 'bg-green-600 hover:bg-green-700 text-white' }}">
-                        {{ $qurbaniModeEnabled ? 'Disable Qurbani Mode' : 'Enable Qurbani Mode' }}
-                    </button>
-                </div>
+                <button type="button" id="qurbaniMobileButton" onclick="toggleQurbaniMode('mobile')"
+                        class="w-full px-4 py-3 text-sm font-semibold rounded-lg transition-colors duration-200 {{ $qurbaniMobileEnabled ? 'bg-red-600 hover:bg-red-700 text-white' : 'bg-green-600 hover:bg-green-700 text-white' }}">
+                    {{ $qurbaniMobileEnabled ? 'Disable on Mobile' : 'Enable on Mobile' }}
+                </button>
             </div>
-            
+
             <div id="qurbaniFeedback" class="mt-3 hidden"></div>
         </div>
 
@@ -589,17 +603,64 @@
                 </div>
             </div>
 
+            {{-- Jun-2026 — amount tolerance control (the auto-match window) --}}
+            @php $currentTolerance = \App\Services\Payments\Signals\PaymentProofStatusService::amountTolerance(); @endphp
+            <div class="mb-4 p-4 bg-gray-50 border border-gray-200 rounded-md">
+                <h3 class="text-sm font-semibold text-gray-800 mb-1">Amount tolerance (±PKR)</h3>
+                <p class="text-xs text-gray-600 mb-2">How far a transfer can differ from an invoice — or the combined total of several invoices — and still auto-match. Saving re-checks recent "amount differs" proofs under the new value.</p>
+                <div class="flex items-center gap-2">
+                    <span class="text-sm text-gray-500">±</span>
+                    <input type="number" id="toleranceInput" min="0" max="1000" step="1" value="{{ (int) round($currentTolerance) }}"
+                           class="w-28 px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                    <button type="button" id="saveToleranceBtn" onclick="savePaymentTolerance()"
+                            style="padding:8px 16px; background:#059669; color:#ffffff; font-size:13px; font-weight:600; border:none; border-radius:8px; cursor:pointer; white-space:nowrap;">💾 Save &amp; re-evaluate</button>
+                </div>
+                <div id="toleranceResult" class="hidden mt-2 text-sm"></div>
+            </div>
+
             <div id="reconcileResult" class="hidden mb-4 p-3 rounded-lg text-sm"></div>
 
             <button type="button"
                     id="reconcileBtn"
                     onclick="runPaymentReconcile()"
-                    class="w-full inline-flex items-center justify-center px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium rounded-md focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500">
+                    style="width:100%; display:inline-flex; align-items:center; justify-content:center; padding:10px 16px; background:#4f46e5; color:#ffffff; font-size:14px; font-weight:600; border:none; border-radius:8px; cursor:pointer;">
                 🔄 Scan for Missed Payment Proofs
             </button>
         </div>
 
         <script>
+        async function savePaymentTolerance() {
+            const btn = document.getElementById('saveToleranceBtn');
+            const input = document.getElementById('toleranceInput');
+            const result = document.getElementById('toleranceResult');
+            const val = parseInt(input.value, 10);
+            if (isNaN(val) || val < 0 || val > 1000) { alert('Enter a tolerance between 0 and 1000.'); return; }
+            const original = btn.textContent;
+            btn.disabled = true; btn.textContent = '⏳ Saving…';
+            result.classList.add('hidden');
+            try {
+                const res = await fetch('{{ route('payments.tolerance') }}', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Accept': 'application/json',
+                        'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').content,
+                    },
+                    body: JSON.stringify({ tolerance: val }),
+                });
+                const data = await res.json();
+                result.classList.remove('hidden');
+                result.style.cssText = 'margin-top:8px; font-size:13px; font-weight:600; color:' + (data.success ? '#047857' : '#b91c1c') + ';';
+                result.textContent = data.message || (data.success ? 'Saved.' : 'Could not save.');
+            } catch (e) {
+                result.classList.remove('hidden');
+                result.style.cssText = 'margin-top:8px; font-size:13px; font-weight:600; color:#b91c1c;';
+                result.textContent = 'Could not save tolerance.';
+            } finally {
+                btn.disabled = false; btn.textContent = original;
+            }
+        }
+
         function reconcileStatusBadge(status) {
             var map = {
                 matched:         ['#dcfce7', '#166534', 'Matched'],
@@ -684,22 +745,26 @@
         </script>
 
         <script>
-        function toggleQurbaniMode() {
-            const btn = document.getElementById('qurbaniToggleButton');
-            const badge = document.getElementById('qurbaniStatusBadge');
+        // Scope-aware Qurbani toggle: 'web' or 'mobile' (independent flags).
+        function toggleQurbaniMode(scope) {
+            scope = scope === 'mobile' ? 'mobile' : 'web';
+            const label = scope === 'web' ? 'Web' : 'Mobile';
+            const btn = document.getElementById(scope === 'web' ? 'qurbaniWebButton' : 'qurbaniMobileButton');
+            const badge = document.getElementById(scope === 'web' ? 'qurbaniWebBadge' : 'qurbaniMobileBadge');
             const feedback = document.getElementById('qurbaniFeedback');
-            
+
             const currentlyEnabled = btn.textContent.includes('Disable');
             btn.disabled = true;
             btn.textContent = 'Updating...';
-            
+
             fetch('{{ route("qurbani.api.toggle") }}', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
                     'Accept': 'application/json',
                     'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || ''
-                }
+                },
+                body: JSON.stringify({ scope: scope })
             })
             .then(r => r.json())
             .then(data => {
@@ -707,7 +772,7 @@
                     const enabled = data.enabled;
                     badge.textContent = enabled ? 'ENABLED' : 'DISABLED';
                     badge.className = 'px-4 py-2 rounded-full text-sm font-bold ' + (enabled ? 'bg-green-100 text-green-800' : 'bg-gray-100 text-gray-800');
-                    btn.textContent = enabled ? 'Disable Qurbani Mode' : 'Enable Qurbani Mode';
+                    btn.textContent = enabled ? ('Disable on ' + label) : ('Enable on ' + label);
                     btn.className = 'w-full px-4 py-3 text-sm font-semibold rounded-lg transition-colors duration-200 ' + (enabled ? 'bg-red-600 hover:bg-red-700 text-white' : 'bg-green-600 hover:bg-green-700 text-white');
                     feedback.innerHTML = '<div class="p-2 bg-green-50 border border-green-200 rounded text-green-800 text-xs">' + data.message + '</div>';
                     feedback.classList.remove('hidden');
@@ -719,7 +784,7 @@
                 feedback.innerHTML = '<div class="p-2 bg-red-50 border border-red-200 rounded text-red-800 text-xs">Error: ' + err.message + '</div>';
                 feedback.classList.remove('hidden');
                 btn.disabled = false;
-                btn.textContent = currentlyEnabled ? 'Disable Qurbani Mode' : 'Enable Qurbani Mode';
+                btn.textContent = currentlyEnabled ? ('Disable on ' + label) : ('Enable on ' + label);
             });
         }
         </script>

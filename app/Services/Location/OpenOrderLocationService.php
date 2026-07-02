@@ -806,6 +806,127 @@ class OpenOrderLocationService
         ];
     }
 
+    /**
+     * Richer "location activity — today" view for the Get-Locations modal
+     * (web + mobile). Unlike autoSendStats() (auto queue only), this uses the
+     * WhatsApp send log as the spine so it covers BOTH auto and manual sends,
+     * and tags each one:
+     *   - HOW it was sent : auto (sent_by null, from the drain) vs manual
+     *     (sent_by = the staff member who pressed "Send to selected").
+     *   - OUTCOME         : replied  (customer shared a pin → auto-saved, or set
+     *     it in the app), staff (a person set the pin), or waiting (no pin yet).
+     * Plus `queued` = requests lined up but NOT sent yet (outside the daily
+     * window) — which is why "waiting/queued" should be ~0 inside working hours.
+     *
+     * Returned ALONGSIDE auto_stats (kept for back-compat), so an older mobile
+     * build keeps working until it ships the richer UI.
+     */
+    public function todayActivity(): array
+    {
+        $out = [
+            'enabled'     => $this->isAutoEnabled(),
+            'sent'        => 0,
+            'sent_auto'   => 0,
+            'sent_manual' => 0,
+            'saved'       => 0,
+            'saved_reply' => 0, // customer replied / set in app
+            'saved_staff' => 0, // a staff member set the pin
+            'waiting'     => 0, // sent, still no pin
+            'queued'      => 0, // queued, not sent yet (outside the send window)
+            'list'        => [],
+        ];
+
+        // Queued-but-not-sent (the off-hours backlog).
+        try {
+            if (Schema::hasTable('t_crm_location_auto_queue')) {
+                $out['queued'] = (int) DB::table('t_crm_location_auto_queue')
+                    ->where('status', 'queued')->count();
+            }
+        } catch (\Throwable $e) {
+            // non-fatal
+        }
+
+        $templates = $this->requestTemplates();
+        if (empty($templates)) {
+            return $out;
+        }
+
+        try {
+            $startOfDay = now()->startOfDay();
+            $rows = DB::table('t_wa_messages as m')
+                ->join('t_wa_conversations as conv', 'conv.id', '=', 'm.conversation_id')
+                ->leftJoin('t_crm_prod_customer as c', 'c.id', '=', 'conv.customer_id')
+                ->leftJoin('t_sys_user as su', 'su.id', '=', 'm.sent_by')
+                ->leftJoin('t_sys_user as vu', 'vu.id', '=', 'c.verified_location_saved_by')
+                ->where('m.direction', 'outbound')
+                ->where('m.type', 'template')
+                ->whereIn('m.template_name', $templates)
+                ->where('m.created_at', '>=', $startOfDay)
+                ->whereNotNull('conv.customer_id')
+                ->orderByDesc('m.id')
+                ->get([
+                    'conv.customer_id',
+                    'm.sent_by',
+                    'm.created_at',
+                    DB::raw("TRIM(CONCAT(COALESCE(c.first_name,''),' ',COALESCE(c.last_name,''))) as customer_name"),
+                    'c.latitude', 'c.longitude', 'c.verified_location_url',
+                    'c.verified_location_saved_by',
+                    DB::raw("COALESCE(su.fullname,'') as sent_by_name"),
+                    DB::raw("COALESCE(vu.fullname,'') as saved_by_name"),
+                ]);
+
+            $seen = [];
+            foreach ($rows as $r) {
+                $cid = (int) $r->customer_id;
+                if ($cid <= 0 || isset($seen[$cid])) {
+                    continue; // one row per customer (latest send wins)
+                }
+                $seen[$cid] = true;
+
+                $isManual = !empty($r->sent_by);
+                $out['sent']++;
+                $isManual ? $out['sent_manual']++ : $out['sent_auto']++;
+
+                $hasPin = $r->latitude && $r->longitude
+                    && (float) $r->latitude !== 0.0 && (float) $r->longitude !== 0.0;
+                $verified = $hasPin || !empty($r->verified_location_url);
+
+                $sentAt = $r->created_at ? Carbon::parse($r->created_at) : null;
+                $row = [
+                    'customer_id'   => $cid,
+                    'customer_name' => trim((string) $r->customer_name) ?: 'Customer',
+                    'via'           => $isManual ? 'manual' : 'auto',
+                    'sent_by_name'  => $isManual ? ($r->sent_by_name ?: 'Staff') : null,
+                    'sent_human'    => $sentAt ? $sentAt->diffForHumans() : null,
+                    'outcome'       => 'waiting',
+                    'saved_by_name' => null,
+                ];
+
+                if ($verified) {
+                    $out['saved']++;
+                    $byStaff = !empty($r->verified_location_saved_by)
+                        && (int) $r->verified_location_saved_by !== \App\Models\CRM\CustomerModel::VERIFIED_PIN_CUSTOMER_ID;
+                    if ($byStaff) {
+                        $out['saved_staff']++;
+                        $row['outcome'] = 'staff';
+                        $row['saved_by_name'] = $r->saved_by_name ?: 'Staff';
+                    } else {
+                        $out['saved_reply']++;
+                        $row['outcome'] = 'reply'; // WhatsApp reply or customer-app pin
+                    }
+                } else {
+                    $out['waiting']++;
+                }
+
+                $out['list'][] = $row;
+            }
+        } catch (\Throwable $e) {
+            Log::warning('OpenOrderLocation: todayActivity failed (non-fatal)', ['error' => $e->getMessage()]);
+        }
+
+        return $out;
+    }
+
     // ------------------------------------------------------------------
     // INBOUND AUTO-SAVE  (called from the WhatsApp webhook)
     // ------------------------------------------------------------------

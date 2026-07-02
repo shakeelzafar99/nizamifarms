@@ -280,7 +280,9 @@
                   </div>
                   
                   @php
-                      $qurbaniEnabled = \App\Models\FIN\ConfigModel::get('qurbani_mode_enabled', '1') === '1';
+                      // Jul-2026: web uses its own key; falls back to the legacy
+                      // flag so the current web state is preserved until first toggle.
+                      $qurbaniEnabled = \App\Models\FIN\ConfigModel::get('qurbani_mode_enabled_web', \App\Models\FIN\ConfigModel::get('qurbani_mode_enabled', '1')) === '1';
                   @endphp
                   @if($qurbaniEnabled && $userRole !== 'rider')
                   <div class="kt-menu-item pt-2.25 pb-px">
@@ -644,6 +646,18 @@
                </span>
                <span class="kt-menu-title text-sm font-medium text-gray-900 group-hover:text-gray-900">
                    Overall Ledger
+               </span>
+           </div>
+       </a>
+   </div>
+   <div class="kt-menu-item" data-kt-menu-item-toggle="accordion" data-kt-menu-item-trigger="click">
+       <a href="/finance/bank-balances" title="Per-bank balances over the single Online ledger account">
+           <div class="kt-menu-link flex items-center grow cursor-pointer border border-transparent gap-[10px] ps-[10px] pe-[10px] py-[6px] hover:bg-gray-200 rounded-md transition-colors duration-200 group" tabindex="0">
+               <span class="kt-menu-icon items-start text-gray-600 group-hover:text-gray-900 w-[20px]">
+                   <i class="ki-filled ki-bank text-lg"></i>
+               </span>
+               <span class="kt-menu-title text-sm font-medium text-gray-900 group-hover:text-gray-900">
+                   Banks
                </span>
            </div>
        </a>

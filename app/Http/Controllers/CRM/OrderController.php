@@ -503,6 +503,15 @@ class OrderController extends Controller
                 ? ($validated['receiving_account_id'] ?? null)
                 : null;
 
+            // Bank is MANDATORY for online payments — without it the per-bank
+            // balances can never reconcile with the ONLINE account.
+            if ($paymentMethod === 'online' && !$receivingAccountId) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Select which bank received this online payment.',
+                ], 422);
+            }
+
             $payment = \App\Models\CRM\OrderPaymentModel::create([
                 'order_id' => $order->id,
                 'amount' => $amount,
@@ -553,14 +562,26 @@ class OrderController extends Controller
                 return response()->json(['success' => false, 'message' => 'Qurbani payment account not configured'], 500);
             }
 
+            // Name the bank in the description for the ledger listing.
+            $qurbaniBankSuffix = '';
+            if ($receivingAccountId) {
+                $qurbaniBankShort = \App\Models\FIN\OnlineReceivingAccountModel::find($receivingAccountId)?->short_code;
+                if ($qurbaniBankShort) {
+                    $qurbaniBankSuffix = " · via {$qurbaniBankShort}";
+                }
+            }
+
             $ledger = \App\Models\FIN\LedgerModel::create([
                 'transaction_date' => $paymentDate,
                 'transaction_type' => \App\Models\FIN\LedgerModel::TYPE_ORDER_PAYMENT,
-                'description' => "Qurbani payment for order #{$order->order_number} - Rs. " . number_format($amount, 2) . " ({$paymentMethod}) by {$user->fullname}",
+                'description' => "Qurbani payment for order #{$order->order_number} - Rs. " . number_format($amount, 2) . " ({$paymentMethod}) by {$user->fullname}{$qurbaniBankSuffix}",
                 'from_account_id' => $salesAccount->id,
                 'to_account_id' => $toAccount->id,
                 'amount' => $amount,
                 'mode' => $paymentMethod === 'cash' ? 'cash' : 'online',
+                // Tag which of OUR banks received this online payment (null for
+                // cash) so per-bank balances reconcile against the ONLINE account.
+                'receiving_account_id' => $receivingAccountId,
                 'approval_status' => \App\Models\FIN\LedgerModel::STATUS_APPROVED,
                 'balance_updated' => 1,
                 'settlement_status' => 'settled',
@@ -708,6 +729,11 @@ class OrderController extends Controller
             ? ($v['receiving_account_id'] ?? null)
             : null;
 
+        // Bank is MANDATORY for online payments (per-bank balance tracking).
+        if ($paymentMethod === 'online' && !$receivingAccountId) {
+            throw new \RuntimeException('Select which bank received this online payment.');
+        }
+
         $salesAccount = \App\Models\FIN\ConfigModel::getSalesRevenueAccount();
         if (!$salesAccount) {
             throw new \RuntimeException('Sales revenue account not configured');
@@ -758,14 +784,26 @@ class OrderController extends Controller
             $order->fill($stampUpdates)->save();
         }
 
+        // Name the bank in the description for the ledger listing.
+        $payBankSuffix = '';
+        if ($receivingAccountId) {
+            $payBankShort = \App\Models\FIN\OnlineReceivingAccountModel::find($receivingAccountId)?->short_code;
+            if ($payBankShort) {
+                $payBankSuffix = " · via {$payBankShort}";
+            }
+        }
+
         $ledger = \App\Models\FIN\LedgerModel::create([
             'transaction_date' => $paymentDate,
             'transaction_type' => \App\Models\FIN\LedgerModel::TYPE_ORDER_PAYMENT,
-            'description' => "{$label} for order #{$order->order_number} - Rs. " . number_format($amount, 2) . " ({$paymentMethod}) by {$user->fullname}",
+            'description' => "{$label} for order #{$order->order_number} - Rs. " . number_format($amount, 2) . " ({$paymentMethod}) by {$user->fullname}{$payBankSuffix}",
             'from_account_id' => $salesAccount->id,
             'to_account_id' => $toAccount->id,
             'amount' => $amount,
             'mode' => $paymentMethod === 'cash' ? 'cash' : 'online',
+            // Tag which of OUR banks received this online payment (null for cash)
+            // so per-bank balances reconcile against the ONLINE account.
+            'receiving_account_id' => $receivingAccountId,
             'approval_status' => \App\Models\FIN\LedgerModel::STATUS_APPROVED,
             'balance_updated' => 1,
             'settlement_status' => 'settled',

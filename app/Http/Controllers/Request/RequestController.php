@@ -126,6 +126,7 @@ class RequestController extends Controller
             'expense_category' => 'nullable|string|max:255', // For expense requests
             'expense_date' => 'nullable|date', // ⭐ For backdated expense entries
             'payment_source_account_id' => 'nullable|exists:t_fin_accounts,id', // Payment source selection
+            'receiving_account_id' => 'nullable|integer|exists:t_fin_online_receiving_accounts,id', // Which bank an ONLINE expense is paid from
             'business_unit_id' => 'nullable|exists:t_fin_business_units,id', // ⭐ Business unit for expense
             'leave_start_date' => 'nullable|date',
             'leave_end_date' => 'nullable|date|after_or_equal:leave_start_date',
@@ -186,6 +187,25 @@ class RequestController extends Controller
                         'success' => false,
                         'message' => 'This payment source is not available.'
                     ], 403);
+                }
+            }
+            // When an EXPENSE or SALARY ADVANCE is paid from an ONLINE bank
+            // account, the specific receiving bank is mandatory so per-bank
+            // balances stay correct. Gated to money-moving categories: the web
+            // form submits the (hidden) pay-from select for LEAVE requests too,
+            // and leaves move no money — they must never be blocked.
+            if ($sourceAccount && $sourceAccount->account_category === \App\Models\FIN\AccountModel::CATEGORY_BANK
+                && !$request->filled('receiving_account_id')) {
+                $catForBankCheck = RequestCategoryModel::find($validated['category_id']);
+                $isMoneyCategory = $catForBankCheck && (
+                    in_array($catForBankCheck->category_code, ['expense', 'khaas_expense', 'salary_advance'], true)
+                    || in_array($catForBankCheck->form_type ?? null, ['expense', 'salary'], true)
+                );
+                if ($isMoneyCategory) {
+                    return response()->json([
+                        'success' => false,
+                        'message' => 'Select which bank this online payment is made from.'
+                    ], 422);
                 }
             }
         }
@@ -365,6 +385,15 @@ class RequestController extends Controller
                 $attachments = [$path];
             }
 
+            // Only keep the receiving bank when the source is an online bank
+            // account — never tag a cash-funded expense with a bank.
+            $expenseSourceAcct = isset($validated['payment_source_account_id'])
+                ? \App\Models\FIN\AccountModel::find($validated['payment_source_account_id'])
+                : null;
+            $expenseBankId = ($expenseSourceAcct && $expenseSourceAcct->account_category === \App\Models\FIN\AccountModel::CATEGORY_BANK)
+                ? ($validated['receiving_account_id'] ?? null)
+                : null;
+
             // Create request
             $requestModel = RequestModel::create([
                 'request_number' => RequestModel::generateRequestNumber(),
@@ -376,6 +405,7 @@ class RequestController extends Controller
                 'expense_category' => $validated['expense_category'] ?? null,
                 'expense_date' => $validated['expense_date'] ?? now()->toDateString(),
                 'payment_source_account_id' => $validated['payment_source_account_id'] ?? null,
+                'receiving_account_id' => $expenseBankId,
                 'business_unit_id' => $validated['business_unit_id'] ?? 1,
                 'leave_start_date' => $validated['leave_start_date'] ?? null,
                 'leave_end_date' => $validated['leave_end_date'] ?? null,

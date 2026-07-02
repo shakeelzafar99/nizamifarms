@@ -226,6 +226,7 @@ class PaymentDiagnosticsController extends Controller
             $wa = $result['whatsapp'] ?? [];
             $em = $result['email'] ?? [];
             $rm = $result['rematch'] ?? [];
+            $bt = $result['bank_tags'] ?? [];
             $summary = sprintf(
                 'WhatsApp: %d image(s) without a signal found, %d new created. Email: %d scanned, %d new ingested. Re-evaluated %d existing proof(s), %d now match.',
                 (int) ($wa['candidates'] ?? 0),
@@ -235,6 +236,19 @@ class PaymentDiagnosticsController extends Controller
                 (int) ($rm['rematched'] ?? 0),
                 (int) ($rm['now_matched'] ?? 0)
             );
+            // Receiving-bank history backfill (button-only) — report progress so
+            // the owner knows to click again when proofs remain.
+            if (!empty($bt['skipped_reason'])) {
+                $summary .= ' Bank detection skipped (' . $bt['skipped_reason'] . ').';
+            } else {
+                $summary .= sprintf(
+                    ' Bank detection: re-read %d proof(s), %d tagged, %d remaining%s',
+                    (int) ($bt['reread'] ?? 0),
+                    (int) ($bt['tagged'] ?? 0),
+                    (int) ($bt['remaining'] ?? 0),
+                    ((int) ($bt['remaining'] ?? 0)) > 0 ? ' — click again to continue.' : '.'
+                );
+            }
 
             return response()->json([
                 'success' => true,
@@ -247,6 +261,49 @@ class PaymentDiagnosticsController extends Controller
                 'message' => 'Reconcile failed: ' . $e->getMessage(),
             ]);
         }
+    }
+
+    /**
+     * Save the payment-proof amount tolerance (PKR) and immediately re-evaluate
+     * recent "amount differs" proofs under the new value. Operations page button.
+     * Writes only the config value + re-runs the matcher on unresolved signals.
+     */
+    public function saveTolerance(Request $request, PaymentSignalReconciler $reconciler)
+    {
+        if (!config('payment_signals.enabled')) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Payment-proof matching is OFF (PAYMENT_SIGNALS_ENABLED). Nothing saved.',
+            ]);
+        }
+
+        $tol = (float) $request->input('tolerance', 10);
+        $tol = max(0.0, min(1000.0, $tol)); // clamp — a typo can't make matching absurd
+
+        \App\Models\FIN\ConfigModel::set(
+            'payment_signals_amount_tolerance',
+            (string) $tol,
+            'Payment-proof amount tolerance (PKR) — how far a transfer can differ from an invoice / combined total and still auto-match.'
+        );
+
+        // Re-evaluate recent unresolved ("amount differs") proofs under the new value.
+        $rematch = ['rematched' => 0, 'now_matched' => 0];
+        try {
+            $rematch = $reconciler->rematchUnresolved();
+        } catch (\Throwable $e) {
+            \Log::warning('saveTolerance rematch failed', ['error' => $e->getMessage()]);
+        }
+
+        return response()->json([
+            'success'   => true,
+            'tolerance' => $tol,
+            'message'   => sprintf(
+                'Tolerance saved: ±Rs %s. Re-evaluated %d proof(s), %d now match.',
+                number_format($tol, 0),
+                (int) ($rematch['rematched'] ?? 0),
+                (int) ($rematch['now_matched'] ?? 0)
+            ),
+        ]);
     }
 
     private function tableExists(string $table): bool

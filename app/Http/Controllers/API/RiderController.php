@@ -1020,9 +1020,20 @@ class RiderController extends Controller
     {
         try {
             $user = Auth::user();
-            
+
+            // Entry log so every dispatch attempt is visible. This endpoint was
+            // previously silent on its early "controlled" returns, which made
+            // "failed to dispatch" reports impossible to trace in the logs.
+            \Log::info('Dispatch: delivery-ETA calculation requested', [
+                'rider_id'       => $riderId,
+                'requested_by'   => $user->id ?? null,
+                'scope'          => $request->input('scope', 'all'),
+                'sequence_count' => is_array($request->input('order_sequence')) ? count($request->input('order_sequence')) : 0,
+            ]);
+
             // Check permission — store managers (view_open_orders) OR the rider acting on own route
             if (!$this->canManageRiderRoute($user, $riderId)) {
+                \Log::warning('Dispatch denied: permission', ['rider_id' => $riderId, 'user_id' => $user->id ?? null]);
                 return response()->json([
                     'success' => false,
                     'message' => 'Permission denied'
@@ -1035,14 +1046,15 @@ class RiderController extends Controller
                 ->where('is_active', 1)
                 ->select('id', 'fullname')
                 ->first();
-            
+
             if (!$rider) {
+                \Log::warning('Dispatch failed: rider not found or inactive', ['rider_id' => $riderId]);
                 return response()->json([
                     'success' => false,
                     'message' => 'Rider not found'
                 ], 404);
             }
-            
+
             // Get rider's current location (most recent heartbeat)
             $riderLocation = \DB::table('t_ops_rider_location')
                 ->where('user_id', $riderId)
@@ -1056,6 +1068,7 @@ class RiderController extends Controller
                     ?? \App\Services\LocationService::getPrimaryBaseLocation();
 
                 if (!$baseLocation || !$baseLocation->latitude || !$baseLocation->longitude) {
+                    \Log::warning('Dispatch failed: rider GPS not active and no shop location configured', ['rider_id' => $riderId]);
                     return response()->json([
                         'success' => false,
                         'message' => "⚠️ Rider GPS not active — please ask {$rider->fullname} to turn on GPS. Shop location also not configured.",
@@ -1125,6 +1138,7 @@ class RiderController extends Controller
             }
             
             if ($orders->isEmpty()) {
+                \Log::warning('Dispatch failed: no out_for_delivery orders for rider', ['rider_id' => $riderId, 'scope' => $scope]);
                 return response()->json([
                     'success' => false,
                     'message' => 'No out_for_delivery orders found for this rider'
@@ -1163,15 +1177,17 @@ class RiderController extends Controller
             }
             
             if (count($ordersWithLocation) === 0) {
+                \Log::warning('Dispatch failed: no orders have GPS coordinates', ['rider_id' => $riderId, 'orders' => $orders->count()]);
                 return response()->json([
                     'success' => false,
                     'message' => 'No orders have GPS coordinates'
                 ], 400);
             }
-            
+
             $etaResult = $this->getMultiStopEtaFromGoogle($waypoints);
-            
+
             if (!$etaResult) {
+                \Log::warning('Dispatch failed: multi-stop ETA returned null (Google Maps API error or monthly cap)', ['rider_id' => $riderId, 'stops' => count($ordersWithLocation)]);
                 return response()->json([
                     'success' => false,
                     'message' => 'Failed to calculate ETA (API error or limit reached)'
@@ -4393,6 +4409,14 @@ class RiderController extends Controller
             // rider's GPS save latency is unaffected.
             $this->fireQurbaniWaAutoSender();
 
+            // ⭐ GPS defibrillator: opportunistically sweep for on-duty riders whose
+            // GPS has gone silent (snoozed) and wake them via a silent FCM push.
+            // Self-throttled to ~once/min via a Cache lock, so firing it on every
+            // heartbeat is cheap. Runs in terminating() so the rider's response is
+            // already flushed. The on-device WorkManager watchdog covers the case
+            // where ALL riders are silent (no heartbeat to trigger this).
+            $this->fireRiderGpsWatchdog();
+
             return response()->json([
                 'success' => true,
                 'message' => 'Location recorded'
@@ -4894,8 +4918,30 @@ class RiderController extends Controller
                     ];
                 });
 
-            // Current location is the most recent
+            // Current location for the precise map marker (accuracy-filtered trail).
             $currentLocation = $locationTrail->first();
+
+            // ⭐ Freshness-consistency fix: the trail above is filtered to accuracy <= 50m,
+            // so when the newest heartbeats are coarse (>50m) they get dropped and the map's
+            // "last seen" lags behind the live board / dispatch card / rider list — all of which
+            // use the raw MAX(captured_at). Use the raw newest fix for the current marker so
+            // "last seen" matches everywhere else, UNLESS it's an absurd outlier (>500m), which
+            // we skip to avoid teleporting the marker. The polyline trail stays filtered.
+            $rawLatest = $rawLocationTrail->first();
+            if ($rawLatest
+                && (!$currentLocation || $rawLatest->captured_at > $currentLocation['captured_at'])
+                && ($rawLatest->accuracy === null || (float) $rawLatest->accuracy <= 500)) {
+                $rawCap = \Carbon\Carbon::parse($rawLatest->captured_at);
+                $currentLocation = [
+                    'latitude'    => (float) $rawLatest->latitude,
+                    'longitude'   => (float) $rawLatest->longitude,
+                    'accuracy'    => $rawLatest->accuracy,
+                    'captured_at' => $rawLatest->captured_at,
+                    'time'        => $rawCap->format('H:i'),
+                    'age'         => $rawCap->diffForHumans(),
+                    'source'      => $rawLatest->source,
+                ];
+            }
 
             // Get orders for this rider based on view mode
             $excludedStatuses = ['delivered', 'completed', 'cancelled', 'refunded'];
@@ -7899,6 +7945,7 @@ class RiderController extends Controller
 
             // Server-side payment source validation: non-EXP_FUND requires permission
             $paymentSourceAccountId = $request->input('payment_source_account_id');
+            $expenseBankId = null; // which of OUR banks an online expense is paid from
             if ($paymentSourceAccountId) {
                 $sourceAccount = \App\Models\FIN\AccountModel::find($paymentSourceAccountId);
                 if ($sourceAccount && $sourceAccount->account_code !== 'EXP_FUND') {
@@ -7921,6 +7968,23 @@ class RiderController extends Controller
                             'message' => 'This payment source is not available.'
                         ], 403);
                     }
+                }
+                // EXPENSE or SALARY ADVANCE from an online bank source → the
+                // specific receiving bank is mandatory, so the outflow
+                // attributes to the right per-bank balance. Leave requests move
+                // no money and are never blocked by this rule.
+                $isMoneyCategory = in_array($category->category_code, ['expense', 'khaas_expense', 'salary_advance'], true)
+                    || in_array($category->form_type ?? null, ['expense', 'salary'], true);
+                if ($sourceAccount && $isMoneyCategory
+                    && $sourceAccount->account_category === \App\Models\FIN\AccountModel::CATEGORY_BANK) {
+                    $rid = $request->input('receiving_account_id');
+                    if (!$rid || !\App\Models\FIN\OnlineReceivingAccountModel::where('id', $rid)->exists()) {
+                        return response()->json([
+                            'success' => false,
+                            'message' => 'Select which bank this online payment is made from.'
+                        ], 422);
+                    }
+                    $expenseBankId = (int) $rid;
                 }
             }
             if (!$paymentSourceAccountId && isset($validated['attendance_id']) && ($validated['expense_category'] ?? null) === 'Petrol') {
@@ -7954,6 +8018,7 @@ class RiderController extends Controller
                 'petrol_rate' => $validated['petrol_rate'] ?? null,
                 'attendance_id' => $validated['attendance_id'] ?? null,
                 'payment_source_account_id' => $paymentSourceAccountId,
+                'receiving_account_id' => $expenseBankId,
                 'business_unit_id' => $request->input('business_unit_id', 1),
                 'leave_start_date' => $validated['leave_start_date'] ?? null,
                 'leave_end_date' => $validated['leave_end_date'] ?? null,
@@ -8639,11 +8704,12 @@ class RiderController extends Controller
                     ->first(['id', 'code', 'name', 'short_code', 'color_hex']);
             }
             
-            // Jun-2026: global Qurbani master switch (Operations page →
-            // qurbani_mode_enabled). When OFF, the mobile app must hide the
-            // Qurbani mode button AND the rider Qurbani delivery view. We fold
-            // it into the role-based flags so older app builds also honour it.
-            $qurbaniGlobalEnabled = \App\Models\FIN\ConfigModel::get('qurbani_mode_enabled', '1') === '1';
+            // Jul-2026: mobile Qurbani visibility is now INDEPENDENT of web and
+            // defaults OFF — the mobile Qurbani mode button AND the rider
+            // Qurbani delivery view stay hidden unless the owner explicitly
+            // enables "Qurbani on Mobile" on the Operations page. (Web uses its
+            // own qurbani_mode_enabled_web key; see QurbaniWebController.)
+            $qurbaniGlobalEnabled = \App\Models\FIN\ConfigModel::get('qurbani_mode_enabled_mobile', '0') === '1';
             $hasQurbaniMode = in_array('access_qurbani_mode', $permissions) && $qurbaniGlobalEnabled;
             $qurbaniRiderDeliveredEnabled = $qurbaniGlobalEnabled
                 && \App\Models\FIN\ConfigModel::get('qurbani_rider_delivered_enabled', '0') === '1';
@@ -12721,16 +12787,43 @@ class RiderController extends Controller
                 }
             }
             
+            // Flag ONLINE bank sources so the expense form knows to show the
+            // receiving-bank picker (bank-category sources require a bank pick).
+            if (!empty($paymentSources)) {
+                $bankAccountIds = \App\Models\FIN\AccountModel::whereIn('id', array_column($paymentSources, 'id'))
+                    ->where('account_category', \App\Models\FIN\AccountModel::CATEGORY_BANK)
+                    ->pluck('id')->map(fn ($v) => (int) $v)->flip();
+                foreach ($paymentSources as &$ps) {
+                    $ps['is_online'] = isset($bankAccountIds[(int) $ps['id']]);
+                }
+                unset($ps);
+            }
+
+            // The banks an online expense can be attributed to (for the chip
+            // picker), each with its computed current balance so the user sees
+            // how much sits in the bank they're paying from.
+            $bankBalances = app(\App\Services\FIN\BankBalanceService::class)->balancesByBank();
+            $receivingAccounts = \App\Models\FIN\OnlineReceivingAccountModel::active()->ordered()
+                ->get(['id', 'name', 'short_code', 'color_hex', 'opening_balance'])
+                ->map(fn ($acc) => [
+                    'id' => $acc->id,
+                    'name' => $acc->name,
+                    'short_code' => $acc->short_code,
+                    'color_hex' => $acc->color_hex,
+                    'balance' => $bankBalances[(int) $acc->id]['balance'] ?? (float) $acc->opening_balance,
+                ]);
+
             \Log::info('Payment sources returned', [
                 'user_id' => Auth::id(),
                 'count' => count($paymentSources),
                 'has_all_permission' => $hasAllPaymentSourcesPermission,
                 'business_unit_id' => $businessUnitId,
             ]);
-            
+
             return response()->json([
                 'success' => true,
                 'payment_sources' => $paymentSources,
+                'receiving_accounts' => $receivingAccounts,
                 'has_all_payment_sources_permission' => $hasAllPaymentSourcesPermission
             ]);
             
@@ -14406,9 +14499,12 @@ class RiderController extends Controller
                 'amount' => 'required|numeric|min:0.01',
                 'transaction_date' => 'required|date',
                 'description' => 'required|string|max:500',
-                'mode' => 'required|in:cash,online'
+                'mode' => 'required|in:cash,online',
+                // Which of OUR banks the transfer touches — required below when
+                // either side is an ONLINE bank-category account.
+                'receiving_account_id' => 'nullable|integer|exists:t_fin_online_receiving_accounts,id'
             ]);
-            
+
             if ($validator->fails()) {
                 return response()->json([
                     'success' => false,
@@ -14416,27 +14512,50 @@ class RiderController extends Controller
                     'errors' => $validator->errors()
                 ], 422);
             }
-            
+
             DB::beginTransaction();
-            
+
             $fromAccount = \App\Models\FIN\AccountModel::findOrFail($request->from_account_id);
             $toAccount = \App\Models\FIN\AccountModel::findOrFail($request->to_account_id);
-            
+
+            // A transfer touching an ONLINE bank account must say WHICH bank so
+            // per-bank balances reconcile (mirrors the web transfer form).
+            $touchesBank = $fromAccount->account_category === \App\Models\FIN\AccountModel::CATEGORY_BANK
+                || $toAccount->account_category === \App\Models\FIN\AccountModel::CATEGORY_BANK;
+            $transferBankId = $touchesBank ? $request->input('receiving_account_id') : null;
+            if ($touchesBank && !$transferBankId) {
+                DB::rollBack();
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Select which bank this transfer goes through.'
+                ], 422);
+            }
+
             // Determine approval status
             // Online transfers require approval
-            $approvalStatus = $request->mode === 'online' 
-                ? \App\Models\FIN\LedgerModel::STATUS_PENDING 
+            $approvalStatus = $request->mode === 'online'
+                ? \App\Models\FIN\LedgerModel::STATUS_PENDING
                 : \App\Models\FIN\LedgerModel::STATUS_APPROVED;
-            
+
+            // Name the bank in the description for the ledger listing.
+            $transferDescription = $request->description;
+            if ($transferBankId) {
+                $transferBankShort = \App\Models\FIN\OnlineReceivingAccountModel::find($transferBankId)?->short_code;
+                if ($transferBankShort) {
+                    $transferDescription .= " · via {$transferBankShort}";
+                }
+            }
+
             // Create ledger entry
             $ledger = \App\Models\FIN\LedgerModel::create([
                 'transaction_date' => $request->transaction_date,
                 'transaction_type' => \App\Models\FIN\LedgerModel::TYPE_TRANSFER,
-                'description' => $request->description,
+                'description' => $transferDescription,
                 'from_account_id' => $fromAccount->id,
                 'to_account_id' => $toAccount->id,
                 'amount' => $request->amount,
                 'mode' => $request->mode,
+                'receiving_account_id' => $transferBankId,
                 'approval_status' => $approvalStatus,
                 'created_by' => $user->id
             ]);
@@ -21077,6 +21196,15 @@ class RiderController extends Controller
             // new APKs can both send the same payload shape).
             $receivingAccountId = $isOnline ? ($validated['receiving_account_id'] ?? null) : null;
 
+            // Bank is MANDATORY for online payments — without it the per-bank
+            // balances can never reconcile with the ONLINE account.
+            if ($isOnline && !$receivingAccountId) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Select which bank received this online payment.',
+                ], 422);
+            }
+
             // Create payment record
             $payment = \App\Models\CRM\OrderPaymentModel::create([
                 'order_id' => $order->id,
@@ -21124,6 +21252,14 @@ class RiderController extends Controller
             $isShopOrder = $order->customer && $order->customer->isShop();
             $label = $isQurbaniOrder ? 'Qurbani' : ($isShopOrder ? 'Shop' : 'Order');
             $description = "{$label} Payment #{$order->order_number} - Rs. " . number_format($amount) . " ({$customerName})";
+
+            // Name the bank in the description for the ledger listing.
+            if ($receivingAccountId) {
+                $payBankShort = \App\Models\FIN\OnlineReceivingAccountModel::find($receivingAccountId)?->short_code;
+                if ($payBankShort) {
+                    $description .= " · via {$payBankShort}";
+                }
+            }
 
             if ($isOnline) {
                 $toAccount = $isQurbaniOrder
@@ -21191,6 +21327,9 @@ class RiderController extends Controller
                 'to_account_id' => $toAccount->id,
                 'amount' => $amount,
                 'mode' => $mode,
+                // Tag which of OUR banks received this online payment (null for
+                // cash) so per-bank balances reconcile against the ONLINE account.
+                'receiving_account_id' => $receivingAccountId,
                 'approval_status' => $approvalStatus,
                 'balance_updated' => $applyBalanceNow ? 1 : 0,
                 'settlement_status' => $settlementStatus,
@@ -22325,6 +22464,29 @@ class RiderController extends Controller
             // Some exotic environments (testing) can't register
             // terminating callbacks — silently no-op there too.
             \Log::debug('QurbaniWaAutoSender hook skipped', ['error' => $e->getMessage()]);
+        }
+    }
+
+    /**
+     * Fire the rider-GPS "defibrillator" sweep on an app()->terminating()
+     * callback (the heartbeat response is already flushed by then). The sweep is
+     * itself lock-throttled to ~once/min, so calling it on every heartbeat is
+     * cheap — with N active riders heartbeating, it runs about once a minute
+     * total, enough to catch a rider who has just gone silent. Never affects the
+     * request.
+     */
+    private function fireRiderGpsWatchdog(): void
+    {
+        try {
+            app()->terminating(function () {
+                try {
+                    app(\App\Services\Location\RiderGpsWatchdog::class)->runThrottled();
+                } catch (\Throwable $e) {
+                    \Log::warning('RiderGpsWatchdog (terminating) failed', ['error' => $e->getMessage()]);
+                }
+            });
+        } catch (\Throwable $e) {
+            \Log::debug('RiderGpsWatchdog hook skipped', ['error' => $e->getMessage()]);
         }
     }
 

@@ -463,8 +463,21 @@ class VendorController extends Controller
         
         // ⭐ Get accessible company accounts for payment source dropdown
         $accessibleCompanyAccounts = AccountModel::getAccessibleCompanyAccounts();
-        
-        return view('fin.vendor.show', compact('vendor', 'ledgerWithBalance', 'groupedTransactions', 'dailySummaries', 'summary', 'expandAll', 'accessibleCompanyAccounts'));
+
+        // Receiving banks (with computed balances) for the mandatory bank picker
+        // shown when an ONLINE payment source is chosen.
+        $bankBalances = app(\App\Services\FIN\BankBalanceService::class)->balancesByBank();
+        $receivingBanks = \App\Models\FIN\OnlineReceivingAccountModel::active()->ordered()
+            ->get(['id', 'name', 'short_code', 'color_hex', 'opening_balance'])
+            ->map(fn ($acc) => [
+                'id' => $acc->id,
+                'name' => $acc->name,
+                'short_code' => $acc->short_code,
+                'color_hex' => $acc->color_hex,
+                'balance' => $bankBalances[(int) $acc->id]['balance'] ?? (float) $acc->opening_balance,
+            ])->values();
+
+        return view('fin.vendor.show', compact('vendor', 'ledgerWithBalance', 'groupedTransactions', 'dailySummaries', 'summary', 'expandAll', 'accessibleCompanyAccounts', 'receivingBanks'));
     }
 
     /**
@@ -699,6 +712,9 @@ class VendorController extends Controller
         $request->validate([
             'amount' => 'required|numeric|min:0.01',
             'payment_source_account_id' => 'nullable|exists:t_fin_accounts,id',
+            // Which of OUR banks an ONLINE vendor payment is made from —
+            // required below when the paying account is a bank.
+            'receiving_account_id' => 'nullable|integer|exists:t_fin_online_receiving_accounts,id',
             'description' => 'nullable|string|max:500',
             'transaction_date' => 'required|date',
             'posted_date' => 'nullable|date', // Date when entry is posted to ledger
@@ -709,7 +725,7 @@ class VendorController extends Controller
             DB::beginTransaction();
 
             $vendor = VendorModel::with('account')->findOrFail($id);
-            
+
             // Get payment source account (user selection or default to NF Cash)
             if ($request->payment_source_account_id) {
                 $paymentAccount = AccountModel::findOrFail($request->payment_source_account_id);
@@ -719,6 +735,19 @@ class VendorController extends Controller
 
             if (!$paymentAccount) {
                 throw new \Exception("Payment source account not found");
+            }
+
+            // ONLINE vendor payment → the specific bank is mandatory so per-bank
+            // balances reconcile with the ONLINE account.
+            $isOnlinePayment = $paymentAccount->account_category === AccountModel::CATEGORY_BANK;
+            $vendorBankId = $isOnlinePayment ? $request->receiving_account_id : null;
+            if ($isOnlinePayment && !$vendorBankId) {
+                DB::rollBack();
+                $msg = 'Select which bank this online payment is made from.';
+                if ($request->expectsJson() || $request->is('api/*')) {
+                    return response()->json(['success' => false, 'message' => $msg], 422);
+                }
+                return back()->withInput()->with('error', $msg);
             }
 
             // Check if payment amount exceeds vendor balance
@@ -740,7 +769,10 @@ class VendorController extends Controller
             }
             
             $approvalStatus = $requiresApproval ? LedgerModel::STATUS_PENDING : LedgerModel::STATUS_APPROVED;
-            $mode = ($paymentAccount->account_code === 'ONLINE') ? LedgerModel::MODE_ONLINE : LedgerModel::MODE_CASH;
+            // Any bank-category paying account is an online movement (matches the
+            // server-wide rule used by expenses / Bank Balances), not just the
+            // account literally coded 'ONLINE'.
+            $mode = $isOnlinePayment ? LedgerModel::MODE_ONLINE : LedgerModel::MODE_CASH;
             
             \Log::info("Vendor payment approval check", [
                 'vendor_id' => $vendor->id,
@@ -760,15 +792,33 @@ class VendorController extends Controller
             // transaction_date: actual date of transaction (for vendor records)
             $postedDate = $request->posted_date ?? $request->transaction_date;
             
+            // Always name the VENDOR in the description — a custom note is
+            // appended, never substituted, so listings always show who was paid.
+            $vendorPayDescription = "Payment to {$vendor->vendor_name}";
+            if ($request->filled('description')) {
+                $vendorPayDescription .= " — " . trim($request->description);
+            }
+            // Name the bank too, so the ledger listing shows at a glance which
+            // bank the money left from.
+            if ($vendorBankId) {
+                $vendorBankShort = \App\Models\FIN\OnlineReceivingAccountModel::find($vendorBankId)?->short_code;
+                if ($vendorBankShort) {
+                    $vendorPayDescription .= " · via {$vendorBankShort}";
+                }
+            }
+
             $ledger = LedgerModel::create([
                 'transaction_date' => $request->transaction_date,
                 'posted_date' => $postedDate,
                 'transaction_type' => LedgerModel::TYPE_VENDOR_PAYMENT,
-                'description' => $request->description ?? "Payment to {$vendor->vendor_name}",
+                'description' => $vendorPayDescription,
                 'from_account_id' => $paymentAccount->id,  // Money leaving from payment source
                 'to_account_id' => $vendor->account->id,   // Money going to settle vendor liability
                 'amount' => $request->amount,
                 'mode' => $mode,
+                // Which of OUR banks the online payment left from (null for cash)
+                // — keeps per-bank balances reconciled.
+                'receiving_account_id' => $vendorBankId,
                 'approval_status' => $approvalStatus,
                 'approval_date' => ($approvalStatus === LedgerModel::STATUS_APPROVED) ? now() : null,
                 'business_unit_id' => $vendor->business_unit_id ?? 1, // ⭐ Use vendor's BU

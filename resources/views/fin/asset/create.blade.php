@@ -125,8 +125,8 @@
                     <select name="payment_account_id" id="payment_account_id" onchange="updatePaymentMode()" class="block w-full text-sm border border-gray-300 rounded-md px-3 py-2 focus:ring-2 focus:ring-emerald-500" required>
                         <option value="">Select Payment Account</option>
                         @foreach($paymentAccounts as $acc)
-                            <option value="{{ $acc->id }}" 
-                                    data-mode="{{ $acc->account_code === 'ONLINE' ? 'online' : 'cash' }}"
+                            <option value="{{ $acc->id }}"
+                                    data-mode="{{ ($acc->account_category ?? null) === 'bank' ? 'online' : 'cash' }}"
                                     {{ old('payment_account_id') == $acc->id ? 'selected' : '' }}>
                                 {{ $acc->account_name }}
                             </option>
@@ -134,6 +134,14 @@
                     </select>
                     <p class="text-xs text-gray-500 mt-1">💡 NF Cash = Cash payment, Online = Online transfer</p>
                     <input type="hidden" name="payment_mode" id="payment_mode" value="{{ old('payment_mode', 'cash') }}">
+                </div>
+
+                <!-- ⭐ Receiving bank — mandatory when paying online -->
+                <div class="md:col-span-2" id="assetBankField" style="display: none;">
+                    <label class="block text-sm font-medium text-gray-700 mb-2">🏦 Paid from Bank <span class="text-red-500">*</span></label>
+                    <div id="assetBankChips" style="display:flex; flex-wrap:wrap; gap:6px;"></div>
+                    <input type="hidden" name="receiving_account_id" id="asset_receiving_account_id" value="{{ old('receiving_account_id') }}">
+                    <p class="text-xs text-gray-500 mt-1">Which bank this online purchase leaves from — keeps per-bank balances correct.</p>
                 </div>
 
                 <!-- Purchased By -->
@@ -289,10 +297,44 @@ function updatePaymentMode() {
     const select = document.getElementById('payment_account_id');
     const modeInput = document.getElementById('payment_mode');
     const selectedOption = select.options[select.selectedIndex];
-    
+
     if (selectedOption && selectedOption.value) {
         modeInput.value = selectedOption.dataset.mode || 'cash';
     }
+    // ⭐ Show the mandatory bank picker only for online payments.
+    renderAssetBankPicker();
+}
+
+// ⭐ Receiving-bank picker for ONLINE asset purchases (chips show balances).
+const assetReceivingBanks = @json($receivingBanks ?? []);
+
+function selectAssetBank(id) {
+    document.getElementById('asset_receiving_account_id').value = id;
+    renderAssetBankPicker();
+}
+
+function renderAssetBankPicker() {
+    const field = document.getElementById('assetBankField');
+    const chips = document.getElementById('assetBankChips');
+    const hidden = document.getElementById('asset_receiving_account_id');
+    if (!field || !chips || !hidden) return;
+
+    const isOnline = document.getElementById('payment_mode').value === 'online';
+    if (!isOnline || assetReceivingBanks.length === 0) {
+        field.style.display = 'none';
+        hidden.value = '';
+        return;
+    }
+    field.style.display = 'block';
+    const current = hidden.value;
+    chips.innerHTML = assetReceivingBanks.map(b => {
+        const active = String(current) === String(b.id);
+        const color = b.color_hex || '#3B82F6';
+        const bal = (b.balance !== undefined && b.balance !== null)
+            ? ` · Rs ${Math.round(Number(b.balance)).toLocaleString()}`
+            : '';
+        return `<button type="button" onclick="selectAssetBank(${b.id})" style="padding:6px 14px; border-radius:16px; border:1px solid ${active ? color : '#CBD5E1'}; background:${active ? color : '#F1F5F9'}; color:${active ? '#fff' : '#475569'}; font-size:13px; font-weight:600; cursor:pointer;">${(b.short_code || b.name)}<span style="font-weight:500; opacity:0.85;">${bal}</span></button>`;
+    }).join('');
 }
 
 // Toggle Physical Details section
@@ -399,6 +441,20 @@ function submitNewCategory() {
 // Initialize on page load
 document.addEventListener('DOMContentLoaded', function() {
     updatePaymentMode();
+
+    // ⭐ Block submit when paying online without a bank picked (server also
+    // enforces via required_if — this is just friendlier).
+    const assetForm = document.querySelector('form[action*="assets"]');
+    if (assetForm) {
+        assetForm.addEventListener('submit', function(e) {
+            const isOnline = document.getElementById('payment_mode').value === 'online';
+            const bankVal = document.getElementById('asset_receiving_account_id')?.value;
+            if (isOnline && !bankVal) {
+                e.preventDefault();
+                alert('Select which bank this online purchase is paid from.');
+            }
+        });
+    }
 });
 </script>
 @endsection

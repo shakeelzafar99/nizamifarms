@@ -141,8 +141,9 @@ class AutomationRegistry
                     . "before delivery, or by a manager on the web — automatically WhatsApp the customer "
                     . "your bank details so they can pay online. Uses a TEXT template (no invoice image, "
                     . "since there's no browser at the moment of change). Variables: {{1}} customer name, "
-                    . "{{2}} order number. Sends once per order; skips if the order is no longer "
-                    . "out-for-delivery / online or has no phone. Off by default.",
+                    . "{{2}} order number. Sends once per order; skips SHOP customers, invoices "
+                    . "that already have a payment proof / are settled, and orders no longer "
+                    . "out-for-delivery (incl. delivered) / online or with no phone. Off by default.",
                 'trigger_summary' => "When an out-for-delivery order switches to online payment",
                 'event'    => 'order.payment_changed',
                 'editable' => ['enabled', 'template'],

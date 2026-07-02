@@ -308,6 +308,22 @@ class LedgerPostingService
                 $description .= " ({$requesterName})";
             }
             
+            // When the expense is funded from an ONLINE bank account, mark the
+            // ledger row 'online' and tag which bank it was paid from, so the
+            // outflow is attributed to that bank's balance (mirrors how online
+            // inflows are tagged). Cash-funded expenses stay mode=null / no bank.
+            $isOnlineFunding = $fundingAccount->account_category === AccountModel::CATEGORY_BANK;
+            $expenseBankId = $isOnlineFunding ? $request->receiving_account_id : null;
+
+            // Name the bank in the description so the ledger listing shows at a
+            // glance which bank the money left from.
+            if ($expenseBankId) {
+                $bankShort = \App\Models\FIN\OnlineReceivingAccountModel::find($expenseBankId)?->short_code;
+                if ($bankShort) {
+                    $description .= " · via {$bankShort}";
+                }
+            }
+
             // Create ledger entry
             // ⭐ Use expense_date for backdated expenses, otherwise approved_at or now
             $ledger = LedgerModel::create([
@@ -317,7 +333,8 @@ class LedgerPostingService
                 'from_account_id' => $fundingAccount->id,
                 'to_account_id' => $expenseAccount->id,
                 'amount' => $request->amount,
-                'mode' => null,
+                'mode' => $isOnlineFunding ? LedgerModel::MODE_ONLINE : null,
+                'receiving_account_id' => $expenseBankId,
                 'approval_status' => LedgerModel::STATUS_APPROVED,
                 'approval_date' => $request->approved_at,
                 'request_id' => $request->id,
@@ -442,6 +459,22 @@ class LedgerPostingService
                 $description .= " - {$request->description}";
             }
             
+            // When the advance is funded from an ONLINE bank account, tag which
+            // bank it left from so per-bank balances stay reconciled. Mode stays
+            // 'cash' (a personal payment) — the bank math reads the accounts +
+            // tag, not the mode.
+            $advanceBankId = ($fundingAccount->account_category === AccountModel::CATEGORY_BANK)
+                ? $request->receiving_account_id
+                : null;
+
+            // Name the bank in the description for the ledger listing.
+            if ($advanceBankId) {
+                $bankShort = \App\Models\FIN\OnlineReceivingAccountModel::find($advanceBankId)?->short_code;
+                if ($bankShort) {
+                    $description .= " · via {$bankShort}";
+                }
+            }
+
             // Create ledger entry
             $ledger = LedgerModel::create([
                 'transaction_date' => $request->completed_at ?? now(),
@@ -451,6 +484,7 @@ class LedgerPostingService
                 'to_account_id' => $employeeCashAccount->id,
                 'amount' => $request->amount,
                 'mode' => 'cash',
+                'receiving_account_id' => $advanceBankId,
                 'approval_status' => LedgerModel::STATUS_APPROVED,
                 'approval_date' => $request->completed_at,
                 'approved_by' => $request->updated_by,

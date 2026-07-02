@@ -388,7 +388,20 @@ class LedgerController extends Controller
                                 ->get()
                                 ->groupBy('account_type');
 
-        return view('fin.ledger.transfer', compact('accounts'));
+        // Receiving banks (with computed balances) — mandatory picker when the
+        // transfer touches an ONLINE bank-category account.
+        $bankBalances = app(\App\Services\FIN\BankBalanceService::class)->balancesByBank();
+        $receivingBanks = \App\Models\FIN\OnlineReceivingAccountModel::active()->ordered()
+            ->get(['id', 'name', 'short_code', 'color_hex', 'opening_balance'])
+            ->map(fn ($acc) => [
+                'id' => $acc->id,
+                'name' => $acc->name,
+                'short_code' => $acc->short_code,
+                'color_hex' => $acc->color_hex,
+                'balance' => $bankBalances[(int) $acc->id]['balance'] ?? (float) $acc->opening_balance,
+            ])->values();
+
+        return view('fin.ledger.transfer', compact('accounts', 'receivingBanks'));
     }
 
     /**
@@ -402,7 +415,10 @@ class LedgerController extends Controller
             'amount' => 'required|numeric|min:0.01',
             'transaction_date' => 'required|date',
             'description' => 'required|string|max:500',
-            'mode' => 'required|in:cash,online'
+            'mode' => 'required|in:cash,online',
+            // Which of OUR banks the transfer touches — required below when
+            // either side is an ONLINE bank-category account.
+            'receiving_account_id' => 'nullable|integer|exists:t_fin_online_receiving_accounts,id',
         ]);
 
         try {
@@ -411,21 +427,44 @@ class LedgerController extends Controller
             $fromAccount = AccountModel::findOrFail($request->from_account_id);
             $toAccount = AccountModel::findOrFail($request->to_account_id);
 
+            // A transfer touching an ONLINE bank account (deposit into a bank,
+            // withdrawal out of one) must say WHICH bank, so per-bank balances
+            // reconcile. Transfers between two bank accounts net to zero for
+            // the tag, but we still capture it for the statement view.
+            $touchesBank = $fromAccount->account_category === AccountModel::CATEGORY_BANK
+                || $toAccount->account_category === AccountModel::CATEGORY_BANK;
+            $transferBankId = $touchesBank ? $request->receiving_account_id : null;
+            if ($touchesBank && !$transferBankId) {
+                DB::rollBack();
+                return back()->withInput()
+                    ->with('error', 'Select which bank this transfer goes through.');
+            }
+
             // Determine approval status
             // Online transfers require approval
-            $approvalStatus = $request->mode === 'online' 
-                ? LedgerModel::STATUS_PENDING 
+            $approvalStatus = $request->mode === 'online'
+                ? LedgerModel::STATUS_PENDING
                 : LedgerModel::STATUS_APPROVED;
+
+            // Name the bank in the description for the ledger listing.
+            $transferDescription = $request->description;
+            if ($transferBankId) {
+                $transferBankShort = \App\Models\FIN\OnlineReceivingAccountModel::find($transferBankId)?->short_code;
+                if ($transferBankShort) {
+                    $transferDescription .= " · via {$transferBankShort}";
+                }
+            }
 
             // Create ledger entry
             $ledger = LedgerModel::create([
                 'transaction_date' => $request->transaction_date,
                 'transaction_type' => LedgerModel::TYPE_TRANSFER,
-                'description' => $request->description,
+                'description' => $transferDescription,
                 'from_account_id' => $fromAccount->id,
                 'to_account_id' => $toAccount->id,
                 'amount' => $request->amount,
                 'mode' => $request->mode,
+                'receiving_account_id' => $transferBankId,
                 'approval_status' => $approvalStatus,
                 'created_by' => auth()->id()
             ]);
@@ -596,6 +635,54 @@ class LedgerController extends Controller
     /**
      * Approve pending transaction
      */
+    /**
+     * Resolve which receiving bank an online approval should be tagged with.
+     * Priority: (1) the bank the approver explicitly picked, (2) a bank already
+     * on the ledger row (captured at L1, now approving L2), (3) the bank the
+     * customer's payment proof was detected in. Returns null when none applies —
+     * the caller then requires a manual pick for online movements.
+     */
+    private function resolveReceivingBankId(Request $request, LedgerModel $ledger): ?int
+    {
+        if ($request->receiving_account_id) {
+            return (int) $request->receiving_account_id;
+        }
+        if ($ledger->receiving_account_id) {
+            return (int) $ledger->receiving_account_id;
+        }
+        if ($ledger->order_id && config('payment_signals.enabled')) {
+            try {
+                $proof = app(\App\Services\Payments\Signals\PaymentProofStatusService::class)
+                    ->forOrder((int) $ledger->order_id);
+                if (!empty($proof['suggested_receiving_account_id'])) {
+                    return (int) $proof['suggested_receiving_account_id'];
+                }
+            } catch (\Throwable $e) {
+                // Detection is best-effort; fall through to a manual requirement.
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Append "· via {SHORT}" to the ledger description once the receiving bank
+     * is known, so the main ledger listing shows the bank at a glance. Guarded:
+     * never appends twice (L1 then L2 approvals both pass through here).
+     */
+    private function appendBankToDescription(LedgerModel $ledger): void
+    {
+        if (!$ledger->receiving_account_id) {
+            return;
+        }
+        if ($ledger->description && str_contains($ledger->description, '· via ')) {
+            return; // already named (stamped at creation or at L1)
+        }
+        $short = \App\Models\FIN\OnlineReceivingAccountModel::find($ledger->receiving_account_id)?->short_code;
+        if ($short) {
+            $ledger->description = trim((string) $ledger->description) . " · via {$short}";
+        }
+    }
+
     public function approve(Request $request, $id)
     {
         $request->validate([
@@ -722,10 +809,30 @@ class LedgerController extends Controller
                 $ledger->bill_image = $proofImagePath;
             }
 
-            // ⭐ Save receiving bank account if provided (which bank received this online payment)
-            if ($request->receiving_account_id) {
-                $ledger->receiving_account_id = $request->receiving_account_id;
+            // ⭐ Receiving bank: explicit choice wins; otherwise auto-apply the
+            // bank detected from the customer's payment proof. Mandatory ONLY
+            // for the Online-Approvals queue types (invoice / order_payment) —
+            // vendor payments, deposits, transfers and asset purchases can also
+            // be mode=online but their approval UIs have no bank picker, so we
+            // never block them (untagged ones surface in the "Unassigned"
+            // bucket on Bank Balances instead).
+            $effectiveBankId = $this->resolveReceivingBankId($request, $ledger);
+            if ($effectiveBankId) {
+                $ledger->receiving_account_id = $effectiveBankId;
             }
+            $bankMandatory = $ledger->mode === LedgerModel::MODE_ONLINE
+                && in_array($ledger->transaction_type, [LedgerModel::TYPE_INVOICE, LedgerModel::TYPE_ORDER_PAYMENT], true);
+            if ($bankMandatory && !$ledger->receiving_account_id) {
+                DB::rollBack();
+                $msg = 'Select which bank received this online payment before approving.';
+                if ($request->ajax() || $request->wantsJson()) {
+                    return response()->json(['success' => false, 'message' => $msg], 422);
+                }
+                return back()->with('error', $msg);
+            }
+            // Name the bank in the description so the ledger listing shows it.
+            // Guarded so an L1-then-L2 approval doesn't append twice.
+            $this->appendBankToDescription($ledger);
 
             // Save customer-side transaction reference if provided. Only
             // overwrite when the caller actually sent a value, so repeat
@@ -970,10 +1077,25 @@ class LedgerController extends Controller
                 $ledger->bill_image = $proofImagePath;
             }
 
-            // ⭐ Save receiving bank account if provided
-            if ($request->receiving_account_id) {
-                $ledger->receiving_account_id = $request->receiving_account_id;
+            // ⭐ Receiving bank: explicit choice wins; else auto-apply the bank
+            // detected from the payment proof. Mandatory ONLY for the
+            // Online-Approvals queue types (see approve() for the rationale).
+            $effectiveBankId = $this->resolveReceivingBankId($request, $ledger);
+            if ($effectiveBankId) {
+                $ledger->receiving_account_id = $effectiveBankId;
             }
+            $bankMandatory = $ledger->mode === LedgerModel::MODE_ONLINE
+                && in_array($ledger->transaction_type, [LedgerModel::TYPE_INVOICE, LedgerModel::TYPE_ORDER_PAYMENT], true);
+            if ($bankMandatory && !$ledger->receiving_account_id) {
+                DB::rollBack();
+                $msg = 'Select which bank received this online payment before approving.';
+                if ($request->ajax() || $request->wantsJson()) {
+                    return response()->json(['success' => false, 'message' => $msg], 422);
+                }
+                return back()->with('error', $msg);
+            }
+            // Name the bank in the description (guarded against double-append).
+            $this->appendBankToDescription($ledger);
 
             // Save optional customer-side transaction reference on L1-only.
             if ($request->filled('transaction_reference')) {

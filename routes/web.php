@@ -750,11 +750,21 @@ Route::middleware(['auth'])->group(function () {
         ->whereNumber('orderId')
         ->name('payments.order-uncombine');
 
+    // Jun-2026 — Phase 2: one-time "balancing discount" (apply / remove).
+    Route::post('/admin/payments/order/{orderId}/balance-discount', [\App\Http\Controllers\FIN\PaymentSignalsController::class, 'applyBalanceDiscount'])
+        ->whereNumber('orderId')->name('payments.balance-discount');
+    Route::post('/admin/payments/order/{orderId}/balance-discount/remove', [\App\Http\Controllers\FIN\PaymentSignalsController::class, 'removeBalanceDiscount'])
+        ->whereNumber('orderId')->name('payments.balance-discount.remove');
+
     // Jun-2026 — Manual catch-up: find WhatsApp images / bank emails that were
     // missed by the live flow, create their signals, and run extraction+match.
     // Idempotent + non-interfering; powers the Operations page button.
     Route::post('/admin/payments/reconcile', [\App\Http\Controllers\FIN\PaymentDiagnosticsController::class, 'reconcile'])
         ->name('payments.reconcile');
+
+    // Jun-2026 — save the amount tolerance (PKR) + re-evaluate recent mismatches.
+    Route::post('/admin/payments/tolerance', [\App\Http\Controllers\FIN\PaymentDiagnosticsController::class, 'saveTolerance'])
+        ->name('payments.tolerance');
     
     // ⭐ Online Receiving Accounts CRUD (manage bank accounts for online approvals)
     Route::prefix('online-receiving-accounts')->group(function () {
@@ -764,7 +774,28 @@ Route::middleware(['auth'])->group(function () {
         Route::post('/{id}/toggle-active', [\App\Http\Controllers\FIN\OnlineReceivingAccountController::class, 'toggleActive']);
         Route::delete('/{id}', [\App\Http\Controllers\FIN\OnlineReceivingAccountController::class, 'destroy']);
     });
-    
+
+    // ⭐ Bank Balances — per-bank current balance over the single ONLINE ledger
+    // account, with statement drill-downs (per-bank + untagged "No bank").
+    Route::get('/finance/bank-balances', [\App\Http\Controllers\FIN\BankBalancesController::class, 'index'])
+        ->name('fin.bank-balances');
+    // Specific route MUST come before the numeric wildcard.
+    Route::get('/finance/bank-balances/unassigned/transactions', [\App\Http\Controllers\FIN\BankBalancesController::class, 'unassignedTransactions'])
+        ->name('fin.bank-balances.unassigned');
+    Route::get('/finance/bank-balances/{id}/transactions', [\App\Http\Controllers\FIN\BankBalancesController::class, 'transactions'])
+        ->whereNumber('id')->name('fin.bank-balances.transactions');
+    // Fix an untagged online movement (assign its bank) — Taimur only.
+    Route::post('/finance/bank-balances/assign/{ledgerId}', [\App\Http\Controllers\FIN\BankBalancesController::class, 'assignBank'])
+        ->whereNumber('ledgerId')->name('fin.bank-balances.assign');
+    // Manual per-bank balance adjustment (+/- true-up) — Taimur only.
+    Route::post('/finance/bank-balances/{bankId}/adjustments', [\App\Http\Controllers\FIN\BankBalancesController::class, 'storeAdjustment'])
+        ->whereNumber('bankId')->name('fin.bank-balances.adjust');
+    Route::post('/finance/bank-balances/adjustments/{adjustmentId}/delete', [\App\Http\Controllers\FIN\BankBalancesController::class, 'deleteAdjustment'])
+        ->whereNumber('adjustmentId')->name('fin.bank-balances.adjust.delete');
+    // Set the "start tracking No-bank from" date — Taimur only.
+    Route::post('/finance/bank-balances/unassigned/since', [\App\Http\Controllers\FIN\BankBalancesController::class, 'setUnassignedSince'])
+        ->name('fin.bank-balances.unassigned.since');
+
     // Debug route for testing virtual assignment
     Route::get('/test-virtual-assignment', function() {
         $requests = \App\Models\Request\RequestModel::where('status', 'pending')

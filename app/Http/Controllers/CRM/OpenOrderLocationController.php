@@ -45,6 +45,10 @@ class OpenOrderLocationController extends Controller
             'default_is_set'   => $this->service->defaultTemplateIsSet(),
             // Daily auto-send stats (sent / responded / didn't-respond list).
             'auto_stats'      => $this->service->autoSendStats(),
+            // Richer "location activity — today": auto vs manual sends, saved via
+            // reply vs staff, waiting, and queued (off-hours backlog). Rendered by
+            // the newer web/mobile UI; auto_stats stays for older mobile builds.
+            'today_activity'  => $this->service->todayActivity(),
             'chunk_size'      => (int) config('open_order_location.chunk_size', 20),
         ]);
     }

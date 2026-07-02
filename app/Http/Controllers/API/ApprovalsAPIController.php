@@ -552,11 +552,135 @@ class ApprovalsAPIController extends Controller
 
         } catch (\Exception $e) {
             Log::error('Mobile approvals summaries error: ' . $e->getMessage());
-            
+
             return response()->json([
                 'success' => false,
                 'message' => 'An error occurred'
             ], 500);
+        }
+    }
+
+    /**
+     * Can the current user see the Banks view? Same gate as Online Approvals.
+     */
+    private function canViewBanks($user): bool
+    {
+        return $user && (
+            $user->hasMobilePermission('view_online_approvals')
+            || $user->hasMobilePermission('view_approvals')
+        );
+    }
+
+    /**
+     * GET /rider/approvals/bank-balances — read-only per-bank balances for the
+     * mobile Banks view. Reuses BankBalanceService (the single source of truth,
+     * shared with the web Bank Balances page). ACTIVE banks only.
+     */
+    public function bankBalances(Request $request, \App\Services\FIN\BankBalanceService $balances)
+    {
+        try {
+            $user = auth()->user();
+            if (!$this->canViewBanks($user)) {
+                return response()->json(['success' => false, 'message' => 'You do not have permission to view banks'], 403);
+            }
+
+            $byBank = $balances->balancesByBank();
+            $banks = \App\Models\FIN\OnlineReceivingAccountModel::active()->ordered()->get()
+                ->map(function ($bank) use ($byBank) {
+                    $calc = $byBank[(int) $bank->id] ?? ['balance' => (float) $bank->opening_balance];
+                    return [
+                        'id' => $bank->id,
+                        'name' => $bank->name,
+                        'short_code' => $bank->short_code,
+                        'account_last4' => $bank->account_last4,
+                        'color_hex' => $bank->color_hex ?: '#3B82F6',
+                        'balance' => $calc['balance'],
+                        'opening_balance_date' => optional($bank->opening_balance_date)->toDateString(),
+                    ];
+                })->values();
+
+            // The ONLINE chart accounts — the pool to distribute across banks.
+            $onlineIds = $balances->onlineAccountIds();
+            $onlineAccounts = $onlineIds
+                ? \App\Models\FIN\AccountModel::whereIn('id', $onlineIds)
+                    ->orderBy('account_name')
+                    ->get(['account_name', 'current_balance'])
+                    ->map(fn ($a) => ['name' => $a->account_name, 'balance' => (float) $a->current_balance])
+                    ->values()
+                : collect();
+
+            return response()->json([
+                'success' => true,
+                'data' => [
+                    'banks' => $banks,
+                    'online_pool_total' => (float) $onlineAccounts->sum('balance'),
+                    'online_accounts' => $onlineAccounts,
+                    'unassigned_net' => $balances->unassignedNet(),
+                ],
+            ]);
+        } catch (\Exception $e) {
+            Log::error('Mobile bank balances error: ' . $e->getMessage());
+            return response()->json(['success' => false, 'message' => 'An error occurred while loading banks'], 500);
+        }
+    }
+
+    /**
+     * GET /rider/approvals/bank-balances/{id}/transactions?days=30|90|365|0
+     * A single bank's statement (in/out rows) for the mobile Banks view.
+     */
+    public function bankTransactions(Request $request, $id, \App\Services\FIN\BankBalanceService $balances)
+    {
+        try {
+            $user = auth()->user();
+            if (!$this->canViewBanks($user)) {
+                return response()->json(['success' => false, 'message' => 'You do not have permission to view banks'], 403);
+            }
+
+            $bank = \App\Models\FIN\OnlineReceivingAccountModel::findOrFail($id);
+            $onlineIds = $balances->onlineAccountIds();
+
+            $days = (int) $request->input('days', 30);
+            if (!in_array($days, [0, 30, 90, 365], true)) {
+                $days = 30;
+            }
+            $since = $days > 0 ? now()->subDays($days)->toDateString() : null;
+
+            $q = \App\Models\FIN\LedgerModel::where('receiving_account_id', $bank->id)
+                ->whereIn('approval_status', \App\Services\FIN\BankBalanceService::APPROVED_STATUSES);
+            if ($since) {
+                $q->whereDate('transaction_date', '>=', $since);
+            }
+            $rows = $q->orderByDesc('transaction_date')->orderByDesc('id')->limit(500)
+                ->get(['id', 'transaction_date', 'transaction_type', 'description', 'amount', 'from_account_id', 'to_account_id']);
+
+            $data = $rows->map(function ($r) use ($onlineIds) {
+                $toOnline = in_array((int) $r->to_account_id, $onlineIds, true);
+                $fromOnline = in_array((int) $r->from_account_id, $onlineIds, true);
+                $isInflow = $toOnline && !$fromOnline;
+                $isOutflow = $fromOnline && !$toOnline;
+                return [
+                    'id' => $r->id,
+                    'date' => optional($r->transaction_date)->toDateString(),
+                    'type' => $r->transaction_type,
+                    'description' => $r->description,
+                    'amount' => (float) $r->amount,
+                    'direction' => $isInflow ? 'in' : ($isOutflow ? 'out' : 'neutral'),
+                ];
+            });
+
+            return response()->json([
+                'success' => true,
+                'data' => [
+                    'bank' => ['id' => $bank->id, 'name' => $bank->name, 'short_code' => $bank->short_code, 'color_hex' => $bank->color_hex ?: '#3B82F6'],
+                    'days' => $days,
+                    'transactions' => $data,
+                    'total_in' => $data->where('direction', 'in')->sum('amount'),
+                    'total_out' => $data->where('direction', 'out')->sum('amount'),
+                ],
+            ]);
+        } catch (\Exception $e) {
+            Log::error('Mobile bank transactions error: ' . $e->getMessage());
+            return response()->json(['success' => false, 'message' => 'An error occurred'], 500);
         }
     }
 }

@@ -39,7 +39,7 @@ class PaymentSignalsController extends Controller
         $order = \DB::table('t_crm_prod_order')->where('id', $orderId)
             ->first(['total_price', 'total_paid', 'order_number']);
         $expected = $order ? round((float) $order->total_price - (float) ($order->total_paid ?? 0), 2) : null;
-        $tolerance = (float) config('payment_signals.amount_tolerance', 10.0);
+        $tolerance = PaymentProofStatusService::amountTolerance();
 
         // For a combined (bulk) signal the agreement must compare the transfer
         // against the GROUP total (sum of every covered invoice's balance), not
@@ -62,6 +62,10 @@ class PaymentSignalsController extends Controller
 
             $amountMatch = ($compareBase !== null && $s->extracted_amount !== null)
                 ? abs((float) $s->extracted_amount - $compareBase) <= $tolerance
+                : null;
+            // Signed gap shown to the approver: + = paid MORE than the invoice(s), − = short.
+            $difference = ($compareBase !== null && $s->extracted_amount !== null)
+                ? round((float) $s->extracted_amount - $compareBase, 2)
                 : null;
 
             return [
@@ -93,6 +97,7 @@ class PaymentSignalsController extends Controller
                 'agreement'      => [
                     'amount_match'  => $amountMatch,
                     'expected'      => $compareBase,
+                    'difference'    => $difference,
                 ],
             ];
         });
@@ -104,6 +109,7 @@ class PaymentSignalsController extends Controller
             'proof'        => app(PaymentProofStatusService::class)->forOrder($orderId),
             'signals'      => $payload,
             'combined'     => $this->combinedPaymentHint($signals),
+            'balance_adjustment' => $this->balanceAdjustmentInfo($signals, $orderId),
         ]);
     }
 
@@ -240,5 +246,270 @@ class PaymentSignalsController extends Controller
             ]);
 
         return response()->json(['success' => true, 'changed' => count($allIds)]);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Phase 2 — one-time "balancing discount" (Jun-2026)
+    // When a matched/combined proof is SHORT by a small (within-tolerance) amount,
+    // an approver can apply that exact difference as a fixed discount to the
+    // largest covered invoice that ISN'T posted to the ledger yet, so the payment
+    // settles clean. One-time, reversible, permission-gated. The endpoints are
+    // shared by BOTH web and mobile so the two stay in sync.
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /** Load the matched/mismatch signals covering an order (direct + bulk-linked). */
+    private function orderSignals(int $orderId)
+    {
+        $linkedSignalIds = \DB::table('t_fin_payment_signal_order')
+            ->where('order_id', $orderId)->pluck('signal_id')->all();
+
+        return PaymentSignal::query()
+            ->where(function ($q) use ($orderId, $linkedSignalIds) {
+                $q->where('matched_order_id', $orderId);
+                if (!empty($linkedSignalIds)) {
+                    $q->orWhereIn('id', $linkedSignalIds);
+                }
+            })
+            ->whereIn('status', [PaymentSignal::STATUS_MATCHED, PaymentSignal::STATUS_AMOUNT_MISMATCH])
+            ->orderByDesc('id')
+            ->get();
+    }
+
+    /** The set of order ids a proof covers (bulk links, or the single order). */
+    private function coveredOrderIds($signals, int $orderId): array
+    {
+        $ids = \DB::table('t_fin_payment_signal_order')
+            ->whereIn('signal_id', $signals->pluck('id')->all())
+            ->pluck('order_id')->map(fn ($v) => (int) $v)->unique()->values()->all();
+        return empty($ids) ? [$orderId] : $ids;
+    }
+
+    /**
+     * Whether a one-time balancing discount can be offered for this proof, how
+     * much (short amount), and which invoice would receive it. Read-only.
+     */
+    private function balanceAdjustmentInfo($signals, int $orderId): array
+    {
+        $off = ['eligible' => false, 'already_applied' => false, 'short_amount' => 0];
+
+        // Any signal covering this order with a read amount — matched OR still
+        // "amount differs". Eligibility is computed from the LIVE gap vs the
+        // tolerance (not the stored status), so raising the tolerance immediately
+        // reveals the button.
+        $signal = $signals->first(fn (PaymentSignal $s) =>
+            in_array($s->status, [PaymentSignal::STATUS_MATCHED, PaymentSignal::STATUS_AMOUNT_MISMATCH], true)
+            && $s->extracted_amount !== null);
+        if (!$signal) {
+            return $off;
+        }
+        $transfer = (float) $signal->extracted_amount;
+
+        $orderIds = $this->coveredOrderIds($signals, $orderId);
+        // Join the invoice's ledger entry: we only touch invoices whose amount has
+        // NOT posted to balances yet (pending / pending_l1 = pre-L1).
+        $preL1 = [\App\Models\FIN\LedgerModel::STATUS_PENDING, \App\Models\FIN\LedgerModel::STATUS_PENDING_L1];
+        $orders = \DB::table('t_crm_prod_order as o')
+            ->leftJoin('t_fin_ledger as l', 'l.id', '=', 'o.ledger_transaction_id')
+            ->whereIn('o.id', $orderIds)
+            ->get(['o.id', 'o.order_number', 'o.total_price', 'o.total_paid', 'o.ledger_transaction_id', 'l.approval_status as ledger_status']);
+        if ($orders->isEmpty()) {
+            return $off;
+        }
+
+        $groupTotal = 0.0;
+        foreach ($orders as $o) {
+            $groupTotal += round((float) $o->total_price - (float) ($o->total_paid ?? 0), 2);
+        }
+        $short = round($groupTotal - $transfer, 2); // >0 => customer paid LESS than the invoices
+
+        // Already balanced? (our marker discount on any covered invoice.)
+        $existing = \DB::table('t_crm_order_discounts')
+            ->whereIn('order_id', $orderIds)->where('coupon_code', 'AUTO_BALANCE')
+            ->get(['order_id', 'discount_amount']);
+        if ($existing->isNotEmpty()) {
+            return ['eligible' => false, 'already_applied' => true,
+                    'applied_amount' => round((float) $existing->sum('discount_amount'), 2), 'short_amount' => 0];
+        }
+
+        // Only offer for a SHORT gap within the tolerance (which is also the cap
+        // on how large a one-click discount can be).
+        $tolerance = PaymentProofStatusService::amountTolerance();
+        if ($short < 0.5 || $short > $tolerance) {
+            return ['eligible' => false, 'already_applied' => false, 'short_amount' => max(0.0, $short)];
+        }
+
+        // Target = largest-balance covered invoice that is still pre-L1 (or has no
+        // ledger entry) and can absorb the discount.
+        $target = null; $targetBal = -1.0;
+        foreach ($orders as $o) {
+            $ledgerOk = empty($o->ledger_transaction_id) || in_array($o->ledger_status, $preL1, true);
+            $bal = round((float) $o->total_price - (float) ($o->total_paid ?? 0), 2);
+            if ($ledgerOk && $bal >= $short && $bal > $targetBal) {
+                $target = $o; $targetBal = $bal;
+            }
+        }
+        if (!$target) {
+            return ['eligible' => false, 'already_applied' => false, 'short_amount' => $short,
+                    'reason' => 'covered invoices are already approved, or too small'];
+        }
+
+        return [
+            'eligible'            => true,
+            'already_applied'     => false,
+            'short_amount'        => $short,
+            'target_order_id'     => (int) $target->id,
+            'target_order_number' => $target->order_number,
+        ];
+    }
+
+    /** 403 JsonResponse unless the caller has L1 or L2 approval rights, else null. */
+    private function ensureApprover(Request $request)
+    {
+        $user = $request->user();
+        $ok = $user && (\App\Models\SysAdmin\RoleApprovalLevelModel::userHasApprovalLevel($user->id, 1)
+                     || \App\Models\SysAdmin\RoleApprovalLevelModel::userHasApprovalLevel($user->id, 2));
+        return $ok ? null : response()->json(['success' => false, 'message' => 'You do not have approval rights.'], 403);
+    }
+
+    /** Re-run the matcher on the matched signals covering this order. */
+    private function rematchOrderSignals($signals, \App\Services\Payments\Signals\PaymentSignalMatcher $matcher): void
+    {
+        foreach ($signals as $s) {
+            if (in_array($s->status, [PaymentSignal::STATUS_MATCHED, PaymentSignal::STATUS_AMOUNT_MISMATCH], true)) {
+                try {
+                    $matcher->rematch($s->fresh());
+                } catch (\Throwable $e) {
+                    \Log::warning('Balance-discount rematch failed', ['signal_id' => $s->id, 'error' => $e->getMessage()]);
+                }
+            }
+        }
+    }
+
+    /**
+     * POST /admin/payments/order/{orderId}/balance-discount (also mobile /rider/...)
+     * Apply the short difference as a one-time fixed discount to the largest
+     * covered (un-posted) invoice, then re-match so the proof settles clean.
+     */
+    public function applyBalanceDiscount(Request $request, int $orderId, \App\Services\Payments\Signals\PaymentSignalMatcher $matcher)
+    {
+        if ($deny = $this->ensureApprover($request)) {
+            return $deny;
+        }
+
+        $signals = $this->orderSignals($orderId);
+        $info = $this->balanceAdjustmentInfo($signals, $orderId);
+
+        if (!empty($info['already_applied'])) {
+            return response()->json(['success' => false, 'message' => 'A balancing discount is already applied.'], 422);
+        }
+        if (empty($info['eligible'])) {
+            return response()->json(['success' => false, 'message' => 'This proof is not eligible for a balancing discount.'], 422);
+        }
+
+        $D = round((float) $info['short_amount'], 2);
+        $targetId = (int) $info['target_order_id'];
+        $userId = $request->user()->id;
+
+        \DB::transaction(function () use ($targetId, $D, $userId) {
+            $order = \App\Models\CRM\OrderModel::find($targetId);
+            if (!$order) {
+                throw new \RuntimeException('Target invoice not found.');
+            }
+            // Re-check the invoice ledger entry is still pre-L1 (not yet posted to
+            // balances) before touching money.
+            if ($order->ledger_transaction_id) {
+                $st = \DB::table('t_fin_ledger')->where('id', $order->ledger_transaction_id)->value('approval_status');
+                if (!in_array($st, [\App\Models\FIN\LedgerModel::STATUS_PENDING, \App\Models\FIN\LedgerModel::STATUS_PENDING_L1], true)) {
+                    throw new \RuntimeException('Invoice already approved — cannot auto-discount.');
+                }
+            }
+            \App\Models\CRM\OrderDiscountModel::create([
+                'order_id'        => $order->id,
+                'discount_title'  => 'Payment balancing adjustment',
+                'discount_amount' => $D,
+                'discount_type'   => 'fixed',
+                'coupon_code'     => 'AUTO_BALANCE',
+                'display_order'   => 999,
+                'notes'           => 'Auto-applied to match the received payment (short by Rs ' . number_format($D, 2) . ').',
+                'created_by'      => $userId,
+            ]);
+            $order->discount_total = round((float) $order->discount_total + $D, 2);
+            $order->total_price    = round((float) $order->total_price - $D, 2);
+            $order->save();
+            $order->recalculatePaymentStatus();
+            // Mirror the reduction onto the (pre-L1, unposted) invoice ledger entry
+            // so the ledger — and the eventual L1 posting — reflect the discounted total.
+            if ($order->ledger_transaction_id) {
+                \DB::table('t_fin_ledger')->where('id', $order->ledger_transaction_id)
+                    ->decrement('amount', $D, ['updated_at' => now()]);
+            }
+        });
+
+        $this->rematchOrderSignals($signals, $matcher);
+
+        \Log::info('Payment balancing discount applied', ['order_id' => $targetId, 'amount' => $D, 'by' => $userId]);
+
+        return response()->json([
+            'success'             => true,
+            'applied_amount'      => $D,
+            'target_order_id'     => $targetId,
+            'target_order_number' => $info['target_order_number'] ?? null,
+        ]);
+    }
+
+    /**
+     * POST /admin/payments/order/{orderId}/balance-discount/remove (also mobile)
+     * Reverse the one-time balancing discount(s) on this proof's invoices.
+     */
+    public function removeBalanceDiscount(Request $request, int $orderId, \App\Services\Payments\Signals\PaymentSignalMatcher $matcher)
+    {
+        if ($deny = $this->ensureApprover($request)) {
+            return $deny;
+        }
+
+        $signals = $this->orderSignals($orderId);
+        $orderIds = $this->coveredOrderIds($signals, $orderId);
+
+        $discounts = \App\Models\CRM\OrderDiscountModel::whereIn('order_id', $orderIds)
+            ->where('coupon_code', 'AUTO_BALANCE')->get();
+        if ($discounts->isEmpty()) {
+            return response()->json(['success' => false, 'message' => 'No balancing discount to remove.'], 422);
+        }
+
+        // Refuse if any affected invoice has since been approved (its amount is now
+        // posted to balances — undoing here would drift the ledger).
+        $preL1 = [\App\Models\FIN\LedgerModel::STATUS_PENDING, \App\Models\FIN\LedgerModel::STATUS_PENDING_L1];
+        foreach ($discounts as $d) {
+            $order = \App\Models\CRM\OrderModel::find($d->order_id);
+            if ($order && $order->ledger_transaction_id) {
+                $st = \DB::table('t_fin_ledger')->where('id', $order->ledger_transaction_id)->value('approval_status');
+                if (!in_array($st, $preL1, true)) {
+                    return response()->json(['success' => false, 'message' => 'That invoice was already approved; the discount can no longer be auto-removed.'], 422);
+                }
+            }
+        }
+
+        \DB::transaction(function () use ($discounts) {
+            foreach ($discounts as $d) {
+                $order = \App\Models\CRM\OrderModel::find($d->order_id);
+                if ($order) {
+                    $order->discount_total = round(max(0.0, (float) $order->discount_total - (float) $d->discount_amount), 2);
+                    $order->total_price    = round((float) $order->total_price + (float) $d->discount_amount, 2);
+                    $order->save();
+                    $order->recalculatePaymentStatus();
+                    if ($order->ledger_transaction_id) {
+                        \DB::table('t_fin_ledger')->where('id', $order->ledger_transaction_id)
+                            ->increment('amount', (float) $d->discount_amount, ['updated_at' => now()]);
+                    }
+                }
+                $d->delete();
+            }
+        });
+
+        $this->rematchOrderSignals($signals, $matcher);
+
+        \Log::info('Payment balancing discount removed', ['order_ids' => $orderIds, 'count' => $discounts->count()]);
+
+        return response()->json(['success' => true, 'removed' => $discounts->count()]);
     }
 }

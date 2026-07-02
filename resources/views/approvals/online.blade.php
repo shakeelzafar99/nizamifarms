@@ -402,9 +402,14 @@
             <p class="text-gray-600 mt-2">Manage online payment approvals</p>
         </div>
         <div style="display: flex; align-items: center; gap: 12px;">
+            <a href="{{ route('fin.bank-balances') }}" style="background: #ECFDF5; color: #065F46; font-weight: 600; padding: 8px 16px; border-radius: 8px; border: 1px solid #A7F3D0; cursor: pointer; font-size: 13px; text-decoration: none; transition: all 0.2s;" onmouseover="this.style.background='#D1FAE5'" onmouseout="this.style.background='#ECFDF5'">
+                📊 Bank Balances
+            </a>
+            @if($isTaimur ?? false)
             <button onclick="openBankAccountsModal()" style="background: #F0F9FF; color: #0369A1; font-weight: 600; padding: 8px 16px; border-radius: 8px; border: 1px solid #BAE6FD; cursor: pointer; font-size: 13px; transition: all 0.2s;" onmouseover="this.style.background='#E0F2FE'" onmouseout="this.style.background='#F0F9FF'">
                 🏦 Manage Banks
             </button>
+            @endif
             <a href="{{ route('approvals.index') }}" class="text-blue-600 hover:text-blue-800 font-medium text-sm">
                 ← Back to All Approvals
             </a>
@@ -541,9 +546,17 @@
         <div id="modalBody" style="padding: 24px;">
             <!-- Modal content will be loaded here -->
         </div>
-        <!-- ⭐ Receiving Bank Account Selection -->
+        <!-- ⭐ Already-received payment proof (auto-matched WhatsApp screenshot) -->
+        <div id="receivedProofBox" style="display: none; padding: 0 24px 12px 24px;">
+            <label style="display: block; font-size: 13px; font-weight: 600; color: #374151; margin-bottom: 6px;">🧾 Received proof</label>
+            <a id="receivedProofLink" href="#" target="_blank" style="display: block;">
+                <img id="receivedProofImg" src="" style="max-height: 150px; border-radius: 8px; border: 1px solid #E5E7EB;">
+            </a>
+        </div>
+        <!-- ⭐ Receiving Bank Account Selection (mandatory for online) -->
         <div style="padding: 0 24px 12px 24px;">
-            <label style="display: block; font-size: 13px; font-weight: 600; color: #0369A1; margin-bottom: 6px;">🏦 Received in Bank (optional)</label>
+            <label style="display: block; font-size: 13px; font-weight: 600; color: #0369A1; margin-bottom: 6px;">🏦 Received in Bank <span style="color:#DC2626;">*</span></label>
+            <div id="bankDetectedHint" style="display: none; font-size: 12px; color: #16A34A; margin-bottom: 6px;"></div>
             <div id="bankAccountChips" style="display: flex; flex-wrap: wrap; gap: 6px;">
                 <button type="button" class="bank-chip bank-chip-active" data-bank-id="" onclick="selectBankAccount(this, '')" style="padding: 4px 12px; border-radius: 16px; border: 1px solid #CBD5E1; background: #3B82F6; color: #fff; font-size: 12px; font-weight: 600; cursor: pointer; transition: all 0.2s;">
                     None
@@ -681,6 +694,10 @@
                 <div style="flex: 1;">
                     <label style="display: block; font-size: 11px; font-weight: 600; color: #6B7280; margin-bottom: 4px;">Short Code</label>
                     <input type="text" id="newBankCode" placeholder="e.g. HBL" style="width: 100%; padding: 8px 10px; border: 1px solid #D1D5DB; border-radius: 6px; font-size: 13px;">
+                </div>
+                <div style="flex: 0.7;">
+                    <label style="display: block; font-size: 11px; font-weight: 600; color: #6B7280; margin-bottom: 4px;" title="Last 4 digits of this account — used to auto-detect the bank from a proof">Last 4</label>
+                    <input type="text" id="newBankLast4" maxlength="4" inputmode="numeric" placeholder="4237" style="width: 100%; padding: 8px 10px; border: 1px solid #D1D5DB; border-radius: 6px; font-size: 13px;">
                 </div>
                 <div style="flex: 0.6;">
                     <label style="display: block; font-size: 11px; font-weight: 600; color: #6B7280; margin-bottom: 4px;">Color</label>
@@ -1058,10 +1075,10 @@ function renderInvoiceRow(item, isApproved) {
             <span class="invoice-level ${item.level === 1 ? 'l1' : 'l2'}">L${item.level}</span>
             ` : `
             <span class="invoice-approved-by">✅ ${item.approved_by || 'System'}</span>
-            ${item.receiving_account_short ? `<span style="display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; background: ${(item.receiving_account_color || '#3B82F6')}20; color: ${item.receiving_account_color || '#3B82F6'}; border: 1px solid ${item.receiving_account_color || '#3B82F6'}40;">🏦 ${escapeHtml(item.receiving_account_short)}</span>` : ''}
             ${approvalDateStr ? `<span class="invoice-approved-date" style="color: #059669; font-size: 12px; margin-left: 8px;">📅 ${approvalDateStr}</span>` : ''}
             `}
             <span class="invoice-amount">Rs. ${numberFormat(item.amount)}</span>
+            ${renderBankBadge(item)}
             ${renderProofBadges(item)}
             <div class="invoice-actions">
                 ${!isApproved ? `
@@ -1167,11 +1184,18 @@ async function submitShopPayment(orderId) {
         errBox.style.display = 'block';
         return;
     }
+    // Bank is mandatory for online payments (per-bank balance tracking).
+    const shopBankId = document.getElementById('shopPayBank').value;
+    if (!shopBankId) {
+        errBox.textContent = 'Select which bank received this payment.';
+        errBox.style.display = 'block';
+        return;
+    }
     const payload = {
         amount: amount,
         payment_method: 'online',
         payment_date: document.getElementById('shopPayDate').value || null,
-        receiving_account_id: document.getElementById('shopPayBank').value || null,
+        receiving_account_id: shopBankId,
         reference: document.getElementById('shopPayRef').value || null,
         notes: document.getElementById('shopPayNotes').value || null,
     };
@@ -1287,6 +1311,24 @@ async function voidShopPayment(orderId, paymentId, orderNumber) {
 // p.status: none | proof_received | bank_confirmed | verified | amount_mismatch
 // p.is_combined: this invoice was paid as part of ONE transfer covering
 // p.combined_count invoices (a combined / bulk payment).
+// Small bank chip on a row: SOLID when the receiving bank is confirmed (already
+// tagged on the ledger), a lighter DASHED "detected" chip when it's only been
+// auto-detected from the customer's proof and not yet approved.
+function renderBankBadge(item) {
+    if (item && item.receiving_account_short) {
+        const c = item.receiving_account_color || '#3B82F6';
+        return `<span title="Received in ${escapeHtml(item.receiving_account_short)}"
+            style="display:inline-block; padding:2px 8px; border-radius:10px; font-size:11px; font-weight:600; background:${c}20; color:${c}; border:1px solid ${c}40; margin-left:6px; white-space:nowrap;">🏦 ${escapeHtml(item.receiving_account_short)}</span>`;
+    }
+    const p = item && item.payment_proof;
+    if (p && p.suggested_receiving_account_short) {
+        const c = p.suggested_receiving_account_color || '#3B82F6';
+        return `<span title="Detected from proof — confirm when you approve"
+            style="display:inline-block; padding:2px 8px; border-radius:10px; font-size:11px; font-weight:600; background:${c}12; color:${c}; border:1px dashed ${c}; margin-left:6px; white-space:nowrap;">🏦 ${escapeHtml(p.suggested_receiving_account_short)} · detected</span>`;
+    }
+    return '';
+}
+
 function renderProofBadges(item) {
     const p = item && item.payment_proof;
     if (!p || p.status === 'none' || !item.order_id) return '';
@@ -1296,10 +1338,18 @@ function renderProofBadges(item) {
     const combinedSuffix = (p.is_combined && p.combined_count) ? ` · combined of ${p.combined_count}` : '';
     const combinedTitle = (p.is_combined && p.combined_count)
         ? ` — one transfer covering ${p.combined_count} invoices` : '';
-    return `<span class="proof-badge" onclick="openProofPanel(${item.order_id})"
+    let badges = `<span class="proof-badge" onclick="openProofPanel(${item.order_id})"
         title="${escapeHtml(p.label)}${combinedTitle} — click to view the proof"
         style="cursor:pointer; display:inline-block; padding:2px 8px; border-radius:10px; font-size:11px; font-weight:600; background:${p.color}1A; color:${p.color}; border:1px solid ${p.color}55; margin-left:6px; white-space:nowrap;">
         ${combinedPrefix}${waIcon}${mailIcon} ${escapeHtml(p.label)}${combinedSuffix}</span>`;
+    // 💸 "Discount needed" marker — a matched proof still short by a small amount.
+    if (p.needs_discount) {
+        const shortTxt = p.short_amount ? ` · Rs ${numberFormat(p.short_amount)}` : '';
+        badges += `<span onclick="openProofPanel(${item.order_id})"
+            title="This payment is short${p.short_amount ? ' by Rs ' + numberFormat(p.short_amount) : ''} — click to apply a balancing discount"
+            style="cursor:pointer; display:inline-block; padding:2px 8px; border-radius:10px; font-size:11px; font-weight:600; background:#FEF3C7; color:#92400E; border:1px solid #FCD34D; margin-left:6px; white-space:nowrap;">💸 discount needed${shortTxt}</span>`;
+    }
+    return badges;
 }
 
 // Fetch + show the screenshot / parsed email behind a proof badge.
@@ -1349,6 +1399,39 @@ async function uncombinePayment(orderId) {
     }
 }
 
+// Phase 2 — apply / undo the one-time balancing discount, then reload the panel + list.
+async function applyBalanceDiscount(orderId) {
+    if (!confirm('Apply a one-time discount to settle the small difference on this payment?')) return;
+    await balanceDiscountRequest(`/admin/payments/order/${orderId}/balance-discount`, orderId, 'Could not apply the discount.');
+}
+async function removeBalanceDiscount(orderId) {
+    if (!confirm('Remove the balancing discount (restores the invoice total)?')) return;
+    await balanceDiscountRequest(`/admin/payments/order/${orderId}/balance-discount/remove`, orderId, 'Could not remove the discount.');
+}
+async function balanceDiscountRequest(url, orderId, errMsg) {
+    try {
+        const res = await fetch(url, {
+            method: 'POST',
+            headers: {
+                'X-Requested-With': 'XMLHttpRequest',
+                'Accept': 'application/json',
+                'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').content,
+            },
+        });
+        const data = await res.json();
+        if (data && data.success) {
+            const overlay = document.getElementById('proofPanelOverlay');
+            if (overlay) overlay.remove();
+            openProofPanel(orderId); // reopen with the updated state
+            loadData();              // refresh the list badges/amounts
+        } else {
+            alert((data && data.message) || errMsg);
+        }
+    } catch (e) {
+        alert(errMsg);
+    }
+}
+
 function buildProofPanelHtml(data) {
     const proof = data.proof || {};
     let html = `<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
@@ -1375,6 +1458,22 @@ function buildProofPanelHtml(data) {
         </div>`;
     }
 
+    // 💸 One-time balancing discount — when the transfer is a little SHORT of the
+    // invoice(s), an approver can write off the small gap so it settles clean.
+    const ba = data.balance_adjustment || {};
+    if (ba.eligible && ba.short_amount > 0) {
+        html += `<div style="border:1px solid #FDE68A; background:#FFFBEB; border-radius:10px; padding:12px; margin-bottom:14px;">
+            <div style="font-weight:700; color:#92400E; margin-bottom:4px;">Payment is Rs ${numberFormat(ba.short_amount)} short</div>
+            <div style="font-size:12px; color:#92400E; margin-bottom:8px;">Apply a one-time discount to ${escapeHtml(ba.target_order_number || 'the largest invoice')} so the payment settles exactly.</div>
+            <button onclick="applyBalanceDiscount(${data.order_id})" style="background:#059669; color:#fff; border:none; border-radius:8px; padding:7px 14px; font-size:13px; font-weight:600; cursor:pointer;">Apply Rs ${numberFormat(ba.short_amount)} discount</button>
+        </div>`;
+    } else if (ba.already_applied) {
+        html += `<div style="border:1px solid #A7F3D0; background:#ECFDF5; border-radius:10px; padding:12px; margin-bottom:14px;">
+            <div style="font-weight:700; color:#065F46; margin-bottom:6px;">✓ Balancing discount applied — Rs ${numberFormat(ba.applied_amount || 0)}</div>
+            <button onclick="removeBalanceDiscount(${data.order_id})" style="background:#FEF2F2; color:#B91C1C; border:1px solid #FECACA; border-radius:8px; padding:6px 12px; font-size:12px; cursor:pointer;">Undo discount</button>
+        </div>`;
+    }
+
     if (!data.signals || data.signals.length === 0) {
         html += '<div style="color:#9CA3AF;">No signal details available.</div>';
         return html;
@@ -1384,6 +1483,17 @@ function buildProofPanelHtml(data) {
         const isWa = s.source === 'whatsapp';
         const am = s.agreement || {};
         const amountColor = am.amount_match === true ? '#16A34A' : (am.amount_match === false ? '#DC2626' : '#9CA3AF');
+        // Amount note: show the signed gap even when it matches within tolerance,
+        // so the approver sees how much short/over the transfer is.
+        let amountNote = '';
+        if (am.amount_match === true) {
+            const d = am.difference;
+            amountNote = (d && Math.abs(d) >= 1)
+                ? (d < 0 ? ` ✓ matches (Rs ${numberFormat(Math.abs(d))} short)` : ` ✓ matches (Rs ${numberFormat(d)} over)`)
+                : ' ✓ matches';
+        } else if (am.amount_match === false) {
+            amountNote = ' (differs from balance Rs. ' + numberFormat(am.expected) + ')';
+        }
         html += `<div style="border:1px solid #E5E7EB; border-radius:10px; padding:14px; margin-bottom:12px;">
             <div style="font-weight:600; margin-bottom:8px;">${isWa ? '📷 Customer WhatsApp screenshot' : '✉️ Bank confirmation email'}
                 <span style="font-weight:400; color:#9CA3AF; font-size:12px; margin-left:6px;">${escapeHtml(s.received_at || '')}</span></div>`;
@@ -1393,7 +1503,7 @@ function buildProofPanelHtml(data) {
         }
 
         html += `<table style="width:100%; font-size:13px; border-collapse:collapse;">
-            <tr><td style="color:#6B7280; padding:2px 0; width:140px;">Amount read</td><td style="font-weight:600; color:${amountColor};">Rs. ${s.amount != null ? numberFormat(s.amount) : '—'}${am.amount_match === false ? ' (differs from balance Rs. ' + numberFormat(am.expected) + ')' : (am.amount_match === true ? ' ✓ matches' : '')}</td></tr>
+            <tr><td style="color:#6B7280; padding:2px 0; width:140px;">Amount read</td><td style="font-weight:600; color:${amountColor};">Rs. ${s.amount != null ? numberFormat(s.amount) : '—'}${amountNote}</td></tr>
             <tr><td style="color:#6B7280; padding:2px 0;">Reference</td><td>${escapeHtml(s.reference || '—')}</td></tr>
             <tr><td style="color:#6B7280; padding:2px 0;">Sender name</td><td>${escapeHtml(s.sender_name || '—')}</td></tr>
             <tr><td style="color:#6B7280; padding:2px 0;">Sender bank</td><td>${escapeHtml(s.sender_bank || '—')}${s.sender_account ? ' · ' + escapeHtml(s.sender_account) : ''}</td></tr>
@@ -1504,13 +1614,55 @@ function openApprovalModal(ledgerId, level) {
     
     // Show L1 Only button for L1 items
     document.getElementById('modalL1OnlyBtn').style.display = level === 1 ? 'block' : 'none';
-    
-    // ⭐ Render bank account chips (pre-select if already tagged)
-    renderBankChips(item.receiving_account_id || '');
-    
+
+    // ⭐ Render bank chips: pre-select the bank already tagged on the ledger, else
+    // the bank auto-detected from the customer's payment proof.
+    const proof = item.payment_proof || {};
+    const detectedBankId = proof.suggested_receiving_account_id || '';
+    const preselectBankId = item.receiving_account_id || detectedBankId || '';
+    renderBankChips(preselectBankId);
+
+    // Bank hint: (a) green "detected from proof" when we auto-filled it, or
+    // (b) amber "unrecognized account" when the proof shows an account that
+    // isn't one of our banks — with a Taimur-only quick-add link.
+    const hint = document.getElementById('bankDetectedHint');
+    if (hint) {
+        if (!item.receiving_account_id && detectedBankId && proof.suggested_receiving_account_short) {
+            hint.innerHTML = `✓ detected from proof — ${escapeHtml(proof.suggested_receiving_account_short)}`;
+            hint.style.color = '#16A34A';
+            hint.style.display = 'block';
+        } else if (!preselectBankId && proof.detected_last4) {
+            const addLink = canRevertApprovals
+                ? ` <a href="#" onclick="openBankAccountsModal(); return false;" style="color:#B45309; text-decoration:underline; font-weight:700;">Add bank</a>`
+                : '';
+            hint.innerHTML = `⚠️ Proof shows account ••${escapeHtml(proof.detected_last4)} — not in your banks.${addLink}`;
+            hint.style.color = '#B45309';
+            hint.style.display = 'block';
+        } else {
+            hint.innerHTML = '';
+            hint.style.display = 'none';
+        }
+    }
+
+    // ⭐ Show the already-received proof screenshot inline (read-only). The
+    // upload field below still lets the approver attach one manually.
+    const proofBox = document.getElementById('receivedProofBox');
+    const proofImg = document.getElementById('receivedProofImg');
+    const proofLink = document.getElementById('receivedProofLink');
+    if (proofBox && proofImg && proofLink) {
+        if (proof.proof_image_url) {
+            proofImg.src = proof.proof_image_url;
+            proofLink.href = proof.proof_image_url;
+            proofBox.style.display = 'block';
+        } else {
+            proofImg.src = '';
+            proofBox.style.display = 'none';
+        }
+    }
+
     // Store item for confirmation
     window.pendingApprovalItem = item;
-    
+
     const modal = document.getElementById('approvalModal');
     if (modal) {
         modal.style.display = 'flex';
@@ -1526,6 +1678,11 @@ function closeModal() {
     // the next approval the user opens.
     const txnRefInput = document.getElementById('transactionReferenceInput');
     if (txnRefInput) txnRefInput.value = '';
+    // Reset the received-proof box + detected hint for the next approval.
+    const proofBox = document.getElementById('receivedProofBox');
+    if (proofBox) proofBox.style.display = 'none';
+    const hint = document.getElementById('bankDetectedHint');
+    if (hint) { hint.textContent = ''; hint.style.display = 'none'; }
 }
 
 function previewProofImage(input) {
@@ -1969,13 +2126,37 @@ async function confirmBulkApprove(approvalType) {
     await doBulkApprove(itemsToApprove, approvalType);
 }
 
+// An item's effective receiving bank: the bank already tagged on the ledger,
+// else the bank auto-detected from the proof. Null when neither is known.
+function itemBankId(item) {
+    if (item && item.receiving_account_id) return item.receiving_account_id;
+    const p = item && item.payment_proof;
+    if (p && p.suggested_receiving_account_id) return p.suggested_receiving_account_id;
+    return null;
+}
+
 // Execute bulk approval with progress tracking
 async function doBulkApprove(items, approvalType) {
     console.log('=== doBulkApprove started ===');
     console.log('Items count:', items.length);
     console.log('Approval type:', approvalType);
-    
-    const total = items.length;
+
+    // Bank is mandatory for online approvals. In bulk we can only auto-apply a
+    // bank we already know (tagged or detected from proof); items with no bank
+    // are SKIPPED so the manager approves them individually and picks one.
+    const skipped = [];
+    const approvable = items.filter(item => {
+        if (itemBankId(item)) return true;
+        skipped.push(item);
+        return false;
+    });
+
+    if (approvable.length === 0) {
+        showToast(`Nothing auto-approvable — ${skipped.length} item(s) need a bank. Open each and pick one.`, 'error');
+        return;
+    }
+
+    const total = approvable.length;
     let successCount = 0;
     let errorCount = 0;
     const errors = [];
@@ -1998,20 +2179,20 @@ async function doBulkApprove(items, approvalType) {
     
     console.log('Starting approval loop...');
     
-    for (let i = 0; i < items.length; i++) {
-        const item = items[i];
+    for (let i = 0; i < approvable.length; i++) {
+        const item = approvable[i];
         console.log(`Processing item ${i + 1}/${total}:`, item.number, item.id);
-        
+
         try {
             const progressEl = document.getElementById('processingProgress');
             if (progressEl) progressEl.textContent = `${i + 1} / ${total}`;
         } catch (e) {}
-        
+
         try {
             // Determine URL and body based on approval type and item level
             // Use web routes (session auth) instead of API routes (Sanctum auth)
             let url, body;
-            
+
             if (approvalType === 'l1_only' && item.level === 1) {
                 // L1 Only: Move L1 items to L2 pending
                 url = `/finance/ledger/${item.id}/approve-l1-only`;
@@ -2019,10 +2200,16 @@ async function doBulkApprove(items, approvalType) {
             } else {
                 // Full approval for all items
                 url = `/finance/ledger/${item.id}/approve`;
-                body = { 
-                    approval_notes: 'Bulk approved from Online Approvals web', 
-                    force_full_approval: true 
+                body = {
+                    approval_notes: 'Bulk approved from Online Approvals web',
+                    force_full_approval: true
                 };
+            }
+
+            // Explicitly tag the bank we know for this item (mandatory online).
+            const bulkBankId = itemBankId(item);
+            if (bulkBankId) {
+                body.receiving_account_id = parseInt(bulkBankId);
             }
             
             console.log(`Approving item ${item.number}: ${url}`);
@@ -2069,7 +2256,10 @@ async function doBulkApprove(items, approvalType) {
     if (errorCount > 0) {
         resultMessage += ` | ❌ Failed: ${errorCount}`;
     }
-    
+    if (skipped.length > 0) {
+        resultMessage += ` | ⏭️ Skipped ${skipped.length} (no bank — approve individually)`;
+    }
+
     showToast(resultMessage, successCount > 0 ? 'success' : 'error');
     
     // Show detailed errors if any
@@ -2593,11 +2783,13 @@ function renderBankAccountsList() {
         <div id="bank-row-${acc.id}" style="display: flex; align-items: center; gap: 10px; padding: 10px 0; border-bottom: 1px solid #F3F4F6; ${!acc.is_active ? 'opacity: 0.5;' : ''}">
             <div style="width: 14px; height: 14px; border-radius: 50%; background: ${escapeHtml(acc.color_hex || '#3B82F6')}; flex-shrink: 0; border: 2px solid ${escapeHtml(acc.color_hex || '#3B82F6')}40;"></div>
             <div style="flex: 1; min-width: 0;">
-                <div style="display: flex; align-items: center; gap: 6px;">
+                <div style="display: flex; align-items: center; gap: 6px; flex-wrap: wrap;">
                     <span style="font-weight: 600; color: #1F2937; font-size: 14px;">${escapeHtml(acc.name)}</span>
                     <span style="background: #F3F4F6; color: #6B7280; padding: 1px 6px; border-radius: 4px; font-size: 11px; font-weight: 600;">${escapeHtml(acc.short_code)}</span>
+                    ${acc.account_last4 ? `<span style="background: #EFF6FF; color: #1D4ED8; padding: 1px 6px; border-radius: 4px; font-size: 11px; font-weight: 600;">••${escapeHtml(acc.account_last4)}</span>` : ''}
                     ${!acc.is_active ? '<span style="background: #FEE2E2; color: #DC2626; padding: 1px 6px; border-radius: 4px; font-size: 10px; font-weight: 600;">INACTIVE</span>' : ''}
                 </div>
+                ${(acc.opening_balance && parseFloat(acc.opening_balance) !== 0) || acc.opening_balance_date ? `<div style="font-size: 11px; color: #9CA3AF; margin-top: 2px;">Opening: Rs. ${numberFormat(parseFloat(acc.opening_balance || 0))}${acc.opening_balance_date ? ' · ' + escapeHtml(String(acc.opening_balance_date).slice(0,10)) : ''}</div>` : ''}
             </div>
             <button onclick="editBankAccount(${acc.id})" style="background: #F3F4F6; color: #374151; padding: 4px 8px; border-radius: 4px; border: none; cursor: pointer; font-size: 11px;" title="Edit">✏️</button>
             <button onclick="toggleBankAccount(${acc.id})" style="background: ${acc.is_active ? '#FEF3C7' : '#D1FAE5'}; color: ${acc.is_active ? '#92400E' : '#065F46'}; padding: 4px 8px; border-radius: 4px; border: none; cursor: pointer; font-size: 11px;" title="${acc.is_active ? 'Deactivate' : 'Activate'}">${acc.is_active ? '⏸' : '▶'}</button>
@@ -2609,11 +2801,12 @@ function renderBankAccountsList() {
 async function addBankAccount() {
     const name = document.getElementById('newBankName').value.trim();
     const shortCode = document.getElementById('newBankCode').value.trim();
+    const last4 = (document.getElementById('newBankLast4').value || '').replace(/\D/g, '').slice(-4);
     const color = document.getElementById('newBankColor').value;
-    
+
     if (!name) { alert('Please enter a bank name'); return; }
     if (!shortCode) { alert('Please enter a short code'); return; }
-    
+
     try {
         const response = await fetch('/online-receiving-accounts', {
             method: 'POST',
@@ -2622,13 +2815,14 @@ async function addBankAccount() {
                 'Accept': 'application/json',
                 'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]')?.content || ''
             },
-            body: JSON.stringify({ name, short_code: shortCode, color_hex: color })
+            body: JSON.stringify({ name, short_code: shortCode, account_last4: last4 || null, color_hex: color })
         });
-        
+
         const result = await response.json();
         if (result.success) {
             document.getElementById('newBankName').value = '';
             document.getElementById('newBankCode').value = '';
+            document.getElementById('newBankLast4').value = '';
             document.getElementById('newBankColor').value = '#3B82F6';
             loadBankAccounts();
             // Refresh the receivingAccounts used in approval modal
@@ -2647,12 +2841,19 @@ function editBankAccount(id) {
     
     const row = document.getElementById(`bank-row-${id}`);
     row.innerHTML = `
-        <div style="width: 100%; display: flex; align-items: center; gap: 8px;">
-            <input type="text" id="edit-name-${id}" value="${escapeHtml(acc.name)}" style="flex: 1.5; padding: 6px 8px; border: 1px solid #3B82F6; border-radius: 4px; font-size: 13px;">
-            <input type="text" id="edit-code-${id}" value="${escapeHtml(acc.short_code)}" style="flex: 1; padding: 6px 8px; border: 1px solid #3B82F6; border-radius: 4px; font-size: 13px;">
-            <input type="color" id="edit-color-${id}" value="${acc.color_hex || '#3B82F6'}" style="width: 36px; height: 30px; border: 1px solid #D1D5DB; border-radius: 4px; cursor: pointer; padding: 1px;">
-            <button onclick="saveBankAccount(${id})" style="background: #16A34A; color: white; padding: 6px 10px; border-radius: 4px; border: none; cursor: pointer; font-size: 12px; font-weight: 600;">Save</button>
-            <button onclick="renderBankAccountsList()" style="background: #E5E7EB; color: #374151; padding: 6px 10px; border-radius: 4px; border: none; cursor: pointer; font-size: 12px;">Cancel</button>
+        <div style="width: 100%; display: flex; flex-direction: column; gap: 6px;">
+            <div style="display: flex; align-items: center; gap: 8px;">
+                <input type="text" id="edit-name-${id}" value="${escapeHtml(acc.name)}" placeholder="Name" style="flex: 1.5; padding: 6px 8px; border: 1px solid #3B82F6; border-radius: 4px; font-size: 13px;">
+                <input type="text" id="edit-code-${id}" value="${escapeHtml(acc.short_code)}" placeholder="Code" style="flex: 1; padding: 6px 8px; border: 1px solid #3B82F6; border-radius: 4px; font-size: 13px;">
+                <input type="text" id="edit-last4-${id}" value="${escapeHtml(acc.account_last4 || '')}" maxlength="4" inputmode="numeric" placeholder="Last4" style="width: 60px; padding: 6px 8px; border: 1px solid #3B82F6; border-radius: 4px; font-size: 13px;">
+                <input type="color" id="edit-color-${id}" value="${acc.color_hex || '#3B82F6'}" style="width: 36px; height: 30px; border: 1px solid #D1D5DB; border-radius: 4px; cursor: pointer; padding: 1px;">
+            </div>
+            <div style="display: flex; align-items: center; gap: 8px;">
+                <input type="number" step="0.01" id="edit-opening-${id}" value="${acc.opening_balance != null ? parseFloat(acc.opening_balance) : ''}" placeholder="Opening balance (Rs.)" style="flex: 1.2; padding: 6px 8px; border: 1px solid #CBD5E1; border-radius: 4px; font-size: 13px;">
+                <input type="date" id="edit-opening-date-${id}" value="${acc.opening_balance_date ? String(acc.opening_balance_date).slice(0,10) : ''}" title="Balance counts from this date" style="flex: 1; padding: 6px 8px; border: 1px solid #CBD5E1; border-radius: 4px; font-size: 13px;">
+                <button onclick="saveBankAccount(${id})" style="background: #16A34A; color: white; padding: 6px 10px; border-radius: 4px; border: none; cursor: pointer; font-size: 12px; font-weight: 600;">Save</button>
+                <button onclick="renderBankAccountsList()" style="background: #E5E7EB; color: #374151; padding: 6px 10px; border-radius: 4px; border: none; cursor: pointer; font-size: 12px;">Cancel</button>
+            </div>
         </div>
     `;
 }
@@ -2660,10 +2861,17 @@ function editBankAccount(id) {
 async function saveBankAccount(id) {
     const name = document.getElementById(`edit-name-${id}`).value.trim();
     const shortCode = document.getElementById(`edit-code-${id}`).value.trim();
+    const last4 = (document.getElementById(`edit-last4-${id}`).value || '').replace(/\D/g, '').slice(-4);
     const color = document.getElementById(`edit-color-${id}`).value;
-    
+    const openingRaw = document.getElementById(`edit-opening-${id}`).value;
+    const openingDate = document.getElementById(`edit-opening-date-${id}`).value;
+
     if (!name || !shortCode) { alert('Name and short code are required'); return; }
-    
+
+    const body = { name, short_code: shortCode, account_last4: last4 || null, color_hex: color };
+    if (openingRaw !== '') body.opening_balance = parseFloat(openingRaw);
+    if (openingDate) body.opening_balance_date = openingDate;
+
     try {
         const response = await fetch(`/online-receiving-accounts/${id}`, {
             method: 'PUT',
@@ -2672,7 +2880,7 @@ async function saveBankAccount(id) {
                 'Accept': 'application/json',
                 'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]')?.content || ''
             },
-            body: JSON.stringify({ name, short_code: shortCode, color_hex: color })
+            body: JSON.stringify(body)
         });
         
         const result = await response.json();

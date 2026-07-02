@@ -82,6 +82,14 @@ return [
         'timeout'  => env('GEMINI_TIMEOUT', 30),
         // Max signals to extract per scheduled run (cost + rate-limit guard).
         'batch_size' => env('PAYMENT_SIGNALS_GEMINI_BATCH', 15),
+        // Stop retrying a screenshot after this many failed extraction attempts
+        // (prevents a permanently-failing image from blocking the oldest-first
+        // queue). Also bounds the one-time re-extract-for-bank backfill.
+        'max_attempts' => env('PAYMENT_SIGNALS_GEMINI_MAX_ATTEMPTS', 5),
+        // Max signals to RE-READ per tick for the bank-detection backfill (the
+        // pending-approval proofs read under the old prompt). Runs AFTER live
+        // extraction so it never crowds out new screenshots.
+        'reextract_batch' => env('PAYMENT_SIGNALS_REEXTRACT_BATCH', 20),
     ],
 
     /*

@@ -229,6 +229,89 @@ class FirebaseService
     }
 
     /**
+     * ⭐ Silent "wake up" data push to a rider's devices — the GPS defibrillator.
+     * Data-only (NO notification block) + high priority so the mobile app's
+     * background message handler runs (even when the app was swiped away / the
+     * OS snoozed it) and restarts the location foreground service, WITHOUT showing
+     * anything to the rider. Best-effort; returns how many devices accepted it.
+     */
+    public function pingRiderToWake(int $userId, array $data = []): int
+    {
+        if (!$this->projectId || !file_exists($this->credentialsPath)) {
+            return 0;
+        }
+
+        try {
+            $tokens = DB::table('t_wa_device_tokens')
+                ->where('user_id', $userId)
+                ->where('is_active', 1)
+                ->pluck('fcm_token')
+                ->all();
+
+            if (empty($tokens)) return 0;
+
+            $accessToken = $this->getAccessToken();
+            if (!$accessToken) return 0;
+
+            $payloadData = array_merge(['type' => 'location_ping'], $data);
+            $sent = 0;
+            foreach ($tokens as $fcmToken) {
+                if ($this->sendDataOnly($accessToken, $fcmToken, $payloadData)) {
+                    $sent++;
+                }
+            }
+            return $sent;
+        } catch (\Exception $e) {
+            Log::warning('Firebase: pingRiderToWake failed', ['user_id' => $userId, 'error' => $e->getMessage()]);
+            return 0;
+        }
+    }
+
+    /**
+     * Send a DATA-ONLY high-priority FCM message (no visible notification). FCM
+     * requires every data value to be a string. Deactivates a dead token.
+     */
+    protected function sendDataOnly(string $accessToken, string $fcmToken, array $data): bool
+    {
+        $url = "https://fcm.googleapis.com/v1/projects/{$this->projectId}/messages:send";
+
+        $stringData = [];
+        foreach ($data as $k => $v) {
+            $stringData[$k] = is_string($v) ? $v : (string) $v;
+        }
+
+        $payload = [
+            'message' => [
+                'token' => $fcmToken,
+                'data'  => $stringData,
+                'android' => [
+                    'priority' => 'high',
+                    // No 'notification' block → silent; wakes the JS background handler.
+                ],
+            ],
+        ];
+
+        try {
+            $response = Http::withToken($accessToken)->timeout(10)->post($url, $payload);
+            if (!$response->successful()) {
+                $code = $response->json('error.details.0.errorCode', '');
+                Log::warning('Firebase: silent data push failed', [
+                    'code'  => $code,
+                    'error' => $response->json('error.message', 'Unknown'),
+                ]);
+                if (in_array($code, ['UNREGISTERED', 'INVALID_ARGUMENT'])) {
+                    DB::table('t_wa_device_tokens')->where('fcm_token', $fcmToken)->update(['is_active' => 0]);
+                }
+                return false;
+            }
+            return true;
+        } catch (\Exception $e) {
+            Log::warning('Firebase: silent data push HTTP error', ['error' => $e->getMessage()]);
+            return false;
+        }
+    }
+
+    /**
      * Get an OAuth2 access token using the service account credentials.
      * Caches the token for 50 minutes (they expire in 60).
      */

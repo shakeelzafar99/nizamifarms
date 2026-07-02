@@ -158,6 +158,15 @@ document.addEventListener('DOMContentLoaded', function() {
         newRequestBtn.addEventListener('click', openNewRequestModal);
         console.log('[NewRequest] Click handler attached');
     }
+    // Load banks + refresh the receiving-bank picker whenever the pay-from
+    // account changes (shows only for ONLINE bank sources).
+    if (typeof loadExpenseBanks === 'function') { loadExpenseBanks(); }
+    const _paySel = document.getElementById('quick_payment_source');
+    if (_paySel) {
+        _paySel.addEventListener('change', function() {
+            if (typeof renderExpenseBankPicker === 'function') { renderExpenseBankPicker(); }
+        });
+    }
     const qurbaniExpenseBtn = document.getElementById('qurbaniExpenseBtn');
     if (qurbaniExpenseBtn) {
         qurbaniExpenseBtn.addEventListener('click', openQurbaniExpenseModal);
@@ -1029,12 +1038,24 @@ document.addEventListener('DOMContentLoaded', function() {
                                    <option value="{{ $acc->id }}"
                                        data-business-unit-id="{{ $acc->business_unit_id }}"
                                        data-account-code="{{ $acc->account_code }}"
+                                       data-account-category="{{ $acc->account_category }}"
                                        {{ $acc->account_code == $defaultPayFromCode ? 'selected' : '' }}>
                                        {{ $acc->account_name }}
                                    </option>
                                @endforeach
                            </select>
                            <p class="text-xs text-gray-500 mt-1">Select which company account to debit for this expense</p>
+                       </div>
+
+                       <!-- ⭐ Receiving bank — only when the Pay-From account is an ONLINE bank -->
+                       <div id="quick-expense-bank-field" style="display: none;" class="mb-6">
+                           <label class="block text-base font-semibold text-gray-800 mb-3 flex items-center gap-2">
+                               <span>🏦 Received in Bank</span>
+                               <span class="text-red-500 text-lg">*</span>
+                           </label>
+                           <div id="quickExpenseBankChips" style="display:flex; flex-wrap:wrap; gap:6px;"></div>
+                           <input type="hidden" name="receiving_account_id" id="quick_receiving_account_id">
+                           <p class="text-xs text-gray-500 mt-1">Which bank this online payment is made from</p>
                        </div>
 
                        <!-- Amount (for Expense & Salary Advance) -->
@@ -1222,6 +1243,11 @@ function handleQuickCategoryChange() {
         descriptionField.required = true;
         descriptionField.placeholder = 'Required: Explain why you need this advance';
         hiddenTitle.value = 'salary advance';
+        // Salary advances can be paid from an ONLINE bank account — show the
+        // pay-from field so the (mandatory) receiving-bank picker can appear.
+        const salaryPayFromField = document.getElementById('quick-pay-from-field');
+        if (salaryPayFromField) salaryPayFromField.style.display = 'block';
+        filterPaymentSourcesByBU();
     }
     
     // Update approval info
@@ -1286,6 +1312,66 @@ function filterPaymentSourcesByBU() {
             firstVisibleOption.selected = true;
         }
     }
+    // The selected source may have changed → refresh the receiving-bank picker.
+    renderExpenseBankPicker();
+}
+
+// ⭐ Receiving-bank picker for ONLINE expenses -------------------------------
+// Shown only when the chosen Pay-From account is an online bank (account_code
+// contains 'ONLINE'). Chips come from t_fin_online_receiving_accounts.
+window.expenseBanks = [];
+function loadExpenseBanks() {
+    fetch('/online-receiving-accounts', { headers: { 'Accept': 'application/json' } })
+        .then(r => r.json())
+        .then(res => {
+            if (res && res.success) {
+                window.expenseBanks = (res.data || []).filter(b => b.is_active != 0);
+                // Refresh in case the expense form is already open on an online source.
+                if (typeof renderExpenseBankPicker === 'function') { renderExpenseBankPicker(); }
+            }
+        })
+        .catch(() => {});
+}
+function selectedPaySourceIsOnline() {
+    const sel = document.getElementById('quick_payment_source');
+    if (!sel) return false;
+    const opt = sel.options[sel.selectedIndex];
+    if (!opt || !opt.dataset) return false;
+    // Match the SERVER rule (account_category === 'bank'); fall back to the
+    // code heuristic for safety if the category attribute is ever missing.
+    if (opt.dataset.accountCategory) {
+        return opt.dataset.accountCategory === 'bank';
+    }
+    return ((opt.dataset.accountCode || '').indexOf('ONLINE') !== -1);
+}
+function selectExpenseBank(id) {
+    document.getElementById('quick_receiving_account_id').value = id;
+    renderExpenseBankPicker();
+}
+function renderExpenseBankPicker() {
+    const field = document.getElementById('quick-expense-bank-field');
+    const chips = document.getElementById('quickExpenseBankChips');
+    const hidden = document.getElementById('quick_receiving_account_id');
+    if (!field || !chips || !hidden) return;
+
+    const payFromVisible = (document.getElementById('quick-pay-from-field') || {}).style?.display !== 'none';
+    if (!payFromVisible || !selectedPaySourceIsOnline() || window.expenseBanks.length === 0) {
+        field.style.display = 'none';
+        hidden.value = '';
+        return;
+    }
+    field.style.display = 'block';
+    const current = hidden.value;
+    chips.innerHTML = window.expenseBanks.map(b => {
+        const active = String(current) === String(b.id);
+        const color = b.color_hex || '#3B82F6';
+        // Show the bank's computed current balance on the chip so the user
+        // knows how much sits in the account they're paying from.
+        const bal = (b.balance !== undefined && b.balance !== null)
+            ? ` · Rs ${Math.round(Number(b.balance)).toLocaleString()}`
+            : '';
+        return `<button type="button" onclick="selectExpenseBank(${b.id})" style="padding:6px 14px; border-radius:16px; border:1px solid ${active ? color : '#CBD5E1'}; background:${active ? color : '#F1F5F9'}; color:${active ? '#fff' : '#475569'}; font-size:13px; font-weight:600; cursor:pointer;">${(b.short_code || b.name)}<span style="font-weight:500; opacity:0.85;">${bal}</span></button>`;
+    }).join('');
 }
 
 // ⭐ Master handler when business unit changes — filters Request Type, Expense Type, and Pay From Account

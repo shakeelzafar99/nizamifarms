@@ -231,7 +231,7 @@
                 <button id="statsTab" class="dashboard-tab border-b-2 border-transparent py-2 px-1 text-sm font-medium text-gray-500 hover:text-gray-700 hover:border-gray-300">
                     <i class="ki-filled ki-chart-pie mr-1"></i> General Stats
                 </button>
-                @php $qurbaniDashEnabled = \App\Models\FIN\ConfigModel::get('qurbani_mode_enabled', '1') === '1'; @endphp
+                @php $qurbaniDashEnabled = \App\Models\FIN\ConfigModel::get('qurbani_mode_enabled_web', \App\Models\FIN\ConfigModel::get('qurbani_mode_enabled', '1')) === '1'; @endphp
                 @if($qurbaniDashEnabled)
                 <button id="qurbaniTab" class="dashboard-tab border-b-2 border-transparent py-2 px-1 text-sm font-medium text-gray-500 hover:text-gray-700 hover:border-gray-300">
                     <i class="ki-filled ki-parcel mr-1"></i> Qurbani

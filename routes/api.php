@@ -82,6 +82,12 @@ Route::middleware('customer.app')->prefix('customer-app')->group(function () {
     Route::get('/orders/{orderNumber}', [\App\Http\Controllers\API\CustomerAppController::class, 'orderSnapshot'])
         ->where('orderNumber', '[^/]+');
 
+    // Phase 5 — customer changes their order's payment method (cash <-> online).
+    // Reuses the shared rider/manager change logic; only allowed while the order
+    // is still open (not delivered/completed/cancelled/refunded).
+    Route::post('/orders/{orderNumber}/payment-method', [\App\Http\Controllers\API\CustomerAppController::class, 'changePaymentMethod'])
+        ->where('orderNumber', '[^/]+');
+
     // Phase 3 — order history keyed on the customer's mobile number (any
     // format; NF normalizes to the last 10 digits before matching).
     Route::get('/customers/{mobile}/orders', [\App\Http\Controllers\API\CustomerAppController::class, 'customerOrders'])
@@ -196,10 +202,17 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('/', [\App\Http\Controllers\API\ApprovalsAPIController::class, 'index']);
         Route::get('/summaries', [\App\Http\Controllers\API\ApprovalsAPIController::class, 'summaries']);
         Route::get('/online', [\App\Http\Controllers\API\ApprovalsAPIController::class, 'onlineOnly']); // ⭐ Fast endpoint for online only
+        // Bank Balances (read-only) for the mobile Banks view — same gate as
+        // Online Approvals (view_online_approvals / view_approvals).
+        Route::get('/bank-balances', [\App\Http\Controllers\API\ApprovalsAPIController::class, 'bankBalances']);
+        Route::get('/bank-balances/{id}/transactions', [\App\Http\Controllers\API\ApprovalsAPIController::class, 'bankTransactions'])->whereNumber('id');
         // Read-only payment-proof detail (WhatsApp screenshot / bank email) for an
         // order — powers the proof popup in the mobile Online Approvals screen,
         // mirroring the web /admin/payments/order/{id}/signals panel.
         Route::get('/order/{orderId}/payment-signals', [\App\Http\Controllers\FIN\PaymentSignalsController::class, 'forOrder']);
+        // Jun-2026 — Phase 2: one-time "balancing discount" (same controller as web).
+        Route::post('/order/{orderId}/balance-discount', [\App\Http\Controllers\FIN\PaymentSignalsController::class, 'applyBalanceDiscount']);
+        Route::post('/order/{orderId}/balance-discount/remove', [\App\Http\Controllers\FIN\PaymentSignalsController::class, 'removeBalanceDiscount']);
     });
     
     // Mobile Permissions
@@ -547,11 +560,23 @@ Route::middleware('auth:sanctum')->group(function () {
     // ⭐ Business Units (for dropdowns in mobile/web)
     Route::get('/business-units', [\App\Http\Controllers\FIN\BusinessUnitController::class, 'apiList']);
 
-    // ⭐ Online Receiving Accounts (for dropdowns in approval flow)
+    // ⭐ Online Receiving Accounts (for dropdowns in approval flow). Each row
+    // carries its computed current `balance` so pickers can show how much sits
+    // in each bank (opening balance + net tagged movement).
     Route::get('/online-receiving-accounts', function () {
         $accounts = \App\Models\FIN\OnlineReceivingAccountModel::active()->ordered()
-            ->get(['id', 'name', 'short_code', 'color_hex']);
-        return response()->json(['success' => true, 'data' => $accounts]);
+            ->get(['id', 'name', 'short_code', 'color_hex', 'opening_balance']);
+        $byBank = app(\App\Services\FIN\BankBalanceService::class)->balancesByBank();
+        $data = $accounts->map(function ($acc) use ($byBank) {
+            return [
+                'id' => $acc->id,
+                'name' => $acc->name,
+                'short_code' => $acc->short_code,
+                'color_hex' => $acc->color_hex,
+                'balance' => $byBank[(int) $acc->id]['balance'] ?? (float) $acc->opening_balance,
+            ];
+        });
+        return response()->json(['success' => true, 'data' => $data]);
     });
 
     // Quick-create endpoint for the mobile Qurbani Pay modal's "+ Add new"

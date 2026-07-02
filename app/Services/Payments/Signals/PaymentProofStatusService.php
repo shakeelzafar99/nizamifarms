@@ -25,6 +25,21 @@ class PaymentProofStatusService
     public const VERIFIED       = 'verified';
     public const AMOUNT_MISMATCH = 'amount_mismatch';
 
+    /**
+     * Runtime amount tolerance in PKR (Jun-2026). Admins can change it from the
+     * Operations page; it's stored in t_fin_config and falls back to the config
+     * default. Clamped to a sane range so a typo can't make matching absurdly
+     * loose. Used by the matcher (single + combined) and the proof panel.
+     */
+    public static function amountTolerance(): float
+    {
+        $val = (float) \App\Models\FIN\ConfigModel::get(
+            'payment_signals_amount_tolerance',
+            config('payment_signals.amount_tolerance', 10)
+        );
+        return max(0.0, min(1000.0, $val));
+    }
+
     /** Build the status payload for a single order id. */
     public function forOrder(int $orderId): array
     {
@@ -124,6 +139,63 @@ class PaymentProofStatusService
 
         $settled = array_flip(self::settledOrderIds($orderIds));
 
+        // ── "Discount needed" hint: a MATCHED proof that's still SHORT of the
+        // covered invoice total by a small (within-tolerance) amount, with no
+        // balancing discount applied yet. Computed in bulk (a few queries), so the
+        // list can show a marker without opening each proof.
+        $discountNeededBySignal = []; // signal_id => short amount
+        $matchedSignals = collect($byOrder)
+            ->flatMap(fn ($m) => array_values($m))
+            ->filter(fn ($s) => $s->status === PaymentSignal::STATUS_MATCHED && $s->extracted_amount !== null)
+            ->unique('id')
+            ->values();
+
+        if ($matchedSignals->isNotEmpty()) {
+            $msIds = $matchedSignals->pluck('id')->all();
+            $coverRows = \DB::table('t_fin_payment_signal_order')->whereIn('signal_id', $msIds)->get(['signal_id', 'order_id']);
+            $coveredBySignal = [];
+            foreach ($coverRows as $r) { $coveredBySignal[(int) $r->signal_id][] = (int) $r->order_id; }
+            foreach ($matchedSignals as $s) {
+                if (empty($coveredBySignal[(int) $s->id])) {
+                    $coveredBySignal[(int) $s->id] = [(int) $s->matched_order_id]; // single match
+                }
+            }
+            $allCovered = collect($coveredBySignal)->flatten()->unique()->values()->all();
+            $balById = \DB::table('t_crm_prod_order')->whereIn('id', $allCovered)
+                ->get(['id', 'total_price', 'total_paid'])
+                ->mapWithKeys(fn ($o) => [(int) $o->id => round((float) $o->total_price - (float) ($o->total_paid ?? 0), 2)]);
+            $balancedOrders = \DB::table('t_crm_order_discounts')
+                ->whereIn('order_id', $allCovered)->where('coupon_code', 'AUTO_BALANCE')
+                ->pluck('order_id')->map(fn ($v) => (int) $v)->flip();
+
+            $tolerance = self::amountTolerance();
+            foreach ($matchedSignals as $s) {
+                $covered = $coveredBySignal[(int) $s->id] ?? [];
+                $groupTotal = 0.0; $alreadyBalanced = false;
+                foreach ($covered as $oid) {
+                    $groupTotal += (float) ($balById[$oid] ?? 0);
+                    if (isset($balancedOrders[$oid])) { $alreadyBalanced = true; }
+                }
+                $short = round($groupTotal - (float) $s->extracted_amount, 2);
+                if (!$alreadyBalanced && $short > 0.5 && $short <= $tolerance) {
+                    $discountNeededBySignal[(int) $s->id] = $short;
+                }
+            }
+        }
+
+        // ── Detected receiving bank: map each signal's resolved receiving
+        // account short_code → {id, short_code, color} in ONE query, so the
+        // approve modal can pre-select the chip and the list can show a
+        // "detected" bank badge before approval.
+        $allSigs = collect($byOrder)->flatMap(fn ($m) => array_values($m));
+        $shortCodes = $allSigs->pluck('extracted_to_account_short')->filter()->unique()->values();
+        $bankByShort = $shortCodes->isNotEmpty()
+            ? \DB::table('t_fin_online_receiving_accounts')
+                ->whereIn('short_code', $shortCodes->all())
+                ->get(['id', 'short_code', 'name', 'color_hex'])
+                ->keyBy('short_code')
+            : collect();
+
         $out = [];
         foreach ($orderIds as $id) {
             $key = (int) $id;
@@ -135,11 +207,45 @@ class PaymentProofStatusService
             $sigs    = collect($byOrder[$key] ?? [])->values();
             $payload = $this->summarise($sigs);
 
+            // Detected receiving bank (newest signal that resolved to one of our
+            // accounts) → auto-select the chip + show the row badge.
+            $bankSig = $sigs->first(fn ($s) => !empty($s->extracted_to_account_short)
+                && $bankByShort->has($s->extracted_to_account_short));
+            if ($bankSig) {
+                $acct = $bankByShort->get($bankSig->extracted_to_account_short);
+                $payload['suggested_receiving_account_id']    = (int) $acct->id;
+                $payload['suggested_receiving_account_short']  = $acct->short_code;
+                $payload['suggested_receiving_account_color']  = $acct->color_hex;
+            }
+
+            // The already-received proof screenshot (first WhatsApp signal with an
+            // image) so the approve modal can show it inline, not just an upload.
+            $imgSig = $sigs->first(fn ($s) => $s->source === PaymentSignal::SOURCE_WHATSAPP
+                && !empty($s->image_path));
+            if ($imgSig) {
+                $payload['proof_image_url'] = $imgSig->image_public_url;
+            }
+
+            // Raw receiving-account last-4 read from the proof, even when it did
+            // NOT resolve to one of our banks — lets the modal flag an
+            // unrecognized account so Taimur can add it.
+            $last4Sig = $sigs->first(fn ($s) => !empty($s->extracted_to_account_last4));
+            if ($last4Sig) {
+                $payload['detected_last4'] = $last4Sig->extracted_to_account_last4;
+            }
+
             // Mark combined when any contributing signal covers more than one invoice.
             $combinedSig = $sigs->first(fn ($s) => (int) ($groupCounts[$s->id] ?? 1) > 1);
             if ($combinedSig) {
                 $payload['is_combined']    = true;
                 $payload['combined_count'] = (int) $groupCounts[$combinedSig->id];
+            }
+
+            // "Discount needed" marker for the list badge.
+            $needSig = $sigs->first(fn ($s) => isset($discountNeededBySignal[(int) $s->id]));
+            if ($needSig) {
+                $payload['needs_discount'] = true;
+                $payload['short_amount']   = $discountNeededBySignal[(int) $needSig->id];
             }
 
             $out[$id] = $payload;

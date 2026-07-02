@@ -23,6 +23,8 @@ use Illuminate\Support\Facades\Log;
  *                                   and match them.
  *   2. payments:poll-bank-emails — poll the mailbox for new bank credit emails
  *                                   and match them.
+ * (payments:reextract-bank — the receiving-bank HISTORY backfill — is button-
+ *  triggered from the Operations catch-up, never part of this tick.)
  *
  * Heartbeat cache keys (surfaced on the /admin/payments/imap-check page so the
  * operator can confirm the worker is alive without a cron or SQL):
@@ -105,6 +107,12 @@ class PaymentSignalAutoRunner
         } catch (\Throwable $e) {
             Log::warning('PaymentSignalAutoRunner: process-signals failed', ['error' => $e->getMessage()]);
         }
+
+        // NOTE: the receiving-bank backfill (payments:reextract-bank) is
+        // deliberately NOT part of the automatic tick — it re-reads HISTORY,
+        // so it runs only from the Operations "catch-up" button (owner-
+        // triggered, batch-capped). New screenshots get the bank natively via
+        // process-signals above.
 
         try {
             Artisan::call('payments:poll-bank-emails');

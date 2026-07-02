@@ -2488,6 +2488,20 @@ select.wa-mgr-input { background: #fff; cursor: pointer; }
     }
     window.waPreviewSelectById = function(id){ const el = document.getElementById(id); window.waShowTemplatePreview(el ? el.value : ''); };
     window.waPreviewRowTpl = function(btn){ const row = btn.closest('.wa-sched-row'); const sel = row ? row.querySelector('.wsr-tpl') : null; window.waShowTemplatePreview(sel ? sel.value : ''); };
+    // Reorder a schedule row for priority (first match wins, top→bottom). Moves
+    // the row's DOM node among its siblings; gatherSchedule() reads rows in DOM
+    // order on Save, so the new order is what's persisted. No-ops at top/bottom.
+    window.waMoveSchedRow = function(btn, dir){
+        const row = btn.closest('.wa-sched-row');
+        if (!row) return;
+        if (dir < 0){
+            const prev = row.previousElementSibling;
+            if (prev && prev.classList && prev.classList.contains('wa-sched-row')) row.parentNode.insertBefore(row, prev);
+        } else {
+            const next = row.nextElementSibling;
+            if (next && next.classList && next.classList.contains('wa-sched-row')) row.parentNode.insertBefore(next, row);
+        }
+    };
 
     // ── Plain-English schedule summary (read-only; the editable rows live below) ──
     function waFmtTime(t){
@@ -2581,7 +2595,11 @@ select.wa-mgr-input { background: #fff; cursor: pointer; }
             .map(o => `<option value="${o[0]}" ${comp===o[0]?'selected':''}>${o[1]}</option>`).join('');
         return `<div class="wa-sched-row" style="border:1px solid #eef2f7;border-radius:8px;padding:8px;margin-bottom:6px;">
             <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:6px;">${dayBoxes}
-                <button type="button" onclick="this.closest('.wa-sched-row').remove()" style="margin-left:auto;background:none;border:none;color:#b91c1c;cursor:pointer;font-size:13px;">✕</button>
+                <span style="margin-left:auto;display:inline-flex;gap:1px;align-items:center;">
+                    <button type="button" onclick="waMoveSchedRow(this,-1)" title="Move up (higher priority — first match wins)" style="background:none;border:none;color:#6b7280;cursor:pointer;font-size:13px;padding:0 4px;line-height:1;">▲</button>
+                    <button type="button" onclick="waMoveSchedRow(this,1)" title="Move down (lower priority)" style="background:none;border:none;color:#6b7280;cursor:pointer;font-size:13px;padding:0 4px;line-height:1;">▼</button>
+                    <button type="button" onclick="this.closest('.wa-sched-row').remove()" title="Remove this rule" style="background:none;border:none;color:#b91c1c;cursor:pointer;font-size:13px;padding:0 4px;line-height:1;">✕</button>
+                </span>
             </div>
             <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;">
                 <input type="time" class="wsr-start" value="${waEsc(row.start||'')}" style="padding:5px;border:1px solid #e5e7eb;border-radius:6px;font-size:12px;"/>

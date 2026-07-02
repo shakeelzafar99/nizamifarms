@@ -13,7 +13,11 @@ class OnlineReceivingAccountModel extends Model
     protected $fillable = [
         'name',
         'short_code',
+        'account_last4',
+        'bank_name',
         'color_hex',
+        'opening_balance',
+        'opening_balance_date',
         'is_active',
         'sort_order',
     ];
@@ -21,6 +25,8 @@ class OnlineReceivingAccountModel extends Model
     protected $casts = [
         'is_active' => 'boolean',
         'sort_order' => 'integer',
+        'opening_balance' => 'decimal:2',
+        'opening_balance_date' => 'date',
     ];
 
     /**

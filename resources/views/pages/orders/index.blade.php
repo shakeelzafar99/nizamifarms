@@ -6006,31 +6006,42 @@ function renderGetLoc(d) {
 
     // Auto-send daily stats (sent / saved / didn't respond + who to chase).
     const aEl = document.getElementById('getLocAutoStats');
-    const auto = d.auto_stats || null;
+    const act = d.today_activity || null;
     if (aEl) {
-        if (auto && (auto.enabled || (auto.sent || 0) > 0)) {
-            let pendingHtml = '';
-            const plist = auto.pending_list || [];
-            if ((auto.pending || 0) > 0 && plist.length) {
-                pendingHtml = '<details style="margin-top:8px;"><summary style="font-size:12px;color:#0e7490;font-weight:700;cursor:pointer;">Show who to contact again (' + auto.pending + ')</summary><div style="margin-top:6px;">';
-                plist.forEach(p => {
-                    pendingHtml += '<div style="display:flex;justify-content:space-between;gap:8px;padding:4px 0;border-top:1px solid #e0f2fe;">' +
-                        '<span style="font-size:12px;color:#111827;font-weight:600;">' + _getLocEsc(p.customer_name || 'Customer') + '</span>' +
-                        '<span style="font-size:11px;color:#6b7280;">' + _getLocEsc((p.phone || '') + (p.order_number ? ' · #' + p.order_number : '')) + '</span>' +
-                        '</div>';
-                });
-                pendingHtml += '</div></details>';
-            }
+        if (act && (act.enabled || (act.sent || 0) > 0 || (act.queued || 0) > 0)) {
+            const chip = (bg, fg, txt) => '<span style="background:' + bg + ';border-radius:8px;padding:3px 8px;color:' + fg + ';font-size:11px;white-space:nowrap;">' + txt + '</span>';
+            let funnel = '';
+            funnel += chip('#e0f2fe', '#075985', '📤 <strong>' + (act.sent || 0) + '</strong> sent · 🤖' + (act.sent_auto || 0) + ' · 👤' + (act.sent_manual || 0));
+            funnel += chip('#dcfce7', '#166534', '✅ <strong>' + (act.saved || 0) + '</strong> saved · 💬' + (act.saved_reply || 0) + ' · 👤' + (act.saved_staff || 0));
+            funnel += chip('#fffbeb', '#92400e', '⏳ <strong>' + (act.waiting || 0) + '</strong> waiting');
+            if ((act.queued || 0) > 0) funnel += chip('#f3f4f6', '#374151', '⏸ <strong>' + act.queued + '</strong> queued (off-hours)');
+
+            const rows = act.list || [];
+            let listHtml = '';
+            rows.forEach(r => {
+                const via = r.via === 'manual'
+                    ? '<span style="color:#6b21a8;">👤 ' + _getLocEsc(r.sent_by_name || 'Staff') + '</span>'
+                    : '<span style="color:#0e7490;">🤖 Auto</span>';
+                let outcome;
+                if (r.outcome === 'reply') outcome = '<span style="color:#166534;">💬 Replied &amp; saved</span>';
+                else if (r.outcome === 'staff') outcome = '<span style="color:#166534;">👤 Saved by ' + _getLocEsc(r.saved_by_name || 'staff') + '</span>';
+                else outcome = '<span style="color:#92400e;">⏳ Waiting</span>';
+                listHtml += '<div style="display:flex;justify-content:space-between;gap:8px;padding:5px 0;border-top:1px solid #e0f2fe;font-size:12px;">' +
+                    '<span style="color:#111827;font-weight:600;min-width:0;">' + _getLocEsc(r.customer_name || 'Customer') + (r.sent_human ? ' <span style="color:#9ca3af;font-weight:400;">· ' + _getLocEsc(r.sent_human) + '</span>' : '') + '</span>' +
+                    '<span style="flex-shrink:0;text-align:right;">' + via + ' · ' + outcome + '</span>' +
+                    '</div>';
+            });
+            const listWrap = rows.length
+                ? '<details style="margin-top:8px;"' + (rows.length <= 6 ? ' open' : '') + '><summary style="font-size:12px;color:#0e7490;font-weight:700;cursor:pointer;">Who was messaged today (' + rows.length + ')</summary><div style="margin-top:4px;">' + listHtml + '</div></details>'
+                : '';
+
             aEl.innerHTML = '<div style="background:#f0f9ff;border:1px solid #bae6fd;border-radius:10px;padding:10px;">' +
                 '<div style="display:flex;justify-content:space-between;align-items:center;">' +
-                    '<strong style="font-size:12px;color:#075985;">🤖 Auto-sent today</strong>' +
-                    '<span style="font-size:11px;font-weight:700;color:' + (auto.enabled ? '#16a34a' : '#9ca3af') + ';">' + (auto.enabled ? 'ON' : 'OFF') + '</span>' +
+                    '<strong style="font-size:12px;color:#075985;">📍 Location activity — today</strong>' +
+                    '<span style="font-size:11px;font-weight:700;color:' + (act.enabled ? '#16a34a' : '#9ca3af') + ';">Auto ' + (act.enabled ? 'ON' : 'OFF') + '</span>' +
                 '</div>' +
-                '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px;font-size:12px;">' +
-                    '<span style="background:#e0f2fe;border-radius:8px;padding:4px 8px;color:#075985;"><strong>' + (auto.sent || 0) + '</strong> sent</span>' +
-                    '<span style="background:#dcfce7;border-radius:8px;padding:4px 8px;color:#166534;"><strong>' + (auto.responded || 0) + '</strong> saved</span>' +
-                    '<span style="background:#fef2f2;border-radius:8px;padding:4px 8px;color:#991b1b;"><strong>' + (auto.pending || 0) + '</strong> no response</span>' +
-                '</div>' + pendingHtml +
+                '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px;">' + funnel + '</div>' +
+                listWrap +
                 '</div>';
         } else {
             aEl.innerHTML = '';

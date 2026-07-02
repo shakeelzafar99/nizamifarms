@@ -391,6 +391,9 @@ class AccountController extends Controller
                     'id' => $account->id,
                     'account_name' => $account->account_name,
                     'account_code' => $account->account_code,
+                    // 'bank' category sources require a receiving-bank pick
+                    // (per-bank balance tracking)
+                    'account_category' => $account->account_category,
                     'current_balance' => $account->current_balance,
                     'business_unit_id' => $account->business_unit_id
                 ];

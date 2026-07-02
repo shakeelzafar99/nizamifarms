@@ -30,6 +30,7 @@ class GeminiBankScreenshotExtractor
      *   sender_bank: string|null,
      *   receiver_name: string|null,
      *   receiver_bank: string|null,
+     *   receiver_account_masked: string|null,
      *   txn_datetime: string|null,
      *   confidence: float,
      *   raw: string
@@ -113,6 +114,7 @@ class GeminiBankScreenshotExtractor
             'sender_bank'           => $this->clean($parsed['sender_bank'] ?? null),
             'receiver_name'         => $this->clean($parsed['receiver_name'] ?? null),
             'receiver_bank'         => $this->clean($parsed['receiver_bank'] ?? null),
+            'receiver_account_masked' => $this->clean($parsed['receiver_account_masked'] ?? null),
             'txn_datetime'          => $this->clean($parsed['txn_datetime'] ?? null),
             'confidence'            => (float) ($parsed['confidence'] ?? 0),
             'raw'                   => $text,
@@ -137,8 +139,12 @@ Return ONLY the JSON object described by the schema. Rules:
 - sender_name: the FROM account holder's name exactly as printed.
 - sender_account_masked: the FROM account/phone as shown (may be masked like 0312xxx8227).
 - sender_bank: the sending bank/wallet name (e.g. "Meezan Bank", "HBL", "JazzCash").
-- receiver_name: the TO account holder's name as printed.
+- receiver_name: the TO account holder's name as printed (usually "Nizami Farms").
 - receiver_bank: the receiving bank if shown.
+- receiver_account_masked: the TO / beneficiary account number or IBAN exactly as
+  shown, INCLUDING any masking (e.g. "0305xxx4237", "PK12MEZN...4237"). This is
+  OUR account that received the money. Return it verbatim so the last visible
+  digits are preserved; null if the receiving account is not shown.
 - txn_datetime: ISO 8601 if you can (e.g. 2026-05-19T19:12:00); else the date text as shown; else null.
 - confidence: your 0.0-1.0 confidence that the extracted amount + reference are correct.
 Never invent values. Use null for anything not visibly present.
@@ -159,6 +165,7 @@ TXT;
                 'sender_bank'           => $nullableString,
                 'receiver_name'         => $nullableString,
                 'receiver_bank'         => $nullableString,
+                'receiver_account_masked' => $nullableString,
                 'txn_datetime'          => $nullableString,
                 'confidence'            => ['type' => 'NUMBER'],
             ],

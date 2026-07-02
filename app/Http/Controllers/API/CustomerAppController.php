@@ -62,16 +62,28 @@ class CustomerAppController extends Controller
                     'success'  => false,
                     'message'  => 'Order not found.',
                     'tracking' => null,
+                    'reason'   => 'order_not_found',
                 ], 404);
             }
 
             // Only meaningful while out for delivery. Anything else -> no fix.
+            // ⭐ `reason` lets the customer-app dev distinguish WHY tracking is null
+            // (previously every case returned an identical {tracking:null}).
             if (strtolower((string) $order->order_status) !== 'out_for_delivery') {
-                return response()->json(['success' => true, 'tracking' => null], 200);
+                return response()->json([
+                    'success'  => true,
+                    'tracking' => null,
+                    'reason'   => 'not_out_for_delivery',
+                    'order_status' => $order->order_status,
+                ], 200);
             }
 
             if (empty($order->assigned_rider_user_id)) {
-                return response()->json(['success' => true, 'tracking' => null], 200);
+                return response()->json([
+                    'success'  => true,
+                    'tracking' => null,
+                    'reason'   => 'no_rider_assigned',
+                ], 200);
             }
 
             // Latest rider GPS fix within the freshness window.
@@ -84,13 +96,23 @@ class CustomerAppController extends Controller
 
             if (!$fix || $fix->latitude === null || $fix->longitude === null) {
                 // No fresh rider position -> app shows "tracking unavailable".
-                return response()->json(['success' => true, 'tracking' => null], 200);
+                // Most common real cause: the rider's GPS went stale (device snooze).
+                return response()->json([
+                    'success'  => true,
+                    'tracking' => null,
+                    'reason'   => 'gps_stale',
+                    'staleness_window_minutes' => $staleness,
+                ], 200);
             }
 
             // Customer drop point (verified pin preferred, geocoded fallback).
             $destination = $this->resolveDestination($order->customer_id);
             if (!$destination) {
-                return response()->json(['success' => true, 'tracking' => null], 200);
+                return response()->json([
+                    'success'  => true,
+                    'tracking' => null,
+                    'reason'   => 'no_destination',
+                ], 200);
             }
 
             $tracking = [
@@ -123,6 +145,7 @@ class CustomerAppController extends Controller
                 'success'  => false,
                 'message'  => 'Tracking lookup failed.',
                 'tracking' => null,
+                'reason'   => 'error',
             ], 500);
         }
     }
@@ -756,6 +779,97 @@ class CustomerAppController extends Controller
         } catch (\Throwable $e) {
             Log::error('CustomerAppController::saveCustomerProfile failed', ['error' => $e->getMessage()]);
             return response()->json(['success' => false, 'message' => 'Failed to save profile.'], 500);
+        }
+    }
+
+    /**
+     * Customer changes the payment method on their own order (Phase 5).
+     *
+     * POST /api/customer-app/orders/{orderNumber}/payment-method
+     * body: { payment_method: "cash" | "online" }
+     *
+     * Reuses the exact same logic riders/managers use (normalize old value → map
+     * new value → OrderModel::save()), so it goes through the shared
+     * OrderPaymentChangeObserver (the gated WhatsApp "bank details when switching
+     * to online" automation). Changing the method BEFORE delivery has no ledger
+     * effect — cash-vs-online is settled at delivery.
+     *
+     * Guard: customers may only change on a still-open order. Delivered /
+     * completed / cancelled / refunded orders are rejected (a delivered order's
+     * money is already reconciled; a cancelled one is finished).
+     */
+    public function changePaymentMethod(Request $request, string $orderNumber)
+    {
+        try {
+            $validated = $request->validate([
+                'payment_method' => 'required|string|in:cash,online',
+            ]);
+
+            $nfOrderNumber = $this->resolveAnyOrderNumber($orderNumber);
+
+            // Live orders only (t_crm_prod_order). Historical orders are past and
+            // would be blocked by the status guard anyway.
+            $order = \App\Models\CRM\OrderModel::where('order_number', $nfOrderNumber)->first();
+            if (!$order) {
+                return response()->json(['success' => false, 'message' => 'Order not found.'], 404);
+            }
+
+            $blocked = ['delivered', 'completed', 'cancelled', 'refunded'];
+            if (in_array($order->order_status, $blocked, true)) {
+                return response()->json([
+                    'success'      => false,
+                    'message'      => 'Payment method can no longer be changed for this order.',
+                    'order_status' => $order->order_status,
+                ], 422);
+            }
+
+            $newType = $validated['payment_method']; // 'cash' | 'online'
+
+            // Treat NULL/empty/cod as cash (same normalization as the rider path).
+            $normalizedOld = strtolower(trim($order->payment_method ?? ''));
+            $oldType = (empty($normalizedOld) || in_array($normalizedOld, ['cash', 'cash_on_delivery', 'cod']))
+                ? 'cash'
+                : 'online';
+
+            if ($oldType === $newType) {
+                return response()->json([
+                    'success'        => true,
+                    'unchanged'      => true,
+                    'matched_order'  => $order->order_number,
+                    'payment_method' => $newType,
+                    'message'        => 'Payment method is already set to ' . $newType . '.',
+                ], 200);
+            }
+
+            // Map to the same stored values the rider path writes.
+            $order->payment_method = $newType === 'cash' ? 'cash_on_delivery' : 'online_payment';
+            $order->save(); // fires OrderPaymentChangeObserver (gated WA automation)
+
+            Log::info('Payment method changed via customer app', [
+                'order_id'     => $order->id,
+                'order_number' => $order->order_number,
+                'old_method'   => $normalizedOld,
+                'new_method'   => $order->payment_method,
+                'order_status' => $order->order_status,
+                'source'       => 'customer_app',
+            ]);
+
+            return response()->json([
+                'success'        => true,
+                'matched_order'  => $order->order_number,
+                'payment_method' => $newType,
+                'message'        => 'Payment method updated to ' . ($newType === 'cash' ? 'Cash' : 'Online/Bank') . '.',
+            ], 200);
+        } catch (\Illuminate\Validation\ValidationException $e) {
+            return response()->json([
+                'success' => false, 'message' => 'Validation failed.', 'errors' => $e->errors(),
+            ], 422);
+        } catch (\Throwable $e) {
+            Log::error('CustomerAppController::changePaymentMethod failed', [
+                'order_number' => $orderNumber,
+                'error'        => $e->getMessage(),
+            ]);
+            return response()->json(['success' => false, 'message' => 'Failed to change payment method.'], 500);
         }
     }
 

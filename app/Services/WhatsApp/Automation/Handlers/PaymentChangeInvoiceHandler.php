@@ -34,16 +34,63 @@ class PaymentChangeInvoiceHandler implements AutomationHandler
         if (!$order) {
             return 'no order';
         }
+        // DELIVERED (and any non-out-for-delivery status) is excluded right here:
+        // the message is only for an order that is STILL out for delivery. The
+        // observer captured the change while out_for_delivery, but we re-read the
+        // order fresh at send time, so an order that got delivered in the meantime
+        // is skipped.
         if (($order->order_status ?? null) !== 'out_for_delivery') {
             return 'order is not out for delivery';
         }
         if (!self::isOnline($order->payment_method ?? '')) {
             return 'payment method is not online';
         }
+        // SHOP customers: their invoices are settled incrementally (partial
+        // payments), not via a single bank-details prompt — skip them.
+        if ($order->customer?->isShop()) {
+            return 'shop customer (invoices handled incrementally)';
+        }
+        // Already paid / proof received: if we've matched a WhatsApp screenshot or
+        // bank email to this invoice (or it's already an approved online payment),
+        // there's nothing to collect — don't ask for payment again.
+        $paidSkip = $this->alreadyPaidOrProofReceived($order);
+        if ($paidSkip !== null) {
+            return $paidSkip;
+        }
         if (!$this->recipientPhone($context)) {
             return 'no phone number';
         }
         return null;
+    }
+
+    /**
+     * Skip reason if this invoice already has a payment proof / is settled, else
+     * null. FAIL-OPEN: if the proof lookup errors we return null (send anyway) —
+     * the whole point of this message is to let the customer pay, so a broken
+     * proof check must not silently suppress it. Rare + logged.
+     */
+    protected function alreadyPaidOrProofReceived($order): ?string
+    {
+        try {
+            $orderId = (int) ($order->id ?? 0);
+            if ($orderId <= 0) {
+                return null;
+            }
+            $svc = app(\App\Services\Payments\Signals\PaymentProofStatusService::class);
+            $status = $svc->forOrder($orderId)['status'] ?? \App\Services\Payments\Signals\PaymentProofStatusService::NONE;
+            if ($status !== \App\Services\Payments\Signals\PaymentProofStatusService::NONE) {
+                return 'payment proof already received (' . $status . ')';
+            }
+            // forOrder() reports 'none' once the online payment is APPROVED (the
+            // badge is intentionally dropped post-approval), so check settled too.
+            if (!empty(\App\Services\Payments\Signals\PaymentProofStatusService::settledOrderIds([$orderId]))) {
+                return 'invoice already settled';
+            }
+            return null;
+        } catch (\Throwable $e) {
+            \Illuminate\Support\Facades\Log::debug('PaymentChange: proof check skipped (fail-open)', ['error' => $e->getMessage()]);
+            return null;
+        }
     }
 
     /** Use the operator-chosen template (rule->template_name). */
