@@ -68,7 +68,22 @@ Route::prefix('webhook')->group(function () {
 // Authenticated by the `customer.app` middleware (bearer token), NOT by
 // Sanctum. Called by the customer-app (Vercel) backend, which resolves the
 // customer from its own JWT and enforces order ownership before proxying.
-Route::middleware('customer.app')->prefix('customer-app')->group(function () {
+//
+// Jul-2026 additions:
+//  - LogCustomerAppRequest (FIRST, so 401/429 rejections are recorded too):
+//    one structured line per request into the customer_app daily log channel;
+//    the "Customer App Stats" admin page (/customer-app-stats) aggregates it.
+//    Measure first — then size the real per-endpoint limits from data.
+//  - throttle:600,1 — a deliberately GENEROUS safety backstop (600 req/min per
+//    caller IP), far above anything 50–100 real users produce. Its only job is
+//    to stop a runaway retry loop / leaked token from consuming the shared
+//    host's PHP workers (which staff tools share) or mass-inserting junk
+//    customers via the create-if-new POST endpoints. Real users never hit it.
+Route::middleware([
+    \App\Http\Middleware\LogCustomerAppRequest::class,
+    'customer.app',
+    'throttle:600,1',
+])->prefix('customer-app')->group(function () {
     Route::get('/orders/{orderNumber}/tracking', [\App\Http\Controllers\API\CustomerAppController::class, 'tracking'])
         ->where('orderNumber', '.*'); // allow SH-1234, 1234, or encoded #1234
 

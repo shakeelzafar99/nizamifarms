@@ -68,6 +68,11 @@ class LedgerPostingService
             // Determine destination account based on payment method
             // Online payments: online, bank_transfer, card (require approval)
             $onlinePaymentMethods = ['online', 'Online', 'bank_transfer', 'card', 'online_payment'];
+
+            // Set true when a CASH invoice with no assigned rider is routed to the
+            // NF Cash (Main Till) account instead of a rider's cash account (owner
+            // rule, Jul-2026). Used to mark the ledger row + notify the caller.
+            $noRiderMainTill = false;
             
             if (in_array($order->payment_method, $onlinePaymentMethods)) {
                 // Online invoice - use configured online bank account and approval levels
@@ -127,9 +132,20 @@ class LedgerPostingService
                         throw new \Exception("Rider not found");
                     }
                 } else {
-                    // Create action item for missing rider assignment
+                    // No rider assigned. Owner rule (Jul-2026): do NOT leave the
+                    // delivery un-invoiced — post the CASH invoice to NF Cash
+                    // (Main Till, account code NF_CASH) so the money is tracked,
+                    // and flag it so the delivering user is warned. (Cash only;
+                    // online orders never use a rider account.) Still record the
+                    // missing-rider action item so ops can review these.
                     \App\Models\FIN\ActionItemModel::createMissingRiderItem($order);
-                    throw new \Exception("No rider assigned to order");
+                    $toAccount = AccountModel::getByCode('NF_CASH');
+                    if (!$toAccount) {
+                        // Misconfigured — fall back to the old hard failure rather
+                        // than post to a null account (money must land somewhere real).
+                        throw new \Exception("No rider assigned and NF Cash (Main Till) account 'NF_CASH' not found");
+                    }
+                    $noRiderMainTill = true;
                 }
                 $mode = LedgerModel::MODE_CASH;
                 $approvalStatus = LedgerModel::STATUS_APPROVED; // Cash is auto-approved
@@ -165,7 +181,10 @@ class LedgerPostingService
             }
             
             $description = "Invoice #{$order->order_number} - Delivered ({$customerName})";
-            
+            if ($noRiderMainTill) {
+                $description .= " [no rider — Main Till]";
+            }
+
             // Determine if balances should be applied now:
             // - approved: yes (auto-approved or cash)
             // - pending_l2: yes (L2 is verification only, balance reflects at L1/creation)
@@ -217,8 +236,11 @@ class LedgerPostingService
 
             return [
                 'success' => true,
-                'message' => 'Invoice posted to ledger successfully',
-                'ledger_id' => $ledger->id
+                'message' => $noRiderMainTill
+                    ? 'No rider was assigned, so the cash invoice was posted to NF Cash (Main Till).'
+                    : 'Invoice posted to ledger successfully',
+                'ledger_id' => $ledger->id,
+                'posted_to_main_till' => $noRiderMainTill,
             ];
 
         } catch (\Exception $e) {

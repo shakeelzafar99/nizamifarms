@@ -130,13 +130,19 @@ class ShopifyOrderModel extends BaseModel
     }
 
     /**
-     * Discounts relationship - Shopify orders typically don't have detailed discount breakdown
-     * as they are stored at order level (discount_total field)
-     * This relationship exists for compatibility but will usually be empty
+     * Discounts relationship - Shopify orders don't have detailed discount breakdown;
+     * their discount is stored at order level (discount_total field).
+     *
+     * Jul-2026: constrained to NEVER match. t_crm_order_discounts is keyed by raw
+     * order_id and shared with PRODUCTION orders, whose auto-increment ids overlap
+     * with staging ids — unconstrained, this relation returned the colliding
+     * production order's discounts (wrong data on staging detail/edit/invoice
+     * views). The relation is kept for code compatibility; getDiscountBreakdown()
+     * below falls back to discount_total, which is the correct representation.
      */
     public function discounts(): HasMany
     {
-        return $this->hasMany(OrderDiscountModel::class, 'order_id')->orderBy('display_order')->orderBy('id');
+        return $this->hasMany(OrderDiscountModel::class, 'order_id')->whereRaw('1 = 0');
     }
 
     public function getDiscountBreakdown()

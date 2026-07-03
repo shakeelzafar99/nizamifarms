@@ -55,7 +55,23 @@ class PaymentSignalsController extends Controller
                 ->keyBy('signal_id');
         }
 
-        $payload = $signals->map(function (PaymentSignal $s) use ($expected, $tolerance, $combinedInfo) {
+        // Resolve the receiving bank at READ time from the proof's last-4 against
+        // a CURRENT active chip (only when exactly one bank carries that last-4),
+        // so "To (our bank)" shows even for proofs read before that chip's last-4
+        // was configured.
+        $last4ToShort = collect();
+        $last4List = $signals->pluck('extracted_to_account_last4')->filter()->unique()->values();
+        if ($last4List->isNotEmpty()) {
+            $rows = \DB::table('t_fin_online_receiving_accounts')
+                ->where('is_active', 1)
+                ->whereIn('account_last4', $last4List->all())
+                ->get(['short_code', 'account_last4']);
+            $counts = $rows->groupBy('account_last4')->map->count();
+            $last4ToShort = $rows->filter(fn ($r) => ($counts[$r->account_last4] ?? 0) === 1)
+                ->keyBy('account_last4')->map(fn ($r) => $r->short_code);
+        }
+
+        $payload = $signals->map(function (PaymentSignal $s) use ($expected, $tolerance, $combinedInfo, $last4ToShort) {
             $combo       = $combinedInfo->get($s->id);
             $isCombined  = $combo && (int) $combo->c > 1;
             $compareBase = $isCombined ? (float) $combo->total : $expected;
@@ -79,7 +95,9 @@ class PaymentSignalsController extends Controller
                 'sender_name'    => $s->extracted_sender_name,
                 'sender_account' => $s->extracted_sender_account_masked,
                 'sender_bank'    => $s->extracted_sender_bank,
-                'to_account'     => $s->extracted_to_account_short,
+                'to_account'     => (!empty($s->extracted_to_account_last4) && $last4ToShort->has($s->extracted_to_account_last4))
+                                    ? $last4ToShort->get($s->extracted_to_account_last4)
+                                    : $s->extracted_to_account_short,
                 'txn_datetime'   => optional($s->extracted_txn_datetime)->format('Y-m-d H:i'),
                 'received_at'    => $s->source === PaymentSignal::SOURCE_EMAIL
                                     ? optional($s->email_received_at)->format('Y-m-d H:i')

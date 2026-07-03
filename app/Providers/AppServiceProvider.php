@@ -10,6 +10,11 @@ use App\Models\CRM\OrderStatusHistory;
 use App\Observers\OrderStatusHistoryObserver;
 use App\Models\CRM\OrderModel;
 use App\Observers\OrderPaymentChangeObserver;
+use App\Models\FIN\LedgerModel;
+use App\Models\CRM\OrderPaymentModel;
+use App\Observers\OrderAuditObserver;
+use App\Observers\LedgerAuditObserver;
+use App\Observers\OrderPaymentAuditObserver;
 
 class AppServiceProvider extends ServiceProvider
 {
@@ -32,6 +37,13 @@ class AppServiceProvider extends ServiceProvider
         // payment_method change paths via one OrderModel `updated` hook. Fully
         // guarded + off-by-default; see OrderPaymentChangeObserver.
         OrderModel::observe(OrderPaymentChangeObserver::class);
+
+        // Jul-2026 (Phase 2 L1): audit trail — "who changed what" on the three
+        // money-critical models. Each writes ONE fail-safe indexed row via
+        // AuditLogger; no-ops if t_sys_audit_log doesn't exist yet.
+        OrderModel::observe(OrderAuditObserver::class);
+        LedgerModel::observe(LedgerAuditObserver::class);
+        OrderPaymentModel::observe(OrderPaymentAuditObserver::class);
 
         //
         Builder::macro('whereLike', function ($attributes, string $searchTerm) {

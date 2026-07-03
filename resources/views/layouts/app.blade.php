@@ -5,6 +5,30 @@
 <head>
     @include('layouts.partials.head')
     @stack('demo1_css')
+    @verbatim
+    <style>
+        /* NF (Jul-2026): reclaim the empty desktop header band. The global
+           kt-header holds only a mobile logo/menu-toggle (lg:hidden) plus a
+           never-rendered demo "topbar", so on DESKTOP it is a blank 50px bar
+           while .kt-wrapper reserves 50px of padding-top for it. Hide it and
+           drop the reserved space at lg+. MOBILE is untouched (that logo/toggle
+           IS the mobile nav). @verbatim keeps Blade from touching the @media.
+           Reversible: delete this block. */
+        @media (min-width: 1024px) {
+            body.kt-header-fixed header.kt-header { display: none !important; }
+            body.kt-header-fixed .kt-wrapper { padding-top: 0 !important; }
+        }
+        /* NF (Jul-2026): some legacy pages carry a long-standing div imbalance
+           (orders blade: 10 extra closes, pre-existing — verified vs git HEAD)
+           which makes the browser re-parent everything after the content —
+           incl. the footer — to <body>. Body is flex-row, so that footer used
+           to render as a full-height strip on the RIGHT ("2025©" column).
+           `body > footer` matches ONLY such spilled footers; on healthy pages
+           the footer lives inside .kt-wrapper and is untouched. Proper
+           re-balancing is scheduled structural work (UI plan, Phase D). */
+        body > footer.kt-footer { display: none; }
+    </style>
+    @endverbatim
 </head>
 
 <body class="antialiased flex h-full text-base text-foreground bg-background demo1 kt-sidebar-fixed kt-header-fixed">

@@ -75,6 +75,19 @@ return [
             'replace_placeholders' => true,
         ],
 
+        // Customer-app API traffic measurement (Jul-2026). One structured line
+        // per /api/customer-app request, written by the LogCustomerAppRequest
+        // middleware. Read by the "Customer App Stats" admin page so a real
+        // rate limit can be sized from OBSERVED traffic instead of guessed.
+        // Daily rotation keeps disk usage bounded on shared hosting.
+        'customer_app' => [
+            'driver' => 'daily',
+            'path' => storage_path('logs/customer_app.log'),
+            'level' => 'info',
+            'days' => env('CUSTOMER_APP_LOG_DAYS', 30),
+            'replace_placeholders' => true,
+        ],
+
         'slack' => [
             'driver' => 'slack',
             'url' => env('LOG_SLACK_WEBHOOK_URL'),

@@ -122,6 +122,11 @@ Route::middleware(['auth'])->group(function () {
     Route::post('/logs/clear-old', [LogController::class, 'clearOldLogs']);
     Route::get('/logs/export', [LogController::class, 'exportLogs']);
     Route::get('/logs/test', [LogController::class, 'testLogging']);
+    // Customer-app traffic stats (Jul-2026) — aggregates the customer_app log
+    // channel so the rate limit can be sized from observed traffic.
+    Route::get('/customer-app-stats', [\App\Http\Controllers\CustomerAppStatsController::class, 'index']);
+    // Audit trail (Jul-2026, Phase 2 L1) — who changed what on orders/ledger/payments.
+    Route::get('/audit-log', [\App\Http\Controllers\AuditLogController::class, 'index']);
     // Operations dashboard page (imports, bulk delivery status)
     Route::get('/admin/operations', function () { return view('admin.operations'); })->name('admin.operations');
 
@@ -135,6 +140,8 @@ Route::middleware(['auth'])->group(function () {
 
     Route::get('/orders', [OrderController::class, 'index'])->name('orders.index');
     Route::get('/orders/filter', [OrderController::class, 'filter'])->name('orders.filter');
+    // Jul-2026 — cheap live count for the Approvals right-drawer badge (30s poll).
+    Route::get('/orders/approvals-count', [OrderController::class, 'approvalsCount'])->name('orders.approvals-count');
     Route::get('/orders/sync-status', [OrderController::class, 'syncStatus'])->name('orders.sync-status'); // ⭐ SMART SYNC (must be before {id})
     Route::get('/orders/geocode-pending', [OrderController::class, 'geocodePendingCustomers'])->name('orders.geocode-pending'); // ⭐ Background geocoding
     Route::get('/orders/open-status-counts', [OrderController::class, 'getOpenOrdersStatusCounts'])->name('orders.open-status-counts');
@@ -175,6 +182,7 @@ Route::middleware(['auth'])->group(function () {
     Route::post('/orders/api/change-payment-method', [OrderController::class, 'changePaymentMethod'])->name('orders.api.change-payment-method');
     Route::get('/orders/{id}/payment-method/timeline', [OrderController::class, 'getPaymentMethodTimeline'])->name('orders.payment-method.timeline');
     Route::get('/orders/{id}/event-history', [OrderController::class, 'getOrderEventHistory'])->name('orders.event-history');
+    Route::get('/orders/{id}/activity-log', [OrderController::class, 'getOrderActivityLog'])->name('orders.activity-log');
     Route::get('/orders/{id}/qurbani-payments', [OrderController::class, 'getQurbaniPayments'])->name('orders.qurbani-payments');
     Route::post('/orders/{id}/qurbani-payments', [OrderController::class, 'addQurbaniPayment'])->name('orders.qurbani-payments.add');
     // Amend non-financial metadata on an existing payment (receiving bank,

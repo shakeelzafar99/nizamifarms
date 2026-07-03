@@ -1253,8 +1253,31 @@ class OrderModel extends BaseModel
         });
     }
     // Status Management Methods
+    /**
+     * Transient flag (Jul-2026) — NOT persisted, NOT an Eloquent attribute.
+     * Set by changeStatus() when a transition to 'delivered' ATTEMPTED to post
+     * the invoice to the ledger and the posting failed (e.g. "No rider assigned
+     * to order"). Callers read it to surface the failure to the user instead of
+     * letting it die quietly in the log — a delivered order with no ledger
+     * entry has no retry mechanism, so the person delivering must know NOW.
+     * Declared as a real class property so it can never leak into $attributes,
+     * save() or toArray(). Stays null when posting succeeded or was legitimately
+     * skipped (pre-received payments / shop-online rules).
+     */
+    public ?string $lastInvoicePostError = null;
+
+    /**
+     * Transient companion to $lastInvoicePostError (Jul-2026) for a NON-fatal
+     * heads-up: the invoice posted OK but not to the usual place — currently
+     * "no rider assigned, so the cash invoice went to NF Cash (Main Till)".
+     * Same non-persisted/non-serialized guarantees as $lastInvoicePostError.
+     */
+    public ?string $lastInvoiceNote = null;
+
     public function changeStatus(string $statusCode, ?string $notes = null, ?int $changedBy = null): bool
     {
+        $this->lastInvoicePostError = null;
+        $this->lastInvoiceNote = null;
         // Phase 1 (May-2026) — capture the prior NF status BEFORE the
         // transaction mutates $this->order_status, so the customer-app
         // webhook emitter (called post-commit below) can include it as
@@ -1523,11 +1546,18 @@ class OrderModel extends BaseModel
                                     'order_id' => $this->id,
                                     'ledger_id' => $result['ledger_id'] ?? null
                                 ]);
+                                // Non-fatal heads-up (e.g. routed to Main Till
+                                // because no rider was assigned) — surface it.
+                                if (!empty($result['posted_to_main_till'])) {
+                                    $this->lastInvoiceNote = $result['message'] ?? null;
+                                }
                             } else {
                                 \Log::warning("Failed to post invoice to ledger", [
                                     'order_id' => $this->id,
                                     'message' => $result['message'] ?? 'Unknown error'
                                 ]);
+                                // Surface to the caller (see property docblock above)
+                                $this->lastInvoicePostError = $result['message'] ?? 'Unknown error';
                             }
                         }
                     } catch (\Exception $e) {
@@ -1535,7 +1565,9 @@ class OrderModel extends BaseModel
                             'order_id' => $this->id,
                             'error' => $e->getMessage()
                         ]);
-                        // Don't fail the status change if ledger posting fails
+                        // Don't fail the status change if ledger posting fails —
+                        // but surface it to the caller (see property docblock above)
+                        $this->lastInvoicePostError = $e->getMessage();
                     }
                 }
 

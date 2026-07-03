@@ -76,12 +76,18 @@ Schedule::command('app:dispatch-customer-webhooks')
 // Both self-throttle to a near no-op (one config read) when
 // config('payment_signals.enabled') is false or the relevant credentials are
 // missing, so they cost almost nothing before the feature is configured.
-Schedule::command('payments:process-signals')
-    ->everyMinute()
-    ->withoutOverlapping(5)
-    ->runInBackground();
-
-Schedule::command('payments:poll-bank-emails')
+//
+// Jul-2026 — route the cron THROUGH PaymentSignalAutoRunner (via the thin
+// payments:auto-tick command) instead of running the two worker commands
+// directly. The workers select pending signals oldest-first with no per-row
+// lock of their own, so a cron run firing at the same second as an in-flight
+// request drain (WhatsApp webhook / store unread-count poll) could read the
+// SAME screenshots twice — duplicate (paid) Gemini calls and a second IMAP
+// connect per minute. processNow() owns the shared 55s Cache lock, so at most
+// one effective run per ~minute happens globally; a locked tick is a cheap
+// no-op. runInBackground keeps a slow Gemini batch from delaying the other
+// every-minute tasks in the same schedule:run.
+Schedule::command('payments:auto-tick')
     ->everyMinute()
     ->withoutOverlapping(5)
     ->runInBackground();

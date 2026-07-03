@@ -141,10 +141,13 @@ Return ONLY the JSON object described by the schema. Rules:
 - sender_bank: the sending bank/wallet name (e.g. "Meezan Bank", "HBL", "JazzCash").
 - receiver_name: the TO account holder's name as printed (usually "Nizami Farms").
 - receiver_bank: the receiving bank if shown.
-- receiver_account_masked: the TO / beneficiary account number or IBAN exactly as
-  shown, INCLUDING any masking (e.g. "0305xxx4237", "PK12MEZN...4237"). This is
-  OUR account that received the money. Return it verbatim so the last visible
-  digits are preserved; null if the receiving account is not shown.
+- receiver_account_masked: the TO / beneficiary account number, IBAN, OR
+  mobile-wallet number that RECEIVED the money, exactly as shown (including any
+  masking). Bank example: "0305xxx4237", "PK12MEZN...4237". Mobile-wallet example
+  (Easypaisa / JazzCash): the number shown under "Sent to" / "To" / "Received by"
+  / "Account Details" — e.g. "03455242624". This is OUR receiving account. Do NOT
+  put the SENDER's / "Sent by" / "Funding Source" number here. Return it verbatim
+  so the last digits are preserved; null only if no receiving number is shown.
 - txn_datetime: ISO 8601 if you can (e.g. 2026-05-19T19:12:00); else the date text as shown; else null.
 - confidence: your 0.0-1.0 confidence that the extracted amount + reference are correct.
 Never invent values. Use null for anything not visibly present.

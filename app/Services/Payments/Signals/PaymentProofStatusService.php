@@ -183,18 +183,34 @@ class PaymentProofStatusService
             }
         }
 
-        // ── Detected receiving bank: map each signal's resolved receiving
-        // account short_code → {id, short_code, color} in ONE query, so the
-        // approve modal can pre-select the chip and the list can show a
-        // "detected" bank badge before approval.
+        // ── Detected receiving bank. We map at READ time (not extraction) so a
+        // bank whose last-4 was configured AFTER a proof was read still resolves
+        // without re-scanning. Match priority: (1) the proof's receiving-account
+        // last-4 against a CURRENT active chip's account_last4 (only when exactly
+        // one active bank carries that last-4 — never guess on a collision);
+        // (2) the stored short_code, for backward-compat / wallet chips.
         $allSigs = collect($byOrder)->flatMap(fn ($m) => array_values($m));
         $shortCodes = $allSigs->pluck('extracted_to_account_short')->filter()->unique()->values();
-        $bankByShort = $shortCodes->isNotEmpty()
+        $last4s = $allSigs->pluck('extracted_to_account_last4')->filter()->unique()->values();
+
+        $banks = ($shortCodes->isNotEmpty() || $last4s->isNotEmpty())
             ? \DB::table('t_fin_online_receiving_accounts')
-                ->whereIn('short_code', $shortCodes->all())
-                ->get(['id', 'short_code', 'name', 'color_hex'])
-                ->keyBy('short_code')
+                ->where('is_active', 1)
+                ->where(function ($q) use ($shortCodes, $last4s) {
+                    if ($shortCodes->isNotEmpty()) {
+                        $q->whereIn('short_code', $shortCodes->all());
+                    }
+                    if ($last4s->isNotEmpty()) {
+                        $q->orWhereIn('account_last4', $last4s->all());
+                    }
+                })
+                ->get(['id', 'short_code', 'name', 'color_hex', 'account_last4'])
             : collect();
+        $bankByShort = $banks->keyBy('short_code');
+        $last4Counts = $banks->filter(fn ($b) => $b->account_last4 !== null && $b->account_last4 !== '')
+            ->groupBy('account_last4')->map->count();
+        $bankByLast4 = $banks->filter(fn ($b) => $b->account_last4 && ($last4Counts[$b->account_last4] ?? 0) === 1)
+            ->keyBy('account_last4');
 
         $out = [];
         foreach ($orderIds as $id) {
@@ -207,12 +223,18 @@ class PaymentProofStatusService
             $sigs    = collect($byOrder[$key] ?? [])->values();
             $payload = $this->summarise($sigs);
 
-            // Detected receiving bank (newest signal that resolved to one of our
-            // accounts) → auto-select the chip + show the row badge.
-            $bankSig = $sigs->first(fn ($s) => !empty($s->extracted_to_account_short)
-                && $bankByShort->has($s->extracted_to_account_short));
-            if ($bankSig) {
-                $acct = $bankByShort->get($bankSig->extracted_to_account_short);
+            // Detected receiving bank → auto-select the chip + row badge.
+            // Prefer the last-4 match (resilient to chips added after the proof
+            // was read); fall back to the stored short_code.
+            $bankSig = $sigs->first(fn ($s) => !empty($s->extracted_to_account_last4)
+                && $bankByLast4->has($s->extracted_to_account_last4));
+            $acct = $bankSig ? $bankByLast4->get($bankSig->extracted_to_account_last4) : null;
+            if (!$acct) {
+                $bankSig = $sigs->first(fn ($s) => !empty($s->extracted_to_account_short)
+                    && $bankByShort->has($s->extracted_to_account_short));
+                $acct = $bankSig ? $bankByShort->get($bankSig->extracted_to_account_short) : null;
+            }
+            if ($acct) {
                 $payload['suggested_receiving_account_id']    = (int) $acct->id;
                 $payload['suggested_receiving_account_short']  = $acct->short_code;
                 $payload['suggested_receiving_account_color']  = $acct->color_hex;

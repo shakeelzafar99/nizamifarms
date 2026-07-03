@@ -933,6 +933,32 @@
                         </a>
                     </div>
                     <div class="kt-menu-item" data-kt-menu-item-toggle="accordion" data-kt-menu-item-trigger="click">
+                        <a href="/customer-app-stats" title="Customer-app API traffic — requests/day, busiest minute, per-endpoint, errors">
+                            <div class="kt-menu-link flex items-center grow cursor-pointer border border-transparent gap-[10px] ps-[10px] pe-[10px] py-[6px] hover:bg-gray-200 rounded-md transition-colors duration-200 group" tabindex="0">
+                                <span class="kt-menu-icon items-start text-gray-600 group-hover:text-gray-900 w-[20px]">
+                                    <i class="ki-filled ki-chart-simple text-lg">
+                                    </i>
+                                </span>
+                                <span class="kt-menu-title text-sm font-medium text-gray-900 group-hover:text-gray-900">
+                                    Customer App Stats
+                                </span>
+                            </div>
+                        </a>
+                    </div>
+                    <div class="kt-menu-item" data-kt-menu-item-toggle="accordion" data-kt-menu-item-trigger="click">
+                        <a href="/audit-log" title="Audit trail — who changed what on orders, ledger and payments">
+                            <div class="kt-menu-link flex items-center grow cursor-pointer border border-transparent gap-[10px] ps-[10px] pe-[10px] py-[6px] hover:bg-gray-200 rounded-md transition-colors duration-200 group" tabindex="0">
+                                <span class="kt-menu-icon items-start text-gray-600 group-hover:text-gray-900 w-[20px]">
+                                    <i class="ki-filled ki-document text-lg">
+                                    </i>
+                                </span>
+                                <span class="kt-menu-title text-sm font-medium text-gray-900 group-hover:text-gray-900">
+                                    Audit Trail
+                                </span>
+                            </div>
+                        </a>
+                    </div>
+                    <div class="kt-menu-item" data-kt-menu-item-toggle="accordion" data-kt-menu-item-trigger="click">
                         <a href="/order-status">
                             <div class="kt-menu-link flex items-center grow cursor-pointer border border-transparent gap-[10px] ps-[10px] pe-[10px] py-[6px] hover:bg-gray-200 rounded-md transition-colors duration-200 group" tabindex="0">
                                 <span class="kt-menu-icon items-start text-gray-600 group-hover:text-gray-900 w-[20px]">

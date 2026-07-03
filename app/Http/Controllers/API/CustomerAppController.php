@@ -315,17 +315,18 @@ class CustomerAppController extends Controller
                 ->limit($limit)
                 ->get();
 
-            // Item count + a small SKU sample per order, fetched per source from
+            // Item count + the distinct SKUs per order, fetched per source from
             // the matching line-item table in ONE grouped query each (no extra
             // round-trips — the SKU concat rides on the same query that already
             // produced the counts). Keyed by "source_type:id" to avoid the
-            // prod/history id clash. SKUs let the app show product thumbnails in
-            // the summary list without firing the detail endpoint per order.
-            // Capped to the first few distinct SKUs so a large order can't bloat
-            // the row (and so we never lean on group_concat_max_len).
+            // prod/history id clash. SKUs let the app show product thumbnails and
+            // build a customer's "usual products" set without firing the detail
+            // endpoint per order. Capped generously so a normal order carries its
+            // FULL SKU list, while a rare bulk order (dozens of distinct SKUs)
+            // can't bloat the row or lean on group_concat_max_len.
             $counts = [];
             $skus   = [];
-            $skuCap = 6;
+            $skuCap = 25;
 
             $collectLineMeta = function ($table, $ids, $sourceType) use (&$counts, &$skus, $skuCap) {
                 if (empty($ids)) {

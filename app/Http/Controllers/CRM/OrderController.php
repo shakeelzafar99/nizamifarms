@@ -236,6 +236,25 @@ class OrderController extends Controller
         return view('pages.orders.index', compact('orders', 'source', 'tab', 'shopifyCount', 'approvalsCount', 'otherCount', 'openCount', 'canViewShopify', 'canViewAllOrders', 'user', 'paymentProofMap'));
     }
 
+    /**
+     * Lightweight count of pending Shopify approvals (unconverted staging rows).
+     * Jul-2026: powers the Approvals right-drawer's live badge — a cheap indexed
+     * COUNT so the 30s poll costs almost nothing (vs. fetching the full order
+     * list just for a number, which is what the mobile badge does today).
+     * Same count + same permission as the "Order Approvals" tab badge.
+     */
+    public function approvalsCount(Request $request)
+    {
+        $user = auth()->user();
+        if (!$user || !$user->hasPermission('view_shopify_orders')) {
+            return response()->json(['count' => 0]);
+        }
+        $count = \App\Models\CRM\ShopifyOrderModel::where(function ($q) {
+            $q->whereNull('converted')->orWhere('converted', 0);
+        })->count();
+        return response()->json(['count' => $count]);
+    }
+
     public function show($id)
     {
         try {
@@ -1646,6 +1665,7 @@ class OrderController extends Controller
             // IMPORTANT: Capture old values BEFORE updating the order
             $oldPaymentMethod = $order->payment_method;
             $oldCustomerId = $order->customer_id;
+            $statusChangeWarning = null; // set by the full-update status discipline below
             
             // ================================================================
             // UPDATE ORDER (with Partial Update Support)
@@ -1711,8 +1731,80 @@ class OrderController extends Controller
                 // Remove internal flags before updating
                 $updateData = $validated;
                 unset($updateData['_partial_update'], $updateData['_popout_mode'], $updateData['_skip_ledger_adjustment']);
-                
+
+                // ================================================================
+                // STATUS-CHANGE DISCIPLINE (Jul-2026)
+                // ================================================================
+                // order_status must NEVER be written via the mass update below.
+                // The old direct write skipped OrderModel::changeStatus(), so a
+                // status set here produced NO status-history row, NO customer-app
+                // webhook, and — worst — picking "delivered" in the edit form
+                // skipped invoice posting + inventory deduction entirely. It also
+                // let a form loaded an hour ago silently REVERT a status the
+                // mobile team had advanced in the meantime (stale overwrite).
+                //
+                // Contract with the edit form: it also sends _loaded_status = the
+                // status the form was SHOWING when it was opened. Decision table:
+                //   • submitted == current DB status
+                //       -> nothing to do.
+                //   • submitted == _loaded_status (dropdown untouched, but the DB
+                //     moved on while the form was open)
+                //       -> KEEP the DB status. The user expressed no intent about
+                //          status; their qty/price edits save normally. This kills
+                //          the stale-revert race with zero user-facing friction.
+                //   • submitted != _loaded_status (user deliberately picked a new
+                //     status), or _loaded_status missing (old cached client)
+                //       -> route through changeStatus() so history / webhook /
+                //          ledger / inventory all fire properly.
+                // Shopify STAGING orders have no changeStatus pipeline (no ledger,
+                // history, or webhooks) — they keep the direct column write.
+                $submittedStatus = isset($updateData['order_status']) ? (string) $updateData['order_status'] : null;
+                $loadedStatus = $request->input('_loaded_status');
+                unset($updateData['order_status']);
+
                 $order->update($updateData);
+
+                if ($submittedStatus !== null && $submittedStatus !== $order->order_status) {
+                    $dropdownUntouched = ($loadedStatus !== null && $loadedStatus !== '' && $submittedStatus === (string) $loadedStatus);
+
+                    if ($dropdownUntouched) {
+                        \Log::info('Order edit: preserved concurrent status change (stale form)', [
+                            'order_id' => $order->id,
+                            'order_number' => $order->order_number,
+                            'form_loaded_with' => $loadedStatus,
+                            'kept_db_status' => $order->order_status,
+                        ]);
+                    } elseif ($order instanceof \App\Models\CRM\OrderModel) {
+                        try {
+                            $ok = $order->changeStatus($submittedStatus, 'Changed via order edit form', auth()->id());
+                            if (!$ok) {
+                                $statusChangeWarning = "Status change to '{$submittedStatus}' could not be applied — the rest of the order was saved.";
+                            } elseif (!empty($order->lastInvoicePostError)) {
+                                // Status changed, but the delivered-invoice could not
+                                // post to the ledger. Without this warning the failure
+                                // only appears in the error log and the order silently
+                                // stays un-invoiced.
+                                $statusChangeWarning = "Order is marked '{$submittedStatus}', but the invoice could NOT be posted to the ledger: {$order->lastInvoicePostError}. Fix the cause, set the status back, then deliver again so the invoice posts.";
+                            } elseif (!empty($order->lastInvoiceNote)) {
+                                // Non-fatal heads-up: the invoice posted, but not to
+                                // the usual account (no rider -> NF Cash Main Till).
+                                $statusChangeWarning = $order->lastInvoiceNote . ' Assign a rider before delivery if it should settle against a rider instead.';
+                            }
+                        } catch (\Throwable $e) {
+                            \Log::error('Order edit: changeStatus failed', [
+                                'order_id' => $order->id,
+                                'order_number' => $order->order_number,
+                                'submitted_status' => $submittedStatus,
+                                'error' => $e->getMessage(),
+                            ]);
+                            $statusChangeWarning = "Status change to '{$submittedStatus}' failed: {$e->getMessage()} — the rest of the order was saved.";
+                        }
+                    } else {
+                        // Shopify staging order — direct write, as before.
+                        $order->order_status = $submittedStatus;
+                        $order->save();
+                    }
+                }
             }
             
             // ================================================================
@@ -1957,8 +2049,14 @@ class OrderController extends Controller
                 }
             }
             
-            // Update discount detail records if provided
-            if (isset($validated['discounts'])) {
+            // Update discount detail records if provided.
+            // ⚠️ NEVER for Shopify STAGING orders: t_crm_order_discounts is keyed by
+            // raw order_id and SHARED with production orders, whose auto-increment
+            // ids OVERLAP with staging ids. A staging save here would delete /
+            // overwrite an UNRELATED production order's discount rows. Staging
+            // orders keep their discount at order level (discount_total on the row);
+            // conversion reads only that, never this child table.
+            if (isset($validated['discounts']) && !($order instanceof \App\Models\CRM\ShopifyOrderModel)) {
                 // Delete existing discount records
                 $order->discounts()->delete();
                 
@@ -2058,6 +2156,9 @@ class OrderController extends Controller
                 if ($customerSyncMessage) {
                     $message .= ' ' . $customerSyncMessage;
                 }
+                if ($statusChangeWarning) {
+                    $message .= ' ⚠️ ' . $statusChangeWarning;
+                }
                 return response()->json([
                     'success' => true,
                     'message' => $message,
@@ -2074,6 +2175,9 @@ class OrderController extends Controller
                 }
                 if ($customerSyncMessage) {
                     $message .= ' ' . $customerSyncMessage;
+                }
+                if ($statusChangeWarning) {
+                    $message .= ' ⚠️ ' . $statusChangeWarning;
                 }
                 return response()->json([
                     'success' => true,
@@ -5059,6 +5163,22 @@ class OrderController extends Controller
                 'notes' => 'nullable|string|max:500'
             ]);
 
+            // ⚠️ Shopify-approval-queue guard (Jul-2026): this endpoint resolves the
+            // id against t_crm_prod_order ONLY. Staging ids overlap with production
+            // ids, so a staging order's id passed here would pass the exists: rule
+            // (the COLLIDING production id exists) and change the WRONG order's
+            // payment method. Business rule: payment method is locked while an
+            // order sits unconverted in the Shopify queue — change it after
+            // conversion. The frontend hides the chip in Shopify mode; this is the
+            // server-side backstop.
+            if (strtolower((string) $request->input('source', '')) === 'shopify') {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Payment method is locked while the order is in the Shopify approval queue. Convert the order first, then change it.',
+                    'error_type' => 'shopify_queue_locked'
+                ], 422);
+            }
+
             $order = OrderModel::findOrFail($validated['order_id']);
             $oldMethod = $order->payment_method;
             $newMethod = $validated['payment_method'];
@@ -5139,6 +5259,67 @@ class OrderController extends Controller
         }
     }
     
+    /**
+     * Phase 2 L1 — per-order Activity Log (2026-07-03).
+     *
+     * The "who changed what" feed for one order, read straight from the audit
+     * trail (t_sys_audit_log): money/ownership edits, payments and ledger actions
+     * — each with the actor, source, timestamp and field-level old→new diffs.
+     * Status changes are intentionally NOT here (they live in the Status History
+     * section, from t_crm_order_status_history — see OrderAuditObserver).
+     *
+     * Fail-safe: if the audit table hasn't been created yet (PHP-first deploy),
+     * returns ready:false with an empty list so the UI shows a friendly note
+     * instead of erroring. Never throws.
+     */
+    public function getOrderActivityLog($orderId)
+    {
+        try {
+            if (!\Schema::hasTable('t_sys_audit_log')) {
+                return response()->json(['success' => true, 'ready' => false, 'entries' => []]);
+            }
+
+            $rows = \DB::table('t_sys_audit_log as a')
+                ->leftJoin('t_sys_user as u', 'u.id', '=', 'a.user_id')
+                ->where(function ($w) use ($orderId) {
+                    $w->where('a.related_order_id', $orderId)
+                      ->orWhere(function ($x) use ($orderId) {
+                          $x->where('a.entity_type', 'order')->where('a.entity_id', $orderId);
+                      });
+                })
+                ->orderByDesc('a.at')
+                ->orderByDesc('a.id')
+                ->select('a.at', 'a.source', 'a.action', 'a.entity_type', 'a.entity_label', 'a.changes', 'a.note', 'u.fullname as user_name')
+                ->limit(200)
+                ->get();
+
+            $entries = $rows->map(function ($r) {
+                $changes = null;
+                if ($r->changes) {
+                    $decoded = json_decode($r->changes, true);
+                    if (is_array($decoded)) {
+                        $changes = $decoded;
+                    }
+                }
+                return [
+                    'at'      => (string) $r->at,
+                    'user'    => $r->user_name ?: '—',
+                    'source'  => $r->source,
+                    'action'  => $r->action,
+                    'entity'  => $r->entity_type,
+                    'label'   => $r->entity_label,
+                    'changes' => $changes,   // {field: {old, new}}
+                    'note'    => $r->note,
+                ];
+            })->values();
+
+            return response()->json(['success' => true, 'ready' => true, 'entries' => $entries]);
+        } catch (\Throwable $e) {
+            // Never break the edit screen over the activity log.
+            return response()->json(['success' => false, 'ready' => false, 'entries' => [], 'error' => $e->getMessage()], 200);
+        }
+    }
+
     /**
      * Get complete event history for an order
      * Includes: order created, status changes, ledger entries, adjustments, and order updates

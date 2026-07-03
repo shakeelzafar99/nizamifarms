@@ -976,10 +976,73 @@ input:focus, select:focus, button:focus {
 
 @endif
 
+<style>
+/* ============================================================================
+   S4 — top-bar consolidation (2026-07-03). The Approvals right-drawer (S2) and
+   the new full-width Riders-Live cards (S3) REPLACE, on this page, the "Order
+   Approvals" tab, the "Riders" tab, and the old side board. Hidden here (after
+   parity). Reversible: delete this whole style block to bring them back.
+   NOTE: plain CSS only, NO Blade directives (a stray @-word or flag inside a
+   Blade view is processed as a directive — that is what broke this page once).
+     - Tabs hidden by onclick-substring so it survives the JS tab-strip rebuilds.
+       Their functions live on (Invoices/Open Orders still work); the full
+       Shopify view stays reachable via the sidebar "Shopify" entry + the
+       drawer "Open"; rider detail via the cards + More menu Riders Map.
+     - The old board is hidden VISUALLY via this CSS class only. Its inline
+       style.display stays 'flex' (set by updateRiderLiveBoardVisibility), so
+       loadRiderLiveBoard()'s 30s interval (which early-returns only on inline
+       style.display==='none') KEEPS RUNNING and feeding the new cards.
+   ============================================================================ */
+button[onclick*="switchToRiders"],
+button[onclick*="switchToShopifyApprovals"] { display: none !important; }
+#riderLiveBoardCol { display: none !important; }
+</style>
+
+<style>
+/* ============================================================================
+   S1 — Orders page coherence polish (2026-07-03). CSS-ONLY: this block changes
+   how existing elements LOOK. It touches no JavaScript, no onclick, no class
+   strings, and no renderer — so every button/action/modal behaves exactly as
+   before. Loaded after the page's base CSS so it wins the cascade for these
+   specific rules. FULLY REVERSIBLE: delete this <style> block to restore the
+   old look. Owner to eyeball on dev; tune from here.
+   ============================================================================ */
+/* Money + numbers: right-align the Total, tabular figures so digits line up in a column */
+.orders-table-container .table-cell-total{ text-align:right; font-variant-numeric:tabular-nums; font-weight:650; }
+.orders-table-container tbody td{ font-variant-numeric:tabular-nums; }
+/* Flatten the dated gradient/blur sticky header into a clean, flat one */
+.orders-table-container thead{ background:#f8fafc; backdrop-filter:none; box-shadow:0 1px 0 #e5e7eb; }
+.orders-table-container thead th{ background:#f8fafc; border-right:0; border-bottom:1px solid #e5e7eb;
+  text-transform:uppercase; font-size:11px; letter-spacing:.04em; color:#94a3b8; font-weight:700; }
+/* Calmer row hover: keep a light highlight, drop the heavy blue glow + shadow. Zebra untouched. */
+.orders-table-container tbody tr:hover{ background:#eff6ff !important; box-shadow:none; }
+
+/* S4b — mockup-style status cards (markup built in renderStatusCards; handlers unchanged).
+   The > div.nfsc-box rule out-specifies the legacy `.status-card > div { padding !important }`. */
+.status-card > div.nfsc-box{ padding:6px 14px !important; min-width:auto !important; }
+.nfsc-box{ background:#fff; border:1px solid #e2e8f0; border-left-width:3px; border-radius:10px;
+  box-shadow:0 1px 2px rgba(15,23,42,.05); cursor:pointer; display:flex; flex-direction:column;
+  transition:box-shadow .15s, border-color .15s; }
+.status-card:hover .nfsc-box{ box-shadow:0 2px 8px rgba(15,23,42,.08); }
+.status-card.active .nfsc-box{ box-shadow:0 0 0 3px #eff4ff; }
+.nfsc-n{ font-size:17px; font-weight:700; line-height:1.2; font-variant-numeric:tabular-nums; }
+.nfsc-l{ font-size:10.5px; color:#94a3b8; font-weight:600; text-transform:uppercase; letter-spacing:.04em; white-space:nowrap; }
+.nfsc-chips{ display:flex; gap:4px; margin-top:3px; }
+.nfsc-chip{ font-size:9.5px; font-weight:700; padding:1px 6px; border-radius:999px; cursor:pointer; }
+.nfsc-chip-ok{ background:#f0fdf4; color:#15803d; border:1px solid #bbf7d0; }
+.nfsc-chip-warn{ background:#fffbeb; color:#b45309; border:1px solid #fde68a; }
+</style>
+
 <!-- Modern Orders Layout -->
-<div class="min-h-screen bg-gray-50" style="overflow-x: clip;">
-    {{-- NF UI: overflow-x: clip prevents any accidental horizontal page scroll from visually overlapping the fixed sidebar.
-         'clip' (vs 'hidden') does not create a scroll container, so the sticky header/search bar below keep working. --}}
+<div class="min-h-screen bg-gray-50" style="overflow-x: clip; position: relative; z-index: 0;">
+    {{-- NF UI (Jul-2026): this div is its OWN stacking context (position:relative + z-index:0).
+         The fixed sidebar lives OUTSIDE it at the body level (z-20), so EVERY z-indexed element
+         inside this page (sticky header z-30, sticky search z-25, the bulk-action bar z-40, the
+         table's sticky header/first-column) is now contained BELOW the sidebar and can never paint
+         over it — the page-scoped fix for the "content scrolls over the sidebar" bug. Modals live
+         after this div's closing tag (~L1540) at body level (z-9999+), so they are unaffected and
+         still render above the sidebar as intended. Relative order INSIDE the page is unchanged.
+         overflow-x: clip (vs hidden) still doesn't create a scroll container, so sticky keeps working. --}}
 
     <!-- Modern Sticky Header with Blur -->
     <div class="sticky top-0 z-30 bg-white/95 backdrop-blur-md border-b border-gray-200 shadow-sm">
@@ -1128,19 +1191,21 @@ input:focus, select:focus, button:focus {
                     </div>
                 </div>
 
-                <!-- Open Orders Status Cards (only show for open orders tab) - Compact Design -->
-                <!-- Status Cards Section - Always present but hidden by default -->
-                <div class="mt-2 mb-3" id="openOrdersStatusCards" style="display: {{ ($source === 'other' && ($tab ?? 'all') === 'open') ? 'block' : 'none' }};">
-                    <div class="flex gap-2" id="statusCardsContainer">
-                        <!-- Status cards will be loaded here via JavaScript -->
-                        <div class="flex items-center justify-center py-4 text-gray-500">
-                            <svg class="animate-spin -ml-1 mr-2 h-4 w-4 text-gray-400" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-                                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                            </svg>
-                            <span class="text-sm">Loading...</span>
-                        </div>
+                {{-- NF (Jul-2026): status cards + Riders-Live cards live INSIDE the left column.
+                     They were briefly moved to a separate row after the two-column header, but in
+                     this div-imbalanced blade that re-parented the orders-table card into a
+                     zero-height context and hid the table — so they stay here. --}}
+                <div class="mt-2 mb-2" id="openOrdersStatusCards" style="display: {{ ($source === 'other' && ($tab ?? 'all') === 'open') ? 'block' : 'none' }};">
+                    <div class="flex gap-2 flex-wrap" id="statusCardsContainer">
+                        <div class="flex items-center justify-center py-3 text-gray-400 text-sm">Loading…</div>
                     </div>
+                </div>
+                <div class="mt-1 mb-2" id="nfRiderCards" style="display:none;">
+                    <div style="display:flex;align-items:center;gap:6px;margin-bottom:5px;">
+                        <span style="font-size:10.5px;font-weight:700;color:#94a3b8;text-transform:uppercase;letter-spacing:.05em;">🏍️ Riders — Live</span>
+                        <span id="nfRiderCardsMeta" style="font-size:10.5px;color:#94a3b8;"></span>
+                    </div>
+                    <div id="nfRiderCardsRow" style="display:flex;gap:8px;flex-wrap:wrap;"></div>
                 </div>
 
                 <!-- Riders Cards (only show for riders tab) - Compact Design -->
@@ -1157,6 +1222,11 @@ input:focus, select:focus, button:focus {
                     </div>
                 </div>
                   </div> {{-- /left column --}}
+
+                  {{-- NF (Jul-2026): header right slot — the search + filters row is MOVED here
+                       at DOMContentLoaded (JS appendChild keeps every id/handler intact), filling
+                       the space freed when the old rider board was consolidated away. --}}
+                  <div id="nfHeaderRight" class="flex-1 min-w-0 flex justify-end items-start" style="min-width:300px;"></div>
 
                   {{-- NF: Rider Live Board — quick-glance per-rider status above the table.
                        Open Orders tab only; scrollable; click a row for full detail. --}}
@@ -1178,7 +1248,7 @@ input:focus, select:focus, button:focus {
             </div>
         </div>
     </div>
-    
+
     <!-- Sticky Search and Filters Bar - Stays visible when scrolling -->
     <div class="sticky top-0 z-20 bg-gray-50 border-b border-gray-200 shadow-sm">
         {{-- NF UI: full content width (dropped max-w-7xl) to match the widened table card. --}}
@@ -1538,6 +1608,465 @@ input:focus, select:focus, button:focus {
 </div>
 
 </div>
+
+{{-- ===================================================================
+     Riders-Live full-width cards (2026-07, S3). ADDITIVE — runs ALONGSIDE
+     the existing side board (#riderLiveBoardCol) during the parity period;
+     fed from the SAME single fetch loadRiderLiveBoard() already does (no
+     extra load). Card body click reuses openRiderDispatchPopup() (the
+     existing dispatch tracker); the funnel filters the current table rows
+     by rider (client-side, reversible — touches no renderer). Prefixed
+     nfrc-/nf to avoid collisions. Container markup is up near the toolbar
+     (#nfRiderCards); this block is just its CSS + behaviour.
+     ==================================================================== --}}
+<style>
+/* Riders-Live = compact panel of ROWS (fits ~5 riders on the right of row 2,
+   like the old board). Row click = dispatch tracker; filter icon = filter table. */
+#nfRiderCards{border:1px solid #e2e8f0;border-radius:11px;background:#fff;box-shadow:0 1px 2px rgba(15,23,42,.05);overflow:hidden;min-width:300px;max-width:460px}
+#nfRiderCards > div:first-child{padding:6px 12px;border-bottom:1px solid #eef2f7;background:#f8fafc;margin-bottom:0 !important}
+#nfRiderCardsRow{flex-direction:column !important;gap:0 !important;flex-wrap:nowrap !important;justify-content:flex-start !important;max-height:190px;overflow-y:auto}
+#nfRiderCards .nfrc-row{display:flex;align-items:center;gap:9px;padding:7px 12px;border-bottom:1px solid #f3f4f6;cursor:pointer;transition:background .12s}
+#nfRiderCards .nfrc-row:last-child{border-bottom:0}
+#nfRiderCards .nfrc-row:hover{background:#f8fafc}
+#nfRiderCards .nfrc-row.nfrc-sel{background:#eff4ff;box-shadow:inset 3px 0 0 #2563eb}
+#nfRiderCards .nfrc-row.nfrc-red{background:#fef2f2;box-shadow:inset 3px 0 0 #ef4444}
+#nfRiderCards .nfrc-row.nfrc-amber{background:#fff7ed;box-shadow:inset 3px 0 0 #f59e0b}
+#nfRiderCards .nfrc-dot{width:8px;height:8px;border-radius:50%;flex:none}
+#nfRiderCards .nfrc-nm{font-weight:650;font-size:12.5px;color:#0f172a;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:120px}
+#nfRiderCards .nfrc-row.nfrc-red .nfrc-nm{color:#b91c1c}
+#nfRiderCards .nfrc-row.nfrc-amber .nfrc-nm{color:#b45309}
+#nfRiderCards .nfrc-st{font-size:11.5px;color:#475569;white-space:nowrap;margin-left:auto;font-variant-numeric:tabular-nums}
+#nfRiderCards .nfrc-f{width:24px;height:24px;border-radius:6px;border:1px solid #e2e8f0;background:#fff;color:#94a3b8;flex:none;display:inline-flex;align-items:center;justify-content:center;cursor:pointer}
+#nfRiderCards .nfrc-f:hover{border-color:#2563eb;color:#2563eb;background:#eff4ff}
+#nfRiderCards .nfrc-row.nfrc-sel .nfrc-f{border-color:#2563eb;color:#2563eb}
+#nfRiderChip{display:inline-flex;align-items:center;gap:6px;font-size:11.5px;font-weight:600;color:#2563eb;background:#eff4ff;border:1px solid #ddd6fe;padding:3px 9px;border-radius:999px;cursor:pointer;margin-left:8px}
+</style>
+<script>
+(function(){
+  function esc(s){ var d=document.createElement('div'); d.textContent=(s==null?'':String(s)); return d.innerHTML; }
+
+  window.nfRenderRiderCards = function(sorted, gps, disp){
+    var row = document.getElementById('nfRiderCardsRow');
+    if(!row) return;
+    var cards = (sorted||[]).map(function(r){ return nfRiderCardHtml(r, (gps||{})[r.rider_id], (disp||{})[r.rider_id]); });
+    // Aggregate "Unassigned" card from the currently-loaded open orders.
+    var unassigned = (window.ordersData||[]).filter(function(o){
+      return !o.assigned_rider_user_id && ['delivered','completed','cancelled','refunded'].indexOf(o.order_status) === -1;
+    }).length;
+    cards.push(nfUnassignedCardHtml(unassigned));
+    row.innerHTML = cards.join('');
+    // Re-apply an active filter after a refresh so the selection sticks.
+    if(window.__nfRiderFilter != null){
+      var sel = row.querySelector('[data-rider="'+window.__nfRiderFilter+'"]');
+      if(sel) sel.classList.add('nfrc-sel');
+    }
+    var meta = document.getElementById('nfRiderCardsMeta');
+    if(meta) meta.textContent = 'updated ' + new Date().toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
+  };
+
+  // A compact ROW per rider. Two clear affordances:
+  //   • click the row body  -> FILTER the table to just this rider's orders
+  //                            (the frequent action; row gets a selected highlight)
+  //   • the map-pin icon     -> open the dispatch tracker + map popup
+  //                            (the "dispatch level details" the old board showed)
+  function nfRiderCardHtml(rider, gps, disp){
+    var id = rider.rider_id;
+    var name = rider.rider_name || ('Rider #'+id);
+    var safe = String(name).replace(/'/g, "\\'");
+    var status = (disp||{}).status;
+    var ageMin = (gps && gps.age_minutes != null) ? gps.age_minutes : null;
+    var dot = '#9ca3af';
+    if(gps && gps.is_fresh){ dot = '#10b981'; }
+    else if(ageMin != null && ageMin <= 60){ dot = '#f59e0b'; }
+
+    var st = 'No active dispatch', cls = '';
+    var gpsLost = (typeof riderGpsLostMidDelivery === 'function') && riderGpsLostMidDelivery(gps, disp);
+    if(status === 'left_without_dispatch'){ st = '⚠ Left w/o dispatch · ' + (disp.undispatched_count||0); cls = 'nfrc-red'; }
+    else if(gpsLost){ st = '📍 GPS lost · ' + (disp.dispatched_count||0) + ' left'; cls = 'nfrc-amber'; dot = '#ef4444'; }
+    else if(status === 'on_route'){ st = '🚚 On route · ' + (disp.dispatched_count||0) + ' left'; }
+    else if(status === 'returning'){ var m = (disp.return_to_office && disp.return_to_office.minutes != null) ? disp.return_to_office.minutes : null; st = '↩️ Returning' + (m != null ? (' · ~' + m + 'min') : '') + (disp.undispatched_count > 0 ? (' · ' + disp.undispatched_count + ' to go') : ''); cls = 'nfrc-blue'; }
+    else if(status === 'waiting_at_office'){ st = '🏠 At office · ' + (disp.undispatched_count||0) + ' to dispatch'; cls = 'nfrc-amber'; }
+    else if(status === 'at_office'){ st = '🏠 At office'; }
+
+    var selCls = (String(window.__nfRiderFilter) === String(id)) ? ' nfrc-sel' : '';
+    return '<div class="nfrc-row '+cls+selCls+'" data-rider="'+id+'" onclick="nfFilterTableByRider('+id+", '"+safe+"')\" title=\"Click to show only "+esc(name)+"'s orders\">"
+      + '<span class="nfrc-dot" style="background:'+dot+'"></span>'
+      + '<span class="nfrc-nm" title="'+esc(name)+'">'+esc(name)+'</span>'
+      + '<span class="nfrc-st">'+esc(st)+'</span>'
+      + '<button class="nfrc-f" title="Dispatch details + map" onclick="event.stopPropagation(); openRiderDispatchPopup('+id+", '"+safe+"')\">"
+      + '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 21s-7-6.5-7-11a7 7 0 0114 0c0 4.5-7 11-7 11z"/><circle cx="12" cy="10" r="2.5"/></svg></button>'
+      + '</div>';
+  }
+
+  function nfUnassignedCardHtml(n){
+    var selCls = (window.__nfRiderFilter === '__unassigned__') ? ' nfrc-sel' : '';
+    return '<div class="nfrc-row nfrc-unassigned'+selCls+'" data-rider="__unassigned__" onclick="nfFilterTableByRider(\'__unassigned__\', \'Unassigned\')" title="Click to show unassigned open orders">'
+      + '<span class="nfrc-dot" style="background:#94a3b8"></span>'
+      + '<span class="nfrc-nm">Unassigned</span>'
+      + '<span class="nfrc-st">'+(n||0)+' need a rider</span>'
+      + '</div>';
+  }
+
+  window.nfFilterTableByRider = function(riderId, label){
+    if(String(window.__nfRiderFilter) === String(riderId)){ nfClearRiderFilter(); return; }
+    window.__nfRiderFilter = riderId;
+    document.querySelectorAll('#nfRiderCardsRow .nfrc-row').forEach(function(c){ c.classList.remove('nfrc-sel'); });
+    var card = document.querySelector('#nfRiderCardsRow [data-rider="'+riderId+'"]');
+    if(card) card.classList.add('nfrc-sel');
+    nfApplyRiderFilter();
+    nfShowRiderChip(label);
+  };
+  function nfApplyRiderFilter(){
+    var rid = window.__nfRiderFilter;
+    var byId = {}; (window.ordersData||[]).forEach(function(o){ byId[String(o.id)] = o; });
+    document.querySelectorAll('#table-body tr[data-order-id]').forEach(function(tr){
+      var o = byId[tr.getAttribute('data-order-id')];
+      var show = true;
+      if(rid === '__unassigned__') show = !!(o && !o.assigned_rider_user_id);
+      else if(rid != null) show = !!(o && String(o.assigned_rider_user_id) === String(rid));
+      tr.style.display = show ? '' : 'none';
+    });
+  }
+  window.nfClearRiderFilter = function(){
+    window.__nfRiderFilter = null;
+    document.querySelectorAll('#nfRiderCardsRow .nfrc-row').forEach(function(c){ c.classList.remove('nfrc-sel'); });
+    document.querySelectorAll('#table-body tr[data-order-id]').forEach(function(tr){ tr.style.display = ''; });
+    var chip = document.getElementById('nfRiderChip'); if(chip) chip.remove();
+  };
+  function nfShowRiderChip(label){
+    var host = document.getElementById('nfRiderCardsMeta');
+    if(!host) return;
+    var chip = document.getElementById('nfRiderChip');
+    if(!chip){ chip = document.createElement('span'); chip.id = 'nfRiderChip'; chip.onclick = window.nfClearRiderFilter; host.parentNode.appendChild(chip); }
+    chip.innerHTML = 'Filtered: ' + esc(label) + ' <span style="opacity:.7">✕</span>';
+  }
+})();
+</script>
+
+<script>
+// NF (Jul-2026, S4e): rebuild the orders top bar into a shape that can never run
+// off-screen. The earlier version right-aligned search+filters+riders into the
+// header's narrow right slot; with a full rider roster that content grew wider
+// than the viewport and got CLIPPED by the content wrapper's overflow-x:clip
+// (riders + filters invisible). New shape, per owner:
+//   Row 1 : tabs + actions            (existing, untouched)
+//   Row 2 : LEFT column  = status cards, then the search + filters row beneath them
+//           RIGHT        = the Riders-Live panel (wraps below the left column when
+//                          space is tight, so it is always visible)
+// Everything is a runtime node-move (appendChild) — every id + inline handler is
+// preserved. Fail-open: any missing piece leaves the original layout intact.
+document.addEventListener('DOMContentLoaded', function(){
+  // NF (Jul-2026): (a) collapse the Order/Delivery date controls into a compact
+  // "📅 Date" popover; (b) move the Riders-Live cards to the header's right so the
+  // top balances (left = tabs + status cards, right = search/filters + riders).
+  // Both are runtime node-moves — every id + handler is preserved. Own try-block
+  // so a failure here can't affect the search relocation above.
+  try {
+    var hr = document.getElementById('nfHeaderRight');
+
+    // (a) Date popover — moves the mode toggle + date/month inputs behind a button.
+    var modeWrap = (document.getElementById('dateModeDateBtn') || {}).parentElement;
+    var dateC = document.getElementById('dateFiltersContainer');
+    var monthC = document.getElementById('monthFiltersContainer');
+    if (modeWrap && dateC && monthC) {
+      var filtersGroup = dateC.parentElement;
+      var wrap = document.createElement('div'); wrap.style.position = 'relative';
+      var btn = document.createElement('button'); btn.type = 'button'; btn.id = 'nfDateBtn';
+      btn.className = 'inline-flex items-center gap-1 px-2.5 py-2 text-sm font-medium border border-gray-300 rounded-lg bg-white shadow-sm hover:bg-gray-50 whitespace-nowrap';
+      btn.innerHTML = '📅 Date <span style="opacity:.55;font-size:11px;">▾</span>';
+      var pop = document.createElement('div'); pop.id = 'nfDatePop';
+      // position:fixed + appended to <body> so NO ancestor overflow (the sticky
+      // header / content wrapper's overflow-x:clip) can ever cut the popover off —
+      // the earlier absolute-in-header version got clipped and "wouldn't open".
+      pop.style.cssText = 'position:fixed;top:0;left:0;background:#fff;border:1px solid #e2e8f0;border-radius:10px;box-shadow:0 10px 28px rgba(15,23,42,.18);padding:12px;z-index:200;display:none;min-width:250px;max-height:80vh;overflow:auto;';
+      var lbl = document.createElement('div');
+      lbl.style.cssText = 'font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;color:#94a3b8;margin-bottom:8px;';
+      lbl.textContent = 'Filter by date';
+      modeWrap.style.marginBottom = '8px';
+      pop.appendChild(lbl); pop.appendChild(modeWrap); pop.appendChild(dateC); pop.appendChild(monthC);
+      // Stack Order/Delivery inputs vertically inside the popover so it stays narrow + never clips.
+      [dateC, monthC].forEach(function (c) { c.style.flexDirection = 'column'; c.style.alignItems = 'stretch'; c.style.gap = '8px'; });
+      wrap.appendChild(btn);
+      document.body.appendChild(pop);            // <-- escape all clipping ancestors
+      var clearBtn = filtersGroup.querySelector('button[onclick*="clearFilters"]');
+      if (clearBtn) filtersGroup.insertBefore(wrap, clearBtn); else filtersGroup.appendChild(wrap);
+      var nfPositionDatePop = function () {
+        var r = btn.getBoundingClientRect();
+        var w = pop.offsetWidth || 260;
+        var left = Math.max(8, Math.min(r.left, window.innerWidth - w - 8)); // clamp inside viewport
+        pop.style.left = left + 'px';
+        pop.style.top = (r.bottom + 6) + 'px';
+      };
+      btn.addEventListener('click', function (e) {
+        e.stopPropagation();
+        if (pop.style.display === 'block') { pop.style.display = 'none'; return; }
+        pop.style.display = 'block'; nfPositionDatePop();
+      });
+      document.addEventListener('click', function (e) { if (!wrap.contains(e.target) && !pop.contains(e.target)) pop.style.display = 'none'; });
+      window.addEventListener('resize', function () { if (pop.style.display === 'block') nfPositionDatePop(); });
+      var nfDateActive = function () {
+        var a = (document.getElementById('dateFilter') || {}).value || (document.getElementById('deliveryDateFilter') || {}).value
+             || (document.getElementById('orderMonthFilter') || {}).value || (document.getElementById('deliveryMonthFilter') || {}).value;
+        btn.style.borderColor = a ? '#2563eb' : ''; btn.style.color = a ? '#2563eb' : ''; btn.style.background = a ? '#eff4ff' : '#fff';
+      };
+      ['dateFilter', 'deliveryDateFilter', 'orderMonthFilter', 'deliveryMonthFilter'].forEach(function (id) {
+        var el = document.getElementById(id); if (el) el.addEventListener('change', nfDateActive);
+      });
+      nfDateActive();
+    }
+
+    // (b) Full-width SECOND ROW, two columns:
+    //   LEFT  = status cards (top) + the search/filters row beneath them
+    //   RIGHT = Riders-Live panel  (wraps below the left column on narrow screens)
+    // Runtime moves (parse-safe) into the header's full-width padding div, AFTER
+    // the tabs row. Left-aligned + wrapping means nothing can be pushed off-screen.
+    var statusCards = document.getElementById('openOrdersStatusCards');
+    var riders = document.getElementById('nfRiderCards');
+    var host = document.querySelector('.sticky.top-0.z-30 .px-4');
+    var search = document.getElementById('orderSearch');
+    var filterRow = search ? search.closest('.flex.flex-wrap.items-center.gap-3') : null;
+    if (statusCards && host && !document.getElementById('nfRow2')) {
+      var row2 = document.createElement('div');
+      row2.id = 'nfRow2';
+      // flex-start (not space-between) keeps the riders panel right next to the left
+      // column — near the centre — instead of shoved to the far-right edge.
+      row2.style.cssText = 'display:flex;align-items:flex-start;justify-content:flex-start;gap:24px;flex-wrap:wrap;padding:2px 0 8px;';
+
+      // LEFT column — status cards, then the filters row directly under them. Bounded
+      // width (doesn't grow to fill) so it can't push the riders panel off to the right.
+      var left = document.createElement('div');
+      left.id = 'nfRow2Left';
+      left.style.cssText = 'display:flex;flex-direction:column;gap:10px;flex:0 1 680px;max-width:720px;min-width:0;';
+      statusCards.style.margin = '0'; statusCards.style.minWidth = '0';
+      var scont = document.getElementById('statusCardsContainer');
+      if (scont) { scont.style.overflowX = 'auto'; scont.style.flexWrap = 'nowrap'; scont.style.paddingBottom = '4px'; }
+      left.appendChild(statusCards);
+      if (filterRow) {
+        var oldWrapper = filterRow.parentElement;   // padded wrapper that held only the filter row
+        filterRow.style.justifyContent = 'flex-start';
+        filterRow.style.margin = '0';
+        var searchWrap = search.closest('.relative');
+        if (searchWrap) { searchWrap.style.flex = '1 1 240px'; searchWrap.style.maxWidth = '340px'; searchWrap.style.minWidth = '180px'; }
+        left.appendChild(filterRow);
+        // Collapse the now-empty wrapper — ONLY if truly empty. NEVER hide the sticky
+        // bar itself: this div-imbalanced blade parses the orders table as a sibling
+        // inside that bar, so hiding the bar would hide the table.
+        if (oldWrapper && oldWrapper.children.length === 0) oldWrapper.style.display = 'none';
+      }
+      row2.appendChild(left);
+
+      // RIGHT column — the Riders-Live panel.
+      if (riders) { riders.style.margin = '0'; riders.style.flex = '0 1 auto'; row2.appendChild(riders); }
+
+      host.appendChild(row2);
+    }
+  } catch (e) { /* leave the row as-is on any failure */ }
+});
+</script>
+
+@if($canViewShopify)
+{{-- ===================================================================
+     Approvals right-drawer (2026-07, S2). ADDITIVE — runs ALONGSIDE the
+     existing "Order Approvals" tab (nothing removed). Reuses the existing
+     endpoints: /orders/filter?source=shopify (list), /orders/{id}/convert
+     (Approve = same SKU recalc), /orders/{id}/ignore. All ids are staging
+     ids sent only to source=shopify-scoped endpoints. Everything here is
+     prefixed nfad-/nfApprovals to avoid any collision with page code.
+     ==================================================================== --}}
+<style>
+#nfadFab{position:fixed;right:22px;bottom:22px;z-index:70}
+#nfadFab button{font-family:inherit;font-size:13.5px;font-weight:700;color:#fff;background:#0f172a;border:0;border-radius:999px;padding:12px 18px;cursor:pointer;box-shadow:0 8px 24px rgba(15,23,42,.28);display:flex;align-items:center;gap:9px}
+#nfadFab .nfad-badge{background:#f59e0b;color:#3b2a06;font-size:12px;font-weight:800;border-radius:999px;padding:1px 8px;font-variant-numeric:tabular-nums;min-width:20px;text-align:center}
+@keyframes nfadPulse{0%{box-shadow:0 8px 24px rgba(15,23,42,.28)}40%{box-shadow:0 8px 28px rgba(245,158,11,.75)}100%{box-shadow:0 8px 24px rgba(15,23,42,.28)}}
+#nfadFab button.nfad-pulse{animation:nfadPulse 1s ease 3}
+#nfadScrim{position:fixed;inset:0;background:rgba(15,23,42,.42);opacity:0;pointer-events:none;transition:opacity .25s;z-index:75}
+#nfadScrim.nfad-open{opacity:1;pointer-events:auto}
+#nfadDrawer{position:fixed;top:0;right:0;height:100%;width:440px;max-width:94vw;background:#fff;z-index:80;box-shadow:-12px 0 40px rgba(15,23,42,.18);transform:translateX(100%);transition:transform .28s cubic-bezier(.4,0,.2,1);display:flex;flex-direction:column;font-family:inherit}
+#nfadDrawer.nfad-open{transform:translateX(0)}
+.nfad-head{padding:15px 18px;border-bottom:1px solid #e2e8f0;display:flex;align-items:center;gap:10px}
+.nfad-title{font-weight:700;font-size:15px;color:#0f172a}
+.nfad-sub{font-size:12px;color:#94a3b8}
+.nfad-x{margin-left:auto;width:30px;height:30px;border-radius:8px;border:1px solid #e2e8f0;background:#fff;cursor:pointer;font-size:16px;color:#475569;line-height:1}
+.nfad-body{overflow-y:auto;padding:14px;display:flex;flex-direction:column;gap:11px;flex:1}
+.nfad-card{border:1px solid #e2e8f0;border-radius:11px;padding:13px;transition:opacity .2s,transform .2s}
+.nfad-card.nfad-gone{opacity:0;transform:translateX(30px)}
+.nfad-top{display:flex;align-items:flex-start;justify-content:space-between;gap:10px}
+.nfad-cust{font-weight:680;color:#0f172a}
+.nfad-no{font-size:11.5px;color:#94a3b8;font-variant-numeric:tabular-nums}
+.nfad-total{font-weight:700;font-variant-numeric:tabular-nums;text-align:right;color:#0f172a}
+.nfad-meta{display:flex;gap:6px;flex-wrap:wrap;margin:9px 0 10px}
+.nfad-mini{font-size:11px;font-weight:600;padding:2px 8px;border-radius:999px;background:#f1f5f9;color:#475569;border:1px solid #e2e8f0}
+.nfad-mini.reply{background:#eff4ff;color:#2563eb;border-color:#ddd6fe}
+.nfad-mini.badge{background:#f5f3ff;color:#6d28d9;border-color:#ddd6fe}
+.nfad-items{font-size:12px;color:#475569;background:#f8fafc;border:1px solid #eef2f7;border-radius:8px;padding:8px 10px;margin-bottom:11px}
+.nfad-btns{display:flex;gap:8px}
+.nfad-b{flex:1;font-family:inherit;font-size:13px;font-weight:650;padding:8px;border-radius:8px;cursor:pointer;border:1px solid}
+.nfad-b[disabled]{opacity:.6;cursor:default}
+.nfad-yes{background:#15803d;border-color:#15803d;color:#fff}
+.nfad-no{background:#fff;border-color:#e2e8f0;color:#475569}
+.nfad-open{flex:0 0 auto;background:#fff;border-color:#e2e8f0;color:#2563eb;padding:8px 12px}
+.nfad-empty{padding:30px 14px;text-align:center;color:#94a3b8;font-size:13px}
+.nfad-foot{font-size:11.5px;color:#94a3b8;text-align:center;padding:10px;border-top:1px solid #eef2f7}
+@media (prefers-reduced-motion:reduce){#nfadDrawer,#nfadScrim,#nfadFab button{transition:none!important;animation:none!important}}
+</style>
+
+<div id="nfadFab"><button type="button" onclick="nfApprovalsOpen()" title="Pending Shopify approvals">🛎️ Approvals <span class="nfad-badge" id="nfadBadge">{{ $canViewShopify ? \App\Models\CRM\ShopifyOrderModel::where(function($q){$q->whereNull('converted')->orWhere('converted',0);})->count() : 0 }}</span></button></div>
+<div id="nfadScrim" onclick="nfApprovalsClose()"></div>
+<aside id="nfadDrawer" aria-label="Order approvals" aria-hidden="true">
+  <div class="nfad-head">
+    <div>
+      <div class="nfad-title">Order Approvals</div>
+      <div class="nfad-sub"><span id="nfadCount">—</span> pending · approve or ignore inline</div>
+    </div>
+    <button class="nfad-x" onclick="nfApprovalsClose()" title="Close">&times;</button>
+  </div>
+  <div class="nfad-body" id="nfadBody"><div class="nfad-empty">Loading…</div></div>
+  <div class="nfad-foot">Approve runs the same conversion (SKU match + price recalc) as the full view.</div>
+</aside>
+
+<script>
+(function(){
+  var loaded = false, lastCount = null;
+  function money(v){ var n = parseFloat(v)||0; return 'Rs ' + (Number.isInteger(n) ? n.toLocaleString('en-US') : n.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})); }
+  function esc(s){ var d=document.createElement('div'); d.textContent = (s==null?'':String(s)); return d.innerHTML; }
+  function csrf(){ var m=document.querySelector('meta[name="csrf-token"]'); return m?m.getAttribute('content'):''; }
+
+  window.nfApprovalsOpen = function(){
+    document.getElementById('nfadDrawer').classList.add('nfad-open');
+    document.getElementById('nfadDrawer').setAttribute('aria-hidden','false');
+    document.getElementById('nfadScrim').classList.add('nfad-open');
+    if(!loaded) nfApprovalsLoad();
+  };
+  window.nfApprovalsClose = function(){
+    document.getElementById('nfadDrawer').classList.remove('nfad-open');
+    document.getElementById('nfadDrawer').setAttribute('aria-hidden','true');
+    document.getElementById('nfadScrim').classList.remove('nfad-open');
+  };
+
+  window.nfApprovalsLoad = function(){
+    var body = document.getElementById('nfadBody');
+    body.innerHTML = '<div class="nfad-empty">Loading…</div>';
+    fetch('/orders/filter?source=shopify&tab=approvals', { headers:{ 'X-Requested-With':'XMLHttpRequest', 'Accept':'application/json' }, credentials:'same-origin' })
+      .then(function(r){ return r.json(); })
+      .then(function(d){
+        loaded = true;
+        var orders = (d && d.orders) ? d.orders : [];
+        setCount(orders.length);
+        if(!orders.length){ body.innerHTML = '<div class="nfad-empty">No pending approvals right now 🎉</div>'; return; }
+        body.innerHTML = orders.map(renderCard).join('');
+      })
+      .catch(function(e){ body.innerHTML = '<div class="nfad-empty">Could not load approvals. <a href="/orders?source=shopify&tab=approvals" style="color:#2563eb">Open full view</a></div>'; });
+  };
+
+  function renderCard(o){
+    var reply = (o.customer_reply && o.customer_reply.text) ? o.customer_reply.text : '';
+    var badge = o.customer_badge || (o.customer_is_new ? 'new' : '');
+    var metas = '';
+    if(badge) metas += '<span class="nfad-mini badge">'+esc(badge)+'</span>';
+    if(reply) metas += '<span class="nfad-mini reply">💬 '+esc(reply)+'</span>';
+    if(o.items_count) metas += '<span class="nfad-mini">'+esc(o.items_count)+' items</span>';
+    var summary = o.items_summary || (o.raw_products_text ? o.raw_products_text.slice(0,120) : '');
+    return '<div class="nfad-card" id="nfad-card-'+o.id+'">'
+      + '<div class="nfad-top"><div><div class="nfad-cust">'+esc(o.name || o.customer_name || 'Customer')+'</div>'
+      + '<div class="nfad-no">#'+esc(o.order_number)+'</div></div>'
+      + '<div class="nfad-total">'+money(o.total_price)+'</div></div>'
+      + (metas ? '<div class="nfad-meta">'+metas+'</div>' : '')
+      + (summary ? '<div class="nfad-items">'+esc(summary)+'</div>' : '')
+      + '<div class="nfad-btns">'
+      + '<button class="nfad-b nfad-yes" onclick="nfApprovalsApprove('+o.id+')">Approve</button>'
+      + '<button class="nfad-b nfad-no" onclick="nfApprovalsIgnore('+o.id+')">Ignore</button>'
+      + '<button class="nfad-b nfad-open" onclick="nfApprovalsOpenFull('+o.id+')" title="Open the full Shopify view for this order">Open</button>'
+      + '</div></div>';
+  }
+
+  function removeCard(id){
+    var el = document.getElementById('nfad-card-'+id);
+    if(!el) return;
+    el.classList.add('nfad-gone');
+    setTimeout(function(){
+      el.remove();
+      var remaining = document.querySelectorAll('#nfadBody .nfad-card').length;
+      setCount(remaining);
+      if(!remaining) document.getElementById('nfadBody').innerHTML = '<div class="nfad-empty">No pending approvals right now 🎉</div>';
+    }, 220);
+  }
+
+  // Approve = the EXACT existing convert endpoint (SKU match + price recalc).
+  // Same confirm + same error surfacing as the full view; smooth (no reload).
+  window.nfApprovalsApprove = function(id){
+    var card = document.getElementById('nfad-card-'+id);
+    var name = card ? (card.querySelector('.nfad-cust')||{}).textContent : 'this order';
+    if(!confirm('Convert '+name+' to a webapp invoice?\n\nThis matches SKUs with your products and recalculates prices at your rates — the same as the full Approve.')) return;
+    var btn = card ? card.querySelector('.nfad-yes') : null;
+    if(btn){ btn.disabled = true; btn.textContent = 'Converting…'; }
+    fetch('/orders/'+id+'/convert', { method:'POST', headers:{ 'Content-Type':'application/json', 'X-CSRF-TOKEN': csrf() }, credentials:'same-origin' })
+      .then(function(r){ return r.json(); })
+      .then(function(data){
+        if(data.success){
+          var msg = 'Converted — new invoice #'+(data.converted_order ? data.converted_order.order_number : '')+'.';
+          if(data.price_changes && data.price_changes.length){ msg += '\n\nPrice changes:'; data.price_changes.forEach(function(c){ msg += '\n• '+c.name+' ('+c.sku+'): '+c.original_price+' → '+c.new_price; }); }
+          if(data.warnings && data.warnings.length){ msg += '\n\nWarnings:'; data.warnings.forEach(function(w){ msg += '\n• '+w; }); }
+          alert(msg);
+          removeCard(id);
+        } else {
+          var err = 'Could not convert:\n'+(data.message||'Unknown error');
+          if(data.errors && data.errors.length){ err += '\n\nDetails:'; data.errors.forEach(function(e){ err += '\n• '+e; }); err += '\n\nFix these in your products, or use Open for the full view.'; }
+          alert(err);
+          if(btn){ btn.disabled = false; btn.textContent = 'Approve'; }
+        }
+      })
+      .catch(function(){ alert('Convert failed — please try again, or use Open for the full view.'); if(btn){ btn.disabled = false; btn.textContent = 'Approve'; } });
+  };
+
+  window.nfApprovalsIgnore = function(id){
+    if(!confirm('Ignore this Shopify order? It will be marked ignored and no invoice is created.')) return;
+    var card = document.getElementById('nfad-card-'+id);
+    var btn = card ? card.querySelector('.nfad-no') : null;
+    if(btn){ btn.disabled = true; btn.textContent = '…'; }
+    fetch('/orders/'+id+'/ignore', { method:'POST', headers:{ 'Content-Type':'application/json', 'X-CSRF-TOKEN': csrf() }, credentials:'same-origin' })
+      .then(function(r){ return r.json(); })
+      .then(function(data){ if(data.success){ removeCard(id); } else { alert('Could not ignore: '+(data.message||'Unknown error')); if(btn){ btn.disabled=false; btn.textContent='Ignore'; } } })
+      .catch(function(){ alert('Ignore failed — please try again.'); if(btn){ btn.disabled=false; btn.textContent='Ignore'; } });
+  };
+
+  window.nfApprovalsOpenFull = function(id){
+    // Full Shopify view for this staging order (source-scoped URL — never the prod twin).
+    window.open('/orders?source=shopify&tab=approvals&edit_order_id='+id, '_blank');
+  };
+
+  function setCount(n){
+    document.getElementById('nfadCount').textContent = n;
+    var badge = document.getElementById('nfadBadge');
+    if(badge) badge.textContent = n;
+    lastCount = n;
+  }
+
+  // Live-ish badge: cheap COUNT poll every 30s, ONLY while the tab is visible.
+  function poll(){
+    if(document.hidden) return;
+    fetch('/orders/approvals-count', { headers:{ 'X-Requested-With':'XMLHttpRequest', 'Accept':'application/json' }, credentials:'same-origin' })
+      .then(function(r){ return r.json(); })
+      .then(function(d){
+        var n = (d && typeof d.count === 'number') ? d.count : null;
+        if(n === null) return;
+        var badge = document.getElementById('nfadBadge');
+        if(lastCount !== null && n > lastCount){
+          var fab = document.querySelector('#nfadFab button');
+          if(fab){ fab.classList.remove('nfad-pulse'); void fab.offsetWidth; fab.classList.add('nfad-pulse'); }
+          // If the drawer is open, refresh its list to show the new order(s).
+          if(document.getElementById('nfadDrawer').classList.contains('nfad-open')) nfApprovalsLoad();
+        }
+        if(badge) badge.textContent = n;
+        lastCount = n;
+      })
+      .catch(function(){});
+  }
+  lastCount = parseInt((document.getElementById('nfadBadge')||{}).textContent, 10);
+  if(isNaN(lastCount)) lastCount = null;
+  setInterval(poll, 30000);
+})();
+</script>
+@endif
 
 <!-- View Order Modal (z-index higher than riders map modal which is 10000) -->
 <div id="viewOrderModal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background-color: rgba(0,0,0,0.5); z-index: 10100;">
@@ -4621,6 +5150,26 @@ function loadEditForm(order) {
             </div>
             `}
 
+            <!-- Activity Log (Phase 2 L1) — who changed what: edits, payments, ledger. Collapsible. -->
+            <div style="background-color: #fff; padding: 12px 16px; border-radius: 8px; margin-bottom: 20px; border: 1px solid #e5e7eb;">
+                <div style="display: flex; justify-content: space-between; align-items: center;">
+                    <div style="display: flex; align-items: center; gap: 8px;">
+                        <span style="font-size: 16px;">🧾</span>
+                        <span style="font-weight: 600; color: #374151; font-size: 14px;">Activity Log</span>
+                        <span style="font-size: 12px; color: #6b7280;">— who changed what</span>
+                    </div>
+                    <button type="button" onclick="toggleActivityLog()" id="toggleActivityLogBtn"
+                            style="background: #6b7280; color: white; border: none; padding: 6px 12px; border-radius: 6px; cursor: pointer; font-size: 11px; font-weight: 600; display: flex; align-items: center; gap: 4px;">
+                        <span id="toggleActivityLogIcon">▼</span> Show
+                    </button>
+                </div>
+                <div id="editOrderActivityWrapper" style="display: none; margin-top: 12px;">
+                    <div id="editOrderActivityLog" style="max-height: 260px; overflow-y: auto;">
+                        <div style="text-align:center;color:#6b7280;font-size:13px;padding:20px;">Loading activity…</div>
+                    </div>
+                </div>
+            </div>
+
             <!-- Form Actions -->
             <div style="display: flex; justify-content: flex-end; gap: 12px; padding-top: 20px; border-top: 1px solid #e5e7eb;">
                 <button type="button" onclick="closeModal('editOrderModal')" 
@@ -4669,6 +5218,13 @@ function loadEditForm(order) {
         loadEditOrderTimeline(order.id);
     } catch (e) {
         console.warn('Failed to load timeline', e);
+    }
+
+    // Load the per-order Activity Log (who changed what — Phase 2 L1)
+    try {
+        loadEditOrderActivityLog(order.id);
+    } catch (e) {
+        console.warn('Failed to load activity log', e);
     }
     
     try {
@@ -5604,6 +6160,12 @@ async function loadEditOrderStatuses(currentStatus) {
                 opt.selected = true;
                 statusSelect.insertBefore(opt, statusSelect.firstChild);
             }
+            // Stale-status guard (Jul-2026): remember what the form LOADED so the
+            // save can tell "user deliberately changed the dropdown" apart from
+            // "form sat open while someone else advanced the status". The save
+            // sends this as _loaded_status; the backend keeps the DB status when
+            // the dropdown was untouched (no error, nothing else is lost).
+            statusSelect.dataset.loadedStatus = statusSelect.value;
         } else {
             throw new Error('Statuses cache empty');
         }
@@ -5622,6 +6184,8 @@ async function loadEditOrderStatuses(currentStatus) {
                 <option value="cancelled" ${normalized === 'cancelled' ? 'selected' : ''}>âœ• Cancelled</option>
                 <option value="refunded" ${normalized === 'refunded' ? 'selected' : ''}>â†© Refunded</option>
             `;
+            // Stale-status guard (see success path above)
+            statusSelect.dataset.loadedStatus = statusSelect.value;
         }
     }
 }
@@ -6464,10 +7028,7 @@ function updateOrderRowRider(orderId, riderId, riderName) {
                     onclick="event.stopPropagation(); openQuickRiderAssign(${orderId}, ${riderId}, '${escapedName}')" 
                     class="inline-flex items-center px-2 py-1 rounded bg-blue-50 text-blue-800 border border-blue-300 text-xs font-medium hover:bg-blue-100 cursor-pointer transition" 
                     title="Click to change rider">
-                ${riderName}<span class="sync-status-indicator" data-order-id="${orderId}" style="display:inline-flex;align-items:center;gap:2px;font-size:10px;padding:2px 6px;border-radius:4px;background:#fef3c7;color:#92400e;margin-left:4px;">
-                    <svg style="width:10px;height:10px;animation:spin 1s linear infinite;" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
-                    Pending
-                </span>
+                ${riderName}
             </button>
         `;
     } else {
@@ -6485,6 +7046,14 @@ function updateOrderRowRider(orderId, riderId, riderName) {
 // PAYMENT METHOD QUICK CHANGE
 // ============================================
 function openQuickPaymentMethodChange(orderId, currentMethod) {
+    // Shopify approval queue (Jul-2026): defense-in-depth — the chip is rendered
+    // as a locked badge in Shopify mode, but if any other caller reaches this
+    // function with a staging id, refuse: the change endpoint resolves ids
+    // against the PRODUCTION table only (overlapping ids = wrong order).
+    if (currentOrderSource() === 'shopify') {
+        showToast('Payment method is locked until the order is converted.', 'error');
+        return;
+    }
     try {
         let modal = document.getElementById('quickPaymentMethodModal');
         if (!modal) {
@@ -6560,7 +7129,10 @@ function openQuickPaymentMethodChange(orderId, currentMethod) {
                     body: JSON.stringify({
                         order_id: orderId,
                         payment_method: newMethod,
-                        notes: notes
+                        notes: notes,
+                        // Carry the page's source context so the backend can refuse
+                        // Shopify-queue ids (they collide with production ids).
+                        source: currentOrderSource() || undefined
                     })
                 });
                 
@@ -6671,79 +7243,15 @@ function showToast(message, type = 'success') {
     }, 3000);
 }
 
-// ⭐ SMART SYNC: Poll for sync status updates
-let syncPollingInterval = null;
-function startSyncStatusPolling() {
-    // Stop existing polling if any
-    if (syncPollingInterval) {
-        clearInterval(syncPollingInterval);
-    }
-    
-    // Initial check immediately
-    checkSyncStatus();
-    
-    // Poll every 5 seconds for recent assignments
-    syncPollingInterval = setInterval(checkSyncStatus, 5000);
-}
-
-async function checkSyncStatus() {
-    try {
-        const response = await fetch('/orders/sync-status?hours=1', {
-            headers: { 'Accept': 'application/json' }
-        });
-        const data = await response.json();
-        
-        if (data.success && data.orders) {
-            data.orders.forEach(order => {
-                const row = document.querySelector(`tr[data-order-id="${order.id}"]`);
-                if (!row) return;
-                
-                const riderCell = row.querySelector('.order-rider-cell');
-                if (!riderCell) return;
-                
-                let indicator = riderCell.querySelector(`.sync-status-indicator[data-order-id="${order.id}"]`);
-                
-                // If order needs sync but has no indicator, add one
-                if (!indicator && order.sync_status === 'pending') {
-                    const riderButton = riderCell.querySelector('button');
-                    if (riderButton) {
-                        // Don't overwrite - append instead
-                        const indicatorHtml = `<span class="sync-status-indicator" data-order-id="${order.id}" style="display:inline-flex;align-items:center;gap:2px;font-size:10px;padding:2px 6px;border-radius:4px;background:#fef3c7;color:#92400e;margin-left:4px;">
-                            <svg style="width:10px;height:10px;animation:spin 1s linear infinite;" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
-                            Pending
-                        </span>`;
-                        riderButton.insertAdjacentHTML('beforeend', indicatorHtml);
-                        indicator = riderCell.querySelector(`.sync-status-indicator[data-order-id="${order.id}"]`);
-                    }
-                }
-                
-                // Update existing indicator if order is now synced
-                if (indicator && order.sync_status === 'synced') {
-                    indicator.style.background = '#d1fae5';
-                    indicator.style.color = '#065f46';
-                    indicator.innerHTML = `
-                        <svg style="width:10px;height:10px;" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg>
-                        Synced
-                    `;
-                    
-                    // Remove indicator after 10 seconds - just remove the badge, don't touch the button
-                    setTimeout(() => {
-                        if (indicator && indicator.parentElement) {
-                            indicator.remove();
-                        }
-                    }, 10000);
-                }
-            });
-        }
-    } catch (error) {
-        // Silent fail - this is just a UI enhancement
-    }
-}
-
-// Start polling when page loads
-document.addEventListener('DOMContentLoaded', () => {
-    startSyncStatusPolling();
-});
+// (Removed 2026-07) SMART SYNC 5s badge poll.
+// This block used to hit GET /orders/sync-status every 5 seconds (per open tab,
+// even hidden tabs) purely to paint a cosmetic "Pending → Synced" badge next to
+// the rider name after a manual assignment. It was the single largest request
+// stream in the system for zero operational value. REMOVED per owner.
+// NOTE: this does NOT affect real rider↔mobile syncing — that runs off the
+// `rider_sync_required` flag (set on order changes) which the mobile app pulls
+// via its own open-orders poll. The /orders/sync-status endpoint itself is left
+// in place but unused (scheduled for removal in the Phase 3 cleanup batch).
 
 // Load status timeline for edit order modal
 async function loadEditOrderTimeline(orderId) {
@@ -6944,6 +7452,102 @@ async function loadViewOrderEventTimeline(orderId) {
             container.innerHTML = '<div style="text-align:center;color:#ef4444;font-size:14px;padding:30px;">Failed to load event timeline</div>';
         }
     }
+}
+
+// ============================================================================
+// Per-order ACTIVITY LOG (Phase 2 L1) — "who changed what" from t_sys_audit_log.
+// Rendered in the Edit Invoice pop-out's collapsible "Activity Log" section.
+// All names are nf-prefixed to avoid collisions in this large file.
+// ============================================================================
+function nfEsc(s){ var d = document.createElement('div'); d.textContent = (s == null ? '' : String(s)); return d.innerHTML; }
+
+function toggleActivityLog() {
+    var wrap = document.getElementById('editOrderActivityWrapper');
+    var btn = document.getElementById('toggleActivityLogBtn');
+    if (!wrap) return;
+    var showing = wrap.style.display !== 'none';
+    wrap.style.display = showing ? 'none' : 'block';
+    if (btn) btn.innerHTML = '<span id="toggleActivityLogIcon">' + (showing ? '▼' : '▲') + '</span> ' + (showing ? 'Show' : 'Hide');
+}
+
+async function loadEditOrderActivityLog(orderId) {
+    var el = document.getElementById('editOrderActivityLog');
+    if (!el || !orderId) return;
+    try {
+        var res = await fetch('/orders/' + orderId + '/activity-log', {
+            headers: { 'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+            credentials: 'same-origin'
+        });
+        var data = await res.json();
+        nfRenderActivityLog(el, data);
+    } catch (e) {
+        el.innerHTML = '<div style="text-align:center;color:#ef4444;font-size:13px;padding:20px;">Failed to load activity log</div>';
+    }
+}
+
+function nfRenderActivityLog(el, data) {
+    if (!el) return;
+    var entries = (data && data.entries) || [];
+    if (data && data.ready === false) {
+        el.innerHTML = '<div style="text-align:center;color:#9ca3af;font-size:12.5px;padding:18px;">Activity logging is being set up — changes made from now on will appear here.</div>';
+        return;
+    }
+    if (entries.length === 0) {
+        el.innerHTML = '<div style="text-align:center;color:#9ca3af;font-size:12.5px;padding:18px;">No edits or payments recorded for this order yet.</div>';
+        return;
+    }
+    el.innerHTML = entries.map(nfActivityRowHtml).join('');
+}
+
+function nfActivityFieldLabel(f) {
+    var m = { payment_method:'Payment method', total_price:'Total', discount_total:'Discount',
+        assigned_rider_user_id:'Rider', customer_id:'Customer', name:'Name', address_line1:'Address',
+        address_city:'City', address_phone:'Phone', amount:'Amount', order_status:'Status', order_number:'Order #' };
+    return m[f] || String(f).replace(/_/g, ' ').replace(/\b\w/g, function(c){ return c.toUpperCase(); });
+}
+function nfActivityFieldVal(f, v) {
+    if (v === null || v === undefined || v === '') return '<span style="color:#9ca3af;">—</span>';
+    if (f === 'total_price' || f === 'discount_total' || f === 'amount') {
+        var n = Number(v); return isNaN(n) ? nfEsc(v) : ('Rs ' + n.toLocaleString('en-PK'));
+    }
+    return nfEsc(v);
+}
+function nfActivityRowHtml(e) {
+    var map = {
+        updated: ['✏️', 'Order edited', '#6b7280'],
+        deleted: ['🗑️', 'Order deleted', '#ef4444'],
+        created: ['📦', 'Created', '#3b82f6'],
+        payment_recorded: ['💰', 'Payment recorded', '#10b981'],
+        payment_voided: ['↩️', 'Payment voided', '#ef4444'],
+        payment_deleted: ['↩️', 'Payment removed', '#ef4444']
+    };
+    var m = map[e.action];
+    if (!m) {
+        if (/ledger/i.test(e.entity || '')) m = ['🏦', 'Ledger ' + String(e.action || '').replace(/_/g, ' '), '#8b5cf6'];
+        else m = ['📝', String(e.action || 'change').replace(/_/g, ' '), '#6b7280'];
+    }
+    var d = new Date(String(e.at || '').replace(' ', 'T'));
+    var when = isNaN(d.getTime()) ? (e.at || '')
+        : (d.toLocaleDateString('en-GB', { day:'2-digit', month:'short', year:'numeric' }) + ' · ' + d.toLocaleTimeString('en-US', { hour:'2-digit', minute:'2-digit', hour12:true }));
+    var srcColors = { web:['#eff6ff','#1d4ed8'], mobile:['#f0fdf4','#15803d'], customer_app:['#fef3c7','#92400e'], system:['#f3f4f6','#6b7280'] };
+    var sc = srcColors[e.source] || ['#f3f4f6','#6b7280'];
+    var srcBadge = e.source ? '<span style="font-size:10px;font-weight:600;padding:1px 6px;border-radius:999px;background:' + sc[0] + ';color:' + sc[1] + ';text-transform:capitalize;">' + nfEsc(String(e.source).replace('_',' ')) + '</span>' : '';
+    var diffs = '';
+    if (e.changes && typeof e.changes === 'object') {
+        diffs = Object.keys(e.changes).map(function(f) {
+            var c = e.changes[f] || {};
+            return '<div style="font-size:12px;color:#4b5563;margin-top:2px;"><span style="font-weight:600;">' + nfEsc(nfActivityFieldLabel(f)) + ':</span> '
+                + nfActivityFieldVal(f, c.old) + ' <span style="color:#9ca3af;">→</span> ' + nfActivityFieldVal(f, c.new) + '</div>';
+        }).join('');
+    }
+    var note = e.note ? '<div style="font-size:12px;color:#6b7280;font-style:italic;margin-top:2px;">' + nfEsc(e.note) + '</div>' : '';
+    return '<div style="display:flex;gap:12px;padding:10px 0;border-bottom:1px solid #f1f5f9;">'
+        + '<div style="width:28px;height:28px;border-radius:50%;flex-shrink:0;display:flex;align-items:center;justify-content:center;background:' + m[2] + '1a;border:1.5px solid ' + m[2] + ';font-size:13px;">' + m[0] + '</div>'
+        + '<div style="flex:1;min-width:0;">'
+        + '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;"><span style="font-size:13.5px;font-weight:600;color:#111827;">' + nfEsc(m[1]) + '</span>' + srcBadge + '</div>'
+        + '<div style="font-size:12px;color:#6b7280;">by ' + nfEsc(e.user || '—') + ' · ' + nfEsc(when) + '</div>'
+        + diffs + note
+        + '</div></div>';
 }
 
 // Quick Status Change Modal
@@ -7327,6 +7931,12 @@ async function saveOrderChanges(orderId) {
         orderData = {
             customer_id: formData.get('customer_id'), // ✅ CRITICAL: Include customer_id for linking
             order_status: formData.get('order_status'),
+            // Stale-status guard (Jul-2026): what the dropdown showed when the form
+            // OPENED. Backend rule: dropdown untouched -> keep the DB's current
+            // status (a status advanced on mobile while this form sat open is never
+            // reverted); dropdown deliberately changed -> proper changeStatus()
+            // pipeline (history + webhook + ledger + inventory).
+            _loaded_status: (document.getElementById('editOrderStatus')?.dataset?.loadedStatus) || null,
             order_date: formattedOrderDate,
             contact_email: formData.get('contact_email'),
             subtotal_price: parseFloat(formData.get('subtotal_price')) || 0,
@@ -7579,6 +8189,9 @@ async function saveAndCloseOrder(orderId) {
         orderData = {
             customer_id: formData.get('customer_id'),
             order_status: formData.get('order_status'),
+            // Stale-status guard (Jul-2026) — same contract as saveOrderChanges:
+            // dropdown untouched -> backend keeps the DB's current status.
+            _loaded_status: (document.getElementById('editOrderStatus')?.dataset?.loadedStatus) || null,
             order_date: formattedOrderDate,
             contact_email: formData.get('contact_email'),
             subtotal_price: parseFloat(formData.get('subtotal_price')) || 0,
@@ -7988,6 +8601,9 @@ function popoutOrder() {
             
             const orderData = {
                 order_status: formData.get('order_status'),
+                // Stale-status guard (Jul-2026) — same contract as saveOrderChanges.
+                // The popup's select carries the copied data-loaded-status attribute.
+                _loaded_status: (newWindow.document.getElementById('editOrderStatus')?.dataset?.loadedStatus) || null,
                 order_date: formattedOrderDate,
                 contact_email: formData.get('contact_email'),
                 subtotal_price: parseFloat(formData.get('subtotal_price')) || 0,
@@ -9817,101 +10433,6 @@ const defaultColumns = [
 // Current column settings
 let currentColumns = JSON.parse(localStorage.getItem('orderTableColumns')) || defaultColumns;
 
-/* ⚠️ DUPLICATE INITIALIZATION BLOCK - COMMENTED OUT TO PREVENT CONFLICTS
-   This block is duplicated below around line 1966 and causes JavaScript errors
-   
-// Ensure Actions column is always present and visible
-function ensureActionsColumn() {
-    const hasActions = currentColumns.find(col => col.id === 'actions');
-    if (!hasActions) {
-        currentColumns.push({ id: 'actions', visible: true });
-    } else {
-        // Make sure it's visible
-        hasActions.visible = true;
-    }
-}
-
-// Ensure all address fields and rider columns are present in currentColumns
-function ensureAddressFields() {
-    const addressFields = [
-        'address_first_name', 'address_last_name', 'address_full_name',
-        'address1', 'address2', 'postal_code', 'rider', 'rider_id'
-    ];
-    
-    addressFields.forEach(fieldId => {
-        const hasField = currentColumns.find(col => col.id === fieldId);
-        if (!hasField) {
-            // Add missing field (default to not visible)
-            currentColumns.push({ id: fieldId, visible: false });
-        }
-    });
-}
-
-// Initialize columns
-ensureActionsColumn();
-ensureAddressFields();
-
-// Migration: Ensure rider columns exist for existing users
-if (!currentColumns.find(col => col.id === 'rider')) {
-    currentColumns.push({ id: 'rider', visible: false });
-}
-if (!currentColumns.find(col => col.id === 'rider_id')) {
-    currentColumns.push({ id: 'rider_id', visible: false });
-}
-// Migration: Ensure delivery_date column exists for existing users
-if (!currentColumns.find(col => col.id === 'delivery_date')) {
-    // Insert after order_date for logical ordering
-    const orderDateIndex = currentColumns.findIndex(col => col.id === 'order_date');
-    if (orderDateIndex !== -1) {
-        currentColumns.splice(orderDateIndex + 1, 0, { id: 'delivery_date', visible: false });
-    } else {
-        currentColumns.push({ id: 'delivery_date', visible: false });
-    }
-}
-// Save the updated columns to localStorage
-localStorage.setItem('orderTableColumns', JSON.stringify(currentColumns));
-
-// Debug: Log current columns after initialization
-console.log('Current columns after initialization:', currentColumns);
-
-    // Populate status filter from loaded orders data - simple and efficient
-    function initStatusFilter() {
-        const sel = document.getElementById('statusFilter');
-        if (!sel || !window.ordersData) return;
-        
-        // Extract unique statuses from loaded orders
-        const uniqueStatuses = [...new Set(window.ordersData.map(order => order.order_status).filter(status => status))];
-        
-        // Build options HTML
-        const preserved = sel.value; // Preserve current selection
-        const optionsHtml = '<option value="">All status</option>' +
-            uniqueStatuses.map(status => {
-                const displayName = status.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
-                return `<option value="${status}">${displayName}</option>`;
-            }).join('');
-        
-        sel.innerHTML = optionsHtml;
-        
-        // Restore previous selection if it still exists
-        if (uniqueStatuses.includes(preserved)) {
-            sel.value = preserved;
-        }
-        
-        console.log('Status filter populated with', uniqueStatuses.length, 'unique statuses:', uniqueStatuses);
-    }
-
-// Orders data passed from Laravel
-window.ordersData = @json($orders->items());
-// Track current source/tab dynamically for correct actions rendering
-window.currentSource = '{{ $source }}';
-window.currentTab = '{{ $tab ?? "all" }}';
-
-
-// Initialize table on page load
-document.addEventListener('DOMContentLoaded', function() {
-    renderOrdersTable();
-});
-*/ 
 // Global: initialize the top status filter from currently loaded orders
 // Safe to call from any tab. For Shopify tabs we intentionally show only "All status".
 function initStatusFilter() {
@@ -10138,256 +10659,6 @@ function renderOrdersTable() {
     renderTableHeader();
     renderTableBody();
 }
-/* âš ï¸ DEPRECATED: This function has been replaced by the newer getCellContent() function below (around line 2227)
-   This older version has been commented out to avoid conflicts and duplicated code
-   The newer version has better error handling, debug logging, and more features
-function getCellContent_DEPRECATED(order, columnId) {
-    const formatDate = (dateStr) => {
-        if (!dateStr) return '<span class="text-gray-400">-</span>';
-        try {
-            // Parse the date string
-            const date = new Date(dateStr);
-            
-            // Format with both date and time
-            const formatted = date.toLocaleDateString('en-US', {
-                year: 'numeric',
-                month: 'short',
-                day: 'numeric',
-                hour: '2-digit',
-                minute: '2-digit',
-                hour12: false
-            });
-            return formatted;
-        } catch (error) {
-            console.error('Date formatting error:', error);
-            return '<span class="text-red-400">Invalid Date</span>';
-        }
-    };
-
-    const formatCurrency = (amount) => {
-        if (!amount && amount !== 0) return '0.00';
-        return parseFloat(amount).toFixed(2);
-    };
-
-    switch (columnId) {
-        case 'id':
-            return order.id || '';
-        case 'order_number':
-            return order.order_number || '';
-        case 'order_date':
-            return formatDate(order.order_date);
-        case 'delivery_date':
-            // Get delivery date from status history if available
-            const deliveryHistory = order.current_status_history || order.statusHistory;
-            if (deliveryHistory && deliveryHistory.status_code === 'delivered' && deliveryHistory.changed_at) {
-                return formatDate(deliveryHistory.changed_at);
-            }
-            return order.delivery_date ? formatDate(order.delivery_date) : '-';
-        case 'order_status':
-            const status = order.order_status || 'pending';
-            const statusConfig = {
-                'pending': { bg: 'bg-yellow-50', border: 'border-yellow-200', text: 'text-yellow-700', icon: '' },
-                'processing': { bg: 'bg-blue-50', border: 'border-blue-200', text: 'text-blue-700', icon: '' },
-                'completed': { bg: 'bg-green-50', border: 'border-green-200', text: 'text-green-700', icon: '' },
-                'cancelled': { bg: 'bg-red-50', border: 'border-red-200', text: 'text-red-700', icon: '' },
-                'refunded': { bg: 'bg-purple-50', border: 'border-purple-200', text: 'text-purple-700', icon: '' },
-                'on-hold': { bg: 'bg-orange-50', border: 'border-orange-200', text: 'text-orange-700', icon: '' }
-            };
-            const config = statusConfig[status] || { bg: 'bg-gray-50', border: 'border-gray-200', text: 'text-gray-700', icon: '' };
-            
-            // Check if quick status change should be disabled (delivered orders with ledger)
-            const hasLedgerForStatus2 = order.ledger_transaction_id && order.ledger_transaction_id > 0;
-            const isDeliveredForStatus2 = order.order_status === 'delivered';
-            const restrictStatusChange2 = hasLedgerForStatus2 && isDeliveredForStatus2;
-            
-            if (restrictStatusChange2) {
-                // Show non-clickable badge with lock indicator
-                return `<span class="inline-flex items-center px-2 py-1 rounded-md text-xs font-medium border ${config.bg} ${config.border} ${config.text} opacity-75" title="Status change restricted for delivered orders with ledger entry">
-                            <span class=\"mr-1 text-xs\">${config.icon}</span>
-                            ${status.replace(/_/g,' ').replace(/\b\w/g,c=>c.toUpperCase())}
-                            <span class=\"ml-1 text-xs\">🔒</span>
-                        </span>${renderOrderProofBadge(order)}`;
-            }
-            
-            return `<button type="button" onclick="event.stopPropagation(); openQuickStatusChange(${order.id}, '${status}')" class="inline-flex items-center px-2 py-1 rounded-md text-xs font-medium border ${config.bg} ${config.border} ${config.text} hover:opacity-80 transition" title="Quick change status">
-                        <span class=\"mr-1 text-xs\">${config.icon}</span>
-                        ${status.replace(/_/g,' ').replace(/\b\w/g,c=>c.toUpperCase())}
-                    </button>${renderOrderProofBadge(order)}`;
-        case 'external_source':
-            const source = order.external_source || 'manual';
-            const sourceColors = {
-                'shopify': 'bg-green-50 border-green-200 text-green-700',
-                'woocommerce': 'bg-purple-50 border-purple-200 text-purple-700',
-                'webapp': 'bg-blue-50 border-blue-200 text-blue-700',
-                'khaas_storage': 'bg-sky-50 border-sky-200 text-sky-700',
-                'manual': 'bg-orange-50 border-orange-200 text-orange-700'
-            };
-            const sourceColor = sourceColors[source] || 'bg-gray-50 border-gray-200 text-gray-700';
-            const srcLabel = source === 'khaas_storage' ? 'Frozen Meat' : source.charAt(0).toUpperCase() + source.slice(1);
-            return `<span class="inline-flex items-center px-2 py-1 rounded-md text-xs font-medium border ${sourceColor}">${srcLabel}</span>`;
-        case 'external_id':
-            return order.external_id || '';
-            
-        // Customer Info
-        case 'customer_name':
-            // Priority: order.name (from address) -> customer.full_name -> address fields
-            let customerName = '';
-            if (order.name && order.name.trim()) {
-                customerName = order.name.trim();
-            } else if (order.customer && order.customer.full_name && order.customer.full_name.trim()) {
-                customerName = order.customer.full_name.trim();
-            } else {
-                // Fallback to address fields
-                const firstName = order.address_first_name || '';
-                const lastName = order.address_last_name || '';
-                customerName = (firstName + ' ' + lastName).trim();
-            }
-            if (!customerName) {
-                return '<span class="table-text-small">N/A</span>';
-            }
-            
-            // Make customer name clickable if customer_id exists
-            if (order.customer_id && order.customer_id !== 'N/A' && order.customer_id !== null) {
-                return `<div class="table-text-primary"><span class="customer-name-link text-blue-600 hover:text-blue-800 hover:underline font-medium cursor-pointer" onclick="openCustomerDetails(${order.customer_id})" title="View customer details">${customerName}</span></div>`;
-            } else {
-                return `<div class="table-text-primary">${customerName}</div>`;
-            }
-        case 'contact_email':
-            return order.contact_email || '';
-        case 'customer_phone':
-            const phone = order.customer_phone || order.address_phone || '';
-            return phone ? `<div class="table-text-secondary">${phone}</div>` : '<span class="table-text-small">N/A</span>';
-            
-        // Address Info
-        case 'address_first_name':
-            return order.address_first_name || '';
-        case 'address_last_name':
-            return order.address_last_name || '';
-        case 'address_full_name':
-            const addrFirstName = order.address_first_name || '';
-            const addrLastName = order.address_last_name || '';
-            const addrFullName = (addrFirstName + ' ' + addrLastName).trim();
-            return addrFullName || '';
-        case 'address_email':
-            return order.address_email || '';
-        case 'address_phone':
-            return order.address_phone || '';
-        case 'address1':
-            // Create compact multi-line address display
-            const addressParts = [];
-            if (order.address_line1) addressParts.push(order.address_line1);
-            if (order.address_line2) addressParts.push(order.address_line2);
-            if (order.address_city) addressParts.push(order.address_city);
-            if (order.address_province) addressParts.push(order.address_province);
-            
-            if (addressParts.length === 0) return '<span class="table-text-small">N/A</span>';
-            
-            const fullAddress = addressParts.join(', ');
-            const shortAddress = addressParts.length > 2 ? 
-                `${addressParts[0]}, ${addressParts[addressParts.length - 1]}` : 
-                addressParts.join(', ');
-            
-            return `<div class="table-cell-address-compact" title="${fullAddress}">
-                        <div class="text-xs text-gray-700 leading-tight" style="max-width: 140px; overflow: hidden; text-overflow: ellipsis;">${shortAddress}</div>
-                        ${addressParts.length > 2 ? '<div class="text-xs text-gray-400 mt-0.5" style="font-size: 10px;">+' + (addressParts.length - 2) + ' more</div>' : ''}
-                    </div>`;
-        case 'address2':
-            const addr2 = order.address_line2 || '';
-            return addr2 ? `<div class="table-cell-address" title="${addr2}">${addr2}</div>` : '';
-        case 'address_city':
-            return order.address_city || '';
-        case 'address_province':
-            return order.address_province || '';
-        case 'address_country':
-            return order.address_country || '';
-        case 'postal_code':
-            return order.postal_code || '';
-            
-        // Financial Info
-        case 'currency':
-            return order.currency || 'PKR';
-        case 'subtotal_price':
-            return formatCurrency(order.subtotal_price);
-        case 'discount_total':
-            return formatCurrency(order.discount_total);
-        case 'shipping_total':
-            return formatCurrency(order.shipping_total);
-        case 'total_price':
-            const totalPrice = formatCurrency(order.total_price);
-            return `<div class="table-cell-total">PKR ${totalPrice}</div>`;
-        case 'total_weight':
-            return order.total_weight || '0';
-            
-        // Payment & Other Info
-        case 'payment_method':
-            const paymentMethod = order.payment_method || 'cash';
-            const normalizedMethod = paymentMethod.toLowerCase().trim();
-            
-            // Determine display text and styling
-            let displayText = 'Cash';
-            let pmConfig = { bg: 'bg-green-50', border: 'border-green-300', text: 'text-green-800' };
-            
-            if (normalizedMethod.includes('online') || normalizedMethod.includes('bank') || normalizedMethod.includes('card')) {
-                displayText = 'Online';
-                pmConfig = { bg: 'bg-purple-50', border: 'border-purple-300', text: 'text-purple-800' };
-            } else if (normalizedMethod.includes('cash') || normalizedMethod.includes('cod')) {
-                displayText = 'Cash';
-                pmConfig = { bg: 'bg-green-50', border: 'border-green-300', text: 'text-green-800' };
-            }
-            
-            // Check if quick payment method change should be disabled (delivered orders with ledger)
-            const hasLedgerForPM = order.ledger_transaction_id && order.ledger_transaction_id > 0;
-            const isDeliveredForPM = order.order_status === 'delivered';
-            const restrictPMChange = hasLedgerForPM && isDeliveredForPM;
-            
-            if (restrictPMChange) {
-                // Show non-clickable badge with lock indicator
-                return `<div class="order-payment-method-cell"><span class="inline-flex items-center px-2 py-1 rounded ${pmConfig.bg} ${pmConfig.border} border ${pmConfig.text} text-xs font-medium opacity-75" title="Payment method change restricted for delivered orders with ledger entry">${displayText} <span class="ml-1">🔒</span></span></div>`;
-            }
-            
-            return `<div class="order-payment-method-cell"><button type="button" onclick="event.stopPropagation(); openQuickPaymentMethodChange(${order.id}, '${paymentMethod}')" class="inline-flex items-center px-2 py-1 rounded ${pmConfig.bg} ${pmConfig.border} border ${pmConfig.text} text-xs font-medium hover:opacity-80 cursor-pointer transition" title="Click to change payment method">${displayText}</button></div>`;
-        case 'coupon_code':
-            return order.coupon_code || '';
-        case 'note':
-            return order.note || '';
-        case 'created_at':
-            return formatDate(order.created_at);
-        case 'updated_at':
-            return formatDate(order.updated_at);
-            
-        // Line Items Count
-        case 'line_items_count':
-            const itemCount = order.line_items ? order.line_items.length : (order.line_items_count || 0);
-            return `<span onclick="viewOrderDetails($${'{'}order.id${'}'}" class="inline-flex items-center px-2 py-1 bg-blue-50 border border-blue-200 text-blue-700 rounded-md text-sm font-medium cursor-pointer hover:bg-blue-100 transition-colors">
-                        $${'{'}itemCount${'}'} item$${'{'}itemCount !== 1 ? 's' : ''${'}'}
-                    </span>`;
-            
-        // Actions column
-        case 'actions':
-            return `
-                <div class="flex items-center space-x-2">
-                    <button onclick="viewOrderDetails($${'{'}order.id${'}'}" 
-                            class="inline-flex items-center p-1.5 border border-gray-300 rounded-md text-gray-600 hover:text-gray-700 hover:bg-gray-50 transition-colors duration-150" 
-                            title="View Details">
-                        <i class="ki-filled ki-eye text-sm"></i>
-                    </button>
-                    <button onclick="editOrderDetails($${'{'}order.id${'}'}" 
-                            class="inline-flex items-center p-1.5 border border-blue-300 rounded-md text-blue-600 hover:text-blue-700 hover:bg-blue-50 transition-colors duration-150" 
-                            title="Edit Order">
-                        <i class="ki-filled ki-notepad-edit text-sm"></i>
-                    </button>
-                    <button onclick="window.open(ordersInvoiceUrl($${'{'}order.id${'}'}), '_blank')" 
-                            class="inline-flex items-center p-1.5 border border-green-300 rounded-md text-green-600 hover:text-green-700 hover:bg-green-50 transition-colors duration-150" 
-                            title="View Invoice">
-                        <i class="ki-filled ki-file-sheet text-sm"></i>
-                    </button>
-                </div>
-            `;
-            
-        default:
-            return '';
-    }
-} // END DEPRECATED getCellContent function */
 
 // DEPRECATED: The following functions are part of the older system and have been commented out
 // to avoid conflicts. The newer implementations are used instead.
@@ -10794,9 +11065,17 @@ function getCellContent(order, columnId) {
             return formatCurrency(order.discount_total);
         case 'shipping_total':
             return formatCurrency(order.shipping_total);
-        case 'total_price':
-            const totalPrice = formatCurrency(order.total_price);
-            return `<div class="table-cell-total">PKR ${totalPrice}</div>`;
+        case 'total_price': {
+            // S1b (2026-07): clean money format "Rs 11,140" — comma-grouped, drops
+            // trailing .00 for whole amounts but KEEPS decimals when present (never
+            // misstate money). Self-contained (no dependency on the scope-shadowed
+            // formatCurrency); only this cell's display changes.
+            const _n = parseFloat(order.total_price) || 0;
+            const _s = Number.isInteger(_n)
+                ? _n.toLocaleString('en-US')
+                : _n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+            return `<div class="table-cell-total">Rs ${_s}</div>`;
+        }
         case 'total_weight':
             return order.total_weight || '0';
             
@@ -10817,11 +11096,17 @@ function getCellContent(order, columnId) {
                 pmConfig2 = { bg: 'bg-green-50', border: 'border-green-300', text: 'text-green-800' };
             }
             
+            // Shopify approval queue (Jul-2026): payment method LOCKED until converted
+            // (staging ids collide with production ids — see the other renderer copy).
+            if (currentOrderSource() === 'shopify') {
+                return `<div class="order-payment-method-cell"><span class="inline-flex items-center px-2 py-1 rounded ${pmConfig2.bg} ${pmConfig2.border} border ${pmConfig2.text} text-xs font-medium opacity-75" title="Payment method is locked until the order is converted">${displayText2} <span class="ml-1">🔒</span></span></div>`;
+            }
+
             // Check if quick payment method change should be disabled (delivered orders with ledger)
             const hasLedgerForPM2 = order.ledger_transaction_id && order.ledger_transaction_id > 0;
             const isDeliveredForPM2 = order.order_status === 'delivered';
             const restrictPMChange2 = hasLedgerForPM2 && isDeliveredForPM2;
-            
+
             if (restrictPMChange2) {
                 // Show non-clickable badge with lock indicator
                 return `<div class="order-payment-method-cell"><span class="inline-flex items-center px-2 py-1 rounded ${pmConfig2.bg} ${pmConfig2.border} border ${pmConfig2.text} text-xs font-medium opacity-75" title="Payment method change restricted for delivered orders with ledger entry">${displayText2} <span class="ml-1">🔒</span></span></div>`;
@@ -11229,7 +11514,13 @@ function fetchFilteredOrders() {
     const currentUrl = new URL(window.location);
     const source = currentUrl.searchParams.get('source') || 'other';
     params.append('source', source);
-    
+    // NF (Jul-2026): scope the search to the CURRENT tab. Without this the search
+    // dropped the tab and searched ALL orders even while on Open Orders. The
+    // backend filter() honours ?tab=open|riders (excludes delivered/completed/
+    // cancelled/refunded + qurbani), so passing it makes search match the tab.
+    const tab = window.currentTab || currentUrl.searchParams.get('tab') || 'all';
+    params.append('tab', tab);
+
     // Make API call
     fetch(`/orders/filter?${params.toString()}`, {
         method: 'GET',
@@ -12768,6 +13059,15 @@ function switchToOpenOrders() {
             url.searchParams.set('tab', 'open');
             window.history.pushState({}, '', url);
 
+            // Keep the runtime tab context in sync BEFORE anything reads it. Without
+            // this, updateTabsForOpenOrders() -> updateRiderLiveBoardVisibility() runs
+            // while window.currentTab is still the previous tab ('all'), so the board's
+            // should-show check fails and the Riders-Live panel never re-appears when
+            // returning to Open Orders (rebuildTableWithOrders sets these too, but that
+            // runs AFTER the visibility check). See riderBoardShouldShow().
+            window.currentSource = 'other';
+            window.currentTab = 'open';
+
             // Update page title
             const pageTitle = document.querySelector('h1');
             if (pageTitle) pageTitle.textContent = 'Orders';
@@ -12880,71 +13180,45 @@ function renderStatusCards(statusCounts, totalOpenCount, deliveredTodayCount = 0
         return;
     }
 
-    // Create "All Open" card first with verified/unverified breakdown - COMPACT
+    // NF (Jul-2026): mockup-style stat cards — big tabular number, small uppercase
+    // label, colored LEFT ACCENT instead of the old mixed borders + meaningless
+    // status-master emoji icons. All click handlers (filterByStatus,
+    // filterByVerifiedLocation) and data-status attrs preserved verbatim.
+    const nfscAccent = (c) => ({ blue:'#2563eb', green:'#15803d', yellow:'#b45309', orange:'#c2410c', red:'#b91c1c', purple:'#6d28d9', indigo:'#4f46e5', gray:'#475569' }[c] || '#475569');
+    const nfscChips = (scope, v, uv) => `
+        <div class="nfsc-chips">
+            <span class="nfsc-chip nfsc-chip-ok" onclick="event.stopPropagation(); filterByVerifiedLocation('${scope}', 'verified');" title="Verified location — click to filter">✓ ${v}</span>
+            <span class="nfsc-chip nfsc-chip-warn" onclick="event.stopPropagation(); filterByVerifiedLocation('${scope}', 'unverified');" title="Unverified location — click to filter">✗ ${uv}</span>
+        </div>`;
+
     let cardsHtml = `
         <div class="status-card active flex-shrink-0" data-status="all" onclick="filterByStatus('all')">
-            <div class="flex items-center gap-2 px-3 py-2 bg-white rounded-lg border-2 border-blue-200 shadow-sm hover:shadow-md transition-all duration-200 cursor-pointer">
-                <div>
-                    <div class="text-2xl font-bold text-blue-600">${totalOpenCount}</div>
-                    <div class="text-sm font-medium text-gray-700">All Open</div>
-                    ${verifiedCounts ? `
-                        <div class="mt-1">
-                            <div class="text-xs text-gray-600 font-medium">Verified Location:</div>
-                            <div class="flex gap-1 text-xs mt-0.5">
-                                <span class="px-1.5 py-0.5 bg-green-100 text-green-700 rounded cursor-pointer hover:bg-green-200" onclick="event.stopPropagation(); filterByVerifiedLocation('all', 'verified');" title="Verified">
-                                    ✓ ${verifiedCounts.all_open_verified}
-                                </span>
-                                <span class="px-1.5 py-0.5 bg-orange-100 text-orange-700 rounded cursor-pointer hover:bg-orange-200" onclick="event.stopPropagation(); filterByVerifiedLocation('all', 'unverified');" title="Unverified">
-                                    ✗ ${verifiedCounts.all_open_unverified}
-                                </span>
-                            </div>
-                        </div>
-                    ` : ''}
-                </div>
-                <div class="text-xl">📋</div>
+            <div class="nfsc-box" style="border-left-color:${nfscAccent('blue')};">
+                <div class="nfsc-n" style="color:${nfscAccent('blue')};">${totalOpenCount}</div>
+                <div class="nfsc-l">All Open</div>
+                ${verifiedCounts ? nfscChips('all', verifiedCounts.all_open_verified, verifiedCounts.all_open_unverified) : ''}
             </div>
         </div>
     `;
 
-    // Delivered Today card (informational) - COMPACT
     cardsHtml += `
         <div class="status-card flex-shrink-0" data-status="delivered_today">
-            <div class="flex items-center gap-2 px-3 py-2 bg-white rounded-lg border-2 border-green-200 shadow-sm hover:shadow-md transition-all duration-200 cursor-default">
-                <div>
-                    <div class="text-2xl font-bold text-green-600">${deliveredTodayCount}</div>
-                    <div class="text-sm font-medium text-gray-700">Delivered Today</div>
-                </div>
-                <div class="text-xl">✅</div>
+            <div class="nfsc-box" style="border-left-color:${nfscAccent('green')};cursor:default;">
+                <div class="nfsc-n" style="color:${nfscAccent('green')};">${deliveredTodayCount}</div>
+                <div class="nfsc-l">Delivered Today</div>
             </div>
         </div>
     `;
 
-    // Add individual status cards - COMPACT
     statusCounts.forEach(status => {
         const colorClass = getStatusColorClass(status.color_class);
         const isOutForDelivery = status.status_code === 'out_for_delivery';
-        
         cardsHtml += `
             <div class="status-card flex-shrink-0" data-status="${status.status_code}" onclick="filterByStatus('${status.status_code}')">
-                <div class="flex items-center gap-2 px-3 py-2 bg-white rounded-lg border border-gray-200 shadow-sm hover:shadow-md transition-all duration-200 cursor-pointer hover:border-${colorClass}-300">
-                    <div>
-                        <div class="text-2xl font-bold text-${colorClass}-600">${status.count}</div>
-                        <div class="text-sm font-medium text-gray-700">${status.status_name}</div>
-                        ${isOutForDelivery && verifiedCounts ? `
-                            <div class="mt-1">
-                                <div class="text-xs text-gray-600 font-medium">Verified Location:</div>
-                                <div class="flex gap-1 text-xs mt-0.5">
-                                    <span class="px-1.5 py-0.5 bg-green-100 text-green-700 rounded cursor-pointer hover:bg-green-200" onclick="event.stopPropagation(); filterByVerifiedLocation('out_for_delivery', 'verified');" title="Verified">
-                                        ✓ ${verifiedCounts.out_for_delivery_verified}
-                                    </span>
-                                    <span class="px-1.5 py-0.5 bg-orange-100 text-orange-700 rounded cursor-pointer hover:bg-orange-200" onclick="event.stopPropagation(); filterByVerifiedLocation('out_for_delivery', 'unverified');" title="Unverified">
-                                        ✗ ${verifiedCounts.out_for_delivery_unverified}
-                                    </span>
-                                </div>
-                            </div>
-                        ` : ''}
-                    </div>
-                    <div class="text-xl">${status.icon}</div>
+                <div class="nfsc-box" style="border-left-color:${nfscAccent(colorClass)};">
+                    <div class="nfsc-n" style="color:${nfscAccent(colorClass)};">${status.count}</div>
+                    <div class="nfsc-l">${status.status_name}</div>
+                    ${isOutForDelivery && verifiedCounts ? nfscChips('out_for_delivery', verifiedCounts.out_for_delivery_verified, verifiedCounts.out_for_delivery_unverified) : ''}
                 </div>
             </div>
         `;
@@ -14153,12 +14427,15 @@ function riderBoardShouldShow() {
 function updateRiderLiveBoardVisibility() {
     const col = document.getElementById('riderLiveBoardCol');
     if (!col) return;
+    var nfc = document.getElementById('nfRiderCards'); // S3: keep the new cards row visible in lockstep with the board
     if (riderBoardShouldShow()) {
         col.style.display = 'flex';
+        if (nfc) nfc.style.display = 'block';
         loadRiderLiveBoard();
         startRiderBoardAutoRefresh();
     } else {
         col.style.display = 'none';
+        if (nfc) nfc.style.display = 'none';
         if (_riderBoardInterval) { clearInterval(_riderBoardInterval); _riderBoardInterval = null; }
     }
 }
@@ -14192,6 +14469,7 @@ async function loadRiderLiveBoard() {
         if (riders.length === 0) {
             body.innerHTML = '<div class="px-3 py-3 text-xs text-gray-400">No riders checked in right now.</div>';
             if (meta) meta.textContent = '';
+            if (window.nfRenderRiderCards) nfRenderRiderCards([], {}, {}); // S3: keep the new cards row in sync (shows just the Unassigned card)
             return;
         }
         // Sort so the riders that need attention surface first:
@@ -14203,6 +14481,7 @@ async function loadRiderLiveBoard() {
             return pa - pb;
         });
         body.innerHTML = sorted.map(r => renderRiderBoardRow(r, gps[r.rider_id], disp[r.rider_id])).join('');
+        if (window.nfRenderRiderCards) nfRenderRiderCards(sorted, gps, disp); // S3: feed the new full-width cards from the SAME data (no extra fetch)
         if (meta) meta.textContent = 'updated ' + new Date().toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
     } catch (e) {
         body.innerHTML = '<div class="px-3 py-3 text-xs text-gray-400">Live status unavailable.</div>';
@@ -14319,8 +14598,16 @@ async function openRiderDispatchPopup(riderId, riderName) {
     box.innerHTML = `<div style="padding:40px; text-align:center; color:#6b7280;">Loading dispatch tracker for ${riderName}...</div>`;
     modal.style.display = 'flex';
 
+    // Tear down any mini-map from a previously opened rider (its DOM node is about
+    // to be replaced) so we never leave a stale Leaflet instance bound to a dead node.
+    if (_riderMiniMapInstance) { try { _riderMiniMapInstance.remove(); } catch (e) {} _riderMiniMapInstance = null; }
+
     try {
-        const today = new Date().toISOString().slice(0, 10);
+        // Use the LOCAL date, not toISOString() (which is UTC). Between midnight and
+        // ~5am PKT the UTC date is still "yesterday", and the live ongoing-dispatch
+        // data is only computed for today — so the UTC date made the tracker wrongly
+        // show "No active dispatch" for riders dispatched in the early hours.
+        const today = localTodayStr();
         const res = await fetch(`/orders/riders-map/dispatch-report?date=${today}`, {
             headers: { 'Accept': 'application/json', 'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').getAttribute('content') }
         });
@@ -14337,9 +14624,14 @@ async function openRiderDispatchPopup(riderId, riderName) {
 function closeRiderDispatchPopup() {
     const modal = document.getElementById('riderDispatchModal');
     if (modal) modal.style.display = 'none';
+    // Release the Leaflet map so it doesn't keep timers/tiles alive while hidden.
+    if (_riderMiniMapInstance) { try { _riderMiniMapInstance.remove(); } catch (e) {} _riderMiniMapInstance = null; }
 }
 
 function renderRiderDispatchPopup(riderId, riderName, ongoing, delivered) {
+    // Stash context so the mini-map + its refresh button can act without re-fetching
+    // the dispatch report.
+    window._riderDispatchCtx = { riderId: riderId, riderName: riderName, ongoing: ongoing, delivered: delivered };
     const meta = {
         left_without_dispatch: { label: '⚠️ Left without dispatch', color: '#991b1b', bg: '#fee2e2' },
         waiting_at_office:     { label: '🏠 Waiting at office',      color: '#854d0e', bg: '#fef9c3' },
@@ -14414,14 +14706,288 @@ function renderRiderDispatchPopup(riderId, riderName, ongoing, delivered) {
     return `
         <div style="position:sticky; top:0; background:#fff; display:flex; justify-content:space-between; align-items:center; padding:14px 16px; border-bottom:1px solid #eee; z-index:1;">
             <div style="font-weight:700; font-size:15px; color:#1f2937;">🏍️ ${riderName} — Dispatch Tracker</div>
-            <button onclick="closeRiderDispatchPopup()" style="background:none; border:none; font-size:20px; cursor:pointer; color:#6b7280; line-height:1;">✕</button>
+            <div style="display:flex; align-items:center; gap:8px;">
+                <button id="riderMiniMapBtn" onclick="toggleRiderMiniMap()" style="font-size:12px; font-weight:600; color:#2563eb; background:#eff6ff; border:1px solid #bfdbfe; padding:5px 10px; border-radius:6px; cursor:pointer;">🗺️ Map</button>
+                <button onclick="closeRiderDispatchPopup()" style="background:none; border:none; font-size:20px; cursor:pointer; color:#6b7280; line-height:1;">✕</button>
+            </div>
+        </div>
+        <div id="riderMiniMapPanel" style="display:none; border-bottom:1px solid #f3f4f6;">
+            <div style="display:flex; justify-content:space-between; align-items:center; padding:6px 16px;">
+                <div id="riderMiniMapLegend" style="font-size:11px; color:#6b7280;">🔵 Rider · 🔴 Next stop · 🟠 Pending · 🟢 Delivered</div>
+                <button onclick="loadRiderMiniMap(window._riderDispatchCtx.riderId, window._riderDispatchCtx.ongoing)" style="font-size:11px; color:#374151; background:#f3f4f6; border:1px solid #e5e7eb; padding:3px 8px; border-radius:5px; cursor:pointer;">↻ Refresh</button>
+            </div>
+            <div id="riderMiniMap" style="height:320px; width:100%; background:#eef2f7;"></div>
+            <div id="riderMiniMapNote" style="padding:6px 16px; font-size:11px; color:#6b7280;"></div>
         </div>
         ${liveHtml}
         ${deliveredHtml}
+        ${renderDeliveredDetail(delivered, !!ongoing)}
         <div style="padding:10px 16px; text-align:right; border-top:1px solid #f3f4f6;">
             <a href="/riders-map" style="font-size:12px; color:#2563eb; text-decoration:none;">Open full Dispatch Tracker →</a>
         </div>
     `;
+}
+
+/* ============ Dispatch Tracker popup: delivered-detail + mini-map ============ */
+
+// Leaflet map instance for the popup's mini-map (torn down on close / re-open).
+let _riderMiniMapInstance = null;
+
+// Local YYYY-MM-DD (device timezone), unlike toISOString() which is UTC.
+function localTodayStr() {
+    const d = new Date();
+    const p = n => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+}
+
+// Collapsible "Delivered today" section showing, per order: delivery time, whether
+// it was on time vs the dispatched ETA, and whether it was delivered at the
+// customer's verified location (with distance). All fields already come back from
+// the dispatch-report endpoint — this is presentation only.
+function renderDeliveredDetail(delivered, hasOngoing) {
+    if (!delivered || !delivered.total_orders) return '';
+
+    const onTime = delivered.eta_total > 0
+        ? `${delivered.eta_on_time}/${delivered.eta_total} on time`
+        : 'no ETAs set';
+    const atVerified = delivered.has_verified_count > 0
+        ? `${delivered.delivered_at_verified_count}/${delivered.has_verified_count} at verified location`
+        : 'no saved locations';
+
+    // Default collapsed while a dispatch is still live (keeps the live view on top);
+    // expanded once the rider is done for the day — that's when you review it.
+    const collapsed = !!hasOngoing;
+    const caret = collapsed ? '▸' : '▾';
+    const bodyDisplay = collapsed ? 'none' : 'block';
+
+    const batches = delivered.dispatch_batches || [];
+    let wavesHtml = batches.map((b, i) => {
+        const rows = (b.orders || []).map(o => deliveredOrderRow(o)).join('');
+        const waveOnTime = b.eta_total > 0 ? ` · ${b.eta_on_time}/${b.eta_total} on time` : '';
+        return `<div style="margin-top:8px; border:1px solid #e5e7eb; border-radius:8px; overflow:hidden;">
+            <div style="background:#f9fafb; padding:5px 10px; font-size:11px; font-weight:600; color:#374151;">Wave ${i + 1} · dispatched ${b.dispatch_time_display || '—'}${waveOnTime}</div>
+            <div style="padding:2px 10px;">${rows}</div>
+        </div>`;
+    }).join('');
+
+    // Orders delivered that were never dispatched (a compliance gap worth seeing).
+    if (delivered.undispatched_group && delivered.undispatched_group.order_count > 0) {
+        const rows = (delivered.undispatched_group.orders || []).map(o => deliveredOrderRow(o)).join('');
+        wavesHtml += `<div style="margin-top:8px; border:1px solid #fed7aa; border-radius:8px; overflow:hidden;">
+            <div style="background:#fff7ed; padding:5px 10px; font-size:11px; font-weight:700; color:#9a3412;">⚠️ Delivered without dispatch · ${delivered.undispatched_group.order_count}</div>
+            <div style="padding:2px 10px;">${rows}</div>
+        </div>`;
+    }
+
+    return `<div style="padding:8px 16px 12px; border-top:1px solid #f3f4f6;">
+        <div onclick="toggleDeliveredBody(this)" style="cursor:pointer; display:flex; align-items:center; gap:6px; font-size:13px; font-weight:700; color:#166534;">
+            <span class="dt-caret">${caret}</span>
+            <span>✅ Delivered today — ${delivered.total_orders} orders · ${onTime} · ${atVerified}</span>
+        </div>
+        <div class="dt-delivered-body" style="display:${bodyDisplay};">${wavesHtml}</div>
+    </div>`;
+}
+
+function deliveredOrderRow(o) {
+    const seq = o.actual_sequence ? `<b>${o.actual_sequence}.</b> ` : '';
+    const name = (o.customer_name || '');
+    const time = o.delivered_at_display || '';
+
+    // On-time vs the dispatched ETA.
+    let etaChip;
+    if (o.eta_comparison) {
+        const on = o.eta_comparison.on_time;
+        etaChip = `<span style="font-size:10px; font-weight:700; padding:2px 6px; border-radius:5px; background:${on ? '#dcfce7' : '#fee2e2'}; color:${on ? '#166534' : '#991b1b'};">${on ? '✓ ' : '⏰ '}${o.eta_comparison.label}</span>`;
+    } else {
+        etaChip = `<span style="font-size:10px; padding:2px 6px; border-radius:5px; background:#f3f4f6; color:#6b7280;">no ETA</span>`;
+    }
+
+    // Delivered at the customer's verified location?
+    let locChip;
+    if (o.has_verified_location && o.has_delivery_gps) {
+        const d = o.verification_distance_m;
+        const dTxt = (d == null) ? '' : (d < 1000 ? `${d}m` : `${(d / 1000).toFixed(1)}km`);
+        if (o.delivered_at_verified) {
+            locChip = `<span style="font-size:10px; font-weight:700; padding:2px 6px; border-radius:5px; background:#dcfce7; color:#166534;">📍 verified${dTxt ? ` (${dTxt})` : ''}</span>`;
+        } else {
+            locChip = `<span style="font-size:10px; font-weight:700; padding:2px 6px; border-radius:5px; background:#fee2e2; color:#991b1b;">⚠️ ${dTxt} off</span>`;
+        }
+    } else if (o.has_verified_location && !o.has_delivery_gps) {
+        locChip = `<span style="font-size:10px; padding:2px 6px; border-radius:5px; background:#f3f4f6; color:#6b7280;">no GPS at delivery</span>`;
+    } else {
+        locChip = `<span style="font-size:10px; padding:2px 6px; border-radius:5px; background:#f3f4f6; color:#6b7280;">no saved location</span>`;
+    }
+
+    return `<div style="display:flex; justify-content:space-between; align-items:center; gap:8px; padding:5px 0; border-bottom:1px dashed #f0f0f0; font-size:12px;">
+        <div style="color:#374151; min-width:0; flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${seq}${o.order_number} — ${name}</div>
+        <div style="display:flex; align-items:center; gap:5px; white-space:nowrap;">
+            <span style="color:#6b7280; font-size:11px;">${time}</span>${etaChip}${locChip}
+        </div>
+    </div>`;
+}
+
+function toggleDeliveredBody(headerEl) {
+    const body = headerEl.parentElement.querySelector('.dt-delivered-body');
+    const caret = headerEl.querySelector('.dt-caret');
+    if (!body) return;
+    const hidden = body.style.display === 'none';
+    body.style.display = hidden ? 'block' : 'none';
+    if (caret) caret.textContent = hidden ? '▾' : '▸';
+}
+
+// Lazily load Leaflet (not on the orders page by default) using the SAME version +
+// integrity hashes the full riders-map page uses. Resolves once window.L is ready.
+function ensureLeafletLoaded() {
+    return new Promise((resolve, reject) => {
+        if (window.L && window.L.map) return resolve();
+        if (!document.getElementById('leaflet-css')) {
+            const link = document.createElement('link');
+            link.id = 'leaflet-css';
+            link.rel = 'stylesheet';
+            link.href = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.css';
+            link.integrity = 'sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=';
+            link.crossOrigin = '';
+            document.head.appendChild(link);
+        }
+        const existing = document.getElementById('leaflet-js');
+        if (existing) {
+            const t0 = Date.now();
+            const check = setInterval(() => {
+                if (window.L && window.L.map) { clearInterval(check); resolve(); }
+                else if (Date.now() - t0 > 8000) { clearInterval(check); reject(new Error('map library load timeout')); }
+            }, 100);
+            return;
+        }
+        const s = document.createElement('script');
+        s.id = 'leaflet-js';
+        s.src = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.js';
+        s.integrity = 'sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=';
+        s.crossOrigin = '';
+        s.onload = () => resolve();
+        s.onerror = () => reject(new Error('could not load map library'));
+        document.body.appendChild(s);
+    });
+}
+
+async function toggleRiderMiniMap() {
+    const panel = document.getElementById('riderMiniMapPanel');
+    const btn = document.getElementById('riderMiniMapBtn');
+    if (!panel) return;
+    const showing = panel.style.display !== 'none';
+    if (showing) {
+        panel.style.display = 'none';
+        if (btn) btn.textContent = '🗺️ Map';
+        return;
+    }
+    panel.style.display = 'block';
+    if (btn) btn.textContent = '🗺️ Hide map';
+    const ctx = window._riderDispatchCtx || {};
+    const note = document.getElementById('riderMiniMapNote');
+    if (note) note.textContent = 'Loading map…';
+    try {
+        await ensureLeafletLoaded();
+        await loadRiderMiniMap(ctx.riderId, ctx.ongoing);
+    } catch (e) {
+        if (note) note.textContent = 'Map unavailable: ' + e.message;
+    }
+}
+
+// Next stop = the first still-pending order (lowest priority) in the earliest live
+// dispatch wave. The ongoing batches only carry orders still out for delivery, so
+// the first order of the first batch is the rider's next drop.
+function computeNextStopOrderNumber(ongoing) {
+    if (!ongoing) return null;
+    const batches = ongoing.dispatch_batches || [];
+    for (const b of batches) {
+        const orders = b.orders || [];
+        if (orders.length) return orders[0].order_number;
+    }
+    return null;
+}
+
+async function loadRiderMiniMap(riderId, ongoing) {
+    const note = document.getElementById('riderMiniMapNote');
+    const mapDiv = document.getElementById('riderMiniMap');
+    if (!mapDiv) return;
+    try {
+        await ensureLeafletLoaded();
+    } catch (e) {
+        if (note) note.textContent = 'Map unavailable: ' + e.message;
+        return;
+    }
+    if (note) note.textContent = 'Loading…';
+
+    let data;
+    try {
+        const res = await fetch(`/orders/riders-map/${riderId}`, {
+            headers: { 'Accept': 'application/json', 'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').getAttribute('content') }
+        });
+        data = await res.json();
+        if (!data.success) throw new Error(data.message || 'Failed');
+    } catch (e) {
+        if (note) note.textContent = 'Could not load location data.';
+        return;
+    }
+
+    if (_riderMiniMapInstance) { try { _riderMiniMapInstance.remove(); } catch (e) {} _riderMiniMapInstance = null; }
+    _riderMiniMapInstance = L.map(mapDiv).setView([33.6844, 73.0479], 12);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { attribution: '© OpenStreetMap contributors' }).addTo(_riderMiniMapInstance);
+
+    const bounds = [];
+    const nextStop = computeNextStopOrderNumber(ongoing);
+    let riderLL = null, nextLL = null, pendingWithLoc = 0;
+
+    const rc = data.rider && data.rider.current_location;
+    if (rc) {
+        riderLL = [rc.latitude, rc.longitude];
+        const riderIcon = L.divIcon({
+            className: '',
+            html: `<div style="width:22px; height:22px; background:#3b82f6; border:3px solid #fff; border-radius:50%; box-shadow:0 2px 8px rgba(59,130,246,0.5);"></div>`,
+            iconSize: [22, 22], iconAnchor: [11, 11]
+        });
+        L.marker(riderLL, { icon: riderIcon }).addTo(_riderMiniMapInstance)
+            .bindPopup(`<b>🏍️ ${data.rider.name}</b><br>Last seen: ${rc.age || ''}`);
+        bounds.push(riderLL);
+    }
+
+    (data.orders || []).forEach(o => {
+        if (!o.location) return;
+        const delivered = ['delivered', 'completed'].includes(o.status);
+        const isNext = nextStop && o.order_number === nextStop;
+        if (!delivered) pendingWithLoc++;
+        let color = delivered ? '#10b981' : '#f59e0b';
+        if (isNext) color = '#ef4444';
+        const ll = [o.location.latitude, o.location.longitude];
+        const label = isNext ? 'NEXT' : (delivered ? '✓' : '📦');
+        const icon = L.divIcon({
+            className: '',
+            html: `<div style="min-width:26px; height:26px; padding:0 4px; background:${color}; border:2px solid #fff; border-radius:6px; display:flex; align-items:center; justify-content:center; color:#fff; font-size:${isNext ? '9px' : '13px'}; font-weight:700; box-shadow:0 2px 6px rgba(0,0,0,0.25);">${label}</div>`,
+            iconSize: [30, 30], iconAnchor: [15, 15]
+        });
+        const eta = o.estimated_delivery_at_display ? `<br>🕒 ETA ${o.estimated_delivery_at_display}` : '';
+        L.marker(ll, { icon }).addTo(_riderMiniMapInstance)
+            .bindPopup(`<b>${o.order_number}</b>${isNext ? ' · <span style="color:#ef4444;">NEXT</span>' : ''}<br>${o.customer_name}<br>${o.total || ''}${eta}`);
+        bounds.push(ll);
+        if (isNext) nextLL = ll;
+    });
+
+    // Straight guide-line from the rider to the next stop (no Google routing call).
+    if (riderLL && nextLL) {
+        L.polyline([riderLL, nextLL], { color: '#ef4444', weight: 2, dashArray: '6,6', opacity: 0.7 }).addTo(_riderMiniMapInstance);
+    }
+
+    if (bounds.length >= 2) _riderMiniMapInstance.fitBounds(bounds, { padding: [30, 30], maxZoom: 15 });
+    else if (bounds.length === 1) _riderMiniMapInstance.setView(bounds[0], 14);
+
+    // The panel was hidden when the map initialised; recompute tile layout now visible.
+    setTimeout(() => { if (_riderMiniMapInstance) _riderMiniMapInstance.invalidateSize(); }, 60);
+
+    if (note) {
+        const bits = [];
+        if (!rc) bits.push('No live GPS for this rider.');
+        if (pendingWithLoc === 0) bits.push('No pending orders with a mapped location.');
+        note.textContent = bits.join(' ');
+    }
 }
 
 /**
