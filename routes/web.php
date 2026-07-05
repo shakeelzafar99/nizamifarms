@@ -155,6 +155,9 @@ Route::middleware(['auth'])->group(function () {
     Route::get('/orders/riders-map/all-open-orders', [\App\Http\Controllers\API\RiderController::class, 'getAllOpenOrdersForMap'])->name('orders.riders-map.all-open');
     Route::get('/orders/riders-map/delivery-history', [\App\Http\Controllers\API\RiderController::class, 'getDeliveryHistory'])->name('orders.riders-map.history');
     Route::get('/orders/riders-map/dispatch-report', [\App\Http\Controllers\API\RiderController::class, 'getDateDeliveryReport'])->name('orders.riders-map.dispatch-report');
+    // Rider Reports (Phase 2) — real-time Manager Issues + Report Card data
+    Route::get('/orders/riders-map/reports', [\App\Http\Controllers\CRM\RiderReportsController::class, 'index'])->name('orders.riders-map.reports');
+    Route::get('/orders/riders-map/timeline', [\App\Http\Controllers\CRM\RiderReportsController::class, 'timeline'])->name('orders.riders-map.timeline');
     Route::get('/orders/riders-map/live-status', [\App\Http\Controllers\API\RiderController::class, 'getRidersLiveStatus'])->name('orders.riders-map.live-status');
     Route::get('/orders/riders-map/riders-for-history', [\App\Http\Controllers\API\RiderController::class, 'getRidersForHistory'])->name('orders.riders-map.riders-for-history');
     Route::get('/orders/riders-map/rider-history/{riderId}', [\App\Http\Controllers\API\RiderController::class, 'getRiderDeliveryHistory'])->name('orders.riders-map.rider-delivery-history');
@@ -198,6 +201,10 @@ Route::middleware(['auth'])->group(function () {
     Route::get('/orders/{id}/shop-payments', [OrderController::class, 'getQurbaniPayments'])->name('orders.shop-payments');
     Route::post('/orders/{id}/shop-payments', [OrderController::class, 'addShopPayment'])->name('orders.shop-payments.add');
     Route::delete('/orders/{id}/shop-payments/{paymentId}', [OrderController::class, 'deleteQurbaniPayment'])->name('orders.shop-payments.delete');
+    // Bulk shop payment: split ONE online transfer across several selected shop
+    // invoices (oldest-first, remainder on the newest). Literal path — declared
+    // here so it can never be captured by an /orders/{id}/... pattern.
+    Route::post('/orders/bulk-shop-payments', [OrderController::class, 'bulkShopPayment'])->name('orders.shop-payments.bulk');
     // Save PAID-stamp overrides (sending bank, stamp date, ref mode) without
     // touching any payment row. Used by the "✏️ Edit stamp" popover on
     // invoice.blade.

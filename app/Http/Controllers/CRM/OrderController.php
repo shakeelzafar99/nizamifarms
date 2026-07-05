@@ -723,6 +723,52 @@ class OrderController extends Controller
     }
 
     /**
+     * Bulk shop payment (web). Split ONE online transfer across several selected
+     * shop invoices. The FIFO allocation + validation + ledger posting all live
+     * in the shared ShopBulkPaymentService so web and the mobile API behave
+     * identically. This method is a thin validate-and-delegate wrapper.
+     */
+    public function bulkShopPayment(\Illuminate\Http\Request $request)
+    {
+        try {
+            $user = \Auth::user();
+            if (!$user) {
+                return response()->json(['success' => false, 'message' => 'Unauthorized'], 401);
+            }
+
+            $validated = $request->validate([
+                'order_ids'            => 'required|array|min:1',
+                'order_ids.*'          => 'required|integer',
+                'amount'               => 'required|numeric|min:0.01',
+                // Online only — bank is mandatory for per-bank reconciliation.
+                'receiving_account_id' => 'required|integer|exists:t_fin_online_receiving_accounts,id',
+                'payment_date'         => 'nullable|date|before_or_equal:today',
+                'reference'            => 'nullable|string|max:255',
+                'notes'                => 'nullable|string|max:1000',
+                'sending_bank'         => 'nullable|string|max:100',
+                'stamp_date'           => 'nullable|date',
+                'stamp_ref_mode'       => 'nullable|string|in:reference,customer_name,blank',
+            ]);
+
+            $result = app(\App\Services\Payments\ShopBulkPaymentService::class)->execute($validated, $user);
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Recorded Rs. ' . number_format($result['total_amount'], 2) . ' across ' . $result['count'] . ' invoice(s).',
+                'result'  => $result,
+            ]);
+        } catch (\Illuminate\Validation\ValidationException $e) {
+            return response()->json(['success' => false, 'message' => $e->errors()], 422);
+        } catch (\App\Exceptions\ShopBulkPaymentException $e) {
+            // Business-rule failure — safe to show the message verbatim.
+            return response()->json(['success' => false, 'message' => $e->getMessage()], 422);
+        } catch (\Exception $e) {
+            \Log::error('Failed to add bulk shop payment', ['error' => $e->getMessage()]);
+            return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
+        }
+    }
+
+    /**
      * Shared core for "immediate" order payments (currently the Shop online
      * flow). Records the payment row + PAID-stamp metadata, posts a paired
      * auto-approved `order_payment` ledger entry, applies account balances,
@@ -3884,8 +3930,12 @@ class OrderController extends Controller
             return redirect()->route('orders.index')
                 ->with('error', 'You do not have permission to view Riders Map.');
         }
-        
-        return view('pages.riders-map.index');
+
+        // Rider Reports (Phase 2) — the ⚠ Issues tab is shown only to users
+        // holding the view_rider_reports permission (admins / Taimur / supervisor2).
+        $canViewRiderReports = $user->hasPermission('view_rider_reports');
+
+        return view('pages.riders-map.index', compact('canViewRiderReports'));
     }
 
     /**

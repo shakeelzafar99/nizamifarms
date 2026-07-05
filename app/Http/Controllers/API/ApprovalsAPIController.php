@@ -453,6 +453,22 @@ class ApprovalsAPIController extends Controller
                         \App\Models\FIN\LedgerModel::STATUS_PENDING_L2,
                     ]);
             })
+            // Jul-2026 (owner decision): fully-paid orders linger for 7 days
+            // (so a mistaken payment can still be voided), then drop off the
+            // Shop tab. "Recent" = an active payment row recorded in the last
+            // 7 days. NULL payment_status counts as not-paid. MIRROR of the
+            // web ApprovalController::getOnlineShopItems clause.
+            ->where(function ($q) {
+                $q->whereNull('payment_status')
+                    ->orWhere('payment_status', '!=', 'paid')
+                    ->orWhereExists(function ($e) {
+                        $e->select(\DB::raw(1))
+                            ->from('t_crm_order_payments')
+                            ->whereColumn('t_crm_order_payments.order_id', 't_crm_prod_order.id')
+                            ->where('t_crm_order_payments.status', 'active')
+                            ->where('t_crm_order_payments.created_at', '>=', now()->subDays(7));
+                    });
+            })
             ->with('customer:id,first_name,last_name,company,phone,phone_original')
             ->orderByRaw('CASE WHEN payment_status = ? THEN 0 WHEN payment_status = ? THEN 1 ELSE 2 END', ['unpaid', 'partial'])
             // NOTE: delivery_date is a computed accessor (from status history),

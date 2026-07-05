@@ -1815,32 +1815,49 @@ document.addEventListener('DOMContentLoaded', function(){
       nfDateActive();
     }
 
-    // (b) Full-width SECOND ROW, two columns:
-    //   LEFT  = status cards (top) + the search/filters row beneath them
-    //   RIGHT = Riders-Live panel  (wraps below the left column on narrow screens)
-    // Runtime moves (parse-safe) into the header's full-width padding div, AFTER
-    // the tabs row. Left-aligned + wrapping means nothing can be pushed off-screen.
+    // (b) TOP layout — two columns that share the FULL header height so the
+    //   Riders-Live panel TOP-ALIGNS with the tabs / Create-Order row. Previously
+    //   riders sat in a second row, leaving an empty band above them and pushing the
+    //   table down; top-aligning pulls everything up and reclaims that vertical space.
+    //     LEFT  = [tabs + actions row] + status cards + search/filters (stacked)
+    //     RIGHT = Riders-Live panel, top-aligned (wraps below on narrow screens)
+    //   All runtime node-moves (parse-safe); every id + inline handler is preserved.
     var statusCards = document.getElementById('openOrdersStatusCards');
     var riders = document.getElementById('nfRiderCards');
     var host = document.querySelector('.sticky.top-0.z-30 .px-4');
     var search = document.getElementById('orderSearch');
     var filterRow = search ? search.closest('.flex.flex-wrap.items-center.gap-3') : null;
-    if (statusCards && host && !document.getElementById('nfRow2')) {
-      var row2 = document.createElement('div');
-      row2.id = 'nfRow2';
-      // flex-start (not space-between) keeps the riders panel right next to the left
-      // column — near the centre — instead of shoved to the far-right edge.
-      row2.style.cssText = 'display:flex;align-items:flex-start;justify-content:flex-start;gap:24px;flex-wrap:wrap;padding:2px 0 8px;';
+    if (statusCards && host && !document.getElementById('nfTopFlex')) {
+      // The existing tabs/actions row = the host's direct child that holds the tabs.
+      var tabsAnchor = document.querySelector('.flex.space-x-1.bg-gray-100');
+      var tabsRow = tabsAnchor ? tabsAnchor.closest('.px-4 > *') : null;
 
-      // LEFT column — status cards, then the filters row directly under them. Bounded
-      // width (doesn't grow to fill) so it can't push the riders panel off to the right.
+      var topFlex = document.createElement('div');
+      topFlex.id = 'nfTopFlex';
+      topFlex.style.cssText = 'display:flex;align-items:flex-start;justify-content:flex-start;gap:24px;flex-wrap:wrap;padding:2px 0 8px;';
+
+      // LEFT column — tabs row on top, then status cards, then the filters row.
+      // Bounded width so the Riders panel keeps its (owner-approved) centre-ish
+      // position and the tabs stay on one line.
       var left = document.createElement('div');
-      left.id = 'nfRow2Left';
-      left.style.cssText = 'display:flex;flex-direction:column;gap:10px;flex:0 1 680px;max-width:720px;min-width:0;';
+      left.id = 'nfTopLeft';
+      left.style.cssText = 'display:flex;flex-direction:column;gap:10px;flex:0 1 700px;max-width:740px;min-width:0;';
+
+      if (tabsRow) {
+        tabsRow.style.margin = '0';
+        // The old empty right slot (#nfHeaderRight) inside the tabs row is a flex-1
+        // spacer; in the narrower left column it steals width and wraps the tabs onto
+        // two lines. It's unused now — hide it so the tabs keep a single line.
+        var hrSlot = document.getElementById('nfHeaderRight');
+        if (hrSlot) hrSlot.style.display = 'none';
+        left.appendChild(tabsRow);
+      }
+
       statusCards.style.margin = '0'; statusCards.style.minWidth = '0';
       var scont = document.getElementById('statusCardsContainer');
       if (scont) { scont.style.overflowX = 'auto'; scont.style.flexWrap = 'nowrap'; scont.style.paddingBottom = '4px'; }
       left.appendChild(statusCards);
+
       if (filterRow) {
         var oldWrapper = filterRow.parentElement;   // padded wrapper that held only the filter row
         filterRow.style.justifyContent = 'flex-start';
@@ -1853,12 +1870,13 @@ document.addEventListener('DOMContentLoaded', function(){
         // inside that bar, so hiding the bar would hide the table.
         if (oldWrapper && oldWrapper.children.length === 0) oldWrapper.style.display = 'none';
       }
-      row2.appendChild(left);
+      topFlex.appendChild(left);
 
-      // RIGHT column — the Riders-Live panel.
-      if (riders) { riders.style.margin = '0'; riders.style.flex = '0 1 auto'; row2.appendChild(riders); }
+      // RIGHT column — the Riders-Live panel, TOP-aligned with the tabs row.
+      if (riders) { riders.style.margin = '0'; riders.style.flex = '0 1 auto'; topFlex.appendChild(riders); }
 
-      host.appendChild(row2);
+      // Place the whole two-column block at the very TOP of the header.
+      host.insertBefore(topFlex, host.firstChild);
     }
   } catch (e) { /* leave the row as-is on any failure */ }
 });
@@ -2967,7 +2985,9 @@ function viewOrderDetails(orderId) {
                     }
                     
                     var lineTotalDisplay = isFreeItem ? '<span style="color: #16a34a; font-weight: 700;">FREE</span>' : formatCurrency(lineTotal, order.currency);
-                    var qtySrcBadge = it.quantity_source === 'barcode' ? ' <span title="Set by barcode scan" style="display:inline-block; padding:1px 5px; background:#dcfce7; color:#15803d; border-radius:3px; font-size:9px; font-weight:700;">🔖</span>' : it.quantity_source === 'manual' ? ' <span title="Set manually" style="display:inline-block; padding:1px 5px; background:#f1f5f9; color:#64748b; border-radius:3px; font-size:9px; font-weight:700;">✏️</span>' : '';
+                    var scannedKgView = it.quantity_source === 'barcode' ? decodeScannedWeightKg(it.quantity_scanned_barcode) : null;
+                    var scanTitleView = scannedKgView !== null ? ('Set by barcode scan — scanned ' + scannedKgView.toFixed(3) + ' kg') : 'Set by barcode scan';
+                    var qtySrcBadge = it.quantity_source === 'barcode' ? ' <span title="' + scanTitleView + '" style="display:inline-block; padding:1px 5px; background:#dcfce7; color:#15803d; border-radius:3px; font-size:9px; font-weight:700;">🔖</span>' : it.quantity_source === 'manual' ? ' <span title="Set manually" style="display:inline-block; padding:1px 5px; background:#f1f5f9; color:#64748b; border-radius:3px; font-size:9px; font-weight:700;">✏️</span>' : '';
                     html += '<td style="padding: 8px; border-bottom: 1px solid #f3f4f6; text-align:right;">' + qty + qtySrcBadge + '</td>' +
                         '<td style="padding: 8px; border-bottom: 1px solid #f3f4f6; text-align:right;">' + (isFreeItem ? '<s style="color:#9ca3af;">' + formatCurrency(unit, order.currency) + '</s>' : formatCurrency(unit, order.currency)) + '</td>' +
                         '<td style="padding: 8px; border-bottom: 1px solid #f3f4f6; text-align:right; font-weight:600;">' + lineTotalDisplay + '</td>' +
@@ -4992,6 +5012,7 @@ function loadEditForm(order) {
                             </div>
                             ${item.quantity_source ? `<div style="grid-column: 2 / -1; margin-top: 2px; font-size: 11px; display: flex; align-items: center; gap: 5px; flex-wrap: wrap;">
                                 <span style="font-weight: 600; color: ${item.quantity_source === 'barcode' ? '#15803d' : '#64748b'};">${item.quantity_source === 'barcode' ? '🔖 Qty set by barcode scan' : '✏️ Qty set manually'}</span>
+                                ${scannedWeightBadge(item, index)}
                                 ${item.quantity_updated_at ? `<span style="color:#9ca3af;">· ${new Date(item.quantity_updated_at).toLocaleString('en-GB',{day:'2-digit',month:'short',year:'numeric',hour:'2-digit',minute:'2-digit'})}</span>` : ''}
                                 ${(item.qty_updater && item.qty_updater.fullname) ? `<span style="color:#9ca3af;">· by ${item.qty_updater.fullname}</span>` : ''}
                             </div>` : ''}
@@ -5366,6 +5387,7 @@ function loadEditForm(order) {
         if (order.line_items) {
             order.line_items.forEach((item, index) => {
                 showWeightFactorFeedbackOnLoad(index);
+                populateScanConversion(index, item);
             });
         }
     }, 500); // Wait for weight factors to be loaded
@@ -5430,6 +5452,43 @@ function getWeightFactorForLineItem(productId, productName) {
         return window.lineItemWeightFactors[productName];
     }
     return 1; // Default
+}
+
+// ⭐ Barcode-qty: decode the stored weight-embedded EAN-13 (in-store flag '2' +
+// 6-digit PLU + 5-digit grams + check) so the edit/view screens can show what the
+// scale actually weighed. Mirrors mobile utils/barcodeDecode.js. Returns kg or null.
+function decodeScannedWeightKg(raw) {
+    var code = String(raw == null ? '' : raw).replace(/\D/g, '');
+    if (code.length !== 13 || code.charAt(0) !== '2') return null;
+    var grams = parseInt(code.substring(7, 12), 10);
+    if (isNaN(grams)) return null;
+    return grams / 1000;
+}
+
+// Inline badge fragment for a barcode-set line: "· scanned 2.050 kg" plus an empty
+// span that populateScanConversion() later fills with "→ applied (÷factor)". Returns
+// '' for non-barcode lines or a blank/unreadable barcode (e.g. older scans).
+function scannedWeightBadge(item, index) {
+    if (!item || item.quantity_source !== 'barcode') return '';
+    var kg = decodeScannedWeightKg(item.quantity_scanned_barcode);
+    if (kg === null) return '';
+    return '<span style="color:#15803d; font-weight:600;">· scanned ' + kg.toFixed(3) + ' kg</span>' +
+           '<span id="scanConv_' + index + '" style="color:#15803d; font-weight:600;"></span>';
+}
+
+// Once weight factors have loaded (same 500ms timing as showWeightFactorFeedbackOnLoad),
+// append "→ applied (÷factor)" to a barcode line whose product carries a weight factor
+// ≠ 1. No-op for factor-1 or non-barcode lines. Never throws.
+function populateScanConversion(index, item) {
+    try {
+        var span = document.getElementById('scanConv_' + index);
+        if (!span || !item || item.quantity_source !== 'barcode') return;
+        var wf = getWeightFactorForLineItem(item.product_id, item.name || item.title);
+        if (wf && wf !== 1) {
+            var applied = parseFloat(item.quantity || 0).toFixed(2);
+            span.textContent = ' → ' + applied + ' applied (÷' + wf + ')';
+        }
+    } catch (e) {}
 }
 
 function showWeightFactorFeedbackOnLoad(index) {

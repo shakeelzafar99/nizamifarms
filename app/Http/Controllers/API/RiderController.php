@@ -4326,7 +4326,11 @@ class RiderController extends Controller
                 
                 return response()->json([
                     'success' => false,
-                    'message' => 'Not checked in or already checked out'
+                    'message' => 'Not checked in or already checked out',
+                    // ⭐ Explicit code so the app can distinguish a genuine "off duty"
+                    // rejection from a transient error and self-stop tracking after a
+                    // sustained streak (kills the forgotten-checkout "zombie" service).
+                    'code' => 'not_on_duty',
                 ], 400);
             }
 
@@ -6569,7 +6573,7 @@ class RiderController extends Controller
                         (float)$order->verified_lat, (float)$order->verified_lng
                     );
                     $verificationDistance = $dist;
-                    $deliveredAtVerified = $dist <= 1000; // within 1km
+                    $deliveredAtVerified = $dist <= (float) config('rider_reports.at_verified_m', 500); // unified rule
                 }
 
                 $riderMap[$riderId]['orders'][] = [
@@ -6990,6 +6994,19 @@ class RiderController extends Controller
             }
         }
 
+        // ⭐ SINGLE SOURCE OF TRUTH for "left without dispatch". This live board, the
+        //    dispatch-tracker popup and the mobile alert/banner ALL derive the flag
+        //    from detectLeftWithoutDispatch() — computed once here, per rider — so no
+        //    surface can ever disagree (the divergence that made a mid-run rider show
+        //    the red warning on web while the mobile alert correctly stayed silent).
+        //    Fail-open: if the detector errors, nobody is flagged (never a false alarm).
+        $leftFlags = [];
+        try {
+            $leftFlags = $this->detectLeftWithoutDispatch($riderIds);
+        } catch (\Throwable $e) {
+            \Log::warning('buildOngoingDispatchTracking: left-without-dispatch check failed (non-fatal)', ['error' => $e->getMessage()]);
+        }
+
         $isCashMethod = fn($m) => in_array(strtolower($m ?? 'cash'), ['cash', 'cash_on_delivery', 'cod']);
 
         $out = [];
@@ -7030,25 +7047,29 @@ class RiderController extends Controller
                 $returnInfo = $this->getReturnToOfficeInfo((int) $rid, $officeLat, $officeLng, $radiusMeters, $useGoogleEta);
             }
 
-            // Status priority: returning > warnings/waits > on route.
+            // Status priority. The "left without dispatch" decision is DELEGATED to
+            // the single canonical rule ($leftFlags, from detectLeftWithoutDispatch)
+            // so this board / the popup / the mobile alert can never disagree.
+            //   Ordering: left-without-dispatch (alarm) > returning > on-route/at-office
+            //             (has a dispatched wave) > waiting/away (has orders, no wave).
+            // Key consequence — the fix for the reported confusion: a rider MID-RUN
+            // (has pending dispatched OFD) is never "left without dispatch", even with
+            // next-wave orders queued, because the canonical rule requires ZERO pending
+            // dispatched. Those queued orders still surface via undispatched_count.
             $status = 'idle';
-            if ($returnInfo) {
+            $flaggedLeft = !empty($leftFlags[(int) $rid]['flagged']);
+            if ($flaggedLeft) {
+                $status = 'left_without_dispatch';
+            } elseif ($returnInfo) {
                 $status = 'returning';
-            } elseif ($undispatched->count() > 0) {
-                if ($atOffice) {
-                    $status = 'waiting_at_office';
-                } elseif ($gpsFresh && $officeLat && $officeLng
-                    && $this->riderWasAtOfficeToday((int) $rid, $officeLat, $officeLng, $radiusMeters)) {
-                    // Genuinely left the office (was here earlier today, now away).
-                    $status = 'left_without_dispatch';
-                } elseif ($gpsFresh) {
-                    // Away with fresh GPS but never came to the office today.
-                    $status = 'away_unknown';
-                } else {
-                    $status = 'away_unknown';
-                }
             } elseif ($dispatched->count() > 0) {
+                // Actively carrying a dispatched wave (queued next-wave orders, if any,
+                // are reported separately as undispatched_count — not as an alarm).
                 $status = $atOffice ? 'at_office' : 'on_route';
+            } elseif ($undispatched->count() > 0) {
+                // Has orders to dispatch but isn't flagged: at the office (about to
+                // dispatch) or away without a confirmed office-departure.
+                $status = $atOffice ? 'waiting_at_office' : 'away_unknown';
             }
 
             // Dispatched OFD orders grouped by wave (eta_calculated_at).
@@ -9742,10 +9763,15 @@ class RiderController extends Controller
             ->pluck('cnt', 'rider_id')
             ->toArray();
 
-        // Dispatched orders delivered TODAY — a rider who already completed a
-        // dispatch and is away is "returning for next dispatch", not "forgot".
+        // Dispatched orders delivered TODAY, with the LATEST such delivery time per
+        // rider. A rider who completed a wave and is away is "returning for next
+        // dispatch" — UNLESS he already came back to the office (a GPS fix at the
+        // office AFTER this last-delivery time) and left again without dispatching,
+        // which is the "forgot the next wave" case handled below.
         $today = now()->format('Y-m-d');
-        $deliveredDispatched = \DB::table('t_crm_prod_order as o')
+        $deliveredDispatched = [];
+        $lastDispatchedDeliveryAt = [];
+        $ddRows = \DB::table('t_crm_prod_order as o')
             ->join('t_crm_order_status_history as osh', function ($j) use ($today) {
                 $j->on('o.id', '=', 'osh.order_id')
                   ->where('osh.status_code', '=', 'delivered')
@@ -9753,10 +9779,15 @@ class RiderController extends Controller
             })
             ->whereIn('o.assigned_rider_user_id', $riderIds)
             ->whereNotNull('o.eta_calculated_at')
-            ->select('o.assigned_rider_user_id as rider_id', \DB::raw('COUNT(DISTINCT o.id) as cnt'))
+            ->select('o.assigned_rider_user_id as rider_id',
+                \DB::raw('COUNT(DISTINCT o.id) as cnt'),
+                \DB::raw('MAX(osh.changed_at) as last_delivery_at'))
             ->groupBy('o.assigned_rider_user_id')
-            ->pluck('cnt', 'rider_id')
-            ->toArray();
+            ->get();
+        foreach ($ddRows as $r) {
+            $deliveredDispatched[$r->rider_id] = (int) $r->cnt;
+            $lastDispatchedDeliveryAt[$r->rider_id] = $r->last_delivery_at;
+        }
 
         // Latest fresh GPS point per rider (desc order → first seen = latest).
         $latestByRider = [];
@@ -9794,21 +9825,44 @@ class RiderController extends Controller
             // separately by the return-to-office logic.
             $hasPendingDispatched = (int) ($pendingDispatched[$rid] ?? 0) > 0;
             $hasDeliveredDispatched = (int) ($deliveredDispatched[$rid] ?? 0) > 0;
-            if ($cnt > 0 && !$hasPendingDispatched && !$hasDeliveredDispatched && isset($latestByRider[$rid])) {
+            // Never flag a rider MID-RUN (still carrying a dispatched wave) — he's
+            // working, not "forgot". Requires undispatched OFD + fresh GPS.
+            if ($cnt > 0 && !$hasPendingDispatched && isset($latestByRider[$rid])) {
                 $pt = $latestByRider[$rid];
                 $dist = $this->haversineDistance($officeLat, $officeLng, (float) $pt->latitude, (float) $pt->longitude);
                 $entry['distance_meters'] = (int) round($dist);
                 if ($dist > $radiusMeters) {
-                    // Only flag a genuine "left the office" transition: the rider
-                    // must have been AT the office earlier today. A rider who
-                    // started the day away (e.g. from home) is not "forgot".
-                    $entry['was_at_office_today'] = $this->riderWasAtOfficeToday($rid, $officeLat, $officeLng, $radiusMeters);
-                    if ($entry['was_at_office_today']) {
-                        $entry['flagged'] = true;
+                    if (!$hasDeliveredDispatched) {
+                        // FIRST run — dispatched nothing yet today. Flag a genuine
+                        // "left the office" transition: he must have been AT the
+                        // office earlier today (someone who started from home is not
+                        // "forgot").
+                        $entry['was_at_office_today'] = $this->riderWasAtOfficeToday($rid, $officeLat, $officeLng, $radiusMeters);
+                        if ($entry['was_at_office_today']) {
+                            $entry['flagged'] = true;
+                            $entry['context'] = 'first_run';
+                        }
+                    } else {
+                        // Already completed a wave today. This is "forgot the NEXT
+                        // wave" only if he RETURNED to the office after his last
+                        // delivery and then left again (a fresh departure without
+                        // dispatching). A rider still on his way back has NOT been to
+                        // the office since his last delivery → that stays "returning".
+                        $since = $lastDispatchedDeliveryAt[$rid] ?? null;
+                        if ($since && $this->riderWasAtOfficeSince((int) $rid, $officeLat, $officeLng, $radiusMeters, (string) $since)) {
+                            $entry['flagged'] = true;
+                            $entry['context'] = 'returned_then_left';
+                        }
                     }
                 }
             }
             $result[$rid] = $entry;
+
+            // Persist the departure the first time it is seen (no cron — logged by
+            // whichever surface runs the detector). Idempotent + fail-safe.
+            if (!empty($entry['flagged'])) {
+                $this->logMissedDispatch((int) $rid, $entry);
+            }
         }
 
         return $result;
@@ -9833,6 +9887,121 @@ class RiderController extends Controller
             ->whereBetween('latitude', [$officeLat - $latDelta, $officeLat + $latDelta])
             ->whereBetween('longitude', [$officeLng - $lngDelta, $officeLng + $lngDelta])
             ->exists();
+    }
+
+    /**
+     * Was the rider AT the office at any point strictly AFTER $since?
+     *
+     * Distinguishes "genuinely still returning" (no office fix since his last
+     * delivery) from "returned to the office and then left again without
+     * dispatching the next wave" (an office fix exists after the last delivery).
+     * Same cheap square-bounding-box existence check as riderWasAtOfficeToday.
+     */
+    private function riderWasAtOfficeSince(int $riderId, float $officeLat, float $officeLng, int $radiusMeters, string $since): bool
+    {
+        $latDelta = $radiusMeters / 111320.0;
+        $lngDelta = $radiusMeters / (111320.0 * max(0.1, cos(deg2rad($officeLat))));
+        return \DB::table('t_ops_rider_location')
+            ->where('user_id', $riderId)
+            ->where('captured_at', '>', $since)
+            ->whereBetween('latitude', [$officeLat - $latDelta, $officeLat + $latDelta])
+            ->whereBetween('longitude', [$officeLng - $lngDelta, $officeLng + $lngDelta])
+            ->exists();
+    }
+
+    /**
+     * Estimate WHEN the rider actually left the office today: the first GPS fix
+     * that is OUTSIDE the office radius, captured after his last fix AT the office.
+     * Computed from the persisted GPS trail, so it is accurate even if the alert is
+     * only DETECTED (and logged) a little later. Best-effort → null if unknown.
+     */
+    private function estimateOfficeDepartureAt(int $riderId): ?string
+    {
+        try {
+            $office = $this->getPrimaryOfficeCoords();
+            if (!$office) {
+                return null;
+            }
+            $officeLat = (float) $office['lat'];
+            $officeLng = (float) $office['lng'];
+            $radiusMeters = 300;
+            $latDelta = $radiusMeters / 111320.0;
+            $lngDelta = $radiusMeters / (111320.0 * max(0.1, cos(deg2rad($officeLat))));
+            $today = now()->format('Y-m-d');
+
+            $lastOfficeAt = \DB::table('t_ops_rider_location')
+                ->where('user_id', $riderId)
+                ->whereDate('captured_at', $today)
+                ->whereBetween('latitude', [$officeLat - $latDelta, $officeLat + $latDelta])
+                ->whereBetween('longitude', [$officeLng - $lngDelta, $officeLng + $lngDelta])
+                ->max('captured_at');
+            if (!$lastOfficeAt) {
+                return null;
+            }
+
+            $firstAwayAt = \DB::table('t_ops_rider_location')
+                ->where('user_id', $riderId)
+                ->where('captured_at', '>', $lastOfficeAt)
+                ->where(function ($q) use ($officeLat, $officeLng, $latDelta, $lngDelta) {
+                    $q->whereNotBetween('latitude', [$officeLat - $latDelta, $officeLat + $latDelta])
+                      ->orWhereNotBetween('longitude', [$officeLng - $lngDelta, $officeLng + $lngDelta]);
+                })
+                ->min('captured_at');
+
+            return $firstAwayAt ?: $lastOfficeAt;
+        } catch (\Throwable $e) {
+            return null;
+        }
+    }
+
+    /**
+     * Persist a "left without dispatch" departure the FIRST time it is detected
+     * (issues report source). No cron: called by whichever surface runs
+     * detectLeftWithoutDispatch(). Idempotent (one row per rider/day via the unique
+     * key) and fail-safe: if the table is absent or anything errors, detection is
+     * never affected. Resolution ("who dispatched, when") is NOT stored here — it is
+     * derivable from the orders' eta_calculated_by / eta_calculated_at.
+     */
+    private function logMissedDispatch(int $riderId, array $entry): void
+    {
+        try {
+            if (!\Schema::hasTable('t_ops_dispatch_missed')) {
+                return;
+            }
+            $today = now()->format('Y-m-d');
+            $exists = \DB::table('t_ops_dispatch_missed')
+                ->where('rider_id', $riderId)
+                ->where('issue_date', $today)
+                ->exists();
+            if ($exists) {
+                return;
+            }
+
+            $orderIds = \DB::table('t_crm_prod_order')
+                ->where('assigned_rider_user_id', $riderId)
+                ->where('order_status', 'out_for_delivery')
+                ->whereNull('eta_calculated_at')
+                ->pluck('id')
+                ->all();
+
+            \DB::table('t_ops_dispatch_missed')->insertOrIgnore([
+                'rider_id'               => $riderId,
+                'issue_date'             => $today,
+                'left_at'                => $this->estimateOfficeDepartureAt($riderId),
+                'detected_at'            => now(),
+                'undispatched_count'     => (int) ($entry['undispatched_count'] ?? count($orderIds)),
+                'undispatched_order_ids' => json_encode(array_values($orderIds)),
+                'distance_meters'        => $entry['distance_meters'] ?? null,
+                'context'                => $entry['context'] ?? null,
+                'created_at'             => now(),
+            ]);
+        } catch (\Throwable $e) {
+            // Never let logging break the live detector.
+            try {
+                \Log::warning('logMissedDispatch failed (non-fatal)', ['rider_id' => $riderId, 'error' => $e->getMessage()]);
+            } catch (\Throwable $ignored) {
+            }
+        }
     }
 
     /**
@@ -9922,7 +10091,7 @@ class RiderController extends Controller
         // Must have delivered at least one DISPATCHED order today (i.e. there
         // genuinely was a dispatch that has now been completed).
         $today = now()->format('Y-m-d');
-        $deliveredDispatched = \DB::table('t_crm_prod_order as o')
+        $dd = \DB::table('t_crm_prod_order as o')
             ->join('t_crm_order_status_history as osh', function ($j) use ($today) {
                 $j->on('o.id', '=', 'osh.order_id')
                   ->where('osh.status_code', '=', 'delivered')
@@ -9930,9 +10099,20 @@ class RiderController extends Controller
             })
             ->where('o.assigned_rider_user_id', $riderId)
             ->whereNotNull('o.eta_calculated_at')
-            ->count();
-        if ($deliveredDispatched < 1) {
+            ->selectRaw('COUNT(*) as cnt, MAX(osh.changed_at) as last_delivery_at')
+            ->first();
+        if (!$dd || (int) $dd->cnt < 1) {
             return null; // No completed dispatch today.
+        }
+
+        // Mutual exclusion with "left without dispatch": if he has ALREADY returned
+        // to the office since that last delivery and is out again, he is NOT
+        // returning — he left again (that surfaces as left_without_dispatch). Keep
+        // them exclusive so every consumer agrees, incl. the mobile banner which
+        // suppresses the alert whenever a return_to_office ETA is present.
+        if (!empty($dd->last_delivery_at)
+            && $this->riderWasAtOfficeSince($riderId, $officeLat, $officeLng, $radiusMeters, (string) $dd->last_delivery_at)) {
+            return null;
         }
 
         // Precise ETA needs one (cached) Google Directions call. The live board
@@ -17723,8 +17903,8 @@ class RiderController extends Controller
                             $verifiedLocation['latitude'], $verifiedLocation['longitude']
                         );
                         $distanceKm = round($distance / 1000, 2);
-                        $isClose = $distanceKm <= 1.0; // Within 1km
-                        
+                        $isClose = $distance <= (float) config('rider_reports.at_verified_m', 500); // unified verified-pin rule
+
                         $locationVerification = [
                             'type' => 'verified',
                             'is_match' => $isClose,

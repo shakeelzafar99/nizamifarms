@@ -102,3 +102,6 @@ Schedule::command('location:auto-process')
     ->everyMinute()
     ->withoutOverlapping(2)
     ->runInBackground();
+
+// Rider Reports are computed REAL-TIME on open (RiderReportsController) — no
+// scheduled job, no stored tables, so there is no staleness to reconcile.

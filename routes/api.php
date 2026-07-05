@@ -243,6 +243,8 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/store/open-orders/{id}/details', [\App\Http\Controllers\API\RiderController::class, 'getStoreOpenOrderDetails']); // Full details when expanded
     Route::get('/store/delivered-orders', [\App\Http\Controllers\API\RiderController::class, 'getStoreDeliveredOrders']); // ⭐ Delivered orders grouped by date
     Route::get('/store/dispatch-report', [\App\Http\Controllers\API\RiderController::class, 'getDateDeliveryReport']); // ⭐ Dispatch tracker report by date
+    Route::get('/store/rider-reports', [\App\Http\Controllers\CRM\RiderReportsController::class, 'apiIndex']); // ⭐ Rider Reports (⚠ Issues + Report Card), real-time, mobile-permission gated
+    Route::get('/store/rider-timeline', [\App\Http\Controllers\CRM\RiderReportsController::class, 'apiTimeline']); // ⭐ Per-rider day timeline
     Route::get('/store/cancelled-orders', [\App\Http\Controllers\API\RiderController::class, 'getStoreCancelledOrders']); // ⭐ Cancelled orders grouped by date
     Route::get('/store/delivered-quantities-tree', [\App\Http\Controllers\API\RiderController::class, 'getDeliveredQuantitiesTree']); // ⭐ Delivered quantities with drill-down (lazy)
     Route::get('/store/delivered-quantities-full-tree', [\App\Http\Controllers\API\RiderController::class, 'getDeliveredQuantitiesFullTree']); // ⭐ Full tree for instant access (last 10 days)
@@ -431,6 +433,11 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::delete('/line-item-quick-notes/{id}', [\App\Http\Controllers\CRM\LineItemQuickNoteController::class, 'destroy']);
     Route::get('/orders/{id}/payments', [\App\Http\Controllers\API\RiderController::class, 'getOrderPayments']);
     Route::post('/orders/{id}/payments', [\App\Http\Controllers\API\RiderController::class, 'addOrderPayment']);
+    // Bulk shop payment: split ONE online transfer across several selected shop
+    // invoices (oldest-first, remainder on the newest). Shares the exact same
+    // ShopBulkPaymentService as the web endpoint so the rule can't drift.
+    // Literal path — kept above /orders/{id}/... so it is never captured by one.
+    Route::post('/orders/bulk-shop-payments', [\App\Http\Controllers\API\ShopBulkPaymentController::class, 'store']);
     // Amend non-financial metadata (receiving bank, reference, notes, stamp
     // overrides) on an existing active payment. Cannot change amount /
     // method / date — those still require void-and-readd.

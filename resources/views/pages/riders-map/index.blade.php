@@ -507,6 +507,9 @@
                 <button id="viewOrdersBtn" onclick="switchView('orders')">📦 Open Orders</button>
                 <button id="viewHistoryBtn" onclick="switchView('history')">📅 History</button>
                 <button id="viewDispatchBtn" onclick="switchView('dispatch')">🚀 Dispatch Tracker</button>
+                @if($canViewRiderReports ?? false)
+                <button id="viewReportsBtn" onclick="switchView('reports')">⚠️ Issues</button>
+                @endif
             </div>
             
             <!-- Date Picker (for riders view) -->
@@ -628,6 +631,50 @@
             <div id="dtOngoingContainer"></div>
             <div id="dtRidersContainer"></div>
         </div>
+
+        <!-- ========== RIDER REPORTS (ISSUES) VIEW ========== -->
+        <div id="reportsView" style="display: none;">
+            <div class="dt-controls">
+                <label style="font-weight:500; font-size:13px; color:#374151;">Date:</label>
+                <input type="date" id="rrDateInput" onchange="rrLoad(this.value)">
+                <button class="dt-btn" onclick="rrSetToday()">Today</button>
+                <button class="dt-btn" style="background:#6b7280;" onclick="rrPrevDay()">← Prev</button>
+                <button class="dt-btn" style="background:#6b7280;" onclick="rrNextDay()">Next →</button>
+                <span id="rrRealtime" style="font-size:12px; color:#6b7280; margin-left:8px;"></span>
+                <button class="dt-btn" style="margin-left:auto; background:#475569;" onclick="rrToggleAll()"><span id="rrToggleLabel">Show all riders</span></button>
+            </div>
+            <div id="rrSummaryBar" class="dt-summary-bar"></div>
+            <div id="rrContainer"></div>
+        </div>
+    </div>
+</div>
+
+<!-- Verified-vs-pressed map modal -->
+<div id="rrMapModal" style="display:none; position:fixed; inset:0; z-index:3000; background:rgba(0,0,0,.55); align-items:center; justify-content:center;">
+    <div style="background:#fff; border-radius:10px; width:min(94vw,660px); overflow:hidden; box-shadow:0 12px 44px rgba(0,0,0,.35);">
+        <div style="display:flex; align-items:center; gap:10px; padding:12px 16px; background:#22303F; color:#fff;">
+            <b id="rrMapTitle" style="font-size:15px;">Verified vs pressed</b>
+            <span id="rrMapDist" style="margin-left:auto; font-size:13px; color:#C9D4DF; font-weight:600;"></span>
+            <button onclick="rrCloseMap()" style="background:none; border:none; color:#fff; font-size:22px; cursor:pointer; line-height:1;">×</button>
+        </div>
+        <div id="rrMap" style="height:380px; width:100%;"></div>
+        <div style="padding:10px 16px; display:flex; gap:14px; font-size:12.5px; flex-wrap:wrap; align-items:center;">
+            <span><span style="display:inline-block; width:11px; height:11px; border-radius:50%; background:#2E7D4F; vertical-align:middle;"></span> Customer's saved pin</span>
+            <span><span style="display:inline-block; width:11px; height:11px; border-radius:50%; background:#B3362B; vertical-align:middle;"></span> Where "Delivered" was pressed</span>
+            <a id="rrMapGmaps" href="#" target="_blank" style="margin-left:auto; color:#2E64A6; text-decoration:none;">Open in Google Maps ↗</a>
+        </div>
+    </div>
+</div>
+
+<!-- Per-rider day Timeline modal -->
+<div id="rrTimelineModal" style="display:none; position:fixed; inset:0; z-index:3000; background:rgba(0,0,0,.55); align-items:center; justify-content:center;">
+    <div style="background:#fff; border-radius:10px; width:min(94vw,720px); max-height:90vh; overflow:hidden; display:flex; flex-direction:column; box-shadow:0 12px 44px rgba(0,0,0,.35);">
+        <div style="display:flex; align-items:center; gap:10px; padding:12px 16px; background:#22303F; color:#fff;">
+            <b id="rrTlTitle" style="font-size:15px;">Timeline</b>
+            <span id="rrTlSub" style="margin-left:auto; font-size:12.5px; color:#C9D4DF;"></span>
+            <button onclick="rrCloseTimeline()" style="background:none; border:none; color:#fff; font-size:22px; cursor:pointer; line-height:1;">×</button>
+        </div>
+        <div id="rrTlBody" style="overflow:auto; padding:16px 18px 20px;"></div>
     </div>
 </div>
 
@@ -685,13 +732,17 @@ function switchView(view) {
     document.getElementById('viewOrdersBtn').classList.toggle('active', view === 'orders');
     document.getElementById('viewHistoryBtn').classList.toggle('active', view === 'history');
     document.getElementById('viewDispatchBtn').classList.toggle('active', view === 'dispatch');
-    
+    var reportsBtn = document.getElementById('viewReportsBtn');
+    if (reportsBtn) reportsBtn.classList.toggle('active', view === 'reports');
+
     // Hide all views
     document.getElementById('ridersListView').style.display = 'none';
     document.getElementById('singleRiderView').style.display = 'none';
     document.getElementById('openOrdersView').style.display = 'none';
     document.getElementById('historyView').style.display = 'none';
     document.getElementById('dispatchView').style.display = 'none';
+    var reportsView = document.getElementById('reportsView');
+    if (reportsView) reportsView.style.display = 'none';
     document.getElementById('filtersSection').style.display = 'none';
     document.getElementById('historyBanner').style.display = 'none';
     
@@ -721,6 +772,12 @@ function switchView(view) {
         document.getElementById('pageTitle').textContent = '🚀 Dispatch Tracker';
         stopAutoRefresh();
         dtInit();
+    } else if (view === 'reports') {
+        document.getElementById('datePicker').style.display = 'none';
+        document.getElementById('reportsView').style.display = 'block';
+        document.getElementById('pageTitle').textContent = '⚠️ Daily Issues';
+        stopAutoRefresh();
+        rrInit();
     }
 }
 
@@ -1866,7 +1923,7 @@ function dtRenderRiders(riders) {
         const etaClass = etaPct !== null ? (etaPct >= 70 ? 'green' : (etaPct >= 40 ? 'amber' : 'red')) : 'gray';
 
         return `
-        <div class="dt-rider-card" id="dtRider_${rIdx}">
+        <div class="dt-rider-card" id="dtRider_${rIdx}" data-rname="${(rider.name||'').replace(/"/g,'&quot;')}">
             <div class="dt-rider-header" onclick="dtToggleRider(${rIdx})">
                 <div>
                     <div class="dt-rider-name">🏍️ ${rider.name}</div>
@@ -1890,6 +1947,7 @@ function dtRenderRiders(riders) {
             </div>
             <div class="dt-rider-body" id="dtBody_${rIdx}">
                 <div style="padding: 6px 16px; text-align: right; border-bottom: 1px solid #f3f4f6;">
+                    ${window.rrCanViewReports ? `<button onclick="event.stopPropagation(); rrOpenTimeline(${rider.id}, dtCurrentDate)" style="font-size:11px; padding:3px 10px; border:1px solid #C4D3E2; border-radius:4px; background:#EEF4FA; cursor:pointer; color:#2E64A6; margin-right:6px;">📋 Timeline</button>` : ''}
                     <button onclick="event.stopPropagation(); dtExpandAllOrders(${rIdx})" style="font-size:11px; padding:3px 10px; border:1px solid #d1d5db; border-radius:4px; background:#fff; cursor:pointer; color:#374151;">⬇ Expand All</button>
                     <button onclick="event.stopPropagation(); dtCollapseAllOrders(${rIdx})" style="font-size:11px; padding:3px 10px; border:1px solid #d1d5db; border-radius:4px; background:#fff; cursor:pointer; color:#374151; margin-left:4px;">⬆ Collapse All</button>
                 </div>
@@ -2107,6 +2165,326 @@ function geocodeCustomer(customerId, customerName) {
         console.error('Error geocoding:', error);
         alert('❌ Error geocoding address');
     });
+}
+</script>
+
+<script>
+// =====================================================================
+// RIDER REPORTS — ⚠ Issues tab + Report Card (Phase 2, Jul-2026)
+// Reads /orders/riders-map/reports (real-time). Rule-based chips, no AI.
+// =====================================================================
+let rrCurrentDate = null;
+let rrMode = 'issues';          // 'issues' (problems only) | 'cards' (all riders)
+let rrData = null;
+let rrCfg = { at_verified_m: 500, late_manager_minutes: 15, late_card_minutes: 10 };
+let rrMapObj = null;
+
+function rrEsc(s){ return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+function rrChip(text, sev){ // sev: crit|warn|good|info|dim
+    const c = { crit:['#F6E3E1','#B3362B'], warn:['#F7EDDA','#7C5710'], good:['#E5F1E9','#2E7D4F'],
+                info:['#E3ECF5','#2E64A6'], dim:['#ECEAE3','#4A5568'] }[sev] || ['#ECEAE3','#4A5568'];
+    return `<span style="display:inline-block;font-size:12px;font-weight:600;padding:1px 9px;border-radius:3px;white-space:nowrap;background:${c[0]};color:${c[1]};margin:1px 3px 1px 0;">${text}</span>`;
+}
+function rrNum(v){ return v==null || v==='' ? null : Number(v); }
+function rrDist(m){ m = rrNum(m); if(m==null) return ''; return m >= 1000 ? (m/1000).toFixed(2)+' km' : Math.round(m)+' m'; }
+function rrLate(o){ const l = rrNum(o.late_minutes); return l==null ? '' : (l>0 ? l+' min late' : (l===0?'on time':(-l)+' min early')); }
+
+function rrInit(){
+    if(!rrCurrentDate) rrCurrentDate = new Date().toISOString().split('T')[0];
+    const inp = document.getElementById('rrDateInput');
+    inp.value = rrCurrentDate; inp.max = new Date().toISOString().split('T')[0];
+    rrLoad(rrCurrentDate);
+}
+function rrSetToday(){ rrCurrentDate = new Date().toISOString().split('T')[0]; document.getElementById('rrDateInput').value = rrCurrentDate; rrLoad(rrCurrentDate); }
+function rrPrevDay(){ const d=new Date(rrCurrentDate); d.setDate(d.getDate()-1); rrCurrentDate=d.toISOString().split('T')[0]; document.getElementById('rrDateInput').value=rrCurrentDate; rrLoad(rrCurrentDate); }
+function rrNextDay(){ const d=new Date(rrCurrentDate); d.setDate(d.getDate()+1); const t=new Date().toISOString().split('T')[0]; if(d.toISOString().split('T')[0]>t) return; rrCurrentDate=d.toISOString().split('T')[0]; document.getElementById('rrDateInput').value=rrCurrentDate; rrLoad(rrCurrentDate); }
+function rrToggleAll(){ rrMode = rrMode==='issues' ? 'cards' : 'issues'; document.getElementById('rrToggleLabel').textContent = rrMode==='issues' ? 'Show all riders' : 'Show issues only'; rrRender(); }
+
+async function rrLoad(date){
+    rrCurrentDate = date;
+    const box = document.getElementById('rrContainer');
+    box.innerHTML = '<div style="padding:40px;text-align:center;color:#6b7280;">Loading…</div>';
+    try {
+        const res = await fetch(`/orders/riders-map/reports?date=${date}`, {headers:{'Accept':'application/json'}});
+        if(res.status === 403){ box.innerHTML = '<div style="padding:40px;text-align:center;color:#b3362b;">You do not have access to this report.</div>'; document.getElementById('rrSummaryBar').innerHTML=''; return; }
+        const data = await res.json();
+        if(!data.success){ box.innerHTML = '<div style="padding:40px;text-align:center;color:#b3362b;">Failed to load.</div>'; return; }
+        rrData = data; rrCfg = data.config || rrCfg;
+        document.getElementById('rrRealtime').textContent = data.realtime ? '● live (updates as the day runs)' : 'stored snapshot';
+        rrRender();
+    } catch(e){ box.innerHTML = '<div style="padding:40px;text-align:center;color:#b3362b;">Error loading report.</div>'; }
+}
+
+// ---- flag extraction (rule engine, client side over server facts) ----
+function rrOrderIssues(o){
+    const out = [];
+    const late = rrNum(o.late_minutes);
+    const hasV = rrNum(o.has_verified) === 1;
+    const atV  = rrNum(o.at_verified);          // null = couldn't measure
+    const gpsOk = rrNum(o.gps_ok) === 1;
+    const dist = rrNum(o.pin_distance_m);
+    if(rrNum(o.was_dispatched) === 0) out.push({sev:'warn', text:'dispatch not pressed'});
+    if(rrNum(o.dispatched_by_other) === 1) out.push({sev:'warn', text:'dispatch by '+(o.dispatched_by_name || 'someone else')});
+    if(late != null && late > rrCfg.late_manager_minutes) out.push({sev:'warn', text: late+' min late'});
+    // route order changed vs the planned dispatch priority (P{planned}→#{actual})
+    var ps = rrNum(o.planned_seq), as = rrNum(o.actual_seq);
+    if(ps != null && as != null && ps !== as) out.push({sev:'info', text:'order changed (P'+ps+'→#'+as+')'});
+    if(hasV && atV === 0 && dist != null) out.push({sev:'crit', text:'delivered '+rrDist(dist)+' from pin', map:true});
+    if(!hasV) out.push({sev:'warn', text:'no pin saved'});
+    if(!gpsOk) out.push({sev:'crit', text:'GPS off at delivery'});
+    return out;
+}
+function rrRiderIssueItems(r){
+    const items = [];
+    (r.orders||[]).forEach(o => {
+        const iss = rrOrderIssues(o);
+        // an order is a problem only if it has a real (non-info) flag; "order
+        // changed" is info-only context and rides along on real problems.
+        if(iss.some(x => x.sev !== 'info')) items.push({order:o, issues:iss});
+    });
+    // on-route stops (orders waiting) always show; idle stops only when long (≥15 min)
+    const stopItems = (r.stops||[]).filter(s =>
+        rrNum(s.on_board) > 0 || s.context==='on_route' || rrNum(s.min) >= 15);
+    return {items, stopItems, oddRoutes:(r.odd_routes||[]), missed:(r.missed_dispatch||null)};
+}
+function rrHasIssues(r){
+    const {items, stopItems, oddRoutes, missed} = rrRiderIssueItems(r);
+    return items.length>0 || stopItems.length>0 || oddRoutes.length>0 || !!missed || !!r.lateness;
+}
+// short manager-friendly line for a missed-dispatch event
+function rrMissedChips(m){
+    const what = m.context==='returned_then_left' ? 'came back, left again without dispatch' : 'left office without dispatch';
+    let res = '';
+    if(m.resolution){
+        if(m.resolution.state==='dispatched') res = m.resolution.by_self
+            ? 'pressed himself at '+m.resolution.at
+            : 'dispatched by '+rrEsc(m.resolution.by_name||'store')+' at '+m.resolution.at;
+        else if(m.resolution.state==='still_undispatched') res = 'still not dispatched';
+    }
+    return rrChip(what+(m.left_at?' · '+m.left_at:''),'crit') + (res? ' '+rrChip(res,'dim') : '');
+}
+
+function rrRender(){
+    if(!rrData){ return; }
+    // build id → object indexes so click handlers pass safe ids, not inline JSON
+    window.rrOrderIndex = {}; window.rrRiderIndex = {};
+    (rrData.riders||[]).forEach(r => {
+        window.rrRiderIndex[r.user_id] = r;
+        (r.orders||[]).forEach(o => { window.rrOrderIndex[o.order_id] = o; });
+    });
+    if(rrMode==='cards') return rrRenderCards();
+    return rrRenderIssues();
+}
+
+// ---- Manager Issues: problems only, real riders ----
+function rrRenderIssues(){
+    const box = document.getElementById('rrContainer');
+    const riders = (rrData.riders||[]).filter(r => r.is_rider);
+    const flagged = riders.filter(rrHasIssues);
+    const clean = riders.length - flagged.length;
+    const delivered = riders.reduce((a,r)=>a+(r.day.delivered_count||0),0);
+    const hidden = (rrData.riders||[]).length - riders.length;
+
+    document.getElementById('rrSummaryBar').innerHTML =
+        `<div style="padding:10px 14px;">${rrChip(delivered+' delivered','dim')} ${rrChip(flagged.length+' riders flagged', flagged.length?'warn':'good')} ${rrChip(clean+' clean','good')}${hidden?' '+rrChip(hidden+' office account'+(hidden>1?'s':'')+' hidden','dim'):''}</div>`;
+
+    if(!flagged.length){ box.innerHTML = '<div style="padding:50px;text-align:center;color:#2E7D4F;font-weight:600;">✓ No issues for this date — everyone on time and at the pin.</div>'; return; }
+
+    // red first (any crit item), then amber
+    flagged.sort((a,b)=> rrSeverityRank(b) - rrSeverityRank(a));
+
+    box.innerHTML = flagged.map(r => {
+        const {items, stopItems, oddRoutes, missed} = rrRiderIssueItems(r);
+        const missedHtml = missed ? `<div style="display:flex;gap:8px;align-items:baseline;flex-wrap:wrap;font-size:13px;padding:2px 0;">
+                    <span style="min-width:130px;color:#6b7280;">dispatch</span>${rrMissedChips(missed)}
+                </div>` : '';
+        const rowsHtml = items.map(it => {
+            const o = it.order;
+            const chips = it.issues.map(x => rrChip(x.text, x.sev) + (x.map ? ` <a href="#" onclick="rrOpenMap(${o.order_id});return false;" style="font-size:12px;color:#2E64A6;text-decoration:none;">🗺️ verified vs pressed</a>` : '')).join(' ');
+            return `<div style="display:flex;gap:8px;align-items:baseline;flex-wrap:wrap;font-size:13px;padding:2px 0;">
+                        <b style="min-width:130px;">${rrEsc(o.customer_name||'—')}</b>
+                        <span style="font-family:monospace;font-size:11.5px;color:#2E64A6;min-width:70px;">${rrEsc(o.order_number||'')}</span>
+                        ${chips}
+                    </div>`;
+        }).join('');
+        const stopsHtml = stopItems.map(s => {
+            const g = s.context==='on_route' || rrNum(s.on_board) > 0;
+            const label = g ? 'stop '+s.min+' min — '+(rrNum(s.on_board)||'')+' orders waiting'
+                            : 'stop '+s.min+' min — nothing on board';
+            return `<div style="display:flex;gap:8px;align-items:baseline;flex-wrap:wrap;font-size:13px;padding:2px 0;">
+                        <span style="min-width:130px;color:#6b7280;">${g?'on-route stop':'idle stop'}</span>
+                        ${rrChip(label, g?'crit':'dim')}
+                        <span style="font-family:monospace;font-size:12px;color:#6b7280;">${s.from}–${s.to}</span>
+                        ${s.map_url?`<a href="${s.map_url}" target="_blank" style="font-size:12px;color:#2E64A6;text-decoration:none;">📍 map</a>`:''}
+                    </div>`;
+        }).join('');
+        const oddHtml = oddRoutes.map(l => `<div style="font-size:13px;padding:2px 0;">${rrChip('odd route '+l.trav_km+' km for '+l.straight_km+' km','warn')}<span style="color:#6b7280;font-size:12px;"> ${rrEsc(l.from)} → ${rrEsc(l.to)}</span></div>`).join('');
+        const sev = rrSeverityRank(r) >= 2 ? 'r' : 'a';
+        return `<div style="padding:10px 14px;border-bottom:1px solid #eef;">
+                    <div style="font-weight:650;font-size:14px;display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+                        <span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${sev==='r'?'#B3362B':'#A8730F'};"></span>
+                        ${rrEsc(r.rider_name)}
+                        ${r.lateness ? rrChip('late '+r.lateness.today_min+' min today · '+r.lateness.month_min+' min this month','warn') : ''}
+                        <span style="margin-left:auto; display:flex; gap:6px;">
+                            <a href="#" onclick="rrOpenTimeline(${r.user_id});return false;" style="font-size:12px;color:#2E64A6;text-decoration:none;border:1px solid #C4D3E2;border-radius:4px;padding:1px 8px;background:#EEF4FA;">📋 timeline</a>
+                            <a href="#" onclick="openDispatchDetail(${r.user_id});return false;" style="font-size:12px;color:#2E64A6;text-decoration:none;border:1px solid #C4D3E2;border-radius:4px;padding:1px 8px;background:#EEF4FA;">🚀 dispatch detail</a>
+                        </span>
+                    </div>
+                    <div style="margin-top:5px;">${missedHtml}${rowsHtml}${stopsHtml}${oddHtml}</div>
+                </div>`;
+    }).join('');
+
+    if(clean>0){
+        const names = riders.filter(r=>!rrHasIssues(r)).map(r=>rrEsc(r.rider_name)).join(', ');
+        box.innerHTML += `<div style="padding:10px 14px;background:#FAF8F2;color:#2E7D4F;font-size:13px;">✓ Clean, not shown: ${names}</div>`;
+    }
+}
+function rrSeverityRank(r){
+    let rank = 0;
+    if(r.missed_dispatch) rank = 2;
+    if(r.lateness) rank = Math.max(rank, 1);
+    (r.orders||[]).forEach(o => { rrOrderIssues(o).forEach(x => { if(x.sev==='crit') rank=Math.max(rank,2); else if(x.sev!=='info') rank=Math.max(rank,1); }); });
+    (r.stops||[]).forEach(s => { if(rrNum(s.on_board) > 0) rank=Math.max(rank,2); });
+    if((r.odd_routes||[]).length) rank=Math.max(rank,1);
+    return rank;
+}
+
+// ---- Report Card: every rider, all orders ----
+function rrRenderCards(){
+    const box = document.getElementById('rrContainer');
+    const riders = (rrData.riders||[]).filter(r => r.is_rider);
+    document.getElementById('rrSummaryBar').innerHTML = `<div style="padding:10px 14px;">${rrChip(riders.length+' riders','dim')} ${rrChip('report cards','info')}</div>`;
+    box.innerHTML = riders.map(r => {
+        const d = r.day;
+        const summary = [
+            rrChip((d.ontime_count||0)+'/'+(d.eta_total||0)+' on time', (rrNum(d.ontime_count)===rrNum(d.eta_total))?'good':'warn'),
+            rrChip((d.at_verified_count||0)+'/'+(d.has_verified_count||0)+' at pin', (rrNum(d.at_verified_count)===rrNum(d.has_verified_count))?'good':'warn'),
+            (rrNum(d.onroute_stop_count)? rrChip(d.onroute_stop_count+' stop w/ orders waiting','crit'):''),
+            (rrNum(d.odd_route_count)? rrChip(d.odd_route_count+' odd route','warn'):''),
+            (rrNum(d.gps_off_count)? rrChip(d.gps_off_count+' GPS off','warn'):'')
+        ].join(' ');
+        const rows = (r.orders||[]).map(o => {
+            const iss = rrOrderIssues(o);
+            const real = iss.filter(x=>x.sev!=='info'), info = iss.filter(x=>x.sev==='info');
+            const chips = (real.length ? real.map(x=>rrChip(x.text,x.sev)).join(' ') : rrChip('✓ '+(rrLate(o)||'ok'),'good')) + ' ' + info.map(x=>rrChip(x.text,x.sev)).join(' ');
+            return `<div style="display:flex;gap:8px;align-items:baseline;flex-wrap:wrap;font-size:13px;padding:4px 0;border-bottom:1px solid #f3f4f6;">
+                        <span style="font-family:monospace;font-size:11.5px;color:#2E64A6;min-width:74px;">${rrEsc(o.order_number)}</span>
+                        <b style="min-width:130px;">${rrEsc(o.customer_name||'—')}</b>
+                        ${chips}
+                    </div>`;
+        }).join('');
+        return `<div style="border:1px solid #e5e7eb;border-radius:8px;margin:10px 14px;overflow:hidden;">
+                    <div style="background:#22303F;color:#fff;padding:8px 14px;display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
+                        <b>🏍️ ${rrEsc(r.rider_name)}</b>
+                        <span style="font-family:monospace;font-size:12px;color:#C9D4DF;">${d.delivered_count||0} delivered</span>
+                        <a href="#" onclick="openDispatchDetail(${r.user_id});return false;" style="margin-left:auto;font-size:12px;color:#EEF4FA;text-decoration:none;">🚀 dispatch detail</a>
+                    </div>
+                    <div style="padding:8px 14px;background:#FAF8F2;">${summary}</div>
+                    <div style="padding:4px 14px 8px;">${rows}</div>
+                </div>`;
+    }).join('');
+}
+
+// ---- verified-vs-pressed map modal ----
+function rrOpenMap(orderId){
+    const o = (window.rrOrderIndex || {})[orderId];
+    if(!o || o.pin_lat==null || o.verified_lat==null){ alert('Missing GPS for this order.'); return; }
+    const modal = document.getElementById('rrMapModal');
+    modal.style.display = 'flex';
+    document.getElementById('rrMapTitle').textContent = (o.customer_name||'Order')+' · '+(o.order_number||'');
+    document.getElementById('rrMapDist').textContent = rrDist(o.pin_distance_m)+' apart';
+    document.getElementById('rrMapGmaps').href = `https://www.google.com/maps/dir/${o.verified_lat},${o.verified_lng}/${o.pin_lat},${o.pin_lng}`;
+    setTimeout(() => {
+        if(rrMapObj){ rrMapObj.remove(); rrMapObj = null; }
+        rrMapObj = L.map('rrMap');
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {maxZoom:19, attribution:'© OpenStreetMap'}).addTo(rrMapObj);
+        const vp = [parseFloat(o.verified_lat), parseFloat(o.verified_lng)];
+        const pp = [parseFloat(o.pin_lat), parseFloat(o.pin_lng)];
+        const green = L.circleMarker(vp, {radius:9, color:'#fff', weight:2, fillColor:'#2E7D4F', fillOpacity:1}).addTo(rrMapObj).bindPopup("Customer's saved pin");
+        const red = L.circleMarker(pp, {radius:9, color:'#fff', weight:2, fillColor:'#B3362B', fillOpacity:1}).addTo(rrMapObj).bindPopup('Pressed "Delivered" here');
+        L.polyline([vp, pp], {color:'#B3362B', weight:2, dashArray:'5,6'}).addTo(rrMapObj);
+        rrMapObj.fitBounds(L.latLngBounds([vp, pp]).pad(0.4));
+    }, 60);
+}
+function rrCloseMap(){ document.getElementById('rrMapModal').style.display = 'none'; if(rrMapObj){ rrMapObj.remove(); rrMapObj=null; } }
+
+// ---- per-rider day Timeline ----
+window.rrCanViewReports = {{ ($canViewRiderReports ?? false) ? 'true' : 'false' }};
+async function rrOpenTimeline(userId, date){
+    date = date || rrCurrentDate || new Date().toISOString().split('T')[0];
+    const modal = document.getElementById('rrTimelineModal');
+    modal.style.display = 'flex';
+    document.getElementById('rrTlTitle').textContent = '📋 Timeline';
+    document.getElementById('rrTlSub').textContent = '';
+    document.getElementById('rrTlBody').innerHTML = '<div style="padding:34px;text-align:center;color:#6b7280;">Loading…</div>';
+    try {
+        const res = await fetch(`/orders/riders-map/timeline?date=${date}&rider=${userId}`, {headers:{'Accept':'application/json'}});
+        if(res.status===403){ document.getElementById('rrTlBody').innerHTML = '<div style="padding:34px;text-align:center;color:#b3362b;">No access.</div>'; return; }
+        const data = await res.json();
+        if(!data.success){ document.getElementById('rrTlBody').innerHTML = '<div style="padding:34px;text-align:center;color:#b3362b;">Failed to load.</div>'; return; }
+        rrCfg = data.config || rrCfg;
+        window.rrOrderIndex = window.rrOrderIndex || {};
+        (data.events||[]).forEach(e => { if(e.kind==='delivery' && e.order) window.rrOrderIndex[e.order.order_id] = e.order; });
+        document.getElementById('rrTlTitle').textContent = '📋 ' + rrEsc(data.rider_name||'Rider');
+        document.getElementById('rrTlSub').textContent = new Date(data.date).toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric'});
+        document.getElementById('rrTlBody').innerHTML = rrRenderTimeline(data.events||[]);
+    } catch(e){ document.getElementById('rrTlBody').innerHTML = '<div style="padding:34px;text-align:center;color:#b3362b;">Error loading timeline.</div>'; }
+}
+function rrCloseTimeline(){ document.getElementById('rrTimelineModal').style.display = 'none'; }
+function rrRenderTimeline(events){
+    if(!events.length) return '<div style="padding:34px;text-align:center;color:#6b7280;">No activity for this day.</div>';
+    return `<div style="border-left:2px solid #e5e7eb; margin-left:58px;">` + events.map(e => {
+        let title='', chips='', color='#9ca3af';
+        if(e.kind==='delivery'){
+            const o=e.order, iss=rrOrderIssues(o);
+            const real=iss.filter(x=>x.sev!=='info'), info=iss.filter(x=>x.sev==='info');
+            chips = (real.length ? real.map(x=>rrChip(x.text,x.sev)+(x.map?` <a href="#" onclick="rrOpenMap(${o.order_id});return false;" style="font-size:11px;color:#2E64A6;text-decoration:none;">🗺️</a>`:'')).join(' ')
+                                 : rrChip('✓ '+(rrLate(o)||'ok'),'good')) + ' ' + info.map(x=>rrChip(x.text,x.sev)).join(' ');
+            color = real.length ? (real.some(x=>x.sev==='crit')?'#B3362B':'#A8730F') : '#2E7D4F';
+            title = `<b>${rrEsc(o.customer_name||'—')}</b> <span style="font-family:monospace;font-size:11px;color:#2E64A6;">${rrEsc(o.order_number)}</span>`;
+        } else if(e.kind==='stop'){
+            const known = rrNum(e.is_unknown)!==1;
+            const onRoute = e.context==='on_route' || rrNum(e.on_board)>0;
+            color = onRoute ? '#B3362B' : (known ? '#6b7280' : '#A8730F');
+            title = known ? 'At '+rrEsc(e.label) : (onRoute ? 'Stop — '+(rrNum(e.on_board)||'')+' orders waiting' : 'Stop — nothing on board');
+            chips = rrChip(e.min+' min · '+e.time+'–'+e.to, 'dim') + (e.map_url && !known ? ` <a href="${e.map_url}" target="_blank" style="font-size:11px;color:#2E64A6;text-decoration:none;">📍 map</a>` : '');
+        } else if(e.kind==='gap'){
+            color='#A8730F'; title='GPS gap'; chips=rrChip(e.min+' min · no signal','warn');
+        } else if(e.kind==='checkin'){
+            color='#2E7D4F'; title='Check-in';
+            chips = e.remote ? rrChip('remote'+(e.dist_m?' · '+rrDist(e.dist_m)+' from base':''),'warn') : rrChip('at base','dim');
+        } else if(e.kind==='checkout'){
+            color='#B3362B'; title='Check-out'; chips='';
+        }
+        return `<div style="position:relative; padding:7px 0 7px 24px;">
+            <span style="position:absolute; left:-7px; top:10px; width:11px; height:11px; border-radius:50%; background:${color}; border:2px solid #fff;"></span>
+            <span style="position:absolute; left:-58px; top:8px; width:44px; text-align:right; font-family:monospace; font-size:12px; color:#6b7280;">${e.time}</span>
+            <div style="font-size:13.5px;">${title}</div>
+            ${chips ? `<div style="margin-top:3px;">${chips}</div>` : ''}
+        </div>`;
+    }).join('') + `</div>`;
+}
+
+// ---- drill-down: open the existing Dispatch Tracker for this rider+date ----
+function openDispatchDetail(userId){
+    const r = (window.rrRiderIndex || {})[userId];
+    if(!r) return;
+    const riderName = r.rider_name;
+    dtCurrentDate = rrCurrentDate;
+    switchView('dispatch');
+    let tries = 0;
+    const iv = setInterval(() => {
+        tries++;
+        const card = document.querySelector(`#dtRidersContainer .dt-rider-card[data-rname="${(riderName||'').replace(/"/g,'&quot;')}"]`);
+        if(card){
+            clearInterval(iv);
+            const body = card.querySelector('.dt-rider-body');
+            if(body && !body.classList.contains('open')) body.classList.add('open');
+            card.scrollIntoView({behavior:'smooth', block:'start'});
+            card.style.boxShadow = '0 0 0 3px #f59e0b'; setTimeout(()=>{ card.style.boxShadow=''; }, 2500);
+        }
+        if(tries > 40) clearInterval(iv);
+    }, 150);
 }
 </script>
 @endsection

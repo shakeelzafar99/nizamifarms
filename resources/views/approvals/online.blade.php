@@ -732,6 +732,11 @@ let currentProof = 'all'; // 'all', 'pending', 'received', 'verified', 'mismatch
 let selectedItems = new Set();
 let allItems = [];
 let groupedItems = [];
+// Shop-tab multi-select — kept SEPARATE from selectedItems so the L1/L2
+// bulk-approve flow is completely untouched. Selection is confined to ONE shop
+// customer at a time (one bank transfer has one payer).
+let shopSelectedOrderIds = new Set();
+let shopSelectedCustomer = null;
 let searchTimeout;
 // ⭐ Receiving bank accounts for dropdown
 const receivingAccounts = @json($receivingAccounts ?? []);
@@ -753,6 +758,9 @@ function selectTab(tab) {
     currentTab = tab;
     selectedItems.clear();
     updateSelectionBar();
+    // Reset the shop multi-select whenever the tab changes so a stale
+    // selection can't carry over into another tab.
+    clearShopSelection();
     
     // Update tab active states
     document.querySelectorAll('.tab-card').forEach(card => card.classList.remove('active'));
@@ -834,6 +842,7 @@ async function loadData() {
             allItems = data.items;
             groupedItems = data.grouped;
             renderItems(data.grouped);
+            updateShopSelectionBar(); // keep the shop floating bar in sync after a reload
             document.getElementById('totalCount').textContent = data.count;
             document.getElementById('totalAmount').textContent = numberFormat(data.total_amount);
 
@@ -1106,9 +1115,18 @@ function renderShopRow(item) {
     };
     const st = statusStyles[status] || statusStyles.unpaid;
     const orderViewUrl = item.order_id ? `/orders?edit_order_id=${item.order_id}` : '#';
+    // Multi-select: only unpaid/partial rows are selectable (a fully-paid order
+    // can't take a payment). Reuses the same checkbox styling as the regular tab.
+    const shopOid = parseInt(item.order_id);
+    const shopSel = shopSelectedOrderIds.has(shopOid);
+    const shopSelectable = remaining > 0.01;
 
     return `
-        <div class="invoice-row" data-item-key="shop_order_${item.id}">
+        <div class="invoice-row ${shopSel ? 'selected' : ''}" data-item-key="shop_order_${item.id}">
+            ${shopSelectable ? `
+            <div class="invoice-checkbox ${shopSel ? 'checked' : ''}" onclick="toggleShopItem(${shopOid})" title="Select for report / bulk payment">
+                <span class="check-icon">${shopSel ? '✓' : ''}</span>
+            </div>` : `<div class="invoice-checkbox" style="visibility:hidden;"><span class="check-icon"></span></div>`}
             <a href="${orderViewUrl}" target="_blank" class="invoice-number" title="View order details">${item.number}</a>
             <span class="invoice-date">📅 ${formatDate(item.date)}</span>
             <span style="display:inline-block; padding:2px 8px; border-radius:10px; font-size:11px; font-weight:600; background:${st.bg}; color:${st.color}; border:1px solid ${st.color}40;">${st.label}</span>
@@ -1304,6 +1322,263 @@ async function voidShopPayment(orderId, paymentId, orderNumber) {
         }
     } catch (e) {
         alert('Network error. Please try again.');
+    }
+}
+
+// =====================================================
+// Shop tab — multi-select + bulk payment
+// =====================================================
+let bulkPayItems = []; // snapshot of selected items (FIFO-sorted) for the modal
+
+// Toggle one shop invoice in/out of the selection. The owning customer is
+// looked up from groupedItems so we never embed the (quote-unsafe) name in an
+// onclick attribute. Selection is confined to ONE shop at a time.
+function toggleShopItem(orderId) {
+    orderId = parseInt(orderId);
+    const group = groupedItems.find(g => (g.items || []).some(it => parseInt(it.order_id) === orderId));
+    const customerName = group ? group.customer : null;
+    if (shopSelectedCustomer && shopSelectedCustomer !== customerName) {
+        shopSelectedOrderIds.clear(); // starting a selection in a different shop
+    }
+    shopSelectedCustomer = customerName;
+    if (shopSelectedOrderIds.has(orderId)) {
+        shopSelectedOrderIds.delete(orderId);
+    } else {
+        shopSelectedOrderIds.add(orderId);
+    }
+    if (shopSelectedOrderIds.size === 0) shopSelectedCustomer = null;
+    updateShopSelectionUI();
+}
+
+function clearShopSelection() {
+    shopSelectedOrderIds.clear();
+    shopSelectedCustomer = null;
+    updateShopSelectionUI();
+}
+
+function updateShopSelectionUI() {
+    // Only the shop tab is re-rendered from cache; other tabs are unaffected.
+    if (currentTab === 'shop') renderItems(groupedItems);
+    updateShopSelectionBar();
+}
+
+// The currently-selected items, restricted to the active shop and to rows that
+// are still present in the (possibly filtered) list.
+function getShopSelectedItems() {
+    if (!shopSelectedCustomer) return [];
+    const group = groupedItems.find(g => g.customer === shopSelectedCustomer);
+    if (!group) return [];
+    return (group.items || []).filter(it => shopSelectedOrderIds.has(parseInt(it.order_id)));
+}
+
+// FIFO (oldest-first) — same ordering key the server uses (the on-screen date),
+// so the client preview matches the server allocation.
+function sortShopItemsFifo(items) {
+    return [...items].sort((a, b) => {
+        const da = String(a.date || ''), db = String(b.date || '');
+        if (da !== db) return da < db ? -1 : 1;
+        return (parseInt(a.order_id) || 0) - (parseInt(b.order_id) || 0);
+    });
+}
+
+function updateShopSelectionBar() {
+    let bar = document.getElementById('shopSelectionBar');
+    const items = getShopSelectedItems();
+    if (!items.length || currentTab !== 'shop') {
+        if (bar) bar.style.display = 'none';
+        return;
+    }
+    if (!bar) {
+        bar = document.createElement('div');
+        bar.id = 'shopSelectionBar';
+        bar.style.cssText = 'position:fixed; left:50%; transform:translateX(-50%); bottom:24px; z-index:9500; background:#111827; color:#fff; border-radius:14px; padding:12px 16px; display:flex; align-items:center; gap:14px; box-shadow:0 10px 30px rgba(0,0,0,0.25); flex-wrap:wrap; max-width:94vw;';
+        document.body.appendChild(bar);
+    }
+    const selBal = items.reduce((s, it) => s + (parseFloat(it.balance_remaining) || 0), 0);
+    bar.style.display = 'flex';
+    bar.innerHTML = `
+        <div style="font-size:13px;">
+            <span style="font-weight:800;">${items.length}</span> selected ·
+            <span style="font-weight:800;">Rs. ${numberFormat(selBal)}</span>
+            <span style="opacity:.7;"> — ${escapeHtml(shopSelectedCustomer || '')}</span>
+        </div>
+        <button onclick="openCustomerReport(shopSelectedCustomer, getShopSelectedItems())" style="background:#EEF2FF; color:#4F46E5; border:none; border-radius:8px; padding:8px 12px; font-weight:600; cursor:pointer;">📋 Report selected</button>
+        <button onclick="openBulkPaymentModal()" style="background:#10B981; color:#fff; border:none; border-radius:8px; padding:8px 12px; font-weight:700; cursor:pointer;">＋ Add bulk payment</button>
+        <button onclick="clearShopSelection()" style="background:transparent; color:#D1D5DB; border:1px solid #374151; border-radius:8px; padding:8px 12px; cursor:pointer;">Clear</button>
+    `;
+}
+
+// Client-side mirror of the server rule (server stays authoritative). Works in
+// integer paisa for exact money maths. Returns {ok, error} or {ok, rows}.
+function computeBulkAllocation(sortedItems, amount) {
+    const bals = sortedItems.map(it => Math.round((parseFloat(it.balance_remaining) || 0) * 100));
+    const n = bals.length;
+    if (n === 0) return { ok: false, error: 'No invoices selected.' };
+    const amt = Math.round((parseFloat(amount) || 0) * 100);
+    const sumAll = bals.reduce((s, c) => s + c, 0);
+    const sumButLast = sumAll - bals[n - 1];
+    if (amt <= 0) return { ok: false, error: 'Enter a valid amount.' };
+    if (amt > sumAll) {
+        return { ok: false, error: `Amount (Rs. ${numberFormat(amt / 100)}) is more than the selected total balance (Rs. ${numberFormat(sumAll / 100)}). Reduce it or select more invoices.` };
+    }
+    if (n > 1 && amt <= sumButLast) {
+        return { ok: false, error: `This amount can't leave a balance on only the newest invoice. It must clear everything except the newest (more than Rs. ${numberFormat(sumButLast / 100)}). Deselect the older extras or increase the amount.` };
+    }
+    const rows = [];
+    for (let i = 0; i < n; i++) {
+        const allocC = (i < n - 1) ? bals[i] : (amt - sumButLast);
+        rows.push({
+            item: sortedItems[i],
+            alloc: allocC / 100,
+            fully: allocC >= bals[i],
+            remainingAfter: Math.max(0, bals[i] - allocC) / 100,
+        });
+    }
+    return { ok: true, rows };
+}
+
+function openBulkPaymentModal() {
+    const items = getShopSelectedItems();
+    if (!items.length) { showToast('Select at least one invoice.', 'error'); return; }
+    if (items.length < 2) {
+        // A single invoice is just a normal payment — steer the user there so
+        // the "bulk" concept stays meaningful, but don't block them.
+        if (!confirm('Only one invoice is selected. Bulk payment is meant for two or more. Continue anyway?')) return;
+    }
+    bulkPayItems = sortShopItemsFifo(items);
+    const totalBal = bulkPayItems.reduce((s, it) => s + (parseFloat(it.balance_remaining) || 0), 0);
+
+    let overlay = document.getElementById('bulkPayOverlay');
+    if (overlay) overlay.remove();
+    overlay = document.createElement('div');
+    overlay.id = 'bulkPayOverlay';
+    overlay.style.cssText = 'position:fixed; inset:0; background:rgba(0,0,0,0.5); z-index:10001; display:flex; align-items:center; justify-content:center; padding:20px;';
+    overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
+
+    const today = new Date().toISOString().slice(0, 10);
+    const bankOptions = (receivingAccounts || []).map(a =>
+        `<option value="${a.id}">${escapeHtml(a.name)}${a.short_code ? ' (' + escapeHtml(a.short_code) + ')' : ''}</option>`
+    ).join('');
+    const inputStyle = 'margin-top:4px; width:100%; padding:8px; border:1px solid #D1D5DB; border-radius:8px;';
+    const labelStyle = 'font-size:13px; font-weight:600; color:#374151;';
+
+    overlay.innerHTML = `
+      <div style="background:#fff; border-radius:12px; padding:24px; max-width:520px; width:100%; max-height:92vh; overflow:auto;">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+          <h3 style="margin:0; font-size:1.1rem;">Bulk payment — ${escapeHtml(shopSelectedCustomer || '')}</h3>
+          <button onclick="document.getElementById('bulkPayOverlay').remove()" style="border:none; background:#F3F4F6; border-radius:8px; padding:4px 10px; cursor:pointer; font-size:18px;">×</button>
+        </div>
+        <div style="font-size:13px; color:#6B7280; margin-bottom:14px;">${bulkPayItems.length} invoice(s) · total balance <b style="color:#B91C1C;">Rs. ${numberFormat(totalBal)}</b>. Applied oldest-first; any shortfall stays on the newest invoice.</div>
+        <div style="display:flex; flex-direction:column; gap:12px;">
+          <label style="${labelStyle}">Total amount received (Rs.)
+            <input id="bulkPayAmount" type="number" step="0.01" min="0.01" value="${totalBal.toFixed(2)}" oninput="renderBulkAllocationPreview()" style="${inputStyle}">
+          </label>
+          <label style="${labelStyle}">Payment date
+            <input id="bulkPayDate" type="date" value="${today}" max="${today}" style="${inputStyle}">
+          </label>
+          <label style="${labelStyle}">Receiving bank
+            <select id="bulkPayBank" style="${inputStyle}">
+              <option value="">— Select bank —</option>
+              ${bankOptions}
+            </select>
+          </label>
+          <label style="${labelStyle}">Reference (optional)
+            <input id="bulkPayRef" type="text" maxlength="255" style="${inputStyle}">
+          </label>
+          <label style="${labelStyle}">Notes (optional)
+            <textarea id="bulkPayNotes" rows="2" maxlength="1000" style="${inputStyle}"></textarea>
+          </label>
+        </div>
+        <div style="margin-top:14px;">
+          <div style="font-size:12px; font-weight:700; color:#374151; margin-bottom:6px;">Allocation preview</div>
+          <div id="bulkPayPreview" style="border:1px solid #E5E7EB; border-radius:8px; overflow:hidden;"></div>
+        </div>
+        <div id="bulkPayError" style="color:#DC2626; font-size:13px; margin-top:10px; display:none;"></div>
+        <div style="display:flex; gap:10px; justify-content:flex-end; margin-top:18px;">
+          <button onclick="document.getElementById('bulkPayOverlay').remove()" style="padding:8px 16px; border:1px solid #D1D5DB; background:#fff; border-radius:8px; cursor:pointer;">Cancel</button>
+          <button id="bulkPaySubmit" onclick="submitBulkPayment()" style="padding:8px 16px; border:none; background:#10B981; color:#fff; border-radius:8px; cursor:pointer; font-weight:600;">Record bulk payment</button>
+        </div>
+      </div>`;
+    document.body.appendChild(overlay);
+    renderBulkAllocationPreview();
+}
+
+function renderBulkAllocationPreview() {
+    const box = document.getElementById('bulkPayPreview');
+    const submitBtn = document.getElementById('bulkPaySubmit');
+    if (!box) return;
+    const amount = parseFloat(document.getElementById('bulkPayAmount').value) || 0;
+    const res = computeBulkAllocation(bulkPayItems, amount);
+    if (!res.ok) {
+        box.innerHTML = `<div style="padding:12px; background:#FEF2F2; color:#B91C1C; font-size:13px;">${escapeHtml(res.error)}</div>`;
+        if (submitBtn) { submitBtn.disabled = true; submitBtn.style.opacity = '0.5'; submitBtn.style.cursor = 'not-allowed'; }
+        return;
+    }
+    let rows = '';
+    res.rows.forEach(r => {
+        const tag = r.fully
+            ? '<span style="color:#059669; font-weight:700;">Paid in full</span>'
+            : `<span style="color:#B45309; font-weight:700;">Rs. ${numberFormat(r.remainingAfter)} left</span>`;
+        rows += `<div style="display:flex; justify-content:space-between; gap:8px; padding:8px 12px; border-bottom:1px solid #F3F4F6; font-size:13px;">
+            <span>${escapeHtml(r.item.number)} <span style="color:#9CA3AF;">· ${formatDate(r.item.date)}</span></span>
+            <span>Rs. ${numberFormat(r.alloc)} · ${tag}</span>
+        </div>`;
+    });
+    box.innerHTML = rows;
+    if (submitBtn) { submitBtn.disabled = false; submitBtn.style.opacity = '1'; submitBtn.style.cursor = 'pointer'; }
+}
+
+async function submitBulkPayment() {
+    const errBox = document.getElementById('bulkPayError');
+    const btn = document.getElementById('bulkPaySubmit');
+    errBox.style.display = 'none';
+    const amount = parseFloat(document.getElementById('bulkPayAmount').value);
+    const bankId = document.getElementById('bulkPayBank').value;
+    if (!amount || amount <= 0) { errBox.textContent = 'Enter a valid amount.'; errBox.style.display = 'block'; return; }
+    if (!bankId) { errBox.textContent = 'Select which bank received this payment.'; errBox.style.display = 'block'; return; }
+    // Guard with the same rule the server enforces (server is authoritative).
+    const check = computeBulkAllocation(bulkPayItems, amount);
+    if (!check.ok) { errBox.textContent = check.error; errBox.style.display = 'block'; return; }
+
+    const payload = {
+        order_ids: bulkPayItems.map(it => parseInt(it.order_id)),
+        amount: amount,
+        receiving_account_id: bankId,
+        payment_date: document.getElementById('bulkPayDate').value || null,
+        reference: document.getElementById('bulkPayRef').value || null,
+        notes: document.getElementById('bulkPayNotes').value || null,
+    };
+    btn.disabled = true;
+    btn.textContent = 'Saving…';
+    try {
+        const res = await fetch('/orders/bulk-shop-payments', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-Requested-With': 'XMLHttpRequest',
+                'Accept': 'application/json',
+                'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').content,
+            },
+            body: JSON.stringify(payload),
+        });
+        const data = await res.json();
+        if (data.success) {
+            document.getElementById('bulkPayOverlay').remove();
+            clearShopSelection();
+            showToast(data.message || 'Bulk payment recorded.', 'success');
+            loadData();
+            refreshStats();
+        } else {
+            errBox.textContent = typeof data.message === 'string' ? data.message : 'Could not record bulk payment.';
+            errBox.style.display = 'block';
+            btn.disabled = false;
+            btn.textContent = 'Record bulk payment';
+        }
+    } catch (e) {
+        errBox.textContent = 'Network error. Please try again.';
+        errBox.style.display = 'block';
+        btn.disabled = false;
+        btn.textContent = 'Record bulk payment';
     }
 }
 
@@ -2341,14 +2616,16 @@ function formatPhoneForWhatsApp(phone) {
 }
 
 // ⭐ Per-customer report modal
-function openCustomerReport(customerName) {
+function openCustomerReport(customerName, itemsOverride) {
     const group = groupedItems.find(g => g.customer === customerName);
     if (!group || !group.items || group.items.length === 0) {
         showToast('No items found for this customer', 'error');
         return;
     }
-    
-    const items = group.items;
+
+    // When a shop multi-select is active, report only the chosen invoices;
+    // otherwise report the whole group (the 📋 header button).
+    const items = (Array.isArray(itemsOverride) && itemsOverride.length) ? itemsOverride : group.items;
     const totalAmount = items.reduce((sum, i) => sum + (parseFloat(i.amount) || 0), 0);
     const customerPhone = group.customer_phone;
     const waNumber = customerPhone ? formatPhoneForWhatsApp(customerPhone) : '';
@@ -2390,7 +2667,7 @@ function openCustomerReport(customerName) {
                 <div style="font-size: 11px; color: #10B981;">Total Amount</div>
             </div>
         </div>
-        <div style="max-height: 350px; overflow-y: auto; border: 1px solid #E5E7EB; border-radius: 8px;">
+        <div class="report-scroll" style="max-height: 350px; overflow-y: auto; border: 1px solid #E5E7EB; border-radius: 8px;">
             <table style="width: 100%; border-collapse: collapse;">
                 <thead>
                     <tr style="background: #F3F4F6;">
@@ -2458,7 +2735,15 @@ function printReport() {
     printWindow.document.write(`
         <html>
         <head><title>${title}</title>
-        <style>body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; padding: 20px; }</style>
+        <style>
+            body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; padding: 20px; }
+            /* Unclamp the on-screen scroll box so the FULL report prints, not just the visible rows. */
+            .report-scroll { max-height: none !important; overflow: visible !important; }
+            table { border-collapse: collapse; }
+            thead { display: table-header-group; } /* repeat the column headers on each printed page */
+            tr { page-break-inside: avoid; }
+            @page { margin: 12mm; }
+        </style>
         </head>
         <body>
             <h2>${title}</h2>
@@ -2467,6 +2752,7 @@ function printReport() {
         </html>
     `);
     printWindow.document.close();
+    printWindow.focus();
     printWindow.print();
 }
 
