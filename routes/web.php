@@ -112,7 +112,30 @@ Route::middleware(['auth'])->group(function () {
     Route::get('/dashboard/customer-list', [DashboardController::class, 'getCustomerList']);
     Route::get('/dashboard/month-customer-stats', [DashboardController::class, 'getMonthCustomerStats']);
     Route::get('/dashboard/frozen-sales', [DashboardController::class, 'getFrozenSales']);
-    
+
+    // ── HQ Executive Dashboard (Jul-2026, Phase 1) ─────────────────────────
+    // Read-only CEO "Monthly Closing" view. Additive: its own controller +
+    // service, no operational endpoint touched. Access gated in-controller to
+    // the same audience as /dashboard (invoices-only supervisors blocked).
+    Route::prefix('hq')->group(function () {
+        Route::get('/', [\App\Http\Controllers\HQ\ExecutiveDashboardController::class, 'index'])->name('hq.index');
+        Route::get('/closing', [\App\Http\Controllers\HQ\ExecutiveDashboardController::class, 'closing']);
+        Route::get('/trend', [\App\Http\Controllers\HQ\ExecutiveDashboardController::class, 'trend']);
+        Route::get('/working-capital', [\App\Http\Controllers\HQ\ExecutiveDashboardController::class, 'workingCapital']);
+        Route::get('/drill/revenue-daily', [\App\Http\Controllers\HQ\ExecutiveDashboardController::class, 'revenueDaily']);
+        Route::get('/drill/revenue-orders', [\App\Http\Controllers\HQ\ExecutiveDashboardController::class, 'revenueOrders']);
+        Route::get('/drill/vendors', [\App\Http\Controllers\HQ\ExecutiveDashboardController::class, 'vendors']);
+        Route::get('/drill/vendor', [\App\Http\Controllers\HQ\ExecutiveDashboardController::class, 'vendorDetail']);
+        Route::get('/drill/expenses', [\App\Http\Controllers\HQ\ExecutiveDashboardController::class, 'expenses']);
+        Route::get('/drill/expense', [\App\Http\Controllers\HQ\ExecutiveDashboardController::class, 'expenseDetail']);
+        Route::get('/drill/customers', [\App\Http\Controllers\HQ\ExecutiveDashboardController::class, 'customers']);
+        Route::get('/drill/receivables', [\App\Http\Controllers\HQ\ExecutiveDashboardController::class, 'receivables']);
+        Route::get('/drill/payables', [\App\Http\Controllers\HQ\ExecutiveDashboardController::class, 'payables']);
+        Route::get('/drill/assets', [\App\Http\Controllers\HQ\ExecutiveDashboardController::class, 'assets']);
+        Route::get('/drill/missing-invoices', [\App\Http\Controllers\HQ\ExecutiveDashboardController::class, 'missingInvoices']);
+    });
+
+
     // Log viewer routes
     Route::get('/logs', [LogController::class, 'index']);
     Route::get('/logs/data', [LogController::class, 'getLogs']);
@@ -146,7 +169,8 @@ Route::middleware(['auth'])->group(function () {
     Route::get('/orders/geocode-pending', [OrderController::class, 'geocodePendingCustomers'])->name('orders.geocode-pending'); // ⭐ Background geocoding
     Route::get('/orders/open-status-counts', [OrderController::class, 'getOpenOrdersStatusCounts'])->name('orders.open-status-counts');
     Route::get('/orders/rider-counts', [OrderController::class, 'getRiderOrdersCounts'])->name('orders.rider-counts');
-    
+    Route::get('/orders/new-since', [OrderController::class, 'newOrdersSince'])->name('orders.new-since'); // "N new orders" pill probe (must be before {id})
+
     // ⭐ RIDERS MAP: Standalone page
     Route::get('/riders-map', [OrderController::class, 'ridersMap'])->name('riders-map');
     
@@ -168,6 +192,10 @@ Route::middleware(['auth'])->group(function () {
     Route::get('/orders/open-quantities/data', [OrderController::class, 'openQuantitiesData'])->name('orders.open-quantities.data');
     Route::get('/orders/open-quantities/settings', [OrderController::class, 'getOpenQuantitiesSettings'])->name('orders.open-quantities.settings.get');
     Route::post('/orders/open-quantities/settings', [OrderController::class, 'saveOpenQuantitiesSettings'])->name('orders.open-quantities.settings.save');
+    // Phase 3 delivery package-scan toggles (operations area on the orders page). Static paths,
+    // defined BEFORE /orders/{id} so they are not captured as an {id}.
+    Route::get('/orders/delivery-scan/settings', [OrderController::class, 'getDeliveryScanSettings'])->name('orders.delivery-scan.settings.get');
+    Route::post('/orders/delivery-scan/settings', [OrderController::class, 'saveDeliveryScanSettings'])->name('orders.delivery-scan.settings.save');
     Route::get('/orders/{id}', [OrderController::class, 'show'])->name('orders.show');
     Route::get('/orders/{id}/invoice', [OrderController::class, 'invoice'])->name('orders.invoice');
     Route::get('/orders/{id}/edit-tab', [OrderController::class, 'editTab'])->name('orders.edit.tab');

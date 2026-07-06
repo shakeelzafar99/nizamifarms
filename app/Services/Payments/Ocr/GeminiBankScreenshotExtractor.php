@@ -79,14 +79,17 @@ class GeminiBankScreenshotExtractor
                 ->withQueryParameters(['key' => $apiKey])
                 ->post($endpoint, $payload);
         } catch (\Throwable $e) {
-            Log::error('GeminiExtractor: request failed', ['error' => $e->getMessage()]);
+            // SECURITY: a cURL/connection error message contains the full request
+            // URL, which includes ?key=<API_KEY>. Redact it so the key never
+            // reaches the log (a leaked key gets auto-disabled by Google).
+            Log::error('GeminiExtractor: request failed', ['error' => $this->redactKey($e->getMessage())]);
             return null;
         }
 
         if (!$response->successful()) {
             Log::error('GeminiExtractor: non-200 from Gemini', [
                 'status' => $response->status(),
-                'body'   => mb_substr($response->body(), 0, 500),
+                'body'   => $this->redactKey(mb_substr($response->body(), 0, 500)),
             ]);
             return null;
         }
@@ -94,7 +97,7 @@ class GeminiBankScreenshotExtractor
         $text = data_get($response->json(), 'candidates.0.content.parts.0.text');
         if (!$text) {
             Log::warning('GeminiExtractor: empty candidate text', [
-                'body' => mb_substr($response->body(), 0, 500),
+                'body' => $this->redactKey(mb_substr($response->body(), 0, 500)),
             ]);
             return null;
         }
@@ -124,17 +127,35 @@ class GeminiBankScreenshotExtractor
     private function prompt(): string
     {
         return <<<'TXT'
-You are reading a screenshot a customer sent over WhatsApp to confirm a bank
-transfer / mobile-wallet payment to a business called "Nizami Farms" in
-Pakistan. Banks include Meezan, HBL, JazzCash, Easypaisa, Bank Alfalah, etc.
+You are checking an image a customer sent over WhatsApp. It MAY be proof of a
+bank transfer / mobile-wallet payment to a business called "Nizami Farms" /
+"Nizami Meat" in Pakistan (banks: Meezan, HBL, JazzCash, Easypaisa, Bank
+Alfalah, Askari, Standard Chartered, MCB, etc.), OR it may be something
+unrelated (a photo of meat/products, a menu or price list, a chat, a meme, a
+random picture).
+
+IMPORTANT — the proof may be EITHER a clean digital SCREENSHOT or a PHOTO taken
+with a camera of a phone screen or a printed receipt. The MEDIUM does not
+matter: a clear photograph of a payment receipt counts EXACTLY like a
+screenshot. Do not reject an image just because it is a photo rather than a
+screenshot.
 
 Return ONLY the JSON object described by the schema. Rules:
-- is_payment_screenshot: true ONLY if this clearly shows a completed money
-  transfer/receipt (look for "Transaction Successful", an amount, a reference
-  number, from/to accounts). If it's a chat, a product photo, a meme, or
-  anything else, set it false and leave other fields null.
+- is_payment_screenshot: judge by CONTENT, not by whether it is a screenshot or
+  a photo. Set TRUE only when the image clearly shows a COMPLETED money transfer
+  / payment receipt — it must have transaction hallmarks: an amount AND at least
+  one of {a success line like "Transaction Successful"/"successful"/"sent"/
+  "paid"/"credited", a reference / transaction ID, a from/to account, or a
+  sender/receiver name}. Set FALSE for anything that is NOT a payment receipt:
+  product or food photos, menus, price lists, chats, memes, screenshots of other
+  apps, or random pictures — even if they are clear. When FALSE, leave the other
+  fields null.
 - amount: the transferred amount as a plain number, no currency symbol, no
-  thousands separators (e.g. "PKR 4,408" -> 4408).
+  thousands separators (e.g. "PKR 4,408" -> 4408). Report it ONLY if its digits
+  are CLEARLY legible. If the image is too blurry, dark, or angled to read the
+  amount with confidence, set amount to null — do NOT guess. A payment receipt
+  whose amount you cannot read is still is_payment_screenshot=true with amount
+  null (it will simply be ignored downstream).
 - reference: the transaction / reference / TID number exactly as shown.
 - sender_name: the FROM account holder's name exactly as printed.
 - sender_account_masked: the FROM account/phone as shown (may be masked like 0312xxx8227).
@@ -149,7 +170,8 @@ Return ONLY the JSON object described by the schema. Rules:
   put the SENDER's / "Sent by" / "Funding Source" number here. Return it verbatim
   so the last digits are preserved; null only if no receiving number is shown.
 - txn_datetime: ISO 8601 if you can (e.g. 2026-05-19T19:12:00); else the date text as shown; else null.
-- confidence: your 0.0-1.0 confidence that the extracted amount + reference are correct.
+- confidence: your 0.0-1.0 confidence that the extracted amount + reference are
+  correct. Lower it for blurry, dark, glare-heavy, or steeply-angled photos.
 Never invent values. Use null for anything not visibly present.
 TXT;
     }
@@ -195,5 +217,15 @@ TXT;
         }
         $value = preg_replace('/\s+/', ' ', trim((string) $value));
         return $value === '' ? null : $value;
+    }
+
+    /**
+     * Strip an API key from any text before it is logged. Guzzle connection
+     * errors embed the full request URL (…?key=AIza…); this ensures the key
+     * can never be written to a log file (and then leaked via a committed log).
+     */
+    private function redactKey(string $text): string
+    {
+        return (string) preg_replace('/([?&]key=)[A-Za-z0-9_\-]+/i', '$1***REDACTED***', $text);
     }
 }

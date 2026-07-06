@@ -1867,6 +1867,40 @@ class RiderController extends Controller
             $longitude = $request->input('longitude');
             $actualPackets = $request->input('actual_packets'); // Optional packet count from rider
 
+            // ── Phase 3: package-scan gate. DEFAULT OFF — only enforces when the owner has
+            //    turned on require_delivery_scan in the web operations settings. When OFF (or the
+            //    config columns don't exist yet), this whole block is inert and delivery behaves
+            //    exactly as before. `??` on a missing column is warning-free and reads as 0.
+            $scanCfg = \DB::table('t_sys_config')->where('id', 1)->first();
+            $requireScan = $scanCfg ? ((int) ($scanCfg->require_delivery_scan ?? 0) === 1) : false;
+            $allowBypass = $scanCfg ? ((int) ($scanCfg->allow_delivery_scan_bypass ?? 0) === 1) : false;
+
+            if ($requireScan) {
+                $scanCode = trim((string) $request->input('scan_code', ''));
+                $bypassReason = trim((string) $request->input('bypass_reason', ''));
+                // A scan is valid when the order-number part of the QR (before '|') matches THIS order.
+                $scanOrderNumber = $scanCode !== '' ? trim(explode('|', $scanCode)[0]) : '';
+                $scanMatches = $scanOrderNumber !== '' && $scanOrderNumber === (string) $order->order_number;
+
+                if ($scanMatches) {
+                    $notes .= ' (scan verified)';
+                } elseif ($bypassReason !== '' && $allowBypass) {
+                    $order->delivery_scan_bypass_reason = mb_substr($bypassReason, 0, 250);
+                    $order->save();
+                    $notes .= ' (scan bypassed: ' . mb_substr($bypassReason, 0, 100) . ')';
+                } else {
+                    return response()->json([
+                        'success' => false,
+                        'code' => 'scan_required',
+                        'require_scan' => true,
+                        'allow_bypass' => $allowBypass,
+                        'message' => $scanCode !== ''
+                            ? 'This package does not match this order — please scan the correct package.'
+                            : 'Please scan the package QR before marking delivered.',
+                    ], 422);
+                }
+            }
+
             // Log received GPS data for debugging
             \Log::info('Received GPS data from mobile app', [
                 'order_id' => $order->id,
@@ -1952,6 +1986,80 @@ class RiderController extends Controller
                 'success' => false,
                 'message' => 'Failed to mark order as delivered: ' . $e->getMessage(),
             ], 500);
+        }
+    }
+
+    /**
+     * Phase 3: verify a scanned package QR against the rider's assigned order.
+     * QR format = "ORDERNUMBER|index/total" (e.g. "SH-10457|1/2"). Read-only, never throws.
+     */
+    public function verifyDeliveryScan(Request $request)
+    {
+        try {
+            $user = Auth::user();
+            $code = trim((string) $request->input('code', ''));
+            if ($code === '') {
+                return response()->json(['success' => true, 'found' => false, 'message' => 'Nothing scanned']);
+            }
+
+            $parts = explode('|', $code);
+            $orderNumber = trim($parts[0] ?? '');
+            $packetIndex = null;
+            $packetTotal = null;
+            if (isset($parts[1]) && strpos($parts[1], '/') !== false) {
+                $pp = explode('/', $parts[1]);
+                $packetIndex = is_numeric(trim($pp[0] ?? '')) ? (int) trim($pp[0]) : null;
+                $packetTotal = is_numeric(trim($pp[1] ?? '')) ? (int) trim($pp[1]) : null;
+            }
+
+            if ($orderNumber === '') {
+                return response()->json(['success' => true, 'found' => false, 'message' => 'QR not recognised']);
+            }
+
+            $order = \App\Models\CRM\OrderModel::with('customer')->where('order_number', $orderNumber)->first();
+            if (!$order) {
+                return response()->json(['success' => true, 'found' => false, 'message' => 'No order found for this QR']);
+            }
+
+            $assignedToMe = ((int) $order->assigned_rider_user_id === (int) $user->id);
+            $alreadyDelivered = in_array($order->order_status, ['delivered', 'completed'], true);
+
+            return response()->json([
+                'success' => true,
+                'found' => true,
+                'assigned_to_me' => $assignedToMe,
+                'already_delivered' => $alreadyDelivered,
+                'order' => [
+                    'id' => $order->id,
+                    'order_number' => $order->order_number,
+                    'customer_name' => optional($order->customer)->name ?? ($order->address_name ?? null),
+                    'order_status' => $order->order_status,
+                ],
+                'packet' => ['index' => $packetIndex, 'total' => $packetTotal],
+                'message' => $assignedToMe
+                    ? ($alreadyDelivered ? 'This order is already delivered' : 'Package matches this order')
+                    : 'This package belongs to another rider',
+            ]);
+        } catch (\Exception $e) {
+            return response()->json(['success' => false, 'found' => false, 'message' => 'Could not verify the scan']);
+        }
+    }
+
+    /**
+     * Phase 3: delivery-scan config flags for the app (require + allow bypass). Defaults 0/0
+     * (scanning optional) when unset or the columns don't exist yet. Never throws.
+     */
+    public function getDeliveryScanConfig()
+    {
+        try {
+            $cfg = \DB::table('t_sys_config')->where('id', 1)->first();
+            return response()->json([
+                'success' => true,
+                'require_delivery_scan' => $cfg ? (int) ($cfg->require_delivery_scan ?? 0) : 0,
+                'allow_delivery_scan_bypass' => $cfg ? (int) ($cfg->allow_delivery_scan_bypass ?? 0) : 0,
+            ]);
+        } catch (\Exception $e) {
+            return response()->json(['success' => true, 'require_delivery_scan' => 0, 'allow_delivery_scan_bypass' => 0]);
         }
     }
 

@@ -25,7 +25,7 @@ use Illuminate\Support\Facades\DB;
 class InvoiceSendPlanService
 {
     /**
-     * @return array{template:string, body_params:array, eta:?string, payment_kind:string, name:string, order_number:string}|null
+     * @return array{template:string, body_params:array, eta:?string, payment_kind:string, name:string, order_number:string, total_price:float}|null
      *         null when the order id doesn't exist in the resolved table.
      */
     public static function for($orderId, bool $isShopify = false): ?array
@@ -62,6 +62,12 @@ class InvoiceSendPlanService
             'payment_kind' => $kind,
             'name'         => $name,
             'order_number' => (string) $orderNumber,
+            // Authoritative, current total so the Send-Invoice dialog header can
+            // show the up-to-date amount instead of trusting stale client-side
+            // orders-table row data (a barcode scan can reprice the order
+            // seconds before the dialog opens — see the invoice-total-mismatch
+            // investigation, WORKLOG 2026-07-06/07).
+            'total_price'  => (float) ($order->total_price ?? 0),
         ];
     }
 

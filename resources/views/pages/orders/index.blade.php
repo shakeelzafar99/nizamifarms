@@ -1184,6 +1184,17 @@ button[onclick*="switchToShopifyApprovals"] { display: none !important; }
                                             <span class="kt-menu-title">Get Customer Locations</span>
                                         </button>
                                     </div>
+
+                                    <div class="kt-menu-item">
+                                        <button type="button" onclick="openDeliveryScanSettings()" class="kt-menu-link nf-more-item">
+                                            <span class="kt-menu-icon" style="color:#0f766e;">
+                                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 11c0-1.105.895-2 2-2s2 .895 2 2-.895 2-2 2m-6 6h12a2 2 0 002-2V7a2 2 0 00-2-2H6a2 2 0 00-2 2v8a2 2 0 002 2z"></path>
+                                                </svg>
+                                            </span>
+                                            <span class="kt-menu-title">Delivery scan settings</span>
+                                        </button>
+                                    </div>
                                     @endif
                                 </div>
                             </div>
@@ -1713,8 +1724,59 @@ button[onclick*="switchToShopifyApprovals"] { display: none !important; }
     document.querySelectorAll('#nfRiderCardsRow .nfrc-row').forEach(function(c){ c.classList.remove('nfrc-sel'); });
     var card = document.querySelector('#nfRiderCardsRow [data-rider="'+riderId+'"]');
     if(card) card.classList.add('nfrc-sel');
-    nfApplyRiderFilter();
     nfShowRiderChip(label);
+    // Refresh the open-orders data BEFORE filtering, so the filter reflects LIVE
+    // assignments/dispatch rather than the page's load-time snapshot. This is
+    // what fixes "click a rider -> table filters to empty" when the order was
+    // assigned/dispatched/created after the page loaded (the Riders-Live board
+    // polls fresh every 30s; the table snapshot did not). Fails safe: if the
+    // refresh can't run, it filters whatever rows are already on screen (the
+    // old behaviour). Self-contained so it can't destabilise the render pipeline.
+    nfRefreshThenApplyRiderFilter();
+  };
+  // Re-pull the current open-orders view then apply the rider show/hide on the
+  // FRESH rows. Only fires from a rider click. Delegates the refetch to the
+  // shared helper so the rider filter and the "new orders" pill stay in lock-step.
+  function nfRefreshThenApplyRiderFilter(){
+    if(typeof window.nfRefreshCurrentOrdersView === 'function'){
+      window.nfRefreshCurrentOrdersView().then(function(){ nfApplyRiderFilter(); });
+    } else {
+      nfApplyRiderFilter();
+    }
+  }
+  // Shared: re-pull the CURRENT orders view (source/tab + any active search /
+  // status / date filters) and re-render it via the shared renderer. Returns a
+  // Promise that resolves once the table has been refreshed (resolves false on
+  // failure — fail safe). Used by the rider filter AND the "new orders" pill.
+  window.nfRefreshCurrentOrdersView = function(){
+    return new Promise(function(resolve){
+      try{
+        var cur = new URL(window.location);
+        var source = window.currentSource || cur.searchParams.get('source') || 'other';
+        var tab = window.currentTab || cur.searchParams.get('tab') || 'open';
+        var params = new URLSearchParams();
+        params.append('source', source);
+        params.append('tab', tab);
+        var searchEl = document.getElementById('orderSearch');
+        var term = searchEl ? String(searchEl.value || '').trim() : '';
+        if(term) params.append('search', term);
+        var statusEl = document.getElementById('statusFilter'); if(statusEl && statusEl.value) params.append('status', statusEl.value);
+        var dateEl = document.getElementById('dateFilter'); if(dateEl && dateEl.value) params.append('date', dateEl.value);
+        var ddEl = document.getElementById('deliveryDateFilter'); if(ddEl && ddEl.value) params.append('delivery_date', ddEl.value);
+        var container = document.querySelector('.orders-table-container');
+        if(container) container.classList.add('opacity-60');
+        fetch('/orders/filter?' + params.toString(), { headers:{ 'X-Requested-With':'XMLHttpRequest', 'Accept':'application/json' }, credentials:'same-origin' })
+          .then(function(r){ return r.json(); })
+          .then(function(d){
+            if(d && d.success && Array.isArray(d.orders) && typeof renderOrdersWithFilters === 'function'){
+              renderOrdersWithFilters(d.orders); // sets window.ordersData + re-renders the table body
+            }
+            resolve(true);
+          })
+          .catch(function(){ resolve(false); })
+          .finally(function(){ if(container) container.classList.remove('opacity-60'); });
+      }catch(e){ resolve(false); }
+    });
   };
   function nfApplyRiderFilter(){
     var rid = window.__nfRiderFilter;
@@ -1740,6 +1802,98 @@ button[onclick*="switchToShopifyApprovals"] { display: none !important; }
     if(!chip){ chip = document.createElement('span'); chip.id = 'nfRiderChip'; chip.onclick = window.nfClearRiderFilter; host.parentNode.appendChild(chip); }
     chip.innerHTML = 'Filtered: ' + esc(label) + ' <span style="opacity:.7">✕</span>';
   }
+})();
+</script>
+
+<script>
+// NF (2026-07): "N new orders — click to load" pill for the open-orders table.
+// Detects NEW orders by highest order id (which only ever increases), NOT by a
+// churny open-order count — so heavy delivery volume can never mask a new
+// arrival (a delivery leaving the open set never mints a higher id). Cheap: one
+// tiny COUNT/MAX probe every 30s, ONLY while the tab is visible and on a live
+// (non-Shopify) open-orders view. Nothing on screen moves until the user clicks
+// the pill; the click reuses window.nfRefreshCurrentOrdersView(). Fail-open.
+(function(){
+  var baselineId = null;    // highest order id the user has "seen" in this view
+  var lastScopeKey = null;  // source|tab — auto-reseed when the view changes
+  var timer = null;
+
+  function scope(){
+    var cur = new URL(window.location);
+    return {
+      source: window.currentSource || cur.searchParams.get('source') || 'other',
+      tab: window.currentTab || cur.searchParams.get('tab') || 'open'
+    };
+  }
+  // Only watch the LIVE orders table (NF + accepted-Shopify land here). Pending
+  // Shopify staging is the approvals badge's job. Watch open/riders/all tabs.
+  function watching(){
+    var s = scope();
+    return s.source !== 'shopify' && (s.tab === 'open' || s.tab === 'riders' || s.tab === 'all');
+  }
+  function ensurePill(){
+    var pill = document.getElementById('nfNewOrdersPill');
+    if(pill) return pill;
+    pill = document.createElement('button');
+    pill.id = 'nfNewOrdersPill';
+    pill.type = 'button';
+    pill.style.cssText = 'display:none;align-items:center;gap:8px;margin:6px 0 10px;padding:8px 14px;background:#2563eb;color:#fff;border:none;border-radius:999px;font-size:13px;font-weight:600;cursor:pointer;box-shadow:0 2px 10px rgba(37,99,235,.3);';
+    pill.onclick = onClick;
+    var container = document.querySelector('.orders-table-container');
+    if(container && container.parentNode){ container.parentNode.insertBefore(pill, container); }
+    else { document.body.appendChild(pill); }
+    return pill;
+  }
+  function show(n){
+    var pill = ensurePill();
+    pill.innerHTML = '↻ ' + n + ' new order' + (n === 1 ? '' : 's') + ' — click to load';
+    pill.style.display = 'inline-flex';
+  }
+  function hide(){
+    var pill = document.getElementById('nfNewOrdersPill');
+    if(pill) pill.style.display = 'none';
+  }
+  function probe(afterId){
+    var s = scope();
+    var params = new URLSearchParams();
+    params.append('after_id', afterId == null ? 0 : afterId);
+    params.append('source', s.source);
+    params.append('tab', s.tab);
+    return fetch('/orders/new-since?' + params.toString(), { headers:{ 'X-Requested-With':'XMLHttpRequest', 'Accept':'application/json' }, credentials:'same-origin' })
+      .then(function(r){ return r.json(); })
+      .catch(function(){ return null; });
+  }
+  // Establish (or re-establish) the baseline as the current highest id for this
+  // view, and clear the pill. Called on load, on view change, and after a load.
+  function reseed(){
+    var s = scope();
+    lastScopeKey = s.source + '|' + s.tab;
+    return probe(0).then(function(d){
+      if(d && d.success){ baselineId = d.max_id; }
+      hide();
+    });
+  }
+  window.nfNewOrdersReseed = reseed; // exposed so a manual refresh can reset it
+  function onClick(){
+    hide();
+    if(typeof window.nfRefreshCurrentOrdersView === 'function'){
+      window.nfRefreshCurrentOrdersView().then(function(){ reseed(); });
+    } else { reseed(); }
+  }
+  function poll(){
+    if(document.hidden) return;              // don't poll hidden tabs
+    if(!watching()){ hide(); return; }       // not a live open-orders view
+    var key = scope().source + '|' + scope().tab;
+    if(key !== lastScopeKey){ reseed(); return; }  // view changed -> new baseline
+    if(baselineId == null){ reseed(); return; }
+    probe(baselineId).then(function(d){
+      if(!d || !d.success) return;
+      if(d.count > 0) show(d.count); else hide();
+    });
+  }
+  function start(){ reseed(); if(timer) clearInterval(timer); timer = setInterval(poll, 30000); }
+  if(document.readyState === 'loading'){ document.addEventListener('DOMContentLoaded', start); }
+  else { start(); }
 })();
 </script>
 
@@ -3476,7 +3630,7 @@ function openSendInvoiceWhatsApp() {
                     </div>
                     <div>
                         <div style="font-size:11px;color:#6b7280;margin-bottom:2px;">Order</div>
-                        <div style="font-size:14px;font-weight:600;color:#111827;">#${escHtml(orderNum)} — Rs. ${parseFloat(order?.total_price || 0).toLocaleString()}</div>
+                        <div id="waInvHeaderTotal" style="font-size:14px;font-weight:600;color:#111827;">#${escHtml(orderNum)} — Rs. ${parseFloat(order?.total_price || 0).toLocaleString()}</div>
                     </div>
                 </div>
                 <div style="margin-bottom:12px;">
@@ -3636,6 +3790,16 @@ function regWaPreselectInvoiceByPayment(paymentMethod, sel, tpls) {
             // Remember the resolved delivery window so onRegularInvoiceTemplateChange
             // can fill it in for 3-var templates (now and on any later template switch).
             _regWaEta = d.eta || '';
+            // Refresh the dialog header with the CURRENT server-side total. The
+            // header was seeded from the orders-table row, which can be stale
+            // (a barcode scan may reprice the order seconds before this dialog
+            // opens). The send-plan is source-aware and just re-read the order,
+            // so this is the authoritative amount. Display-only — the actual
+            // invoice image is captured server-fresh at send time regardless.
+            if (d.total_price != null) {
+                var htotal = document.getElementById('waInvHeaderTotal');
+                if (htotal) htotal.textContent = '#' + (_regWaOrderNum || '') + ' — Rs. ' + parseFloat(d.total_price).toLocaleString();
+            }
             var found = (tpls || []).some(function(t){ return t.name === d.template; });
             if (found) { sel.value = d.template; }
             // Re-fill the body vars for whatever template is now selected.
@@ -17909,6 +18073,47 @@ document.addEventListener('DOMContentLoaded', function() {
         }, 500);
     }
 });
+</script>
+
+<script>
+/* Phase 3 — Delivery package-scan settings modal (opened from the operations "More" menu).
+   Self-contained: builds its own modal in JS so it cannot disturb this large blade's HTML
+   structure. Reads/writes the two flags via /orders/delivery-scan/settings. */
+(function(){
+  function csrf(){ var m=document.querySelector('meta[name="csrf-token"]'); return m?m.getAttribute('content'):''; }
+  var overlay=null;
+  function hide(){ if(overlay) overlay.style.display='none'; }
+  function save(){
+    var req=overlay.querySelector('#dss-require').checked, byp=overlay.querySelector('#dss-bypass').checked;
+    fetch('/orders/delivery-scan/settings',{method:'POST',headers:{'Content-Type':'application/json','X-Requested-With':'XMLHttpRequest','X-CSRF-TOKEN':csrf()},body:JSON.stringify({require_delivery_scan:req?1:0,allow_delivery_scan_bypass:byp?1:0})})
+      .then(function(r){return r.json();}).then(function(d){ hide(); alert(d&&d.success?'Delivery scan settings saved.':'Could not save settings.'); })
+      .catch(function(){ alert('Could not save settings.'); });
+  }
+  function build(){
+    overlay=document.createElement('div');
+    overlay.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,0.45);z-index:100000;display:none;align-items:center;justify-content:center;padding:16px;';
+    overlay.innerHTML='<div style="background:#fff;border-radius:12px;max-width:460px;width:100%;padding:20px;">'
+      +'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;"><h3 style="margin:0;font-size:18px;font-weight:700;color:#0f172a;">Delivery package scan</h3><button id="dss-close" style="border:none;background:none;font-size:24px;cursor:pointer;color:#64748b;line-height:1;">&times;</button></div>'
+      +'<p style="margin:0 0 14px;font-size:13px;color:#64748b;">Whether riders must scan the package QR before marking an order delivered.</p>'
+      +'<label style="display:flex;align-items:flex-start;gap:10px;padding:12px;border:1px solid #e2e8f0;border-radius:8px;margin-bottom:10px;cursor:pointer;"><input type="checkbox" id="dss-require" style="margin-top:3px;width:18px;height:18px;"><span><b style="color:#0f172a;">Require scan before delivery</b><br><span style="font-size:12px;color:#64748b;">On = rider must scan the correct package QR to mark delivered. Off = optional (current behaviour).</span></span></label>'
+      +'<label style="display:flex;align-items:flex-start;gap:10px;padding:12px;border:1px solid #e2e8f0;border-radius:8px;margin-bottom:16px;cursor:pointer;"><input type="checkbox" id="dss-bypass" style="margin-top:3px;width:18px;height:18px;"><span><b style="color:#0f172a;">Allow rider to bypass (with reason)</b><br><span style="font-size:12px;color:#64748b;">If scanning fails, the rider can deliver without scanning by typing a reason (logged). Only applies when Require scan is on.</span></span></label>'
+      +'<div style="display:flex;gap:10px;justify-content:flex-end;"><button id="dss-cancel" style="padding:9px 16px;border:1px solid #cbd5e1;background:#fff;border-radius:8px;font-weight:600;cursor:pointer;color:#334155;">Cancel</button><button id="dss-save" style="padding:9px 16px;border:none;background:#0f766e;color:#fff;border-radius:8px;font-weight:700;cursor:pointer;">Save</button></div></div>';
+    document.body.appendChild(overlay);
+    overlay.querySelector('#dss-close').onclick=hide;
+    overlay.querySelector('#dss-cancel').onclick=hide;
+    overlay.querySelector('#dss-save').onclick=save;
+    overlay.addEventListener('click',function(e){ if(e.target===overlay) hide(); });
+  }
+  window.openDeliveryScanSettings=function(){
+    if(!overlay) build();
+    overlay.style.display='flex';
+    overlay.querySelector('#dss-require').checked=false;
+    overlay.querySelector('#dss-bypass').checked=false;
+    fetch('/orders/delivery-scan/settings',{headers:{'X-Requested-With':'XMLHttpRequest'}})
+      .then(function(r){return r.json();}).then(function(d){ if(d){ overlay.querySelector('#dss-require').checked=!!Number(d.require_delivery_scan); overlay.querySelector('#dss-bypass').checked=!!Number(d.allow_delivery_scan_bypass); } })
+      .catch(function(){});
+  };
+})();
 </script>
 
 @endpush

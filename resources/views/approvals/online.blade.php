@@ -528,8 +528,25 @@
         <span class="count"><span id="selectedCount">0</span> selected &bull; <span style="color: #34D399; font-weight: 700;">Rs. <span id="selectedAmount">0</span></span></span>
         <button class="clear-btn" onclick="clearSelection()">✕ Clear</button>
         <button style="background: #25D366; color: white; border: none; padding: 8px 16px; border-radius: 8px; font-weight: 600; font-size: 13px; cursor: pointer; display: inline-flex; align-items: center; gap: 6px;" onclick="sendPaymentReminder()">💬 Payment Reminder</button>
+        <button id="bulkAssignBankBtn" style="background: #F0F9FF; color: #0369A1; border: 1px solid #BAE6FD; padding: 8px 16px; border-radius: 8px; font-weight: 600; font-size: 13px; cursor: pointer;" onclick="openBulkAssignBank()" title="Assign a bank to selected items that have no detected bank, so they can be approved">🏦 Assign bank</button>
         <button class="full-approve-btn" onclick="fullApproveSelected()">✓ Full Approve</button>
         <button class="l1-approve-btn" onclick="l1ApproveSelected()">→ L1 Only</button>
+    </div>
+</div>
+
+<!-- ⭐ Bulk "assign bank" overlay (for selected invoices with no detected bank) -->
+<div id="bulkAssignBankOverlay" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.5); z-index:10002; align-items:center; justify-content:center; padding:20px;" onclick="if(event.target===this) closeBulkAssignBank()">
+    <div style="background:#fff; border-radius:14px; padding:22px; max-width:460px; width:100%;" onclick="event.stopPropagation()">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+            <h3 style="margin:0; font-size:1.05rem; font-weight:700; color:#111827;">🏦 Assign bank to selected</h3>
+            <button onclick="closeBulkAssignBank()" style="border:none; background:#F3F4F6; border-radius:8px; padding:4px 10px; cursor:pointer; font-size:18px;">×</button>
+        </div>
+        <p style="font-size:12px; color:#6B7280; margin:0 0 12px;">Items that already have a detected or tagged bank keep theirs. Items with <b>no</b> bank (e.g. proof sent to another WhatsApp number) will use the bank you pick here so they can be approved.</p>
+        <div id="bulkAssignBankChips" style="display:flex; flex-wrap:wrap; gap:6px;"></div>
+        <div style="display:flex; gap:10px; justify-content:flex-end; margin-top:16px;">
+            <button onclick="clearBulkAssignBank()" style="padding:8px 14px; border:1px solid #D1D5DB; background:#fff; border-radius:8px; cursor:pointer; font-size:13px;">Clear</button>
+            <button onclick="closeBulkAssignBank()" style="padding:8px 16px; border:none; background:#0369A1; color:#fff; border-radius:8px; cursor:pointer; font-weight:600; font-size:13px;">Done</button>
+        </div>
     </div>
 </div>
 
@@ -538,11 +555,13 @@
 @push('modals')
 <!-- Approval Modal (Single Item) -->
 <div id="approvalModal" style="display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.6); backdrop-filter: blur(4px); z-index: 10000; justify-content: center; align-items: center;" onclick="if(event.target === this) closeModal()">
-    <div style="background: white; border-radius: 16px; box-shadow: 0 25px 50px -12px rgba(0,0,0,0.25); width: 100%; max-width: 420px; margin: 20px; overflow: hidden;" onclick="event.stopPropagation()">
-        <div style="padding: 20px 24px; border-bottom: 1px solid #e5e7eb; display: flex; align-items: center; justify-content: space-between;">
+    <div style="background: white; border-radius: 16px; box-shadow: 0 25px 50px -12px rgba(0,0,0,0.25); width: 100%; max-width: 420px; margin: 20px; overflow: hidden; display: flex; flex-direction: column; max-height: calc(100vh - 40px);" onclick="event.stopPropagation()">
+        <div style="padding: 20px 24px; border-bottom: 1px solid #e5e7eb; display: flex; align-items: center; justify-content: space-between; flex-shrink: 0;">
             <h3 id="modalTitle" style="font-size: 18px; font-weight: 700; color: #111827; margin: 0;">Approve Invoice</h3>
             <button onclick="closeModal()" style="background: none; border: none; font-size: 24px; color: #9ca3af; cursor: pointer; padding: 0; line-height: 1;">&times;</button>
         </div>
+        <!-- Scrollable content region — keeps the header + footer (Approve button) fixed so the button stays reachable when a proof image makes the body tall -->
+        <div id="approvalModalScroll" style="overflow-y: auto; overflow-x: hidden; flex: 1 1 auto; -webkit-overflow-scrolling: touch;">
         <div id="modalBody" style="padding: 24px;">
             <!-- Modal content will be loaded here -->
         </div>
@@ -580,7 +599,9 @@
             <input type="text" id="transactionReferenceInput" placeholder="e.g. TX-9871231 or banking app reference"
                    style="width:100%; padding:8px 12px; border:1px solid #d1d5db; border-radius:6px; font-size:13px;">
         </div>
-        <div style="padding: 20px 24px; background: #f9fafb; border-top: 1px solid #e5e7eb; display: flex; gap: 12px;">
+        </div>
+        <!-- /scrollable content region -->
+        <div style="padding: 20px 24px; background: #f9fafb; border-top: 1px solid #e5e7eb; display: flex; gap: 12px; flex-shrink: 0;">
             <button id="modalApproveBtn" onclick="confirmApprove()" style="flex: 1; background: #16a34a; color: white; font-weight: 600; padding: 14px 20px; border-radius: 10px; border: none; cursor: pointer; font-size: 15px; transition: background 0.2s;">
                 ✓ Full Approve
             </button>
@@ -596,15 +617,15 @@
 
 <!-- Bulk Approval Modal -->
 <div id="bulkApprovalModal" style="display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.6); backdrop-filter: blur(4px); z-index: 10000; justify-content: center; align-items: center;" onclick="if(event.target === this) closeBulkModal()">
-    <div style="background: white; border-radius: 16px; box-shadow: 0 25px 50px -12px rgba(0,0,0,0.25); width: 100%; max-width: 450px; margin: 20px; overflow: hidden;" onclick="event.stopPropagation()">
-        <div style="padding: 20px 24px; border-bottom: 1px solid #e5e7eb; display: flex; align-items: center; justify-content: space-between;">
+    <div style="background: white; border-radius: 16px; box-shadow: 0 25px 50px -12px rgba(0,0,0,0.25); width: 100%; max-width: 450px; margin: 20px; overflow: hidden; display: flex; flex-direction: column; max-height: calc(100vh - 40px);" onclick="event.stopPropagation()">
+        <div style="padding: 20px 24px; border-bottom: 1px solid #e5e7eb; display: flex; align-items: center; justify-content: space-between; flex-shrink: 0;">
             <h3 id="bulkModalTitle" style="font-size: 18px; font-weight: 700; color: #111827; margin: 0;">Bulk Approval</h3>
             <button onclick="closeBulkModal()" style="background: none; border: none; font-size: 24px; color: #9ca3af; cursor: pointer; padding: 0; line-height: 1;">&times;</button>
         </div>
-        <div id="bulkModalBody" style="padding: 24px;">
+        <div id="bulkModalBody" style="padding: 24px; overflow-y: auto; overflow-x: hidden; flex: 1 1 auto; -webkit-overflow-scrolling: touch;">
             <!-- Bulk modal content will be loaded here -->
         </div>
-        <div style="padding: 20px 24px; background: #f9fafb; border-top: 1px solid #e5e7eb;">
+        <div style="padding: 20px 24px; background: #f9fafb; border-top: 1px solid #e5e7eb; flex-shrink: 0;">
             <div style="display: flex; flex-direction: column; gap: 12px;">
                 <!-- Full Approve Button -->
                 <button id="bulkFullApproveBtn" onclick="confirmBulkApprove('full')" style="width: 100%; background: linear-gradient(135deg, #16a34a 0%, #15803d 100%); color: white; font-weight: 600; padding: 16px 20px; border-radius: 10px; border: none; cursor: pointer; font-size: 15px; display: flex; align-items: center; justify-content: center; gap: 8px; transition: transform 0.2s, box-shadow 0.2s;" onmouseover="this.style.transform='translateY(-1px)'; this.style.boxShadow='0 4px 12px rgba(22,163,74,0.4)';" onmouseout="this.style.transform='none'; this.style.boxShadow='none';">
@@ -631,15 +652,15 @@
 
 <!-- ⭐ Customer Report Modal -->
 <div id="reportModal" style="display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.6); backdrop-filter: blur(4px); z-index: 10000; justify-content: center; align-items: center;" onclick="if(event.target === this) closeReportModal()">
-    <div style="background: white; border-radius: 16px; box-shadow: 0 25px 50px -12px rgba(0,0,0,0.25); width: 100%; max-width: 520px; margin: 20px; overflow: hidden;" onclick="event.stopPropagation()">
-        <div style="padding: 20px 24px; border-bottom: 1px solid #e5e7eb; display: flex; align-items: center; justify-content: space-between;">
+    <div style="background: white; border-radius: 16px; box-shadow: 0 25px 50px -12px rgba(0,0,0,0.25); width: 100%; max-width: 520px; margin: 20px; overflow: hidden; display: flex; flex-direction: column; max-height: calc(100vh - 40px);" onclick="event.stopPropagation()">
+        <div style="padding: 20px 24px; border-bottom: 1px solid #e5e7eb; display: flex; align-items: center; justify-content: space-between; flex-shrink: 0;">
             <h3 id="reportModalTitle" style="font-size: 18px; font-weight: 700; color: #111827; margin: 0;">📋 Report</h3>
             <button onclick="closeReportModal()" style="background: none; border: none; font-size: 24px; color: #9ca3af; cursor: pointer; padding: 0; line-height: 1;">&times;</button>
         </div>
-        <div id="reportModalBody" style="padding: 24px;">
+        <div id="reportModalBody" style="padding: 24px; overflow-y: auto; overflow-x: hidden; flex: 1 1 auto; -webkit-overflow-scrolling: touch;">
             <!-- Report content will be loaded here -->
         </div>
-        <div style="padding: 16px 24px; background: #f9fafb; border-top: 1px solid #e5e7eb; display: flex; flex-direction: column; gap: 10px;">
+        <div style="padding: 16px 24px; background: #f9fafb; border-top: 1px solid #e5e7eb; display: flex; flex-direction: column; gap: 10px; flex-shrink: 0;">
             <div style="display: flex; gap: 10px;">
                 <button onclick="copyReportText()" style="flex: 1; background: #F3F4F6; color: #374151; font-weight: 600; padding: 12px 16px; border-radius: 10px; border: 1px solid #D1D5DB; cursor: pointer; font-size: 14px; transition: background 0.2s;" onmouseover="this.style.background='#E5E7EB'" onmouseout="this.style.background='#F3F4F6'">
                     📋 Copy Text
@@ -984,6 +1005,9 @@ function renderItems(groups) {
         // checkboxes. Each row offers Add Payment / View payments instead.
         if (isShopTab) {
             const outstanding = group.items.reduce((s, it) => s + (parseFloat(it.balance_remaining) || 0), 0);
+            // First selectable (unpaid/partial) invoice — used by the group
+            // "Select all" button, which selects every unpaid invoice of this shop.
+            const shopFirstSelectable = (group.items.find(it => (parseFloat(it.balance_remaining) || 0) > 0.01) || {}).order_id;
             html += `
             <div class="customer-group">
                 <div class="customer-group-header ${colorClass}">
@@ -994,6 +1018,9 @@ function renderItems(groups) {
                     </div>
                     <div class="customer-actions">
                         <span class="customer-total" title="Outstanding balance">Outstanding: Rs. ${numberFormat(outstanding)}</span>
+                        ${shopFirstSelectable ? `
+                        <button class="approve-group-btn" style="background: #EEF2FF; color: #4F46E5; border: 1px solid #C7D2FE;" onclick="selectAllShopGroup(${shopFirstSelectable})" title="Select all unpaid invoices of ${escapeHtml(group.customer)} for a bulk payment">☑ All</button>
+                        ` : ''}
                         ${group.customer_phone && formatPhoneForWhatsApp(group.customer_phone) ? `
                         <a href="https://wa.me/${formatPhoneForWhatsApp(group.customer_phone)}" target="_blank"
                            class="approve-group-btn" style="background: #25D366; text-decoration: none; display: inline-flex; align-items: center; gap: 4px; color: white;"
@@ -1142,6 +1169,25 @@ function renderShopRow(item) {
 }
 
 // Shop tab — add an incremental payment against a shop order.
+// ⭐ Reusable receiving-bank CHIP picker (used by shop single/bulk payment and
+// the bulk-assign-bank flow) — same bubble style as the approve modal. Chips
+// render into #containerId; the chosen id lives on window[stateKey]. No "None"
+// chip: the bank is mandatory for these flows.
+function renderReceivingBankChips(containerId, stateKey) {
+    const c = document.getElementById(containerId);
+    if (!c) return;
+    const sel = window[stateKey] || '';
+    c.innerHTML = (receivingAccounts || []).map(a => {
+        const active = String(sel) === String(a.id);
+        const color = a.color_hex || '#3B82F6';
+        return `<button type="button" onclick="selectReceivingBankChip('${containerId}','${stateKey}',${a.id})" style="padding:6px 14px; border-radius:16px; border:1px solid ${active ? color : '#CBD5E1'}; background:${active ? color : '#F1F5F9'}; color:${active ? '#fff' : '#475569'}; font-size:13px; font-weight:600; cursor:pointer;">${escapeHtml(a.short_code || a.name)}</button>`;
+    }).join('');
+}
+function selectReceivingBankChip(containerId, stateKey, id) {
+    window[stateKey] = id;
+    renderReceivingBankChips(containerId, stateKey);
+}
+
 function openShopPaymentModal(orderId, orderNumber, total, paid) {
     const remaining = Math.max(0, (parseFloat(total) || 0) - (parseFloat(paid) || 0));
     let overlay = document.getElementById('shopPayOverlay');
@@ -1152,9 +1198,6 @@ function openShopPaymentModal(orderId, orderNumber, total, paid) {
     overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
 
     const today = new Date().toISOString().slice(0, 10);
-    const bankOptions = (receivingAccounts || []).map(a =>
-        `<option value="${a.id}">${escapeHtml(a.name)}${a.short_code ? ' (' + escapeHtml(a.short_code) + ')' : ''}</option>`
-    ).join('');
 
     overlay.innerHTML = `
       <div style="background:#fff; border-radius:12px; padding:24px; max-width:440px; width:100%;">
@@ -1170,12 +1213,9 @@ function openShopPaymentModal(orderId, orderNumber, total, paid) {
           <label style="font-size:13px; font-weight:600; color:#374151;">Payment date
             <input id="shopPayDate" type="date" value="${today}" max="${today}" style="margin-top:4px; width:100%; padding:8px; border:1px solid #D1D5DB; border-radius:8px;">
           </label>
-          <label style="font-size:13px; font-weight:600; color:#374151;">Receiving bank
-            <select id="shopPayBank" style="margin-top:4px; width:100%; padding:8px; border:1px solid #D1D5DB; border-radius:8px;">
-              <option value="">— Select bank —</option>
-              ${bankOptions}
-            </select>
-          </label>
+          <div style="font-size:13px; font-weight:600; color:#374151;">🏦 Receiving bank <span style="color:#DC2626;">*</span>
+            <div id="shopPaySingleBankChips" style="display:flex; flex-wrap:wrap; gap:6px; margin-top:6px;"></div>
+          </div>
           <label style="font-size:13px; font-weight:600; color:#374151;">Reference (optional)
             <input id="shopPayRef" type="text" maxlength="255" style="margin-top:4px; width:100%; padding:8px; border:1px solid #D1D5DB; border-radius:8px;">
           </label>
@@ -1190,6 +1230,9 @@ function openShopPaymentModal(orderId, orderNumber, total, paid) {
         </div>
       </div>`;
     document.body.appendChild(overlay);
+    // Render the bank chips (bubble style) — selection stored on window.shopPaySingleBank.
+    window.shopPaySingleBank = '';
+    renderReceivingBankChips('shopPaySingleBankChips', 'shopPaySingleBank');
 }
 
 async function submitShopPayment(orderId) {
@@ -1203,7 +1246,7 @@ async function submitShopPayment(orderId) {
         return;
     }
     // Bank is mandatory for online payments (per-bank balance tracking).
-    const shopBankId = document.getElementById('shopPayBank').value;
+    const shopBankId = window.shopPaySingleBank || '';
     if (!shopBankId) {
         errBox.textContent = 'Select which bank received this payment.';
         errBox.style.display = 'block';
@@ -1350,6 +1393,27 @@ function toggleShopItem(orderId) {
     updateShopSelectionUI();
 }
 
+// Select (or, if already all selected, clear) every unpaid invoice of ONE shop
+// customer — for a quick bulk payment. Identified by any of its order ids so we
+// never embed the (quote-unsafe) customer name in the onclick.
+function selectAllShopGroup(anyOrderId) {
+    anyOrderId = parseInt(anyOrderId);
+    const group = groupedItems.find(g => (g.items || []).some(it => parseInt(it.order_id) === anyOrderId));
+    if (!group) return;
+    const selectable = (group.items || []).filter(it => (parseFloat(it.balance_remaining) || 0) > 0.01);
+    if (!selectable.length) return;
+    const sameCustomer = shopSelectedCustomer === group.customer;
+    const allSelected = sameCustomer && selectable.every(it => shopSelectedOrderIds.has(parseInt(it.order_id)));
+    shopSelectedOrderIds.clear();
+    if (allSelected) {
+        shopSelectedCustomer = null; // toggle off
+    } else {
+        shopSelectedCustomer = group.customer;
+        selectable.forEach(it => shopSelectedOrderIds.add(parseInt(it.order_id)));
+    }
+    updateShopSelectionUI();
+}
+
 function clearShopSelection() {
     shopSelectedOrderIds.clear();
     shopSelectedCustomer = null;
@@ -1456,9 +1520,6 @@ function openBulkPaymentModal() {
     overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
 
     const today = new Date().toISOString().slice(0, 10);
-    const bankOptions = (receivingAccounts || []).map(a =>
-        `<option value="${a.id}">${escapeHtml(a.name)}${a.short_code ? ' (' + escapeHtml(a.short_code) + ')' : ''}</option>`
-    ).join('');
     const inputStyle = 'margin-top:4px; width:100%; padding:8px; border:1px solid #D1D5DB; border-radius:8px;';
     const labelStyle = 'font-size:13px; font-weight:600; color:#374151;';
 
@@ -1476,12 +1537,9 @@ function openBulkPaymentModal() {
           <label style="${labelStyle}">Payment date
             <input id="bulkPayDate" type="date" value="${today}" max="${today}" style="${inputStyle}">
           </label>
-          <label style="${labelStyle}">Receiving bank
-            <select id="bulkPayBank" style="${inputStyle}">
-              <option value="">— Select bank —</option>
-              ${bankOptions}
-            </select>
-          </label>
+          <div style="${labelStyle}">🏦 Receiving bank <span style="color:#DC2626;">*</span>
+            <div id="shopBulkBankChips" style="display:flex; flex-wrap:wrap; gap:6px; margin-top:6px;"></div>
+          </div>
           <label style="${labelStyle}">Reference (optional)
             <input id="bulkPayRef" type="text" maxlength="255" style="${inputStyle}">
           </label>
@@ -1500,6 +1558,8 @@ function openBulkPaymentModal() {
         </div>
       </div>`;
     document.body.appendChild(overlay);
+    window.shopBulkBank = '';
+    renderReceivingBankChips('shopBulkBankChips', 'shopBulkBank');
     renderBulkAllocationPreview();
 }
 
@@ -1533,7 +1593,7 @@ async function submitBulkPayment() {
     const btn = document.getElementById('bulkPaySubmit');
     errBox.style.display = 'none';
     const amount = parseFloat(document.getElementById('bulkPayAmount').value);
-    const bankId = document.getElementById('bulkPayBank').value;
+    const bankId = window.shopBulkBank || '';
     if (!amount || amount <= 0) { errBox.textContent = 'Enter a valid amount.'; errBox.style.display = 'block'; return; }
     if (!bankId) { errBox.textContent = 'Select which bank received this payment.'; errBox.style.display = 'block'; return; }
     // Guard with the same rule the server enforces (server is authoritative).
@@ -1829,6 +1889,9 @@ function isGroupSelected(items) {
 
 function clearSelection() {
     selectedItems.clear();
+    // Drop any bulk-assigned bank so it can't bleed into the next selection.
+    window.bulkAssignBank = '';
+    if (typeof updateBulkAssignBankBtn === 'function') updateBulkAssignBankBtn();
     updateSelectionUI();
 }
 
@@ -1941,11 +2004,17 @@ function openApprovalModal(ledgerId, level) {
     const modal = document.getElementById('approvalModal');
     if (modal) {
         modal.style.display = 'flex';
+        // Lock the page behind so scrolling stays inside the modal (the card
+        // scrolls internally); reset the card's scroll to the top each open.
+        document.body.style.overflow = 'hidden';
+        const scrollArea = document.getElementById('approvalModalScroll');
+        if (scrollArea) scrollArea.scrollTop = 0;
     }
 }
 
 function closeModal() {
     document.getElementById('approvalModal').style.display = 'none';
+    document.body.style.overflow = '';
     window.pendingApprovalItem = null;
     window.selectedBankAccountId = '';
     clearProofImage();
@@ -2374,11 +2443,13 @@ function openBulkApprovalModal(items, contextLabel) {
     const modal = document.getElementById('bulkApprovalModal');
     if (modal) {
         modal.style.display = 'flex';
+        document.body.style.overflow = 'hidden'; // lock page scroll behind the modal
     }
 }
 
 function closeBulkModal() {
     document.getElementById('bulkApprovalModal').style.display = 'none';
+    document.body.style.overflow = '';
     window.pendingBulkItems = [];
     window.pendingBulkContext = '';
 }
@@ -2410,24 +2481,61 @@ function itemBankId(item) {
     return null;
 }
 
+// The bank we'll actually use for an item in a bulk approve: its own detected /
+// tagged bank if any, otherwise the manager's "assign bank" choice (for the
+// no-proof-auto-detected cases). Null → still skipped.
+function effectiveBulkBankId(item) {
+    return itemBankId(item) || window.bulkAssignBank || null;
+}
+
+// ── Bulk "assign bank" overlay ─────────────────────────────────────────────
+window.bulkAssignBank = '';
+function openBulkAssignBank() {
+    document.getElementById('bulkAssignBankOverlay').style.display = 'flex';
+    renderReceivingBankChips('bulkAssignBankChips', 'bulkAssignBank');
+}
+function closeBulkAssignBank() {
+    document.getElementById('bulkAssignBankOverlay').style.display = 'none';
+    updateBulkAssignBankBtn();
+}
+function clearBulkAssignBank() {
+    window.bulkAssignBank = '';
+    renderReceivingBankChips('bulkAssignBankChips', 'bulkAssignBank');
+    updateBulkAssignBankBtn();
+}
+function updateBulkAssignBankBtn() {
+    const btn = document.getElementById('bulkAssignBankBtn');
+    if (!btn) return;
+    if (window.bulkAssignBank) {
+        const acc = (receivingAccounts || []).find(a => String(a.id) === String(window.bulkAssignBank));
+        btn.textContent = '🏦 ' + (acc ? (acc.short_code || acc.name) : 'bank set');
+        btn.style.background = '#0369A1';
+        btn.style.color = '#fff';
+    } else {
+        btn.textContent = '🏦 Assign bank';
+        btn.style.background = '#F0F9FF';
+        btn.style.color = '#0369A1';
+    }
+}
+
 // Execute bulk approval with progress tracking
 async function doBulkApprove(items, approvalType) {
     console.log('=== doBulkApprove started ===');
     console.log('Items count:', items.length);
     console.log('Approval type:', approvalType);
 
-    // Bank is mandatory for online approvals. In bulk we can only auto-apply a
-    // bank we already know (tagged or detected from proof); items with no bank
-    // are SKIPPED so the manager approves them individually and picks one.
+    // Bank is mandatory for online approvals. Each item uses its own detected /
+    // tagged bank; items with none use the manager's "Assign bank" choice (if
+    // set). Only items that STILL have no bank are skipped.
     const skipped = [];
     const approvable = items.filter(item => {
-        if (itemBankId(item)) return true;
+        if (effectiveBulkBankId(item)) return true;
         skipped.push(item);
         return false;
     });
 
     if (approvable.length === 0) {
-        showToast(`Nothing auto-approvable — ${skipped.length} item(s) need a bank. Open each and pick one.`, 'error');
+        showToast(`Nothing auto-approvable — ${skipped.length} item(s) need a bank. Use 🏦 Assign bank, or open each and pick one.`, 'error');
         return;
     }
 
@@ -2481,8 +2589,9 @@ async function doBulkApprove(items, approvalType) {
                 };
             }
 
-            // Explicitly tag the bank we know for this item (mandatory online).
-            const bulkBankId = itemBankId(item);
+            // Explicitly tag the bank for this item — its own, or the bulk
+            // "assign bank" fallback for no-detected-bank items (mandatory online).
+            const bulkBankId = effectiveBulkBankId(item);
             if (bulkBankId) {
                 body.receiving_account_id = parseInt(bulkBankId);
             }
@@ -2550,8 +2659,10 @@ async function doBulkApprove(items, approvalType) {
     
     // Clear selection and refresh
     selectedItems.clear();
+    window.bulkAssignBank = '';
+    if (typeof updateBulkAssignBankBtn === 'function') updateBulkAssignBankBtn();
     updateSelectionBar();
-    
+
     // Refresh the data list and stats
     loadData();
     refreshStats();
@@ -2704,11 +2815,13 @@ function openCustomerReport(customerName, itemsOverride) {
     
     if (modal) {
         modal.style.display = 'flex';
+        document.body.style.overflow = 'hidden'; // lock page scroll behind the modal
     }
 }
 
 function closeReportModal() {
     document.getElementById('reportModal').style.display = 'none';
+    document.body.style.overflow = '';
     window.currentReportText = '';
 }
 
@@ -2975,8 +3088,13 @@ async function confirmSendPaymentReminder() {
     try {
         if (pendingReminderData.isSingle && pendingReminderData.orderId) {
             btn.innerHTML = '⏳ Preparing invoice...';
-            const imageUrl = await getOrGenerateInvoiceImage(pendingReminderData.orderId);
-            payload.header_params = [{type: 'image', image: {link: imageUrl}}];
+            // Capture the invoice PNG to disk (html2canvas can only run here),
+            // then let the SERVER attach it to Meta by media_id via order_id.
+            // Do NOT hand Meta a /public-storage link header — Meta's fetch of
+            // that link 403s on this host (error 131053) and fails the whole
+            // send. sendTemplate mirrors the mobile media_id auto-attach.
+            await getOrGenerateInvoiceImage(pendingReminderData.orderId);
+            payload.order_id = pendingReminderData.orderId;
         }
 
         btn.innerHTML = '⏳ Sending...';

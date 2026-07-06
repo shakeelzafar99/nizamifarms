@@ -3659,6 +3659,69 @@ class OrderController extends Controller
     }
 
     /**
+     * Lightweight "are there new orders?" probe for the open-orders table's
+     * "N new orders — click to load" pill (30s poll, only while the tab is
+     * visible). Detects NEW orders by highest order id — which only ever
+     * increases — instead of by a churny open-order COUNT. That matters under
+     * heavy delivery volume: with a count, deliveries leaving the open set can
+     * offset new arrivals so the total never rises and new orders go unnoticed;
+     * an id high-water mark is immune to that (a delivery never mints a new id).
+     *
+     * Watches the LIVE orders table only (NF-created + accepted-Shopify orders
+     * land here). Pending Shopify STAGING orders are covered by the separate
+     * approvals-count badge, so source=shopify returns nothing here.
+     *
+     * Query params: after_id (highest id the client has seen), source, tab.
+     * Returns: { success, count (# orders with id > after_id in scope),
+     *            max_id (current highest id in scope = the client's next baseline) }.
+     */
+    public function newOrdersSince(Request $request)
+    {
+        try {
+            $afterId = (int) $request->get('after_id', 0);
+            $source  = $request->get('source', 'other');
+            $tab     = $request->get('tab', 'open');
+
+            // Shopify staging is the approvals badge's job — nothing to add here.
+            if ($source === 'shopify') {
+                return response()->json(['success' => true, 'count' => 0, 'max_id' => $afterId]);
+            }
+
+            $query = \DB::table('t_crm_prod_order as o')
+                ->where(function ($q) {
+                    $q->where('o.external_source', '!=', 'shopify')
+                      ->orWhereNull('o.external_source');
+                });
+
+            // Mirror filter()'s open/riders scoping so the count matches the table
+            // the user is looking at (exclude finished statuses + qurbani orders).
+            if ($tab === 'open' || $tab === 'riders') {
+                $query->whereNotIn('o.order_status', ['delivered', 'completed', 'cancelled', 'refunded'])
+                      ->whereNull('o.qurbani_day')
+                      ->whereNotExists(function ($sub) {
+                          $sub->select(\DB::raw(1))
+                              ->from('t_crm_prod_order_line_item as li')
+                              ->join('t_crm_prod_product as p', 'li.product_id', '=', 'p.id')
+                              ->whereColumn('li.order_id', 'o.id')
+                              ->whereRaw("LOWER(p.attribute_1) = 'qurbani'");
+                      });
+            }
+
+            $maxId = (int) ((clone $query)->max('o.id') ?? $afterId);
+            $count = $afterId > 0 ? (int) (clone $query)->where('o.id', '>', $afterId)->count() : 0;
+
+            return response()->json([
+                'success' => true,
+                'count'   => $count,
+                'max_id'  => $maxId,
+            ]);
+        } catch (\Exception $e) {
+            \Log::warning('newOrdersSince failed', ['error' => $e->getMessage()]);
+            return response()->json(['success' => false, 'count' => 0, 'max_id' => (int) $request->get('after_id', 0)]);
+        }
+    }
+
+    /**
      * Get open orders status counts for status cards
      */
     public function getOpenOrdersStatusCounts(Request $request)
@@ -5050,11 +5113,54 @@ class OrderController extends Controller
      * Save global open quantities settings
      * Only users with Taimur role can save settings
      */
+    /**
+     * Phase 3 delivery-scan settings (orders-page operations toggle) — read the two flags.
+     */
+    public function getDeliveryScanSettings()
+    {
+        $cfg = \DB::table('t_sys_config')->where('id', 1)->first();
+        return response()->json([
+            'require_delivery_scan' => $cfg ? (int) ($cfg->require_delivery_scan ?? 0) : 0,
+            'allow_delivery_scan_bypass' => $cfg ? (int) ($cfg->allow_delivery_scan_bypass ?? 0) : 0,
+        ]);
+    }
+
+    /**
+     * Phase 3 delivery-scan settings — save the two flags. This is the owner's on/off +
+     * bypass control for the rider package scan (default off = nothing changes for riders).
+     */
+    public function saveDeliveryScanSettings(Request $request)
+    {
+        try {
+            // Manager-only: this switch gates riders' ability to mark orders delivered,
+            // so ordinary staff must not be able to flip it. Mirrors the role check used
+            // by saveOpenQuantitiesSettings.
+            $user = auth()->user();
+            $isManager = $user && $user->roles()
+                ->whereRaw('LOWER(urole_name) IN (?, ?)', ['admin', 'taimur'])
+                ->exists();
+            if (!$isManager) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Only a manager role can change delivery scan settings.',
+                ], 403);
+            }
+
+            \DB::table('t_sys_config')->where('id', 1)->update([
+                'require_delivery_scan' => $request->boolean('require_delivery_scan') ? 1 : 0,
+                'allow_delivery_scan_bypass' => $request->boolean('allow_delivery_scan_bypass') ? 1 : 0,
+            ]);
+            return response()->json(['success' => true]);
+        } catch (\Exception $e) {
+            return response()->json(['success' => false, 'message' => 'Could not save settings'], 500);
+        }
+    }
+
     public function saveOpenQuantitiesSettings(Request $request)
     {
         try {
             $user = auth()->user();
-            
+
             // Check permission
             if (!$user->hasPermission('view_open_quantities')) {
                 return response()->json([

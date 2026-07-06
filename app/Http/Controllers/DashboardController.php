@@ -22,8 +22,33 @@ class DashboardController extends Controller
     public function index(Request $request)
     {
         $user = Auth::user();
+        // Jul-2026 — restricted web roles (web_menu_* keys, e.g. the HQ-only
+        // "adnan" role) land on their granted home instead of the dashboard.
+        if ($user && $this->isHqOnlyWebUser($user->id)) {
+            return redirect('/hq');
+        }
         // Now using enhanced dashboard as the main dashboard
         return view('dashboard-enhanced', compact('user'));
+    }
+
+    /**
+     * True when the user's roles carry web_menu_* keys but NOT the dashboards
+     * one — i.e. a restricted web user whose home is /hq. Fail-open on any
+     * error so the normal dashboard is never blocked by this check.
+     */
+    private function isHqOnlyWebUser(int $userId): bool
+    {
+        try {
+            $keys = \DB::table('t_sys_role_permissions as rp')
+                ->join('t_sys_user_role as ur', 'ur.role_id', '=', 'rp.role_id')
+                ->where('ur.user_id', $userId)
+                ->where('rp.is_allowed', 1)
+                ->where('rp.permission_key', 'like', 'web\_menu\_%')
+                ->pluck('rp.permission_key')->unique()->all();
+            return !empty($keys) && !in_array('web_menu_dashboards', $keys, true);
+        } catch (\Throwable $e) {
+            return false;
+        }
     }
     
     /**

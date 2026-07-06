@@ -170,6 +170,9 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('/orders', [\App\Http\Controllers\CRM\OrderController::class, 'filter']);
         Route::get('/orders/{id}', [\App\Http\Controllers\API\RiderController::class, 'getOrderDetails']);
         Route::post('/orders/{id}/mark-delivered', [\App\Http\Controllers\API\RiderController::class, 'markOrderDelivered']);
+        // Phase 3 delivery package-scan (default off): read config flags + verify a scanned QR.
+        Route::get('/delivery-scan-config', [\App\Http\Controllers\API\RiderController::class, 'getDeliveryScanConfig']);
+        Route::get('/verify-delivery-scan', [\App\Http\Controllers\API\RiderController::class, 'verifyDeliveryScan']);
         Route::post('/orders/{id}/change-payment-method', [\App\Http\Controllers\API\RiderController::class, 'changePaymentMethod']);
         Route::post('/orders/{id}/mark-online-message-sent', [\App\Http\Controllers\API\RiderController::class, 'markOnlineMessageSent']);
         

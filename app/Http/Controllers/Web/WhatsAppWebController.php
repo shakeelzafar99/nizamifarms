@@ -922,6 +922,7 @@ class WhatsAppWebController extends Controller
             'phone' => 'required',
             'template_name' => 'required',
             'conversation_id' => 'nullable|integer',
+            'order_id' => 'nullable|integer',
         ]);
 
         $service = app(WhatsAppService::class);
@@ -942,6 +943,29 @@ class WhatsAppWebController extends Controller
         );
         if ($dedup) {
             return response()->json(['success' => false] + $dedup, 409);
+        }
+
+        // Robust invoice attach (Jul-2026): an invoice-bearing reminder passes
+        // order_id. Upload the captured PNG to Meta and attach it BY media_id
+        // (buildInvoiceHeaderForSend) instead of trusting a /public-storage
+        // link header — Meta's fetch of that link 403s on this host (error
+        // 131053 "Media upload error ... 403 Forbidden") and fails the whole
+        // send. This is the same robust path the orders-page Send-Invoice and
+        // the mobile send-template already use; it OVERRIDES any client-sent
+        // header. Only fires when order_id is present, so plain template sends
+        // (no order_id) are unaffected.
+        if ($request->filled('order_id')) {
+            try {
+                $imgData = $this->buildInvoiceHeaderForSend((int) $request->input('order_id'));
+                if (($imgData['success'] ?? false) && !empty($imgData['header_params'])) {
+                    $headerParams = $imgData['header_params'];
+                }
+            } catch (\Exception $e) {
+                \Log::warning('sendTemplate: failed to auto-attach invoice image by media_id', [
+                    'order_id' => $request->input('order_id'),
+                    'error' => $e->getMessage(),
+                ]);
+            }
         }
 
         $result = $service->sendTemplateMessage($phone, $request->template_name, 'en', $bodyParams, $headerParams);

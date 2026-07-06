@@ -69,7 +69,92 @@
                           ->where('ur.user_id', auth()->id())
                           ->whereRaw('LOWER(r.urole_name) IN (?, ?)', ['supervisor', 'supervisor 2'])
                           ->exists();
+
+                      // Jul-2026 — RESTRICTED WEB MENU mode (e.g. the "adnan"
+                      // HQ-only role). If any of the user's roles carries a
+                      // web_menu_* permission key, the sidebar shows ONLY the
+                      // granted sections (plus Logout). Grant more sections by
+                      // inserting rows into t_sys_role_permissions — see
+                      // database/migrations/add_web_menu_restricted_role_jul2026.sql.
+                      // Users with NO web_menu_* keys see the normal full menu.
+                      $nfWebMenuKeys = [];
+                      if (auth()->check()) {
+                          try {
+                              $nfWebMenuKeys = \DB::table('t_sys_role_permissions as rp')
+                                  ->join('t_sys_user_role as ur2', 'ur2.role_id', '=', 'rp.role_id')
+                                  ->where('ur2.user_id', auth()->id())
+                                  ->where('rp.is_allowed', 1)
+                                  ->where('rp.permission_key', 'like', 'web\_menu\_%')
+                                  ->pluck('rp.permission_key')->unique()->values()->all();
+                          } catch (\Throwable $e) { $nfWebMenuKeys = []; }
+                      }
+                      $nfRestrictedWeb = !empty($nfWebMenuKeys);
+                      $nfWebCan = function ($key) use ($nfWebMenuKeys) {
+                          return in_array('web_menu_' . $key, $nfWebMenuKeys, true);
+                      };
                   @endphp
+                  @if($nfRestrictedWeb)
+                  {{-- ================= RESTRICTED WEB MENU ================= --}}
+                  @if($nfWebCan('hq'))
+                  <div class="kt-menu-item" data-kt-menu-item-toggle="accordion" data-kt-menu-item-trigger="click">
+                      <a href="/hq">
+                          <div class="kt-menu-link flex items-center grow cursor-pointer border border-transparent gap-[10px] ps-[10px] pe-[10px] py-[6px] hover:bg-gray-200 rounded-md transition-colors duration-200 group" tabindex="0">
+                              <span class="kt-menu-icon items-start text-gray-600 group-hover:text-gray-900 w-[20px]"><i class="ki-filled ki-chart-line-up text-lg"></i></span>
+                              <span class="kt-menu-title text-sm font-medium text-gray-900 group-hover:text-gray-900">HQ · Executive</span>
+                          </div>
+                      </a>
+                  </div>
+                  @endif
+                  @if($nfWebCan('dashboards'))
+                  <div class="kt-menu-item" data-kt-menu-item-toggle="accordion" data-kt-menu-item-trigger="click">
+                      <a href="/dashboard">
+                          <div class="kt-menu-link flex items-center grow cursor-pointer border border-transparent gap-[10px] ps-[10px] pe-[10px] py-[6px] hover:bg-gray-200 rounded-md transition-colors duration-200 group" tabindex="0">
+                              <span class="kt-menu-icon items-start text-gray-600 group-hover:text-gray-900 w-[20px]"><i class="ki-filled ki-element-11 text-lg"></i></span>
+                              <span class="kt-menu-title text-sm font-medium text-gray-900 group-hover:text-gray-900">Dashboards</span>
+                          </div>
+                      </a>
+                  </div>
+                  @endif
+                  @if($nfWebCan('invoices'))
+                  <div class="kt-menu-item" data-kt-menu-item-toggle="accordion" data-kt-menu-item-trigger="click">
+                      <a href="/orders">
+                          <div class="kt-menu-link flex items-center grow cursor-pointer border border-transparent gap-[10px] ps-[10px] pe-[10px] py-[6px] hover:bg-gray-200 rounded-md transition-colors duration-200 group" tabindex="0">
+                              <span class="kt-menu-icon items-start text-gray-600 group-hover:text-gray-900 w-[20px]"><i class="ki-filled ki-security-user text-lg"></i></span>
+                              <span class="kt-menu-title text-sm font-medium text-gray-900 group-hover:text-gray-900">Invoices</span>
+                          </div>
+                      </a>
+                  </div>
+                  @endif
+                  @if($nfWebCan('customers'))
+                  <div class="kt-menu-item" data-kt-menu-item-toggle="accordion" data-kt-menu-item-trigger="click">
+                      <a href="/customers">
+                          <div class="kt-menu-link flex items-center grow cursor-pointer border border-transparent gap-[10px] ps-[10px] pe-[10px] py-[6px] hover:bg-gray-200 rounded-md transition-colors duration-200 group" tabindex="0">
+                              <span class="kt-menu-icon items-start text-gray-600 group-hover:text-gray-900 w-[20px]"><i class="ki-filled ki-profile-circle text-lg"></i></span>
+                              <span class="kt-menu-title text-sm font-medium text-gray-900 group-hover:text-gray-900">Customers</span>
+                          </div>
+                      </a>
+                  </div>
+                  @endif
+                  @if($nfWebCan('finance'))
+                  <div class="kt-menu-item" data-kt-menu-item-toggle="accordion" data-kt-menu-item-trigger="click">
+                      <a href="/finance/employee">
+                          <div class="kt-menu-link flex items-center grow cursor-pointer border border-transparent gap-[10px] ps-[10px] pe-[10px] py-[6px] hover:bg-gray-200 rounded-md transition-colors duration-200 group" tabindex="0">
+                              <span class="kt-menu-icon items-start text-gray-600 group-hover:text-gray-900 w-[20px]"><i class="ki-filled ki-dollar text-lg"></i></span>
+                              <span class="kt-menu-title text-sm font-medium text-gray-900 group-hover:text-gray-900">NF Ledger</span>
+                          </div>
+                      </a>
+                  </div>
+                  <div class="kt-menu-item" data-kt-menu-item-toggle="accordion" data-kt-menu-item-trigger="click">
+                      <a href="/finance/expenses">
+                          <div class="kt-menu-link flex items-center grow cursor-pointer border border-transparent gap-[10px] ps-[10px] pe-[10px] py-[6px] hover:bg-gray-200 rounded-md transition-colors duration-200 group" tabindex="0">
+                              <span class="kt-menu-icon items-start text-gray-600 group-hover:text-gray-900 w-[20px]"><i class="ki-filled ki-wallet text-lg"></i></span>
+                              <span class="kt-menu-title text-sm font-medium text-gray-900 group-hover:text-gray-900">Expense Management</span>
+                          </div>
+                      </a>
+                  </div>
+                  @endif
+                  @else
+                  {{-- ================= NORMAL FULL MENU ================= --}}
                   @if(!$isInvoicesOnly)
                    <div class="kt-menu-item" data-kt-menu-item-toggle="accordion" data-kt-menu-item-trigger="click">
                        <a href="/dashboard">
@@ -86,7 +171,23 @@
                       </a>
                   </div>
                   @endif{{-- /Dashboards (hidden for the invoices-only role) --}}
-                  
+
+                  @if(!$isInvoicesOnly)
+                  {{-- HQ Executive dashboard (Jul-2026). Same audience as Dashboards. --}}
+                  <div class="kt-menu-item" data-kt-menu-item-toggle="accordion" data-kt-menu-item-trigger="click">
+                      <a href="/hq">
+                          <div class="kt-menu-link flex items-center grow cursor-pointer border border-transparent gap-[10px] ps-[10px] pe-[10px] py-[6px] hover:bg-gray-200 rounded-md transition-colors duration-200 group" tabindex="0">
+                              <span class="kt-menu-icon items-start text-gray-600 group-hover:text-gray-900 w-[20px]">
+                                  <i class="ki-filled ki-chart-line-up text-lg"></i>
+                              </span>
+                              <span class="kt-menu-title text-sm font-medium text-gray-900 group-hover:text-gray-900">
+                                  HQ · Executive
+                              </span>
+                          </div>
+                      </a>
+                  </div>
+                  @endif{{-- /HQ Executive --}}
+
                   <!-- Get User Role -->
                   @php
                       $userRole = null;
@@ -987,6 +1088,7 @@
                     @endif
                 </div>{{-- /#nf-admin-items --}}
                 @endif{{-- /$isInvoicesOnly: end of the full menu --}}
+                @endif{{-- /$nfRestrictedWeb: restricted vs normal menu --}}
 
                     <!-- Logout Section -->
                     @if(auth()->check())

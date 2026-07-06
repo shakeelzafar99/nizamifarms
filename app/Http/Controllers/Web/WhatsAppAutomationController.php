@@ -309,6 +309,7 @@ class WhatsAppAutomationController extends Controller
             'body_params'  => $plan['body_params'],
             'eta'          => $plan['eta'],
             'payment_kind' => $plan['payment_kind'],
+            'total_price'  => $plan['total_price'],
         ]);
     }
 
