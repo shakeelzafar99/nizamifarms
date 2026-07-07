@@ -326,6 +326,117 @@ class WhatsAppService
     /**
      * Handle a single incoming message
      */
+    /**
+     * A rider tapping the "confirm" quick-reply on the shift_reminder template →
+     * acknowledge their shift change(s), identical to the in-app confirm endpoint
+     * (sets acknowledged_at on ALL their pending rows). Resolution:
+     *   1. Precise: the tapped template's context.id → the shift_assigned automation
+     *      log → its dedup_key "shift:{userId}:{assignmentId}". If context.id is
+     *      present but is NOT a shift template, we stop (the tap was on something
+     *      else — never phone-guess in that case).
+     *   2. Fallback (no context.id at all): match the sender's number to a rider by
+     *      last-10 digits of t_ops_rider_profile.phone.
+     * Guard: only acts when a NOTIFIED, UNACKNOWLEDGED, not-past assignment exists,
+     * so a stray "confirm" tap acknowledges nothing.
+     */
+    protected function maybeConfirmShiftFromReply(string $from, array $msg, string $content, string $type): void
+    {
+        // Is this a "confirm"?
+        //  • button/interactive: label or payload contains it.
+        //  • typed text: the message must essentially BE the word — "confirm",
+        //    "Confirmed", "ok/yes confirm" (+ punctuation/emoji). A longer sentence
+        //    ("I cannot confirm tomorrow") deliberately does NOT match.
+        if ($type === 'text') {
+            $c = trim($content);
+            if ($c === '' || mb_strlen($c) > 40
+                || !preg_match('/^\W*((ok(ay)?|yes|g|ji)\s+)?confirm(ed)?\W*$/i', $c)) {
+                return;
+            }
+        } else {
+            $payload = $type === 'button'
+                ? (string) ($msg['button']['payload'] ?? '')
+                : (string) ($msg['interactive']['button_reply']['id'] ?? '');
+            if (stripos($content . ' ' . $payload, 'confirm') === false) {
+                return;
+            }
+        }
+
+        // Resolve WHICH rider. Precise path first: the replied-to template's
+        // context.id → our automation log. If that maps to a DIFFERENT rule's
+        // template (an order confirm etc.) → stop, it's positively not a shift
+        // reply. If it maps to NOTHING (manual send / no context) → fall through
+        // to the phone match.
+        $userId = null;
+        $ctxId = $msg['context']['id'] ?? null;
+        if ($ctxId && \Illuminate\Support\Facades\Schema::hasTable('t_wa_automation_log')) {
+            $log = \Illuminate\Support\Facades\DB::table('t_wa_automation_log')
+                ->where('wa_message_id', $ctxId)
+                ->orderByDesc('id')->first();
+            if ($log) {
+                if (($log->rule_key ?? '') !== 'shift_assigned') {
+                    return; // reply to some other automation's template — not ours
+                }
+                if (preg_match('/^shift:(\d+):/', (string) ($log->dedup_key ?? ''), $m)) {
+                    $userId = (int) $m[1];
+                }
+            }
+        }
+        if (!$userId) {
+            // Best-effort phone match (last 10 digits, driver-agnostic) against the
+            // unified rider phone.
+            $last10 = substr(preg_replace('/\D/', '', $from), -10);
+            if (strlen($last10) !== 10) {
+                return;
+            }
+            $profiles = \Illuminate\Support\Facades\DB::table('t_ops_rider_profile')
+                ->whereNotNull('phone')->where('phone', '!=', '')
+                ->get(['user_id', 'phone']);
+            foreach ($profiles as $p) {
+                if (substr(preg_replace('/\D/', '', (string) $p->phone), -10) === $last10) {
+                    $userId = (int) $p->user_id;
+                    break;
+                }
+            }
+        }
+        if (!$userId) {
+            return;
+        }
+
+        // Only acknowledge when a pending (notified, unacked, not-past) row exists.
+        $today = now()->format('Y-m-d');
+        $q = \App\Models\Ops\UserShiftAssignmentModel::where('user_id', $userId)
+            ->whereNotNull('notified_at')->whereNull('acknowledged_at')
+            ->where(function ($qq) use ($today) {
+                $qq->whereNull('effective_to')->orWhereDate('effective_to', '>=', $today);
+            });
+        $count = (clone $q)->count();
+        if ($count === 0) {
+            return;
+        }
+        $q->update(['acknowledged_at' => now()]);
+        Log::info('Shift confirmed via WhatsApp reply', [
+            'user_id' => $userId, 'rows' => $count, 'from' => $from, 'type' => $type,
+        ]);
+
+        // Audit row in the automations Activity log. Safe: dedup only counts
+        // sent/failed rows, so this can never block a future send.
+        try {
+            if (\Illuminate\Support\Facades\Schema::hasTable('t_wa_automation_log')) {
+                // NOTE: t_wa_automation_log has created_at only (no updated_at).
+                \Illuminate\Support\Facades\DB::table('t_wa_automation_log')->insert([
+                    'rule_key' => 'shift_assigned',
+                    'trigger_event' => 'shift.confirmed',
+                    'dedup_key' => 'shift:' . $userId . ':confirm',
+                    'status' => 'confirmed_reply',
+                    'wa_message_id' => $msg['id'] ?? null,
+                    'created_at' => now(),
+                ]);
+            }
+        } catch (\Throwable $e) {
+            // audit only — never let it affect the ack
+        }
+    }
+
     protected function handleIncomingMessage(array $msg, array $contacts): void
     {
         try {
@@ -468,6 +579,20 @@ class WhatsAppService
                     }
                 } catch (\Throwable $linkErr) {
                     Log::debug('WhatsApp: reply→order link skipped (non-fatal)', ['error' => $linkErr->getMessage()]);
+                }
+            }
+
+            // Jul-2026 — shift-change confirm: a quick-reply "confirm" TAP or a short
+            // TYPED "confirm" from a rider acknowledges their pending shift change
+            // (same acknowledged_at as the in-app confirm). Guarded + non-fatal; only
+            // acts when the sender maps to a rider WITH a pending change, so stray
+            // messages do nothing. (Typed replies matter: riders often type the word
+            // instead of tapping the button.)
+            if ($savedMessage && in_array($type, ['button', 'interactive', 'text'], true)) {
+                try {
+                    $this->maybeConfirmShiftFromReply($from, $msg, (string) $content, $type);
+                } catch (\Throwable $shiftErr) {
+                    Log::debug('WhatsApp: shift-confirm skipped (non-fatal)', ['error' => $shiftErr->getMessage()]);
                 }
             }
 

@@ -3167,7 +3167,8 @@ class RiderController extends Controller
                 ->where(function ($q) {
                     $q->whereNull('effective_to')->orWhereDate('effective_to', '>=', now()->format('Y-m-d'));
                 })
-                ->orderByDesc('id')->first();
+                // Most-recently-notified first (a same-day correction updates an older row in place).
+                ->orderByDesc('notified_at')->orderByDesc('id')->first();
             $pendingAckData = null;
             if ($pendingAck && $pendingAck->shiftTemplate) {
                 $pendingAckData = [
@@ -25718,7 +25719,7 @@ class RiderController extends Controller
         $riders = \DB::table('t_sys_user as u')
             ->join('t_ops_rider_profile as p', 'p.user_id', '=', 'u.id')
             ->where('p.active', 1)->where('u.is_active', 1)
-            ->orderBy('u.fullname')->get(['u.id', 'u.fullname']);
+            ->orderBy('u.fullname')->get(['u.id', 'u.fullname', 'p.phone']);
         $out = [];
         foreach ($riders as $r) {
             $primary = $svc->getUserShift($r->id, $today);
@@ -25734,6 +25735,7 @@ class RiderController extends Controller
                 }
             }
             $out[] = ['user_id' => $r->id, 'name' => $r->fullname,
+                'has_phone' => !empty(trim((string) $r->phone)),
                 'primary' => ['shift_name' => $primary['shift_name'], 'start' => $primary['shift_start'], 'end' => $primary['shift_end']],
                 'changes' => $changes];
         }
@@ -25747,6 +25749,47 @@ class RiderController extends Controller
             return response()->json(['success' => false, 'message' => 'You do not have permission to manage shifts'], 403);
         }
         return app(\App\Http\Controllers\Ops\ShiftController::class)->assignShiftToUser($request);
+    }
+
+    /** Save/update a rider's WhatsApp contact number (unified location =
+     *  t_ops_rider_profile.phone) from the mobile Shifts screen's add-number prompt.
+     *  Gated by manage_shifts; upserts by user_id, never touches other profile fields. */
+    public function updateShiftRiderPhone(Request $request)
+    {
+        if (!Auth::user()->hasMobilePermission('manage_shifts')) {
+            return response()->json(['success' => false, 'message' => 'You do not have permission to manage shifts'], 403);
+        }
+        $v = \Validator::make($request->all(), [
+            'user_id' => 'required|integer|exists:t_sys_user,id',
+            'phone' => 'required|string|max:50',
+        ]);
+        if ($v->fails()) {
+            return response()->json(['success' => false, 'message' => $v->errors()->first()], 422);
+        }
+        // A real number, not a note: at least 10 digits somewhere in the string.
+        if (strlen(preg_replace('/\D/', '', $request->phone)) < 10) {
+            return response()->json(['success' => false, 'message' => 'Please enter a valid number (at least 10 digits).'], 422);
+        }
+        $uid = (int) $request->user_id;
+        if (\DB::table('t_ops_rider_profile')->where('user_id', $uid)->exists()) {
+            \DB::table('t_ops_rider_profile')->where('user_id', $uid)
+                ->update(['phone' => trim($request->phone), 'updated_at' => now()]);
+        } else {
+            // New row for a non-rider: active=0 EXPLICITLY — the column defaults to 1,
+            // and saving a phone must never silently turn someone into a delivery rider.
+            \DB::table('t_ops_rider_profile')->insert([
+                'user_id' => $uid, 'phone' => trim($request->phone), 'active' => 0,
+                'created_at' => now(), 'updated_at' => now(),
+            ]);
+        }
+        // If a shift change was assigned while they had no number, its WhatsApp was
+        // skipped — now that we have one, fire it (dedup ignores skips; no-ops otherwise).
+        try {
+            app(\App\Http\Controllers\Ops\ShiftController::class)->dispatchShiftWhatsApp($uid);
+        } catch (\Throwable $e) {
+            \Log::warning('update-phone WA redispatch failed (non-fatal)', ['error' => $e->getMessage()]);
+        }
+        return response()->json(['success' => true]);
     }
 
     /** Cancel a temporary shift change from mobile. */
@@ -25788,7 +25831,8 @@ class RiderController extends Controller
             ->where(function ($q) use ($today) {
                 $q->whereNull('effective_to')->orWhereDate('effective_to', '>=', $today);
             })
-            ->orderByDesc('id')->first();
+            // Most-recently-notified first (a same-day correction updates an older row in place).
+            ->orderByDesc('notified_at')->orderByDesc('id')->first();
         $data = null;
         if ($pendingAck && $pendingAck->shiftTemplate) {
             $data = [

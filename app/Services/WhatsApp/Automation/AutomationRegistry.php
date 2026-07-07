@@ -133,6 +133,25 @@ class AutomationRegistry
                 ],
             ],
             [
+                'key'   => 'shift_assigned',
+                'tab'   => 'shift',
+                'label' => 'Shift change → WhatsApp the rider',
+                'description' =>
+                    "When a rider's shift is assigned or changed (from the mobile Shifts screen or the web "
+                    . "Shift Planner), automatically WhatsApp them the new time with a \"confirm\" button. "
+                    . "Tapping confirm marks the shift accepted — the SAME as confirming in the app, so the "
+                    . "store manager sees ✓ either way. Uses your approved template (default `shift_reminder`): "
+                    . "{{1}} rider first name, {{2}} the shift + date. Recipient is the rider's number from "
+                    . "their profile; skips silently if they have no number, if the change is already confirmed, "
+                    . "or if it's in the past. Sends once per change. Off by default.",
+                'trigger_summary' => "When a rider's shift is assigned or changed",
+                'event'    => 'shift.assigned',
+                'editable' => ['enabled', 'template'],
+                'template' => ['body_vars' => 2, 'header' => 'none', 'default' => 'shift_reminder'],
+                'available' => true,
+                'handler'  => \App\Services\WhatsApp\Automation\Handlers\ShiftAssignedHandler::class,
+            ],
+            [
                 'key'   => 'invoice_on_payment_change',
                 'tab'   => 'invoice',
                 'label' => 'Bank details when payment switches to online',

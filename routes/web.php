@@ -332,6 +332,7 @@ Route::middleware(['auth'])->group(function () {
     // Shift Planner (the consolidated week-grid assignment view)
     Route::get('/shift-planner', [\App\Http\Controllers\Ops\ShiftPlannerController::class, 'index'])->name('shift-planner.index');
     Route::get('/shift-planner/week', [\App\Http\Controllers\Ops\ShiftPlannerController::class, 'weekData'])->name('shift-planner.week');
+    Route::post('/shift-planner/update-phone', [\App\Http\Controllers\Ops\ShiftPlannerController::class, 'updatePhone'])->name('shift-planner.update-phone');
 
     // Holiday Management
     Route::get('/holidays', [\App\Http\Controllers\Ops\HolidayController::class, 'index'])->name('holidays.index');

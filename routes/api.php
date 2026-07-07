@@ -173,6 +173,8 @@ Route::middleware('auth:sanctum')->group(function () {
         // Phase 3 delivery package-scan (default off): read config flags + verify a scanned QR.
         Route::get('/delivery-scan-config', [\App\Http\Controllers\API\RiderController::class, 'getDeliveryScanConfig']);
         Route::get('/verify-delivery-scan', [\App\Http\Controllers\API\RiderController::class, 'verifyDeliveryScan']);
+        // Receipt printout field config for the app (which fields/text to print).
+        Route::get('/receipt-config', [\App\Http\Controllers\API\RiderController::class, 'getReceiptConfig']);
         Route::post('/orders/{id}/change-payment-method', [\App\Http\Controllers\API\RiderController::class, 'changePaymentMethod']);
         Route::post('/orders/{id}/mark-online-message-sent', [\App\Http\Controllers\API\RiderController::class, 'markOnlineMessageSent']);
         
@@ -202,6 +204,7 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('/shifts/riders', [\App\Http\Controllers\API\RiderController::class, 'getStoreShiftRiders']);
         Route::post('/shifts/assign', [\App\Http\Controllers\API\RiderController::class, 'assignShiftMobile']);
         Route::post('/shifts/cancel', [\App\Http\Controllers\API\RiderController::class, 'cancelShiftMobile']);
+        Route::post('/shifts/update-phone', [\App\Http\Controllers\API\RiderController::class, 'updateShiftRiderPhone']);
         Route::post('/shift/acknowledge', [\App\Http\Controllers\API\RiderController::class, 'acknowledgeShift']);
         // Rider-facing (self-only, no manage_shifts): floating banner + My Shift view
         Route::get('/shift/pending', [\App\Http\Controllers\API\RiderController::class, 'getPendingShiftAck']);

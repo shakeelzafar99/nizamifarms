@@ -1611,6 +1611,7 @@ select.wa-mgr-input { background: #fff; cursor: pointer; }
                 <button type="button" id="waTabBtn-ooo" onclick="switchAutoTab('ooo')" style="background:none;border:none;border-bottom:2px solid #16a34a;color:#166534;font-weight:600;font-size:13px;padding:8px 12px;cursor:pointer;">Out-of-office</button>
                 <button type="button" id="waTabBtn-order" onclick="switchAutoTab('order')" style="background:none;border:none;border-bottom:2px solid transparent;color:#6b7280;font-weight:500;font-size:13px;padding:8px 12px;cursor:pointer;">Order actions</button>
                 <button type="button" id="waTabBtn-invoice" onclick="switchAutoTab('invoice')" style="background:none;border:none;border-bottom:2px solid transparent;color:#6b7280;font-weight:500;font-size:13px;padding:8px 12px;cursor:pointer;">Invoice &amp; dispatch</button>
+                <button type="button" id="waTabBtn-shift" onclick="switchAutoTab('shift')" style="background:none;border:none;border-bottom:2px solid transparent;color:#6b7280;font-weight:500;font-size:13px;padding:8px 12px;cursor:pointer;">Shifts</button>
                 <button type="button" id="waTabBtn-templates" onclick="waOpenTemplatesTab()" style="background:none;border:none;border-bottom:2px solid transparent;color:#6b7280;font-weight:500;font-size:13px;padding:8px 12px;cursor:pointer;margin-left:auto;">📄 Templates</button>
             </div>
 
@@ -1781,6 +1782,14 @@ select.wa-mgr-input { background: #fff; cursor: pointer; }
             {{-- ═══ PANEL: Invoice & dispatch ═══ --}}
             <div id="waTab-invoice" style="display:none;flex:1;overflow-y:auto;padding:16px;">
                 <div id="waAutoInvoiceCards"><div style="color:#9ca3af;font-size:13px;padding:30px;text-align:center;">Loading…</div></div>
+            </div>
+
+            {{-- ═══ PANEL: Shifts ═══ --}}
+            <div id="waTab-shift" style="display:none;flex:1;overflow-y:auto;padding:16px;">
+                <div style="font-size:12px;color:#6b7280;background:#eff6ff;border:1px solid #bfdbfe;border-radius:8px;padding:8px 12px;margin-bottom:12px;line-height:1.4;">
+                    <strong>Note:</strong> when you turn this on, riders get a WhatsApp with a <strong>confirm</strong> button whenever their shift changes. Tapping confirm marks it accepted — the same as confirming in the app. Uses the <code>shift_reminder</code> template; the master switch and 🧪 test number above apply here too.
+                </div>
+                <div id="waAutoShiftCards"><div style="color:#9ca3af;font-size:13px;padding:30px;text-align:center;">Loading…</div></div>
             </div>
         </div>
     </div>
@@ -2401,8 +2410,8 @@ select.wa-mgr-input { background: #fff; cursor: pointer; }
         // Restore each panel's REAL display when active (ooo is a flex column;
         // the others are simple scroll panes) — never '' which would drop the
         // out-of-office flex layout back to block.
-        const disp = { ooo:'flex', order:'block', invoice:'block' };
-        ['ooo','order','invoice'].forEach(t => {
+        const disp = { ooo:'flex', order:'block', invoice:'block', shift:'block' };
+        ['ooo','order','invoice','shift'].forEach(t => {
             const panel = document.getElementById('waTab-'+t);
             if (panel) panel.style.display = (t===tab) ? disp[t] : 'none';
             const btn = document.getElementById('waTabBtn-'+t);
@@ -2412,7 +2421,7 @@ select.wa-mgr-input { background: #fff; cursor: pointer; }
                 btn.style.fontWeight = (t===tab) ? '600' : '500';
             }
         });
-        if ((tab==='order' || tab==='invoice') && !_waAutoLoaded) loadAutomations();
+        if ((tab==='order' || tab==='invoice' || tab==='shift') && !_waAutoLoaded) loadAutomations();
     };
 
     // "Templates" tab: opens the existing Template Manager (list + create/edit +
@@ -2580,9 +2589,12 @@ select.wa-mgr-input { background: #fff; cursor: pointer; }
     function renderAutoCards(){
         const order = _waAutoRules.filter(r => r.tab==='order_actions');
         const invoice = _waAutoRules.filter(r => r.tab==='invoice');
+        const shift = _waAutoRules.filter(r => r.tab==='shift');
         document.getElementById('waAutoOrderCards').innerHTML = order.map(renderAutoCard).join('') || '<div style="color:#9ca3af;padding:16px;">No order rules.</div>';
         const inv = document.getElementById('waAutoInvoiceCards');
         if (inv) inv.innerHTML = invoice.map(renderAutoCard).join('') || '<div style="color:#9ca3af;padding:16px;">No invoice rules.</div>';
+        const shf = document.getElementById('waAutoShiftCards');
+        if (shf) shf.innerHTML = shift.map(renderAutoCard).join('') || '<div style="color:#9ca3af;padding:16px;">No shift rules.</div>';
     }
 
     function schedRowHtml(key, row){

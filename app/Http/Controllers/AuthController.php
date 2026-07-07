@@ -129,19 +129,56 @@ class AuthController extends Controller
         Auth::guard('web')->login($user);
         $request->session()->regenerate();
 
+        // ⭐ Jul-2026 — restricted web roles (web_menu_* keys, e.g. the HQ-only
+        // "adnan" role) land on their granted home, NOT Orders. Hard redirect
+        // (not intended()) so they can't be bounced to a page they can't see.
+        $restrictedHome = $this->restrictedWebHome($user->id);
+        if ($restrictedHome) {
+            return redirect($restrictedHome);
+        }
+
         // ⭐ Default web landing = Orders/Invoices for everyone; Khaas-only users land
         // on the Khaas dashboard. (The main dashboard stays reachable via menu / URL.)
         $user->load(['roles.mobilePermissions']);
         $webPermissions = $user->getMobilePermissions();
         $hasKhaasWeb = in_array('access_khaas_mode', $webPermissions);
         $hasStoreWeb = in_array('access_store_mode', $webPermissions);
-        
+
         // If user has only Khaas access (no store/admin), redirect to Khaas dashboard
         if ($hasKhaasWeb && !$hasStoreWeb && !in_array($user->user_type, ['admin'])) {
             return redirect()->intended('khaas');
         }
 
         return redirect()->intended('orders');
+    }
+
+    /**
+     * Landing path for a RESTRICTED WEB user (a role carrying web_menu_* keys),
+     * or null if the user isn't restricted. Lands on the best available granted
+     * section, HQ first. Fail-open (null) on any error so normal logins are
+     * never affected. Mirrors the sidebar's web_menu_* gating.
+     */
+    private function restrictedWebHome(int $userId): ?string
+    {
+        try {
+            $keys = \DB::table('t_sys_role_permissions as rp')
+                ->join('t_sys_user_role as ur', 'ur.role_id', '=', 'rp.role_id')
+                ->where('ur.user_id', $userId)
+                ->where('rp.is_allowed', 1)
+                ->where('rp.permission_key', 'like', 'web\_menu\_%')
+                ->pluck('rp.permission_key')->unique()->all();
+            if (empty($keys)) {
+                return null; // not a restricted web user → normal landing
+            }
+            if (in_array('web_menu_hq', $keys, true))         return 'hq';
+            if (in_array('web_menu_dashboards', $keys, true)) return 'dashboard';
+            if (in_array('web_menu_invoices', $keys, true))   return 'orders';
+            if (in_array('web_menu_customers', $keys, true))  return 'customers';
+            if (in_array('web_menu_finance', $keys, true))    return 'finance/employee';
+            return 'hq';
+        } catch (\Throwable $e) {
+            return null;
+        }
     }
 
 

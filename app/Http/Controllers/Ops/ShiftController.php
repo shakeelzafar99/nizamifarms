@@ -437,22 +437,37 @@ class ShiftController extends Controller
             return response()->json(['success' => false, 'message' => 'An end date is required for a date-range change.'], 422);
         }
 
+        // A bounded change that ends BEFORE today is a pure historical CORRECTION:
+        // re-stamp the past so reports/lateness fix, but send NO notification and
+        // require NO confirmation (there's nothing for the rider to act on).
+        $isHistorical = ($to !== null && $to < now()->format('Y-m-d'));
+
+        // Widen the re-stamp span to cover any existing override this one replaces
+        // (captured before the transaction deletes those rows).
+        [$rsFrom, $rsTo] = $isTemp ? $this->restampSpanForTemp($userId, $from, $to) : [$from, null];
+
         try {
-            DB::transaction(function () use ($userId, $templateId, $from, $to, $isTemp) {
+            DB::transaction(function () use ($userId, $templateId, $from, $to, $isTemp, $isHistorical) {
                 if ($isTemp) {
-                    $this->applyTemporaryAssignment($userId, $templateId, $from, $to);
+                    $this->applyTemporaryAssignment($userId, $templateId, $from, $to, !$isHistorical);
                 } else {
                     $this->applyAssignment($userId, $templateId, $from);
                 }
             });
 
-            // Invalidate caches + re-stamp snapshots for any back-dated portion.
-            $this->invalidateAndRestamp($userId, $from, $isTemp ? $to : null);
-            $this->pushShiftChange($userId);
+            // Invalidate caches + re-stamp snapshots for any back-dated portion (ALWAYS —
+            // this is the correction). Notify only for changes that touch today/future.
+            $this->invalidateAndRestamp($userId, $rsFrom, $rsTo);
+            if (!$isHistorical) {
+                $this->pushShiftChange($userId);
+                $this->dispatchShiftWhatsApp($userId);
+            }
 
             return response()->json([
                 'success' => true,
-                'message' => $isTemp ? 'Temporary shift change saved' : 'Shift assigned successfully'
+                'message' => $isHistorical
+                    ? 'Past shift corrected — attendance recalculated. No notification sent.'
+                    : ($isTemp ? 'Temporary shift change saved' : 'Shift assigned successfully')
             ]);
         } catch (\Exception $e) {
             return response()->json([
@@ -493,11 +508,22 @@ class ShiftController extends Controller
             return response()->json(['success' => false, 'message' => 'An end date is required for a date-range change.'], 422);
         }
 
+        // Pure historical correction (bounded, ends before today) → re-stamp only, no notify.
+        $isHistorical = ($to !== null && $to < now()->format('Y-m-d'));
+
+        // Per-user widened re-stamp span (existing overrides this replaces), before delete.
+        $spans = [];
+        if ($isTemp) {
+            foreach ($userIds as $uid) {
+                $spans[(int) $uid] = $this->restampSpanForTemp((int) $uid, $from, $to);
+            }
+        }
+
         try {
-            DB::transaction(function () use ($userIds, $templateId, $from, $to, $isTemp) {
+            DB::transaction(function () use ($userIds, $templateId, $from, $to, $isTemp, $isHistorical) {
                 foreach ($userIds as $userId) {
                     if ($isTemp) {
-                        $this->applyTemporaryAssignment((int) $userId, $templateId, $from, $to);
+                        $this->applyTemporaryAssignment((int) $userId, $templateId, $from, $to, !$isHistorical);
                     } else {
                         $this->applyAssignment((int) $userId, $templateId, $from);
                     }
@@ -505,13 +531,19 @@ class ShiftController extends Controller
             });
 
             foreach ($userIds as $userId) {
-                $this->invalidateAndRestamp((int) $userId, $from, $isTemp ? $to : null);
-                $this->pushShiftChange((int) $userId);
+                [$rsFrom, $rsTo] = $isTemp ? $spans[(int) $userId] : [$from, null];
+                $this->invalidateAndRestamp((int) $userId, $rsFrom, $rsTo);
+                if (!$isHistorical) {
+                    $this->pushShiftChange((int) $userId);
+                    $this->dispatchShiftWhatsApp((int) $userId);
+                }
             }
 
             return response()->json([
                 'success' => true,
-                'message' => 'Shift ' . ($isTemp ? 'change' : 'assigned') . ' saved for ' . count($userIds) . ' user(s)'
+                'message' => $isHistorical
+                    ? ('Past shift corrected for ' . count($userIds) . ' rider(s) — attendance recalculated. No notification sent.')
+                    : ('Shift ' . ($isTemp ? 'change' : 'assigned') . ' saved for ' . count($userIds) . ' user(s)')
             ]);
         } catch (\Exception $e) {
             return response()->json([
@@ -601,6 +633,27 @@ class ShiftController extends Controller
             // Only today's resolution changes (elapsed override days stand); re-stamp today.
             $this->invalidateAndRestamp($userId, $today, $today);
 
+            // Tell the rider — otherwise a change they may have already CONFIRMED
+            // silently vanishes and they show up on the cancelled shift. (FCM only;
+            // a WhatsApp cancel message would need its own approved template.)
+            try {
+                $t = $row->shiftTemplate;
+                $what = $t
+                    ? ($t->shift_name . ' (' . substr($t->shift_start, 0, 5) . '–' . substr($t->shift_end, 0, 5) . ')' . $this->whenSuffix($row))
+                    : 'Your temporary shift change';
+                app(\App\Services\FirebaseService::class)->notifyUser(
+                    $userId,
+                    [
+                        'title' => 'Shift change cancelled',
+                        'body'  => $what . ' is cancelled — your usual shift applies.',
+                    ],
+                    ['type' => 'shift_assigned'], // same type → mobile banner/screens refresh
+                    'shift_notifications'
+                );
+            } catch (\Throwable $e) {
+                \Log::warning('Shift-cancel push failed (non-fatal)', ['user_id' => $userId, 'error' => $e->getMessage()]);
+            }
+
             return response()->json(['success' => true, 'message' => 'Temporary change cancelled.']);
         } catch (\Exception $e) {
             return response()->json(['success' => false, 'message' => 'Error cancelling change: ' . $e->getMessage()], 500);
@@ -652,6 +705,32 @@ class ShiftController extends Controller
      * what makes "assign the correct old shift → the reports fix themselves" actually
      * true for lateness, matching the owner's expectation.
      */
+    /**
+     * The full date span that a temporary override touches = the new [$from,$to]
+     * UNIONED with any EXISTING bounded overrides it overlaps (which
+     * applyTemporaryAssignment will delete). Days trimmed off a replaced wider
+     * override revert to the primary, so they must be re-stamped too — otherwise
+     * their snapshots keep the old override's lateness. Call BEFORE the transaction
+     * (the overlapping rows still exist).
+     */
+    private function restampSpanForTemp(int $userId, string $from, string $to): array
+    {
+        $minFrom = $from;
+        $maxTo = $to;
+        $overlap = UserShiftAssignmentModel::where('user_id', $userId)
+            ->whereNotNull('effective_to')->whereNotNull('effective_from')
+            ->whereDate('effective_from', '<=', $to)
+            ->whereDate('effective_to', '>=', $from)
+            ->get(['effective_from', 'effective_to']);
+        foreach ($overlap as $r) {
+            $f = $r->effective_from->format('Y-m-d');
+            $t = $r->effective_to->format('Y-m-d');
+            if ($f < $minFrom) $minFrom = $f;
+            if ($t > $maxTo) $maxTo = $t;
+        }
+        return [$minFrom, $maxTo];
+    }
+
     private function invalidateAndRestamp(int $userId, string $effectiveFrom, ?string $effectiveTo = null): void
     {
         $today = now()->format('Y-m-d');
@@ -680,18 +759,89 @@ class ShiftController extends Controller
     private function pushShiftChange(int $userId): void
     {
         try {
-            $shift = $this->shiftService->getUserShift($userId, now()->format('Y-m-d'));
+            // Prefer the pending change itself (future-aware) over today's resolved
+            // shift — a change effective next week shouldn't announce today's times.
+            $pending = $this->latestPendingAssignment($userId);
+            if ($pending && $pending->shiftTemplate) {
+                $t = $pending->shiftTemplate;
+                $body = 'Your shift: ' . $t->shift_name . ' ('
+                    . substr($t->shift_start, 0, 5) . '–' . substr($t->shift_end, 0, 5) . ')'
+                    . $this->whenSuffix($pending) . '. Open the app to confirm.';
+            } else {
+                $shift = $this->shiftService->getUserShift($userId, now()->format('Y-m-d'));
+                $body = 'Your shift is now ' . $shift['shift_name'] . ' (' . $shift['shift_start'] . '–' . $shift['shift_end'] . '). Open the app to confirm.';
+            }
             app(\App\Services\FirebaseService::class)->notifyUser(
                 $userId,
-                [
-                    'title' => 'Shift updated',
-                    'body'  => 'Your shift is now ' . $shift['shift_name'] . ' (' . $shift['shift_start'] . '–' . $shift['shift_end'] . '). Open the app to confirm.',
-                ],
+                ['title' => 'Shift updated', 'body' => $body],
                 ['type' => 'shift_assigned'],
                 'shift_notifications'
             );
         } catch (\Throwable $e) {
             \Log::warning('Shift-change push failed (non-fatal)', ['user_id' => $userId, 'error' => $e->getMessage()]);
+        }
+    }
+
+    /** The rider's MOST-RECENTLY-NOTIFIED unacknowledged assignment (not fully past),
+     *  or null. Ordered by notified_at (not id): a same-day primary correction updates
+     *  an OLDER row in place, so id-ordering would announce a stale change instead. */
+    private function latestPendingAssignment(int $userId)
+    {
+        $today = now()->format('Y-m-d');
+        return UserShiftAssignmentModel::with('shiftTemplate')
+            ->where('user_id', $userId)
+            ->whereNotNull('notified_at')->whereNull('acknowledged_at')
+            ->where(function ($q) use ($today) {
+                $q->whereNull('effective_to')->orWhereDate('effective_to', '>=', $today);
+            })
+            ->orderByDesc('notified_at')->orderByDesc('id')->first();
+    }
+
+    /** " from Mon 14 Jul" / " on Tue 8 Jul" / " for Wed 9 – Sun 13 Jul" suffix for a change. */
+    private function whenSuffix($row): string
+    {
+        $from = $row->effective_from ? $row->effective_from->format('D j M') : null;
+        $to = $row->effective_to ? $row->effective_to->format('D j M') : null;
+        if ($row->effective_to) {
+            return $from === $to ? ($to ? ' on ' . $to : '') : ' for ' . $from . ' – ' . $to;
+        }
+        return $from ? ' from ' . $from : '';
+    }
+
+    /**
+     * Fire the `shift.assigned` WhatsApp automation for a rider, out-of-band
+     * (after the response) so a slow/failed WhatsApp send never blocks or breaks
+     * the assignment. Self-guards: the automation service no-ops unless the master
+     * switch + the shift_assigned rule are both ON. Only dispatches when there's a
+     * fresh pending change (so a no-op re-assign or an already-acked change sends
+     * nothing).
+     *
+     * PUBLIC on purpose: the update-phone endpoints call it after saving a number,
+     * so a rider whose send was skipped "no phone" gets the WhatsApp as soon as the
+     * manager adds their number (skips never count for dedup, so it goes out).
+     */
+    public function dispatchShiftWhatsApp(int $userId): void
+    {
+        try {
+            $pending = $this->latestPendingAssignment($userId);
+            if (!$pending) {
+                return;
+            }
+            $context = [
+                'user_id' => $userId,
+                'assignment_id' => (int) $pending->id,
+                'order_id' => (int) $pending->id, // best-effort entity ref for the activity log
+            ];
+            app()->terminating(function () use ($context) {
+                try {
+                    app(\App\Services\WhatsApp\Automation\WhatsAppAutomationService::class)
+                        ->dispatch('shift.assigned', $context);
+                } catch (\Throwable $e) {
+                    \Log::warning('Shift WA dispatch failed (non-fatal)', ['error' => $e->getMessage()]);
+                }
+            });
+        } catch (\Throwable $e) {
+            \Log::warning('Shift WA seam failed (non-fatal)', ['user_id' => $userId, 'error' => $e->getMessage()]);
         }
     }
 
@@ -785,8 +935,12 @@ class ShiftController extends Controller
      * the primary resumes automatically after $to. Removes any existing OVERLAPPING
      * bounded overrides (the "replace existing temporary change" behaviour — the UI
      * confirms first). Must run inside a DB transaction supplied by the caller.
+     *
+     * $notify=false for a pure HISTORICAL correction (range entirely before today):
+     * the row is stamped with notified_at=NULL so it never appears as a pending /
+     * awaiting-confirmation change anywhere — it's a silent data fix, not a request.
      */
-    private function applyTemporaryAssignment(int $userId, int $shiftTemplateId, string $from, string $to): void
+    private function applyTemporaryAssignment(int $userId, int $shiftTemplateId, string $from, string $to, bool $notify = true): void
     {
         // Remove overlapping temporary overrides (BOUNDED rows only — never the primary).
         $overlapping = UserShiftAssignmentModel::where('user_id', $userId)
@@ -808,7 +962,7 @@ class ShiftController extends Controller
             'shift_template_id' => $shiftTemplateId,
             'effective_from'    => $from,
             'effective_to'      => $to,
-            'notified_at'       => now(),
+            'notified_at'       => $notify ? now() : null,
             'acknowledged_at'   => null,
             'created_by'        => auth()->id(),
             'updated_by'        => auth()->id(),

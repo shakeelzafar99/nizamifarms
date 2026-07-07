@@ -2694,7 +2694,16 @@ function numberFormat(num) {
 
 function formatDate(dateStr) {
     if (!dateStr) return 'N/A';
-    const date = new Date(dateStr);
+    // These are calendar dates (invoice date, approved date, etc.). Build the
+    // date from its Y-M-D parts as a LOCAL date so it renders as the same day
+    // everywhere. Using `new Date("2026-07-07T00:00:00Z")` would apply a
+    // timezone shift and could roll the day backward on machines behind UTC+5
+    // (e.g. an approval stamped in PKT showing the previous day on a UTC+3 box).
+    const m = String(dateStr).match(/^(\d{4})-(\d{2})-(\d{2})/);
+    const date = m
+        ? new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]))
+        : new Date(dateStr);
+    if (isNaN(date.getTime())) return 'N/A';
     return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
 }
 

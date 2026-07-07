@@ -264,10 +264,12 @@ class RiderReportsController extends Controller
     }
 
     /**
-     * Month-to-date attendance lateness per rider. Reuses ShiftResolutionService
-     * for each rider's shift start and the same TIMESTAMPDIFF logic as the salary
-     * calculation, so the numbers match the salary slips. Returns only riders who
-     * are late TODAY and whose month total ≥ the configured threshold.
+     * Month-to-date attendance lateness per rider. Uses the SAME snapshot-preferred
+     * helper (ShiftResolutionService::sumLateOvertimeMinutes) as the salary
+     * calculation and the monthly attendance report, so the numbers match the salary
+     * slips even when a rider's shift changed mid-month (each day resolves against
+     * its own frozen snapshot / per-date shift, never a single as-of-today shift).
+     * Returns only riders who are late TODAY and whose month total ≥ the threshold.
      */
     private function attendanceLateness(array $userIds, string $date): array
     {
@@ -276,25 +278,13 @@ class RiderReportsController extends Controller
         try {
             $threshold = (int) config('rider_reports.late_month_threshold_min', 200);
             $monthStart = date('Y-m-01', strtotime($date));
-            $shifts = (new \App\Services\ShiftResolutionService())->getUserShiftsBulk($userIds, $date);
+            $svc = new \App\Services\ShiftResolutionService();
 
             foreach ($userIds as $rid) {
-                $shiftStart = $shifts[$rid]['shift_start'] ?? '09:00:00';
-                $row = DB::selectOne(
-                    "SELECT
-                        COALESCE(SUM(CASE WHEN login_time > ? THEN
-                            TIMESTAMPDIFF(MINUTE, CONCAT(attendance_date,' ',?), CONCAT(attendance_date,' ',login_time))
-                          ELSE 0 END), 0) AS month_min,
-                        COALESCE(SUM(CASE WHEN attendance_date = ? AND login_time > ? THEN
-                            TIMESTAMPDIFF(MINUTE, CONCAT(attendance_date,' ',?), CONCAT(attendance_date,' ',login_time))
-                          ELSE 0 END), 0) AS today_min
-                       FROM t_ops_attendance
-                      WHERE user_id = ? AND attendance_date BETWEEN ? AND ?
-                        AND login_time IS NOT NULL AND login_time != ''",
-                    [$shiftStart, $shiftStart, $date, $shiftStart, $shiftStart, $rid, $monthStart, $date]
-                );
-                $today = (int) ($row->today_min ?? 0);
-                $month = (int) ($row->month_min ?? 0);
+                // Snapshot-preferred, per-date resolution — identical basis to the
+                // salary slip and the attendance report.
+                $today = (int) $svc->sumLateOvertimeMinutes($rid, $date, $date)['late_minutes'];
+                $month = (int) $svc->sumLateOvertimeMinutes($rid, $monthStart, $date)['late_minutes'];
                 if ($today > 0 && $month >= $threshold) {
                     $out[$rid] = ['today_min' => $today, 'month_min' => $month];
                 }

@@ -23,6 +23,42 @@ class ShiftPlannerController extends Controller
     }
 
     /**
+     * Save/update a rider's WhatsApp contact number (unified location =
+     * t_ops_rider_profile.phone) from the planner's "add number" prompt. Upserts
+     * by user_id; never touches other profile fields.
+     */
+    public function updatePhone(Request $request)
+    {
+        $data = $request->validate([
+            'user_id' => 'required|integer|exists:t_sys_user,id',
+            'phone' => 'required|string|max:50',
+        ]);
+        // A real number, not a note: at least 10 digits somewhere in the string.
+        if (strlen(preg_replace('/\D/', '', $data['phone'])) < 10) {
+            return response()->json(['success' => false, 'message' => 'Please enter a valid number (at least 10 digits).'], 422);
+        }
+        $uid = (int) $data['user_id'];
+        if (DB::table('t_ops_rider_profile')->where('user_id', $uid)->exists()) {
+            DB::table('t_ops_rider_profile')->where('user_id', $uid)
+                ->update(['phone' => trim($data['phone']), 'updated_at' => now()]);
+        } else {
+            // New row (e.g. All-staff view, non-rider): active=0 EXPLICITLY — the column
+            // defaults to 1, and saving a phone must never mint a delivery rider.
+            DB::table('t_ops_rider_profile')->insert([
+                'user_id' => $uid, 'phone' => trim($data['phone']), 'active' => 0,
+                'created_at' => now(), 'updated_at' => now(),
+            ]);
+        }
+        // Fire any WhatsApp that was skipped "no phone" for a pending change.
+        try {
+            app(ShiftController::class)->dispatchShiftWhatsApp($uid);
+        } catch (\Throwable $e) {
+            \Log::warning('planner update-phone WA redispatch failed (non-fatal)', ['error' => $e->getMessage()]);
+        }
+        return response()->json(['success' => true]);
+    }
+
+    /**
      * Week grid data: riders (or all staff) × 7 days, each day resolved to the shift
      * actually in effect, plus each rider's active/upcoming changes (for past/now/next
      * and the Cancel button), the assignable templates, and the week's holidays.
@@ -63,7 +99,9 @@ class ShiftPlannerController extends Controller
                 'u.fullname',
                 DB::raw('MAX(r.urole_name) as role_name'),
                 // "Delivery rider" = active rider profile — same list as the assign screens.
-                DB::raw('MAX(CASE WHEN p.active = 1 THEN 1 ELSE 0 END) as is_rider')
+                DB::raw('MAX(CASE WHEN p.active = 1 THEN 1 ELSE 0 END) as is_rider'),
+                // Has a WhatsApp number on file? (drives the "add number" prompt.)
+                DB::raw("MAX(CASE WHEN p.phone IS NOT NULL AND TRIM(p.phone) <> '' THEN 1 ELSE 0 END) as has_phone")
             )
             ->groupBy('u.id', 'u.fullname')
             ->orderBy('u.fullname')
@@ -147,6 +185,7 @@ class ShiftPlannerController extends Controller
                 'user_id' => $uid,
                 'name' => $u->fullname,
                 'role' => $u->role_name,
+                'has_phone' => (int) ($u->has_phone ?? 0) === 1,
                 'primary' => [
                     'shift_name' => $primary['shift_name'],
                     'start' => $primary['shift_start'],

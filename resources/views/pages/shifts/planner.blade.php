@@ -217,6 +217,7 @@ function renderGrid() {
             <span class="block text-[11px] text-gray-400">${r.role||''}</span>
             <span class="pchip mt-1">${r.primary.start}–${r.primary.end} · ${r.primary.shift_name}</span>
             <button onclick="openAssignOne(${r.user_id})" class="ml-1 text-xs text-red-600 font-semibold hover:underline">Change</button>
+            ${r.has_phone===false ? `<button onclick="event.preventDefault();addNumber(${r.user_id}, ${JSON.stringify(r.name)})" title="No WhatsApp number — riders can't be notified of shift changes" class="ml-1 text-[11px] text-amber-600 font-semibold hover:underline">📱 add number</button>` : ''}
             <div>${changes}</div>
           </span>
         </label>
@@ -259,6 +260,12 @@ function renderEffect(){
   if(MODE==='until_changed') msg=`→ ${who} will be on <b>${nm}</b> from <b>${fmt(from)}</b> until you change it. Past days are untouched.`;
   else if(MODE==='one_day') msg=`→ ${who} on <b>${nm}</b> for <b>${fmt(from)}</b> only, then back to their normal shift automatically.`;
   else msg=`→ ${who} on <b>${nm}</b> for <b>${fmt(from)}–${fmt(to)}</b>, then back to their normal shift automatically.`;
+  // A bounded range that ENDS before today is a past-record correction: attendance
+  // recalculates, but the rider is NOT notified and has nothing to confirm.
+  const end = (MODE==='one_day') ? from : to;
+  if(MODE!=='until_changed' && end && end < DATA.today){
+    msg += `<br><span style="color:#b45309;font-weight:600;">✎ Correcting a past period — attendance will recalculate. The rider is not notified (nothing to confirm).</span>`;
+  }
   document.getElementById('effectLine').innerHTML=msg;
 }
 async function saveAssign(){
@@ -281,6 +288,14 @@ async function cancelChange(id){
   if(!confirm('Cancel this temporary change? Their normal shift resumes.')) return;
   const json=await post('/shifts/cancel-change',{assignment_id:id});
   if(json.success) loadWeek(WEEK); else alert(json.message||'Failed to cancel');
+}
+async function addNumber(id, name){
+  const phone = window.prompt('WhatsApp number for '+name+' (used to send shift notifications):');
+  if(phone===null) return;
+  const p = phone.trim();
+  if(p.length<7){ alert('Please enter a valid number.'); return; }
+  const json = await post('/shift-planner/update-phone', {user_id:id, phone:p});
+  if(json.success) loadWeek(WEEK); else alert(json.message||'Could not save the number.');
 }
 document.getElementById('assignModal').addEventListener('click', closeAssign);
 

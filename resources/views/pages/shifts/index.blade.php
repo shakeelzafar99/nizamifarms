@@ -101,6 +101,16 @@
         </div>
       </div>
 
+      <!-- Shown only when EDITING an existing template (times don't rewrite past attendance). -->
+      <div id="editTimeNote" style="display:none" class="items-start gap-2 p-3 bg-amber-50 border border-amber-200 rounded-lg">
+        <span class="text-amber-500 text-base leading-none mt-0.5">⚠️</span>
+        <p class="text-xs text-amber-800">
+          Changing these times applies <b>going forward only</b>. Already-recorded attendance keeps the
+          old times and lateness. To correct a <b>past</b> day, use the <b>Shift Planner</b> to assign a
+          shift for that date instead.
+        </p>
+      </div>
+
       <div>
         <label class="block text-sm font-medium text-gray-700 mb-2">Working Days <span class="text-red-500">*</span></label>
         <div class="grid grid-cols-7 gap-2">
@@ -311,6 +321,7 @@ function openCreateModal() {
   editingShiftId = null;
   document.getElementById('modalTitle').textContent = 'Create Shift Template';
   document.getElementById('shiftForm').reset();
+  document.getElementById('editTimeNote').style.display = 'none'; // create → no history to worry about
   const modal = document.getElementById('shiftModal');
   modal.classList.remove('hidden');
   modal.style.display = 'flex';
@@ -328,7 +339,8 @@ function openEditModal(shiftId) {
   document.getElementById('shiftStart').value = shift.shift_start.substring(0, 5);
   document.getElementById('shiftEnd').value = shift.shift_end.substring(0, 5);
   document.getElementById('shiftDescription').value = shift.description || '';
-  
+  document.getElementById('editTimeNote').style.display = 'flex'; // editing → warn times are forward-only
+
   // Set working days checkboxes
   document.querySelectorAll('.working-day-checkbox').forEach(cb => cb.checked = false);
   shift.working_days.forEach(day => {

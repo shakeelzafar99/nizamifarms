@@ -1348,8 +1348,16 @@ class ApprovalController extends Controller
             'title' => $ledger->order ? "Invoice #{$ledger->order->order_number}" : $ledger->description,
             'description' => $ledger->description,
             'amount' => $ledger->amount ?? 0,
-            'date' => $displayDate,
-            'approved_at' => $ledger->approval_date,
+            // Normalize to a plain 'Y-m-d' string. $displayDate can be a Carbon
+            // (transaction_date / delivery_date are date-casts) which would
+            // JSON-serialize to UTC and render a day early in the browser; a
+            // bare date string has no time component to shift.
+            'date' => $displayDate instanceof \DateTimeInterface ? $displayDate->format('Y-m-d') : $displayDate,
+            // Emit as a plain calendar date (Y-m-d), NOT the cast Carbon: a
+            // 'date'-cast Carbon JSON-serializes to UTC (Karachi midnight → the
+            // previous evening in UTC), which then renders a day earlier in the
+            // browser's local timezone. A bare date string has no time to shift.
+            'approved_at' => $ledger->approval_date ? $ledger->approval_date->format('Y-m-d') : null,
             'approved_by' => $ledger->approvedBy ? $ledger->approvedBy->fullname : null,
             'level' => $level,
             'status' => $overrideStatus ?? $ledger->approval_status,
