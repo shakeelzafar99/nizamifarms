@@ -197,6 +197,16 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::post('/daily-closing/approve/{id}', [\App\Http\Controllers\API\RiderController::class, 'approveDailyClosingSettlement']);
         Route::post('/daily-closing/reject/{id}', [\App\Http\Controllers\API\RiderController::class, 'rejectDailyClosingSettlement']);
         
+        // Shift management (Store → Shifts; assign/cancel/templates/riders gated by manage_shifts)
+        Route::get('/shifts/templates', [\App\Http\Controllers\API\RiderController::class, 'getShiftTemplatesMobile']);
+        Route::get('/shifts/riders', [\App\Http\Controllers\API\RiderController::class, 'getStoreShiftRiders']);
+        Route::post('/shifts/assign', [\App\Http\Controllers\API\RiderController::class, 'assignShiftMobile']);
+        Route::post('/shifts/cancel', [\App\Http\Controllers\API\RiderController::class, 'cancelShiftMobile']);
+        Route::post('/shift/acknowledge', [\App\Http\Controllers\API\RiderController::class, 'acknowledgeShift']);
+        // Rider-facing (self-only, no manage_shifts): floating banner + My Shift view
+        Route::get('/shift/pending', [\App\Http\Controllers\API\RiderController::class, 'getPendingShiftAck']);
+        Route::get('/shift/mine', [\App\Http\Controllers\API\RiderController::class, 'getMyShift']);
+
         // Attendance
         Route::get('/attendance/today', [\App\Http\Controllers\API\RiderController::class, 'getTodayAttendance']);
         Route::post('/attendance/check-in', [\App\Http\Controllers\API\RiderController::class, 'checkIn']);

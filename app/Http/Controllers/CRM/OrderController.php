@@ -5114,6 +5114,50 @@ class OrderController extends Controller
      * Only users with Taimur role can save settings
      */
     /**
+     * Receipt printout field config — read (for the orders-page "Receipt fields" modal).
+     */
+    public function getReceiptPrintConfig()
+    {
+        $raw = \DB::table('t_sys_config')->where('id', 1)->value('receipt_print_config');
+        $decoded = $raw ? json_decode($raw, true) : null;
+        return response()->json(['config' => is_array($decoded) ? $decoded : (object) []]);
+    }
+
+    /**
+     * Receipt printout field config — save (manager-only). Whitelisted boolean keys only, so a
+     * malformed request can never inject arbitrary data into the config blob.
+     */
+    public function saveReceiptPrintConfig(Request $request)
+    {
+        try {
+            $user = auth()->user();
+            $isManager = $user && $user->roles()
+                ->whereRaw('LOWER(urole_name) IN (?, ?)', ['admin', 'taimur'])
+                ->exists();
+            if (!$isManager) {
+                return response()->json(['success' => false, 'message' => 'Only a manager role can change receipt settings.'], 403);
+            }
+            $boolKeys = ['show_prices', 'show_phone', 'show_address'];
+            $out = [];
+            foreach ($boolKeys as $k) {
+                $out[$k] = $request->boolean($k) ? 1 : 0;
+            }
+            // Editable text lines: strip control chars, trim, cap length. Empty string is a
+            // valid value meaning "hide this line".
+            $textKeys = ['store_name' => 40, 'tagline_text' => 40, 'contact_line' => 48, 'footer_text' => 120];
+            foreach ($textKeys as $k => $max) {
+                $v = (string) $request->input($k, '');
+                $v = preg_replace('/[\x00-\x1F\x7F]+/', '', $v);
+                $out[$k] = mb_substr(trim($v), 0, $max);
+            }
+            \DB::table('t_sys_config')->where('id', 1)->update(['receipt_print_config' => json_encode($out, JSON_UNESCAPED_UNICODE)]);
+            return response()->json(['success' => true]);
+        } catch (\Exception $e) {
+            return response()->json(['success' => false, 'message' => 'Could not save settings'], 500);
+        }
+    }
+
+    /**
      * Phase 3 delivery-scan settings (orders-page operations toggle) — read the two flags.
      */
     public function getDeliveryScanSettings()

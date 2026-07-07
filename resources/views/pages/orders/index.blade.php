@@ -1195,6 +1195,17 @@ button[onclick*="switchToShopifyApprovals"] { display: none !important; }
                                             <span class="kt-menu-title">Delivery scan settings</span>
                                         </button>
                                     </div>
+
+                                    <div class="kt-menu-item">
+                                        <button type="button" onclick="openReceiptFieldsSettings()" class="kt-menu-link nf-more-item">
+                                            <span class="kt-menu-icon" style="color:#0f766e;">
+                                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path>
+                                                </svg>
+                                            </span>
+                                            <span class="kt-menu-title">Receipt fields (printout)</span>
+                                        </button>
+                                    </div>
                                     @endif
                                 </div>
                             </div>
@@ -18112,6 +18123,72 @@ document.addEventListener('DOMContentLoaded', function() {
     fetch('/orders/delivery-scan/settings',{headers:{'X-Requested-With':'XMLHttpRequest'}})
       .then(function(r){return r.json();}).then(function(d){ if(d){ overlay.querySelector('#dss-require').checked=!!Number(d.require_delivery_scan); overlay.querySelector('#dss-bypass').checked=!!Number(d.allow_delivery_scan_bypass); } })
       .catch(function(){});
+  };
+})();
+</script>
+
+<script>
+/* Receipt printout field config modal (operations "More" menu). Self-contained: builds its
+   own modal in JS. Reads/writes /orders/receipt-config/settings. Defaults every field ON
+   (matches the printer's default), then applies saved values. */
+(function(){
+  function csrf(){ var m=document.querySelector('meta[name="csrf-token"]'); return m?m.getAttribute('content'):''; }
+  var overlay=null;
+  var TOGGLES=[
+    {k:'show_prices', t:'Show prices', d:'Item amounts + subtotal/discount/total. Off = a clean delivery slip with no money.'},
+    {k:'show_phone', t:'Show customer phone', d:''},
+    {k:'show_address', t:'Show customer address', d:''}
+  ];
+  var TEXTS=[
+    {k:'store_name', t:'Store name (header)', def:'NIZAMI FARMS', max:40},
+    {k:'tagline_text', t:'Tagline', def:'Fresh Farm Meat', max:40},
+    {k:'contact_line', t:'Contact line (phone / website) - optional', def:'', max:48},
+    {k:'footer_text', t:'Footer message', def:'Thank you for choosing Nizami Farms!', max:120}
+  ];
+  function hide(){ if(overlay) overlay.style.display='none'; }
+  function save(){
+    var body={};
+    TOGGLES.forEach(function(f){ body[f.k]=overlay.querySelector('#rfc-'+f.k).checked?1:0; });
+    TEXTS.forEach(function(f){ body[f.k]=overlay.querySelector('#rfc-'+f.k).value; });
+    fetch('/orders/receipt-config/settings',{method:'POST',headers:{'Content-Type':'application/json','X-Requested-With':'XMLHttpRequest','X-CSRF-TOKEN':csrf()},body:JSON.stringify(body)})
+      .then(function(r){return r.json();}).then(function(d){ hide(); alert(d&&d.success?'Receipt settings saved. New prints will use them.':((d&&d.message)||'Could not save settings.')); })
+      .catch(function(){ alert('Could not save settings.'); });
+  }
+  function build(){
+    overlay=document.createElement('div');
+    overlay.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,0.45);z-index:100000;display:none;align-items:center;justify-content:center;padding:16px;';
+    var rows='';
+    TOGGLES.forEach(function(f){
+      rows+='<label style="display:flex;align-items:flex-start;gap:10px;padding:11px;border:1px solid #e2e8f0;border-radius:8px;margin-bottom:8px;cursor:pointer;"><input type="checkbox" id="rfc-'+f.k+'" style="margin-top:3px;width:18px;height:18px;"><span><b style="color:#0f172a;">'+f.t+'</b>'+(f.d?'<br><span style="font-size:12px;color:#64748b;">'+f.d+'</span>':'')+'</span></label>';
+    });
+    var texts='';
+    TEXTS.forEach(function(f){
+      texts+='<div style="margin-bottom:10px;"><label style="display:block;font-size:12px;font-weight:600;color:#334155;margin-bottom:4px;">'+f.t+'</label><input type="text" id="rfc-'+f.k+'" maxlength="'+f.max+'" style="width:100%;box-sizing:border-box;padding:8px 10px;border:1px solid #cbd5e1;border-radius:6px;font-size:13px;"></div>';
+    });
+    overlay.innerHTML='<div style="background:#fff;border-radius:12px;max-width:460px;width:100%;padding:20px;max-height:90vh;overflow:auto;">'
+      +'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;"><h3 style="margin:0;font-size:18px;font-weight:700;color:#0f172a;">Receipt fields</h3><button id="rfc-close" style="border:none;background:none;font-size:24px;cursor:pointer;color:#64748b;line-height:1;">&times;</button></div>'
+      +'<p style="margin:0 0 14px;font-size:13px;color:#64748b;">Choose what the receipt shows and edit the store text. Order number, QR, customer name and items always print. Leave a text box empty to hide that line.</p>'
+      +rows
+      +'<div style="border-top:1px solid #e2e8f0;margin:12px 0 14px;"></div>'
+      +texts
+      +'<div style="display:flex;gap:10px;justify-content:flex-end;margin-top:8px;"><button id="rfc-cancel" style="padding:9px 16px;border:1px solid #cbd5e1;background:#fff;border-radius:8px;font-weight:600;cursor:pointer;color:#334155;">Cancel</button><button id="rfc-save" style="padding:9px 16px;border:none;background:#0f766e;color:#fff;border-radius:8px;font-weight:700;cursor:pointer;">Save</button></div></div>';
+    document.body.appendChild(overlay);
+    overlay.querySelector('#rfc-close').onclick=hide;
+    overlay.querySelector('#rfc-cancel').onclick=hide;
+    overlay.querySelector('#rfc-save').onclick=save;
+    overlay.addEventListener('click',function(e){ if(e.target===overlay) hide(); });
+  }
+  window.openReceiptFieldsSettings=function(){
+    if(!overlay) build();
+    overlay.style.display='flex';
+    TOGGLES.forEach(function(f){ overlay.querySelector('#rfc-'+f.k).checked=true; });
+    TEXTS.forEach(function(f){ overlay.querySelector('#rfc-'+f.k).value=f.def; });
+    fetch('/orders/receipt-config/settings',{headers:{'X-Requested-With':'XMLHttpRequest'}})
+      .then(function(r){return r.json();}).then(function(d){
+        var c=d&&d.config?d.config:{};
+        TOGGLES.forEach(function(f){ if(Object.prototype.hasOwnProperty.call(c,f.k)) overlay.querySelector('#rfc-'+f.k).checked=!!Number(c[f.k]); });
+        TEXTS.forEach(function(f){ if(Object.prototype.hasOwnProperty.call(c,f.k)) overlay.querySelector('#rfc-'+f.k).value=String(c[f.k]); });
+      }).catch(function(){});
   };
 })();
 </script>

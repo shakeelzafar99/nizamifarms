@@ -151,44 +151,11 @@ class SalaryCalculationService
 
         $attendance = DB::selectOne($attendanceQuery, [$userId, $startDate, $effectiveEndDate]);
 
-        // Calculate late minutes and overtime hours using shift resolution service
-        // This matches the attendance report logic for consistency
+        // Per-date + snapshot-aware late/overtime totals. Replaces the old single-shift
+        // SQL that applied today's shift to the whole month (rewriting past lateness
+        // whenever a rider's shift changed). Prefers the frozen check-in snapshot per day.
         $shiftService = new \App\Services\ShiftResolutionService();
-        $userShift = $shiftService->getUserShift($userId);
-        $shiftStart = $userShift['shift_start'] ?? '09:00:00';
-        $shiftEnd = $userShift['shift_end'] ?? '17:00:00';
-        
-        $lateAndOTQuery = "
-            SELECT 
-                COALESCE(SUM(CASE 
-                    WHEN login_time > ? AND login_time IS NOT NULL THEN 
-                        TIMESTAMPDIFF(MINUTE, 
-                            CONCAT(attendance_date, ' ', ?),
-                            CONCAT(attendance_date, ' ', login_time)
-                        )
-                    ELSE 0 
-                END), 0) as total_late_minutes,
-                COALESCE(SUM(CASE 
-                    WHEN logout_time > ? AND logout_time IS NOT NULL THEN 
-                        TIMESTAMPDIFF(MINUTE, 
-                            CONCAT(attendance_date, ' ', ?),
-                            CONCAT(attendance_date, ' ', logout_time)
-                        )
-                    ELSE 0 
-                END), 0) as total_overtime_minutes
-            FROM t_ops_attendance
-            WHERE user_id = ?
-            AND attendance_date IS NOT NULL
-            AND attendance_date BETWEEN ? AND ?
-            AND login_time IS NOT NULL
-            AND login_time != ''
-        ";
-
-        $lateAndOT = DB::selectOne($lateAndOTQuery, [
-            $shiftStart, $shiftStart, // For late calculation
-            $shiftEnd, $shiftEnd,     // For overtime calculation
-            $userId, $startDate, $effectiveEndDate
-        ]);
+        $lateOt = $shiftService->sumLateOvertimeMinutes($userId, $startDate, $effectiveEndDate);
 
         // Calculate working days using the SAME logic as attendance reports
         // This considers user's shift schedule AND public holidays
@@ -248,9 +215,9 @@ class SalaryCalculationService
             'present_days' => $presentDays,
             'absent_days' => max(0, $workingDays - $presentDays - $leaveDays), // CRITICAL: Subtract leave days!
             'leave_days' => $leaveDays,
-            'late_minutes' => $lateAndOT->total_late_minutes ?? 0,
-            'overtime_minutes' => $lateAndOT->total_overtime_minutes ?? 0,
-            'overtime_hours' => round(($lateAndOT->total_overtime_minutes ?? 0) / 60, 2)
+            'late_minutes' => $lateOt['late_minutes'],
+            'overtime_minutes' => $lateOt['overtime_minutes'],
+            'overtime_hours' => round($lateOt['overtime_minutes'] / 60, 2)
         ];
     }
 

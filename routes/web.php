@@ -196,6 +196,9 @@ Route::middleware(['auth'])->group(function () {
     // defined BEFORE /orders/{id} so they are not captured as an {id}.
     Route::get('/orders/delivery-scan/settings', [OrderController::class, 'getDeliveryScanSettings'])->name('orders.delivery-scan.settings.get');
     Route::post('/orders/delivery-scan/settings', [OrderController::class, 'saveDeliveryScanSettings'])->name('orders.delivery-scan.settings.save');
+    // Receipt printout field config (operations "More" menu). Static paths before /orders/{id}.
+    Route::get('/orders/receipt-config/settings', [OrderController::class, 'getReceiptPrintConfig'])->name('orders.receipt-config.settings.get');
+    Route::post('/orders/receipt-config/settings', [OrderController::class, 'saveReceiptPrintConfig'])->name('orders.receipt-config.settings.save');
     Route::get('/orders/{id}', [OrderController::class, 'show'])->name('orders.show');
     Route::get('/orders/{id}/invoice', [OrderController::class, 'invoice'])->name('orders.invoice');
     Route::get('/orders/{id}/edit-tab', [OrderController::class, 'editTab'])->name('orders.edit.tab');
@@ -259,6 +262,7 @@ Route::middleware(['auth'])->group(function () {
     Route::get('/attendance/gps-audit', [\App\Http\Controllers\CRM\AttendanceController::class, 'gpsReadingsAudit'])->name('attendance.gps-audit');
     Route::get('/attendance/users-visibility', [\App\Http\Controllers\CRM\AttendanceController::class, 'getUsersVisibility'])->name('attendance.users-visibility');
     Route::post('/attendance/update-visibility', [\App\Http\Controllers\CRM\AttendanceController::class, 'updateUserVisibility'])->name('attendance.update-visibility');
+    Route::post('/attendance/update-delivery-rider', [\App\Http\Controllers\CRM\AttendanceController::class, 'updateDeliveryRider'])->name('attendance.update-delivery-rider');
     
     // Company Locations Management (for attendance tracking)
     Route::get('/attendance/locations', [\App\Http\Controllers\CRM\CompanyLocationsController::class, 'index'])->name('attendance.locations');
@@ -317,10 +321,17 @@ Route::middleware(['auth'])->group(function () {
     Route::put('/shifts/{id}', [\App\Http\Controllers\Ops\ShiftController::class, 'update'])->name('shifts.update');
     Route::delete('/shifts/{id}', [\App\Http\Controllers\Ops\ShiftController::class, 'destroy'])->name('shifts.destroy');
     Route::post('/shifts/{id}/set-default', [\App\Http\Controllers\Ops\ShiftController::class, 'setDefault'])->name('shifts.set-default');
+    Route::post('/shifts/{id}/set-active', [\App\Http\Controllers\Ops\ShiftController::class, 'setActive'])->name('shifts.set-active');
     Route::get('/shifts/users-with-shifts', [\App\Http\Controllers\Ops\ShiftController::class, 'getUsersWithShifts'])->name('shifts.users-with-shifts');
     Route::post('/shifts/assign', [\App\Http\Controllers\Ops\ShiftController::class, 'assignShiftToUser'])->name('shifts.assign');
     Route::post('/shifts/bulk-assign', [\App\Http\Controllers\Ops\ShiftController::class, 'bulkAssignShift'])->name('shifts.bulk-assign');
     Route::delete('/shifts/remove-assignment', [\App\Http\Controllers\Ops\ShiftController::class, 'removeShiftAssignment'])->name('shifts.remove-assignment');
+    Route::post('/shifts/cancel-change', [\App\Http\Controllers\Ops\ShiftController::class, 'cancelShiftChange'])->name('shifts.cancel-change');
+    Route::get('/shifts/user-summary', [\App\Http\Controllers\Ops\ShiftController::class, 'userShiftSummary'])->name('shifts.user-summary');
+
+    // Shift Planner (the consolidated week-grid assignment view)
+    Route::get('/shift-planner', [\App\Http\Controllers\Ops\ShiftPlannerController::class, 'index'])->name('shift-planner.index');
+    Route::get('/shift-planner/week', [\App\Http\Controllers\Ops\ShiftPlannerController::class, 'weekData'])->name('shift-planner.week');
 
     // Holiday Management
     Route::get('/holidays', [\App\Http\Controllers\Ops\HolidayController::class, 'index'])->name('holidays.index');

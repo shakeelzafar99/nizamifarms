@@ -54,16 +54,30 @@ class PublicHolidayModel extends Model
     }
 
     /**
+     * In-request set of all active holiday dates (Y-m-d => true), loaded once.
+     * Avoids one EXISTS query per isHoliday() call (the monthly report calls it
+     * hundreds of times via ShiftResolutionService::isWorkingDay).
+     */
+    private static ?array $holidaySet = null;
+
+    /**
      * Check if a specific date is a holiday
-     * 
+     *
      * @param string $date Y-m-d format
      * @return bool
      */
     public static function isHoliday(string $date): bool
     {
-        return self::where('is_active', 1)
-            ->where('holiday_date', $date)
-            ->exists();
+        if (self::$holidaySet === null) {
+            self::$holidaySet = array_flip(
+                self::where('is_active', 1)
+                    ->pluck('holiday_date')
+                    ->map(fn($d) => $d->format('Y-m-d'))
+                    ->all()
+            );
+        }
+
+        return isset(self::$holidaySet[$date]);
     }
 
     /**

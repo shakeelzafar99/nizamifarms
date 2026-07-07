@@ -5,12 +5,12 @@
     <div class="flex items-center justify-between mb-6">
         <h1 class="text-2xl font-semibold text-gray-900">Rider Management</h1>
         <div class="flex gap-3">
-            <a 
-                href="/shifts"
+            <a
+                href="/shift-planner"
                 class="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-semibold hover:bg-blue-700 transition shadow-md border-2 border-blue-700 inline-flex items-center gap-2"
                 style="min-width: 150px; text-decoration: none;"
             >
-                📅 Manage Shifts
+                📅 Shift Planner
             </a>
             <button 
                 type="button"
@@ -71,7 +71,7 @@
                         <div class="text-sm">
                             <span class="font-medium text-gray-900">{{ $rider->shift_start ?? '11:00' }} - {{ $rider->shift_end ?? '19:00' }}</span>
                             <br>
-                            <a href="/shifts" class="text-xs text-blue-600 hover:text-blue-800">Manage shifts →</a>
+                            <a href="/shift-planner" class="text-xs text-blue-600 hover:text-blue-800">Shift planner →</a>
                         </div>
                     </td>
                     <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900">

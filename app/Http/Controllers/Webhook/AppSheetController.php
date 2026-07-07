@@ -936,6 +936,17 @@ class AppSheetController extends Controller
                 $updateData
             );
 
+            // Re-stamp the shift snapshot (expected shift + late/OT) for this day so a
+            // correction here can't leave a stale frozen value winning in reports.
+            // NON-FATAL — never fail the webhook on a snapshot error.
+            try {
+                (new \App\Services\ShiftResolutionService())->stampAttendanceSnapshot($user->id, $attendanceDate);
+            } catch (\Exception $snapErr) {
+                Log::warning('AppSheet attendance-update: snapshot failed (non-fatal)', [
+                    'user_id' => $user->id, 'date' => $attendanceDate, 'error' => $snapErr->getMessage(),
+                ]);
+            }
+
             Log::info('AppSheet attendance-update: record saved', [
                 'user_id' => $user->id,
                 'fullname' => $user->fullname,

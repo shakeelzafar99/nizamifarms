@@ -12,6 +12,13 @@ use Illuminate\Support\Facades\Log;
 class ShiftResolutionService
 {
     /**
+     * In-request memo of resolved shifts, keyed "ver|userId|date". A monthly report
+     * resolves the same (user,date) many times; this avoids repeat cache/DB hits.
+     * Cleared by clearUserShiftCache (per user) and clearAllShiftCaches (all).
+     */
+    private static array $shiftMemo = [];
+
+    /**
      * Get the effective shift for a user on a specific date
      * 
      * Resolution order:
@@ -28,17 +35,31 @@ class ShiftResolutionService
     {
         $date = $date ?? now()->format('Y-m-d');
         
-        // Try to get from cache first (cache for 1 hour)
-        $cacheKey = "user_shift_{$userId}_{$date}";
-        
-        return Cache::remember($cacheKey, 3600, function() use ($userId, $date) {
-            // 1. Check user shift assignment
+        // In-request memo first (a monthly report resolves the same (user,date) many
+        // times); then the file cache (1h). The version segment lets clearAllShiftCaches()
+        // invalidate every cached shift at once by bumping the version (no Cache::flush()).
+        $ver = (int) Cache::get('shift_cache_ver', 1);
+        $memoKey = "{$ver}|{$userId}|{$date}";
+        if (isset(self::$shiftMemo[$memoKey])) {
+            return self::$shiftMemo[$memoKey];
+        }
+        $cacheKey = "user_shift_v{$ver}_{$userId}_{$date}";
+
+        $result = Cache::remember($cacheKey, 3600, function() use ($userId, $date) {
+            // 1. Check user shift assignment (latest effective_from wins once
+            //    history exists; the frozen "since forever" NULL-from row sorts last).
             $assignment = UserShiftAssignmentModel::with('shiftTemplate')
                 ->where('user_id', $userId)
                 ->effective($date)
+                // Most specific / most recent wins: a bounded override (later
+                // effective_from) beats the primary; a same-day tie → newest row (id).
+                ->orderByRaw('effective_from IS NULL, effective_from DESC')
+                ->orderByDesc('id')
                 ->first();
 
-            if ($assignment && $assignment->shiftTemplate && $assignment->shiftTemplate->active) {
+            // NOTE: an inactive template is still honored here — history is immutable;
+            // `active` only controls whether a template is offered for NEW assignments.
+            if ($assignment && $assignment->shiftTemplate) {
                 $shift = $assignment->shiftTemplate;
                 return [
                     'shift_start' => substr($shift->shift_start, 0, 5), // HH:MM format
@@ -47,6 +68,30 @@ class ShiftResolutionService
                     'shift_name' => $shift->shift_name,
                     'shift_id' => $shift->id,
                     'source' => 'user_assignment'
+                ];
+            }
+
+            // 1b. Backward freeze (plan R1.2): no row is effective on $date, but if the
+            //     user HAS assignment history and $date is BEFORE their earliest dated
+            //     assignment, resolve to that earliest assignment's template (so months
+            //     straddling a first-ever assignment stay consistent). Gaps and
+            //     ended-assignments (removeShiftAssignment) fall through to default below.
+            $earliest = UserShiftAssignmentModel::with('shiftTemplate')
+                ->where('user_id', $userId)
+                ->whereNotNull('effective_from')
+                ->orderBy('effective_from', 'asc')
+                ->first();
+
+            if ($earliest && $earliest->shiftTemplate
+                && $date < $earliest->effective_from->format('Y-m-d')) {
+                $shift = $earliest->shiftTemplate;
+                return [
+                    'shift_start' => substr($shift->shift_start, 0, 5),
+                    'shift_end' => substr($shift->shift_end, 0, 5),
+                    'working_days' => $shift->getWorkingDaysArray(),
+                    'shift_name' => $shift->shift_name,
+                    'shift_id' => $shift->id,
+                    'source' => 'earliest_backfill'
                 ];
             }
 
@@ -90,6 +135,9 @@ class ShiftResolutionService
                 'source' => 'hardcoded_fallback'
             ];
         });
+
+        self::$shiftMemo[$memoKey] = $result;
+        return $result;
     }
 
     /**
@@ -103,46 +151,96 @@ class ShiftResolutionService
      */
     public function calculateWorkingDays(int $userId, string $startDate, string $endDate): int
     {
-        // Get user's shift using today's date (current shift assignment)
-        // This ensures shifts apply retroactively to all past dates
-        $lookupDate = date('Y-m-d');
-        $shift = $this->getUserShift($userId, $lookupDate);
-        $workingDaysOfWeek = $shift['working_days'];
-        
-        Log::info('calculateWorkingDays - shift data', [
-            'user_id' => $userId,
-            'shift_name' => $shift['shift_name'],
-            'working_days_array' => $workingDaysOfWeek,
-            'start_date' => $startDate,
-            'end_date' => $endDate
-        ]);
-        
         // Get public holidays in this range
         $holidays = PublicHolidayModel::getHolidaysInRange($startDate, $endDate);
-        
-        // Iterate through date range
+
+        // Iterate the range resolving the shift FOR EACH DATE. A mid-range shift
+        // change with different off-days is now counted correctly per day; the
+        // Phase-0 freeze makes past dates resolve to the shift that was actually in
+        // effect then, so unchanged users' totals stay identical to before.
         $workingDays = 0;
         $currentDate = new \DateTime($startDate);
         $endDateObj = new \DateTime($endDate);
-        
+
         while ($currentDate <= $endDateObj) {
             $dateStr = $currentDate->format('Y-m-d');
             $dayOfWeek = (int)$currentDate->format('N'); // 1=Mon, 7=Sun
-            
+
+            $workingDaysOfWeek = $this->getUserShift($userId, $dateStr)['working_days'];
+
             // Check if it's a working day AND not a holiday
             if (in_array($dayOfWeek, $workingDaysOfWeek) && !in_array($dateStr, $holidays)) {
                 $workingDays++;
             }
-            
+
             $currentDate->modify('+1 day');
         }
-        
-        Log::info('calculateWorkingDays - result', [
-            'user_id' => $userId,
-            'working_days_count' => $workingDays
-        ]);
-        
+
         return $workingDays;
+    }
+
+    /**
+     * Sum late + overtime minutes across a date range, resolving each day correctly.
+     *
+     * For each attendance day with a login: prefer the FROZEN snapshot
+     * (late_minutes / overtime_minutes stamped at check-in) when present; otherwise
+     * compute against the shift resolved FOR THAT DATE (not today's shift). This
+     * replaces the old single-shift-for-the-whole-month calculation that silently
+     * rewrote past lateness whenever a rider's shift changed.
+     *
+     * @return array ['late_minutes','overtime_minutes','late_days','overtime_days']
+     */
+    public function sumLateOvertimeMinutes(int $userId, string $startDate, string $endDate): array
+    {
+        $rows = DB::table('t_ops_attendance')
+            ->where('user_id', $userId)
+            ->whereBetween('attendance_date', [$startDate, $endDate])
+            ->whereNotNull('login_time')
+            ->where('login_time', '!=', '')
+            ->get(['attendance_date', 'login_time', 'logout_time',
+                   'expected_shift_start', 'expected_shift_end',
+                   'late_minutes', 'overtime_minutes']);
+
+        $totLate = 0; $totOt = 0; $lateDays = 0; $otDays = 0;
+
+        foreach ($rows as $r) {
+            $date = substr((string) $r->attendance_date, 0, 10);
+
+            // --- Late ---
+            if (!is_null($r->late_minutes)) {
+                $late = (int) $r->late_minutes;
+            } else {
+                $start = $r->expected_shift_start
+                    ?: (($this->getUserShift($userId, $date)['shift_start'] ?? '09:00') . ':00');
+                $s = strtotime($date . ' ' . $start);
+                $l = strtotime($date . ' ' . $r->login_time);
+                // Truncate seconds to whole minutes — matches legacy TIMESTAMPDIFF(MINUTE).
+                $late = ($l > $s) ? (int) (($l - $s) / 60) : 0;
+            }
+            if ($late > 0) { $totLate += $late; $lateDays++; }
+
+            // --- Overtime (only when checked out) ---
+            if (!empty($r->logout_time)) {
+                if (!is_null($r->overtime_minutes)) {
+                    $ot = (int) $r->overtime_minutes;
+                } else {
+                    $end = $r->expected_shift_end
+                        ?: (($this->getUserShift($userId, $date)['shift_end'] ?? '17:00') . ':00');
+                    $e = strtotime($date . ' ' . $end);
+                    $o = strtotime($date . ' ' . $r->logout_time);
+                    // Truncate seconds to whole minutes — matches legacy TIMESTAMPDIFF(MINUTE).
+                    $ot = ($o > $e) ? (int) (($o - $e) / 60) : 0;
+                }
+                if ($ot > 0) { $totOt += $ot; $otDays++; }
+            }
+        }
+
+        return [
+            'late_minutes' => $totLate,
+            'overtime_minutes' => $totOt,
+            'late_days' => $lateDays,
+            'overtime_days' => $otDays,
+        ];
     }
 
     /**
@@ -189,20 +287,109 @@ class ShiftResolutionService
     }
 
     /**
+     * Freeze the day's expected shift + late/overtime minutes onto the attendance
+     * row, so a later shift change can never rewrite this day's history.
+     *
+     * Idempotent: safe to call at check-in (fills late), check-out (fills overtime),
+     * and on manual attendance entry. Resolves the shift FOR THE RECORD'S DATE.
+     * Callers MUST wrap this in try/catch — it must never break check-in/out.
+     *
+     * @param int    $userId
+     * @param string $date  (Y-m-d)
+     */
+    public function stampAttendanceSnapshot(int $userId, string $date): void
+    {
+        $row = DB::table('t_ops_attendance')
+            ->where('user_id', $userId)
+            ->whereDate('attendance_date', $date)
+            ->first();
+
+        if (!$row) {
+            return;
+        }
+
+        $shift = $this->getUserShift($userId, $date);
+        $start = $shift['shift_start'] ?? null; // 'HH:MM'
+        $end   = $shift['shift_end'] ?? null;
+
+        $update = [
+            'expected_shift_start' => $start ? $start . ':00' : null,
+            'expected_shift_end'   => $end ? $end . ':00' : null,
+            'shift_template_id'    => $shift['shift_id'] ?? null,
+        ];
+
+        // Late minutes — only when checked in. Same-day comparison, matching the
+        // existing report logic (keeps snapshot numbers identical to current reports).
+        if (!empty($row->login_time) && $start) {
+            $s = strtotime($date . ' ' . $start);
+            $l = strtotime($date . ' ' . $row->login_time);
+            // Truncate seconds to whole minutes — matches legacy TIMESTAMPDIFF(MINUTE).
+            $update['late_minutes'] = ($l > $s) ? (int) (($l - $s) / 60) : 0;
+        }
+
+        // Overtime minutes — only when checked out.
+        if (!empty($row->logout_time) && $end) {
+            $e = strtotime($date . ' ' . $end);
+            $o = strtotime($date . ' ' . $row->logout_time);
+            $update['overtime_minutes'] = ($o > $e) ? (int) (($o - $e) / 60) : 0;
+        }
+
+        DB::table('t_ops_attendance')
+            ->where('id', $row->id)
+            ->update($update);
+    }
+
+    /**
+     * Re-stamp snapshots for every attendance day in a date range. Used after a
+     * BACK-DATED shift assignment so that days already stamped (at check-in, against
+     * the old/default shift) get recomputed against the newly-assigned shift — this is
+     * what makes "assign the correct old shift → the reports fix themselves" true for
+     * late/overtime, not just working days. Idempotent.
+     *
+     * IMPORTANT: the caller must clear this user's shift cache BEFORE calling, so the
+     * per-date resolution inside stampAttendanceSnapshot reflects the new assignment.
+     *
+     * @return int number of days re-stamped
+     */
+    public function restampRange(int $userId, string $startDate, string $endDate): int
+    {
+        $dates = DB::table('t_ops_attendance')
+            ->where('user_id', $userId)
+            ->whereBetween('attendance_date', [$startDate, $endDate])
+            ->whereNotNull('login_time')
+            ->where('login_time', '!=', '')
+            ->pluck('attendance_date');
+
+        $count = 0;
+        foreach ($dates as $d) {
+            $this->stampAttendanceSnapshot($userId, substr((string) $d, 0, 10));
+            $count++;
+        }
+
+        return $count;
+    }
+
+    /**
      * Clear cache for a user's shift (call after updating shifts or assignments)
-     * 
+     *
      * @param int $userId
      */
     public function clearUserShiftCache(int $userId): void
     {
-        // Clear all possible cached entries for this user
-        // In a production app, you'd use cache tags for more efficient clearing
-        $today = now()->format('Y-m-d');
+        // Clear this user's cached shift entries around today (version-aware keys).
+        $ver = (int) Cache::get('shift_cache_ver', 1);
         for ($i = -30; $i <= 30; $i++) {
             $date = now()->addDays($i)->format('Y-m-d');
-            Cache::forget("user_shift_{$userId}_{$date}");
+            Cache::forget("user_shift_v{$ver}_{$userId}_{$date}");
         }
-        
+
+        // Also drop this user's in-request memo entries.
+        foreach (array_keys(self::$shiftMemo) as $k) {
+            if (str_contains($k, "|{$userId}|")) {
+                unset(self::$shiftMemo[$k]);
+            }
+        }
+
         Log::info("Cleared shift cache for user {$userId}");
     }
 
@@ -211,11 +398,15 @@ class ShiftResolutionService
      */
     public function clearAllShiftCaches(): void
     {
-        // For now, just flush all cache
-        // In production, you'd use cache tags for more granular control
-        Cache::flush();
-        
-        Log::info("Cleared all shift caches");
+        // Bump a version counter instead of flushing the WHOLE application cache
+        // (Cache::flush() also wiped dashboard/report caches on every template edit).
+        // getUserShift() embeds this version in its cache key, so one bump
+        // invalidates every cached shift without touching unrelated caches.
+        $ver = (int) Cache::get('shift_cache_ver', 1);
+        Cache::forever('shift_cache_ver', $ver + 1);
+        self::$shiftMemo = [];
+
+        Log::info('Bumped shift cache version to ' . ($ver + 1));
     }
 
     /**
@@ -235,7 +426,7 @@ class ShiftResolutionService
             $summary[] = [
                 'shift_id' => $shift->id,
                 'shift_name' => $shift->shift_name,
-                'assigned_users' => $shift->userAssignments()->count(),
+                'assigned_users' => $shift->currentUserAssignments()->count(),
                 'working_days_count' => $shift->getWorkingDaysCount(),
                 'hours' => substr($shift->shift_start, 0, 5) . ' - ' . substr($shift->shift_end, 0, 5)
             ];

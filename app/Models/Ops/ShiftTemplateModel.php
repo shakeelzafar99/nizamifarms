@@ -37,6 +37,18 @@ class ShiftTemplateModel extends Model
         return $this->hasMany(UserShiftAssignmentModel::class, 'shift_template_id');
     }
 
+    /**
+     * Only the CURRENTLY-effective assignments (open rows). Since assignments are
+     * closed-not-deleted on change, one open row = one user currently on this shift.
+     * Use this for "how many users are on this shift now" and delete guards, so
+     * historical (closed) rows don't inflate counts or block template deletion.
+     */
+    public function currentUserAssignments()
+    {
+        return $this->hasMany(UserShiftAssignmentModel::class, 'shift_template_id')
+            ->whereNull('effective_to');
+    }
+
     public function createdBy()
     {
         return $this->belongsTo(\App\Models\User::class, 'created_by');

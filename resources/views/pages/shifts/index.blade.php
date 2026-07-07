@@ -37,15 +37,15 @@
   <!-- Header -->
   <div class="flex justify-between items-center mb-6">
     <div>
-      <h1 class="text-2xl font-semibold text-gray-900">Shift Management</h1>
-      <p class="text-sm text-gray-500 mt-1">Manage shift templates and assign them to employees</p>
+      <h1 class="text-2xl font-semibold text-gray-900">Shift Types</h1>
+      <p class="text-sm text-gray-500 mt-1">Define your shifts (times &amp; off days). To assign them to riders, use the Shift Planner.</p>
     </div>
     <div class="flex gap-2">
-      <button onclick="openUserAssignmentView()" class="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition font-semibold shadow-md">
-        👥 Assign to Users
-      </button>
+      <a href="/shift-planner" class="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition font-semibold shadow-md">
+        📅 Open Shift Planner
+      </a>
       <button onclick="openCreateModal()" class="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition font-semibold shadow-md">
-        ➕ Create Shift
+        ➕ Create Shift Type
       </button>
     </div>
   </div>

@@ -13,6 +13,9 @@
   <div class="flex justify-between items-center mb-6 relative" style="z-index: 10;">
     <h1 class="text-2xl font-semibold text-gray-900">Attendance Management</h1>
     <div class="flex gap-2 items-center">
+      <a href="/shift-planner" class="px-4 py-2 bg-white text-gray-700 rounded-lg hover:bg-gray-100 transition font-semibold shadow-sm border border-gray-300">
+        📅 Shift Planner
+      </a>
       <a href="/attendance/reports" class="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition font-semibold shadow-md border-2 border-blue-700">
         Reports
       </a>
@@ -69,13 +72,19 @@
             >
               📍 Office Locations
             </a>
-            <a 
+            <a
+              href="/shift-planner"
+              class="block px-4 py-3 text-gray-800 hover:bg-gray-100 transition font-medium"
+            >
+              📅 Shift Planner
+            </a>
+            <a
               href="/shifts"
               class="block px-4 py-3 text-gray-800 hover:bg-gray-100 transition font-medium"
             >
-              📅 Shift Management
+              🗂️ Shift Types
             </a>
-            <a 
+            <a
               href="/holidays"
               class="block px-4 py-3 text-gray-800 hover:bg-gray-100 transition font-medium"
             >
@@ -336,20 +345,17 @@
           <tr>
             <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Employee</th>
             <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Expected Shift</th>
-            <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Login</th>
-            <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Logout</th>
+            <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">In → Out</th>
             <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Location</th>
             <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Distance</th>
             <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Hours</th>
-            <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Late By</th>
-            <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Overtime</th>
             <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Leave</th>
             <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Actions</th>
           </tr>
         </thead>
         <tbody id="attBody" class="bg-white divide-y divide-gray-200">
           <tr>
-            <td colspan="11" class="px-4 py-8 text-center text-gray-500 text-sm">Loading attendance records...</td>
+            <td colspan="8" class="px-4 py-8 text-center text-gray-500 text-sm">Loading attendance records...</td>
           </tr>
         </tbody>
       </table>
@@ -602,6 +608,9 @@
   </div>
 </div>
 
+{{-- Shared "Change shift" popup (used by the clickable Expected Shift column) --}}
+@include('partials.shift-change-modal')
+
 <!-- Customize User List Modal -->
 <div id="customizeUserListModal" style="display: none;" onclick="if(event.target === this) closeCustomizeUserList();">
   <div style="background: white; border-radius: 16px; width: 95%; max-width: 800px; max-height: 90vh; display: flex; flex-direction: column; box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.25);" onclick="event.stopPropagation();">
@@ -609,8 +618,8 @@
     <div style="padding: 20px 24px; border-bottom: 1px solid #e5e7eb; background: white; flex-shrink: 0;">
       <div style="display: flex; align-items: center; justify-content: space-between;">
         <div>
-          <h2 style="font-size: 20px; font-weight: 600; color: #111827; margin: 0;">Customize Attendance User List</h2>
-          <p style="font-size: 14px; color: #6b7280; margin-top: 4px;">Hide system users or test accounts from attendance tracking. By default, all users are visible.</p>
+          <h2 style="font-size: 20px; font-weight: 600; color: #111827; margin: 0;">People &amp; Rider List</h2>
+          <p style="font-size: 14px; color: #6b7280; margin-top: 4px;"><b>Show in Attendance</b> = appears in attendance &amp; salary tracking. <b>Delivery Rider</b> = appears in the rider-assign lists on web &amp; mobile. These are independent — e.g. an office person can be shown in attendance but not be a delivery rider.</p>
         </div>
         <button onclick="closeCustomizeUserList()" style="color: #9ca3af; font-size: 28px; line-height: 1; border: none; background: none; cursor: pointer; padding: 0;" onmouseover="this.style.color='#4b5563'" onmouseout="this.style.color='#9ca3af'">
           ×
@@ -623,12 +632,10 @@
       <table style="width: 100%;">
         <thead style="background: #f9fafb; position: sticky; top: 0;">
           <tr style="text-align: left; font-size: 12px; font-weight: 500; color: #6b7280; text-transform: uppercase;">
-            <th style="padding: 12px; width: 50px;">
-              <input type="checkbox" id="selectAllUsersVis" onchange="toggleSelectAllUsersVis(this)" checked>
-            </th>
             <th style="padding: 12px;">Employee</th>
             <th style="padding: 12px;">Role</th>
-            <th style="padding: 12px; width: 120px;">Show in Attendance</th>
+            <th style="padding: 12px; width: 150px; text-align:center;">Show in Attendance</th>
+            <th style="padding: 12px; width: 140px; text-align:center;">Delivery Rider</th>
           </tr>
         </thead>
         <tbody id="usersVisibilityTableBody">
@@ -765,6 +772,7 @@ let currentSummaryPeriod = 'day'; // 'day' or 'month'
 let currentTimeModalMode = null; // 'login' or 'logout'
 let allUsersVisibility = [];
 let visibilityChanges = {};
+let deliveryRiderChanges = {};
 
 // Initialize on page load
 document.addEventListener('DOMContentLoaded', async function() {
@@ -793,7 +801,9 @@ document.addEventListener('DOMContentLoaded', async function() {
         e.stopPropagation();
         const userId = parseInt(target.dataset.userId);
         const userName = target.dataset.userName;
-        openShiftManagerForUser(userId, userName);
+        // Use the in-place popup (same as clicking the Expected Shift) instead of
+        // redirecting away to the shifts page.
+        openShiftChange({ userId: userId, userName: userName, onSaved: loadAttendanceForDate });
       }
       
       // Handle quick edit button (✏️ button)
@@ -1014,7 +1024,7 @@ async function loadAttendanceForDate() {
     updateSummaryCards(filteredData);
   } catch(e) {
     console.error('Error loading attendance', e);
-    document.getElementById('attBody').innerHTML = '<tr><td colspan="11" class="px-4 py-8 text-center text-red-500 text-sm">Error loading data</td></tr>';
+    document.getElementById('attBody').innerHTML = '<tr><td colspan="8" class="px-4 py-8 text-center text-red-500 text-sm">Error loading data</td></tr>';
   }
 }
 
@@ -1022,20 +1032,27 @@ function renderAttendanceTable(data) {
   const body = document.getElementById('attBody');
   
   if (!data || data.length === 0) {
-    body.innerHTML = '<tr><td colspan="11" class="px-4 py-8 text-center text-gray-500 text-sm">No attendance records found for this date</td></tr>';
+    body.innerHTML = '<tr><td colspan="8" class="px-4 py-8 text-center text-gray-500 text-sm">No attendance records found for this date</td></tr>';
     return;
   }
 
   body.innerHTML = data.map(r => {
     const hours = calculateHours(r.login_time, r.logout_time);
-    const lateBy = calculateLateBy(r.login_time, r.shift_start);
-    const overtime = calculateOvertime(r.logout_time, r.shift_end, r.login_time);
+    // Prefer server-computed late/overtime (per-date + frozen-snapshot aware). Fall
+    // back to local calc only if the server didn't send them (older cached responses).
+    const fmtMins = (n) => { const h = Math.floor(n / 60), m = n % 60; return h > 0 ? `${h}h ${m}m` : `${m}m`; };
+    const lateBy = (r.late_minutes != null)
+      ? { isLate: r.late_minutes > 0, duration: r.late_minutes > 0 ? fmtMins(r.late_minutes) : '-' }
+      : calculateLateBy(r.login_time, r.shift_start);
+    const overtime = (r.overtime_minutes != null)
+      ? { hasOvertime: r.overtime_minutes > 0, duration: r.overtime_minutes > 0 ? fmtMins(r.overtime_minutes) : '-' }
+      : calculateOvertime(r.logout_time, r.shift_end, r.login_time);
     
     // Get location status
     const locationBadge = getLocationBadge(r);
     
     return `
-      <tr class="hover:bg-gray-50" data-status="${getRowStatus(r, lateBy, overtime)}" data-location="${locationBadge.type}">
+      <tr class="hover:bg-gray-50" style="border-left:3px solid ${attStatusColor(r, lateBy)}" data-status="${getRowStatus(r, lateBy, overtime)}" data-location="${locationBadge.type}">
         <td class="px-4 py-3 text-sm font-medium">
           <button 
             onclick="showEmployeeDetails(${r.user_id}, \`${(r.fullname || '').replace(/`/g, '')}\`, '${r.attendance_date}')"
@@ -1044,14 +1061,22 @@ function renderAttendanceTable(data) {
           >
             ${r.fullname || '#' + r.user_id}
           </button>
+          <div class="mt-1">${attStatusPill(r, lateBy, overtime)}</div>
         </td>
         <td class="px-4 py-3 text-sm">
-          <div class="text-gray-900 font-medium">${r.shift_name || 'Default Shift'}</div>
-          <div class="text-xs text-gray-500">${r.shift_start || '09:00'} - ${r.shift_end || '17:00'}</div>
+          <button type="button"
+            onclick="openShiftChange({userId:${r.user_id}, userName:\`${(r.fullname||'').replace(/`/g,'')}\`, onSaved: loadAttendanceForDate})"
+            class="text-left cursor-pointer group" title="Click to change this rider's shift">
+            <div class="font-medium text-gray-900 group-hover:text-red-700 group-hover:underline">${r.shift_name || 'Default Shift'} <span class="text-gray-300 group-hover:text-red-500">✎</span></div>
+            <div class="text-xs text-gray-500">${r.shift_start || '09:00'} - ${r.shift_end || '17:00'}</div>
+          </button>
         </td>
-        <td class="px-4 py-3 text-sm ${lateBy.isLate ? 'text-red-600 font-medium' : 'text-gray-900'}">${r.login_time || '-'}</td>
-        <td class="px-4 py-3 text-sm text-gray-900">${r.logout_time || '-'}</td>
-        
+        <td class="px-4 py-3 text-sm whitespace-nowrap">
+          <span class="${r.login_time ? (lateBy.isLate ? 'text-red-600 font-medium' : 'text-gray-900') : 'text-gray-300'}">${r.login_time || '–'}</span>
+          <span class="text-gray-300 mx-1">→</span>
+          <span class="${r.logout_time ? 'text-gray-900' : 'text-gray-300'}">${r.logout_time || '–'}</span>
+        </td>
+
         <!-- Location Badge Column -->
         <td class="px-4 py-3 text-sm">
           ${locationBadge.html}
@@ -1062,10 +1087,8 @@ function renderAttendanceTable(data) {
           ${getDistanceBadge(r)}
         </td>
         
-        <td class="px-4 py-3 text-sm text-gray-600">${hours}</td>
-        <td class="px-4 py-3 text-sm ${lateBy.isLate ? 'text-red-600 font-semibold' : 'text-gray-400'}">${lateBy.duration}</td>
-        <td class="px-4 py-3 text-sm ${overtime.hasOvertime ? 'text-green-600 font-semibold' : 'text-gray-400'}">${overtime.duration}</td>
-        
+        <td class="px-4 py-3 text-sm ${hours === '-' ? 'text-gray-300' : 'text-gray-600'}">${hours}</td>
+
         <!-- Leave badge -->
         ${r.leave_request_id ? `
         <td class="px-4 py-3 text-sm">
@@ -1073,7 +1096,7 @@ function renderAttendanceTable(data) {
               ${r.leave_type_from_req || 'Leave'} · ${r.leave_status}
             </span>
           </td>
-        ` : '<td class="px-4 py-3 text-sm text-gray-400">-</td>'}
+        ` : '<td class="px-4 py-3 text-sm text-gray-300">–</td>'}
         <td class="px-4 py-3 text-sm">
           <div class="flex gap-2" style="position: relative; z-index: 5;">
             ${!r.logout_time ? `
@@ -1123,6 +1146,31 @@ function getRowStatus(r, lateBy, overtime) {
   if (overtime.hasOvertime) return 'overtime';
   if (lateBy.isLate) return 'late';
   return 'present';
+}
+
+// Status chip under the employee name — folds in Late duration + an Overtime badge
+// (replaces the old separate Late By / Overtime columns).
+function attStatusPill(r, lateBy, overtime) {
+  const onLeave = r.leave_request_id && ['approved','pending'].includes(String(r.leave_status || '').toLowerCase());
+  let label, bg, fg;
+  if (onLeave)            { label = 'On leave';                bg = '#E6ECFD'; fg = '#1D4ED8'; }
+  else if (!r.login_time) { label = 'Absent';                 bg = '#EEF1F5'; fg = '#5B6B84'; }
+  else if (lateBy.isLate) { label = 'Late ' + lateBy.duration; bg = '#FBEEDC'; fg = '#B45309'; }
+  else                    { label = 'On time';                bg = '#E6F3EB'; fg = '#15803D'; }
+  let html = `<span style="display:inline-block; font-size:11px; font-weight:600; padding:1px 8px; border-radius:20px; background:${bg}; color:${fg};">${label}</span>`;
+  if (overtime && overtime.hasOvertime) {
+    html += ` <span style="display:inline-block; font-size:11px; font-weight:600; padding:1px 8px; border-radius:20px; background:#E6F3EB; color:#15803D;">+OT ${overtime.duration}</span>`;
+  }
+  return html;
+}
+
+// Left-edge accent colour per row status (scannable at a glance).
+function attStatusColor(r, lateBy) {
+  const onLeave = r.leave_request_id && ['approved','pending'].includes(String(r.leave_status || '').toLowerCase());
+  if (onLeave) return '#1D4ED8';
+  if (!r.login_time) return '#CBD5E1';
+  if (lateBy.isLate) return '#F59E0B';
+  return '#22C55E';
 }
 
 /**
@@ -2253,6 +2301,7 @@ async function openCustomizeUserList() {
     if (json.success) {
       allUsersVisibility = json.data;
       visibilityChanges = {}; // Reset changes
+      deliveryRiderChanges = {};
       renderUsersVisibility();
       updateVisibleUsersCount();
     } else {
@@ -2268,6 +2317,7 @@ function closeCustomizeUserList() {
   const modal = document.getElementById('customizeUserListModal');
   modal.style.display = 'none';
   visibilityChanges = {}; // Reset unsaved changes
+  deliveryRiderChanges = {};
 }
 
 // Settings dropdown toggle
@@ -2295,32 +2345,28 @@ function renderUsersVisibility() {
   
   tbody.innerHTML = allUsersVisibility.map((user, index) => {
     const rowBg = index % 2 === 0 ? '#ffffff' : '#f9fafb';
-    // Check if this user has pending changes
-    const currentVisibility = visibilityChanges.hasOwnProperty(user.id) 
-      ? visibilityChanges[user.id] 
-      : user.is_visible;
-    
+    const curVis = visibilityChanges.hasOwnProperty(user.id) ? visibilityChanges[user.id] : !!user.is_visible;
+    const curRider = deliveryRiderChanges.hasOwnProperty(user.id) ? deliveryRiderChanges[user.id] : !!Number(user.is_delivery_rider);
+
     return `
       <tr style="background: ${rowBg};" onmouseover="this.style.background='#f3f4f6'" onmouseout="this.style.background='${rowBg}'">
-        <td style="padding: 12px;">
-          <input 
-            type="checkbox" 
-            class="user-visibility-checkbox" 
-            data-user-id="${user.id}"
-            ${currentVisibility ? 'checked' : ''}
-            onchange="toggleUserVisibility(${user.id}, this.checked)"
-          >
-        </td>
         <td style="padding: 12px; font-weight: 500; color: #111827;">${user.fullname}</td>
         <td style="padding: 12px; color: #6b7280; font-size: 13px;">${user.role_name || 'N/A'}</td>
-        <td style="padding: 12px;">
-          <span style="font-size: 12px; padding: 4px 8px; border-radius: 6px; background: ${currentVisibility ? '#dcfce7' : '#fee2e2'}; color: ${currentVisibility ? '#166534' : '#991b1b'};">
-            ${currentVisibility ? '✓ Visible' : '✗ Hidden'}
-          </span>
+        <td style="padding: 12px; text-align:center;">
+          <input type="checkbox" class="user-visibility-checkbox" data-user-id="${user.id}"
+            ${curVis ? 'checked' : ''} onchange="toggleUserVisibility(${user.id}, this.checked)">
+        </td>
+        <td style="padding: 12px; text-align:center;">
+          <input type="checkbox" data-user-id="${user.id}"
+            ${curRider ? 'checked' : ''} onchange="toggleDeliveryRider(${user.id}, this.checked)">
         </td>
       </tr>
     `;
   }).join('');
+}
+
+function toggleDeliveryRider(userId, isRider) {
+  deliveryRiderChanges[userId] = isRider;
 }
 
 function toggleUserVisibility(userId, isVisible) {
@@ -2349,7 +2395,8 @@ function toggleSelectAllUsersVis(checkbox) {
 function updateSelectAllCheckbox() {
   const checkboxes = document.querySelectorAll('.user-visibility-checkbox');
   const selectAllCheckbox = document.getElementById('selectAllUsersVis');
-  
+
+  if (!selectAllCheckbox) return; // select-all removed (two-column layout)
   if (checkboxes.length === 0) return;
   
   const allChecked = Array.from(checkboxes).every(cb => cb.checked);
@@ -2371,44 +2418,49 @@ function updateVisibleUsersCount() {
 }
 
 async function saveUserVisibilityChanges() {
-  if (Object.keys(visibilityChanges).length === 0) {
+  const visIds = Object.keys(visibilityChanges);
+  const riderIds = Object.keys(deliveryRiderChanges);
+  if (visIds.length === 0 && riderIds.length === 0) {
     alert('No changes to save');
     closeCustomizeUserList();
     return;
   }
-  
+
+  const csrf = document.querySelector('meta[name="csrf-token"]').content;
   try {
-    console.log('Saving visibility changes:', visibilityChanges);
-    
-    // Save each changed user
-    const promises = Object.keys(visibilityChanges).map(userId => {
-      return fetch('/attendance/update-visibility', {
+    const promises = [];
+    // "Show in Attendance" changes
+    visIds.forEach(userId => {
+      promises.push(fetch('/attendance/update-visibility', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').content
-        },
+        headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': csrf },
         body: JSON.stringify({
           user_id: parseInt(userId),
           is_visible: visibilityChanges[userId] ? 1 : 0,
           notes: visibilityChanges[userId] ? null : 'Hidden from attendance tracking'
         })
-      });
+      }));
     });
-    
+    // "Delivery Rider" changes (rider-assign list)
+    riderIds.forEach(userId => {
+      promises.push(fetch('/attendance/update-delivery-rider', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': csrf },
+        body: JSON.stringify({ user_id: parseInt(userId), is_rider: deliveryRiderChanges[userId] ? 1 : 0 })
+      }));
+    });
+
     await Promise.all(promises);
-    
-    alert('✓ User visibility preferences saved successfully!');
+
+    alert('✓ Saved. Attendance visibility and the delivery-rider list are updated.');
     closeCustomizeUserList();
-    
-    // Reload attendance table to reflect changes
     loadAttendanceForDate();
-    
   } catch(e) {
-    console.error('Error saving visibility changes:', e);
+    console.error('Error saving user list changes:', e);
     alert('Failed to save changes. Please try again.');
   }
 }
+window.toggleDeliveryRider = toggleDeliveryRider;
 
 // Make customize user list functions globally accessible
 window.openCustomizeUserList = openCustomizeUserList;

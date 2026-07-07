@@ -21,19 +21,52 @@ class AttendanceController extends Controller
     {
         $users = DB::table('t_sys_user as u')
             ->leftJoin('t_ops_attendance_visibility as av', 'av.user_id', '=', 'u.id')
+            ->leftJoin('t_ops_rider_profile as p', 'p.user_id', '=', 'u.id')
             ->leftJoin('t_sys_user_role as ur', 'ur.user_id', '=', 'u.id')
             ->leftJoin('t_sys_role as r', 'r.id', '=', 'ur.role_id')
+            ->where('u.is_active', 1)
             ->select(
                 'u.id',
                 'u.fullname',
                 'r.urole_name as role_name',
                 DB::raw('COALESCE(av.is_visible, 1) as is_visible'),
+                // Delivery rider = active rider profile (separate from attendance visibility).
+                DB::raw('CASE WHEN p.active = 1 THEN 1 ELSE 0 END as is_delivery_rider'),
                 'av.notes as hide_reason'
             )
+            ->groupBy('u.id', 'u.fullname', 'r.urole_name', 'av.is_visible', 'p.active', 'av.notes')
             ->orderBy('u.fullname')
             ->get();
 
         return response()->json(['success' => true, 'data' => $users]);
+    }
+
+    // Toggle whether a user is a delivery rider (appears in the rider-assign lists on
+    // web + mobile). Independent of attendance visibility. Backed by rider_profile.active.
+    public function updateDeliveryRider(Request $request)
+    {
+        $validated = $request->validate([
+            'user_id' => 'required|integer|exists:t_sys_user,id',
+            'is_rider' => 'required|boolean',
+        ]);
+
+        $userId = (int) $validated['user_id'];
+        $isRider = $validated['is_rider'] ? 1 : 0;
+
+        $existing = DB::table('t_ops_rider_profile')->where('user_id', $userId)->first();
+        if ($existing) {
+            DB::table('t_ops_rider_profile')->where('user_id', $userId)
+                ->update(['active' => $isRider, 'updated_at' => now()]);
+        } else {
+            DB::table('t_ops_rider_profile')->insert([
+                'user_id' => $userId,
+                'active' => $isRider,
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+        }
+
+        return response()->json(['success' => true, 'message' => 'Rider list updated']);
     }
 
     // Update user visibility in attendance
@@ -124,6 +157,11 @@ class AttendanceController extends Controller
                 'a.login_time',
                 'a.logout_time',
                 'a.notes',
+                // Frozen snapshot (preferred over recomputation for late/OT)
+                'a.expected_shift_start',
+                'a.expected_shift_end',
+                'a.late_minutes',
+                'a.overtime_minutes',
                 // Meter readings
                 'a.meter_start',
                 'a.meter_end',
@@ -181,12 +219,35 @@ class AttendanceController extends Controller
         $userIdsWithAttendance = [];
         
         foreach ($rows as $row) {
-            $shiftData = $shiftService->getUserShift($row->user_id);
+            // Resolve the shift FOR THE SELECTED DATE (not today) so past dates show the
+            // shift that was actually in effect then.
+            $shiftData = $shiftService->getUserShift($row->user_id, $selectedDate);
             $row->shift_start = $shiftData['shift_start'];
             $row->shift_end = $shiftData['shift_end'];
             $row->shift_name = $shiftData['shift_name'];
             $row->shift_source = $shiftData['source'];
-            
+
+            // Per-row late/overtime minutes — prefer the frozen snapshot, else compute
+            // for the selected date. The frontend should DISPLAY these, not recompute.
+            if (!$row->login_time) {
+                $row->late_minutes = 0;
+            } elseif (!is_null($row->late_minutes)) {
+                $row->late_minutes = (int) $row->late_minutes;
+            } else {
+                $s = strtotime($selectedDate . ' ' . $shiftData['shift_start'] . ':00');
+                $l = strtotime($selectedDate . ' ' . $row->login_time);
+                $row->late_minutes = ($l > $s) ? (int) (($l - $s) / 60) : 0;
+            }
+            if (!$row->logout_time) {
+                $row->overtime_minutes = 0;
+            } elseif (!is_null($row->overtime_minutes)) {
+                $row->overtime_minutes = (int) $row->overtime_minutes;
+            } else {
+                $e = strtotime($selectedDate . ' ' . $shiftData['shift_end'] . ':00');
+                $o = strtotime($selectedDate . ' ' . $row->logout_time);
+                $row->overtime_minutes = ($o > $e) ? (int) (($o - $e) / 60) : 0;
+            }
+
             // ⭐ Calculate meter distance
             $row->meter_distance = null;
             if ($row->meter_start && $row->meter_end) {
@@ -297,6 +358,21 @@ class AttendanceController extends Controller
                     'logout_time' => $validated['logout_time'] ?? null,
                     'created_at' => now(),
                     'created_by' => $loggedInUserId
+                ]);
+            }
+
+            // Freeze the shift snapshot onto this row, resolved for the record's
+            // own date. NON-FATAL — a snapshot failure must not fail the save.
+            try {
+                (new ShiftResolutionService())->stampAttendanceSnapshot(
+                    (int) $validated['user_id'],
+                    $validated['attendance_date']
+                );
+            } catch (\Exception $snapErr) {
+                \Log::warning('Attendance shift snapshot failed on manual entry (non-fatal)', [
+                    'user_id' => $validated['user_id'],
+                    'date' => $validated['attendance_date'],
+                    'error' => $snapErr->getMessage(),
                 ]);
             }
 
@@ -441,10 +517,7 @@ class AttendanceController extends Controller
                     'processed_attendance_ids' => [] // Track processed attendance records to prevent duplicates
                 ];
             }
-            
-            $userShiftStart = $byUser[$record->user_id]['shift_start'];
-            $userShiftEnd = $byUser[$record->user_id]['shift_end'];
-            
+
             // Track leave dates for this user
             if ($record->leave_request_id && $record->leave_start_date && $record->leave_end_date) {
                 $leaveStart = new \DateTime($record->leave_start_date);
@@ -473,22 +546,11 @@ class AttendanceController extends Controller
                 $byUser[$record->user_id]['total_days']++;
                 if ($record->login_time) {
                     $byUser[$record->user_id]['present_days']++;
-                    
-                    // Calculate late using user's actual shift
-                    if ($record->login_time > $userShiftStart) {
-                        $byUser[$record->user_id]['late_days']++;
-                        $late_mins = (strtotime($record->login_time) - strtotime($userShiftStart)) / 60;
-                        $byUser[$record->user_id]['total_late_minutes'] += $late_mins;
-                    }
-                    
-                    // Calculate overtime using user's actual shift
-                    if ($record->logout_time && $record->logout_time > $userShiftEnd) {
-                        $byUser[$record->user_id]['overtime_days']++;
-                        $ot_mins = (strtotime($record->logout_time) - strtotime($userShiftEnd)) / 60;
-                        $byUser[$record->user_id]['total_overtime_minutes'] += $ot_mins;
-                    }
-                    
-                    // Calculate hours worked
+
+                    // Late/overtime TOTALS are computed once per user below via
+                    // ShiftResolutionService::sumLateOvertimeMinutes (per-date + frozen
+                    // snapshot), so this report agrees with the salary calculation.
+                    // Here we only tally hours worked.
                     if ($record->logout_time) {
                         $hours = (strtotime($record->logout_time) - strtotime($record->login_time)) / 3600;
                         $byUser[$record->user_id]['total_hours'] += $hours;
@@ -511,6 +573,9 @@ class AttendanceController extends Controller
                     $status = 'absent';
                 }
                 
+                // Resolve the shift FOR THIS DATE so the per-day row shows the shift
+                // that was actually in effect (not today's), matching the totals.
+                $dayShift = $shiftService->getUserShift($record->user_id, $record->attendance_date);
                 $byUser[$record->user_id]['daily'][] = [
                     'attendance_date' => $record->attendance_date,
                     'login_time' => $record->login_time,
@@ -519,8 +584,8 @@ class AttendanceController extends Controller
                     'picture_end' => $record->picture_end,
                     'meter_start' => $record->meter_start,
                     'meter_end' => $record->meter_end,
-                    'shift_start' => $userShiftStart,
-                    'shift_end' => $userShiftEnd,
+                    'shift_start' => $dayShift['shift_start'],
+                    'shift_end' => $dayShift['shift_end'],
                     'status' => $status // ✅ Always add status field
                 ];
             }
@@ -531,7 +596,15 @@ class AttendanceController extends Controller
         foreach ($byUser as $userId => &$userData) {
             $userData['leave_days'] = count($userData['leave_dates']);
             $userData['absent_days'] = max(0, $userData['working_days'] - $userData['present_days'] - $userData['leave_days']);
-            
+
+            // Per-date + snapshot-aware late/overtime totals (SAME helper as salary,
+            // so this report and the salary slip always show identical numbers).
+            $lateOt = $shiftService->sumLateOvertimeMinutes($userId, $startDate, $effectiveEndDate);
+            $userData['total_late_minutes'] = $lateOt['late_minutes'];
+            $userData['total_overtime_minutes'] = $lateOt['overtime_minutes'];
+            $userData['late_days'] = $lateOt['late_days'];
+            $userData['overtime_days'] = $lateOt['overtime_days'];
+
             // Create a set of dates that have attendance records
             $attendanceDates = [];
             foreach ($userData['daily'] as $day) {
@@ -551,6 +624,8 @@ class AttendanceController extends Controller
                     // CRITICAL: Only add if this is a WORKING DAY for this user
                     // This respects shift schedule (e.g., Tuesday off) AND public holidays
                     if ($shiftService->isWorkingDay($userId, $dateStr)) {
+                        // Shift in effect on THIS date (memoized) for the row display.
+                        $fillerShift = $shiftService->getUserShift($userId, $dateStr);
                         // Check if on leave
                         if (isset($userData['leave_dates'][$dateStr])) {
                             // This is a working day on leave = ON LEAVE
@@ -558,8 +633,8 @@ class AttendanceController extends Controller
                                 'attendance_date' => $dateStr,
                                 'login_time' => null,
                                 'logout_time' => null,
-                                'shift_start' => $userData['shift_start'],
-                                'shift_end' => $userData['shift_end'],
+                                'shift_start' => $fillerShift['shift_start'],
+                                'shift_end' => $fillerShift['shift_end'],
                                 'status' => 'on_leave' // ✅ Mark as on leave
                             ];
                         } else {
@@ -568,8 +643,8 @@ class AttendanceController extends Controller
                                 'attendance_date' => $dateStr,
                                 'login_time' => null,
                                 'logout_time' => null,
-                                'shift_start' => $userData['shift_start'],
-                                'shift_end' => $userData['shift_end'],
+                                'shift_start' => $fillerShift['shift_start'],
+                                'shift_end' => $fillerShift['shift_end'],
                                 'status' => 'absent' // Mark as absent for frontend rendering
                             ];
                         }
@@ -649,11 +724,18 @@ class AttendanceController extends Controller
         $late = 0;
         $absent = 0;
         $byUser = [];
+        $shiftService = new ShiftResolutionService();
 
         foreach ($records as $r) {
+            // Effective shift start for THIS date: prefer the frozen check-in snapshot,
+            // else resolve the shift that was in effect on that date (not today's, not
+            // the legacy rider-profile column).
+            $shiftStart = $r->expected_shift_start
+                ?: (($shiftService->getUserShift($r->user_id, $r->attendance_date)['shift_start'] ?? '09:00') . ':00');
+
             if (!$r->login_time) {
                 $absent++;
-            } elseif ($r->login_time > $r->shift_start) {
+            } elseif ($r->login_time > $shiftStart) {
                 $late++;
             } else {
                 $onTime++;
@@ -675,7 +757,7 @@ class AttendanceController extends Controller
                 $byUser[$r->user_id]['absent']++;
             } else {
                 $byUser[$r->user_id]['present']++;
-                if ($r->login_time > $r->shift_start) {
+                if ($r->login_time > $shiftStart) {
                     $byUser[$r->user_id]['late']++;
                 }
             }
@@ -803,6 +885,9 @@ class AttendanceController extends Controller
                     'a.picture_end',
                     'a.meter_start',
                     'a.meter_end',
+                    // Frozen snapshot (preferred over recomputation)
+                    'a.late_minutes as snap_late_minutes',
+                    'a.overtime_minutes as snap_overtime_minutes',
                     'lr.leave_request_id',
                     'lr.leave_status',
                     'lr.leave_type',
@@ -891,32 +976,41 @@ class AttendanceController extends Controller
                     $record->hours_worked = 0;
                 }
 
-                // Check if late
-                if ($record->login_time && $user->shift_start) {
-                    $shiftStart = strtotime($record->attendance_date . ' ' . $user->shift_start);
+                // Per-day late/overtime — prefer the FROZEN snapshot; else resolve the
+                // shift in effect ON THIS DATE and compute (truncate seconds). This keeps
+                // per-day rows consistent with the snapshot-preferring monthly totals + salary.
+                if (!$record->login_time) {
+                    $record->late_minutes = 0;
+                } elseif (!is_null($record->snap_late_minutes)) {
+                    $record->late_minutes = (int) $record->snap_late_minutes;
+                    if ($record->late_minutes > 0) { $lateDays++; }
+                } else {
+                    $dayStart = $shiftService->getUserShift($userId, $record->attendance_date)['shift_start'] ?? null;
+                    $shiftStart = $dayStart ? strtotime($record->attendance_date . ' ' . $dayStart) : null;
                     $actualLogin = strtotime($record->attendance_date . ' ' . $record->login_time);
-                    if ($actualLogin > $shiftStart) {
+                    if ($shiftStart && $actualLogin > $shiftStart) {
                         $lateDays++;
-                        $record->late_minutes = round(($actualLogin - $shiftStart) / 60);
+                        $record->late_minutes = (int) (($actualLogin - $shiftStart) / 60);
                     } else {
                         $record->late_minutes = 0;
                     }
-                } else {
-                    $record->late_minutes = 0;
                 }
 
-                // Check if overtime
-                if ($record->logout_time && $user->shift_end) {
-                    $shiftEnd = strtotime($record->attendance_date . ' ' . $user->shift_end);
+                if (!$record->logout_time) {
+                    $record->overtime_minutes = 0;
+                } elseif (!is_null($record->snap_overtime_minutes)) {
+                    $record->overtime_minutes = (int) $record->snap_overtime_minutes;
+                    if ($record->overtime_minutes > 0) { $overtimeDays++; }
+                } else {
+                    $dayEnd = $shiftService->getUserShift($userId, $record->attendance_date)['shift_end'] ?? null;
+                    $shiftEnd = $dayEnd ? strtotime($record->attendance_date . ' ' . $dayEnd) : null;
                     $actualLogout = strtotime($record->attendance_date . ' ' . $record->logout_time);
-                    if ($actualLogout > $shiftEnd) {
+                    if ($shiftEnd && $actualLogout > $shiftEnd) {
                         $overtimeDays++;
-                        $record->overtime_minutes = round(($actualLogout - $shiftEnd) / 60);
+                        $record->overtime_minutes = (int) (($actualLogout - $shiftEnd) / 60);
                     } else {
                         $record->overtime_minutes = 0;
                     }
-                } else {
-                    $record->overtime_minutes = 0;
                 }
 
                 // Add order count to total

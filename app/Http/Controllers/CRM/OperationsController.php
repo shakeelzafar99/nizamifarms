@@ -736,7 +736,16 @@ class OperationsController extends Controller
                         'updated_at' => now()
                     ]
                 );
-                
+
+                // Stamp the shift snapshot for the imported day (non-fatal).
+                try {
+                    (new \App\Services\ShiftResolutionService())->stampAttendanceSnapshot($user->id, $attendanceDate);
+                } catch (\Exception $snapErr) {
+                    \Log::warning('CSV attendance import: snapshot failed (non-fatal)', [
+                        'user_id' => $user->id, 'date' => $attendanceDate, 'error' => $snapErr->getMessage(),
+                    ]);
+                }
+
                 if ($existing) {
                     $updated++;
                 } else {

@@ -16,12 +16,16 @@ class UserShiftAssignmentModel extends Model
         'effective_from',
         'effective_to',
         'created_by',
-        'updated_by'
+        'updated_by',
+        'notified_at',
+        'acknowledged_at'
     ];
 
     protected $casts = [
         'effective_from' => 'date',
-        'effective_to' => 'date'
+        'effective_to' => 'date',
+        'notified_at' => 'datetime',
+        'acknowledged_at' => 'datetime'
     ];
 
     /**
@@ -93,16 +97,9 @@ class UserShiftAssignmentModel extends Model
         });
     }
 
-    /**
-     * Get the currently effective shift for a user
-     */
-    public static function getUserCurrentShift(int $userId, ?string $date = null)
-    {
-        return self::with('shiftTemplate')
-            ->where('user_id', $userId)
-            ->effective($date)
-            ->first();
-    }
+    // NOTE: shift resolution goes through ShiftResolutionService::getUserShift(),
+    // which applies the latest-effective-first ordering and fallbacks. Do not add a
+    // shortcut resolver here — it would miss that ordering and drift from the service.
 }
 
 

@@ -2064,6 +2064,21 @@ class RiderController extends Controller
     }
 
     /**
+     * Receipt printout field config for the app (which fields to print). Empty object when
+     * unset (the app then prints everything, i.e. today's layout). Never throws.
+     */
+    public function getReceiptConfig()
+    {
+        try {
+            $raw = \DB::table('t_sys_config')->where('id', 1)->value('receipt_print_config');
+            $decoded = $raw ? json_decode($raw, true) : null;
+            return response()->json(['success' => true, 'config' => is_array($decoded) ? $decoded : (object) []]);
+        } catch (\Exception $e) {
+            return response()->json(['success' => true, 'config' => (object) []]);
+        }
+    }
+
+    /**
      * Change payment method for an order (rider can switch between cash/online)
      * For non-delivered orders only
      */
@@ -3142,6 +3157,29 @@ class RiderController extends Controller
                     ->first();
             }
 
+            // Rider's current shift + any change awaiting their acknowledgment (additive fields).
+            $shiftSvc = new \App\Services\ShiftResolutionService();
+            $todayShift = $shiftSvc->getUserShift(Auth::id(), now()->format('Y-m-d'));
+            $pendingAck = \App\Models\Ops\UserShiftAssignmentModel::with('shiftTemplate')
+                ->where('user_id', Auth::id())
+                ->whereNotNull('notified_at')->whereNull('acknowledged_at')
+                // Don't nag for a temporary change that's already fully in the past.
+                ->where(function ($q) {
+                    $q->whereNull('effective_to')->orWhereDate('effective_to', '>=', now()->format('Y-m-d'));
+                })
+                ->orderByDesc('id')->first();
+            $pendingAckData = null;
+            if ($pendingAck && $pendingAck->shiftTemplate) {
+                $pendingAckData = [
+                    'assignment_id' => $pendingAck->id,
+                    'shift_name' => $pendingAck->shiftTemplate->shift_name,
+                    'start' => substr($pendingAck->shiftTemplate->shift_start, 0, 5),
+                    'end' => substr($pendingAck->shiftTemplate->shift_end, 0, 5),
+                    'effective_from' => $pendingAck->effective_from ? $pendingAck->effective_from->format('Y-m-d') : null,
+                    'effective_to' => $pendingAck->effective_to ? $pendingAck->effective_to->format('Y-m-d') : null,
+                ];
+            }
+
             return response()->json([
                 'success' => true,
                 'attendance' => $attendance ? [
@@ -3165,6 +3203,13 @@ class RiderController extends Controller
                     'longitude' => $assignedLocation->longitude,
                     'radius_meters' => $assignedLocation->radius_meters,
                 ] : null,
+                // NEW (additive): rider's own shift + pending acknowledgment
+                'shift' => [
+                    'shift_name' => $todayShift['shift_name'],
+                    'start' => $todayShift['shift_start'],
+                    'end' => $todayShift['shift_end'],
+                ],
+                'pending_shift_ack' => $pendingAckData,
             ]);
         } catch (\Exception $e) {
             \Log::error('Failed to get today attendance', [
@@ -3249,6 +3294,19 @@ class RiderController extends Controller
                 }
                 
                 \DB::table('t_ops_attendance')->insert($insertData);
+            }
+
+            // ⭐ Freeze today's expected shift + late minutes onto the row so a later
+            // shift change can never rewrite this day. NON-FATAL: must never block
+            // or fail check-in.
+            try {
+                (new \App\Services\ShiftResolutionService())->stampAttendanceSnapshot($user->id, $today);
+            } catch (\Exception $snapErr) {
+                \Log::warning('Attendance shift snapshot failed on check-in (non-fatal)', [
+                    'user_id' => $user->id,
+                    'date' => $today,
+                    'error' => $snapErr->getMessage(),
+                ]);
             }
 
             // Prepare response message with location info
@@ -4203,6 +4261,17 @@ class RiderController extends Controller
             \DB::table('t_ops_attendance')
                 ->where('id', $existing->id)
                 ->update($updateData);
+
+            // ⭐ Freeze overtime minutes onto the row (same-day). NON-FATAL.
+            try {
+                (new \App\Services\ShiftResolutionService())->stampAttendanceSnapshot($user->id, $today);
+            } catch (\Exception $snapErr) {
+                \Log::warning('Attendance shift snapshot failed on check-out (non-fatal)', [
+                    'user_id' => $user->id,
+                    'date' => $today,
+                    'error' => $snapErr->getMessage(),
+                ]);
+            }
 
             // ⭐ ROAD DISTANCE: Calculate and store after successful checkout
             // This runs in background - doesn't block the checkout response
@@ -7514,13 +7583,8 @@ class RiderController extends Controller
                 }
             }
 
-            // Get user's shift utilities
+            // Get user's shift utilities (per-day resolution happens inside the loop).
             $shiftService = new \App\Services\ShiftResolutionService();
-            
-            // Get user's shift times
-            $userShift = $shiftService->getUserShift($user->id);
-            $shiftStart = $userShift['shift_start'] ?? '09:00:00';
-            $shiftEnd = $userShift['shift_end'] ?? '17:00:00';
 
             // Build calendar history of working days with attendance/absent
             $history = [];
@@ -7543,16 +7607,18 @@ class RiderController extends Controller
                         if (isset($leaveDates[$dateStr])) {
                             $status = 'on_leave';
                         } elseif ($record->login_time) {
-                            // Check if late
-                            $shiftStartTime = strtotime($dateStr . ' ' . $shiftStart);
-                            $loginTime = strtotime($dateStr . ' ' . $record->login_time);
-                            
-                            if ($loginTime > $shiftStartTime) {
-                                $lateMinutes = round(($loginTime - $shiftStartTime) / 60);
-                                $status = 'late';
+                            // Check if late — prefer the frozen check-in snapshot, else the
+                            // shift in effect ON THIS DATE; truncate seconds (matches all screens).
+                            if ($record->late_minutes !== null) {
+                                $lateMinutes = (int) $record->late_minutes;
                             } else {
-                                $status = $record->logout_time ? 'completed' : 'in_progress';
+                                $dayStart = $record->expected_shift_start
+                                    ?: (($shiftService->getUserShift($user->id, $dateStr)['shift_start'] ?? '09:00') . ':00');
+                                $s = strtotime($dateStr . ' ' . $dayStart);
+                                $l = strtotime($dateStr . ' ' . $record->login_time);
+                                $lateMinutes = ($l > $s) ? (int) (($l - $s) / 60) : 0;
                             }
+                            $status = $lateMinutes > 0 ? 'late' : ($record->logout_time ? 'completed' : 'in_progress');
                         }
                         // else: status remains 'absent' (no login and not on leave)
                         
@@ -7622,34 +7688,9 @@ class RiderController extends Controller
                 return strcmp($b['date'], $a['date']);
             });
 
-            // Calculate total late minutes for the month
-            $userShift = $shiftService->getUserShift($user->id);
-            $shiftStart = $userShift['shift_start'] ?? '09:00:00';
-            
-            $lateMinutesQuery = "
-                SELECT 
-                    COALESCE(SUM(CASE 
-                        WHEN login_time > ? AND login_time IS NOT NULL THEN 
-                            TIMESTAMPDIFF(MINUTE, 
-                                CONCAT(attendance_date, ' ', ?),
-                                CONCAT(attendance_date, ' ', login_time)
-                            )
-                        ELSE 0 
-                    END), 0) as total_late_minutes
-                FROM t_ops_attendance
-                WHERE user_id = ?
-                AND attendance_date IS NOT NULL
-                AND attendance_date BETWEEN ? AND ?
-                AND login_time IS NOT NULL
-                AND login_time != ''
-            ";
-            
-            $lateResult = DB::selectOne($lateMinutesQuery, [
-                $shiftStart, $shiftStart, // For late calculation
-                $user->id, $startDate, $effectiveEndDate
-            ]);
-            
-            $totalLateMinutes = $lateResult->total_late_minutes ?? 0;
+            // Total late minutes for the month — per-date + snapshot aware (same helper
+            // as the salary calc and the web reports, so all screens agree).
+            $totalLateMinutes = $shiftService->sumLateOvertimeMinutes($user->id, $startDate, $effectiveEndDate)['late_minutes'];
 
             // Build summary: prefer salary service; otherwise compute a safe fallback
             if ($salaryData['success']) {
@@ -10516,12 +10557,12 @@ class RiderController extends Controller
                 ], 403);
             }
             
-            // Same query as webapp CRM\RiderController::active
+            // Delivery riders = users with an ACTIVE rider profile (rider_profile.active=1).
+            // This is the single "who can be assigned deliveries" list, curated in the
+            // People list; managers/office (no profile) and stood-down riders are excluded.
             $riders = DB::table('t_sys_user as u')
-                ->leftJoin('t_ops_rider_profile as p', 'p.user_id', '=', 'u.id')
-                ->where(function ($q) {
-                    $q->whereNull('p.user_id')->orWhere('p.active', 1);
-                })
+                ->join('t_ops_rider_profile as p', 'p.user_id', '=', 'u.id')
+                ->where('p.active', 1)
                 ->where('u.is_active', 1)
                 ->orderBy('u.fullname')
                 ->get([
@@ -13799,8 +13840,10 @@ class RiderController extends Controller
             $formattedData = [];
             
             foreach ($query as $row) {
-                $shiftData = $shiftService->getUserShift($row->user_id);
-                
+                // Resolve the shift FOR THE SELECTED DATE (not today) so past dates use
+                // the shift that was actually in effect then.
+                $shiftData = $shiftService->getUserShift($row->user_id, $selectedDate);
+
                 // Calculate hours and late/OT status
                 $hours = 0;
                 $isLate = false;
@@ -14126,6 +14169,9 @@ class RiderController extends Controller
                     'a.road_distance_source',
                     'a.gps_straight_distance_km',
                     'a.gps_readings_used',
+                    // Frozen snapshot (preferred over recomputation)
+                    'a.late_minutes as snap_late_minutes',
+                    'a.overtime_minutes as snap_overtime_minutes',
                     'lr.leave_request_id',
                     'lr.leave_status',
                     'lr.leave_type',
@@ -14222,32 +14268,41 @@ class RiderController extends Controller
                     $record->hours_worked = 0;
                 }
                 
-                // Check if late
-                if ($record->login_time && $shiftInfo['shift_start']) {
-                    $shiftStart = strtotime($record->attendance_date . ' ' . $shiftInfo['shift_start']);
+                // Per-day late/overtime — prefer the FROZEN snapshot; else resolve the
+                // shift in effect ON THIS DATE and compute (truncate seconds). Keeps
+                // per-day rows consistent with the snapshot-preferring monthly totals.
+                if (!$record->login_time) {
+                    $record->late_minutes = 0;
+                } elseif (!is_null($record->snap_late_minutes)) {
+                    $record->late_minutes = (int) $record->snap_late_minutes;
+                    if ($record->late_minutes > 0) { $lateDays++; }
+                } else {
+                    $dayStart = $shiftService->getUserShift($userId, $record->attendance_date)['shift_start'] ?? null;
+                    $shiftStart = $dayStart ? strtotime($record->attendance_date . ' ' . $dayStart) : null;
                     $actualLogin = strtotime($record->attendance_date . ' ' . $record->login_time);
-                    if ($actualLogin > $shiftStart) {
+                    if ($shiftStart && $actualLogin > $shiftStart) {
                         $lateDays++;
-                        $record->late_minutes = round(($actualLogin - $shiftStart) / 60);
+                        $record->late_minutes = (int) (($actualLogin - $shiftStart) / 60);
                     } else {
                         $record->late_minutes = 0;
                     }
-                } else {
-                    $record->late_minutes = 0;
                 }
-                
-                // Check if overtime
-                if ($record->logout_time && $shiftInfo['shift_end']) {
-                    $shiftEnd = strtotime($record->attendance_date . ' ' . $shiftInfo['shift_end']);
+
+                if (!$record->logout_time) {
+                    $record->overtime_minutes = 0;
+                } elseif (!is_null($record->snap_overtime_minutes)) {
+                    $record->overtime_minutes = (int) $record->snap_overtime_minutes;
+                    if ($record->overtime_minutes > 0) { $overtimeDays++; }
+                } else {
+                    $dayEnd = $shiftService->getUserShift($userId, $record->attendance_date)['shift_end'] ?? null;
+                    $shiftEnd = $dayEnd ? strtotime($record->attendance_date . ' ' . $dayEnd) : null;
                     $actualLogout = strtotime($record->attendance_date . ' ' . $record->logout_time);
-                    if ($actualLogout > $shiftEnd) {
+                    if ($shiftEnd && $actualLogout > $shiftEnd) {
                         $overtimeDays++;
-                        $record->overtime_minutes = round(($actualLogout - $shiftEnd) / 60);
+                        $record->overtime_minutes = (int) (($actualLogout - $shiftEnd) / 60);
                     } else {
                         $record->overtime_minutes = 0;
                     }
-                } else {
-                    $record->overtime_minutes = 0;
                 }
                 
                 // Add order count to total
@@ -14538,7 +14593,11 @@ class RiderController extends Controller
             $month = $request->input('month', now()->format('Y-m'));
             $startDate = $month . '-01';
             $endDate = \Carbon\Carbon::parse($startDate)->endOfMonth()->toDateString();
-            
+            // For the CURRENT month, only count up to today (don't treat future days as
+            // absent) — matches the web monthly report.
+            $today = date('Y-m-d');
+            $effectiveEndDate = ($endDate > $today) ? $today : $endDate;
+
             // Get all active visible users
             $users = DB::table('t_sys_user as u')
                 ->leftJoin('t_sys_user_role as ur', 'ur.user_id', '=', 'u.id')
@@ -14577,10 +14636,6 @@ class RiderController extends Controller
                     $resolvedShiftName = $user->shift_start . ' - ' . $user->shift_end;
                 }
 
-                // Normalize to HH:MM:SS for consistent SQL/PHP comparisons
-                $shiftStartFull = strlen($resolvedShiftStart) <= 5 ? $resolvedShiftStart . ':00' : $resolvedShiftStart;
-                $shiftEndFull = strlen($resolvedShiftEnd) <= 5 ? $resolvedShiftEnd . ':00' : $resolvedShiftEnd;
-
                 // Get attendance records for this user in the month
                 $attendance = DB::table('t_ops_attendance')
                     ->where('user_id', $user->user_id)
@@ -14604,61 +14659,46 @@ class RiderController extends Controller
                     ->select('r.leave_start_date', 'r.leave_end_date')
                     ->get();
                 
-                // Calculate total leave days within the month range
+                // Calculate total leave days within the month range (clipped to today
+                // for the current month, matching working-days).
                 $leaveDays = 0;
                 foreach ($leaveRequests as $leave) {
                     $leaveStart = max($leave->leave_start_date, $startDate);
-                    $leaveEnd = min($leave->leave_end_date, $endDate);
+                    $leaveEnd = min($leave->leave_end_date, $effectiveEndDate);
+                    if ($leaveStart > $leaveEnd) { continue; } // entirely in the future
                     $days = \Carbon\Carbon::parse($leaveStart)->diffInDays(\Carbon\Carbon::parse($leaveEnd)) + 1;
                     $leaveDays += $days;
                 }
                 
                 // Calculate stats
                 $presentDays = $attendance->filter(fn($a) => $a->login_time)->count();
+
+                // Total hours worked.
                 $totalHours = 0;
-                $overtimeDays = 0;
-                $overtimeMinutes = 0;
-                
                 foreach ($attendance as $record) {
                     if ($record->login_time && $record->logout_time) {
                         $loginTs = strtotime($record->attendance_date . ' ' . $record->login_time);
                         $logoutTs = strtotime($record->attendance_date . ' ' . $record->logout_time);
                         $totalHours += ($logoutTs - $loginTs) / 3600;
-                        
-                        $shiftEndTs = strtotime($record->attendance_date . ' ' . $shiftEndFull);
-                        if ($logoutTs > $shiftEndTs) {
-                            $overtimeDays++;
-                            $overtimeMinutes += round(($logoutTs - $shiftEndTs) / 60);
-                        }
                     }
                 }
-                
-                // Use SQL with TIME() cast for reliable late calculation
-                $lateStats = DB::selectOne("
-                    SELECT 
-                        COALESCE(SUM(CASE WHEN TIME(login_time) > TIME(?) THEN 1 ELSE 0 END), 0) as late_days,
-                        COALESCE(SUM(CASE WHEN TIME(login_time) > TIME(?) THEN 
-                            TIMESTAMPDIFF(MINUTE, 
-                                CONCAT(attendance_date, ' ', ?),
-                                CONCAT(attendance_date, ' ', login_time)
-                            ) ELSE 0 END), 0) as late_minutes
-                    FROM t_ops_attendance
-                    WHERE user_id = ?
-                    AND attendance_date BETWEEN ? AND ?
-                    AND login_time IS NOT NULL
-                    AND login_time != ''
-                ", [$shiftStartFull, $shiftStartFull, $shiftStartFull, $user->user_id, $startDate, $endDate]);
-                
-                $lateDays = (int) ($lateStats->late_days ?? 0);
-                $lateMinutes = (int) ($lateStats->late_minutes ?? 0);
-                
-                // Calculate working days using ShiftResolutionService (same as web app)
+
+                // Late + overtime — per-date + snapshot aware (SAME helper as the salary
+                // calc and the web reports, so this store report agrees with all of them).
+                $lateOt = $shiftService->sumLateOvertimeMinutes($user->user_id, $startDate, $effectiveEndDate);
+                $lateDays = $lateOt['late_days'];
+                $lateMinutes = $lateOt['late_minutes'];
+                $overtimeDays = $lateOt['overtime_days'];
+                $overtimeMinutes = $lateOt['overtime_minutes'];
+
+                // Calculate working days using ShiftResolutionService (same as web app),
+                // only up to today for the current month.
                 try {
-                    $workingDays = $shiftService->calculateWorkingDays($user->user_id, $startDate, $endDate);
+                    $workingDays = $shiftService->calculateWorkingDays($user->user_id, $startDate, $effectiveEndDate);
                 } catch (\Exception $e) {
-                    $workingDays = \Carbon\Carbon::parse($startDate)->diffInDaysFiltered(function(\Carbon\Carbon $date) use ($endDate) {
-                        return $date->isWeekday() && $date->lte(\Carbon\Carbon::parse($endDate));
-                    }, \Carbon\Carbon::parse($endDate));
+                    $workingDays = \Carbon\Carbon::parse($startDate)->diffInDaysFiltered(function(\Carbon\Carbon $date) use ($effectiveEndDate) {
+                        return $date->isWeekday() && $date->lte(\Carbon\Carbon::parse($effectiveEndDate));
+                    }, \Carbon\Carbon::parse($effectiveEndDate));
                 }
                 
                 $absentDays = max(0, $workingDays - $presentDays - $leaveDays);
@@ -25654,6 +25694,208 @@ class RiderController extends Controller
             \Log::error('sendQurbaniDelayUpdate failed', ['rider_id' => $riderId, 'err' => $e->getMessage()]);
             return response()->json(['success' => false, 'message' => 'Failed to send delay updates: ' . $e->getMessage()], 500);
         }
+    }
+
+    // ===================== Shift management (mobile Store → Shifts) =====================
+
+    /** Shift types for the mobile picker (gated by manage_shifts). Reuses the web endpoint. */
+    public function getShiftTemplatesMobile(Request $request)
+    {
+        if (!Auth::user()->hasMobilePermission('manage_shifts')) {
+            return response()->json(['success' => false, 'message' => 'You do not have permission to manage shifts'], 403);
+        }
+        return app(\App\Http\Controllers\Ops\ShiftController::class)->list($request);
+    }
+
+    /** Delivery riders + current shift + active/upcoming changes (StoreShiftsScreen data). */
+    public function getStoreShiftRiders(Request $request)
+    {
+        if (!Auth::user()->hasMobilePermission('manage_shifts')) {
+            return response()->json(['success' => false, 'message' => 'You do not have permission to manage shifts'], 403);
+        }
+        $svc = new \App\Services\ShiftResolutionService();
+        $today = now()->format('Y-m-d');
+        $riders = \DB::table('t_sys_user as u')
+            ->join('t_ops_rider_profile as p', 'p.user_id', '=', 'u.id')
+            ->where('p.active', 1)->where('u.is_active', 1)
+            ->orderBy('u.fullname')->get(['u.id', 'u.fullname']);
+        $out = [];
+        foreach ($riders as $r) {
+            $primary = $svc->getUserShift($r->id, $today);
+            $rows = \App\Models\Ops\UserShiftAssignmentModel::with('shiftTemplate')->where('user_id', $r->id)->get();
+            $changes = [];
+            foreach ($rows as $row) {
+                $f = $row->effective_from ? $row->effective_from->format('Y-m-d') : null;
+                $t = $row->effective_to ? $row->effective_to->format('Y-m-d') : null;
+                if ($t !== null && $t >= $today) {
+                    $changes[] = ['assignment_id' => $row->id, 'kind' => 'temporary', 'shift_name' => optional($row->shiftTemplate)->shift_name, 'from' => $f, 'to' => $t, 'acknowledged' => $row->acknowledged_at !== null];
+                } elseif ($t === null && $f !== null && $f > $today) {
+                    $changes[] = ['assignment_id' => $row->id, 'kind' => 'upcoming_primary', 'shift_name' => optional($row->shiftTemplate)->shift_name, 'from' => $f, 'to' => null, 'acknowledged' => $row->acknowledged_at !== null];
+                }
+            }
+            $out[] = ['user_id' => $r->id, 'name' => $r->fullname,
+                'primary' => ['shift_name' => $primary['shift_name'], 'start' => $primary['shift_start'], 'end' => $primary['shift_end']],
+                'changes' => $changes];
+        }
+        return response()->json(['success' => true, 'riders' => $out]);
+    }
+
+    /** Assign/change a rider's shift from mobile (mode-aware; reuses the verified web engine). */
+    public function assignShiftMobile(Request $request)
+    {
+        if (!Auth::user()->hasMobilePermission('manage_shifts')) {
+            return response()->json(['success' => false, 'message' => 'You do not have permission to manage shifts'], 403);
+        }
+        return app(\App\Http\Controllers\Ops\ShiftController::class)->assignShiftToUser($request);
+    }
+
+    /** Cancel a temporary shift change from mobile. */
+    public function cancelShiftMobile(Request $request)
+    {
+        if (!Auth::user()->hasMobilePermission('manage_shifts')) {
+            return response()->json(['success' => false, 'message' => 'You do not have permission to manage shifts'], 403);
+        }
+        return app(\App\Http\Controllers\Ops\ShiftController::class)->cancelShiftChange($request);
+    }
+
+    /** Rider acknowledges their shift change(s). Clears ALL pending rows — the banner
+     *  shows only the latest, so leaving older ones un-acked would show a stale
+     *  "awaiting" badge to the manager forever. */
+    public function acknowledgeShift(Request $request)
+    {
+        $user = Auth::user();
+        \App\Models\Ops\UserShiftAssignmentModel::where('user_id', $user->id)
+            ->whereNotNull('notified_at')->whereNull('acknowledged_at')
+            ->update(['acknowledged_at' => now()]);
+        return response()->json(['success' => true]);
+    }
+
+    /** Lightweight: drives the app-wide floating banner. Returns:
+     *   - pending_shift_ack : an unconfirmed change to acknowledge (any date), or null.
+     *   - tomorrow_reminder : a heads-up when a DIFFERENT shift STARTS tomorrow (a change
+     *       begins tomorrow and the rider works tomorrow) — so a rider who already confirmed
+     *       gets a day-before reminder of tomorrow's (different) time. Null otherwise.
+     *  pending_shift_ack keeps the same shape as getTodayAttendance.pending_shift_ack. */
+    public function getPendingShiftAck(Request $request)
+    {
+        $uid = Auth::id();
+        $today = now()->format('Y-m-d');
+
+        $pendingAck = \App\Models\Ops\UserShiftAssignmentModel::with('shiftTemplate')
+            ->where('user_id', $uid)
+            ->whereNotNull('notified_at')->whereNull('acknowledged_at')
+            // Don't nag for a temporary change that's already fully in the past.
+            ->where(function ($q) use ($today) {
+                $q->whereNull('effective_to')->orWhereDate('effective_to', '>=', $today);
+            })
+            ->orderByDesc('id')->first();
+        $data = null;
+        if ($pendingAck && $pendingAck->shiftTemplate) {
+            $data = [
+                'assignment_id' => $pendingAck->id,
+                'shift_name' => $pendingAck->shiftTemplate->shift_name,
+                'start' => substr($pendingAck->shiftTemplate->shift_start, 0, 5),
+                'end' => substr($pendingAck->shiftTemplate->shift_end, 0, 5),
+                'effective_from' => $pendingAck->effective_from ? $pendingAck->effective_from->format('Y-m-d') : null,
+                'effective_to' => $pendingAck->effective_to ? $pendingAck->effective_to->format('Y-m-d') : null,
+            ];
+        }
+
+        // Tomorrow reminder: only when a change actually BEGINS tomorrow (a bounded override
+        // or an upcoming primary switch whose effective_from is tomorrow). Triggering on the
+        // start of a change — not merely "tomorrow ≠ today" — means we DON'T nag with a
+        // "back to normal" reminder the day after a temporary shift ends.
+        $reminder = null;
+        $tomorrow = now()->addDay()->format('Y-m-d');
+        $startsTomorrow = \App\Models\Ops\UserShiftAssignmentModel::where('user_id', $uid)
+            ->whereDate('effective_from', $tomorrow)
+            ->exists();
+        if ($startsTomorrow) {
+            $svc = new \App\Services\ShiftResolutionService();
+            $tomShift = $svc->getUserShift($uid, $tomorrow);
+            $todShift = $svc->getUserShift($uid, $today);
+            $tomorrowDow = (int) now()->addDay()->dayOfWeekIso; // 1=Mon..7=Sun
+            $differs = ($tomShift['shift_id'] ?? null) !== ($todShift['shift_id'] ?? null)
+                || $tomShift['shift_start'] !== $todShift['shift_start']
+                || $tomShift['shift_end'] !== $todShift['shift_end'];
+            $worksTomorrow = in_array($tomorrowDow, $tomShift['working_days'] ?? []);
+            if ($differs && $worksTomorrow) {
+                $reminder = [
+                    'date' => $tomorrow,
+                    'shift_name' => $tomShift['shift_name'],
+                    'start' => $tomShift['shift_start'],
+                    'end' => $tomShift['shift_end'],
+                ];
+            }
+        }
+
+        return response()->json([
+            'success' => true,
+            'pending_shift_ack' => $data,
+            'tomorrow_reminder' => $reminder,
+        ]);
+    }
+
+    /** Rider's own shift view: what they're on NOW, any upcoming change (with ack state),
+     *  and recent past changes (history). Read-only, self-only. */
+    public function getMyShift(Request $request)
+    {
+        $uid = Auth::id();
+        $today = now()->format('Y-m-d');
+        $svc = new \App\Services\ShiftResolutionService();
+        $current = $svc->getUserShift($uid, $today);
+
+        // Off days from the working-days array of the current shift.
+        $dayNames = [1 => 'Mon', 2 => 'Tue', 3 => 'Wed', 4 => 'Thu', 5 => 'Fri', 6 => 'Sat', 7 => 'Sun'];
+        $wd = $current['working_days'] ?? [];
+        $off = [];
+        foreach ($dayNames as $n => $nm) {
+            if (!in_array($n, $wd)) $off[] = $nm;
+        }
+
+        $rows = \App\Models\Ops\UserShiftAssignmentModel::with('shiftTemplate')
+            ->where('user_id', $uid)->get();
+        $upcoming = [];
+        $history = [];
+        foreach ($rows as $row) {
+            $f = $row->effective_from ? $row->effective_from->format('Y-m-d') : null;
+            $t = $row->effective_to ? $row->effective_to->format('Y-m-d') : null;
+            $nm = optional($row->shiftTemplate)->shift_name;
+            $times = $row->shiftTemplate
+                ? substr($row->shiftTemplate->shift_start, 0, 5) . '–' . substr($row->shiftTemplate->shift_end, 0, 5)
+                : '';
+            $isFutureTemp = ($t !== null && $t >= $today);            // active/future temporary override
+            $isFuturePrimary = ($t === null && $f !== null && $f > $today); // upcoming primary switch
+            if ($isFutureTemp || $isFuturePrimary) {
+                $upcoming[] = [
+                    'shift_name' => $nm,
+                    'times' => $times,
+                    'from' => $f,
+                    'to' => $t,
+                    'kind' => $isFutureTemp ? 'temporary' : 'primary',
+                    'acknowledged' => $row->acknowledged_at !== null,
+                ];
+            } elseif ($t !== null && $t < $today && ($f === null || $t >= $f)) {
+                // Past bounded override → history. Skip dead/zero-length rows (to < from),
+                // which are same-day supersession artifacts and represent nothing real.
+                $history[] = ['shift_name' => $nm, 'times' => $times, 'from' => $f, 'to' => $t];
+            }
+        }
+        // Newest-first history, cap to a handful.
+        usort($history, fn($a, $b) => strcmp($b['to'] ?? '', $a['to'] ?? ''));
+        $history = array_slice($history, 0, 6);
+
+        return response()->json([
+            'success' => true,
+            'current' => [
+                'shift_name' => $current['shift_name'],
+                'start' => $current['shift_start'],
+                'end' => $current['shift_end'],
+                'off_days' => $off ? implode(', ', $off) : 'None',
+            ],
+            'upcoming' => $upcoming,
+            'history' => $history,
+        ]);
     }
 }
 
