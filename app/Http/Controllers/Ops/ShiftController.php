@@ -51,7 +51,7 @@ class ShiftController extends Controller
                     'shift_name' => $shift->shift_name,
                     'shift_code' => $shift->shift_code,
                     'shift_start' => substr($shift->shift_start, 0, 5),
-                    'shift_end' => substr($shift->shift_end, 0, 5),
+                    'shift_end' => $shift->shift_end ? substr($shift->shift_end, 0, 5) : null,
                     'working_days' => $shift->working_days,
                     'working_days_count' => $shift->getWorkingDaysCount(),
                     'off_days' => $shift->getOffDaysString(),
@@ -77,7 +77,7 @@ class ShiftController extends Controller
             'shift_name' => 'required|string|max:100',
             'shift_code' => 'required|string|max:50|unique:t_ops_shift_template,shift_code',
             'shift_start' => 'required|date_format:H:i',
-            'shift_end' => 'required|date_format:H:i',
+            'shift_end' => 'nullable|date_format:H:i', // start-only shifts leave this empty
             'working_days' => 'required|array|min:1',
             'working_days.*' => 'integer|between:1,7',
             'description' => 'nullable|string'
@@ -95,7 +95,7 @@ class ShiftController extends Controller
                 'shift_name' => $request->shift_name,
                 'shift_code' => $request->shift_code,
                 'shift_start' => $request->shift_start . ':00',
-                'shift_end' => $request->shift_end . ':00',
+                'shift_end' => $request->filled('shift_end') ? $request->shift_end . ':00' : null,
                 'working_days' => $request->working_days,
                 'is_default' => false, // New shifts are not default by default
                 'description' => $request->description,
@@ -138,7 +138,7 @@ class ShiftController extends Controller
             'shift_name' => 'required|string|max:100',
             'shift_code' => 'required|string|max:50|unique:t_ops_shift_template,shift_code,' . $id,
             'shift_start' => 'required|date_format:H:i',
-            'shift_end' => 'required|date_format:H:i',
+            'shift_end' => 'nullable|date_format:H:i', // start-only shifts leave this empty
             'working_days' => 'required|array|min:1',
             'working_days.*' => 'integer|between:1,7',
             'description' => 'nullable|string'
@@ -156,7 +156,7 @@ class ShiftController extends Controller
                 'shift_name' => $request->shift_name,
                 'shift_code' => $request->shift_code,
                 'shift_start' => $request->shift_start . ':00',
-                'shift_end' => $request->shift_end . ':00',
+                'shift_end' => $request->filled('shift_end') ? $request->shift_end . ':00' : null,
                 'working_days' => $request->working_days,
                 'description' => $request->description,
                 'updated_by' => auth()->id()
@@ -442,18 +442,27 @@ class ShiftController extends Controller
         // require NO confirmation (there's nothing for the rider to act on).
         $isHistorical = ($to !== null && $to < now()->format('Y-m-d'));
 
+        // Location for this assignment (chosen on the assign screen; defaults to the
+        // rider's own default). Optionally make it the rider's new default going forward.
+        $locationId = $request->filled('location_id') ? (int) $request->input('location_id') : null;
+        $setDefault = $request->boolean('set_default_location');
+
         // Widen the re-stamp span to cover any existing override this one replaces
         // (captured before the transaction deletes those rows).
         [$rsFrom, $rsTo] = $isTemp ? $this->restampSpanForTemp($userId, $from, $to) : [$from, null];
 
         try {
-            DB::transaction(function () use ($userId, $templateId, $from, $to, $isTemp, $isHistorical) {
+            DB::transaction(function () use ($userId, $templateId, $from, $to, $isTemp, $isHistorical, $locationId) {
                 if ($isTemp) {
-                    $this->applyTemporaryAssignment($userId, $templateId, $from, $to, !$isHistorical);
+                    $this->applyTemporaryAssignment($userId, $templateId, $from, $to, !$isHistorical, $locationId);
                 } else {
-                    $this->applyAssignment($userId, $templateId, $from);
+                    $this->applyAssignment($userId, $templateId, $from, $locationId);
                 }
             });
+
+            if ($setDefault && $locationId) {
+                $this->setUserDefaultLocation($userId, $locationId);
+            }
 
             // Invalidate caches + re-stamp snapshots for any back-dated portion (ALWAYS —
             // this is the correction). Notify only for changes that touch today/future.
@@ -462,6 +471,7 @@ class ShiftController extends Controller
                 $this->pushShiftChange($userId);
                 $this->dispatchShiftWhatsApp($userId);
             }
+            $this->logAssignment($userId, 'assign', $mode, $templateId, $from, $isTemp ? $to : null, $request);
 
             return response()->json([
                 'success' => true,
@@ -511,6 +521,10 @@ class ShiftController extends Controller
         // Pure historical correction (bounded, ends before today) → re-stamp only, no notify.
         $isHistorical = ($to !== null && $to < now()->format('Y-m-d'));
 
+        // Location (one for all selected riders); optionally set as each rider's default.
+        $locationId = $request->filled('location_id') ? (int) $request->input('location_id') : null;
+        $setDefault = $request->boolean('set_default_location');
+
         // Per-user widened re-stamp span (existing overrides this replaces), before delete.
         $spans = [];
         if ($isTemp) {
@@ -520,23 +534,27 @@ class ShiftController extends Controller
         }
 
         try {
-            DB::transaction(function () use ($userIds, $templateId, $from, $to, $isTemp, $isHistorical) {
+            DB::transaction(function () use ($userIds, $templateId, $from, $to, $isTemp, $isHistorical, $locationId) {
                 foreach ($userIds as $userId) {
                     if ($isTemp) {
-                        $this->applyTemporaryAssignment((int) $userId, $templateId, $from, $to, !$isHistorical);
+                        $this->applyTemporaryAssignment((int) $userId, $templateId, $from, $to, !$isHistorical, $locationId);
                     } else {
-                        $this->applyAssignment((int) $userId, $templateId, $from);
+                        $this->applyAssignment((int) $userId, $templateId, $from, $locationId);
                     }
                 }
             });
 
             foreach ($userIds as $userId) {
+                if ($setDefault && $locationId) {
+                    $this->setUserDefaultLocation((int) $userId, $locationId);
+                }
                 [$rsFrom, $rsTo] = $isTemp ? $spans[(int) $userId] : [$from, null];
                 $this->invalidateAndRestamp((int) $userId, $rsFrom, $rsTo);
                 if (!$isHistorical) {
                     $this->pushShiftChange((int) $userId);
                     $this->dispatchShiftWhatsApp((int) $userId);
                 }
+                $this->logAssignment((int) $userId, 'assign', $mode, $templateId, $from, $isTemp ? $to : null, $request);
             }
 
             return response()->json([
@@ -557,6 +575,91 @@ class ShiftController extends Controller
      * A single rider's shift summary for the change popup: their CURRENT shift plus
      * active/upcoming changes (so the manager sees what's set before setting more).
      */
+    /**
+     * Append-only audit log of an assignment action (assign / cancel / end). Records WHO
+     * (actor + name snapshot), from WHERE (web/mobile), what shift, dates and mode — so the
+     * team can see who did what even after a later in-place edit overwrites created/updated_by.
+     * Non-fatal + no-ops if the log table hasn't been created yet.
+     * $source is read from a request attribute the mobile delegators set (default 'web').
+     */
+    private function logAssignment(int $userId, string $action, ?string $mode, ?int $templateId, ?string $from, ?string $to, Request $request, ?string $note = null): void
+    {
+        try {
+            if (!\Illuminate\Support\Facades\Schema::hasTable('t_ops_shift_assignment_log')) {
+                return;
+            }
+            $tplName = $templateId ? DB::table('t_ops_shift_template')->where('id', $templateId)->value('shift_name') : null;
+            $actorId = auth()->id();
+            $actorName = $actorId ? DB::table('t_sys_user')->where('id', $actorId)->value('fullname') : null;
+            DB::table('t_ops_shift_assignment_log')->insert([
+                'user_id' => $userId,
+                'action' => $action,
+                'mode' => $mode,
+                'shift_template_id' => $templateId,
+                'shift_name' => $tplName,
+                'effective_from' => $from,
+                'effective_to' => $to,
+                'actor_user_id' => $actorId,
+                'actor_name' => $actorName,
+                'source' => $request->attributes->get('shift_log_source', 'web'),
+                'note' => $note,
+                'created_at' => now(),
+            ]);
+        } catch (\Throwable $e) {
+            \Log::warning('Shift assignment log failed (non-fatal)', ['error' => $e->getMessage()]);
+        }
+    }
+
+    /**
+     * Assignment history for a rider (append-only log), newest first. Powers the "History"
+     * views on the mobile Month screen and the web Shift Planner. Each row carries a
+     * pre-built human label + when/actor/via so the frontends just render it.
+     */
+    public function assignmentHistory(Request $request)
+    {
+        $userId = (int) $request->input('user_id');
+        if (!$userId) {
+            return response()->json(['success' => false, 'message' => 'user_id required'], 422);
+        }
+        if (!\Illuminate\Support\Facades\Schema::hasTable('t_ops_shift_assignment_log')) {
+            return response()->json(['success' => true, 'history' => []]);
+        }
+        $rows = DB::table('t_ops_shift_assignment_log')
+            ->where('user_id', $userId)
+            ->orderByDesc('id')
+            ->limit(60)
+            ->get();
+
+        $fmt = fn($d) => $d ? \Carbon\Carbon::parse($d)->format('j M') : null;
+        $history = $rows->map(function ($r) use ($fmt) {
+            $shift = $r->shift_name ?: 'shift';
+            if ($r->action === 'cancel') {
+                $label = 'Cancelled ' . $shift . ($r->effective_from ? ' · ' . $fmt($r->effective_from) . ($r->effective_to && $r->effective_to !== $r->effective_from ? '–' . $fmt($r->effective_to) : '') : '');
+            } elseif ($r->action === 'end') {
+                $label = 'Ended shift' . ($r->effective_from ? ' · from ' . $fmt($r->effective_from) : '');
+            } elseif ($r->mode === 'until_changed') {
+                $label = $shift . ' · from ' . $fmt($r->effective_from) . ' (regular)';
+            } elseif ($r->mode === 'one_day') {
+                $label = $shift . ' · ' . $fmt($r->effective_from) . ' only';
+            } elseif ($r->mode === 'date_range') {
+                $label = $shift . ' · ' . $fmt($r->effective_from) . '–' . $fmt($r->effective_to);
+            } else {
+                $label = $shift;
+            }
+            return [
+                'id' => $r->id,
+                'action' => $r->action,
+                'label' => $label,
+                'actor' => $r->actor_name ?: 'someone',
+                'via' => $r->source ?: 'web',
+                'when' => \Carbon\Carbon::parse($r->created_at)->format('j M, g:i A'),
+                'note' => $r->note,
+            ];
+        });
+
+        return response()->json(['success' => true, 'history' => $history]);
+    }
+
     public function userShiftSummary(Request $request)
     {
         $userId = (int) $request->input('user_id');
@@ -639,7 +742,7 @@ class ShiftController extends Controller
             try {
                 $t = $row->shiftTemplate;
                 $what = $t
-                    ? ($t->shift_name . ' (' . substr($t->shift_start, 0, 5) . '–' . substr($t->shift_end, 0, 5) . ')' . $this->whenSuffix($row))
+                    ? ($t->shift_name . ' (' . substr($t->shift_start, 0, 5) . ($t->shift_end ? '–' . substr($t->shift_end, 0, 5) : ' onwards') . ')' . $this->whenSuffix($row))
                     : 'Your temporary shift change';
                 app(\App\Services\FirebaseService::class)->notifyUser(
                     $userId,
@@ -653,6 +756,14 @@ class ShiftController extends Controller
             } catch (\Throwable $e) {
                 \Log::warning('Shift-cancel push failed (non-fatal)', ['user_id' => $userId, 'error' => $e->getMessage()]);
             }
+
+            $this->logAssignment(
+                $userId, 'cancel', null,
+                $row->shift_template_id,
+                $row->effective_from ? $row->effective_from->format('Y-m-d') : null,
+                $row->effective_to ? $row->effective_to->format('Y-m-d') : null,
+                $request, 'Cancelled temporary change'
+            );
 
             return response()->json(['success' => true, 'message' => 'Temporary change cancelled.']);
         } catch (\Exception $e) {
@@ -685,6 +796,8 @@ class ShiftController extends Controller
 
             // Clear cache
             $this->shiftService->clearUserShiftCache((int) $request->user_id);
+
+            $this->logAssignment((int) $request->user_id, 'end', null, null, $asOf, null, $request, 'Ended assignment (fall back to default)');
 
             return response()->json([
                 'success' => true,
@@ -764,12 +877,18 @@ class ShiftController extends Controller
             $pending = $this->latestPendingAssignment($userId);
             if ($pending && $pending->shiftTemplate) {
                 $t = $pending->shiftTemplate;
-                $body = 'Your shift: ' . $t->shift_name . ' ('
-                    . substr($t->shift_start, 0, 5) . '–' . substr($t->shift_end, 0, 5) . ')'
+                $time = substr($t->shift_start, 0, 5) . ($t->shift_end ? '–' . substr($t->shift_end, 0, 5) : ' onwards');
+                $date = $pending->effective_from ? $pending->effective_from->format('Y-m-d') : now()->format('Y-m-d');
+                $locName = $this->shiftService->getUserShift($userId, $date)['location_name'] ?? null;
+                $body = 'Your shift: ' . $t->shift_name . ' (' . $time . ')'
+                    . ($locName ? ' at ' . $locName : '')
                     . $this->whenSuffix($pending) . '. Open the app to confirm.';
             } else {
                 $shift = $this->shiftService->getUserShift($userId, now()->format('Y-m-d'));
-                $body = 'Your shift is now ' . $shift['shift_name'] . ' (' . $shift['shift_start'] . '–' . $shift['shift_end'] . '). Open the app to confirm.';
+                $time = $shift['shift_start'] . ($shift['shift_end'] ? '–' . $shift['shift_end'] : ' onwards');
+                $body = 'Your shift is now ' . $shift['shift_name'] . ' (' . $time . ')'
+                    . (!empty($shift['location_name']) ? ' at ' . $shift['location_name'] : '')
+                    . '. Open the app to confirm.';
             }
             app(\App\Services\FirebaseService::class)->notifyUser(
                 $userId,
@@ -855,14 +974,65 @@ class ShiftController extends Controller
      * - A new open row (effective_to = NULL) is inserted from $effectiveFrom.
      * Must run inside a DB transaction supplied by the caller.
      */
-    private function applyAssignment(int $userId, int $shiftTemplateId, string $effectiveFrom): void
+    /** Does the assignment table have the (owner-added) location_id column yet? Memoized. */
+    private function locationColumnExists(): bool
+    {
+        static $has = null;
+        if ($has === null) {
+            $has = \Illuminate\Support\Facades\Schema::hasColumn('t_ops_user_shift_assignment', 'location_id');
+        }
+        return $has;
+    }
+
+    /** Apply the location_id to a write array only when the column exists (deploy-order safe). */
+    private function withLocation(array $data, ?int $locationId): array
+    {
+        if ($this->locationColumnExists()) {
+            $data['location_id'] = $locationId;
+        }
+        return $data;
+    }
+
+    /**
+     * Set a rider's DEFAULT office location (t_ops_user_location_assignment) — used by
+     * the "set as their default" toggle on the assign screens. One active row per user.
+     * Busts that user's shift-resolution cache (location feeds getUserShift). Non-fatal.
+     */
+    private function setUserDefaultLocation(int $userId, int $locationId): void
+    {
+        try {
+            DB::table('t_ops_user_location_assignment')->where('user_id', $userId)
+                ->update(['is_active' => 0, 'updated_at' => now()]);
+            $existing = DB::table('t_ops_user_location_assignment')
+                ->where('user_id', $userId)->where('location_id', $locationId)->first();
+            if ($existing) {
+                DB::table('t_ops_user_location_assignment')->where('id', $existing->id)
+                    ->update(['is_active' => 1, 'assigned_by' => auth()->id(), 'updated_at' => now()]);
+            } else {
+                DB::table('t_ops_user_location_assignment')->insert([
+                    'user_id' => $userId, 'location_id' => $locationId, 'is_active' => 1,
+                    'assigned_at' => now(), 'assigned_by' => auth()->id(),
+                    'created_at' => now(), 'updated_at' => now(),
+                ]);
+            }
+            $this->shiftService->clearUserShiftCache($userId);
+        } catch (\Throwable $e) {
+            \Log::warning('Set user default location failed (non-fatal)', ['user_id' => $userId, 'error' => $e->getMessage()]);
+        }
+    }
+
+    private function applyAssignment(int $userId, int $shiftTemplateId, string $effectiveFrom, ?int $locationId = null): void
     {
         $prevDay = date('Y-m-d', strtotime($effectiveFrom . ' -1 day'));
 
-        // No-op guard: user already on this template, open-ended, covering the date →
-        // don't create a redundant history row or re-prompt the rider to acknowledge.
+        // No-op guard: user already on this template AND SAME location, open-ended,
+        // covering the date → don't create a redundant history row or re-prompt. A
+        // location-only change (same template, different branch) is NOT a no-op.
         $alreadyOnIt = UserShiftAssignmentModel::where('user_id', $userId)
             ->where('shift_template_id', $shiftTemplateId)
+            ->when($this->locationColumnExists(), function ($q) use ($locationId) {
+                return is_null($locationId) ? $q->whereNull('location_id') : $q->where('location_id', $locationId);
+            })
             ->whereNull('effective_to')
             ->where(function ($q) use ($effectiveFrom) {
                 $q->whereNull('effective_from')
@@ -894,13 +1064,13 @@ class ShiftController extends Controller
         }
 
         if ($sameDay) {
-            $sameDay->update([
+            $sameDay->update($this->withLocation([
                 'shift_template_id' => $shiftTemplateId,
                 'effective_to'      => null,
                 'notified_at'       => now(),
                 'acknowledged_at'   => null,
                 'updated_by'        => auth()->id(),
-            ]);
+            ], $locationId));
             return;
         }
 
@@ -917,7 +1087,7 @@ class ShiftController extends Controller
             ]);
 
         // Insert the new open assignment.
-        UserShiftAssignmentModel::create([
+        UserShiftAssignmentModel::create($this->withLocation([
             'user_id'           => $userId,
             'shift_template_id' => $shiftTemplateId,
             'effective_from'    => $effectiveFrom,
@@ -926,7 +1096,7 @@ class ShiftController extends Controller
             'acknowledged_at'   => null,
             'created_by'        => auth()->id(),
             'updated_by'        => auth()->id(),
-        ]);
+        ], $locationId));
     }
 
     /**
@@ -940,7 +1110,7 @@ class ShiftController extends Controller
      * the row is stamped with notified_at=NULL so it never appears as a pending /
      * awaiting-confirmation change anywhere — it's a silent data fix, not a request.
      */
-    private function applyTemporaryAssignment(int $userId, int $shiftTemplateId, string $from, string $to, bool $notify = true): void
+    private function applyTemporaryAssignment(int $userId, int $shiftTemplateId, string $from, string $to, bool $notify = true, ?int $locationId = null): void
     {
         // Remove overlapping temporary overrides (BOUNDED rows only — never the primary).
         $overlapping = UserShiftAssignmentModel::where('user_id', $userId)
@@ -957,7 +1127,7 @@ class ShiftController extends Controller
             UserShiftAssignmentModel::whereIn('id', $overlapping->pluck('id'))->delete();
         }
 
-        UserShiftAssignmentModel::create([
+        UserShiftAssignmentModel::create($this->withLocation([
             'user_id'           => $userId,
             'shift_template_id' => $shiftTemplateId,
             'effective_from'    => $from,
@@ -966,7 +1136,7 @@ class ShiftController extends Controller
             'acknowledged_at'   => null,
             'created_by'        => auth()->id(),
             'updated_by'        => auth()->id(),
-        ]);
+        ], $locationId));
     }
 
     /**

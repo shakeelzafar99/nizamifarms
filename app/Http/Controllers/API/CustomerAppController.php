@@ -530,7 +530,23 @@ class CustomerAppController extends Controller
                 'verified_location_url'      => !empty($validated['url']) ? $validated['url'] : null,
             ];
 
+            // Snapshot the pre-write pin so the change is auditable (the old
+            // coordinates are otherwise silently overwritten). null for a
+            // just-created customer → logged as "first pin set".
+            $existingPin = DB::table('t_crm_prod_customer')->where('id', $customerId)
+                ->first(['first_name', 'last_name', 'latitude', 'longitude']);
+
             DB::table('t_crm_prod_customer')->where('id', $customerId)->update($update);
+
+            \App\Services\AuditLogger::logCustomerPinChange(
+                $customerId,
+                $existingPin ? trim(($existingPin->first_name ?? '') . ' ' . ($existingPin->last_name ?? '')) : null,
+                $existingPin->latitude ?? null,
+                $existingPin->longitude ?? null,
+                $validated['latitude'],
+                $validated['longitude'],
+                'Verified pin (customer app)'
+            );
 
             $c = DB::table('t_crm_prod_customer')
                 ->where('id', $customerId)

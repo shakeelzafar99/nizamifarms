@@ -238,7 +238,8 @@ class AttendanceController extends Controller
                 $l = strtotime($selectedDate . ' ' . $row->login_time);
                 $row->late_minutes = ($l > $s) ? (int) (($l - $s) / 60) : 0;
             }
-            if (!$row->logout_time) {
+            if (!$row->logout_time || empty($shiftData['shift_end'])) {
+                // No checkout, or a start-only shift (no end) → no overtime.
                 $row->overtime_minutes = 0;
             } elseif (!is_null($row->overtime_minutes)) {
                 $row->overtime_minutes = (int) $row->overtime_minutes;

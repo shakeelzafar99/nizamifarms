@@ -112,16 +112,31 @@ class ShiftAssignedHandler implements AutomationHandler
             return 'your updated shift';
         }
         $t = $row->shiftTemplate;
-        $times = $t->shift_name . ' ' . substr($t->shift_start, 0, 5) . '–' . substr($t->shift_end, 0, 5);
+        $start = substr($t->shift_start, 0, 5);
+        // Start-only shifts have no end time.
+        $timeStr = $t->shift_end ? ($start . '–' . substr($t->shift_end, 0, 5)) : ('starts ' . $start);
+        $base = $t->shift_name . ', ' . $timeStr;
+
+        // Location for this change (resolved for the change's start date → assignment
+        // location → rider default → primary). Shown in the same {{2}} variable.
+        $uid = (int) ($row->user_id ?? 0);
+        $date = $row->effective_from ? $row->effective_from->format('Y-m-d') : now()->format('Y-m-d');
+        $loc = null;
+        try {
+            $loc = (new \App\Services\ShiftResolutionService())->getUserShift($uid, $date)['location_name'] ?? null;
+        } catch (\Throwable $e) { /* location optional */ }
+        if ($loc) {
+            $base .= ' at ' . $loc;
+        }
+
         $from = $row->effective_from ? $row->effective_from->format('D j M') : null;
         $to = $row->effective_to ? $row->effective_to->format('D j M') : null;
-
         if ($row->effective_to) { // bounded / temporary
             if ($from === $to) {
-                return $times . ($to ? ' on ' . $to : '');
+                return $base . ($to ? ' — ' . $to : '');
             }
-            return $times . ' for ' . $from . ' – ' . $to;
+            return $base . ' — ' . $from . ' to ' . $to;
         }
-        return $times . ($from ? ' from ' . $from : '');
+        return $base . ($from ? ' — from ' . $from : '');
     }
 }

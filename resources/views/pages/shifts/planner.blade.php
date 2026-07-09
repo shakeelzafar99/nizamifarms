@@ -4,7 +4,10 @@
 
 @section('content')
 <style>
-  #planWrap { --brand:#B91C1C; --brand-soft:#FBECEC; --line:#E3E8F0; }
+  /* The modals live OUTSIDE #planWrap, so define the palette on them too — without
+     this, var(--brand) resolves to nothing there and the Save button renders
+     white-on-white (invisible). */
+  #planWrap, #assignModal, #historyModal, #newLocModal, #newShiftModal { --brand:#B91C1C; --brand-soft:#FBECEC; --line:#E3E8F0; }
   .plan-scroll { overflow-x:auto; }
   .plan-table { border-collapse:separate; border-spacing:0; width:100%; min-width:860px; }
   .plan-table th, .plan-table td { border-bottom:1px solid var(--line); padding:8px 10px; vertical-align:top; }
@@ -33,24 +36,38 @@
   .mode-opt.on { border-color:var(--brand); background:var(--brand-soft); }
   .mode-opt .mt { font-weight:600; color:#0f172a; }
   .mode-opt .md { font-size:11px; color:#64748b; margin-top:1px; }
+  .dur-badge { display:inline-block; font-size:9.5px; font-weight:800; letter-spacing:.04em; border-radius:20px; padding:1px 7px; margin-left:6px; vertical-align:middle; }
+  .dur-ongoing { background:#E6F3EB; color:#15803d; }
+  .dur-temp { background:#FEF3C7; color:#92400e; }
+  .loc-bubbles { display:flex; flex-wrap:wrap; gap:7px; margin:4px 0 8px; }
+  .loc-bubble { border:1px solid var(--line); border-radius:20px; padding:6px 13px; font-size:13px; font-weight:600; color:#334155; cursor:pointer; background:#fff; }
+  .loc-bubble.on { border-color:var(--brand); background:var(--brand-soft); color:#8E1414; }
+  .loc-bubble .loc-def { font-size:10px; color:#94a3b8; font-weight:700; margin-left:4px; }
+  .loc-default { display:flex; align-items:center; gap:7px; font-size:12.5px; color:#475569; margin-bottom:6px; cursor:pointer; }
+  .loc-bubble.add { border-style:dashed; color:#B91C1C; background:#fff; }
+  .pm-addlink { float:right; background:none; border:0; color:#B91C1C; font-size:11.5px; font-weight:700; cursor:pointer; padding:0; }
+  .pm-mini-grid { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+  .pm-day-chips { display:flex; gap:6px; flex-wrap:wrap; }
+  .pm-day-chip { border:1px solid var(--line); border-radius:8px; padding:6px 10px; font-size:12px; font-weight:600; color:#334155; cursor:pointer; }
+  .pm-day-chip.off { background:#EEF2F7; color:#94a3b8; text-decoration:line-through; }
   /* Self-contained modal — scoped under #assignModal so the Metronic theme's
      component CSS can't override the width or hide the buttons. */
-  #assignModal .pm-card{ background:#fff; border-radius:14px; box-shadow:0 25px 60px rgba(15,23,42,.35); width:100%; max-width:440px; margin:auto; max-height:calc(100vh - 32px); overflow-y:auto; }
-  #assignModal .pm-head{ display:flex; justify-content:space-between; align-items:center; padding:16px 18px; border-bottom:1px solid var(--line); }
-  #assignModal .pm-head h2{ font-size:17px; font-weight:600; margin:0; color:#0f172a; }
-  #assignModal .pm-x{ background:none; border:0; font-size:24px; line-height:1; color:#94a3b8; cursor:pointer; }
-  #assignModal .pm-body{ padding:18px; }
-  #assignModal .pm-label{ display:block; font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.04em; color:#64748b; margin:14px 0 6px; }
-  #assignModal .pm-body > .pm-label:first-child{ margin-top:0; }
-  #assignModal .pm-input{ width:100%; padding:9px 11px; font-size:13px; border:1px solid var(--line); border-radius:8px; background:#fff; color:#0f172a; }
+  :is(#assignModal,#newLocModal,#newShiftModal,#historyModal) .pm-card{ background:#fff; border-radius:14px; box-shadow:0 25px 60px rgba(15,23,42,.35); width:100%; max-width:440px; margin:auto; max-height:calc(100vh - 32px); overflow-y:auto; }
+  :is(#assignModal,#newLocModal,#newShiftModal,#historyModal) .pm-head{ display:flex; justify-content:space-between; align-items:center; padding:16px 18px; border-bottom:1px solid var(--line); }
+  :is(#assignModal,#newLocModal,#newShiftModal,#historyModal) .pm-head h2{ font-size:17px; font-weight:600; margin:0; color:#0f172a; }
+  :is(#assignModal,#newLocModal,#newShiftModal,#historyModal) .pm-x{ background:none; border:0; font-size:24px; line-height:1; color:#94a3b8; cursor:pointer; }
+  :is(#assignModal,#newLocModal,#newShiftModal,#historyModal) .pm-body{ padding:18px; }
+  :is(#assignModal,#newLocModal,#newShiftModal,#historyModal) .pm-label{ display:block; font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.04em; color:#64748b; margin:14px 0 6px; }
+  :is(#assignModal,#newLocModal,#newShiftModal,#historyModal) .pm-body > .pm-label:first-child{ margin-top:0; }
+  :is(#assignModal,#newLocModal,#newShiftModal,#historyModal) .pm-input{ width:100%; padding:9px 11px; font-size:13px; border:1px solid var(--line); border-radius:8px; background:#fff; color:#0f172a; }
   #assignModal .mode-opt{ margin-bottom:7px; }
-  #assignModal .pm-dates{ display:flex; gap:12px; }
-  #assignModal .pm-dates > div{ flex:1; }
-  #assignModal .pm-effect{ font-size:12px; color:#37485f; background:#F1F5FB; border:1px solid #E1E8F2; border-radius:8px; padding:9px 11px; margin:14px 0 0; line-height:1.5; }
-  #assignModal .pm-actions{ display:flex; gap:10px; margin-top:16px; }
-  #assignModal .pm-save{ flex:1; background:var(--brand); color:#fff; border:0; border-radius:9px; padding:11px; font-size:14px; font-weight:600; cursor:pointer; }
-  #assignModal .pm-save:hover{ background:#a11818; }
-  #assignModal .pm-cancel{ padding:11px 16px; background:#fff; color:#475569; border:1px solid var(--line); border-radius:9px; font-size:14px; font-weight:600; cursor:pointer; }
+  :is(#assignModal,#newLocModal,#newShiftModal,#historyModal) .pm-dates{ display:flex; gap:12px; }
+  :is(#assignModal,#newLocModal,#newShiftModal,#historyModal) .pm-dates > div{ flex:1; }
+  :is(#assignModal,#newLocModal,#newShiftModal,#historyModal) .pm-effect{ font-size:12px; color:#37485f; background:#F1F5FB; border:1px solid #E1E8F2; border-radius:8px; padding:9px 11px; margin:14px 0 0; line-height:1.5; }
+  :is(#assignModal,#newLocModal,#newShiftModal,#historyModal) .pm-actions{ display:flex; gap:10px; margin-top:16px; }
+  :is(#assignModal,#newLocModal,#newShiftModal,#historyModal) .pm-save{ flex:1; background:var(--brand); color:#fff; border:0; border-radius:9px; padding:11px; font-size:14px; font-weight:600; cursor:pointer; }
+  :is(#assignModal,#newLocModal,#newShiftModal,#historyModal) .pm-save:hover{ background:#a11818; }
+  :is(#assignModal,#newLocModal,#newShiftModal,#historyModal) .pm-cancel{ padding:11px 16px; background:#fff; color:#475569; border:1px solid var(--line); border-radius:9px; font-size:14px; font-weight:600; cursor:pointer; }
 </style>
 
 <div id="planWrap" class="p-4 md:p-6">
@@ -61,6 +78,7 @@
     </div>
     <div class="flex items-center gap-2">
       <a href="/shifts" class="px-3 py-2 text-sm text-gray-600 border border-gray-300 rounded-lg hover:bg-gray-100">Shift types</a>
+      <a href="/attendance/locations" class="px-3 py-2 text-sm text-gray-600 border border-gray-300 rounded-lg hover:bg-gray-100">Locations</a>
       <a href="/holidays" class="px-3 py-2 text-sm text-gray-600 border border-gray-300 rounded-lg hover:bg-gray-100">Holidays</a>
     </div>
   </div>
@@ -109,21 +127,21 @@
       <button class="pm-x" onclick="closeAssign()">&times;</button>
     </div>
     <div class="pm-body">
-      <label class="pm-label">Shift</label>
+      <label class="pm-label">Shift <button type="button" class="pm-addlink" onclick="openNewShift()">＋ new shift type</button></label>
       <select id="mTemplate" class="pm-input" onchange="renderEffect()"></select>
 
       <label class="pm-label">How long?</label>
       <div class="mode-opt" data-mode="until_changed" onclick="setMode('until_changed')">
-        <div class="mt">Set new primary shift</div>
-        <div class="md">Until I change it — this becomes their normal shift.</div>
+        <div class="mt">New regular shift <span class="dur-badge dur-ongoing">REGULAR</span></div>
+        <div class="md">Every day from the start date, <b>until you change it</b>. This is their new normal.</div>
       </div>
       <div class="mode-opt" data-mode="one_day" onclick="setMode('one_day')">
-        <div class="mt">Just one day</div>
-        <div class="md">Temporary — their normal shift comes back after.</div>
+        <div class="mt">One day only <span class="dur-badge dur-temp">TEMPORARY</span></div>
+        <div class="md">Just the one date you pick — back to their normal shift <b>the next day</b>.</div>
       </div>
       <div class="mode-opt" data-mode="date_range" onclick="setMode('date_range')">
-        <div class="mt">Start &amp; end date</div>
-        <div class="md">Temporary — for a set period, then back to normal.</div>
+        <div class="mt">A date range <span class="dur-badge dur-temp">TEMPORARY</span></div>
+        <div class="md">Only between the two dates — back to their normal shift <b>after</b>.</div>
       </div>
 
       <div class="pm-dates">
@@ -131,11 +149,75 @@
         <div id="toWrap"><label class="pm-label">To</label><input type="date" id="mTo" class="pm-input" onchange="renderEffect()"></div>
       </div>
 
+      <label class="pm-label">Location <span style="font-weight:400;color:#94a3b8;">— where they check in</span></label>
+      <div id="locBubbles" class="loc-bubbles"></div>
+      <label id="setDefaultWrap" class="loc-default"><input type="checkbox" id="mSetDefault"> <span id="setDefaultLbl">Make this their default location</span></label>
+
       <p id="effectLine" class="pm-effect"></p>
       <div class="pm-actions">
         <button class="pm-cancel" onclick="closeAssign()">Cancel</button>
         <button id="saveBtn" class="pm-save" onclick="saveAssign()">Save</button>
       </div>
+    </div>
+  </div>
+</div>
+
+<div id="newLocModal" class="modal-bg" onclick="if(event.target===this)closeNewLoc()">
+  <div class="pm-card" onclick="event.stopPropagation()" style="max-width:420px;">
+    <div class="pm-head"><h2>New office location</h2><button class="pm-x" onclick="closeNewLoc()">&times;</button></div>
+    <div class="pm-body">
+      <label class="pm-label">Name</label>
+      <input id="nlName" class="pm-input" placeholder="e.g. LaCarne DHA" maxlength="100">
+      <label class="pm-label">Position</label>
+      <button type="button" class="pm-cancel" style="width:100%;" onclick="nlToggleMap()">🗺 Pick on map</button>
+      <div id="nlMapWrap" style="display:none;">
+        <div id="nlMap" style="height:280px;border-radius:10px;border:1px solid var(--line);margin-top:10px;"></div>
+        <p style="font-size:11px;color:#94a3b8;margin:4px 0 0;">Click the map or drag the pin to the office entrance.</p>
+      </div>
+      <div class="pm-mini-grid" style="margin-top:10px;">
+        <div><label class="pm-label">Latitude</label><input id="nlLat" class="pm-input" placeholder="33.5204" inputmode="decimal"></div>
+        <div><label class="pm-label">Longitude</label><input id="nlLng" class="pm-input" placeholder="73.0479" inputmode="decimal"></div>
+      </div>
+      <label class="pm-label">Check-in radius (meters)</label>
+      <input id="nlRadius" class="pm-input" value="300" inputmode="numeric">
+      <p style="font-size:11px;color:#94a3b8;margin:4px 0 0;">Check-ins farther than this are flagged "remote". 100–10000m.</p>
+      <div class="pm-actions">
+        <button class="pm-cancel" onclick="closeNewLoc()">Cancel</button>
+        <button id="nlSave" class="pm-save" onclick="saveNewLoc()">Add location</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div id="newShiftModal" class="modal-bg" onclick="if(event.target===this)closeNewShift()">
+  <div class="pm-card" onclick="event.stopPropagation()" style="max-width:440px;">
+    <div class="pm-head"><h2>New shift type</h2><button class="pm-x" onclick="closeNewShift()">&times;</button></div>
+    <div class="pm-body">
+      <label class="pm-label">Name</label>
+      <input id="nsName" class="pm-input" placeholder="e.g. Evening 5 PM" maxlength="100">
+      <div class="pm-mini-grid" style="margin-top:10px;">
+        <div><label class="pm-label">Start time</label><input id="nsStart" type="time" class="pm-input"></div>
+        <div><label class="pm-label">End time <span style="font-weight:400;color:#94a3b8;">(optional)</span></label><input id="nsEnd" type="time" class="pm-input"></div>
+      </div>
+      <p style="font-size:11px;color:#94a3b8;margin:4px 0 10px;">Leave End empty for a start-only shift (no fixed end → no overtime).</p>
+      <label class="pm-label">Working days <span style="font-weight:400;color:#94a3b8;">— tap to toggle off-days</span></label>
+      <div id="nsDays" class="pm-day-chips"></div>
+      <div class="pm-actions">
+        <button class="pm-cancel" onclick="closeNewShift()">Cancel</button>
+        <button id="nsSave" class="pm-save" onclick="saveNewShift()">Add shift type</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div id="historyModal" class="modal-bg" onclick="closeHistory()">
+  <div class="pm-card" onclick="event.stopPropagation()">
+    <div class="pm-head">
+      <h2 id="historyTitle">Change history</h2>
+      <button class="pm-x" onclick="closeHistory()">&times;</button>
+    </div>
+    <div class="pm-body">
+      <div id="historyBody" style="max-height:420px;overflow-y:auto;"></div>
     </div>
   </div>
 </div>
@@ -153,6 +235,25 @@ let MODE = 'until_changed';
 function post(url, body) {
   return fetch(url, { method:'POST', headers:{'Content-Type':'application/json','X-CSRF-TOKEN':CSRF}, body:JSON.stringify(body) }).then(r=>r.json());
 }
+function escapeHtml(s){ return String(s==null?'':s).replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+async function openHistory(id, name){
+  document.getElementById('historyTitle').textContent = 'Change history · ' + name;
+  const body = document.getElementById('historyBody');
+  body.innerHTML = '<div style="color:#94a3b8;font-size:13px;padding:16px;">Loading…</div>';
+  document.getElementById('historyModal').style.display = 'flex';
+  try {
+    const d = await fetch('/shifts/history?user_id=' + encodeURIComponent(id)).then(r=>r.json());
+    const rows = d.history || [];
+    if(!rows.length){ body.innerHTML = '<div style="color:#94a3b8;font-size:13px;padding:16px;">No recorded changes yet. New assignments will appear here.</div>'; return; }
+    body.innerHTML = rows.map(h => `
+      <div style="padding:9px 2px;border-bottom:1px solid #f1f5f9;">
+        <div style="font-weight:700;font-size:13.5px;color:#0f172a;">${escapeHtml(h.label)}</div>
+        <div style="font-size:11.5px;color:#64748b;margin-top:2px;">${escapeHtml(h.actor)} · ${escapeHtml(h.when)} · via ${escapeHtml(h.via)}</div>
+        ${h.note ? `<div style="font-size:11px;color:#94a3b8;font-style:italic;margin-top:1px;">${escapeHtml(h.note)}</div>` : ''}
+      </div>`).join('');
+  } catch(e){ body.innerHTML = '<div style="color:#ef4444;font-size:13px;padding:16px;">Failed to load history.</div>'; }
+}
+function closeHistory(){ document.getElementById('historyModal').style.display='none'; }
 function fmt(d) { const x = new Date(d+'T00:00:00'); return x.toLocaleDateString(undefined,{day:'numeric',month:'short'}); }
 
 async function loadWeek(start) {
@@ -203,7 +304,7 @@ function renderGrid() {
       let cls='chip-work', body='';
       if (c.is_holiday) { cls='chip-holiday'; body=`<span>Holiday</span>`; }
       else if (c.is_off) { cls='chip-off'; body=`<span>Off</span>`; }
-      else { cls = c.is_override?'chip-override':'chip-work'; body=`<span class="chip-nm">${c.start}–${c.end}</span><span class="text-[10px] opacity-70">${c.shift_name}</span>`; }
+      else { cls = c.is_override?'chip-override':'chip-work'; body=`<span class="chip-nm">${c.start}${c.end?'–'+c.end:'+'}</span><span class="text-[10px] opacity-70">${c.shift_name}</span>`; }
       return `<td class="${isToday?'col-today':''}"><span class="cell-chip ${cls}">${body}</span></td>`;
     }).join('');
 
@@ -215,8 +316,9 @@ function renderGrid() {
           <span>
             <span class="font-semibold text-sm text-gray-900">${r.name}</span>
             <span class="block text-[11px] text-gray-400">${r.role||''}</span>
-            <span class="pchip mt-1">${r.primary.start}–${r.primary.end} · ${r.primary.shift_name}</span>
+            <span class="pchip mt-1">${r.primary.start}${r.primary.end?'–'+r.primary.end:'+'} · ${r.primary.shift_name}${r.primary.location_name?' · 📍'+r.primary.location_name:''}</span>
             <button onclick="openAssignOne(${r.user_id})" class="ml-1 text-xs text-red-600 font-semibold hover:underline">Change</button>
+            <button onclick="event.preventDefault();openHistory(${r.user_id}, ${JSON.stringify(r.name)})" title="Who changed this rider's shift, and when" class="ml-2 text-[11px] text-gray-500 font-semibold hover:underline">History</button>
             ${r.has_phone===false ? `<button onclick="event.preventDefault();addNumber(${r.user_id}, ${JSON.stringify(r.name)})" title="No WhatsApp number — riders can't be notified of shift changes" class="ml-1 text-[11px] text-amber-600 font-semibold hover:underline">📱 add number</button>` : ''}
             <div>${changes}</div>
           </span>
@@ -237,9 +339,23 @@ function clearSel(){ SEL.clear(); document.querySelectorAll('.rider-cb').forEach
 function updateBulkBar(){ const bar=document.getElementById('bulkBar'); if(SEL.size){ bar.classList.remove('hidden'); bar.classList.add('flex'); document.getElementById('bulkCount').textContent=SEL.size+' selected'; } else { bar.classList.add('hidden'); bar.classList.remove('flex'); } }
 
 /* modal */
-function fillTemplates(){ const s=document.getElementById('mTemplate'); s.innerHTML=DATA.templates.map(t=>`<option value="${t.id}">${t.name} · ${t.start}–${t.end} · off ${t.off_days}</option>`).join(''); }
+function fillTemplates(){ const s=document.getElementById('mTemplate'); s.innerHTML=DATA.templates.map(t=>`<option value="${t.id}">${t.name} · ${t.start}${t.end?'–'+t.end:'+'} · off ${t.off_days}</option>`).join(''); }
 function openAssignOne(id){ const r=DATA.riders.find(x=>x.user_id===id); TARGET=[{id, name:r.name}]; openAssignModal(); }
 function openAssignBulk(){ TARGET=[...SEL].map(id=>{ const r=DATA.riders.find(x=>x.user_id===id); return {id, name:r?r.name:('#'+id)}; }); openAssignModal(); }
+let SELLOC = null;           // selected location id in the assign modal
+function renderLocBubbles(){
+  const wrap=document.getElementById('locBubbles');
+  const locs=DATA.locations||[];
+  if(!locs.length){ wrap.innerHTML='<span class="loc-bubble add" onclick="openNewLoc()">＋ Add your first location</span>'; document.getElementById('setDefaultWrap').style.display='none'; return; }
+  document.getElementById('setDefaultWrap').style.display='flex';
+  // The rider's current default (single target) — shown with a "default" tag.
+  const riderDefault = (TARGET.length===1) ? (DATA.riders.find(x=>x.user_id===TARGET[0].id)||{}).default_location_id : null;
+  wrap.innerHTML = locs.map(l=>`<span class="loc-bubble ${l.id===SELLOC?'on':''}" onclick="pickLoc(${l.id})">${l.name}${l.id===riderDefault?'<span class="loc-def">default</span>':''}</span>`).join('')
+    + `<span class="loc-bubble add" onclick="openNewLoc()">＋ New</span>`;
+  const who = TARGET.length===1 ? (TARGET[0].name.split(' ')[0]+"'s") : "the riders'";
+  document.getElementById('setDefaultLbl').textContent = 'Make this '+who+' default location';
+}
+function pickLoc(id){ SELLOC=id; renderLocBubbles(); }
 function openAssignModal(){
   if(!TARGET.length) return;
   document.getElementById('assignTitle').textContent = TARGET.length===1 ? ('Change shift · '+TARGET[0].name) : ('Change shift · '+TARGET.length+' riders');
@@ -247,6 +363,12 @@ function openAssignModal(){
   document.getElementById('mFrom').value = DATA.today;
   document.getElementById('mTo').value = DATA.today;
   setMode('until_changed');
+  // Default location: the rider's own (single) → else the primary location.
+  const primary=(DATA.locations||[]).find(l=>l.is_primary) || (DATA.locations||[])[0];
+  const riderDefault=(TARGET.length===1) ? (DATA.riders.find(x=>x.user_id===TARGET[0].id)||{}).default_location_id : null;
+  SELLOC = riderDefault || (primary?primary.id:null);
+  document.getElementById('mSetDefault').checked=false;
+  renderLocBubbles();
   document.getElementById('assignModal').style.display='flex';
 }
 function closeAssign(){ document.getElementById('assignModal').style.display='none'; }
@@ -273,10 +395,16 @@ async function saveAssign(){
   const from=document.getElementById('mFrom').value, to=document.getElementById('mTo').value;
   if(!templateId||!from){ alert('Pick a shift and a date.'); return; }
   if(MODE==='date_range' && (!to || to<from)){ alert('Pick a valid end date.'); return; }
+  // Guard the classic mix-up: a "one day only" change dated TODAY (they revert tomorrow).
+  // If they meant a lasting change they should pick "New regular shift".
+  if(MODE==='one_day' && from===DATA.today){
+    if(!confirm('This sets the shift for TODAY only ('+fmt(from)+'). They go back to their normal shift tomorrow.\n\nIf you want a lasting change, cancel and choose "New regular shift" (REGULAR) instead.\n\nContinue with today only?')) return;
+  }
   const btn=document.getElementById('saveBtn'); btn.disabled=true; btn.textContent='Saving…';
   const payload={ shift_template_id:templateId, mode:MODE, effective_from:from };
   if(MODE==='date_range') payload.effective_to=to;
   if(MODE==='one_day') payload.effective_to=from;
+  if(SELLOC){ payload.location_id=SELLOC; payload.set_default_location=document.getElementById('mSetDefault').checked; }
   let json;
   if(TARGET.length===1){ payload.user_id=TARGET[0].id; json=await post('/shifts/assign',payload); }
   else { payload.user_ids=TARGET.map(t=>t.id); json=await post('/shifts/bulk-assign',payload); }
@@ -298,6 +426,78 @@ async function addNumber(id, name){
   if(json.success) loadWeek(WEEK); else alert(json.message||'Could not save the number.');
 }
 document.getElementById('assignModal').addEventListener('click', closeAssign);
+
+/* ── "+ New" popups: create a location / shift type WITHOUT leaving the assign flow.
+      Saved via the same endpoints the management pages use; the new item is appended
+      to the in-memory lists and auto-selected so the manager just continues. ── */
+function openNewLoc(){ document.getElementById('nlName').value=''; document.getElementById('nlLat').value=''; document.getElementById('nlLng').value=''; document.getElementById('nlRadius').value='300'; document.getElementById('nlMapWrap').style.display='none'; NL_MAP=null; document.getElementById('newLocModal').style.display='flex'; }
+function closeNewLoc(){ document.getElementById('newLocModal').style.display='none'; }
+
+/* Map pin — SAME strategy as the /attendance/locations page: Google Maps JS loaded
+   on demand, click or drag the marker, coordinates written back at 8 decimals. */
+let NL_MAP=null, NL_MARKER=null;
+function nlLoadGoogle(cb){
+  if (typeof google !== 'undefined' && google.maps) { cb(); return; }
+  const s=document.createElement('script');
+  s.src='https://maps.googleapis.com/maps/api/js?key=AIzaSyBFCBj7ebflrliC1pHq0XhsjuW18Q3iElk&libraries=places';
+  s.async=true; s.defer=true; s.onload=cb;
+  s.onerror=()=>alert('Could not load Google Maps — enter the coordinates manually.');
+  document.head.appendChild(s);
+}
+function nlToggleMap(){
+  const wrap=document.getElementById('nlMapWrap');
+  if(wrap.style.display!=='none'){ wrap.style.display='none'; return; }
+  wrap.style.display='block';
+  nlLoadGoogle(()=>setTimeout(nlInitMap,100));
+}
+function nlInitMap(){
+  // Center on already-typed coords, else the same default the locations page uses.
+  const lat=parseFloat(document.getElementById('nlLat').value)||33.70811597;
+  const lng=parseFloat(document.getElementById('nlLng').value)||73.08868750;
+  NL_MAP=new google.maps.Map(document.getElementById('nlMap'),{center:{lat,lng},zoom:15,streetViewControl:false,mapTypeControl:false});
+  NL_MARKER=new google.maps.Marker({position:{lat,lng},map:NL_MAP,draggable:true});
+  const setPos=p=>{ document.getElementById('nlLat').value=p.lat().toFixed(8); document.getElementById('nlLng').value=p.lng().toFixed(8); };
+  NL_MARKER.addListener('dragend',()=>setPos(NL_MARKER.getPosition()));
+  NL_MAP.addListener('click',e=>{ NL_MARKER.setPosition(e.latLng); setPos(e.latLng); });
+}
+async function saveNewLoc(){
+  const name=document.getElementById('nlName').value.trim();
+  const lat=parseFloat(document.getElementById('nlLat').value), lng=parseFloat(document.getElementById('nlLng').value);
+  const radius=parseInt(document.getElementById('nlRadius').value);
+  if(!name){ alert('Give the location a name.'); return; }
+  if(isNaN(lat)||isNaN(lng)||lat<-90||lat>90||lng<-180||lng>180){ alert('Enter a valid latitude and longitude (from Google Maps).'); return; }
+  if(isNaN(radius)||radius<100||radius>10000){ alert('Radius must be between 100 and 10000 meters.'); return; }
+  const btn=document.getElementById('nlSave'); btn.disabled=true; btn.textContent='Saving…';
+  const json=await post('/attendance/locations', {location_name:name, latitude:lat, longitude:lng, radius_meters:radius});
+  btn.disabled=false; btn.textContent='Add location';
+  if(json.success){
+    DATA.locations = DATA.locations||[]; DATA.locations.push({id:json.location_id, name:name, is_primary:false});
+    SELLOC = json.location_id; renderLocBubbles(); closeNewLoc();
+  } else alert(json.message||'Could not save the location.');
+}
+
+const NS_DAYS=[{n:1,l:'Mon'},{n:2,l:'Tue'},{n:3,l:'Wed'},{n:4,l:'Thu'},{n:5,l:'Fri'},{n:6,l:'Sat'},{n:7,l:'Sun'}];
+let NS_ON=new Set([1,2,3,4,5,6,7]);
+function renderNsDays(){ document.getElementById('nsDays').innerHTML = NS_DAYS.map(d=>`<span class="pm-day-chip ${NS_ON.has(d.n)?'':'off'}" onclick="toggleNsDay(${d.n})">${d.l}</span>`).join(''); }
+function toggleNsDay(n){ NS_ON.has(n)?NS_ON.delete(n):NS_ON.add(n); renderNsDays(); }
+function openNewShift(){ document.getElementById('nsName').value=''; document.getElementById('nsStart').value=''; document.getElementById('nsEnd').value=''; NS_ON=new Set([1,2,3,4,5,6,7]); renderNsDays(); document.getElementById('newShiftModal').style.display='flex'; }
+function closeNewShift(){ document.getElementById('newShiftModal').style.display='none'; }
+async function saveNewShift(){
+  const name=document.getElementById('nsName').value.trim();
+  const start=document.getElementById('nsStart').value, end=document.getElementById('nsEnd').value;
+  if(!name){ alert('Give the shift a name.'); return; }
+  if(!start){ alert('Pick a start time.'); return; }
+  if(!NS_ON.size){ alert('Pick at least one working day.'); return; }
+  const code=(name.toLowerCase().replace(/[^a-z0-9]+/g,'_').replace(/^_+|_+$/g,'')||'shift')+'_'+Date.now().toString(36).slice(-4);
+  const btn=document.getElementById('nsSave'); btn.disabled=true; btn.textContent='Saving…';
+  const json=await post('/shifts', {shift_name:name, shift_code:code, shift_start:start, shift_end:end||null, working_days:[...NS_ON]});
+  btn.disabled=false; btn.textContent='Add shift type';
+  if(json.success){
+    const offNames=NS_DAYS.filter(d=>!NS_ON.has(d.n)).map(d=>d.l).join(', ')||'None';
+    DATA.templates.push({id:json.data.id, name:name, start:start, end:end||null, off_days:offNames});
+    fillTemplates(); document.getElementById('mTemplate').value=json.data.id; renderEffect(); closeNewShift();
+  } else alert(json.message||'Could not save the shift type.');
+}
 
 loadWeek(null);
 </script>

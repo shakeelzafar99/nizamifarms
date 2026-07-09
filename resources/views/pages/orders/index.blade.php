@@ -1732,10 +1732,11 @@ button[onclick*="switchToShopifyApprovals"] { display: none !important; }
   window.nfFilterTableByRider = function(riderId, label){
     if(String(window.__nfRiderFilter) === String(riderId)){ nfClearRiderFilter(); return; }
     window.__nfRiderFilter = riderId;
+    window.__nfRiderLabel = label;
     document.querySelectorAll('#nfRiderCardsRow .nfrc-row').forEach(function(c){ c.classList.remove('nfrc-sel'); });
     var card = document.querySelector('#nfRiderCardsRow [data-rider="'+riderId+'"]');
     if(card) card.classList.add('nfrc-sel');
-    nfShowRiderChip(label);
+    window.nfRenderActiveFilters();
     // Refresh the open-orders data BEFORE filtering, so the filter reflects LIVE
     // assignments/dispatch rather than the page's load-time snapshot. This is
     // what fixes "click a rider -> table filters to empty" when the order was
@@ -1771,7 +1772,11 @@ button[onclick*="switchToShopifyApprovals"] { display: none !important; }
         var searchEl = document.getElementById('orderSearch');
         var term = searchEl ? String(searchEl.value || '').trim() : '';
         if(term) params.append('search', term);
-        var statusEl = document.getElementById('statusFilter'); if(statusEl && statusEl.value) params.append('status', statusEl.value);
+        // Prefer the funnel status CARD (window.__nfStatusCard) so a rider click
+        // made while a status card is active refetches WITHIN that status; fall
+        // back to the "All status" dropdown otherwise.
+        if(window.__nfStatusCard){ params.append('status', window.__nfStatusCard); }
+        else { var statusEl = document.getElementById('statusFilter'); if(statusEl && statusEl.value) params.append('status', statusEl.value); }
         var dateEl = document.getElementById('dateFilter'); if(dateEl && dateEl.value) params.append('date', dateEl.value);
         var ddEl = document.getElementById('deliveryDateFilter'); if(ddEl && ddEl.value) params.append('delivery_date', ddEl.value);
         var container = document.querySelector('.orders-table-container');
@@ -1800,19 +1805,59 @@ button[onclick*="switchToShopifyApprovals"] { display: none !important; }
       tr.style.display = show ? '' : 'none';
     });
   }
+  // Exposed so any table rebuild (e.g. a status-card refetch) can re-apply the
+  // active rider overlay on the fresh rows — this is what lets the rider filter
+  // and the funnel status filter compose.
+  window.nfReapplyRiderFilter = nfApplyRiderFilter;
   window.nfClearRiderFilter = function(){
     window.__nfRiderFilter = null;
+    window.__nfRiderLabel = null;
     document.querySelectorAll('#nfRiderCardsRow .nfrc-row').forEach(function(c){ c.classList.remove('nfrc-sel'); });
     document.querySelectorAll('#table-body tr[data-order-id]').forEach(function(tr){ tr.style.display = ''; });
-    var chip = document.getElementById('nfRiderChip'); if(chip) chip.remove();
+    // Re-render the unified chip (a status pill stays if a funnel status is active).
+    window.nfRenderActiveFilters();
   };
-  function nfShowRiderChip(label){
+  // Human label for a funnel status code (falls back to a prettified code).
+  function nfStatusLabel(code){
+    var m = { all:'All open', delivered_today:'Delivered today', out_for_delivery:'Out for delivery',
+              new:'New', on_hold:'On hold', pending:'Pending', confirmed:'Confirmed',
+              processing:'Processing', ready:'Ready', cancelled:'Cancelled' };
+    if(m[code]) return m[code];
+    return String(code||'').replace(/_/g,' ').replace(/\b\w/g, function(c){ return c.toUpperCase(); });
+  }
+  // Unified "active filters" chip. Single source of truth for what is narrowing
+  // the orders table: the rider filter and/or the funnel status filter, each as
+  // its own independently-removable pill. Lives where the rider chip already sat
+  // (Riders-Live panel header). Additive: removed entirely when nothing active.
+  window.nfRenderActiveFilters = function(){
     var host = document.getElementById('nfRiderCardsMeta');
     if(!host) return;
+    var riderOn = (window.__nfRiderFilter != null);
+    var statusOn = !!window.__nfStatusCard;
     var chip = document.getElementById('nfRiderChip');
-    if(!chip){ chip = document.createElement('span'); chip.id = 'nfRiderChip'; chip.onclick = window.nfClearRiderFilter; host.parentNode.appendChild(chip); }
-    chip.innerHTML = 'Filtered: ' + esc(label) + ' <span style="opacity:.7">✕</span>';
-  }
+    if(!riderOn && !statusOn){ if(chip) chip.remove(); return; }
+    if(!chip){ chip = document.createElement('span'); chip.id = 'nfRiderChip'; host.parentNode.appendChild(chip); }
+    chip.style.cursor = 'default';
+    var xStyle = 'cursor:pointer;opacity:.75;margin-left:4px;font-weight:700;';
+    var parts = [];
+    if(riderOn){
+      parts.push('🛵 ' + esc(window.__nfRiderLabel || 'Rider')
+        + '<span title="Remove rider filter" style="'+xStyle+'" onclick="event.stopPropagation(); window.nfClearRiderFilter();">✕</span>');
+    }
+    if(statusOn){
+      parts.push('📦 ' + esc(nfStatusLabel(window.__nfStatusCard))
+        + '<span title="Remove status filter" style="'+xStyle+'" onclick="event.stopPropagation(); window.nfClearStatusFilter();">✕</span>');
+    }
+    chip.innerHTML = '<span style="opacity:.7;margin-right:2px;">Filtered:</span> '
+      + parts.join(' <span style="opacity:.45">·</span> ');
+  };
+  // Clear ONLY the funnel status filter (keeps any rider filter). Reuses
+  // filterByStatus('all'), which reloads the all-status rows and — via its own
+  // tail — re-applies the rider overlay and re-renders this chip.
+  window.nfClearStatusFilter = function(){
+    if(typeof filterByStatus === 'function'){ filterByStatus('all'); }
+    else { window.__nfStatusCard = null; window.nfRenderActiveFilters(); }
+  };
 })();
 </script>
 
@@ -3198,8 +3243,8 @@ function viewOrderDetails(orderId) {
                 html += '</div>';
             }
 
-            // Packet Tracking Section (if packet data exists)
-            if (order.expected_packets || order.actual_packets) {
+            // Packet Tracking Section (if packet data exists OR a dispatch hand-over scan was recorded)
+            if (order.expected_packets || order.actual_packets || order.dispatch_scanned_at) {
                 html += '<div style="padding: 20px; background-color: #fef3c7; border: 1px solid #fbbf24; border-radius: 8px; margin: 20px 0 0 0;">';
                 html += '<h3 style="margin: 0 0 12px 0; color: #92400e; font-size: 16px; display: flex; align-items: center; gap: 8px;"><span>📦</span> Packet Tracking</h3>';
                 html += '<div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px;">';
@@ -3219,6 +3264,14 @@ function viewOrderDetails(orderId) {
                 }
                 html += '</div>';
                 html += '</div>';
+                // Enh-2: dispatch hand-over audit — who scanned this order ready to leave, and when.
+                // Lets management trace a wrong order back to the person who scanned it out.
+                if (order.dispatch_scanned_at) {
+                    html += '<div style="margin-top: 12px; padding: 10px 12px; background-color: white; border-radius: 6px; font-size: 13px; color: #374151;">';
+                    html += '<span style="color: #6b7280;">Dispatch hand-over scan:</span> <strong>' + (order.dispatch_scanned_by_name ? escapeHtml(order.dispatch_scanned_by_name) : 'Done') + '</strong>';
+                    html += ' · ' + formatDate(order.dispatch_scanned_at);
+                    html += '</div>';
+                }
                 html += '</div>';
             }
 
@@ -13477,6 +13530,9 @@ function getStatusColorClass(colorClass) {
 
 // Filter orders by status
 function filterByStatus(statusCode) {
+    // Remember the active funnel status so it composes with the rider filter
+    // (the unified chip + the rider-filter refetch both read window.__nfStatusCard).
+    window.__nfStatusCard = (statusCode === 'all') ? null : statusCode;
     // Update active card
     document.querySelectorAll('.status-card').forEach(card => {
         card.classList.remove('active');
@@ -13519,6 +13575,13 @@ function filterByStatus(statusCode) {
                 rebuildTableWithOrders(data.orders, 'other', 'open');
                 // Update pagination for filtered results
                 updatePaginationForTab(data.orders, 'other', 'open');
+                // Re-apply the rider overlay on the freshly rebuilt rows so rider +
+                // status compose (the rebuild renders every row visible, wiping it).
+                if (window.__nfRiderFilter != null && typeof window.nfReapplyRiderFilter === 'function') {
+                    window.nfReapplyRiderFilter();
+                }
+                // Refresh the unified "active filters" chip.
+                if (typeof window.nfRenderActiveFilters === 'function') window.nfRenderActiveFilters();
             }
         })
         .catch(err => console.error('Failed to filter by status:', err))
@@ -18095,8 +18158,8 @@ document.addEventListener('DOMContentLoaded', function() {
   var overlay=null;
   function hide(){ if(overlay) overlay.style.display='none'; }
   function save(){
-    var req=overlay.querySelector('#dss-require').checked, byp=overlay.querySelector('#dss-bypass').checked;
-    fetch('/orders/delivery-scan/settings',{method:'POST',headers:{'Content-Type':'application/json','X-Requested-With':'XMLHttpRequest','X-CSRF-TOKEN':csrf()},body:JSON.stringify({require_delivery_scan:req?1:0,allow_delivery_scan_bypass:byp?1:0})})
+    var req=overlay.querySelector('#dss-require').checked, byp=overlay.querySelector('#dss-bypass').checked, ban=overlay.querySelector('#dss-banner').checked;
+    fetch('/orders/delivery-scan/settings',{method:'POST',headers:{'Content-Type':'application/json','X-Requested-With':'XMLHttpRequest','X-CSRF-TOKEN':csrf()},body:JSON.stringify({require_delivery_scan:req?1:0,allow_delivery_scan_bypass:byp?1:0,dispatch_scan_banner_enabled:ban?1:0})})
       .then(function(r){return r.json();}).then(function(d){ hide(); alert(d&&d.success?'Delivery scan settings saved.':'Could not save settings.'); })
       .catch(function(){ alert('Could not save settings.'); });
   }
@@ -18107,7 +18170,9 @@ document.addEventListener('DOMContentLoaded', function() {
       +'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;"><h3 style="margin:0;font-size:18px;font-weight:700;color:#0f172a;">Delivery package scan</h3><button id="dss-close" style="border:none;background:none;font-size:24px;cursor:pointer;color:#64748b;line-height:1;">&times;</button></div>'
       +'<p style="margin:0 0 14px;font-size:13px;color:#64748b;">Whether riders must scan the package QR before marking an order delivered.</p>'
       +'<label style="display:flex;align-items:flex-start;gap:10px;padding:12px;border:1px solid #e2e8f0;border-radius:8px;margin-bottom:10px;cursor:pointer;"><input type="checkbox" id="dss-require" style="margin-top:3px;width:18px;height:18px;"><span><b style="color:#0f172a;">Require scan before delivery</b><br><span style="font-size:12px;color:#64748b;">On = rider must scan the correct package QR to mark delivered. Off = optional (current behaviour).</span></span></label>'
-      +'<label style="display:flex;align-items:flex-start;gap:10px;padding:12px;border:1px solid #e2e8f0;border-radius:8px;margin-bottom:16px;cursor:pointer;"><input type="checkbox" id="dss-bypass" style="margin-top:3px;width:18px;height:18px;"><span><b style="color:#0f172a;">Allow rider to bypass (with reason)</b><br><span style="font-size:12px;color:#64748b;">If scanning fails, the rider can deliver without scanning by typing a reason (logged). Only applies when Require scan is on.</span></span></label>'
+      +'<label style="display:flex;align-items:flex-start;gap:10px;padding:12px;border:1px solid #e2e8f0;border-radius:8px;margin-bottom:14px;cursor:pointer;"><input type="checkbox" id="dss-bypass" style="margin-top:3px;width:18px;height:18px;"><span><b style="color:#0f172a;">Allow rider to bypass (with reason)</b><br><span style="font-size:12px;color:#64748b;">If scanning fails, the rider can deliver without scanning by typing a reason (logged). Only applies when Require scan is on.</span></span></label>'
+      +'<div style="border-top:1px solid #e2e8f0;margin:0 0 12px;padding-top:12px;"><span style="font-size:12px;font-weight:700;color:#0f172a;text-transform:uppercase;letter-spacing:0.03em;">Dispatch hand-over (store)</span></div>'
+      +'<label style="display:flex;align-items:flex-start;gap:10px;padding:12px;border:1px solid #e2e8f0;border-radius:8px;margin-bottom:16px;cursor:pointer;"><input type="checkbox" id="dss-banner" style="margin-top:3px;width:18px;height:18px;"><span><b style="color:#0f172a;">Show &quot;not scanned&quot; banner in the store view</b><br><span style="font-size:12px;color:#64748b;">On = a dismissable banner lists out-for-delivery orders not yet scanned for hand-over. The warning when pressing Dispatch shows either way. Off = no banner (current behaviour).</span></span></label>'
       +'<div style="display:flex;gap:10px;justify-content:flex-end;"><button id="dss-cancel" style="padding:9px 16px;border:1px solid #cbd5e1;background:#fff;border-radius:8px;font-weight:600;cursor:pointer;color:#334155;">Cancel</button><button id="dss-save" style="padding:9px 16px;border:none;background:#0f766e;color:#fff;border-radius:8px;font-weight:700;cursor:pointer;">Save</button></div></div>';
     document.body.appendChild(overlay);
     overlay.querySelector('#dss-close').onclick=hide;
@@ -18120,8 +18185,9 @@ document.addEventListener('DOMContentLoaded', function() {
     overlay.style.display='flex';
     overlay.querySelector('#dss-require').checked=false;
     overlay.querySelector('#dss-bypass').checked=false;
+    overlay.querySelector('#dss-banner').checked=false;
     fetch('/orders/delivery-scan/settings',{headers:{'X-Requested-With':'XMLHttpRequest'}})
-      .then(function(r){return r.json();}).then(function(d){ if(d){ overlay.querySelector('#dss-require').checked=!!Number(d.require_delivery_scan); overlay.querySelector('#dss-bypass').checked=!!Number(d.allow_delivery_scan_bypass); } })
+      .then(function(r){return r.json();}).then(function(d){ if(d){ overlay.querySelector('#dss-require').checked=!!Number(d.require_delivery_scan); overlay.querySelector('#dss-bypass').checked=!!Number(d.allow_delivery_scan_bypass); overlay.querySelector('#dss-banner').checked=!!Number(d.dispatch_scan_banner_enabled); } })
       .catch(function(){});
   };
 })();
@@ -18135,6 +18201,7 @@ document.addEventListener('DOMContentLoaded', function() {
   function csrf(){ var m=document.querySelector('meta[name="csrf-token"]'); return m?m.getAttribute('content'):''; }
   var overlay=null;
   var TOGGLES=[
+    {k:'show_logo', t:'Show logo in header', d:'Off = plain store-name text header instead (use this if the printed logo looks bad).'},
     {k:'show_prices', t:'Show prices', d:'Item amounts + subtotal/discount/total. Off = a clean delivery slip with no money.'},
     {k:'show_phone', t:'Show customer phone', d:''},
     {k:'show_address', t:'Show customer address', d:''}

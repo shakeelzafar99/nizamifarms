@@ -262,6 +262,12 @@ class OrderController extends Controller
             
             // Attach discounts to the order object for frontend convenience
             $order->discounts = $order->discounts ?? [];
+
+            // Enh-2: resolve who completed the dispatch hand-over scan so the detail modal can show
+            // an audit line ("scanned by X"). Null when not scanned or on staging orders (no column).
+            $order->dispatch_scanned_by_name = $order->dispatch_scanned_by
+                ? (\DB::table('t_sys_user')->where('id', $order->dispatch_scanned_by)->value('fullname') ?: null)
+                : null;
             
             // Get delivery location if order is delivered
             $deliveryLocation = null;
@@ -5137,7 +5143,7 @@ class OrderController extends Controller
             if (!$isManager) {
                 return response()->json(['success' => false, 'message' => 'Only a manager role can change receipt settings.'], 403);
             }
-            $boolKeys = ['show_prices', 'show_phone', 'show_address'];
+            $boolKeys = ['show_logo', 'show_prices', 'show_phone', 'show_address'];
             $out = [];
             foreach ($boolKeys as $k) {
                 $out[$k] = $request->boolean($k) ? 1 : 0;
@@ -5166,6 +5172,9 @@ class OrderController extends Controller
         return response()->json([
             'require_delivery_scan' => $cfg ? (int) ($cfg->require_delivery_scan ?? 0) : 0,
             'allow_delivery_scan_bypass' => $cfg ? (int) ($cfg->allow_delivery_scan_bypass ?? 0) : 0,
+            // Enh-1: store-side dispatch hand-over banner (default off). Separate switch from the
+            // rider delivery scan above — this only controls the "N not scanned" awareness banner.
+            'dispatch_scan_banner_enabled' => $cfg ? (int) ($cfg->dispatch_scan_banner_enabled ?? 0) : 0,
         ]);
     }
 
@@ -5194,6 +5203,13 @@ class OrderController extends Controller
                 'require_delivery_scan' => $request->boolean('require_delivery_scan') ? 1 : 0,
                 'allow_delivery_scan_bypass' => $request->boolean('allow_delivery_scan_bypass') ? 1 : 0,
             ]);
+            // Enh-1 banner flag in its OWN update: if the column migration hasn't run yet, only
+            // this write fails silently — the two scan toggles above still save normally.
+            try {
+                \DB::table('t_sys_config')->where('id', 1)->update([
+                    'dispatch_scan_banner_enabled' => $request->boolean('dispatch_scan_banner_enabled') ? 1 : 0,
+                ]);
+            } catch (\Exception $e) {}
             return response()->json(['success' => true]);
         } catch (\Exception $e) {
             return response()->json(['success' => false, 'message' => 'Could not save settings'], 500);

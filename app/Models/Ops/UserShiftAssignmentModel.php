@@ -13,6 +13,7 @@ class UserShiftAssignmentModel extends Model
     protected $fillable = [
         'user_id',
         'shift_template_id',
+        'location_id',
         'effective_from',
         'effective_to',
         'created_by',

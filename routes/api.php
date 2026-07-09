@@ -175,6 +175,9 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('/verify-delivery-scan', [\App\Http\Controllers\API\RiderController::class, 'verifyDeliveryScan']);
         // Receipt printout field config for the app (which fields/text to print).
         Route::get('/receipt-config', [\App\Http\Controllers\API\RiderController::class, 'getReceiptConfig']);
+        // Dispatch package-scan (store hand-over): scan each packet, persistent "ready" tick.
+        Route::post('/orders/{id}/dispatch-scan', [\App\Http\Controllers\API\RiderController::class, 'dispatchScan']);
+        Route::post('/orders/{id}/dispatch-scan-clear', [\App\Http\Controllers\API\RiderController::class, 'dispatchScanClear']);
         Route::post('/orders/{id}/change-payment-method', [\App\Http\Controllers\API\RiderController::class, 'changePaymentMethod']);
         Route::post('/orders/{id}/mark-online-message-sent', [\App\Http\Controllers\API\RiderController::class, 'markOnlineMessageSent']);
         
@@ -202,6 +205,11 @@ Route::middleware('auth:sanctum')->group(function () {
         // Shift management (Store → Shifts; assign/cancel/templates/riders gated by manage_shifts)
         Route::get('/shifts/templates', [\App\Http\Controllers\API\RiderController::class, 'getShiftTemplatesMobile']);
         Route::get('/shifts/riders', [\App\Http\Controllers\API\RiderController::class, 'getStoreShiftRiders']);
+        Route::get('/shifts/rider-month', [\App\Http\Controllers\API\RiderController::class, 'getRiderShiftMonth']);
+        Route::get('/shifts/history', [\App\Http\Controllers\API\RiderController::class, 'getRiderShiftHistory']);
+        Route::post('/shifts/create-template', [\App\Http\Controllers\API\RiderController::class, 'createShiftTemplateMobile']);
+        Route::post('/shifts/update-template/{id}', [\App\Http\Controllers\API\RiderController::class, 'updateShiftTemplateMobile']);
+        Route::post('/locations/create', [\App\Http\Controllers\API\RiderController::class, 'createLocationMobile']);
         Route::post('/shifts/assign', [\App\Http\Controllers\API\RiderController::class, 'assignShiftMobile']);
         Route::post('/shifts/cancel', [\App\Http\Controllers\API\RiderController::class, 'cancelShiftMobile']);
         Route::post('/shifts/update-phone', [\App\Http\Controllers\API\RiderController::class, 'updateShiftRiderPhone']);

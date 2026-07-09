@@ -193,13 +193,22 @@ class LocationService
      * @param int|null $userId Optional user ID to check assigned location
      * @return array ['distance_meters' => int, 'is_remote' => bool, 'base_location' => object|null, 'error' => string|null]
      */
-    public static function calculateDistanceFromBase($latitude, $longitude, $userId = null): array
+    public static function calculateDistanceFromBase($latitude, $longitude, $userId = null, ?int $baseLocationId = null): array
     {
-        // Get location based on user assignment or primary location
-        $baseLocation = $userId 
-            ? self::getUserAssignedLocation($userId)
-            : self::getPrimaryBaseLocation();
-        
+        // Explicit base (e.g. today's SHIFT location) wins when valid & active; else fall
+        // back to the user's assigned location, else the primary.
+        $baseLocation = null;
+        if ($baseLocationId) {
+            $baseLocation = DB::table('t_ops_company_locations')
+                ->where('id', $baseLocationId)->where('is_active', 1)
+                ->first(['id', 'location_name', 'latitude', 'longitude', 'radius_meters']);
+        }
+        if (!$baseLocation) {
+            $baseLocation = $userId
+                ? self::getUserAssignedLocation($userId)
+                : self::getPrimaryBaseLocation();
+        }
+
         if (!$baseLocation) {
             Log::warning('No base location configured for attendance', ['user_id' => $userId]);
             return [

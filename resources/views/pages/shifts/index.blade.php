@@ -96,8 +96,9 @@
           <input type="time" id="shiftStart" class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500" required>
         </div>
         <div>
-          <label class="block text-sm font-medium text-gray-700 mb-1">End Time <span class="text-red-500">*</span></label>
-          <input type="time" id="shiftEnd" class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500" required>
+          <label class="block text-sm font-medium text-gray-700 mb-1">End Time <span class="text-gray-400 font-normal">(optional)</span></label>
+          <input type="time" id="shiftEnd" class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500">
+          <p class="text-xs text-gray-500 mt-1">Leave empty for a start-only shift (no fixed end → no overtime).</p>
         </div>
       </div>
 
@@ -290,7 +291,7 @@ function renderShifts() {
       <div class="space-y-2 mb-4">
         <div class="flex items-center text-sm">
           <span class="text-gray-500 w-20">Hours:</span>
-          <span class="font-medium">${shift.shift_start} - ${shift.shift_end}</span>
+          <span class="font-medium">${shift.shift_end ? (shift.shift_start + ' - ' + shift.shift_end) : (shift.shift_start + ' onwards')}</span>
         </div>
         <div class="flex items-center text-sm">
           <span class="text-gray-500 w-20">Working:</span>
@@ -337,7 +338,7 @@ function openEditModal(shiftId) {
   document.getElementById('shiftName').value = shift.shift_name;
   document.getElementById('shiftCode').value = shift.shift_code;
   document.getElementById('shiftStart').value = shift.shift_start.substring(0, 5);
-  document.getElementById('shiftEnd').value = shift.shift_end.substring(0, 5);
+  document.getElementById('shiftEnd').value = shift.shift_end ? shift.shift_end.substring(0, 5) : '';
   document.getElementById('shiftDescription').value = shift.description || '';
   document.getElementById('editTimeNote').style.display = 'flex'; // editing → warn times are forward-only
 
@@ -374,7 +375,7 @@ document.getElementById('shiftForm').addEventListener('submit', async function(e
     shift_name: document.getElementById('shiftName').value,
     shift_code: document.getElementById('shiftCode').value,
     shift_start: document.getElementById('shiftStart').value,
-    shift_end: document.getElementById('shiftEnd').value,
+    shift_end: document.getElementById('shiftEnd').value || null,
     working_days: workingDays,
     description: document.getElementById('shiftDescription').value
   };

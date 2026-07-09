@@ -463,6 +463,12 @@ class RiderController extends Controller
                     ),
                     'expected_packets' => $order->expected_packets, // Number of packets expected (from manager)
                     'actual_packets' => $order->actual_packets,     // Number of packets delivered (from rider)
+                    // Enh-2: dispatch hand-over scan audit (who marked this order ready to leave, when).
+                    // Safe before the SQL migration runs: missing columns read as null on the Eloquent model.
+                    'dispatch_scanned_at' => $order->dispatch_scanned_at,
+                    'dispatch_scanned_by_name' => $order->dispatch_scanned_by
+                        ? (\DB::table('t_sys_user')->where('id', $order->dispatch_scanned_by)->value('fullname') ?: null)
+                        : null,
                     'delivery_location' => $deliveryLocation,       // GPS coordinates of delivery (if delivered)
                     'online_message_sent_at' => $order->online_message_sent_at,  // WhatsApp message sent timestamp
                     'online_message_sent_by' => $order->online_message_sent_by,  // Who sent the message
@@ -673,8 +679,22 @@ class RiderController extends Controller
                 ]);
             }
 
+            // Capture the pre-write pin so the change is auditable — a
+            // mis-dropped pin is exactly what once turned a 15-min drive into
+            // an hour-long ETA, and today the old value is silently overwritten.
+            $oldPinLat = $customer->latitude;
+            $oldPinLng = $customer->longitude;
+
             // Update customer
             $customer->update($updateData);
+
+            \App\Services\AuditLogger::logCustomerPinChange(
+                $customer->id,
+                trim(($customer->first_name ?? '') . ' ' . ($customer->last_name ?? '')),
+                $oldPinLat, $oldPinLng,
+                $customer->latitude, $customer->longitude,
+                'Verified pin (mobile)'
+            );
 
             return response()->json([
                 'success' => true,
@@ -1055,32 +1075,46 @@ class RiderController extends Controller
                 ], 404);
             }
 
-            // Get rider's current location (most recent heartbeat)
-            $riderLocation = \DB::table('t_ops_rider_location')
-                ->where('user_id', $riderId)
-                ->where('captured_at', '>=', now()->subMinutes(30))
-                ->orderBy('captured_at', 'desc')
-                ->first();
-            
-            $usedShopLocation = false;
-            if (!$riderLocation) {
-                $baseLocation = \App\Services\LocationService::getUserAssignedLocation($riderId)
-                    ?? \App\Services\LocationService::getPrimaryBaseLocation();
+            // Choose the dispatch origin with a guardrail against phantom GPS
+            // fixes. A stale / low-accuracy reading that lands kilometres away
+            // used to be accepted blindly and blew ETAs up to an hour for a
+            // 15-minute drive (Jul 2026: a rider's fix reported 16 km NW of the
+            // store). selectDispatchOrigin() filters those out and, on a FIRST
+            // dispatch (rider loading at the store), refuses an implausibly-far
+            // fix in favour of the store location. On a mid-run re-dispatch it
+            // always trusts the live rider GPS so re-timing a live route still
+            // works from the rider's real position.
+            $origin = $this->selectDispatchOrigin($riderId);
 
-                if (!$baseLocation || !$baseLocation->latitude || !$baseLocation->longitude) {
-                    \Log::warning('Dispatch failed: rider GPS not active and no shop location configured', ['rider_id' => $riderId]);
-                    return response()->json([
-                        'success' => false,
-                        'message' => "⚠️ Rider GPS not active — please ask {$rider->fullname} to turn on GPS. Shop location also not configured.",
-                    ], 400);
-                }
-
-                $riderLocation = (object) [
-                    'latitude' => $baseLocation->latitude,
-                    'longitude' => $baseLocation->longitude,
-                ];
-                $usedShopLocation = true;
+            if (!$origin['location']) {
+                \Log::warning('Dispatch failed: rider GPS not active and no shop location configured', ['rider_id' => $riderId]);
+                return response()->json([
+                    'success' => false,
+                    'message' => "⚠️ Rider GPS not active — please ask {$rider->fullname} to turn on GPS. Shop location also not configured.",
+                ], 400);
             }
+
+            $riderLocation    = $origin['location'];
+            $usedShopLocation = $origin['used_store'];
+
+            \Log::info('Dispatch origin selected', [
+                'rider_id'              => $riderId,
+                'source'                => $origin['source'],
+                'is_mid_run'            => $origin['is_mid_run'],
+                'used_store'            => $origin['used_store'],
+                'distance_from_store_m' => $origin['distance_from_store_m'],
+                'gps_fix'               => $origin['fix'] ? [
+                    'lat'         => (float) $origin['fix']->latitude,
+                    'lng'         => (float) $origin['fix']->longitude,
+                    'accuracy_m'  => $origin['fix']->accuracy ?? null,
+                    'captured_at' => $origin['fix']->captured_at ?? null,
+                ] : null,
+                'origin_used'           => [
+                    'lat' => (float) $riderLocation->latitude,
+                    'lng' => (float) $riderLocation->longitude,
+                ],
+                'note'                  => $origin['note'],
+            ]);
             
             // ⭐ Check if frontend passed explicit order sequence (fixes debounce timing issue)
             $orderSequence = $request->input('order_sequence', []);
@@ -1277,7 +1311,12 @@ class RiderController extends Controller
             ];
 
             if ($usedShopLocation) {
-                $response['gps_warning'] = "⚠️ Rider GPS not active — ETAs calculated from shop location. Ask {$rider->fullname} to turn on GPS for accurate times.";
+                if ($origin['source'] === 'store_far_gps' && $origin['distance_from_store_m']) {
+                    $km = number_format($origin['distance_from_store_m'] / 1000, 1);
+                    $response['gps_warning'] = "⚠️ {$rider->fullname}'s GPS reading was ~{$km} km from the office, so ETAs were calculated from the office location. Ask them to open the app so GPS refreshes.";
+                } else {
+                    $response['gps_warning'] = "⚠️ Rider GPS not active — ETAs calculated from shop location. Ask {$rider->fullname} to turn on GPS for accurate times.";
+                }
             }
 
             return response()->json($response);
@@ -1294,6 +1333,223 @@ class RiderController extends Controller
                 'message' => 'Failed to calculate ETAs: ' . $e->getMessage()
             ], 500);
         }
+    }
+
+    /**
+     * Is this rider already out on the road (as opposed to loading up at the
+     * store for a first dispatch)? Used to decide whether the store-proximity
+     * guardrail in selectDispatchOrigin() should apply.
+     *
+     * Two independent signals, either is enough:
+     *   1. A previous dispatch wave is still live — some order assigned to the
+     *      rider is out_for_delivery AND already has an ETA. This covers the
+     *      manager "reorder → Re-dispatch" case (mobile Re-dispatch re-times
+     *      without clearing eta_calculated_at) and the "Next Dispatch" wave.
+     *   2. The rider delivered something in the last 90 minutes — he's clearly
+     *      moving even if a cancel-dispatch wiped the ETAs first.
+     *
+     * When in doubt this errs toward "mid-run" (trust the rider's GPS), which
+     * is the safe direction: it never snaps a genuinely-travelling rider back
+     * to the store.
+     */
+    private function riderIsMidRun(int $riderId): bool
+    {
+        $hasLiveEta = \DB::table('t_crm_prod_order')
+            ->where('assigned_rider_user_id', $riderId)
+            ->where('order_status', 'out_for_delivery')
+            ->whereNotNull('eta_calculated_at')
+            ->exists();
+        if ($hasLiveEta) {
+            return true;
+        }
+
+        return \DB::table('t_crm_prod_order')
+            ->where('assigned_rider_user_id', $riderId)
+            ->where('order_status', 'delivered')
+            ->where('updated_at', '>=', now()->subMinutes(90))
+            ->exists();
+    }
+
+    /**
+     * Pick the origin point for a dispatch ETA calculation, defending against
+     * phantom GPS fixes (cached / low-accuracy readings that land kilometres
+     * from the rider and inflate ETAs to an hour for a 15-minute drive).
+     *
+     * The core trick is to anchor on the rider's OWN recent GPS consensus: we
+     * take the median of his credible recent fixes (robust to a transient burst
+     * of phantom readings, even ones that report good accuracy) and use the
+     * newest fix that agrees with that consensus.
+     *
+     * The fallback / backstop reference is the primary OFFICE — every rider
+     * dispatches deliveries from there. (A rider's *assigned* location is only
+     * his attendance / supply-pickup point and can be kilometres away, so it is
+     * deliberately NOT used here.)
+     *
+     * Rules:
+     *  - MID-RUN / RE-DISPATCH (see riderIsMidRun): always trust the rider's
+     *    live GPS (newest accuracy-filtered fix). Never second-guess it, so
+     *    re-timing a live route from the rider's real position keeps working.
+     *  - FIRST DISPATCH: use the consensus-anchored fix. Only when even that
+     *    anchored position is EGREGIOUSLY far from the office (a persistent
+     *    phantom — the phone stuck on one wrong spot) do we fall back to the
+     *    office location.
+     *  - No usable GPS at all: fall back to the office location (unchanged
+     *    behaviour) with a warning; error only if no office is configured.
+     *
+     * @return array{location: ?object, used_store: bool, source: string,
+     *               note: string, fix: ?object, distance_from_store_m: ?int,
+     *               is_mid_run: bool}
+     */
+    private function selectDispatchOrigin(int $riderId): array
+    {
+        // Tunables — kept inline so this stays a single-file, cache-free deploy.
+        $windowMinutes  = 30;       // how far back to look for a GPS fix
+        $accuracyMaxM   = 150.0;    // fixes worse than this are "low confidence"
+        $clusterRadiusM = 1500.0;   // a fix within this of the consensus is trusted
+        $farBackstopM   = 5000.0;   // even anchored, beyond this ⇒ persistent phantom
+
+        $isMidRun = $this->riderIsMidRun($riderId);
+
+        // Deliveries ALWAYS start from the primary office — that's the real
+        // dispatch origin for every rider. The rider's *assigned* location is
+        // only his attendance / supply-pickup point (e.g. LaCarne) and can be
+        // kilometres away, so it must NOT be the dispatch reference. Fall back
+        // to the assigned location only if no primary office is configured.
+        $store = \App\Services\LocationService::getPrimaryBaseLocation()
+            ?? \App\Services\LocationService::getUserAssignedLocation($riderId);
+        $storeOk = $store && $store->latitude && $store->longitude;
+
+        // Recent trail (newest first). One cheap indexed read; capped for safety.
+        $fixes = \DB::table('t_ops_rider_location')
+            ->where('user_id', $riderId)
+            ->where('captured_at', '>=', now()->subMinutes($windowMinutes))
+            ->whereNotNull('latitude')->whereNotNull('longitude')
+            ->orderBy('captured_at', 'desc')
+            ->limit(100)
+            ->get(['latitude', 'longitude', 'accuracy', 'captured_at']);
+
+        // Accuracy-filtered subset. NULL accuracy is allowed through (many
+        // native fixes omit it); the consensus/backstop below still guards it.
+        $credible = $fixes->filter(function ($f) use ($accuracyMaxM) {
+            return $f->accuracy === null || (float) $f->accuracy <= $accuracyMaxM;
+        })->values();
+
+        $distFromStore = function ($fix) use ($store, $storeOk) {
+            if (!$fix || !$storeOk) {
+                return null;
+            }
+            return (int) round(\App\Services\LocationService::calculateDistance(
+                $fix->latitude, $fix->longitude, $store->latitude, $store->longitude
+            ));
+        };
+
+        $storeLocation = function () use ($store, $storeOk) {
+            return $storeOk
+                ? (object) ['latitude' => $store->latitude, 'longitude' => $store->longitude, 'captured_at' => null]
+                : null;
+        };
+
+        // --- MID-RUN: trust the rider's live GPS, prefer the confident fix. ---
+        if ($isMidRun) {
+            $fix = $credible->first() ?: $fixes->first();
+            if ($fix) {
+                return [
+                    'location'              => $fix,
+                    'used_store'            => false,
+                    'source'                => $credible->isNotEmpty() ? 'rider_gps_midrun' : 'rider_gps_midrun_lowacc',
+                    'note'                  => 'Mid-run re-dispatch — used live rider GPS.',
+                    'fix'                   => $fix,
+                    'distance_from_store_m' => $distFromStore($fix),
+                    'is_mid_run'            => true,
+                ];
+            }
+            return [
+                'location'              => $storeLocation(),
+                'used_store'            => $storeOk,
+                'source'                => 'store_no_gps_midrun',
+                'note'                  => 'Mid-run but no recent GPS — fell back to office location.',
+                'fix'                   => null,
+                'distance_from_store_m' => null,
+                'is_mid_run'            => true,
+            ];
+        }
+
+        // --- FIRST DISPATCH: anchor on the rider's own recent consensus. ------
+        $fix = null;
+        if ($credible->isNotEmpty()) {
+            // Robust centre of the recent trail. Median tolerates up to ~half
+            // the fixes being phantom outliers without moving off the real spot.
+            $medLat = $this->medianOf($credible->pluck('latitude')->map('floatval')->all());
+            $medLng = $this->medianOf($credible->pluck('longitude')->map('floatval')->all());
+
+            // Newest credible fix that agrees with the consensus = the rider's
+            // real current position (skips a fresh phantom that jumped away).
+            foreach ($credible as $f) {
+                $d = \App\Services\LocationService::calculateDistance($f->latitude, $f->longitude, $medLat, $medLng);
+                if ($d <= $clusterRadiusM) {
+                    $fix = $f;
+                    break;
+                }
+            }
+            $fix = $fix ?: $credible->first();
+        } else {
+            $fix = $fixes->first(); // nothing credible — raw fix, guarded below
+        }
+
+        $dist = $distFromStore($fix);
+
+        // Persistent-phantom backstop: even the consensus sits absurdly far from
+        // the store (phone stuck on a wrong spot). No legitimate dispatch point
+        // is 10 km from the store, so use the store instead.
+        if ($fix && $storeOk && $dist !== null && $dist > $farBackstopM) {
+            return [
+                'location'              => $storeLocation(),
+                'used_store'            => true,
+                'source'                => 'store_far_gps',
+                'note'                  => "First-dispatch GPS was {$dist} m from the office — used office location instead.",
+                'fix'                   => $fix,
+                'distance_from_store_m' => $dist,
+                'is_mid_run'            => false,
+            ];
+        }
+
+        if ($fix) {
+            return [
+                'location'              => $fix,
+                'used_store'            => false,
+                'source'                => 'rider_gps_anchored',
+                'note'                  => 'First dispatch — used rider GPS (recent consensus position).',
+                'fix'                   => $fix,
+                'distance_from_store_m' => $dist,
+                'is_mid_run'            => false,
+            ];
+        }
+
+        // No usable GPS at all → store fallback (unchanged behaviour).
+        return [
+            'location'              => $storeLocation(),
+            'used_store'            => $storeOk,
+            'source'                => 'store_no_gps',
+            'note'                  => 'No recent rider GPS — used office location.',
+            'fix'                   => null,
+            'distance_from_store_m' => null,
+            'is_mid_run'            => false,
+        ];
+    }
+
+    /**
+     * Median of a numeric list (returns the lower-middle for even counts).
+     * Small local helper for selectDispatchOrigin's consensus anchor.
+     */
+    private function medianOf(array $values): float
+    {
+        $values = array_values(array_filter($values, 'is_numeric'));
+        sort($values);
+        $n = count($values);
+        if ($n === 0) {
+            return 0.0;
+        }
+        return (float) $values[intdiv($n - 1, 2)];
     }
 
     /**
@@ -1476,31 +1732,18 @@ class RiderController extends Controller
                 return response()->json(['success' => false, 'message' => 'Rider not found'], 404);
             }
 
-            $riderLocation = \DB::table('t_ops_rider_location')
-                ->where('user_id', $riderId)
-                ->where('captured_at', '>=', now()->subMinutes(30))
-                ->orderBy('captured_at', 'desc')
-                ->first();
-
-            $usedShopLocation = false;
-            if (!$riderLocation) {
-                // Fall back to shop/office location
-                $baseLocation = \App\Services\LocationService::getUserAssignedLocation($riderId)
-                    ?? \App\Services\LocationService::getPrimaryBaseLocation();
-
-                if (!$baseLocation || !$baseLocation->latitude || !$baseLocation->longitude) {
-                    return response()->json([
-                        'success' => false,
-                        'message' => "⚠️ Rider GPS not active — please ask {$rider->fullname} to turn on GPS. Shop location also not configured.",
-                    ], 400);
-                }
-
-                $riderLocation = (object) [
-                    'latitude' => $baseLocation->latitude,
-                    'longitude' => $baseLocation->longitude,
-                ];
-                $usedShopLocation = true;
+            // Same phantom-GPS guardrail as the "Get Times" dispatch path
+            // (selectDispatchOrigin) so this route-optimisation PREVIEW can't
+            // show a phantom-inflated route while the real dispatch is fine.
+            $origin = $this->selectDispatchOrigin($riderId);
+            if (!$origin['location']) {
+                return response()->json([
+                    'success' => false,
+                    'message' => "⚠️ Rider GPS not active — please ask {$rider->fullname} to turn on GPS. Shop location also not configured.",
+                ], 400);
             }
+            $riderLocation    = $origin['location'];
+            $usedShopLocation = $origin['used_store'];
 
             $orders = \DB::table('t_crm_prod_order as o')
                 ->leftJoin('t_crm_prod_customer as c', 'c.id', '=', 'o.customer_id')
@@ -1593,7 +1836,12 @@ class RiderController extends Controller
             ];
 
             if ($usedShopLocation) {
-                $response['gps_warning'] = "⚠️ Rider GPS not active — route optimized from shop location. Ask {$rider->fullname} to turn on GPS for accurate results.";
+                if ($origin['source'] === 'store_far_gps' && $origin['distance_from_store_m']) {
+                    $km = number_format($origin['distance_from_store_m'] / 1000, 1);
+                    $response['gps_warning'] = "⚠️ {$rider->fullname}'s GPS reading was ~{$km} km from the office, so the route was optimised from the office location. Ask them to open the app so GPS refreshes.";
+                } else {
+                    $response['gps_warning'] = "⚠️ Rider GPS not active — route optimized from shop location. Ask {$rider->fullname} to turn on GPS for accurate results.";
+                }
             }
 
             if (!empty($farOrders)) {
@@ -2057,9 +2305,11 @@ class RiderController extends Controller
                 'success' => true,
                 'require_delivery_scan' => $cfg ? (int) ($cfg->require_delivery_scan ?? 0) : 0,
                 'allow_delivery_scan_bypass' => $cfg ? (int) ($cfg->allow_delivery_scan_bypass ?? 0) : 0,
+                // Enh-1: store-side dispatch hand-over banner toggle (default off).
+                'dispatch_scan_banner_enabled' => $cfg ? (int) ($cfg->dispatch_scan_banner_enabled ?? 0) : 0,
             ]);
         } catch (\Exception $e) {
-            return response()->json(['success' => true, 'require_delivery_scan' => 0, 'allow_delivery_scan_bypass' => 0]);
+            return response()->json(['success' => true, 'require_delivery_scan' => 0, 'allow_delivery_scan_bypass' => 0, 'dispatch_scan_banner_enabled' => 0]);
         }
     }
 
@@ -2075,6 +2325,100 @@ class RiderController extends Controller
             return response()->json(['success' => true, 'config' => is_array($decoded) ? $decoded : (object) []]);
         } catch (\Exception $e) {
             return response()->json(['success' => true, 'config' => (object) []]);
+        }
+    }
+
+    /**
+     * Dispatch package-scan (store hand-over). The manager scans a package QR
+     * ("ORDERNUMBER|index/total") at dispatch. Records the packet index; when ALL
+     * packets are scanned the order is stamped "ready to leave" (dispatch_scanned_at).
+     * Per-packet + persistent. Verifies the scanned QR belongs to THIS order. Never throws.
+     */
+    public function dispatchScan(Request $request, $id)
+    {
+        try {
+            $user = Auth::user();
+            $order = \App\Models\CRM\OrderModel::find($id);
+            if (!$order) {
+                return response()->json(['success' => false, 'message' => 'Order not found'], 404);
+            }
+
+            $code = trim((string) $request->input('scan_code', ''));
+            $parts = explode('|', $code);
+            $codeOrderNo = trim($parts[0] ?? '');
+            $idx = null;
+            $totalFromCode = null;
+            if (isset($parts[1]) && strpos($parts[1], '/') !== false) {
+                $pp = explode('/', $parts[1]);
+                $idx = is_numeric(trim($pp[0] ?? '')) ? (int) trim($pp[0]) : null;
+                $totalFromCode = is_numeric(trim($pp[1] ?? '')) ? (int) trim($pp[1]) : null;
+            }
+
+            if ($codeOrderNo === '' || $codeOrderNo !== (string) $order->order_number) {
+                return response()->json([
+                    'success' => false,
+                    'code' => 'wrong_order',
+                    'scanned_order' => $codeOrderNo,
+                    'message' => $codeOrderNo !== '' ? 'This package is for order ' . $codeOrderNo : 'QR not recognised',
+                ], 422);
+            }
+
+            // Target = the order's packet count (fallback to the QR's total, then 1).
+            $target = (int) ($order->expected_packets ?: $totalFromCode ?: 1);
+            if ($target < 1) $target = 1;
+            $idx = $idx ?: 1;
+
+            $scanned = [];
+            if (!empty($order->dispatch_scanned_packets)) {
+                $decoded = json_decode($order->dispatch_scanned_packets, true);
+                if (is_array($decoded)) $scanned = array_values(array_unique(array_map('intval', $decoded)));
+            }
+            $already = in_array($idx, $scanned, true);
+            if (!$already) $scanned[] = $idx;
+            sort($scanned);
+
+            $order->dispatch_scanned_packets = json_encode(array_values($scanned));
+            $complete = count($scanned) >= $target;
+            if ($complete && empty($order->dispatch_scanned_at)) {
+                $order->dispatch_scanned_at = now();
+                $order->dispatch_scanned_by = $user->id;
+            }
+            $order->save();
+
+            return response()->json([
+                'success' => true,
+                'already_scanned' => $already,
+                'scanned_count' => count($scanned),
+                'target' => $target,
+                'complete' => $complete,
+                'dispatch_scanned_at' => $order->dispatch_scanned_at,
+                'message' => $complete
+                    ? 'All packets scanned — ready to leave'
+                    : ($already ? ('Packet ' . $idx . ' already scanned (' . count($scanned) . ' of ' . $target . ')')
+                                : ('Packet ' . $idx . ' scanned (' . count($scanned) . ' of ' . $target . ')')),
+            ]);
+        } catch (\Exception $e) {
+            return response()->json(['success' => false, 'message' => 'Could not record the scan'], 200);
+        }
+    }
+
+    /**
+     * Clear an order's dispatch scan (undo a mistaken scan / re-do from scratch).
+     */
+    public function dispatchScanClear(Request $request, $id)
+    {
+        try {
+            $order = \App\Models\CRM\OrderModel::find($id);
+            if (!$order) {
+                return response()->json(['success' => false, 'message' => 'Order not found'], 404);
+            }
+            $order->dispatch_scanned_packets = null;
+            $order->dispatch_scanned_at = null;
+            $order->dispatch_scanned_by = null;
+            $order->save();
+            return response()->json(['success' => true, 'message' => 'Dispatch scan cleared']);
+        } catch (\Exception $e) {
+            return response()->json(['success' => false, 'message' => 'Could not clear the scan'], 200);
         }
     }
 
@@ -3160,6 +3504,17 @@ class RiderController extends Controller
             // Rider's current shift + any change awaiting their acknowledgment (additive fields).
             $shiftSvc = new \App\Services\ShiftResolutionService();
             $todayShift = $shiftSvc->getUserShift(Auth::id(), now()->format('Y-m-d'));
+
+            // "Your Office" banner should show where the SHIFT expects them today
+            // (assignment location → default → primary) — same location check-in verifies.
+            if (!empty($todayShift['location_id'])) {
+                $shiftLoc = \DB::table('t_ops_company_locations')
+                    ->where('id', $todayShift['location_id'])->where('is_active', 1)
+                    ->select('location_name', 'latitude', 'longitude', 'radius_meters')->first();
+                if ($shiftLoc) {
+                    $assignedLocation = $shiftLoc;
+                }
+            }
             $pendingAck = \App\Models\Ops\UserShiftAssignmentModel::with('shiftTemplate')
                 ->where('user_id', Auth::id())
                 ->whereNotNull('notified_at')->whereNull('acknowledged_at')
@@ -3175,7 +3530,7 @@ class RiderController extends Controller
                     'assignment_id' => $pendingAck->id,
                     'shift_name' => $pendingAck->shiftTemplate->shift_name,
                     'start' => substr($pendingAck->shiftTemplate->shift_start, 0, 5),
-                    'end' => substr($pendingAck->shiftTemplate->shift_end, 0, 5),
+                    'end' => $pendingAck->shiftTemplate->shift_end ? substr($pendingAck->shiftTemplate->shift_end, 0, 5) : null,
                     'effective_from' => $pendingAck->effective_from ? $pendingAck->effective_from->format('Y-m-d') : null,
                     'effective_to' => $pendingAck->effective_to ? $pendingAck->effective_to->format('Y-m-d') : null,
                 ];
@@ -3208,7 +3563,8 @@ class RiderController extends Controller
                 'shift' => [
                     'shift_name' => $todayShift['shift_name'],
                     'start' => $todayShift['shift_start'],
-                    'end' => $todayShift['shift_end'],
+                    'end' => $todayShift['shift_end'], // null for start-only shifts
+                    'location_name' => $todayShift['location_name'] ?? null,
                 ],
                 'pending_shift_ack' => $pendingAckData,
             ]);
@@ -3374,8 +3730,16 @@ class RiderController extends Controller
             return null;
         }
 
-        // Calculate distance from base (using user's assigned location)
-        $distanceInfo = LocationService::calculateDistanceFromBase($latitude, $longitude, $userId);
+        // Calculate distance from base. Priority: the location of the rider's SHIFT
+        // for today (getUserShift resolves assignment → user default → primary), so a
+        // rider working at LaCarne today is checked against LaCarne, not the office.
+        // Falls back inside calculateDistanceFromBase if that location is unavailable.
+        $shiftLocationId = null;
+        try {
+            $shiftLocationId = (new \App\Services\ShiftResolutionService())
+                ->getUserShift($userId, now()->format('Y-m-d'))['location_id'] ?? null;
+        } catch (\Throwable $e) { /* fall back to the user's assigned location below */ }
+        $distanceInfo = LocationService::calculateDistanceFromBase($latitude, $longitude, $userId, $shiftLocationId);
 
         // ⭐ Detailed logging for attendance location tracking
         $methodLabels = [
@@ -9417,6 +9781,7 @@ class RiderController extends Controller
             $dispatchActorMap = [];
             $actorIds = $orders->pluck('eta_calculated_by')
                 ->merge($orders->pluck('delivery_priority_updated_by'))
+                ->merge($orders->pluck('dispatch_scanned_by'))
                 ->filter()
                 ->unique()
                 ->values()
@@ -9528,6 +9893,11 @@ class RiderController extends Controller
                     'delivery_priority_updated_at' => $order->delivery_priority_updated_at,
                     'expected_packets' => $order->expected_packets, // ⭐ Packet info (from manager)
                     'actual_packets' => $order->actual_packets,     // ⭐ Actual packets (from rider, after delivery)
+                    // Dispatch package-scan (store hand-over). scanned_count vs expected_packets
+                    // drives the progress; dispatch_scanned_at set = "ready to leave" tick.
+                    'dispatch_scanned_count' => $order->dispatch_scanned_packets ? count((array) json_decode($order->dispatch_scanned_packets, true)) : 0,
+                    'dispatch_scanned_at' => $order->dispatch_scanned_at,
+                    'dispatch_scanned_by_name' => $order->dispatch_scanned_by ? ($dispatchActorMap[$order->dispatch_scanned_by] ?? null) : null,
                     'payment_method' => $order->payment_method,     // ⭐ Payment method (cash/online)
                     'payment_proof' => $paymentProofMap[$order->id] ?? null, // Jun-2026: WhatsApp/email proof status
                     'customer_id' => $order->customer_id, // Added for verified location functionality
@@ -13866,12 +14236,15 @@ class RiderController extends Controller
                         $lateMinutes = (int) abs($login->diffInMinutes($shiftStart));
                     }
                     
-                    // Check if overtime
-                    $shiftEnd = \Carbon\Carbon::parse($shiftData['shift_end']);
-                    if ($logout->gt($shiftEnd)) {
-                        $isOvertime = true;
-                        // ⭐ Use abs() to ensure positive, round to whole number
-                        $overtimeMinutes = (int) abs($logout->diffInMinutes($shiftEnd));
+                    // Check if overtime — only when the shift HAS an end (start-only shifts
+                    // have no overtime).
+                    if (!empty($shiftData['shift_end'])) {
+                        $shiftEnd = \Carbon\Carbon::parse($shiftData['shift_end']);
+                        if ($logout->gt($shiftEnd)) {
+                            $isOvertime = true;
+                            // ⭐ Use abs() to ensure positive, round to whole number
+                            $overtimeMinutes = (int) abs($logout->diffInMinutes($shiftEnd));
+                        }
                     }
                 }
                 
@@ -25734,12 +26107,106 @@ class RiderController extends Controller
                     $changes[] = ['assignment_id' => $row->id, 'kind' => 'upcoming_primary', 'shift_name' => optional($row->shiftTemplate)->shift_name, 'from' => $f, 'to' => null, 'acknowledged' => $row->acknowledged_at !== null];
                 }
             }
+            $def = $svc->userDefaultLocation($r->id); // rider's default office (pre-selected on assign)
             $out[] = ['user_id' => $r->id, 'name' => $r->fullname,
                 'has_phone' => !empty(trim((string) $r->phone)),
-                'primary' => ['shift_name' => $primary['shift_name'], 'start' => $primary['shift_start'], 'end' => $primary['shift_end']],
+                'default_location_id' => $def['location_id'],
+                'default_location_name' => $def['location_name'],
+                'primary' => ['shift_name' => $primary['shift_name'], 'start' => $primary['shift_start'], 'end' => $primary['shift_end'], 'location_name' => $primary['location_name'] ?? null],
                 'changes' => $changes];
         }
-        return response()->json(['success' => true, 'riders' => $out]);
+        // Active office locations (for the assign screen's location bubbles).
+        $locations = \DB::table('t_ops_company_locations')->where('is_active', 1)
+            ->orderByDesc('is_primary')->orderBy('location_name')
+            ->get(['id', 'location_name', 'is_primary'])
+            ->map(fn($l) => ['id' => (int) $l->id, 'name' => $l->location_name, 'is_primary' => (int) $l->is_primary === 1]);
+        return response()->json(['success' => true, 'riders' => $out, 'locations' => $locations]);
+    }
+
+    /** Per-rider MONTH shift breakdown for the manager (StoreShifts → tap rider → month view),
+     *  so they can SEE what shift each day was set to before correcting history. Each day carries
+     *  the resolved shift + off/holiday/override flags + the frozen snapshot lateness (the signal
+     *  for "this day's shift may be wrong"). Read-only, gated by manage_shifts. Mirrors the web
+     *  Shift Planner's per-day cell logic, for a full month. */
+    public function getRiderShiftMonth(Request $request)
+    {
+        if (!Auth::user()->hasMobilePermission('manage_shifts')) {
+            return response()->json(['success' => false, 'message' => 'You do not have permission to manage shifts'], 403);
+        }
+        $v = \Validator::make($request->all(), [
+            'user_id' => 'required|integer|exists:t_sys_user,id',
+            'month' => 'nullable|date_format:Y-m',
+        ]);
+        if ($v->fails()) {
+            return response()->json(['success' => false, 'message' => $v->errors()->first()], 422);
+        }
+
+        $uid = (int) $request->user_id;
+        $month = $request->input('month') ?: now()->format('Y-m');
+        $start = \Carbon\Carbon::parse($month . '-01')->startOfMonth();
+        $end = $start->copy()->endOfMonth();
+        $startStr = $start->format('Y-m-d');
+        $endStr = $end->format('Y-m-d');
+        $today = now()->format('Y-m-d');
+        $svc = new \App\Services\ShiftResolutionService();
+
+        // Preload once: assignment rows, holidays, attendance (for late) across the month.
+        $rows = \App\Models\Ops\UserShiftAssignmentModel::with('shiftTemplate')->where('user_id', $uid)->get();
+        $holidays = \DB::table('t_ops_public_holidays')->where('is_active', 1)
+            ->whereBetween('holiday_date', [$startStr, $endStr])->get()
+            ->mapWithKeys(fn($h) => [\Carbon\Carbon::parse($h->holiday_date)->format('Y-m-d') => $h->holiday_name])
+            ->all();
+        $att = \DB::table('t_ops_attendance')->where('user_id', $uid)
+            ->whereBetween('attendance_date', [$startStr, $endStr])
+            ->get(['attendance_date', 'login_time', 'logout_time', 'late_minutes'])
+            ->keyBy(fn($a) => substr((string) $a->attendance_date, 0, 10));
+
+        $days = [];
+        for ($d = $start->copy(); $d->lte($end); $d->addDay()) {
+            $ds = $d->format('Y-m-d');
+            $shift = $svc->getUserShift($uid, $ds);
+            $dow = (int) $d->format('N'); // 1=Mon..7=Sun
+            $isHoliday = isset($holidays[$ds]);
+            $isOff = !in_array($dow, $shift['working_days'] ?? []);
+            // A bounded row (effective_to set) covering this date = temporary override.
+            $isOverride = $rows->first(function ($row) use ($ds) {
+                if (is_null($row->effective_to)) {
+                    return false;
+                }
+                $f = $row->effective_from ? $row->effective_from->format('Y-m-d') : null;
+                $t = $row->effective_to->format('Y-m-d');
+                return ($f === null || $f <= $ds) && ($t >= $ds);
+            }) !== null;
+
+            $a = $att[$ds] ?? null;
+            $loggedIn = $a && !empty($a->login_time);
+            $late = ($loggedIn && !is_null($a->late_minutes)) ? (int) $a->late_minutes : null;
+
+            $days[] = [
+                'date' => $ds,
+                'dow' => $d->format('D'),
+                'day' => (int) $d->format('j'),
+                'shift_name' => $shift['shift_name'],
+                'start' => $shift['shift_start'],
+                'end' => $shift['shift_end'],
+                'is_off' => $isOff,
+                'is_holiday' => $isHoliday,
+                'holiday_name' => $isHoliday ? $holidays[$ds] : null,
+                'is_override' => $isOverride,
+                'is_today' => $ds === $today,
+                'is_future' => $ds > $today,
+                'logged_in' => $loggedIn,
+                'late_minutes' => $late,
+            ];
+        }
+
+        return response()->json([
+            'success' => true,
+            'user_id' => $uid,
+            'name' => \DB::table('t_sys_user')->where('id', $uid)->value('fullname'),
+            'month' => $month,
+            'days' => $days,
+        ]);
     }
 
     /** Assign/change a rider's shift from mobile (mode-aware; reuses the verified web engine). */
@@ -25748,7 +26215,66 @@ class RiderController extends Controller
         if (!Auth::user()->hasMobilePermission('manage_shifts')) {
             return response()->json(['success' => false, 'message' => 'You do not have permission to manage shifts'], 403);
         }
+        $request->attributes->set('shift_log_source', 'mobile'); // audit log: action came from the app
         return app(\App\Http\Controllers\Ops\ShiftController::class)->assignShiftToUser($request);
+    }
+
+    /** Create a shift type from the mobile assign sheet's "+ new" popup. Auto-generates
+     *  the unique shift_code from the name (mobile managers shouldn't have to invent
+     *  codes); delegates to the verified web engine. Gated by manage_shifts. */
+    public function createShiftTemplateMobile(Request $request)
+    {
+        if (!Auth::user()->hasMobilePermission('manage_shifts')) {
+            return response()->json(['success' => false, 'message' => 'You do not have permission to manage shifts'], 403);
+        }
+        $code = \Illuminate\Support\Str::slug((string) $request->input('shift_name', 'shift'), '_');
+        if ($code === '' ) {
+            $code = 'shift';
+        }
+        // Keep it readable but guaranteed-unique.
+        if (\DB::table('t_ops_shift_template')->where('shift_code', $code)->exists()) {
+            $code .= '_' . substr(uniqid(), -4);
+        }
+        $request->merge(['shift_code' => $code]);
+        return app(\App\Http\Controllers\Ops\ShiftController::class)->store($request);
+    }
+
+    /** Edit an existing shift type from mobile (same popup as create, in edit mode).
+     *  shift_code is kept from the existing row (mobile managers never touch codes).
+     *  Delegates to the verified web engine. Gated by manage_shifts. */
+    public function updateShiftTemplateMobile(Request $request, $id)
+    {
+        if (!Auth::user()->hasMobilePermission('manage_shifts')) {
+            return response()->json(['success' => false, 'message' => 'You do not have permission to manage shifts'], 403);
+        }
+        if (!$request->filled('shift_code')) {
+            $code = \DB::table('t_ops_shift_template')->where('id', (int) $id)->value('shift_code');
+            if (!$code) {
+                return response()->json(['success' => false, 'message' => 'Shift template not found'], 404);
+            }
+            $request->merge(['shift_code' => $code]);
+        }
+        return app(\App\Http\Controllers\Ops\ShiftController::class)->update($request, $id);
+    }
+
+    /** Create an office location from the mobile assign sheet's "+ new" popup (name,
+     *  lat/lng — typically "use my current location" — and radius). Delegates to the
+     *  existing web CRUD. Gated by manage_shifts. */
+    public function createLocationMobile(Request $request)
+    {
+        if (!Auth::user()->hasMobilePermission('manage_shifts')) {
+            return response()->json(['success' => false, 'message' => 'You do not have permission to manage shifts'], 403);
+        }
+        return app(\App\Http\Controllers\CRM\CompanyLocationsController::class)->store($request);
+    }
+
+    /** Assignment audit history for a rider (who did what), for the mobile Month view. */
+    public function getRiderShiftHistory(Request $request)
+    {
+        if (!Auth::user()->hasMobilePermission('manage_shifts')) {
+            return response()->json(['success' => false, 'message' => 'You do not have permission to manage shifts'], 403);
+        }
+        return app(\App\Http\Controllers\Ops\ShiftController::class)->assignmentHistory($request);
     }
 
     /** Save/update a rider's WhatsApp contact number (unified location =
@@ -25798,6 +26324,7 @@ class RiderController extends Controller
         if (!Auth::user()->hasMobilePermission('manage_shifts')) {
             return response()->json(['success' => false, 'message' => 'You do not have permission to manage shifts'], 403);
         }
+        $request->attributes->set('shift_log_source', 'mobile'); // audit log: action came from the app
         return app(\App\Http\Controllers\Ops\ShiftController::class)->cancelShiftChange($request);
     }
 
@@ -25906,7 +26433,8 @@ class RiderController extends Controller
             $t = $row->effective_to ? $row->effective_to->format('Y-m-d') : null;
             $nm = optional($row->shiftTemplate)->shift_name;
             $times = $row->shiftTemplate
-                ? substr($row->shiftTemplate->shift_start, 0, 5) . '–' . substr($row->shiftTemplate->shift_end, 0, 5)
+                ? (substr($row->shiftTemplate->shift_start, 0, 5)
+                    . ($row->shiftTemplate->shift_end ? '–' . substr($row->shiftTemplate->shift_end, 0, 5) : ' onwards'))
                 : '';
             $isFutureTemp = ($t !== null && $t >= $today);            // active/future temporary override
             $isFuturePrimary = ($t === null && $f !== null && $f > $today); // upcoming primary switch
@@ -25934,7 +26462,8 @@ class RiderController extends Controller
             'current' => [
                 'shift_name' => $current['shift_name'],
                 'start' => $current['shift_start'],
-                'end' => $current['shift_end'],
+                'end' => $current['shift_end'], // null for start-only shifts
+                'location_name' => $current['location_name'] ?? null,
                 'off_days' => $off ? implode(', ', $off) : 'None',
             ],
             'upcoming' => $upcoming,

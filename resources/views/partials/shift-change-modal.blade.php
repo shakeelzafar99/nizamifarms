@@ -18,16 +18,16 @@
 
       <label class="scm-label">How long?</label>
       <div class="scm-mode" data-mode="until_changed">
-        <div class="mt">Set new primary shift</div>
-        <div class="md">Until I change it — this becomes their normal shift.</div>
+        <div class="mt">New regular shift <span class="scm-dur scm-ongoing">REGULAR</span></div>
+        <div class="md">Every day from the start date, <b>until you change it</b>. This is their new normal.</div>
       </div>
       <div class="scm-mode" data-mode="one_day">
-        <div class="mt">Just one day</div>
-        <div class="md">Temporary — their normal shift comes back after.</div>
+        <div class="mt">One day only <span class="scm-dur scm-temp">TEMPORARY</span></div>
+        <div class="md">Just the one date you pick — back to their normal shift <b>the next day</b>.</div>
       </div>
       <div class="scm-mode" data-mode="date_range">
-        <div class="mt">Start &amp; end date</div>
-        <div class="md">Temporary — for a set period, then back to normal.</div>
+        <div class="mt">A date range <span class="scm-dur scm-temp">TEMPORARY</span></div>
+        <div class="md">Only between the two dates — back to their normal shift <b>after</b>.</div>
       </div>
 
       <div class="scm-dates">
@@ -58,6 +58,9 @@
   #shiftChangeModal .scm-mode.on{ border-color:#B91C1C; background:#FBECEC; }
   #shiftChangeModal .scm-mode .mt{ font-weight:600; font-size:13px; color:#0f172a; }
   #shiftChangeModal .scm-mode .md{ font-size:11px; color:#64748b; margin-top:1px; }
+  #shiftChangeModal .scm-dur{ display:inline-block; font-size:9.5px; font-weight:800; letter-spacing:.04em; border-radius:20px; padding:1px 7px; margin-left:6px; vertical-align:middle; }
+  #shiftChangeModal .scm-ongoing{ background:#E6F3EB; color:#15803d; }
+  #shiftChangeModal .scm-temp{ background:#FEF3C7; color:#92400e; }
   #shiftChangeModal .scm-dates{ display:flex; gap:12px; }
   #shiftChangeModal .scm-dates > div{ flex:1; }
   #shiftChangeModal .scm-effect{ font-size:12px; color:#37485f; background:#F1F5FB; border:1px solid #E1E8F2; border-radius:8px; padding:9px 11px; margin:14px 0 0; line-height:1.5; }
@@ -129,7 +132,7 @@
   }
   function renderSummary(d){
     const p = d.primary || {};
-    let html = `<div class="scm-now"><span class="scm-now-lbl">Now</span> <b>${p.shift_name||'—'}</b> · ${p.start||''}–${p.end||''}</div>`;
+    let html = `<div class="scm-now"><span class="scm-now-lbl">Now</span> <b>${p.shift_name||'—'}</b> · ${p.start||''}${p.end?'–'+p.end:' onwards'}</div>`;
     if (d.changes && d.changes.length){
       html += '<div class="scm-changes">' + d.changes.map(c=>{
         const lbl = c.kind==='temporary'
@@ -158,6 +161,10 @@
     const from = $('scmFrom').value, to = $('scmTo').value;
     if (!templateId || !from){ alert('Pick a shift and a date.'); return; }
     if (mode==='date_range' && (!to || to<from)){ alert('Pick a valid end date.'); return; }
+    // Guard the "one day only, dated today" mix-up (they revert tomorrow).
+    if (mode==='one_day' && from===todayStr()){
+      if(!confirm('This sets the shift for TODAY only. They go back to their normal shift tomorrow.\n\nIf you want a lasting change, cancel and choose "New regular shift" (REGULAR) instead.\n\nContinue with today only?')) return;
+    }
     const btn = $('scmSave'); btn.disabled=true; btn.textContent='Saving…';
     const payload = { user_id: target.userId, shift_template_id: templateId, mode, effective_from: from };
     if (mode==='date_range') payload.effective_to = to;
@@ -183,7 +190,7 @@
     target = opts || {}; onSaved = (opts && opts.onSaved) || null;
     await loadTemplates();
     $('scmTitle').textContent = 'Change shift · ' + (target.userName || '');
-    $('scmTemplate').innerHTML = templates.map(t => `<option value="${t.id}">${t.shift_name} · ${t.shift_start}–${t.shift_end} · off ${t.off_days}</option>`).join('');
+    $('scmTemplate').innerHTML = templates.map(t => `<option value="${t.id}">${t.shift_name} · ${t.shift_start}${t.shift_end?'–'+t.shift_end:'+'} · off ${t.off_days}</option>`).join('');
     const today = todayStr();
     $('scmFrom').value = today; $('scmTo').value = today;
     setMode('until_changed');

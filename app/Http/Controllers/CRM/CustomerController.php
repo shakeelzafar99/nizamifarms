@@ -1507,8 +1507,22 @@ class CustomerController extends Controller
                 ]);
             }
 
+            // Capture the pre-write pin so the change is auditable — a
+            // mis-dropped pin can turn a short drive into an hour-long ETA,
+            // and the old coordinates are otherwise silently overwritten.
+            $oldPinLat = $customer->latitude;
+            $oldPinLng = $customer->longitude;
+
             // Update customer
             $customer->update($updateData);
+
+            \App\Services\AuditLogger::logCustomerPinChange(
+                $customer->id,
+                trim(($customer->first_name ?? '') . ' ' . ($customer->last_name ?? '')),
+                $oldPinLat, $oldPinLng,
+                $customer->latitude, $customer->longitude,
+                'Verified pin (web)'
+            );
 
             return response()->json([
                 'success' => true,

@@ -24,3 +24,4 @@ yarn-error.log
 /public/assets
 public/downloads/NizamiFarms-Rider.apk
 storage/nizami-farms-whatsapp-firebase-adminsdk-fbsvc-01fbd3fef7.json
+*.log

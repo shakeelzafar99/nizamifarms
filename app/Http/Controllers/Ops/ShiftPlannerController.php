@@ -181,15 +181,19 @@ class ShiftPlannerController extends Controller
                 }
             }
 
+            $def = $svc->userDefaultLocation($uid); // rider's default office (pre-selected on assign)
             $riders[] = [
                 'user_id' => $uid,
                 'name' => $u->fullname,
                 'role' => $u->role_name,
                 'has_phone' => (int) ($u->has_phone ?? 0) === 1,
+                'default_location_id' => $def['location_id'],
+                'default_location_name' => $def['location_name'],
                 'primary' => [
                     'shift_name' => $primary['shift_name'],
                     'start' => $primary['shift_start'],
                     'end' => $primary['shift_end'],
+                    'location_name' => $primary['location_name'] ?? null,
                 ],
                 'cells' => $cells,
                 'changes' => $changes,
@@ -203,9 +207,16 @@ class ShiftPlannerController extends Controller
                 'id' => $t->id,
                 'name' => $t->shift_name,
                 'start' => substr($t->shift_start, 0, 5),
-                'end' => substr($t->shift_end, 0, 5),
+                'end' => $t->shift_end ? substr($t->shift_end, 0, 5) : null,
                 'off_days' => $t->getOffDaysString(),
             ])
+            ->values();
+
+        // Active office locations (for the assign dialog's location bubbles).
+        $locations = DB::table('t_ops_company_locations')->where('is_active', 1)
+            ->orderByDesc('is_primary')->orderBy('location_name')
+            ->get(['id', 'location_name', 'is_primary'])
+            ->map(fn($l) => ['id' => (int) $l->id, 'name' => $l->location_name, 'is_primary' => (int) $l->is_primary === 1])
             ->values();
 
         return response()->json([
@@ -220,6 +231,7 @@ class ShiftPlannerController extends Controller
             'holiday_names' => $holidayNames,
             'templates' => $templates,
             'riders' => array_values($riders),
+            'locations' => $locations,
         ]);
     }
 }

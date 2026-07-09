@@ -61,12 +61,15 @@ class ShiftResolutionService
             // `active` only controls whether a template is offered for NEW assignments.
             if ($assignment && $assignment->shiftTemplate) {
                 $shift = $assignment->shiftTemplate;
+                $loc = $this->resolveLocation($userId, $assignment->location_id ? (int) $assignment->location_id : null);
                 return [
                     'shift_start' => substr($shift->shift_start, 0, 5), // HH:MM format
-                    'shift_end' => substr($shift->shift_end, 0, 5),
+                    'shift_end' => $shift->shift_end ? substr($shift->shift_end, 0, 5) : null,
                     'working_days' => $shift->getWorkingDaysArray(),
                     'shift_name' => $shift->shift_name,
                     'shift_id' => $shift->id,
+                    'location_id' => $loc['location_id'],
+                    'location_name' => $loc['location_name'],
                     'source' => 'user_assignment'
                 ];
             }
@@ -85,15 +88,22 @@ class ShiftResolutionService
             if ($earliest && $earliest->shiftTemplate
                 && $date < $earliest->effective_from->format('Y-m-d')) {
                 $shift = $earliest->shiftTemplate;
+                $loc = $this->resolveLocation($userId, $earliest->location_id ? (int) $earliest->location_id : null);
                 return [
                     'shift_start' => substr($shift->shift_start, 0, 5),
-                    'shift_end' => substr($shift->shift_end, 0, 5),
+                    'shift_end' => $shift->shift_end ? substr($shift->shift_end, 0, 5) : null,
                     'working_days' => $shift->getWorkingDaysArray(),
                     'shift_name' => $shift->shift_name,
                     'shift_id' => $shift->id,
+                    'location_id' => $loc['location_id'],
+                    'location_name' => $loc['location_name'],
                     'source' => 'earliest_backfill'
                 ];
             }
+
+            // No assignment covers this date → location falls back to the user's
+            // default location, else the primary.
+            $loc = $this->resolveLocation($userId, null);
 
             // 2. Fall back to old rider_profile system
             $riderProfile = DB::table('t_ops_rider_profile')
@@ -108,6 +118,8 @@ class ShiftResolutionService
                     'working_days' => [1,3,4,5,6,7], // Hardcoded: exclude Tuesday (legacy default)
                     'shift_name' => 'Legacy Shift',
                     'shift_id' => null,
+                    'location_id' => $loc['location_id'],
+                    'location_name' => $loc['location_name'],
                     'source' => 'legacy_rider_profile'
                 ];
             }
@@ -117,10 +129,12 @@ class ShiftResolutionService
             if ($defaultShift) {
                 return [
                     'shift_start' => substr($defaultShift->shift_start, 0, 5),
-                    'shift_end' => substr($defaultShift->shift_end, 0, 5),
+                    'shift_end' => $defaultShift->shift_end ? substr($defaultShift->shift_end, 0, 5) : null,
                     'working_days' => $defaultShift->getWorkingDaysArray(),
                     'shift_name' => $defaultShift->shift_name,
                     'shift_id' => $defaultShift->id,
+                    'location_id' => $loc['location_id'],
+                    'location_name' => $loc['location_name'],
                     'source' => 'default_shift'
                 ];
             }
@@ -132,12 +146,57 @@ class ShiftResolutionService
                 'working_days' => [1,2,3,4,5,6], // Mon-Sat
                 'shift_name' => 'System Default',
                 'shift_id' => null,
+                'location_id' => $loc['location_id'],
+                'location_name' => $loc['location_name'],
                 'source' => 'hardcoded_fallback'
             ];
         });
 
         self::$shiftMemo[$memoKey] = $result;
         return $result;
+    }
+
+    /**
+     * Resolve the office location that applies to a shift: the assignment's own
+     * location (chosen at assign time) → the user's DEFAULT location
+     * (t_ops_user_location_assignment) → the primary company location. Returns
+     * ['location_id'=>?int, 'location_name'=>?string]. Cheap indexed lookups; runs
+     * inside the cached getUserShift closure. A deleted/inactive location falls
+     * through to the next level.
+     */
+    /** Public: a rider's DEFAULT office location (their assignment → primary), for the
+     *  assign screens to pre-select. Returns ['location_id'=>?int,'location_name'=>?string]. */
+    public function userDefaultLocation(int $userId): array
+    {
+        return $this->resolveLocation($userId, null);
+    }
+
+    private function resolveLocation(int $userId, ?int $assignmentLocationId): array
+    {
+        // 1) the location picked for this specific assignment (if still active)
+        if ($assignmentLocationId) {
+            $loc = DB::table('t_ops_company_locations')
+                ->where('id', $assignmentLocationId)->where('is_active', 1)
+                ->first(['id', 'location_name']);
+            if ($loc) {
+                return ['location_id' => (int) $loc->id, 'location_name' => $loc->location_name];
+            }
+        }
+        // 2) the user's default location
+        $def = DB::table('t_ops_user_location_assignment as ula')
+            ->join('t_ops_company_locations as loc', 'loc.id', '=', 'ula.location_id')
+            ->where('ula.user_id', $userId)->where('ula.is_active', 1)->where('loc.is_active', 1)
+            ->first(['loc.id', 'loc.location_name']);
+        if ($def) {
+            return ['location_id' => (int) $def->id, 'location_name' => $def->location_name];
+        }
+        // 3) primary company location (or the first active one)
+        $primary = DB::table('t_ops_company_locations')->where('is_active', 1)
+            ->orderByDesc('is_primary')->orderBy('id')
+            ->first(['id', 'location_name']);
+        return $primary
+            ? ['location_id' => (int) $primary->id, 'location_name' => $primary->location_name]
+            : ['location_id' => null, 'location_name' => null];
     }
 
     /**
@@ -219,17 +278,26 @@ class ShiftResolutionService
             }
             if ($late > 0) { $totLate += $late; $lateDays++; }
 
-            // --- Overtime (only when checked out) ---
+            // --- Overtime (only when checked out AND the shift has an end time) ---
             if (!empty($r->logout_time)) {
                 if (!is_null($r->overtime_minutes)) {
                     $ot = (int) $r->overtime_minutes;
                 } else {
-                    $end = $r->expected_shift_end
-                        ?: (($this->getUserShift($userId, $date)['shift_end'] ?? '17:00') . ':00');
-                    $e = strtotime($date . ' ' . $end);
-                    $o = strtotime($date . ' ' . $r->logout_time);
-                    // Truncate seconds to whole minutes — matches legacy TIMESTAMPDIFF(MINUTE).
-                    $ot = ($o > $e) ? (int) (($o - $e) / 60) : 0;
+                    // Snapshot end (HH:MM:SS) → else the per-date resolved end (HH:MM).
+                    // A start-only shift has NO end → no overtime (don't invent 17:00).
+                    $endRaw = $r->expected_shift_end;
+                    if (is_null($endRaw)) {
+                        $ge = $this->getUserShift($userId, $date)['shift_end'] ?? null;
+                        $endRaw = $ge ? ($ge . ':00') : null;
+                    }
+                    if ($endRaw) {
+                        $e = strtotime($date . ' ' . $endRaw);
+                        $o = strtotime($date . ' ' . $r->logout_time);
+                        // Truncate seconds to whole minutes — matches legacy TIMESTAMPDIFF(MINUTE).
+                        $ot = ($o > $e) ? (int) (($o - $e) / 60) : 0;
+                    } else {
+                        $ot = 0;
+                    }
                 }
                 if ($ot > 0) { $totOt += $ot; $otDays++; }
             }
@@ -327,8 +395,12 @@ class ShiftResolutionService
             $update['late_minutes'] = ($l > $s) ? (int) (($l - $s) / 60) : 0;
         }
 
-        // Overtime minutes — only when checked out.
-        if (!empty($row->logout_time) && $end) {
+        // Overtime — needs an end time. A start-only shift has NO overtime, so clear
+        // any stale value (e.g. after switching a day from an end-having shift to a
+        // start-only one). Otherwise compute only when checked out.
+        if (!$end) {
+            $update['overtime_minutes'] = null;
+        } elseif (!empty($row->logout_time)) {
             $e = strtotime($date . ' ' . $end);
             $o = strtotime($date . ' ' . $row->logout_time);
             $update['overtime_minutes'] = ($o > $e) ? (int) (($o - $e) / 60) : 0;

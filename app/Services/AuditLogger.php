@@ -78,6 +78,63 @@ class AuditLogger
     }
 
     /**
+     * Audit a customer's verified map-pin (lat/lng) change. Call AFTER the
+     * pin has been written, passing the pre-write coordinates. No-ops when
+     * the pin didn't actually move (e.g. a URL-only save), so it's safe to
+     * call unconditionally. The note carries how far the pin jumped, which
+     * is exactly the signal for spotting a mis-dropped pin after the fact
+     * (a wrong pin is why a 15-min drive once estimated at an hour).
+     *
+     * Logged as entity_type='customer' so it shows on the customer in the
+     * audit log without polluting the per-order timeline.
+     *
+     * @param int|null    $customerId
+     * @param string|null $customerLabel  human tag (customer name)
+     * @param mixed       $oldLat,$oldLng pre-write coords (may be null)
+     * @param mixed       $newLat,$newLng post-write coords (may be null)
+     * @param string|null $note           context, e.g. 'Verified pin (mobile)'
+     */
+    public static function logCustomerPinChange(
+        $customerId,
+        ?string $customerLabel,
+        $oldLat,
+        $oldLng,
+        $newLat,
+        $newLng,
+        ?string $note = null
+    ): void {
+        // Skip no-op writes (loose compare handles "33.10" vs 33.1).
+        if ((string) $oldLat === (string) $newLat && (string) $oldLng === (string) $newLng) {
+            return;
+        }
+
+        $changes = [
+            'latitude'  => ['old' => $oldLat, 'new' => $newLat],
+            'longitude' => ['old' => $oldLng, 'new' => $newLng],
+        ];
+
+        // Append how far the pin moved (or "first pin set") so a bad jump is
+        // obvious at a glance in the log. Purely informational — never fatal.
+        $finalNote = $note;
+        try {
+            $haveOld = is_numeric($oldLat) && is_numeric($oldLng);
+            $haveNew = is_numeric($newLat) && is_numeric($newLng);
+            if ($haveOld && $haveNew) {
+                $movedM = (int) round(\App\Services\LocationService::calculateDistance(
+                    (float) $oldLat, (float) $oldLng, (float) $newLat, (float) $newLng
+                ));
+                $finalNote = trim(($note ? $note . ' — ' : '') . 'moved ' . \App\Services\LocationService::formatDistance($movedM));
+            } elseif (!$haveOld && $haveNew) {
+                $finalNote = trim(($note ? $note . ' — ' : '') . 'first pin set');
+            }
+        } catch (\Throwable $e) {
+            // keep the base note
+        }
+
+        self::log('pin_updated', 'customer', $customerId, $customerLabel, $changes, null, $finalNote);
+    }
+
+    /**
      * Build a {field:{old,new}} map for the whitelisted fields that ACTUALLY
      * changed in the just-saved model. Uses in-memory Eloquent state only
      * (getChanges/getOriginal) — no queries. Call from an `updated` observer.

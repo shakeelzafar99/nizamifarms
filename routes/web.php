@@ -328,6 +328,7 @@ Route::middleware(['auth'])->group(function () {
     Route::delete('/shifts/remove-assignment', [\App\Http\Controllers\Ops\ShiftController::class, 'removeShiftAssignment'])->name('shifts.remove-assignment');
     Route::post('/shifts/cancel-change', [\App\Http\Controllers\Ops\ShiftController::class, 'cancelShiftChange'])->name('shifts.cancel-change');
     Route::get('/shifts/user-summary', [\App\Http\Controllers\Ops\ShiftController::class, 'userShiftSummary'])->name('shifts.user-summary');
+    Route::get('/shifts/history', [\App\Http\Controllers\Ops\ShiftController::class, 'assignmentHistory'])->name('shifts.history');
 
     // Shift Planner (the consolidated week-grid assignment view)
     Route::get('/shift-planner', [\App\Http\Controllers\Ops\ShiftPlannerController::class, 'index'])->name('shift-planner.index');

@@ -1068,7 +1068,7 @@ function renderAttendanceTable(data) {
             onclick="openShiftChange({userId:${r.user_id}, userName:\`${(r.fullname||'').replace(/`/g,'')}\`, onSaved: loadAttendanceForDate})"
             class="text-left cursor-pointer group" title="Click to change this rider's shift">
             <div class="font-medium text-gray-900 group-hover:text-red-700 group-hover:underline">${r.shift_name || 'Default Shift'} <span class="text-gray-300 group-hover:text-red-500">✎</span></div>
-            <div class="text-xs text-gray-500">${r.shift_start || '09:00'} - ${r.shift_end || '17:00'}</div>
+            <div class="text-xs text-gray-500">${r.shift_start || '09:00'}${r.shift_end ? ' - ' + r.shift_end : ' onwards'}</div>
           </button>
         </td>
         <td class="px-4 py-3 text-sm whitespace-nowrap">
@@ -1440,7 +1440,8 @@ function updateSummaryCards(data) {
         late++;
       }
       
-      if (r.logout_time && r.logout_time > (r.shift_end || '17:00')) {
+      // Start-only shifts (no end) never count as overtime — don't invent 17:00.
+      if (r.logout_time && r.shift_end && r.logout_time > r.shift_end) {
         overtime++;
       }
     }
