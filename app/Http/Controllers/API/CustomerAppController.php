@@ -30,9 +30,12 @@ class CustomerAppController extends Controller
      *
      * GET /api/customer-app/orders/{orderNumber}/tracking
      *
-     * {orderNumber} may be the bare Shopify number ("1234") or the NF number
-     * ("SH-1234"); both resolve to the same order. Mirrors the customer app's
-     * LiveDelivery shape (snake_case; their backend maps to camelCase).
+     * {orderNumber} accepts any full NF number ("SH-1234", "NF-2001",
+     * "QUR26-045") or a bare Shopify number ("1234" -> SH-1234), resolved the
+     * same way as orderSnapshot/orderInvoice (via resolveAnyOrderNumber). A
+     * lettered prefix is kept as-is, so NF-/QUR orders resolve correctly.
+     * Mirrors the customer app's LiveDelivery shape (snake_case; their backend
+     * maps to camelCase).
      *
      * Response semantics (match the app's expectations):
      *   200 { "tracking": {...} }  -> a live fix; render the map.
@@ -42,7 +45,7 @@ class CustomerAppController extends Controller
     public function tracking(Request $request, string $orderNumber)
     {
         try {
-            $nfOrderNumber = $this->normalizeOrderNumber($orderNumber);
+            $nfOrderNumber = $this->resolveAnyOrderNumber($orderNumber);
 
             $order = DB::table('t_crm_prod_order')
                 ->where('order_number', $nfOrderNumber)
@@ -1145,22 +1148,6 @@ class CustomerAppController extends Controller
         }
 
         return ['lat' => (float) $lat, 'lng' => (float) $lng];
-    }
-
-    /**
-     * Accept "1234", "SH-1234", or a URL-encoded "#1234" and return the NF
-     * order_number ("SH-1234").
-     */
-    private function normalizeOrderNumber(string $raw): string
-    {
-        $value  = trim(urldecode($raw));
-        $value  = ltrim($value, '#');
-        $prefix = (string) config('customer_app.strip_prefix_for_payload', 'SH-');
-
-        if ($prefix !== '' && !str_starts_with($value, $prefix)) {
-            return $prefix . $value;
-        }
-        return $value;
     }
 
     /** Strip the NF prefix for the customer-facing order number. */

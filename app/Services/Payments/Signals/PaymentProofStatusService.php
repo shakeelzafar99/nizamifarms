@@ -40,12 +40,29 @@ class PaymentProofStatusService
         return max(0.0, min(1000.0, $val));
     }
 
-    /** Build the status payload for a single order id. */
-    public function forOrder(int $orderId): array
+    /**
+     * Amount tolerance (PKR) for CROSS-SOURCE pairing — deciding that a WhatsApp
+     * screenshot and a bank credit-alert email describe the SAME transaction
+     * (→ "Verified"). Deliberately TIGHT and independent of amountTolerance():
+     * the two sources report one real bank transfer, so their figures must agree
+     * bar sub-rupee rounding. Read from config only (NOT the runtime-tunable
+     * t_fin_config that drives amountTolerance) and clamped to a hard ceiling, so
+     * loosening the invoice tolerance can never loosen pairing — which would
+     * re-introduce the Jul-2026 "Rs 36 short" false pair (a 3,926 credit welded
+     * onto a 3,962 payment).
+     */
+    public static function pairAmountTolerance(): float
+    {
+        $val = (float) config('payment_signals.pair_amount_tolerance', 1.00);
+        return max(0.0, min(5.0, $val));
+    }
+
+    /** Build the status payload for a single order id. See forOrders() for $suppressSettled. */
+    public function forOrder(int $orderId, bool $suppressSettled = true): array
     {
         // Delegate to the bulk path so combined-payment links are handled in one
         // place (an order can carry a proof either directly or via a bulk link).
-        return $this->forOrders([$orderId])[$orderId] ?? $this->summarise(collect());
+        return $this->forOrders([$orderId], $suppressSettled)[$orderId] ?? $this->summarise(collect());
     }
 
     /**
@@ -85,9 +102,16 @@ class PaymentProofStatusService
      * Bulk variant: returns [orderId => statusPayload] for many orders in one
      * query. Use this on list pages to avoid N+1.
      *
+     * $suppressSettled (default true) drops the badge for orders whose online
+     * payment is already APPROVED — correct for ACTION-PROMPT surfaces (Online
+     * Approvals, the Messages inbox list) where the badge means "act now". Pass
+     * FALSE on RECORD surfaces (Daily Closing, the Messages customer-orders
+     * panel) where the badge is a permanent "proof received / verified" marker
+     * that must survive approval.
+     *
      * @param  array<int>  $orderIds
      */
-    public function forOrders(array $orderIds): array
+    public function forOrders(array $orderIds, bool $suppressSettled = true): array
     {
         if (empty($orderIds)) {
             return [];
@@ -137,7 +161,9 @@ class PaymentProofStatusService
             }
         }
 
-        $settled = array_flip(self::settledOrderIds($orderIds));
+        // Record surfaces pass $suppressSettled=false so approved orders keep
+        // their proof/verified badge; action-prompt surfaces keep the default.
+        $settled = $suppressSettled ? array_flip(self::settledOrderIds($orderIds)) : [];
 
         // ── "Discount needed" hint: a MATCHED proof that's still SHORT of the
         // covered invoice total by a small (within-tolerance) amount, with no

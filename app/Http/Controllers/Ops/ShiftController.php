@@ -872,24 +872,23 @@ class ShiftController extends Controller
     private function pushShiftChange(int $userId): void
     {
         try {
-            // Prefer the pending change itself (future-aware) over today's resolved
-            // shift — a change effective next week shouldn't announce today's times.
+            // Self-guard (mirrors dispatchShiftWhatsApp): only announce a pending
+            // current/future change. A purely-historical correction stamps
+            // notified_at=NULL, and an already-acked change is gone too, so
+            // latestPendingAssignment returns null → we push NOTHING. This keeps the
+            // FCM and WhatsApp channels aligned even if a future caller forgets to
+            // gate on !$isHistorical (past dates must never notify).
             $pending = $this->latestPendingAssignment($userId);
-            if ($pending && $pending->shiftTemplate) {
-                $t = $pending->shiftTemplate;
-                $time = substr($t->shift_start, 0, 5) . ($t->shift_end ? '–' . substr($t->shift_end, 0, 5) : ' onwards');
-                $date = $pending->effective_from ? $pending->effective_from->format('Y-m-d') : now()->format('Y-m-d');
-                $locName = $this->shiftService->getUserShift($userId, $date)['location_name'] ?? null;
-                $body = 'Your shift: ' . $t->shift_name . ' (' . $time . ')'
-                    . ($locName ? ' at ' . $locName : '')
-                    . $this->whenSuffix($pending) . '. Open the app to confirm.';
-            } else {
-                $shift = $this->shiftService->getUserShift($userId, now()->format('Y-m-d'));
-                $time = $shift['shift_start'] . ($shift['shift_end'] ? '–' . $shift['shift_end'] : ' onwards');
-                $body = 'Your shift is now ' . $shift['shift_name'] . ' (' . $time . ')'
-                    . (!empty($shift['location_name']) ? ' at ' . $shift['location_name'] : '')
-                    . '. Open the app to confirm.';
+            if (!$pending || !$pending->shiftTemplate) {
+                return;
             }
+            $t = $pending->shiftTemplate;
+            $time = substr($t->shift_start, 0, 5) . ($t->shift_end ? '–' . substr($t->shift_end, 0, 5) : ' onwards');
+            $date = $pending->effective_from ? $pending->effective_from->format('Y-m-d') : now()->format('Y-m-d');
+            $locName = $this->shiftService->getUserShift($userId, $date)['location_name'] ?? null;
+            $body = 'Your shift: ' . $t->shift_name . ' (' . $time . ')'
+                . ($locName ? ' at ' . $locName : '')
+                . $this->whenSuffix($pending) . '. Open the app to confirm.';
             app(\App\Services\FirebaseService::class)->notifyUser(
                 $userId,
                 ['title' => 'Shift updated', 'body' => $body],

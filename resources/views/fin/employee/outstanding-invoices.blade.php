@@ -1106,14 +1106,23 @@ function toggleDateGroup(date) {
     // togglePendingSettlements();
 @endif
 
+// Jul-2026 rewrite: the old version stripped ONE leading zero then prepended
+// +92 with no last-10 step, so an order typed "00923215793000" became
+// "+920923215793000" — an undeliverable junk number (prod 131026 failure,
+// order SH-21020). Now mirrors the server's last-10 rule: any PK-shaped
+// number collapses to +92 + last-10; a number that clearly carries its own
+// country code (11+ digits, no leading 0/92 after stripping a "00" prefix)
+// passes through. This matters here even though the server also heals the
+// number, because the wa.me FALLBACK below opens WhatsApp directly from the
+// browser and never touches our server. See WHATSAPP-PHONE-HANDLING.md.
 function formatPhoneForWhatsApp(phone) {
     if (!phone) return null;
-    let cleaned = phone.replace(/[^0-9+]/g, '');
-    if (cleaned.startsWith('+92')) return cleaned;
-    if (cleaned.startsWith('92') && cleaned.length >= 12) return '+' + cleaned;
-    if (cleaned.startsWith('0')) return '+92' + cleaned.substring(1);
-    if (cleaned.length === 10) return '+92' + cleaned;
-    return cleaned.startsWith('+') ? cleaned : '+' + cleaned;
+    let digits = phone.replace(/\D/g, '');
+    if (digits.startsWith('00')) digits = digits.substring(2);
+    if (digits.startsWith('92') && digits.length === 12) return '+' + digits;
+    if (digits.length >= 11 && !digits.startsWith('0') && !digits.startsWith('92')) return '+' + digits;
+    if (digits.length >= 10) return '+92' + digits.slice(-10);
+    return null;
 }
 
 function sendOnlineWhatsApp(orderId, customerName, customerPhone, orderNumber, riderName, deliveryDate, deliveryTime, proofLabel) {

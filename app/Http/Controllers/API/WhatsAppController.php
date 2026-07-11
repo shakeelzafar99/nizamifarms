@@ -1047,7 +1047,16 @@ class WhatsAppController extends Controller
                 'force' => 'nullable|boolean',
             ]);
 
-            $phone = $this->whatsapp->formatPhone($request->input('phone'));
+            // Jul-2026: dial-resolve (known-number override; no-op for PK).
+            // phone_exact=true = the manual-override seam for the NF Messages
+            // app: dial exactly the digits given, skip all normalization.
+            // See WHATSAPP-PHONE-HANDLING.md at the workspace root.
+            $sendConversation = $request->input('conversation_id')
+                ? ConversationModel::find((int) $request->input('conversation_id'))
+                : null;
+            $phone = $request->boolean('phone_exact')
+                ? preg_replace('/\D/', '', (string) $request->input('phone'))
+                : $this->whatsapp->resolveDialPhone((string) $request->input('phone'), $sendConversation);
             $templateName = $request->input('template_name');
             $bodyParams = $request->input('body_params', []);
             $headerParams = $request->input('header_params', []);
@@ -1178,7 +1187,8 @@ class WhatsAppController extends Controller
 
             $conversationId = (int) $request->input('conversation_id', 0);
             if (!$conversationId && $request->filled('phone')) {
-                $phone = $this->whatsapp->formatPhone($request->input('phone'));
+                // Dial-resolved so the preflight matches what sendTemplate dials.
+                $phone = $this->whatsapp->resolveDialPhone((string) $request->input('phone'));
                 $conv = ConversationModel::where('wa_phone', $phone)->first();
                 if ($conv) $conversationId = (int) $conv->id;
             }
@@ -2026,7 +2036,10 @@ class WhatsAppController extends Controller
                 return response()->json(['success' => false, 'message' => 'Customer not found'], 404);
             }
 
-            $phone = $this->whatsapp->formatPhone($customer->phone_normalized ?? $customer->phone);
+            // Dial-resolve: phone_normalized is a truncated last-10 identity
+            // key, so for an international customer the resolver recovers the
+            // real number from their conversation / phone_original.
+            $phone = $this->whatsapp->resolveDialPhone((string) ($customer->phone_normalized ?? $customer->phone));
 
             $conversation = $this->whatsapp->findOrCreateConversation($phone);
             if (!$conversation->customer_id) {
@@ -2068,7 +2081,9 @@ class WhatsAppController extends Controller
                 'message' => 'required|string|max:4096',
             ]);
 
-            $phone = $this->whatsapp->formatPhone($request->input('phone'));
+            // Dial-resolve (known-number override; no-op for PK) — also
+            // prevents creating a junk conversation for a mangled number.
+            $phone = $this->whatsapp->resolveDialPhone((string) $request->input('phone'));
             $conversation = $this->whatsapp->findOrCreateConversation($phone);
 
             if (!$conversation->isSessionActive()) {
@@ -2348,11 +2363,23 @@ class WhatsAppController extends Controller
                 ->with(['lineItems:id,order_id,name,quantity,unit_price,line_total', 'assignedRider:id,fullname'])
                 ->orderBy('order_date', 'desc')
                 ->limit(20)
-                ->get(['id', 'order_number', 'order_date', 'order_status', 'total_price', 'customer_id', 'assigned_rider_user_id', 'estimated_delivery_at']);
+                ->get(['id', 'order_number', 'order_date', 'order_status', 'total_price', 'customer_id', 'assigned_rider_user_id', 'estimated_delivery_at', 'payment_method']);
+
+            // Cash/online + payment-proof badges for the order rows. RECORD
+            // surface → suppressSettled:false so an approved online order keeps
+            // its "proof received / verified" badge (mirrors the web panel).
+            $proofMap = [];
+            if (config('payment_signals.enabled')) {
+                $proofIds = $orders->pluck('id')->all();
+                if (!empty($proofIds)) {
+                    $proofMap = app(\App\Services\Payments\Signals\PaymentProofStatusService::class)
+                        ->forOrders($proofIds, suppressSettled: false);
+                }
+            }
 
             return response()->json([
                 'success' => true,
-                'orders' => $orders->map(function($o) {
+                'orders' => $orders->map(function($o) use ($proofMap) {
                     $eta = null;
                     if ($o->estimated_delivery_at && strtolower($o->order_status) === 'out_for_delivery') {
                         $eta = \Carbon\Carbon::parse($o->estimated_delivery_at)->format('h:i A');
@@ -2367,6 +2394,8 @@ class WhatsAppController extends Controller
                         'items_summary' => $o->lineItems->take(3)->pluck('name')->join(', '),
                         'rider_name' => $o->assignedRider?->fullname,
                         'eta' => $eta,
+                        'payment_method' => OrderModel::paymentChannel($o->payment_method),
+                        'payment_proof' => $proofMap[$o->id] ?? null,
                     ];
                 }),
             ]);
@@ -2485,7 +2514,11 @@ class WhatsAppController extends Controller
                 'customer_id' => 'nullable|integer',
             ]);
 
-            $phone = $this->whatsapp->formatPhone($request->input('phone'));
+            // Jul-2026: dial-resolve (known-number override; no-op for PK),
+            // with the phone_exact manual-override seam — see sendTemplate.
+            $phone = $request->boolean('phone_exact')
+                ? preg_replace('/\D/', '', (string) $request->input('phone'))
+                : $this->whatsapp->resolveDialPhone((string) $request->input('phone'));
 
             // Jun-2026: upload the captured invoice PNG straight to Meta
             // and reference it by media_id rather than handing Meta a

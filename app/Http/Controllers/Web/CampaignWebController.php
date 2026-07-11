@@ -618,7 +618,8 @@ class CampaignWebController extends Controller
             }
 
             try {
-                $formattedPhone = $whatsapp->formatPhone($phone);
+                // Dial-resolve (known-number override; no-op for PK numbers).
+                $formattedPhone = $whatsapp->resolveDialPhone((string) $phone);
                 $customerName = trim(($customer->first_name ?? '') . ' ' . ($customer->last_name ?? ''));
                 $bodyParams = $request->input('body_params', []);
                 $resolvedParams = array_map(fn($p) => $p === '{{customer_name}}' ? $customerName : $p, $bodyParams);

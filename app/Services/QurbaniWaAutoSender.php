@@ -1081,7 +1081,8 @@ class QurbaniWaAutoSender
         foreach ($candidates as $c) {
             $clean = trim((string) ($c ?? ''));
             if ($clean === '') continue;
-            $formatted = $this->whatsapp->formatPhone($clean);
+            // Dial-resolve (known-number override; no-op for PK numbers).
+            $formatted = $this->whatsapp->resolveDialPhone($clean);
             if ($formatted !== '') return $formatted;
         }
         // May-2026 — TEST MODE fallback: when the test phone is

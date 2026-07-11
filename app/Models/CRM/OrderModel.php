@@ -1218,6 +1218,25 @@ class OrderModel extends BaseModel
     }
 
     /**
+     * Coarse payment channel for UI badges: 'online' vs 'cash'.
+     *
+     * Unlike normalizePaymentMethod() (5 buckets + a Log::info on every call),
+     * this is a side-effect-free binary split for display chips. The stored
+     * column holds RAW gateway strings (e.g. 'online_payment', 'bank_transfer',
+     * 'cod') — NOT the normalized value — so match loosely: anything cash/COD-like
+     * (or blank, the system default) is cash; everything else (transfer, card,
+     * online, wallets) is online.
+     */
+    public static function paymentChannel(?string $paymentMethod): string
+    {
+        $m = strtolower(trim((string) $paymentMethod));
+        if ($m === '' || str_contains($m, 'cash') || str_contains($m, 'cod')) {
+            return 'cash';
+        }
+        return 'online';
+    }
+
+    /**
      * Reconcile current status flag and main order table using latest history by changed_at
      * Defensive utility for cases where external updates created inconsistent flags
      */

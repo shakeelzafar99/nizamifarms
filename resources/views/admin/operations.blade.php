@@ -1,10 +1,164 @@
 @extends('layouts.app')
 
 @section('content')
+{{-- NF (Jul-2026): Tailwind COLOR-UTILITY BACKFILL.
+     This page's buttons/badges use bg/text/border color utilities
+     (bg-green-600, bg-red-600, bg-indigo-600, hover:bg-*-700, bg-*-50/100,
+     text-*-700/800, border-*-200/300, …) but the site ships Metronic's PURGED
+     styles.css and the Tailwind build (@vite app.css) is disabled — so those
+     classes DON'T EXIST in the loaded CSS. Result: action buttons render white
+     text on no background = invisible/unreadable. This block defines exactly the
+     color utilities THIS page uses that are missing from styles.css (verified by
+     grep; classes already present are NOT redefined). Scoped to Operations — the
+     same classes are missing site-wide, so the proper fix is a shared backfill
+     CSS file; ask if you want that. Reversible: delete this <style> block. --}}
+@verbatim
+<style>
+.bg-amber-50 { background-color: #fffbeb !important; }
+.bg-amber-100 { background-color: #fef3c7 !important; }
+.bg-amber-600 { background-color: #d97706 !important; }
+.bg-emerald-50 { background-color: #ecfdf5 !important; }
+.bg-emerald-100 { background-color: #d1fae5 !important; }
+.bg-emerald-600 { background-color: #059669 !important; }
+.bg-gray-200 { background-color: #e5e7eb !important; }
+.bg-green-100 { background-color: #dcfce7 !important; }
+.bg-green-600 { background-color: #16a34a !important; }
+.bg-indigo-50 { background-color: #eef2ff !important; }
+.bg-indigo-100 { background-color: #e0e7ff !important; }
+.bg-indigo-600 { background-color: #4f46e5 !important; }
+.bg-purple-50 { background-color: #faf5ff !important; }
+.bg-purple-100 { background-color: #f3e8ff !important; }
+.bg-purple-600 { background-color: #9333ea !important; }
+.bg-red-50 { background-color: #fef2f2 !important; }
+.bg-red-100 { background-color: #fee2e2 !important; }
+.bg-red-600 { background-color: #dc2626 !important; }
+.bg-teal-50 { background-color: #f0fdfa !important; }
+.bg-teal-100 { background-color: #ccfbf1 !important; }
+.bg-teal-600 { background-color: #0d9488 !important; }
+.hover\:bg-amber-700:hover { background-color: #b45309 !important; }
+.hover\:bg-emerald-700:hover { background-color: #047857 !important; }
+.hover\:bg-gray-50:hover { background-color: #f9fafb !important; }
+.hover\:bg-green-700:hover { background-color: #15803d !important; }
+.hover\:bg-indigo-700:hover { background-color: #4338ca !important; }
+.hover\:bg-purple-700:hover { background-color: #7e22ce !important; }
+.hover\:bg-red-700:hover { background-color: #b91c1c !important; }
+.hover\:bg-teal-700:hover { background-color: #0f766e !important; }
+.border-amber-200 { border-color: #fde68a !important; }
+.border-blue-200 { border-color: #bfdbfe !important; }
+.border-blue-300 { border-color: #93c5fd !important; }
+.border-emerald-200 { border-color: #a7f3d0 !important; }
+.border-green-300 { border-color: #86efac !important; }
+.border-indigo-200 { border-color: #c7d2fe !important; }
+.border-purple-200 { border-color: #e9d5ff !important; }
+.border-red-200 { border-color: #fecaca !important; }
+.border-teal-200 { border-color: #99f6e4 !important; }
+.border-teal-300 { border-color: #5eead4 !important; }
+.text-amber-700 { color: #b45309 !important; }
+.text-amber-800 { color: #92400e !important; }
+.text-blue-700 { color: #1d4ed8 !important; }
+.text-emerald-600 { color: #059669 !important; }
+.text-emerald-700 { color: #047857 !important; }
+.text-emerald-800 { color: #065f46 !important; }
+.text-green-700 { color: #15803d !important; }
+.text-green-800 { color: #166534 !important; }
+.text-indigo-700 { color: #4338ca !important; }
+.text-indigo-800 { color: #3730a3 !important; }
+.text-orange-600 { color: #ea580c !important; }
+.text-orange-700 { color: #c2410c !important; }
+.text-purple-600 { color: #9333ea !important; }
+.text-purple-700 { color: #7e22ce !important; }
+.text-purple-800 { color: #6b21a8 !important; }
+.text-red-500 { color: #ef4444 !important; }
+.text-red-600 { color: #dc2626 !important; }
+.text-red-700 { color: #b91c1c !important; }
+.text-red-800 { color: #991b1b !important; }
+.text-teal-700 { color: #0f766e !important; }
+.text-teal-800 { color: #115e59 !important; }
+</style>
+@endverbatim
 <div class="container mx-auto px-4 py-6" style="max-width: 1400px;">
     <h1 class="text-2xl font-semibold text-gray-900 mb-6">Operations</h1>
 
     <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+        <!-- App Update Notification Card -->
+        <div class="bg-white border border-gray-200 rounded-lg p-6 shadow-sm">
+            <div class="flex items-center justify-between mb-4">
+                <h2 class="text-lg font-medium text-gray-800">📲 App Update Notification</h2>
+            </div>
+
+            <div class="mb-4 p-4 bg-indigo-50 border border-indigo-200 rounded-md">
+                <div class="text-xs text-indigo-700 space-y-1">
+                    <p><strong>Current served version:</strong>
+                        <span class="font-mono bg-indigo-100 px-2 py-0.5 rounded">v{{ $appUpdateInfo['version']['name'] ?? '?' }}</span>
+                        (code {{ $appUpdateInfo['version']['code'] ?? '?' }})
+                    </p>
+                    <p><strong>Active devices:</strong> {{ $appUpdateInfo['active_devices'] ?? 0 }}</p>
+                    <p class="mt-2"><strong>What happens:</strong> every device with the app installed gets a
+                        push notification — "🚀 App Update Available". Tapping it opens the app, which shows
+                        the standard update dialog with the download button.</p>
+                    <p class="mt-2 text-red-600"><strong>⚠️ Press ONLY after</strong> the new APK and
+                        AppController.php are uploaded to production — the notification announces whatever
+                        version <code>/api/app/version</code> currently serves.</p>
+                </div>
+            </div>
+
+            <div id="appUpdatePushResult" class="hidden mb-4 p-3 rounded-lg text-sm"></div>
+
+            <button type="button"
+                    id="appUpdatePushBtn"
+                    onclick="sendAppUpdatePush()"
+                    class="w-full inline-flex items-center justify-center px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium rounded-md focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500">
+                📣 Notify All Users of Update
+            </button>
+
+            <script>
+                async function sendAppUpdatePush() {
+                    const versionName = @json($appUpdateInfo['version']['name'] ?? '?');
+                    const deviceCount = @json($appUpdateInfo['active_devices'] ?? 0);
+                    const ok = confirm(
+                        'Send "Update available" push for v' + versionName + ' to ' + deviceCount + ' active device(s)?\n\n' +
+                        '⚠️ Make sure the new APK is ALREADY uploaded to production before sending.'
+                    );
+                    if (!ok) return;
+
+                    const btn = document.getElementById('appUpdatePushBtn');
+                    const resultDiv = document.getElementById('appUpdatePushResult');
+                    btn.disabled = true;
+                    btn.textContent = '⏳ Sending to ' + deviceCount + ' device(s)...';
+                    resultDiv.classList.add('hidden');
+
+                    try {
+                        const response = await fetch('{{ route('operations.notify-app-update') }}', {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/json',
+                                'Accept': 'application/json',
+                                'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || '{{ csrf_token() }}'
+                            }
+                        });
+                        const data = await response.json();
+
+                        resultDiv.classList.remove('hidden');
+                        if (data.success) {
+                            resultDiv.className = 'mb-4 p-3 rounded-lg text-sm bg-green-50 border border-green-200 text-green-800';
+                            resultDiv.textContent = '✅ Update push (v' + data.version + ') sent to ' + data.sent + ' of ' + data.total + ' device(s)' +
+                                (data.failed > 0 ? ' — ' + data.failed + ' failed (dead tokens are deactivated automatically)' : '');
+                        } else {
+                            resultDiv.className = 'mb-4 p-3 rounded-lg text-sm bg-red-50 border border-red-200 text-red-800';
+                            resultDiv.textContent = '❌ ' + (data.error || 'No notifications were sent (0 of ' + (data.total ?? 0) + ')');
+                        }
+                    } catch (err) {
+                        resultDiv.classList.remove('hidden');
+                        resultDiv.className = 'mb-4 p-3 rounded-lg text-sm bg-red-50 border border-red-200 text-red-800';
+                        resultDiv.textContent = '❌ Request failed: ' + err.message;
+                    } finally {
+                        btn.disabled = false;
+                        btn.textContent = '📣 Notify All Users of Update';
+                    }
+                }
+            </script>
+        </div>
+
         <!-- Imports Card -->
         <div class="bg-white border border-gray-200 rounded-lg p-6 shadow-sm">
             <div class="flex items-center justify-between mb-4">

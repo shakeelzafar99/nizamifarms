@@ -369,7 +369,8 @@ class OpenOrderLocationService
                 $skipped++;
                 continue;
             }
-            $phone = $this->wa->formatPhone($rawPhone);
+            // Dial-resolve (known-number override; no-op for PK numbers).
+            $phone = $this->wa->resolveDialPhone((string) $rawPhone);
             $name = trim(((string) $cust->first_name) . ' ' . ((string) $cust->last_name));
             $name = $name !== '' ? $name : 'Customer';
 

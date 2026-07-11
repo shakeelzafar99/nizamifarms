@@ -402,13 +402,16 @@ class WhatsAppService
             return;
         }
 
-        // Only acknowledge when a pending (notified, unacked, not-past) row exists.
-        $today = now()->format('Y-m-d');
+        // Only acknowledge when a pending (notified, unacknowledged) row exists —
+        // the SAME condition the in-app confirm uses (acknowledgeShift), so both
+        // channels agree. Deliberately NOT date-restricted: a single-day change
+        // confirmed the next morning is still a legitimate confirm (the earlier
+        // "effective_to >= today" guard silently dropped exactly those, so a
+        // WhatsApp tap did nothing while the in-app confirm worked). The
+        // notified_at + unacknowledged pair already guarantees a real pending
+        // change, so a stray "confirm" from a rider with nothing pending no-ops.
         $q = \App\Models\Ops\UserShiftAssignmentModel::where('user_id', $userId)
-            ->whereNotNull('notified_at')->whereNull('acknowledged_at')
-            ->where(function ($qq) use ($today) {
-                $qq->whereNull('effective_to')->orWhereDate('effective_to', '>=', $today);
-            });
+            ->whereNotNull('notified_at')->whereNull('acknowledged_at');
         $count = (clone $q)->count();
         if ($count === 0) {
             return;
@@ -1705,13 +1708,27 @@ class WhatsAppService
     }
 
     /**
-     * Format phone number for WhatsApp API (must be 92XXXXXXXXXX)
+     * Format phone number for WhatsApp API (must be 92XXXXXXXXXX).
+     *
+     * Pakistan-only by design (last-10-digits rule): collapses every way staff
+     * free-type a PK number (+92 345..., 0345..., 345..., 0092 345...) to
+     * 92XXXXXXXXXX.
+     *
+     * Jul-2026: the early-return now requires EXACTLY 12 digits. A valid PK
+     * E.164 number is exactly 92 + 10 digits; anything longer that happens to
+     * start with "92" is half-normalized junk (e.g. a client formatter turned
+     * "00923215793000" into "920923215793000") and previously sailed through
+     * to Meta and failed 131026. Now it falls into the same last-10 rule and
+     * self-heals to the correct 92XXXXXXXXXX.
+     *
+     * International numbers are NOT handled here on purpose — dial-time
+     * resolution of known international customers lives in resolveDialPhone().
      */
     public function formatPhone(string $phone): string
     {
         $digits = preg_replace('/\D/', '', $phone);
 
-        if (str_starts_with($digits, '92') && strlen($digits) >= 12) {
+        if (str_starts_with($digits, '92') && strlen($digits) === 12) {
             return $digits;
         }
 
@@ -1722,6 +1739,84 @@ class WhatsAppService
         $digits = substr($digits, -10);
 
         return '92' . $digits;
+    }
+
+    /**
+     * Resolve the number to actually DIAL for a customer-facing send.
+     *
+     * formatPhone() is a PK-only formatter, so it mangles the rare
+     * international customer (971..., etc). Rather than teach it country
+     * codes, this prefers a KNOWN-GOOD full number the system already holds:
+     *
+     *   1. An explicitly-passed conversation's wa_phone — that number came
+     *      from Meta's own webhook, so it is proven deliverable.
+     *   2. A conversation whose wa_phone ends in the same last-10 digits AND
+     *      that has at least one INBOUND message. The inbound requirement is
+     *      load-bearing: outbound-only conversations can be junk rows created
+     *      by a past mangled send (e.g. wa_phone 920923215793000), and
+     *      last_customer_message_at can NOT be used instead — it is seeded at
+     *      creation time even for outbound-created conversations.
+     *   3. The matched customer's phone_original, when it clearly carries a
+     *      non-PK country code (11+ digits, no leading 0/92 after stripping a
+     *      00 international prefix).
+     *   4. Otherwise formatPhone()'s result — byte-for-byte today's behavior.
+     *
+     * For Pakistani numbers this is a NO-OP by construction: their proven
+     * conversation number IS the formatPhone() output. The last-10 identity
+     * always comes from the caller's input, so manually typing a different
+     * number still redirects the send — this only fixes the country-code
+     * interpretation, never the identity.
+     *
+     * FAIL-OPEN: any lookup error returns the formatted number (old behavior).
+     */
+    public function resolveDialPhone(string $phone, $conversation = null): string
+    {
+        $formatted = $this->formatPhone($phone);
+
+        try {
+            if ($conversation && !empty($conversation->wa_phone)) {
+                return ltrim((string) $conversation->wa_phone, '+');
+            }
+
+            $digits = preg_replace('/\D/', '', $phone);
+            $last10 = substr($digits, -10);
+            if (strlen($last10) < 10) {
+                return $formatted;
+            }
+
+            $candidates = \App\Models\WhatsApp\ConversationModel::where('wa_phone', 'like', '%' . $last10)
+                ->orderBy('id')
+                ->limit(10)
+                ->get();
+            foreach ($candidates as $cand) {
+                if (empty($cand->wa_phone)) {
+                    continue;
+                }
+                $hasInbound = \App\Models\WhatsApp\MessageModel::where('conversation_id', $cand->id)
+                    ->where('direction', 'inbound')
+                    ->exists();
+                if ($hasInbound) {
+                    return ltrim((string) $cand->wa_phone, '+');
+                }
+            }
+
+            $customer = \App\Models\CRM\CustomerModel::where('phone_normalized', $last10)
+                ->whereNull('merged_into_customer_id')
+                ->first();
+            if ($customer) {
+                $orig = preg_replace('/\D/', '', (string) ($customer->phone_original ?? ''));
+                if (str_starts_with($orig, '00')) {
+                    $orig = substr($orig, 2);
+                }
+                if (strlen($orig) >= 11 && !str_starts_with($orig, '0') && !str_starts_with($orig, '92')) {
+                    return $orig;
+                }
+            }
+        } catch (\Throwable $e) {
+            Log::debug('resolveDialPhone fell back to formatPhone', ['error' => $e->getMessage()]);
+        }
+
+        return $formatted;
     }
 
     protected function sendRequest(array $payload): array

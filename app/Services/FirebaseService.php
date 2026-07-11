@@ -185,9 +185,72 @@ class FirebaseService
     }
 
     /**
-     * Send a notification to a single device via FCM v1 API
+     * ⭐ App-release broadcast: notify EVERY active device (all users, all
+     * roles) that a new APK version is available. Pressed manually from the
+     * Operations page AFTER the owner has uploaded the new APK + AppController
+     * to production, so the download link always points at a live file.
+     * Data payload mirrors /api/app/version so the mobile app can show its
+     * standard update dialog on tap. Returns counts for the UI.
      */
-    protected function sendToDevice(string $accessToken, string $fcmToken, array $notification, array $data = [], string $channelId = 'whatsapp_messages'): void
+    public function notifyAppUpdate(array $version): array
+    {
+        if (!$this->projectId || !file_exists($this->credentialsPath)) {
+            return ['total' => 0, 'sent' => 0, 'failed' => 0, 'error' => 'Firebase is not configured on this server'];
+        }
+
+        try {
+            $tokens = DB::table('t_wa_device_tokens')
+                ->where('is_active', 1)
+                ->distinct()
+                ->pluck('fcm_token')
+                ->all();
+
+            if (empty($tokens)) {
+                return ['total' => 0, 'sent' => 0, 'failed' => 0, 'error' => 'No active devices registered'];
+            }
+
+            $accessToken = $this->getAccessToken();
+            if (!$accessToken) {
+                Log::error('Firebase: Failed to get access token for notifyAppUpdate');
+                return ['total' => count($tokens), 'sent' => 0, 'failed' => count($tokens), 'error' => 'Could not authenticate with Firebase'];
+            }
+
+            $notification = [
+                'title' => '🚀 App Update Available',
+                'body'  => "Nizami Farms v{$version['name']} is ready to install. Tap to update.",
+            ];
+            // FCM v1 requires every data value to be a string.
+            $data = [
+                'type'         => 'app_update',
+                'version_name' => (string) $version['name'],
+                'version_code' => (string) $version['code'],
+                'download_url' => (string) $version['download_url'],
+            ];
+
+            $sent = 0;
+            foreach ($tokens as $fcmToken) {
+                if ($this->sendToDevice($accessToken, $fcmToken, $notification, $data, 'app_updates')) {
+                    $sent++;
+                }
+            }
+
+            Log::info('Firebase: App update broadcast finished', [
+                'version' => $version['name'], 'total' => count($tokens), 'sent' => $sent,
+            ]);
+
+            return ['total' => count($tokens), 'sent' => $sent, 'failed' => count($tokens) - $sent, 'error' => null];
+        } catch (\Exception $e) {
+            Log::error('Firebase: notifyAppUpdate failed', ['error' => $e->getMessage()]);
+            return ['total' => 0, 'sent' => 0, 'failed' => 0, 'error' => $e->getMessage()];
+        }
+    }
+
+    /**
+     * Send a notification to a single device via FCM v1 API.
+     * Returns true when FCM accepted the message (used for broadcast counts;
+     * older callers simply ignore the return value).
+     */
+    protected function sendToDevice(string $accessToken, string $fcmToken, array $notification, array $data = [], string $channelId = 'whatsapp_messages'): bool
     {
         $url = "https://fcm.googleapis.com/v1/projects/{$this->projectId}/messages:send";
 
@@ -222,9 +285,12 @@ class FirebaseService
                         ->where('fcm_token', $fcmToken)
                         ->update(['is_active' => 0]);
                 }
+                return false;
             }
+            return true;
         } catch (\Exception $e) {
             Log::warning('Firebase: HTTP error sending to device', ['error' => $e->getMessage()]);
+            return false;
         }
     }
 

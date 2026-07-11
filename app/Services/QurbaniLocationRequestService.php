@@ -1132,7 +1132,8 @@ class QurbaniLocationRequestService
     protected function resolveCustomerPhone(int $customerId, ?string $supplied = null): ?string
     {
         if ($supplied) {
-            $p = $this->wa->formatPhone($supplied);
+            // Dial-resolve (known-number override; no-op for PK numbers).
+            $p = $this->wa->resolveDialPhone($supplied);
             if ($p && strlen($p) >= 12) { return $p; }
         }
         $cust = DB::table('t_crm_prod_customer')
@@ -1140,7 +1141,7 @@ class QurbaniLocationRequestService
             ->where('id', $customerId)
             ->first();
         if (!$cust || empty($cust->phone)) { return null; }
-        $p = $this->wa->formatPhone($cust->phone);
+        $p = $this->wa->resolveDialPhone($cust->phone);
         return ($p && strlen($p) >= 12) ? $p : null;
     }
 }

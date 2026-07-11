@@ -550,6 +550,241 @@ class ExecutiveClosingService
     }
 
     // =====================================================================
+    //  GROWTH  (Phase 2) — the "customer engine". All read-only, cached.
+    //  Two layers: SALES QUALITY (AOV / new / repeat — unit-aware, from the
+    //  closing block) and the CUSTOMER ENGINE (active 30/60/90, recency ladder,
+    //  cohort retention — computed on the WHOLE regular customer base, because a
+    //  customer is one relationship whether they buy fresh or frozen). Qurbani
+    //  gets a simplified seasonal variant (rolling windows don't fit a season).
+    // =====================================================================
+
+    public function growth(string $unit, int $year, int $month): array
+    {
+        $unit = $this->normalizeUnit($unit);
+        return Cache::remember("hq_growth_{$unit}_{$year}_{$month}", $this->ttlFor($unit, $year, $month),
+            fn () => $this->growthCompute($unit, $year, $month));
+    }
+
+    private function growthCompute(string $unit, int $year, int $month): array
+    {
+        $closing = $this->closing($unit, $year, $month); // cached; unit-aware
+        $cur = $closing['current']; $prev = $closing['previous'];
+        $aov     = $cur['orders'] > 0 ? round($cur['revenue'] / $cur['orders'], 0) : 0;
+        $aovPrev = $prev['orders'] > 0 ? round($prev['revenue'] / $prev['orders'], 0) : 0;
+        $repeat     = $cur['customers'] > 0 ? ($cur['customers'] - $cur['new_customers']) / $cur['customers'] : 0;
+        $repeatPrev = $prev['customers'] > 0 ? ($prev['customers'] - $prev['new_customers']) / $prev['customers'] : 0;
+
+        $isQb = $unit === self::UNIT_QB;
+        return [
+            'unit'         => $unit,
+            'is_season'    => $isQb,
+            'period_label' => $closing['period_label'],
+            'sales' => [
+                'aov'           => $aov,
+                'aov_prev'      => $aovPrev,
+                'new_customers' => $cur['new_customers'],
+                'new_prev'      => $prev['new_customers'],
+                'repeat'        => round($repeat * 100, 1),
+                'repeat_prev'   => round($repeatPrev * 100, 1),
+                'customers'     => $cur['customers'],
+                'returning'     => max($cur['customers'] - $cur['new_customers'], 0),
+            ],
+            'engine' => $isQb ? $this->qurbaniGrowthEngine($year) : $this->regularGrowthEngine(),
+            'cohort' => $isQb ? null : $this->cohortRetention(),
+        ];
+    }
+
+    /**
+     * Active-customer counts + the recency ladder for the whole regular customer
+     * base, computed from one grouped "last delivered order per customer" query.
+     * Cached for the day (the windows are relative to today).
+     */
+    private function regularGrowthEngine(): array
+    {
+        return Cache::remember('hq_growth_engine_' . Carbon::now()->format('Y-m-d'), 3600, function () {
+            $ids = $this->qurbaniOrderIds();
+            $rows = DB::table('t_crm_prod_order as o')
+                ->joinSub($this->deliveredDatesSub(), 'd', 'd.order_id', '=', 'o.id')
+                ->whereIn('o.order_status', self::DELIVERED_STATUSES)
+                ->where(function ($w) {
+                    $w->where('o.external_source', '!=', 'shopify')->orWhereNull('o.external_source');
+                })
+                ->whereNotNull('o.customer_id')
+                ->when(!empty($ids), fn ($q) => $q->whereNotIn('o.id', $ids))
+                ->groupBy('o.customer_id')
+                ->selectRaw('o.customer_id, MAX(d.delivered_at) last_del')
+                ->get();
+
+            $today = Carbon::now();
+            $a30 = $a60 = $a90 = 0;
+            // bands: 0-30, 31-60, 61-90, 91-180, 180+
+            $bands = [0, 0, 0, 0, 0];
+            foreach ($rows as $r) {
+                if (!$r->last_del) continue;
+                $days = Carbon::parse($r->last_del)->diffInDays($today);
+                if ($days <= 30) { $a30++; $bands[0]++; }
+                elseif ($days <= 60) { $bands[1]++; }
+                elseif ($days <= 90) { $bands[2]++; }
+                elseif ($days <= 180) { $bands[3]++; }
+                else { $bands[4]++; }
+                if ($days <= 60) $a60++;
+                if ($days <= 90) $a90++;
+            }
+            $total = count($rows);
+            $bandDefs = [
+                ['key' => '0-30',   'label' => '0–30 days',    'count' => $bands[0], 'winback' => false],
+                ['key' => '31-60',  'label' => '31–60 days',   'count' => $bands[1], 'winback' => false],
+                ['key' => '61-90',  'label' => '61–90 days',   'count' => $bands[2], 'winback' => true],
+                ['key' => '91-180', 'label' => '91–180 days',  'count' => $bands[3], 'winback' => false],
+                ['key' => '180+',   'label' => '180+ · lapsed','count' => $bands[4], 'winback' => false],
+            ];
+            return [
+                'active_30' => $a30, 'active_60' => $a60, 'active_90' => $a90,
+                'total_customers' => $total,
+                'bands' => $bandDefs,
+            ];
+        });
+    }
+
+    /** Qurbani seasonal growth: season buyers + returning-from-last-season. */
+    private function qurbaniGrowthEngine(int $year): array
+    {
+        $prefix = 'QUR' . substr((string) $year, -2) . '%';
+        $prevPrefix = 'QUR' . substr((string) ($year - 1), -2) . '%';
+
+        $buyers = (int) DB::table('t_crm_prod_order as o')
+            ->where('o.order_number', 'like', $prefix)
+            ->where('o.order_status', '<>', 'cancelled')
+            ->distinct()->count('o.customer_id');
+        // returning = this season's buyers who also bought last season
+        $returning = (int) DB::table('t_crm_prod_order as o')
+            ->where('o.order_number', 'like', $prefix)
+            ->where('o.order_status', '<>', 'cancelled')
+            ->whereIn('o.customer_id', function ($q) use ($prevPrefix) {
+                $q->select('customer_id')->from('t_crm_prod_order')
+                    ->where('order_number', 'like', $prevPrefix)
+                    ->where('order_status', '<>', 'cancelled');
+            })
+            ->distinct()->count('o.customer_id');
+
+        return [
+            'season'        => true,
+            'buyers'        => $buyers,
+            'returning'     => $returning,
+            'new_to_season' => max($buyers - $returning, 0),
+            'retention_pct' => $buyers > 0 ? round($returning / $buyers * 100, 1) : 0,
+        ];
+    }
+
+    /**
+     * Cohort retention — for the last 6 acquisition months, the % of each
+     * cohort that placed another delivered order in month +1/+2/+3. Cells for
+     * months that haven't finished yet are null (shown as "—"). Regular base.
+     */
+    private function cohortRetention(): array
+    {
+        return Cache::remember('hq_cohort_' . Carbon::now()->format('Y-m'), 3600, function () {
+            $ids = $this->qurbaniOrderIds();
+            $start = Carbon::now()->subMonths(5)->startOfMonth();
+            $custs = DB::table('t_crm_prod_customer')
+                ->whereNotNull('first_order_date')
+                ->where('first_order_date', '>=', $start)
+                ->get(['id', 'first_order_date']);
+            if ($custs->isEmpty()) return ['months' => []];
+
+            $custIds = $custs->pluck('id')->all();
+            $orderMonths = DB::table('t_crm_prod_order as o')
+                ->joinSub($this->deliveredDatesSub(), 'd', 'd.order_id', '=', 'o.id')
+                ->whereIn('o.customer_id', $custIds)
+                ->whereIn('o.order_status', self::DELIVERED_STATUSES)
+                ->when(!empty($ids), fn ($q) => $q->whereNotIn('o.id', $ids))
+                ->selectRaw("o.customer_id cid, DATE_FORMAT(d.delivered_at, '%Y-%m') ym")
+                ->distinct()->get();
+            $byCust = [];
+            foreach ($orderMonths as $r) { $byCust[$r->cid][$r->ym] = true; }
+
+            $nowMonth = Carbon::now()->format('Y-m'); // current month is incomplete
+            $coh = [];
+            foreach ($custs as $c) {
+                $fm = Carbon::parse($c->first_order_date)->startOfMonth();
+                $key = $fm->format('Y-m');
+                $coh[$key]['size'] = ($coh[$key]['size'] ?? 0) + 1;
+                for ($k = 1; $k <= 3; $k++) {
+                    $mk = $fm->copy()->addMonths($k)->format('Y-m');
+                    if (!empty($byCust[$c->id][$mk])) {
+                        $coh[$key]['m' . $k] = ($coh[$key]['m' . $k] ?? 0) + 1;
+                    }
+                }
+            }
+            ksort($coh);
+            $out = [];
+            foreach ($coh as $key => $v) {
+                $fm = Carbon::createFromFormat('Y-m', $key)->startOfMonth();
+                $size = (int) $v['size'];
+                $cells = [];
+                for ($k = 1; $k <= 3; $k++) {
+                    $mk = $fm->copy()->addMonths($k)->format('Y-m');
+                    // A follow-on month that is the current (incomplete) month or
+                    // later hasn't fully happened → show as null.
+                    $cells[] = ($mk >= $nowMonth || $size === 0)
+                        ? null
+                        : round(($v['m' . $k] ?? 0) / $size * 100);
+                }
+                $out[] = [
+                    'label' => $fm->format('M y'),
+                    'size'  => $size,
+                    'cells' => $cells,
+                ];
+            }
+            // Only the last 6 acquisition months, and drop the current (still
+            // filling) month's own cohort row if it's tiny/incomplete-only.
+            return ['months' => array_slice($out, -6)];
+        });
+    }
+
+    /** Recency band → drill: the customers in one band (win-back campaign list). */
+    public function recencyList(string $band): array
+    {
+        $map = [
+            '0-30'   => [0, 30],   '31-60' => [31, 60], '61-90' => [61, 90],
+            '91-180' => [91, 180], '180+'  => [181, 100000],
+        ];
+        [$min, $max] = $map[$band] ?? [61, 90];
+        $ids = $this->qurbaniOrderIds();
+
+        $q = DB::table('t_crm_prod_order as o')
+            ->joinSub($this->deliveredDatesSub(), 'd', 'd.order_id', '=', 'o.id')
+            ->leftJoin('t_crm_prod_customer as c', 'c.id', '=', 'o.customer_id')
+            ->whereIn('o.order_status', self::DELIVERED_STATUSES)
+            ->where(function ($w) {
+                $w->where('o.external_source', '!=', 'shopify')->orWhereNull('o.external_source');
+            })
+            ->whereNotNull('o.customer_id')
+            ->when(!empty($ids), fn ($qq) => $qq->whereNotIn('o.id', $ids))
+            ->groupBy('o.customer_id')
+            ->havingRaw('DATEDIFF(NOW(), MAX(d.delivered_at)) BETWEEN ? AND ?', [$min, $max]);
+
+        return $q->select(
+            'o.customer_id',
+            DB::raw('MAX(TRIM(CONCAT(COALESCE(c.first_name,""), " ", COALESCE(c.last_name,"")))) as name'),
+            DB::raw('MAX(COALESCE(c.phone_original, c.phone)) as phone'),
+            DB::raw('MAX(c.customer_type) as type'),
+            DB::raw('MAX(d.delivered_at) as last_del'),
+            DB::raw('COUNT(DISTINCT o.id) as orders'),
+            DB::raw('SUM(o.total_price) as spent')
+        )->orderByDesc('spent')->limit(400)->get()
+            ->map(fn ($r) => [
+                'customer'  => trim($r->name) !== '' ? trim($r->name) : 'Walk-in',
+                'phone'     => $r->phone ?: '—',
+                'type'      => $r->type ?: 'regular',
+                'last'      => $r->last_del ? Carbon::parse($r->last_del)->format('M d, y') : '—',
+                'days'      => $r->last_del ? (int) Carbon::parse($r->last_del)->diffInDays(Carbon::now()) : 0,
+                'orders'    => (int) $r->orders,
+                'spent'     => round((float) $r->spent),
+            ])->all();
+    }
+
+    // =====================================================================
     //  DRILL-DOWNS  (Level 1 summary → Level 2 detail). All read-only.
     //  Each reuses the SAME definitions as the KPI cards, so totals reconcile.
     // =====================================================================

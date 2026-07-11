@@ -469,6 +469,11 @@ class RiderController extends Controller
                     'dispatch_scanned_by_name' => $order->dispatch_scanned_by
                         ? (\DB::table('t_sys_user')->where('id', $order->dispatch_scanned_by)->value('fullname') ?: null)
                         : null,
+                    // Delivery-scan audit (proof the rider scanned at delivery + when). Same safe-null rule.
+                    'delivery_scanned_at' => $order->delivery_scanned_at,
+                    'delivery_scanned_by_name' => $order->delivery_scanned_by
+                        ? (\DB::table('t_sys_user')->where('id', $order->delivery_scanned_by)->value('fullname') ?: null)
+                        : null,
                     'delivery_location' => $deliveryLocation,       // GPS coordinates of delivery (if delivered)
                     'online_message_sent_at' => $order->online_message_sent_at,  // WhatsApp message sent timestamp
                     'online_message_sent_by' => $order->online_message_sent_by,  // Who sent the message
@@ -2310,6 +2315,41 @@ class RiderController extends Controller
             ]);
         } catch (\Exception $e) {
             return response()->json(['success' => true, 'require_delivery_scan' => 0, 'allow_delivery_scan_bypass' => 0, 'dispatch_scan_banner_enabled' => 0]);
+        }
+    }
+
+    /**
+     * Best-effort audit stamp that the rider completed the delivery package scan (proof + time).
+     * The phone pings this right after a successful scan; the on-device cache is what actually
+     * prevents re-scans, so this NEVER blocks the delivery flow. Records the FIRST scan time only
+     * (re-scans don't move it). Safe before the SQL migration runs — a missing column is caught.
+     * POST /api/rider/orders/{id}/delivery-scan-mark
+     */
+    public function deliveryScanMark(Request $request, $id)
+    {
+        try {
+            $user = Auth::user();
+            $order = \DB::table('t_crm_prod_order')
+                ->where('id', $id)
+                ->select('id', 'assigned_rider_user_id', 'delivery_scanned_at')
+                ->first();
+            if (!$order) {
+                return response()->json(['success' => false, 'message' => 'Order not found'], 404);
+            }
+            if ((int) $order->assigned_rider_user_id !== (int) $user->id) {
+                return response()->json(['success' => false, 'message' => 'Not authorized for this order'], 403);
+            }
+            // Stamp only the first scan — keeps the earliest proof; later re-scans don't overwrite.
+            if (empty($order->delivery_scanned_at)) {
+                \DB::table('t_crm_prod_order')->where('id', $id)->update([
+                    'delivery_scanned_at' => now(),
+                    'delivery_scanned_by' => $user->id,
+                ]);
+            }
+            return response()->json(['success' => true]);
+        } catch (\Exception $e) {
+            // Best-effort only — never surface an error into the delivery flow.
+            return response()->json(['success' => false], 200);
         }
     }
 
@@ -16044,8 +16084,10 @@ class RiderController extends Controller
                 $proofOrderIds = $displayInvoices->map(fn($inv) => $inv->order?->id)
                     ->filter()->unique()->values()->all();
                 if (!empty($proofOrderIds)) {
+                    // Daily Closing is a RECORD surface — keep proof/verified
+                    // badges after approval (suppressSettled: false).
                     $paymentProofMap = app(\App\Services\Payments\Signals\PaymentProofStatusService::class)
-                        ->forOrders($proofOrderIds);
+                        ->forOrders($proofOrderIds, suppressSettled: false);
                 }
             }
             
@@ -17629,7 +17671,8 @@ class RiderController extends Controller
                 }
 
                 try {
-                    $formattedPhone = $whatsapp->formatPhone($phone);
+                    // Dial-resolve (known-number override; no-op for PK numbers).
+                    $formattedPhone = $whatsapp->resolveDialPhone((string) $phone);
                     $customerName = trim(($customer->first_name ?? '') . ' ' . ($customer->last_name ?? ''));
 
                     $bodyParams = $request->input('body_params', []);

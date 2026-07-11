@@ -236,7 +236,8 @@ function post(url, body) {
   return fetch(url, { method:'POST', headers:{'Content-Type':'application/json','X-CSRF-TOKEN':CSRF}, body:JSON.stringify(body) }).then(r=>r.json());
 }
 function escapeHtml(s){ return String(s==null?'':s).replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
-async function openHistory(id, name){
+async function openHistory(id){
+  const name = (DATA.riders.find(x=>x.user_id===id)||{}).name || '#'+id;
   document.getElementById('historyTitle').textContent = 'Change history · ' + name;
   const body = document.getElementById('historyBody');
   body.innerHTML = '<div style="color:#94a3b8;font-size:13px;padding:16px;">Loading…</div>';
@@ -318,8 +319,8 @@ function renderGrid() {
             <span class="block text-[11px] text-gray-400">${r.role||''}</span>
             <span class="pchip mt-1">${r.primary.start}${r.primary.end?'–'+r.primary.end:'+'} · ${r.primary.shift_name}${r.primary.location_name?' · 📍'+r.primary.location_name:''}</span>
             <button onclick="openAssignOne(${r.user_id})" class="ml-1 text-xs text-red-600 font-semibold hover:underline">Change</button>
-            <button onclick="event.preventDefault();openHistory(${r.user_id}, ${JSON.stringify(r.name)})" title="Who changed this rider's shift, and when" class="ml-2 text-[11px] text-gray-500 font-semibold hover:underline">History</button>
-            ${r.has_phone===false ? `<button onclick="event.preventDefault();addNumber(${r.user_id}, ${JSON.stringify(r.name)})" title="No WhatsApp number — riders can't be notified of shift changes" class="ml-1 text-[11px] text-amber-600 font-semibold hover:underline">📱 add number</button>` : ''}
+            <button onclick="event.preventDefault();openHistory(${r.user_id})" title="Who changed this rider's shift, and when" class="ml-2 text-[11px] text-gray-500 font-semibold hover:underline">History</button>
+            ${r.has_phone===false ? `<button onclick="event.preventDefault();addNumber(${r.user_id})" title="No WhatsApp number — riders can't be notified of shift changes" class="ml-1 text-[11px] text-amber-600 font-semibold hover:underline">📱 add number</button>` : ''}
             <div>${changes}</div>
           </span>
         </label>
@@ -417,7 +418,8 @@ async function cancelChange(id){
   const json=await post('/shifts/cancel-change',{assignment_id:id});
   if(json.success) loadWeek(WEEK); else alert(json.message||'Failed to cancel');
 }
-async function addNumber(id, name){
+async function addNumber(id){
+  const name = (DATA.riders.find(x=>x.user_id===id)||{}).name || 'this rider';
   const phone = window.prompt('WhatsApp number for '+name+' (used to send shift notifications):');
   if(phone===null) return;
   const p = phone.trim();

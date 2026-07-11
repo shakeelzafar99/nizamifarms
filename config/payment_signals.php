@@ -50,9 +50,23 @@ return [
     // differences. A payment within ±10 of a single invoice's balance — OR within
     // ±10 of the COMBINED total of several open invoices — is treated as a clean
     // match (so it reads "Proof received"/"Verified", not "amount differs").
-    // Applies to single-invoice matching, combined/bulk matching, and the
-    // WhatsApp⇄bank-email pairing. Override per-environment via the env key.
+    // Applies to single-invoice matching and combined/bulk matching ONLY — i.e.
+    // the customer's transfer vs their bill(s), where rounding is expected. It is
+    // deliberately NOT used for screenshot⇄email pairing (see
+    // pair_amount_tolerance below). Override per-environment via the env key.
     'amount_tolerance' => env('PAYMENT_SIGNALS_AMOUNT_TOLERANCE', 10.00),
+
+    // Amount tolerance (in PKR) for CROSS-SOURCE pairing: deciding that a
+    // WhatsApp screenshot and a bank credit-alert email describe the SAME bank
+    // transaction (→ the "Verified" badge). DELIBERATELY tight and SEPARATE from
+    // amount_tolerance above: a screenshot and the bank's own alert for one
+    // transfer must report the same figure — the only allowable slack is
+    // sub-rupee rounding / OCR display (e.g. "3,962" vs "3,962.00", or a 3,961.80
+    // invoice paid as a round 3,962). A whole-rupee gap must NOT pair.
+    // (Jul-2026: a stray Meezan credit of 3,926 wrongly paired to a 3,962
+    // Easypaisa payment because pairing borrowed the loose 10 PKR tolerance,
+    // producing a bogus "Rs 36 short — apply discount" prompt on NF-18447.)
+    'pair_amount_tolerance' => env('PAYMENT_SIGNALS_PAIR_AMOUNT_TOLERANCE', 1.00),
 
     // Order payment methods we consider "online" for matching purposes.
     'online_payment_methods' => ['online', 'bank_transfer'],

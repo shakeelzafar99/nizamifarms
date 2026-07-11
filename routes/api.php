@@ -173,6 +173,8 @@ Route::middleware('auth:sanctum')->group(function () {
         // Phase 3 delivery package-scan (default off): read config flags + verify a scanned QR.
         Route::get('/delivery-scan-config', [\App\Http\Controllers\API\RiderController::class, 'getDeliveryScanConfig']);
         Route::get('/verify-delivery-scan', [\App\Http\Controllers\API\RiderController::class, 'verifyDeliveryScan']);
+        // Best-effort audit stamp: rider completed the delivery package scan (proof + time).
+        Route::post('/orders/{id}/delivery-scan-mark', [\App\Http\Controllers\API\RiderController::class, 'deliveryScanMark']);
         // Receipt printout field config for the app (which fields/text to print).
         Route::get('/receipt-config', [\App\Http\Controllers\API\RiderController::class, 'getReceiptConfig']);
         // Dispatch package-scan (store hand-over): scan each packet, persistent "ready" tick.
@@ -580,6 +582,10 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::prefix('vendors')->group(function () {
         Route::get('/', [\App\Http\Controllers\FIN\VendorController::class, 'index']);
         Route::get('/monthly-summary', [\App\Http\Controllers\FIN\VendorController::class, 'monthlySummary']);
+        // Vendor transaction report (mirrors web fin.vendors.report). MUST stay before /{id}
+        // so this static path isn't captured by the {id} wildcard. Reuses the same
+        // VendorController@getReport used by the web report modal — identical KPIs.
+        Route::get('/report', [\App\Http\Controllers\FIN\VendorController::class, 'getReport']);
         Route::get('/{id}', [\App\Http\Controllers\FIN\VendorController::class, 'show']);
         Route::post('/{id}/purchase', [\App\Http\Controllers\FIN\VendorController::class, 'recordPurchase']);
         Route::post('/{id}/payment', [\App\Http\Controllers\FIN\VendorController::class, 'recordPayment']);

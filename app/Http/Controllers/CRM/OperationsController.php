@@ -12,6 +12,43 @@ use App\Models\CRM\CustomerModel;
 class OperationsController extends Controller
 {
     /**
+     * ⭐ App-release broadcast (Operations page button). Sends an FCM push to
+     * every active mobile device announcing the CURRENT version served by
+     * /api/app/version (single source of truth — the build script bumps it).
+     * Owner presses this manually AFTER uploading the new APK + AppController
+     * so the announced download link is always live. Tapping the notification
+     * opens the app, which shows its standard update dialog.
+     */
+    public function notifyAppUpdate(Request $request)
+    {
+        // One HTTP call to FCM per device (~0.2-0.5s each); allow headroom
+        // beyond shared-hosting default max_execution_time.
+        set_time_limit(300);
+
+        // Reuse the exact version payload the mobile app itself sees.
+        $version = app(\App\Http\Controllers\API\AppController::class)
+            ->getLatestVersion()
+            ->getData(true)['version'];
+
+        $result = app(\App\Services\FirebaseService::class)->notifyAppUpdate($version);
+
+        Log::info('Operations: app update notification triggered', [
+            'by_user' => auth()->id(),
+            'version' => $version['name'],
+            'result'  => $result,
+        ]);
+
+        return response()->json([
+            'success' => $result['sent'] > 0,
+            'version' => $version['name'],
+            'total'   => $result['total'],
+            'sent'    => $result['sent'],
+            'failed'  => $result['failed'],
+            'error'   => $result['error'],
+        ]);
+    }
+
+    /**
      * Import historical orders from CSV file
      * File location: public/downloads/NF_Data_Center_Data_History.csv
      */

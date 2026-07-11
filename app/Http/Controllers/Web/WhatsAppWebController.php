@@ -928,7 +928,19 @@ class WhatsAppWebController extends Controller
         $service = app(WhatsAppService::class);
         $bodyParams = $request->body_params ?? [];
         $headerParams = $request->header_params ?? [];
-        $phone = $service->formatPhone($request->phone);
+
+        // Jul-2026: resolve the DIAL number instead of blind PK-formatting.
+        // resolveDialPhone prefers a proven known number (conversation
+        // wa_phone / international phone_original) and is a no-op for PK
+        // numbers. phone_exact=true is the MANUAL OVERRIDE seam (used by the
+        // NF Messages app): dial exactly the digits given, no normalization.
+        // See WHATSAPP-PHONE-HANDLING.md at the workspace root.
+        $conversation = $request->conversation_id
+            ? ConversationModel::find($request->conversation_id)
+            : null;
+        $phone = $request->boolean('phone_exact')
+            ? preg_replace('/\D/', '', (string) $request->phone)
+            : $service->resolveDialPhone((string) $request->phone, $conversation);
         $force = filter_var($request->input('force', false), FILTER_VALIDATE_BOOLEAN);
 
         // Marketing-dedup guard. Returns null if OK to send, or a payload
@@ -974,9 +986,7 @@ class WhatsAppWebController extends Controller
             return response()->json(['success' => false, 'message' => $result['error'] ?? 'Failed to send template'], 422);
         }
 
-        $conversation = $request->conversation_id
-            ? ConversationModel::find($request->conversation_id)
-            : $service->findOrCreateConversation($phone);
+        $conversation = $conversation ?: $service->findOrCreateConversation($phone);
 
         if ($conversation) {
             $paramText = implode(', ', $bodyParams);
@@ -1028,10 +1038,12 @@ class WhatsAppWebController extends Controller
             return response()->json($base);
         }
 
-        // Resolve conversation by id, or by phone as a fallback.
+        // Resolve conversation by id, or by phone as a fallback. Uses the
+        // dial-resolved number so this preflight matches what sendTemplate
+        // will actually dial (matters for international customers).
         $conversationId = $request->conversation_id ? (int) $request->conversation_id : 0;
         if (!$conversationId && $request->filled('phone')) {
-            $phone = $service->formatPhone($request->phone);
+            $phone = $service->resolveDialPhone((string) $request->phone);
             $conv = ConversationModel::where('wa_phone', $phone)->first();
             if ($conv) $conversationId = (int) $conv->id;
         }
@@ -2100,7 +2112,20 @@ class WhatsAppWebController extends Controller
             ])
             ->orderBy('order_date', 'desc')
             ->limit(20)
-            ->get(['id', 'order_number', 'order_date', 'order_status', 'total_price', 'customer_id', 'assigned_rider_user_id', 'estimated_delivery_at', 'eta_calculated_at', 'delivery_priority']);
+            ->get(['id', 'order_number', 'order_date', 'order_status', 'total_price', 'customer_id', 'assigned_rider_user_id', 'estimated_delivery_at', 'eta_calculated_at', 'delivery_priority', 'payment_method']);
+
+        // Cash/online + payment-proof badges for the right-rail order cards.
+        // RECORD surface → suppressSettled:false so an approved online order
+        // keeps its "proof received / verified" badge (a permanent marker, not
+        // an action prompt like the inbox list).
+        $proofMap = [];
+        if (config('payment_signals.enabled')) {
+            $proofIds = $orders->pluck('id')->all();
+            if (!empty($proofIds)) {
+                $proofMap = app(\App\Services\Payments\Signals\PaymentProofStatusService::class)
+                    ->forOrders($proofIds, suppressSettled: false);
+            }
+        }
 
         // Pre-compute "ahead count" lookups in batches so we don't
         // do N+1 queries. We collect (rider_id, current_priority) for
@@ -2189,7 +2214,7 @@ class WhatsAppWebController extends Controller
         $activeDelivery = null; // sorted by soonest ETA across all OFD entities
         $activeCandidates = [];
 
-        $mapped = $orders->map(function($o) use ($regularAheadMap, $qurbaniAheadMap, &$activeCandidates) {
+        $mapped = $orders->map(function($o) use ($regularAheadMap, $qurbaniAheadMap, $proofMap, &$activeCandidates) {
             $eta = null;
             $etaIso = null;
             if ($o->estimated_delivery_at && strtolower((string) $o->order_status) === 'out_for_delivery') {
@@ -2317,6 +2342,8 @@ class WhatsAppWebController extends Controller
                 'is_qurbani' => $isQurbani,
                 'qurbani_items' => $qurbaniItems,
                 'ofd_position' => $ofdPosition,
+                'payment_method' => OrderModel::paymentChannel($o->payment_method),
+                'payment_proof' => $proofMap[$o->id] ?? null,
             ];
         });
 
@@ -2701,7 +2728,15 @@ class WhatsAppWebController extends Controller
 
         try {
             $service = app(WhatsAppService::class);
-            $phone = $service->formatPhone($request->phone);
+
+            // Jul-2026: dial-resolve (known-number override; no-op for PK)
+            // with the phone_exact manual-override seam — see sendTemplate.
+            $conversation = $request->conversation_id
+                ? ConversationModel::find($request->conversation_id)
+                : null;
+            $phone = $request->boolean('phone_exact')
+                ? preg_replace('/\D/', '', (string) $request->phone)
+                : $service->resolveDialPhone((string) $request->phone, $conversation);
 
             // Jun-2026: upload the freshly-captured invoice PNG straight
             // to Meta and reference it by media_id, instead of handing
@@ -2734,9 +2769,7 @@ class WhatsAppWebController extends Controller
                 return response()->json(['success' => false, 'message' => $result['error'] ?? 'Failed to send'], 422);
             }
 
-            $conversation = $request->conversation_id
-                ? ConversationModel::find($request->conversation_id)
-                : $service->findOrCreateConversation($phone);
+            $conversation = $conversation ?: $service->findOrCreateConversation($phone);
 
             if ($conversation) {
                 $paramText = implode(', ', $bodyParams);

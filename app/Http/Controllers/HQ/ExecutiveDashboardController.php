@@ -63,6 +63,20 @@ class ExecutiveDashboardController extends Controller
         return $this->ok($this->svc->workingCapital($unit, $request->boolean('fresh')));
     }
 
+    public function growth(Request $request)
+    {
+        $this->guard();
+        [$unit, $year, $month] = $this->params($request);
+        return $this->ok($this->svc->growth($unit, $year, $month));
+    }
+
+    public function recency(Request $request)
+    {
+        $this->guard();
+        $band = (string) $request->get('band', '61-90');
+        return $this->ok($this->svc->recencyList($band));
+    }
+
     // ---- JSON: drill-downs ---------------------------------------------
 
     public function revenueDaily(Request $request)

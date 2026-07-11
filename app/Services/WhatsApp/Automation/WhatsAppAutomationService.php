@@ -216,7 +216,11 @@ class WhatsAppAutomationService
         // customer, for safe live testing. The real recipient is still logged.
         $realPhone = $phone;
         $testPhone = $this->testPhone();
-        $sendTo = $wa->formatPhone($testPhone ?: $phone);
+        // Customer sends are dial-resolved (known-number override; no-op for
+        // PK); the operator's test phone keeps plain PK formatting.
+        $sendTo = $testPhone
+            ? $wa->formatPhone($testPhone)
+            : $wa->resolveDialPhone((string) $phone);
 
         $body = $handler->bodyParams($context, $rule);
         $header = $handler->headerParams($context, $rule);

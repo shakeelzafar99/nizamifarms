@@ -121,7 +121,9 @@ Route::middleware(['auth'])->group(function () {
         Route::get('/', [\App\Http\Controllers\HQ\ExecutiveDashboardController::class, 'index'])->name('hq.index');
         Route::get('/closing', [\App\Http\Controllers\HQ\ExecutiveDashboardController::class, 'closing']);
         Route::get('/trend', [\App\Http\Controllers\HQ\ExecutiveDashboardController::class, 'trend']);
+        Route::get('/growth', [\App\Http\Controllers\HQ\ExecutiveDashboardController::class, 'growth']);
         Route::get('/working-capital', [\App\Http\Controllers\HQ\ExecutiveDashboardController::class, 'workingCapital']);
+        Route::get('/drill/recency', [\App\Http\Controllers\HQ\ExecutiveDashboardController::class, 'recency']);
         Route::get('/drill/revenue-daily', [\App\Http\Controllers\HQ\ExecutiveDashboardController::class, 'revenueDaily']);
         Route::get('/drill/revenue-orders', [\App\Http\Controllers\HQ\ExecutiveDashboardController::class, 'revenueOrders']);
         Route::get('/drill/vendors', [\App\Http\Controllers\HQ\ExecutiveDashboardController::class, 'vendors']);
@@ -151,7 +153,16 @@ Route::middleware(['auth'])->group(function () {
     // Audit trail (Jul-2026, Phase 2 L1) — who changed what on orders/ledger/payments.
     Route::get('/audit-log', [\App\Http\Controllers\AuditLogController::class, 'index']);
     // Operations dashboard page (imports, bulk delivery status)
-    Route::get('/admin/operations', function () { return view('admin.operations'); })->name('admin.operations');
+    Route::get('/admin/operations', function () {
+        // App-release broadcast card: current served version + reachable devices.
+        $appUpdateInfo = [
+            'version' => app(\App\Http\Controllers\API\AppController::class)
+                ->getLatestVersion()->getData(true)['version'],
+            'active_devices' => \Illuminate\Support\Facades\DB::table('t_wa_device_tokens')
+                ->where('is_active', 1)->distinct()->count('fcm_token'),
+        ];
+        return view('admin.operations', compact('appUpdateInfo'));
+    })->name('admin.operations');
 
     // Line-item quick-note presets (chips shown next to the per-line-item
     // "Add note" box). Shared team-wide list; same controller backs the mobile
@@ -244,6 +255,8 @@ Route::middleware(['auth'])->group(function () {
     Route::post('/operations/attendance-import', [\App\Http\Controllers\CRM\OperationsController::class, 'importAttendance'])->name('operations.attendance-import');
     Route::post('/operations/history-import', [\App\Http\Controllers\CRM\OperationsController::class, 'importHistoryOrders'])->name('operations.history-import');
     Route::post('/operations/history-delivery-update', [\App\Http\Controllers\CRM\OperationsController::class, 'updateHistoryDeliveryDates'])->name('operations.history-delivery-update');
+    // App-release broadcast: push "update available" to all active mobile devices (Operations page button)
+    Route::post('/operations/notify-app-update', [\App\Http\Controllers\CRM\OperationsController::class, 'notifyAppUpdate'])->name('operations.notify-app-update');
     
     // Rider profile management
     Route::get('/riders', [\App\Http\Controllers\CRM\RiderProfileController::class, 'index'])->name('riders.index');

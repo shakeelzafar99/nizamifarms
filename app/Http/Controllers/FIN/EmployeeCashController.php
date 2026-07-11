@@ -2305,8 +2305,10 @@ class EmployeeCashController extends Controller
                 $proofOrderIds = $displayInvoices->map(fn($inv) => $inv->order?->id)
                     ->filter()->unique()->values()->all();
                 if (!empty($proofOrderIds)) {
+                    // Daily Closing is a RECORD surface — keep proof/verified
+                    // badges after approval (suppressSettled: false).
                     $paymentProofMap = app(\App\Services\Payments\Signals\PaymentProofStatusService::class)
-                        ->forOrders($proofOrderIds);
+                        ->forOrders($proofOrderIds, suppressSettled: false);
                 }
             }
 
@@ -2615,8 +2617,10 @@ class EmployeeCashController extends Controller
             // flow can warn the user when a customer has already sent proof.
             $paymentProofMap = [];
             if (config('payment_signals.enabled')) {
+                // Daily Closing reminder flow is a RECORD surface — keep
+                // proof/verified badges after approval (suppressSettled: false).
                 $paymentProofMap = app(\App\Services\Payments\Signals\PaymentProofStatusService::class)
-                    ->forOrders($orderIds);
+                    ->forOrders($orderIds, suppressSettled: false);
             }
             
             // Group by rider

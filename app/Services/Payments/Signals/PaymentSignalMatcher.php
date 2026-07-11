@@ -507,15 +507,22 @@ class PaymentSignalMatcher
 
     /**
      * Find the best opposite-source signal describing the SAME payment:
-     * same reference (wins outright), else same amount within tolerance AND a
-     * transaction time within the configured pairing window.
+     * same reference (wins outright), else the SAME amount (within the TIGHT
+     * pairAmountTolerance — NOT the loose invoice tolerance) AND a transaction
+     * time within the configured pairing window. Requiring the amounts to agree
+     * is what stops an unrelated credit of a nearby amount from being welded on
+     * as false "corroboration" (the Jul-2026 "Rs 36 short" bug).
      */
     private function findOppositeByAmountDate(PaymentSignal $signal, string $oppositeSource): ?PaymentSignal
     {
         if ($signal->extracted_amount === null) {
             return null;
         }
-        $tol = PaymentProofStatusService::amountTolerance();
+        // Pairing tolerance is deliberately tight: a screenshot and the bank
+        // email describe the SAME transfer, so their amounts must match bar
+        // sub-rupee rounding. This is distinct from the loose invoice-matching
+        // tolerance used in doMatch() (customer's transfer vs their bill(s)).
+        $tol = PaymentProofStatusService::pairAmountTolerance();
         $windowDays = (int) config('payment_signals.pair_window_days', 3);
         $time = $this->paymentTime($signal);
         $from = $time->copy()->subDays($windowDays);

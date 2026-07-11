@@ -4281,14 +4281,29 @@ select.wa-mgr-input { background: #fff; cursor: pointer; }
                 const dt = o.order_date ? new Date(o.order_date).toLocaleDateString('en-GB', {day:'2-digit', month:'short', year:'numeric'}) : '';
                 const st = (o.status || 'pending').toLowerCase().replace(/\s+/g, '_');
                 const statusLabel = (o.status || 'Pending').replace(/_/g, ' ');
+                // Cash/online chip + persistent proof/verified badge. The proof
+                // badge stays regardless of approval — it's a record here, not
+                // an action prompt (the inbox list is where it clears on approval).
+                const pm = (o.payment_method || '').toLowerCase();
+                let pmChip = '';
+                if (pm === 'online') pmChip = '<span style="font-size:10px;font-weight:700;color:#1d4ed8;background:#dbeafe;padding:1px 6px;border-radius:8px;">💳 Online</span>';
+                else if (pm === 'cash') pmChip = '<span style="font-size:10px;font-weight:700;color:#166534;background:#dcfce7;padding:1px 6px;border-radius:8px;">💵 Cash</span>';
+                let proofChip = '';
+                const pp = o.payment_proof;
+                if (pp && pp.status && pp.status !== 'none') {
+                    const ic = (pp.has_whatsapp ? '📷' : '') + (pp.has_email ? '✉️' : '');
+                    proofChip = '<span style="font-size:10px;font-weight:700;color:#fff;background:' + (pp.color || '#9ca3af') + ';padding:1px 6px;border-radius:8px;">' + (ic ? ic + ' ' : '') + esc(pp.label || '') + '</span>';
+                }
                 html += `<div class="wa-op-item">
                     <div style="display:flex;justify-content:space-between;align-items:center;">
                         <div><span class="wa-op-num">#${esc(o.order_number||'')}</span><span class="wa-op-date">${dt}</span></div>
                         <span class="wa-op-total">Rs. ${parseFloat(o.total||0).toLocaleString()}</span>
                     </div>
-                    <div style="margin-top:4px;display:flex;align-items:center;gap:6px;">
+                    <div style="margin-top:4px;display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
                         <span class="wa-op-status ${st}">${statusLabel}</span>
                         ${o.items_count ? '<span style="font-size:10px;color:#9ca3af;">' + o.items_count + ' items</span>' : ''}
+                        ${pmChip}
+                        ${proofChip}
                     </div>
                     ${o.rider_name ? '<div class="wa-op-rider">🏍️ ' + esc(o.rider_name) + (o.eta ? ' · ETA ' + o.eta : '') + '</div>' : (o.eta ? '<div class="wa-op-rider">⏱️ ETA ' + o.eta + '</div>' : '')}
                     ${o.items_summary ? '<div class="wa-op-items">' + esc(o.items_summary) + '</div>' : ''}

@@ -3244,7 +3244,7 @@ function viewOrderDetails(orderId) {
             }
 
             // Packet Tracking Section (if packet data exists OR a dispatch hand-over scan was recorded)
-            if (order.expected_packets || order.actual_packets || order.dispatch_scanned_at) {
+            if (order.expected_packets || order.actual_packets || order.dispatch_scanned_at || order.delivery_scanned_at) {
                 html += '<div style="padding: 20px; background-color: #fef3c7; border: 1px solid #fbbf24; border-radius: 8px; margin: 20px 0 0 0;">';
                 html += '<h3 style="margin: 0 0 12px 0; color: #92400e; font-size: 16px; display: flex; align-items: center; gap: 8px;"><span>📦</span> Packet Tracking</h3>';
                 html += '<div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px;">';
@@ -3270,6 +3270,12 @@ function viewOrderDetails(orderId) {
                     html += '<div style="margin-top: 12px; padding: 10px 12px; background-color: white; border-radius: 6px; font-size: 13px; color: #374151;">';
                     html += '<span style="color: #6b7280;">Dispatch hand-over scan:</span> <strong>' + (order.dispatch_scanned_by_name ? escapeHtml(order.dispatch_scanned_by_name) : 'Done') + '</strong>';
                     html += ' · ' + formatDate(order.dispatch_scanned_at);
+                    html += '</div>';
+                }
+                if (order.delivery_scanned_at) {
+                    html += '<div style="margin-top: 8px; padding: 10px 12px; background-color: white; border-radius: 6px; font-size: 13px; color: #374151;">';
+                    html += '<span style="color: #6b7280;">Delivery scan (rider):</span> <strong>' + (order.delivery_scanned_by_name ? escapeHtml(order.delivery_scanned_by_name) : 'Done') + '</strong>';
+                    html += ' · ' + formatDate(order.delivery_scanned_at);
                     html += '</div>';
                 }
                 html += '</div>';
@@ -18204,13 +18210,15 @@ document.addEventListener('DOMContentLoaded', function() {
     {k:'show_logo', t:'Show logo in header', d:'Off = plain store-name text header instead (use this if the printed logo looks bad).'},
     {k:'show_prices', t:'Show prices', d:'Item amounts + subtotal/discount/total. Off = a clean delivery slip with no money.'},
     {k:'show_phone', t:'Show customer phone', d:''},
-    {k:'show_address', t:'Show customer address', d:''}
+    {k:'show_address', t:'Show customer address', d:''},
+    {k:'show_disclaimer', t:'Show "not a final invoice" note', d:'Prints a note above the items warning that quantities may change. Off = hidden.'}
   ];
   var TEXTS=[
     {k:'store_name', t:'Store name (header)', def:'NIZAMI FARMS', max:40},
     {k:'tagline_text', t:'Tagline', def:'Fresh Farm Meat', max:40},
     {k:'contact_line', t:'Contact line (phone / website) - optional', def:'', max:48},
-    {k:'footer_text', t:'Footer message', def:'Thank you for choosing Nizami Farms!', max:120}
+    {k:'footer_text', t:'Footer message', def:'Thank you for choosing Nizami Farms!', max:120},
+    {k:'disclaimer_text', t:'Invoice disclaimer (prints above the items)', def:'NOT A FINAL INVOICE - quantities may change. Your official invoice will be sent on WhatsApp.', max:160}
   ];
   function hide(){ if(overlay) overlay.style.display='none'; }
   function save(){

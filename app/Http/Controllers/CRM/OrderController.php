@@ -268,6 +268,10 @@ class OrderController extends Controller
             $order->dispatch_scanned_by_name = $order->dispatch_scanned_by
                 ? (\DB::table('t_sys_user')->where('id', $order->dispatch_scanned_by)->value('fullname') ?: null)
                 : null;
+            // Same for the rider's delivery-scan audit stamp (proof he scanned at delivery + when).
+            $order->delivery_scanned_by_name = $order->delivery_scanned_by
+                ? (\DB::table('t_sys_user')->where('id', $order->delivery_scanned_by)->value('fullname') ?: null)
+                : null;
             
             // Get delivery location if order is delivered
             $deliveryLocation = null;
@@ -5143,14 +5147,14 @@ class OrderController extends Controller
             if (!$isManager) {
                 return response()->json(['success' => false, 'message' => 'Only a manager role can change receipt settings.'], 403);
             }
-            $boolKeys = ['show_logo', 'show_prices', 'show_phone', 'show_address'];
+            $boolKeys = ['show_logo', 'show_prices', 'show_phone', 'show_address', 'show_disclaimer'];
             $out = [];
             foreach ($boolKeys as $k) {
                 $out[$k] = $request->boolean($k) ? 1 : 0;
             }
             // Editable text lines: strip control chars, trim, cap length. Empty string is a
             // valid value meaning "hide this line".
-            $textKeys = ['store_name' => 40, 'tagline_text' => 40, 'contact_line' => 48, 'footer_text' => 120];
+            $textKeys = ['store_name' => 40, 'tagline_text' => 40, 'contact_line' => 48, 'footer_text' => 120, 'disclaimer_text' => 160];
             foreach ($textKeys as $k => $max) {
                 $v = (string) $request->input($k, '');
                 $v = preg_replace('/[\x00-\x1F\x7F]+/', '', $v);

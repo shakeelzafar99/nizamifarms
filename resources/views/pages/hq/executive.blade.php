@@ -111,6 +111,27 @@
   #hq-root .trend-card svg{display:block;width:100%;height:150px}
   #hq-root .t-legend{display:flex;gap:18px;font-size:11.5px;color:var(--mut);margin-top:6px}
 
+  /* ---------- growth: recency ladder + cohort ---------- */
+  #hq-root .gnote{font-size:11.5px;color:var(--mut);margin-top:11px;line-height:1.55}
+  #hq-root .lrow{display:grid;grid-template-columns:104px 1fr 128px;gap:12px;align-items:center;padding:8px 0;border-bottom:1px solid var(--line)}
+  #hq-root .lrow:last-child{border-bottom:0}
+  #hq-root .lrow.click{cursor:pointer;border-radius:7px;transition:background .12s}
+  #hq-root .lrow.click:hover{background:#faf9f8}
+  #hq-root .lrow.wb{background:#fffbeb}
+  #hq-root .ln{font-size:12px;font-weight:600;color:var(--mut);display:flex;align-items:center;gap:6px}
+  #hq-root .lb{height:20px;border-radius:5px;min-width:3px}
+  #hq-root .lv{font-size:12.5px;font-weight:700;text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+  #hq-root .lv small{color:var(--mut);font-weight:600}
+  #hq-root .wbtag{font-size:9px;font-weight:800;letter-spacing:.04em;color:#92400e;background:#fde68a;border-radius:4px;padding:1px 5px}
+  #hq-root table.coh{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums;min-width:320px}
+  #hq-root .coh th{font-size:10px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:var(--mut);text-align:center;padding:6px 6px;border-bottom:1px solid var(--line)}
+  #hq-root .coh th:first-child,#hq-root .coh td:first-child{text-align:left}
+  #hq-root .coh td{font-size:12px;padding:5px 6px;text-align:center;border-bottom:1px solid #f4f3f1}
+  #hq-root .coh td:first-child{font-weight:600;color:var(--ink);white-space:nowrap}
+  #hq-root .coh .cell{display:inline-block;min-width:42px;padding:4px 0;border-radius:5px;font-weight:700}
+  #hq-root .coh .csize{color:var(--mut);font-weight:600}
+  #hq-root .coh .cempty{color:#d6d3d1}
+
   #hq-root .placeholder{border:1px dashed var(--line2);border-radius:12px;padding:40px 24px;text-align:center;
     color:var(--mut);background:#fff}
   #hq-root .placeholder h3{font-size:15px;font-weight:700;color:var(--ink);margin-bottom:6px}
@@ -236,12 +257,35 @@
   </div>
 </div>
 
-{{-- ===================== GROWTH (Phase 2 placeholder) ===================== --}}
+{{-- ===================== GROWTH ===================== --}}
 <div id="hqGrowth" style="display:none">
-  <div class="placeholder" style="margin-top:20px">
-    <h3>Growth view — arriving in Phase 2</h3>
-    <div>Average order value, active customers (30 / 60 / 90 days), the recency win-back ladder, and cohort
-      retention — each with the same click-to-drill and formula popovers as the Closing view.</div>
+  <h2 class="sec">Sales quality <span id="hqGrowthUnit" class="hint"></span><span class="rule"></span><span class="hint">follows the unit above</span></h2>
+  <div class="grid" id="hqGSales" style="grid-template-columns:repeat(3,1fr)"></div>
+
+  <div id="hqGRegular">
+    <h2 class="sec">Customer engine — whole regular base <span class="rule"></span><span class="hint">active &amp; retention are one customer base (fresh + frozen)</span></h2>
+    <div class="grid" id="hqGActives" style="grid-template-columns:repeat(3,1fr)"></div>
+
+    <div class="two-col" style="display:grid;grid-template-columns:1.15fr 1fr;gap:12px;align-items:start;margin-top:12px">
+      <div class="card">
+        <div class="k-label">Customer recency — days since last order
+          <button class="i-btn" type="button" onclick="hqDef('recency_def')" aria-label="How is recency calculated?">i</button>
+          <span class="drill">click a band ›</span></div>
+        <div id="hqLadder" style="margin-top:10px"></div>
+        <div class="gnote" id="hqLadderNote"></div>
+      </div>
+      <div class="card">
+        <div class="k-label">Cohort retention — % who ordered again
+          <button class="i-btn" style="margin-left:auto" type="button" onclick="hqDef('cohort_def')" aria-label="How is cohort retention calculated?">i</button></div>
+        <div id="hqCohort" style="margin-top:8px;overflow-x:auto"></div>
+        <div class="gnote">Read down a column: if <strong>M+1</strong> rises cohort-over-cohort, your first-delivery experience is improving.</div>
+      </div>
+    </div>
+  </div>
+
+  <div id="hqGSeason" style="display:none">
+    <h2 class="sec">Qurbani season — customers <span class="rule"></span><span class="hint">seasonal, not rolling</span></h2>
+    <div class="grid" id="hqSeasonCards" style="grid-template-columns:repeat(4,1fr)"></div>
   </div>
 </div>
 
@@ -280,7 +324,7 @@
              kh:{name:'Khaas · Frozen',hex:'#d97706'},qb:{name:'Qurbani',hex:'#9f1239'}};
   var CUR_YEAR={{ $currentYear }}, CUR_MONTH={{ $currentMonth }};
   var state={unit:'nf',year:CUR_YEAR,month:CUR_MONTH,tab:'closing'}; // default = Nizami Farms (owner rule)
-  var data={closing:null,trend:null,wc:null};
+  var data={closing:null,trend:null,wc:null,growth:null,growthKey:null};
   var MONTHS=[];
 
   var $=function(id){return document.getElementById(id);};
@@ -585,6 +629,43 @@
           ['Meaning','What is left if everyone paid you and you paid every vendor today — for the regular business']]};
       }
     }
+
+    // ---- Growth definitions (read from data.growth) ----
+    var g=data.growth;
+    if(g){
+      var gs=g.sales, ge=g.engine, gqb=g.is_season;
+      D.g_aov={t:'Average order value',v:rs(gs.aov),r:[
+        ['Formula',(gqb?'Booked revenue':'Delivered revenue')+' ÷ orders (from the Closing view, for '+esc(UNITS[state.unit].name)+')'],
+        ['vs last '+(gqb?'season':'month'),'was <span class="var">'+rs(gs.aov_prev)+'</span>']]};
+      D.g_new={t:'New customers',v:rsS(gs.new_customers),r:[
+        ['Formula','Customers whose <span class="var">first-ever order</span> falls in the period (by <code>first_order_date</code>)'],
+        ['Unit','For '+esc(UNITS[state.unit].name)+' · was '+rsS(gs.new_prev)+' last '+(gqb?'season':'month')]]};
+      D.g_repeat={t:'Repeat rate',v:gs.repeat+'%',r:[
+        ['Formula','(customers − new) ÷ customers this '+(gqb?'season':'month')],
+        ['Values','('+rsS(gs.customers)+' − '+rsS(gs.new_customers)+') ÷ '+rsS(gs.customers)+' = <span class="var">'+gs.repeat+'%</span>'],
+        ['Meaning','Of everyone who bought, how many had bought before — the best single “is the base compounding?” number']]};
+      if(!gqb&&ge){
+        var mk=function(days){return {t:'Active customers · '+days+' days',v:rsS(ge['active_'+days]),r:[
+          ['Formula','Unique customers (whole regular base) with ≥1 <span class="var">delivered</span> order in the last '+days+' days'],
+          ['Window','rolling — counted back from <strong>today</strong>, not the month picker'],
+          ['Note','Always ≥ the shorter window; base = '+rsS(ge.total_customers)+' customers who ever ordered']]};};
+        D.g_a30=mk('30'); D.g_a60=mk('60'); D.g_a90=mk('90');
+        D.recency_def={t:'Customer recency bands',v:'',r:[
+          ['Formula','Every regular customer bucketed by days between their <span class="var">last delivered order</span> and <span class="var">today</span>'],
+          ['Bands','0–30 · 31–60 · <strong>61–90 (win-back)</strong> · 91–180 · 180+ (lapsed)'],
+          ['Why 61–90','Still warm, one nudge from lapsing — click the band for the exact WhatsApp list (name, phone, lifetime value)']]};
+        D.cohort_def={t:'Cohort retention',v:'',r:[
+          ['Formula','Take everyone whose <span class="var">first order</span> was in month M. M+1 = % of them with ≥1 delivered order in the <span class="var">next month</span>, and so on'],
+          ['Reading','Down a column: M+1 rising cohort-over-cohort = onboarding / first delivery improving'],
+          ['—','Blank cells are months that haven’t finished yet']]};
+      }
+      if(gqb&&ge){
+        D.g_season={t:'Season buyers',v:rsS(ge.buyers),r:[['Formula','Unique customers with a non-cancelled Qurbani order this season']]};
+        D.g_seasonnew={t:'New to Qurbani',v:rsS(ge.new_to_season),r:[['Formula','Season buyers who did NOT buy Qurbani with us last season']]};
+        D.g_returning={t:'Returning',v:rsS(ge.returning),r:[['Formula','Season buyers who also bought Qurbani last season']]};
+        D.g_retention={t:'Season retention',v:ge.retention_pct+'%',r:[['Formula','Returning ÷ Season buyers = '+rsS(ge.returning)+' ÷ '+rsS(ge.buyers)+' = <span class="var">'+ge.retention_pct+'%</span>']]};
+      }
+    }
     return D[key];
   }
   window.hqDef=function(key){
@@ -642,7 +723,13 @@
       map:function(r){return [esc(r.asset),esc(r.unit),esc(r.location),esc(r.bought),rsS(r.value)];}},
     missing_invoices:{crumb:['Working capital','Missing invoices'],url:function(){return '/hq/drill/missing-invoices';},
       cols:['Order #','Customer','Delivered','Amount','Paid'],
-      map:function(r){return [esc(r.order_number),esc(r.customer),esc(r.delivered),rsS(r.amount),pill(r.paid)];}}
+      map:function(r){return [esc(r.order_number),esc(r.customer),esc(r.delivered),rsS(r.amount),pill(r.paid)];}},
+    recency:{crumb:['Recency'],crumbPrefix:function(){return 'Growth · whole regular base';},
+      titleOverride:function(){return (drill.bandLabel||'')+' — customers';},
+      url:function(){return '/hq/drill/recency?band='+encodeURIComponent(drill.band);},
+      cols:['Customer','Phone','Last order','Orders','Lifetime'],
+      map:function(r){return [esc(r.customer),esc(r.phone),esc(r.last)+' <small style="color:var(--faint)">('+r.days+'d)</small>',rsS(r.orders),rsS(r.spent)];},
+      total:function(rows){var o=0,sp=0;rows.forEach(function(r){o+=r.orders;sp+=r.spent;});return [rows.length+' customers','','',rsS(o),rsS(sp)];}}
   };
   function qs(){return '?unit='+state.unit+'&year='+state.year+'&month='+state.month;}
   function fmtDay(s){var d=new Date(s+'T00:00:00');return d.toLocaleDateString('en-GB',{weekday:'short',day:'2-digit',month:'short'});}
@@ -659,12 +746,13 @@
 
   function renderDrill(){
     var d=DRILL[drill.key]; if(!d)return;
-    var crumb=[UNITS[state.unit].name+' · '+(data.closing?data.closing.period_label:'')].concat(d.crumb);
+    var prefix = d.crumbPrefix ? d.crumbPrefix() : (UNITS[state.unit].name+' · '+(data.closing?data.closing.period_label:''));
+    var crumb=[prefix].concat(d.crumb);
     var l2 = drill.level===2 && d.l2;
     if(l2)crumb.push(d.l2.crumb(drill.row));
     $('hqPCrumb').innerHTML=crumb.map(function(c,i){return (i?'<span class="sep">›</span>':'')+'<span>'+esc(c)+'</span>';}).join('');
     $('hqPBack').classList.toggle('show',!!l2);
-    $('hqPTitle').textContent=l2?d.l2.crumb(drill.row):(d.crumb[d.crumb.length-1]+' — '+(data.closing?data.closing.period_label:''));
+    $('hqPTitle').textContent=l2?d.l2.crumb(drill.row):(d.titleOverride?d.titleOverride():(d.crumb[d.crumb.length-1]+' — '+(data.closing?data.closing.period_label:'')));
     $('hqPBody').innerHTML='<div class="p-empty">Loading…</div>';
 
     if(d.local){
@@ -710,11 +798,90 @@
     }).catch(function(e){ setLoading(false); showErr(e.message); });
   }
   window.hqReload=hqReload;
-  window.hqSetUnit=function(u){ state.unit=u; if(u==='qb'){state.year=CUR_YEAR;} renderControls(); hqReload(); };
-  window.hqPick=function(y,m){ state.year=y; state.month=m; renderControls(); hqReload(); };
+  function afterLoad(){ if(state.tab==='growth') loadGrowth(true); }
+  window.hqSetUnit=function(u){ state.unit=u; if(u==='qb'){state.year=CUR_YEAR;} renderControls(); hqReload(); afterLoad(); };
+  window.hqPick=function(y,m){ state.year=y; state.month=m; renderControls(); hqReload(); afterLoad(); };
   window.hqSetTab=function(t){ state.tab=t;
     $('tabClosing').classList.toggle('on',t==='closing'); $('tabGrowth').classList.toggle('on',t==='growth');
-    $('hqClosing').style.display=t==='closing'?'':'none'; $('hqGrowth').style.display=t==='growth'?'':'none'; };
+    $('hqClosing').style.display=t==='closing'?'':'none'; $('hqGrowth').style.display=t==='growth'?'':'none';
+    if(t==='growth') loadGrowth(false); };
+
+  // ---------- growth ----------
+  function loadGrowth(force){
+    if(!force && data.growth && data.growthKey===growthKey()){ renderGrowth(); return; }
+    $('hqGSales').classList.add('loading');
+    fetchJSON('/hq/growth'+qs()).then(function(g){
+      data.growth=g; data.growthKey=growthKey(); renderGrowth(); $('hqGSales').classList.remove('loading');
+    }).catch(function(e){ $('hqGSales').classList.remove('loading'); showErr(e.message); });
+  }
+  function growthKey(){ return state.unit+'_'+state.year+'_'+state.month; }
+  function deltaVs(cur,prev,goodUp){ return deltaChip(cur,prev,goodUp)+' vs last '+(state.unit==='qb'?'season':'month'); }
+
+  function renderGrowth(){
+    var g=data.growth; if(!g)return;
+    var isQb=g.is_season, s=g.sales;
+    $('hqGrowthUnit').textContent = '· '+UNITS[state.unit].name;
+    function card(def,label,val,sub){
+      var iBtn='<button class="i-btn" type="button" onclick="hqDef(\''+def+'\')" aria-label="How is '+esc(label)+' calculated?">i</button>';
+      return '<div class="card"><div class="k-label">'+esc(label)+iBtn+'</div><div class="k-val">'+val+'</div><div class="k-sub">'+sub+'</div></div>';
+    }
+    $('hqGSales').innerHTML=
+      card('g_aov','Average order value',rs(s.aov),deltaVs(s.aov,s.aov_prev,true))+
+      card('g_new','New customers',rsS(s.new_customers),deltaVs(s.new_customers,s.new_prev,true)+' · first-time')+
+      card('g_repeat','Repeat rate',s.repeat+'%',deltaVs(s.repeat,s.repeat_prev,true)+' · '+rsS(s.returning)+' of '+rsS(s.customers)+' had bought before');
+
+    if(isQb){
+      $('hqGRegular').style.display='none'; $('hqGSeason').style.display='';
+      var e=g.engine;
+      $('hqSeasonCards').innerHTML=
+        card('g_season','Season buyers',rsS(e.buyers),'unique customers this season')+
+        card('g_seasonnew','New to Qurbani',rsS(e.new_to_season),'first Qurbani with us')+
+        card('g_returning','Returning',rsS(e.returning),'also bought last season')+
+        card('g_retention','Season retention',e.retention_pct+'%',rsS(e.returning)+' of '+rsS(e.buyers)+' came back');
+      return;
+    }
+    $('hqGRegular').style.display=''; $('hqGSeason').style.display='none';
+
+    // active tiles (nested — point in time, no delta)
+    var e=g.engine, hex=UNITS[state.unit].hex;
+    $('hqGActives').innerHTML=
+      card('g_a30','Active · 30 days',rsS(e.active_30),'ordered in the last 30 days')+
+      card('g_a60','Active · 60 days',rsS(e.active_60),'ordered in the last 60 days')+
+      card('g_a90','Active · 90 days',rsS(e.active_90),'ordered in the last 90 days');
+
+    // recency ladder
+    var bands=e.bands||[], bmax=Math.max.apply(null,bands.map(function(b){return b.count;}).concat([1]));
+    var btot=bands.reduce(function(a,b){return a+b.count;},0)||1;
+    $('hqLadder').innerHTML=bands.map(function(b){
+      var color=b.winback?'#f59e0b':hex;
+      return '<div class="lrow click'+(b.winback?' wb':'')+'" tabindex="0" role="button" onclick="hqRecency(\''+b.key+'\',\''+esc(b.label)+'\')" onkeydown="if(event.key===\'Enter\')hqRecency(\''+b.key+'\',\''+esc(b.label)+'\')">'+
+        '<span class="ln">'+esc(b.label)+(b.winback?' <span class="wbtag">WIN-BACK</span>':'')+'</span>'+
+        '<div><div class="lb" style="width:'+Math.max(b.count/bmax*100,2)+'%;background:'+color+(b.winback?'':';opacity:.82')+'"></div></div>'+
+        '<span class="lv">'+rsS(b.count)+' <small>· '+(b.count/btot*100).toFixed(0)+'%</small></span></div>';
+    }).join('');
+    $('hqLadderNote').innerHTML='The <strong>61–90</strong> band is your win-back window — still warm, one nudge from lapsing. Click it for the list (name, phone, lifetime value) to run a WhatsApp campaign.';
+
+    // cohort heatmap (single-hue green ramp by %)
+    var months=(g.cohort&&g.cohort.months)||[];
+    function cell(p){
+      if(p===null||p===undefined) return '<span class="cempty">—</span>';
+      var a=0.10+Math.min(p/55,1)*0.62; // light→dark green by %
+      return '<span class="cell" style="background:rgba(5,150,105,'+a.toFixed(2)+');color:'+(p>=32?'#fff':'#065f46')+'">'+p+'%</span>';
+    }
+    var html='<table class="coh"><thead><tr><th>First ordered</th><th>New</th><th>M+1</th><th>M+2</th><th>M+3</th></tr></thead><tbody>';
+    html+=months.map(function(m){
+      return '<tr><td>'+esc(m.label)+'</td><td class="csize">'+rsS(m.size)+'</td>'+
+        m.cells.map(function(p){return '<td>'+cell(p)+'</td>';}).join('')+'</tr>';
+    }).join('');
+    html+='</tbody></table>';
+    $('hqCohort').innerHTML=html;
+  }
+
+  window.hqRecency=function(band,label){
+    drill={key:'recency',level:1,l1:null,row:null,band:band,bandLabel:label};
+    $('hqDrillScrim').classList.add('on'); $('hqPanel').classList.add('on');
+    renderDrill();
+  };
 
   document.addEventListener('keydown',function(e){ if(e.key==='Escape'){
     if($('hqDefBox').classList.contains('on'))hqCloseDef();
