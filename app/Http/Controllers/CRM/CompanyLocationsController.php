@@ -15,7 +15,56 @@ class CompanyLocationsController extends Controller
      */
     public function index()
     {
-        return view('pages.attendance.locations');
+        return view('pages.attendance.locations', [
+            'requireLocation' => $this->requireLocationEnabled(),
+        ]);
+    }
+
+    /** Read the "riders must be at their location to check in" flag (default off). */
+    private function requireLocationEnabled(): bool
+    {
+        try {
+            $v = DB::table('t_fin_config')
+                ->where('config_key', 'ATTENDANCE_REQUIRE_LOCATION')
+                ->value('config_value');
+            return $v !== null && (string) $v === '1';
+        } catch (\Throwable $e) {
+            return false;
+        }
+    }
+
+    /**
+     * Toggle the mandatory-location rule. When ON, riders can only check in on the
+     * mobile app when GPS confirms they're within their shift location's radius
+     * (the manager's web "Mark Attendance" stays exempt). Stored in t_fin_config.
+     */
+    public function setRequireLocation(Request $request)
+    {
+        try {
+            $enabled = $request->boolean('enabled') ? '1' : '0';
+            $exists = DB::table('t_fin_config')
+                ->where('config_key', 'ATTENDANCE_REQUIRE_LOCATION')->exists();
+            if ($exists) {
+                DB::table('t_fin_config')
+                    ->where('config_key', 'ATTENDANCE_REQUIRE_LOCATION')
+                    ->update(['config_value' => $enabled, 'updated_at' => now()]);
+            } else {
+                DB::table('t_fin_config')->insert([
+                    'config_key' => 'ATTENDANCE_REQUIRE_LOCATION',
+                    'config_value' => $enabled,
+                    'description' => 'When on, riders can only check in (mobile) while inside their shift location radius.',
+                    'created_at' => now(),
+                    'updated_at' => now(),
+                ]);
+            }
+            Log::info('Attendance require-location setting changed', [
+                'enabled' => $enabled, 'by' => Auth::id(),
+            ]);
+            return response()->json(['success' => true, 'enabled' => $enabled === '1']);
+        } catch (\Throwable $e) {
+            Log::error('Failed to set require-location', ['error' => $e->getMessage()]);
+            return response()->json(['success' => false, 'message' => 'Could not save the setting.'], 500);
+        }
     }
 
     /**

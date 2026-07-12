@@ -2,7 +2,10 @@
 
 @section('title', 'Customers')
 
-@push('styles')
+{{-- NOTE: the layout has no @stack('styles') — pushes to that name are silently
+     dropped (head partial renders 'vendor_css' and 'custom_css' only). This
+     block was dead until renamed to 'custom_css' (Jul-2026). --}}
+@push('custom_css')
 <style>
 /* Enhanced line item styling for customers page - consistent with orders */
 .line-item input[name*="[name]"] {
@@ -35,6 +38,101 @@
     text-align: right;
 }
 </style>
+@verbatim
+<style>
+/* ---------------------------------------------------------------------------
+ * Tailwind color-utility backfill (Jul-2026). The shipped Metronic styles.css
+ * is PURGED and the Tailwind @vite build is disabled, so many color utilities
+ * this page uses don't exist in the loaded CSS (dead hover states / flat look).
+ * These restore ONLY the classes verified missing (diffed against styles.css);
+ * classes already present are NOT redefined. Focus ring-* cosmetics skipped.
+ * Page-scoped (loads only on Customers) so it can't affect other pages.
+ * Same approach as the Operations page fix. Proper long-term fix = a shared
+ * backfill file <link>ed in the head partial / re-enabling the Tailwind build.
+ * ------------------------------------------------------------------------- */
+.bg-green-100 { background-color: #dcfce7 !important; }
+.bg-orange-50 { background-color: #fff7ed !important; }
+.bg-orange-500 { background-color: #f97316 !important; }
+.border-blue-600 { border-color: #2563eb !important; }
+.border-emerald-300 { border-color: #6ee7b7 !important; }
+.border-green-300 { border-color: #86efac !important; }
+.text-emerald-600 { color: #059669 !important; }
+.text-green-700 { color: #15803d !important; }
+.text-orange-600 { color: #ea580c !important; }
+.text-orange-700 { color: #c2410c !important; }
+.text-red-400 { color: #f87171 !important; }
+.hover\:bg-blue-200:hover { background-color: #bfdbfe !important; }
+.hover\:bg-blue-50:hover { background-color: #eff6ff !important; }
+.hover\:bg-emerald-50:hover { background-color: #ecfdf5 !important; }
+.hover\:bg-gray-50:hover { background-color: #f9fafb !important; }
+.hover\:bg-green-50:hover { background-color: #f0fdf4 !important; }
+.hover\:bg-orange-50:hover { background-color: #fff7ed !important; }
+.hover\:bg-red-50:hover { background-color: #fef2f2 !important; }
+.hover\:text-emerald-700:hover { color: #047857 !important; }
+.hover\:text-gray-500:hover { color: #6b7280 !important; }
+.hover\:text-green-700:hover { color: #15803d !important; }
+.hover\:text-red-500:hover { color: #ef4444 !important; }
+</style>
+<style>
+/* ---------------------------------------------------------------------------
+ * Jul-2026 facelift polish (page-scoped, matches the approved mockup's feel).
+ * Pure presentation: soft page canvas, the table carded with radius + shadow,
+ * quieter letterspaced headers, tighter rows with hover, tabular numerals.
+ * Deterministic ID/element selectors so it works regardless of which Tailwind
+ * utilities survived the purged Metronic build. No markup or JS depends on it.
+ * ------------------------------------------------------------------------- */
+body { background: #f1f3f6; }
+
+/* Page title */
+.container-fixed h1 { font-weight: 800; letter-spacing: -0.01em; color: #16202e; }
+
+/* The customers table card (the page's only .card) */
+.card.card-grid {
+    background: #fff;
+    border: 1px solid #e4e7ec;
+    border-radius: 14px;
+    box-shadow: 0 1px 2px rgba(16,24,40,.04), 0 6px 20px rgba(16,24,40,.05);
+    overflow: hidden;
+}
+.card.card-grid .card-header { padding: 13px 18px; border-bottom: 1px solid #eef0f3; }
+.card.card-grid .card-title { font-weight: 700; color: #16202e; }
+
+/* Filter strip */
+#customersFilterBar { background: #f8fafc; border-bottom: 1px solid #eef0f3; padding: 10px 14px; }
+#customersFilterBar input, #customersFilterBar select {
+    border: 1px solid #d7dce3 !important;
+    border-radius: 9px !important;
+    background: #fff;
+    font-size: 13px;
+}
+
+/* Column headers — small, letterspaced, quiet */
+#table-header th {
+    font-size: 11px !important;
+    font-weight: 700 !important;
+    letter-spacing: .06em !important;
+    text-transform: uppercase;
+    color: #8a94a6 !important;
+    background: #fafbfc !important;
+    padding: 10px 16px !important;
+    border-bottom: 1px solid #e7eaf0 !important;
+    white-space: nowrap;
+}
+
+/* Rows — tighter rhythm, soft separators, hover, lined-up digits */
+#table-body td {
+    padding: 11px 16px !important;
+    border-bottom: 1px solid #f1f3f7;
+    font-variant-numeric: tabular-nums;
+    vertical-align: middle;
+}
+#table-body tr:last-child td { border-bottom: none; }
+#table-body tr:hover { background: #f8fafc; }
+
+/* Pagination / footer area inside the card */
+.card.card-grid .card-body { background: #fff; }
+</style>
+@endverbatim
 @endpush
 
 <script>
@@ -71,96 +169,66 @@ window.viewCustomer = function(id) {
             const mergedCustomers = data.merged_customers || [];
             
             let html = `
-                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 24px;">
-                    <div>
-                        <h4 style="font-weight: 600; color: #374151; margin: 0 0 16px 0;">Personal Information</h4>
-                        <div style="background-color: #f9fafb; padding: 16px; border-radius: 8px;">
-                            <div style="margin-bottom: 12px;">
-                                <label style="font-size: 12px; color: #6b7280; text-transform: uppercase; font-weight: 500;">Full Name</label>
-                                <p style="margin: 4px 0 0 0; font-weight: 500;">${customer.first_name} ${customer.last_name}</p>
-                            </div>
-                            <div style="margin-bottom: 12px;">
-                                <label style="font-size: 12px; color: #6b7280; text-transform: uppercase; font-weight: 500;">Email</label>
-                                <p style="margin: 4px 0 0 0;">${customer.email || 'N/A'}</p>
-                            </div>
-                            <div style="margin-bottom: 12px;">
-                                <label style="font-size: 12px; color: #6b7280; text-transform: uppercase; font-weight: 500;">Phone (Original)</label>
-                                <p style="margin: 4px 0 0 0;">
-                                    ${customer.phone_original || customer.phone || 'N/A'}
-                                    ${(customer.phone_original || customer.phone) ? `<button onclick="openCustomerWhatsApp('${escapeForJs(customer.first_name + ' ' + customer.last_name)}', '${escapeForJs(customer.phone_original || customer.phone)}', ${customer.id})" style="padding: 2px 8px; background: #25D366; color: white; border: none; border-radius: 4px; font-size: 11px; cursor: pointer; margin-left: 6px;" title="Send WhatsApp Message">💬 WhatsApp</button>` : ''}
-                                </p>
-                            </div>
-                            <div style="margin-bottom: 12px;">
-                                <label style="font-size: 12px; color: #6b7280; text-transform: uppercase; font-weight: 500;">Phone (Normalized)</label>
-                                <p style="margin: 4px 0 0 0;">${customer.phone_normalized || 'N/A'}</p>
-                            </div>
-                            <div>
-                                <label style="font-size: 12px; color: #6b7280; text-transform: uppercase; font-weight: 500;">Company</label>
-                                <p style="margin: 4px 0 0 0;">${customer.company || 'N/A'}</p>
-                            </div>
-                            ${data.profile_attribution && data.profile_attribution.saved_by ? `
-                            <div style="margin-top: 12px; padding-top: 10px; border-top: 1px dashed #e5e7eb;">
-                                <span style="font-size: 11px; color: #2563eb;"><i class="fas fa-user"></i> Name/email saved by: <strong>${data.profile_attribution.saved_by}</strong>${data.profile_attribution.saved_at ? ' · ' + new Date(data.profile_attribution.saved_at).toLocaleDateString() : ''}</span>
-                            </div>` : ''}
+                <div style="display:flex; align-items:center; gap:14px; flex-wrap:wrap; margin-bottom:16px;">
+                    <div style="width:48px; height:48px; border-radius:12px; background:#eef2ff; color:#4f46e5; display:flex; align-items:center; justify-content:center; font-size:22px; flex-shrink:0;">${customer.customer_type === 'shop' ? '🏪' : '👤'}</div>
+                    <div style="flex:1; min-width:220px;">
+                        <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+                            <span style="font-size:18px; font-weight:800; color:#111827;">${customer.first_name} ${customer.last_name}</span>
+                            ${customer.customer_type === 'shop'
+                                ? '<span style="padding:2px 8px; border-radius:8px; font-size:11px; font-weight:700; background:#FEF3C7; color:#B45309; border:1px solid #FCD34D;">🏪 Shop</span>'
+                                : '<span style="padding:2px 8px; border-radius:8px; font-size:11px; font-weight:600; background:#f3f4f6; color:#6b7280;">Regular</span>'}
+                            <span style="font-size:12px; color:#9ca3af;">#${customer.id}</span>
+                        </div>
+                        <div style="font-size:13px; color:#6b7280; margin-top:4px; display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+                            ${(customer.phone_original || customer.phone) ? `<span>📞 ${customer.phone_original || customer.phone}</span>` : ''}
+                            ${(customer.phone_original || customer.phone) ? `<button onclick="openCustomerWhatsApp('${escapeForJs(customer.first_name + ' ' + customer.last_name)}', '${escapeForJs(customer.phone_original || customer.phone)}', ${customer.id})" style="padding:2px 8px; background:#25D366; color:white; border:none; border-radius:6px; font-size:11px; cursor:pointer;" title="Send WhatsApp Message">💬 WhatsApp</button>` : ''}
+                            ${customer.email ? `<span style="color:#6b7280;">✉️ ${customer.email}</span>` : ''}
+                            ${customer.phone_normalized && customer.phone_normalized !== (customer.phone_original || customer.phone) ? `<span style="color:#9ca3af; font-size:12px;" title="Normalized phone (used for WhatsApp matching)">norm: ${customer.phone_normalized}</span>` : ''}
                         </div>
                     </div>
+                    <div style="display:flex; gap:8px; flex-shrink:0;">
+                        <button onclick="addCustomerNote(${customer.id})" style="padding:6px 12px; background:#fff; color:#374151; border:1px solid #d1d5db; border-radius:8px; font-size:12.5px; font-weight:600; cursor:pointer;" title="Add / edit note">📝 Note</button>
+                        <button onclick="editCustomer(${customer.id})" style="padding:6px 12px; background:#4f46e5; color:#fff; border:none; border-radius:8px; font-size:12.5px; font-weight:600; cursor:pointer;" title="Edit customer">✏️ Edit</button>
+                    </div>
+                </div>
 
-                    <div>
-                        <h4 style="font-weight: 600; color: #374151; margin: 0 0 16px 0;">Address Information</h4>
-                        <div style="background-color: #f9fafb; padding: 16px; border-radius: 8px;">
-                            <div style="margin-bottom: 12px;">
-                                <label style="font-size: 12px; color: #6b7280; text-transform: uppercase; font-weight: 500;">Address</label>
-                                <p style="margin: 4px 0 0 0;">${customer.address1 || 'N/A'}</p>
-                                ${customer.address2 ? `<p style="margin: 4px 0 0 0;">${customer.address2}</p>` : ''}
-                            </div>
-                            <div style="margin-bottom: 12px;">
-                                <label style="font-size: 12px; color: #6b7280; text-transform: uppercase; font-weight: 500;">City</label>
-                                <p style="margin: 4px 0 0 0;">${customer.city || 'N/A'}</p>
-                            </div>
-                            <div style="margin-bottom: 12px;">
-                                <label style="font-size: 12px; color: #6b7280; text-transform: uppercase; font-weight: 500;">Province</label>
-                                <p style="margin: 4px 0 0 0;">${customer.province || 'N/A'}</p>
-                            </div>
-                            <div>
-                                <label style="font-size: 12px; color: #6b7280; text-transform: uppercase; font-weight: 500;">Postal Code</label>
-                                <p style="margin: 4px 0 0 0;">${customer.postal_code || 'N/A'}</p>
-                            </div>
-                            ${data.address_attribution && data.address_attribution.saved_by ? `
-                            <div style="margin-top: 12px; padding-top: 10px; border-top: 1px dashed #e5e7eb;">
-                                <span style="font-size: 11px; color: #2563eb;"><i class="fas fa-user"></i> Address saved by: <strong>${data.address_attribution.saved_by}</strong>${data.address_attribution.saved_at ? ' · ' + new Date(data.address_attribution.saved_at).toLocaleDateString() : ''}</span>
-                            </div>` : ''}
-                        </div>
-                    </div>
+                <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px 24px; margin-bottom:16px; font-size:13px;">
+                    <div><div style="font-size:11px; color:#9ca3af; text-transform:uppercase; font-weight:600;">Address</div><div style="color:#374151; margin-top:2px;">${customer.address1 || 'N/A'}${customer.address2 ? ', ' + customer.address2 : ''}</div></div>
+                    <div><div style="font-size:11px; color:#9ca3af; text-transform:uppercase; font-weight:600;">City / Province</div><div style="color:#374151; margin-top:2px;">${customer.city || 'N/A'}${customer.province && customer.province !== 'N/A' ? ', ' + customer.province : ''}</div></div>
+                    <div style="grid-column:1 / -1;"><div style="font-size:11px; color:#9ca3af; text-transform:uppercase; font-weight:600;">Notes</div><div style="color:#374151; margin-top:2px; white-space:pre-wrap;">${customer.notes ? (customer.notes.length > 220 ? customer.notes.substring(0, 220) + '…' : customer.notes) : '<span style="color:#d1d5db;">No notes yet — use 📝 Note to add one</span>'}</div></div>
                 </div>
             `;
-            
-            // Delivery Region section
+
+            // Delivery Region + Verified Location — ONE compact row, two segments.
+            const vloc = data.verified_location;
+            const mapsUrl = vloc ? (vloc.url || vloc.google_maps_url || null) : null;
             html += `
-                <div style="margin-top: 24px;">
-                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
-                        <h4 style="font-weight: 600; color: #374151; margin: 0;">🚚 Delivery Region</h4>
+                <div style="display:flex; align-items:stretch; gap:10px; flex-wrap:wrap; margin-bottom:14px;">
+                    <div style="flex:1 1 340px; display:flex; align-items:center; gap:8px; flex-wrap:wrap; padding:9px 12px; background:${data.delivery_region_name ? '#eef2ff' : '#fef2f2'}; border:1px solid ${data.delivery_region_name ? '#c7d2fe' : '#fca5a5'}; border-radius:10px;">
+                        <span style="font-size:13px; color:#6b7280;">🚚 Region:</span>
+                        <span style="font-weight:700; color:${data.delivery_region_name ? '#4338ca' : '#dc2626'};">${data.delivery_region_name || 'Not assigned'}</span>
+                        ${customer.delivery_region_source ? `<span style="font-size:11px; color:#9ca3af;">(${customer.delivery_region_source})</span>` : ''}
+                        <div style="flex:1; min-width:6px;"></div>
+                        <select id="custRegionSelect_${customer.id}" style="padding:4px 8px; border:1px solid #d1d5db; border-radius:6px; font-size:12.5px; max-width:150px;"><option value="">-- No Region --</option></select>
+                        <button onclick="saveCustomerRegion(${customer.id})" style="padding:4px 12px; background:#4f46e5; color:#fff; border:none; border-radius:6px; font-size:12.5px; font-weight:500; cursor:pointer;">Save</button>
                     </div>
-                    <div style="background-color: ${data.delivery_region_name ? '#eef2ff' : '#fef2f2'}; padding: 16px; border-radius: 8px; border: 1px solid ${data.delivery_region_name ? '#6366f1' : '#fca5a5'};">
-                        <div style="display: flex; align-items: center; gap: 12px;">
-                            <div style="flex:1;">
-                                <label style="font-size: 12px; color: #6b7280; text-transform: uppercase; font-weight: 500;">Current Region</label>
-                                <p style="margin: 4px 0 0 0; font-weight: 600; color: ${data.delivery_region_name ? '#4338ca' : '#dc2626'};">
-                                    ${data.delivery_region_name || 'Not assigned'}
-                                    ${customer.delivery_region_source ? '<span style="font-size:11px;font-weight:400;color:#9ca3af;margin-left:6px;">(' + customer.delivery_region_source + ')</span>' : ''}
-                                </p>
-                            </div>
-                            <div>
-                                <select id="custRegionSelect_${customer.id}" style="padding:6px 10px;border:1px solid #d1d5db;border-radius:6px;font-size:13px;">
-                                    <option value="">-- No Region --</option>
-                                </select>
-                            </div>
-                            <button onclick="saveCustomerRegion(${customer.id})" style="padding:6px 16px;background:#4f46e5;color:#fff;border:none;border-radius:6px;font-size:13px;font-weight:500;cursor:pointer;">
-                                Save
-                            </button>
-                        </div>
+                    <div style="flex:1 1 280px; display:flex; align-items:center; gap:8px; flex-wrap:wrap; padding:9px 12px; background:${vloc ? '#f0fdf4' : '#eff6ff'}; border:1px solid ${vloc ? '#86efac' : '#93c5fd'}; border-radius:10px;">
+                        <span style="font-size:13px; color:#6b7280;">📍 Location:</span>
+                        ${vloc ? `
+                            <span style="font-weight:700; color:#059669;">✅ Verified</span>
+                            ${mapsUrl ? `<a href="${mapsUrl}" target="_blank" style="color:#3b82f6; text-decoration:none; font-size:13px; font-weight:600;">Open in Maps ↗</a>` : ''}
+                            ${vloc.saved_by ? `<span style="font-size:11px; color:#9ca3af;" title="${vloc.saved_at ? new Date(vloc.saved_at).toLocaleString() : ''}">by ${vloc.saved_by}</span>` : ''}
+                            <div style="flex:1; min-width:6px;"></div>
+                            <button onclick="updateVerifiedLocation(${customer.id})" style="padding:4px 12px; background:#3b82f6; color:#fff; border:none; border-radius:6px; font-size:12.5px; font-weight:500; cursor:pointer;">Update</button>
+                        ` : `
+                            <span style="font-weight:700; color:#dc2626;">Not set</span>
+                            <div style="flex:1; min-width:6px;"></div>
+                            <button onclick="setVerifiedLocation(${customer.id})" style="padding:4px 12px; background:#3b82f6; color:#fff; border:none; border-radius:6px; font-size:12.5px; font-weight:500; cursor:pointer;">Set location</button>
+                        `}
                     </div>
                 </div>
             `;
+
             // Populate region dropdown after render
             setTimeout(async () => {
                 try {
@@ -176,75 +244,14 @@ window.viewCustomer = function(id) {
                 } catch(e) { console.error(e); }
             }, 100);
 
-            // Add Verified Location section
-            if (data.verified_location) {
-                html += `
-                <div style="margin-top: 24px;">
-                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
-                        <h4 style="font-weight: 600; color: #374151; margin: 0;">✅ Verified Location</h4>
-                        <button onclick="updateVerifiedLocation(${customer.id})" style="padding: 6px 12px; background-color: #3b82f6; color: white; border: none; border-radius: 6px; font-size: 13px; font-weight: 500; cursor: pointer;">
-                            <i class="fas fa-edit"></i> Update
-                        </button>
-                    </div>
-                    <div style="background-color: #f0fdf4; padding: 16px; border-radius: 8px; border: 1px solid #10b981;">
-                `;
-                
-                if (data.verified_location.url) {
-                    html += `
-                        <div style="margin-bottom: 12px;">
-                            <label style="font-size: 12px; color: #059669; text-transform: uppercase; font-weight: 500;">Google Maps Link</label>
-                            <p style="margin: 4px 0 0 0;">
-                                <a href="${data.verified_location.url}" target="_blank" style="color: #3b82f6; text-decoration: none; font-weight: 500;">
-                                    <i class="fas fa-external-link-alt"></i> Open in Google Maps
-                                </a>
-                            </p>
-                        </div>
-                    `;
-                } else if (data.verified_location.latitude && data.verified_location.longitude) {
-                    html += `
-                        <div style="margin-bottom: 12px;">
-                            <label style="font-size: 12px; color: #059669; text-transform: uppercase; font-weight: 500;">Coordinates</label>
-                            <p style="margin: 4px 0 0 0; font-family: monospace;">${data.verified_location.latitude}, ${data.verified_location.longitude}</p>
-                            <p style="margin: 4px 0 0 0;">
-                                <a href="${data.verified_location.google_maps_url}" target="_blank" style="color: #3b82f6; text-decoration: none; font-weight: 500;">
-                                    <i class="fas fa-external-link-alt"></i> Open in Google Maps
-                                </a>
-                            </p>
-                        </div>
-                    `;
-                }
-                
-                if (data.verified_location.saved_by) {
-                    html += `
-                        <div style="padding-top: 12px; border-top: 1px solid #bbf7d0;">
-                            <p style="margin: 0; font-size: 12px; color: #059669;">
-                                <i class="fas fa-user"></i> Saved by: <strong>${data.verified_location.saved_by}</strong>
-                            </p>
-                            <p style="margin: 4px 0 0 0; font-size: 12px; color: #059669;">
-                                <i class="fas fa-clock"></i> ${new Date(data.verified_location.saved_at).toLocaleString()}
-                            </p>
-                        </div>
-                    `;
-                }
-                
-                html += `
-                    </div>
-                </div>
-                `;
-            } else {
-                html += `
-                <div style="margin-top: 24px;">
-                    <div style="background-color: #eff6ff; padding: 16px; border-radius: 8px; border: 1px solid #3b82f6; text-align: center;">
-                        <p style="margin: 0 0 12px 0; color: #1e40af; font-weight: 500;">No verified location set</p>
-                        <button onclick="setVerifiedLocation(${customer.id})" style="padding: 8px 16px; background-color: #3b82f6; color: white; border: none; border-radius: 6px; font-size: 14px; font-weight: 500; cursor: pointer;">
-                            <i class="fas fa-map-marker-alt"></i> Set Verified Location
-                        </button>
-                    </div>
-                </div>
-                `;
-            }
-            
+            // (Verified Location now lives in the combined Region+Location row above.)
+            // Orders & Invoices come FIRST — the main content of this modal.
             html += `
+                <div style="margin-top: 8px;" id="customerOrdersInlineWrap">
+                    <h4 style="font-weight: 600; color: #374151; margin: 0 0 16px 0;">Orders &amp; Invoices</h4>
+                    <div id="customerOrdersInline"><div style="text-align:center;color:#9ca3af;padding:20px;">Loading orders…</div></div>
+                </div>
+
                 <div style="margin-top: 24px;">
                     <h4 style="font-weight: 600; color: #374151; margin: 0 0 16px 0;">Order Statistics <span style="font-size: 11px; font-weight: 400; color: #9ca3af;">(delivered orders only)</span></h4>
                     <div style="background-color: #f9fafb; padding: 16px; border-radius: 8px;">
@@ -262,13 +269,6 @@ window.viewCustomer = function(id) {
                                 <p style="margin: 4px 0 0 0; font-size: 16px; font-weight: 500;">${customer.last_order_date ? window.formatDateLocal(customer.last_order_date) : 'Never'}</p>
                             </div>
                         </div>
-                    </div>
-                </div>
-                
-                <div style="margin-top: 24px;">
-                    <h4 style="font-weight: 600; color: #374151; margin: 0 0 16px 0;">Notes</h4>
-                    <div style="background-color: #f9fafb; padding: 16px; border-radius: 8px; margin-bottom: 24px;">
-                        <p style="margin: 0; color: #374151; white-space: pre-wrap;">${customer.notes || 'No notes available'}</p>
                     </div>
                 </div>
                 
@@ -315,103 +315,18 @@ window.viewCustomer = function(id) {
                                 <h4 style="font-weight: 600; color: #92400e; margin: 0 0 4px 0;">🔄 Merge with Another Customer</h4>
                                 <p style="margin: 0; font-size: 12px; color: #b45309;">Transfer all orders from another customer into this one</p>
                             </div>
-                            <button onclick="openMergeIntoModal(${customer.id}, '${(customer.first_name || '').replace(/'/g, "\\'")} ${(customer.last_name || '').replace(/'/g, "\\'")}')" 
+                            <button onclick="openMergeIntoModal(${customer.id}, '${(customer.first_name || '').replace(/'/g, "\\'")} ${(customer.last_name || '').replace(/'/g, "\\'")}')"
                                     style="padding: 8px 16px; background: #f59e0b; color: white; border: none; border-radius: 6px; font-size: 13px; font-weight: 500; cursor: pointer;">
                                 <i class="fas fa-compress-arrows-alt"></i> Merge Into This
                             </button>
                         </div>
                     </div>
                 </div>
-                
-                <div style="margin-top: 24px;">
-                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
-                        <h4 style="font-weight: 600; color: #374151; margin: 0;">Recent Orders ${customer.orders && customer.orders.length >= 10 ? '(Last 10)' : ''}</h4>
-                        <button onclick="viewCustomerOrders(${customer.id}, '${(customer.first_name || '').replace(/'/g, "\\'")} ${(customer.last_name || '').replace(/'/g, "\\'")}')" 
-                                style="padding: 6px 12px; background: #2563eb; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 12px; display: flex; align-items: center; gap: 4px;"
-                                onmouseover="this.style.background='#1d4ed8'" 
-                                onmouseout="this.style.background='#2563eb'">
-                            📋 View All Orders
-                        </button>
-                    </div>
-                    <div style="background-color: #f9fafb; padding: 16px; border-radius: 8px;">
-                        ${customer.orders && customer.orders.length > 0 ? `
-                            <div style="overflow-x: auto;">
-                                <table style="width: 100%; border-collapse: collapse;">
-                                    <thead>
-                                        <tr style="border-bottom: 2px solid #e5e7eb;">
-                                            <th style="padding: 8px; text-align: left; font-size: 12px; font-weight: 600; color: #374151; text-transform: uppercase;">Order #</th>
-                                            <th style="padding: 8px; text-align: left; font-size: 12px; font-weight: 600; color: #374151; text-transform: uppercase;">Date</th>
-                                            <th style="padding: 8px; text-align: left; font-size: 12px; font-weight: 600; color: #374151; text-transform: uppercase;">Status</th>
-                                            <th style="padding: 8px; text-align: left; font-size: 12px; font-weight: 600; color: #374151; text-transform: uppercase;">Source</th>
-                                            <th style="padding: 8px; text-align: right; font-size: 12px; font-weight: 600; color: #374151; text-transform: uppercase;">Total</th>
-                                            <th style="padding: 8px; text-align: center; font-size: 12px; font-weight: 600; color: #374151; text-transform: uppercase;">Actions</th>
-                                        </tr>
-                                    </thead>
-                                    <tbody>
-                                        ${customer.orders.map(order => {
-                                            const statusColor = order.order_status === 'completed' ? '#059669' : 
-                                                              order.order_status === 'delivered' ? '#059669' :
-                                                              order.order_status === 'pending' ? '#d97706' : 
-                                                              order.order_status === 'cancelled' ? '#dc2626' : '#6b7280';
-                                            // Handle both source_type (history/production) and external_source
-                                            const isHistoryOrder = order.source_type === 'history';
-                                            const sourceColor = isHistoryOrder ? '#9333ea' : // Purple for history
-                                                              order.external_source === 'shopify' ? '#7c3aed' :
-                                                              order.external_source === 'woocommerce' ? '#2563eb' :
-                                                              order.external_source === 'webapp' ? '#059669' : '#6b7280';
-                                            const sourceLabel = isHistoryOrder ? 'history' : (order.external_source || 'direct');
-                                            return `
-                                                <tr style="border-bottom: 1px solid #e5e7eb; hover:background-color: #ffffff;">
-                                                    <td style="padding: 10px 8px; font-weight: 600; color: #1f2937; font-size: 13px;">#${order.order_number || order.id}</td>
-                                                    <td style="padding: 10px 8px; color: #6b7280; font-size: 13px;">${window.formatDateLocal(order.order_date)}</td>
-                                                    <td style="padding: 10px 8px; font-size: 13px;">
-                                                        <span style="display: inline-flex; align-items: center; padding: 2px 6px; border-radius: 12px; font-size: 11px; font-weight: 500; background-color: ${statusColor}20; color: ${statusColor};">
-                                                            ${order.order_status ? order.order_status.charAt(0).toUpperCase() + order.order_status.slice(1) : 'N/A'}
-                                                        </span>
-                                                    </td>
-                                                    <td style="padding: 10px 8px; font-size: 13px;">
-                                                        <span style="display: inline-flex; align-items: center; padding: 2px 6px; border-radius: 12px; font-size: 11px; font-weight: 500; background-color: ${sourceColor}20; color: ${sourceColor};">
-                                                            ${sourceLabel}
-                                                        </span>
-                                                    </td>
-                                                    <td style="padding: 10px 8px; text-align: right; font-weight: 600; color: #1f2937; font-size: 13px;">PKR ${Math.round(order.total_price || 0).toLocaleString()}</td>
-                                                    <td style="padding: 10px 8px; text-align: center;">
-                                                        ${isHistoryOrder ? `
-                                                            <button onclick="viewHistoryOrderDetails(${order.id}, '${order.order_number}')" 
-                                                                    style="padding: 4px 8px; background: #9333ea; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 11px;"
-                                                                    onmouseover="this.style.background='#7c3aed'" 
-                                                                    onmouseout="this.style.background='#9333ea'">
-                                                                View
-                                                            </button>
-                                                        ` : `
-                                                            <button onclick="viewOrderDetailsFromCustomer(${order.id})" 
-                                                                    style="padding: 4px 8px; background: #3b82f6; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 11px; margin-right: 4px;"
-                                                                    onmouseover="this.style.background='#2563eb'" 
-                                                                    onmouseout="this.style.background='#3b82f6'">
-                                                                View
-                                                            </button>
-                                                            <button onclick="window.open('/orders/${order.id}/invoice', '_blank')" 
-                                                                    style="padding: 4px 8px; background: #059669; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 11px;"
-                                                                    onmouseover="this.style.background='#047857'" 
-                                                                    onmouseout="this.style.background='#059669'">
-                                                                Invoice
-                                                            </button>
-                                                        `}
-                                                    </td>
-                                                </tr>
-                                            `;
-                                        }).join('')}
-                                    </tbody>
-                                </table>
-                            </div>
-                        ` : `
-                            <p style="text-align: center; color: #6b7280; padding: 20px; font-size: 14px;">No orders found for this customer.</p>
-                        `}
-                    </div>
-                </div>
             `;
-            
+
             content.innerHTML = html;
+            // Unified modal: load the full orders + receivable view inline.
+            loadCustomerOrdersInline(customer.id);
         } else {
             content.innerHTML = '<div style="text-align: center; padding: 40px; color: #ef4444;">Error loading customer details</div>';
         }
@@ -423,16 +338,16 @@ window.viewCustomer = function(id) {
 };
 
 // Customer column management (reusing existing pattern)
+// Jul-2026 facelift default (v2): ID folded under the name; redundant Location
+// dropped (Region is enough); Notes / First Order off by default. All of these
+// stay in the Columns customizer, so anyone can re-add them.
 const defaultCustomerColumns = [
-    { id: 'id', visible: true, fixed: true },
     { id: 'name', visible: true, fixed: true },
     { id: 'contact', visible: true, fixed: false },
-    { id: 'location', visible: true, fixed: false },
     { id: 'region', visible: true, fixed: false },
     { id: 'total_orders', visible: true, fixed: false },
     { id: 'total_spent', visible: true, fixed: false },
-    { id: 'notes', visible: true, fixed: false },
-    { id: 'first_order_date', visible: true, fixed: false },
+    { id: 'receivable', visible: true, fixed: false },
     { id: 'last_order_date', visible: true, fixed: false },
     { id: 'actions', visible: true, fixed: true }
 ];
@@ -442,33 +357,34 @@ let currentCustomerColumns = JSON.parse(localStorage.getItem('customerTableColum
 // Clean up any corrupted data on initialization
 currentCustomerColumns = currentCustomerColumns.filter(col => col && col.id && typeof col.id === 'string');
 
-// Migrate old 'status' column to 'notes' for existing users
-currentCustomerColumns = currentCustomerColumns.map(col => {
-    if (col && col.id === 'status') {
-        return { ...col, id: 'notes' };
-    }
-    return col;
-});
-// Ensure 'notes' exists (in case it was missing)
-if (!currentCustomerColumns.find(col => col.id === 'notes')) {
-    const actionsIdx = currentCustomerColumns.findIndex(col => col.id === 'actions');
-    const notesCol = { id: 'notes', visible: true, fixed: false };
-    if (actionsIdx >= 0) {
-        currentCustomerColumns.splice(actionsIdx, 0, notesCol);
-    } else {
-        currentCustomerColumns.push(notesCol);
-    }
-}
+// (Jul-2026) The old per-column migrations (status→notes rename, ensure-notes,
+// ensure-receivable) were REMOVED: they re-inserted dropped columns on every
+// page load, silently undoing both the v2 default layout and any user's choice
+// to hide those columns. The one-time v2 reset below supersedes them; columns
+// are re-addable any time via the Columns customizer.
 localStorage.setItem('customerTableColumns', JSON.stringify(currentCustomerColumns));
 
+// Jul-2026 facelift: one-time reset to the new default layout so existing
+// users land on the cleaner mockup columns. Runs once; after that their own
+// customizations via the Columns button persist normally. (v3: re-ran once to
+// purge the ghost 'notes' column that the removed legacy migrations kept
+// re-adding to layouts saved while v2 was live.)
+const CUSTOMER_COLS_VERSION = 3;
+if (parseInt(localStorage.getItem('customerColumnsVersion') || '1', 10) < CUSTOMER_COLS_VERSION) {
+    currentCustomerColumns = JSON.parse(JSON.stringify(defaultCustomerColumns));
+    localStorage.setItem('customerTableColumns', JSON.stringify(currentCustomerColumns));
+    localStorage.setItem('customerColumnsVersion', String(CUSTOMER_COLS_VERSION));
+}
+
 const availableCustomerColumns = {
-    'id': { label: 'ID', fixed: true },
+    'id': { label: 'ID', fixed: false },
     'name': { label: 'Customer', fixed: true },
     'contact': { label: 'Contact', fixed: false },
     'location': { label: 'Location', fixed: false },
     'region': { label: 'Region', fixed: false },
     'total_orders': { label: 'Orders', fixed: false },
     'total_spent': { label: 'Total Spent', fixed: false },
+    'receivable': { label: 'Receivable', fixed: false },
     'notes': { label: 'Notes', fixed: false },
     'first_order_date': { label: 'First Order', fixed: false },
     'last_order_date': { label: 'Last Order', fixed: false },
@@ -1031,24 +947,27 @@ function getCustomerCellContent(customer, columnId) {
             
         case 'name':
             let nameHtml = '<div class="flex flex-col">';
-            nameHtml += '<span class="text-sm font-medium text-gray-900">' + customer.first_name + ' ' + customer.last_name;
-            if (customer.customer_type === 'shop') {
-                nameHtml += ' <span style="display:inline-block; padding:1px 6px; border-radius:8px; font-size:10px; font-weight:700; background:#FEF3C7; color:#B45309; border:1px solid #FCD34D;">🏪 Shop</span>';
-            }
-            nameHtml += '</span>';
+            nameHtml += '<span class="text-sm font-semibold text-gray-900">' + customer.first_name + ' ' + customer.last_name + '</span>';
+            nameHtml += '<span style="font-size:11px; color:#9ca3af; margin-top:1px;">#' + customer.id + ' · ' + (customer.customer_type === 'shop'
+                ? '<span style="color:#b45309; font-weight:700;">🏪 Shop</span>'
+                : '<span style="color:#9ca3af;">Regular</span>') + '</span>';
             if (customer.company) {
                 nameHtml += '<span class="text-xs text-gray-500">' + customer.company + '</span>';
             }
             nameHtml += '</div>';
             return nameHtml;
-            
+
         case 'contact':
             let contactHtml = '<div class="flex flex-col text-sm">';
-            if (customer.email) {
-                contactHtml += '<span class="text-gray-600 truncate max-w-[150px]" title="' + customer.email + '">' + customer.email + '</span>';
+            const cPhone = customer.phone_original || customer.phone;
+            if (cPhone) {
+                contactHtml += '<span class="text-gray-700" style="font-variant-numeric:tabular-nums;">' + cPhone + '</span>';
             }
-            if (customer.phone_original || customer.phone) {
-                contactHtml += '<span class="text-gray-500">' + (customer.phone_original || customer.phone) + '</span>';
+            if (customer.email) {
+                contactHtml += '<span class="text-gray-400 truncate max-w-[170px]" style="font-size:12px;" title="' + customer.email + '">' + customer.email + '</span>';
+            }
+            if (!cPhone && !customer.email) {
+                contactHtml += '<span class="text-gray-300">—</span>';
             }
             contactHtml += '</div>';
             return contactHtml;
@@ -1071,11 +990,25 @@ function getCustomerCellContent(customer, columnId) {
             return '<span style="font-size:12px;color:#9ca3af;">Not set</span>';
             
         case 'total_orders':
-            return '<span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-800 cursor-pointer hover:bg-blue-200 transition-colors" onclick="viewCustomerOrders(' + customer.id + ', \'' + customer.first_name + ' ' + customer.last_name + '\')" title="Click to view customer orders">' + (customer.total_orders || 0) + '</span>';
+            return '<span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-800 cursor-pointer hover:bg-blue-200 transition-colors" onclick="event.stopPropagation(); viewCustomer(' + customer.id + ')" title="Click to view customer orders">' + (customer.total_orders || 0) + '</span>';
             
         case 'total_spent':
             return '<span class="text-sm font-medium text-gray-900">PKR ' + Math.round(customer.total_spent || 0).toLocaleString() + '</span>';
-            
+
+        case 'receivable': {
+            // Money to chase — Outstanding (shops) / Pending approval (regulars).
+            // Matches the approvals page exactly (computed server-side).
+            const rAmt = Number(customer.receivable_amount || 0);
+            if (rAmt > 0.01) {
+                const rLabel = customer.receivable_label || 'Outstanding';
+                const rCount = Number(customer.receivable_count || 0);
+                const prefix = rLabel === 'Outstanding' ? 'Owes ' : 'Pending ';
+                const tip = rLabel + (rCount ? ' · ' + rCount + ' invoice' + (rCount > 1 ? 's' : '') : '');
+                return '<span title="' + tip + '" style="display:inline-block; padding:3px 9px; border-radius:8px; font-size:12px; font-weight:700; color:#b91c1c; background:#fef2f2; border:1px solid #fecaca; white-space:nowrap;">' + prefix + 'PKR ' + Math.round(rAmt).toLocaleString() + '</span>';
+            }
+            return '<span style="font-size:12px; color:#9ca3af;">—</span>';
+        }
+
         case 'first_order_date':
             return customer.first_order_date ? '<span class="text-sm text-gray-600">' + window.formatDateLocal(customer.first_order_date) + '</span>' : '<span class="text-sm text-gray-400">Never</span>';
             
@@ -1124,7 +1057,7 @@ function getCustomerCellContent(customer, columnId) {
         case 'notes':
             const notes = customer.notes || '';
             const truncatedNotes = notes.length > 50 ? notes.substring(0, 50) + '...' : notes;
-            return '<span class="text-sm text-gray-600" title="' + notes + '">' + (truncatedNotes || 'No notes') + '</span>';
+            return '<span class="text-sm text-gray-600" title="' + notes + '">' + (truncatedNotes || '<span style="color:#d1d5db;">—</span>') + '</span>';
             
         case 'latitude':
             return '<span class="text-sm text-gray-500">' + (customer.latitude || 'N/A') + '</span>';
@@ -1179,6 +1112,7 @@ function getCustomerColumnWidth(columnId) {
         case 'region': return 'w-32';
         case 'total_orders': return 'w-20';
         case 'total_spent': return 'w-32';
+        case 'receivable': return 'w-36';
         case 'first_order_date': return 'w-32';
         case 'last_order_date': return 'w-32';
         case 'notes': return 'w-64';
@@ -1340,6 +1274,15 @@ window.saveCustomerRegion = async function(customerId) {
 };
 
 window.viewCustomerOrders = function(customerId, customerName) {
+    // Unified modal (Jul-2026): orders now render INSIDE the customer details
+    // modal, so every "view orders" entry point opens the one popup. The legacy
+    // separate-modal render below is kept but unreachable (after the return).
+    window.viewCustomer(customerId);
+    setTimeout(() => {
+        const w = document.getElementById('customerOrdersInlineWrap');
+        if (w) w.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }, 350);
+    return;
     console.log('Opening orders for customer ID:', customerId);
     const modal = document.getElementById('customerOrdersModal');
     const content = document.getElementById('customerOrdersContent');
@@ -1374,13 +1317,49 @@ window.viewCustomerOrders = function(customerId, customerName) {
             console.log('Customer orders data received:', data);
             if (data.success) {
                 const orders = data.orders;
-                
+                // Payment status/balance columns are meaningful only for shop
+                // customers (they settle invoices incrementally).
+                const isShop = !!data.is_shop;
+
                 if (orders.length === 0) {
                     content.innerHTML = '<div style="text-align: center; padding: 40px; color: #6b7280;">No orders found for this customer.</div>';
                     return;
                 }
-                
-                let html = `
+
+                // ---- Summary tiles. The receivable (Outstanding for shops /
+                // Pending approval for regulars) matches the approvals page exactly. ----
+                const sum = data.summary || {};
+                const rLabel = sum.receivable_label || (isShop ? 'Outstanding' : 'Pending approval');
+                const rAmount = Number(sum.receivable_amount || 0);
+                const rCount = Number(sum.receivable_count || 0);
+                // Oldest still-pending invoice: unpaid/partial (shops) or pending-L1 (regulars).
+                const pendingOrders = orders.filter(o => isShop
+                    ? (o.balance_remaining !== null && o.balance_remaining > 0.01)
+                    : (o.approval_state === 'pending_l1'));
+                let oldestAge = null, oldestNum = null;
+                pendingOrders.forEach(o => {
+                    const d = new Date(o.order_date);
+                    if (!isNaN(d.getTime())) {
+                        const age = Math.floor((Date.now() - d.getTime()) / 86400000);
+                        if (oldestAge === null || age > oldestAge) { oldestAge = age; oldestNum = o.order_number; }
+                    }
+                });
+                const lifetime = orders.reduce((s, o) => s + (Number(o.total_price) || 0), 0);
+                const tile = (cap, big, sub, alert) => `
+                    <div style="flex:1 1 130px; min-width:130px; border:1px solid ${alert ? '#fecaca' : '#e5e7eb'}; background:${alert ? '#fef2f2' : '#f9fafb'}; border-radius:12px; padding:12px 14px;">
+                        <div style="font-size:11px; text-transform:uppercase; letter-spacing:.04em; font-weight:700; color:${alert ? '#b91c1c' : '#9ca3af'};">${cap}</div>
+                        <div style="font-size:19px; font-weight:800; color:${alert ? '#b91c1c' : '#111827'}; margin-top:2px;">${big}</div>
+                        <div style="font-size:12px; color:#6b7280; margin-top:2px;">${sub || '&nbsp;'}</div>
+                    </div>`;
+                const tilesHtml = `
+                    <div style="display:flex; gap:10px; flex-wrap:wrap; margin-bottom:16px;">
+                        ${tile(rLabel, rAmount > 0.01 ? ('PKR ' + Math.round(rAmount).toLocaleString()) : 'PKR 0', rCount > 0 ? (rCount + ' invoice' + (rCount > 1 ? 's' : '')) : 'nothing pending', rAmount > 0.01)}
+                        ${tile('Oldest pending', oldestAge !== null ? (oldestAge + ' days') : '—', oldestNum || '', false)}
+                        ${tile('Total orders', String(orders.length), ((sum.history_orders || 0) > 0 ? (sum.history_orders + ' legacy') : ''), false)}
+                        ${tile('Lifetime', 'PKR ' + Math.round(lifetime).toLocaleString(), '', false)}
+                    </div>`;
+
+                let html = tilesHtml + `
                     <div style="overflow-x: auto;">
                         <table style="width: 100%; border-collapse: collapse;">
                             <thead>
@@ -1390,6 +1369,12 @@ window.viewCustomerOrders = function(customerId, customerName) {
                                     <th style="padding: 12px; text-align: left; font-size: 12px; font-weight: 600; color: #374151; text-transform: uppercase;">Status</th>
                                     <th style="padding: 12px; text-align: left; font-size: 12px; font-weight: 600; color: #374151; text-transform: uppercase;">Items</th>
                                     <th style="padding: 12px; text-align: right; font-size: 12px; font-weight: 600; color: #374151; text-transform: uppercase;">Total</th>
+                                    ${isShop ? `
+                                    <th style="padding: 12px; text-align: center; font-size: 12px; font-weight: 600; color: #374151; text-transform: uppercase;">Payment</th>
+                                    <th style="padding: 12px; text-align: right; font-size: 12px; font-weight: 600; color: #374151; text-transform: uppercase;">Balance</th>
+                                    ` : `
+                                    <th style="padding: 12px; text-align: center; font-size: 12px; font-weight: 600; color: #374151; text-transform: uppercase;">Approval</th>
+                                    `}
                                     <th style="padding: 12px; text-align: center; font-size: 12px; font-weight: 600; color: #374151; text-transform: uppercase;">Actions</th>
                                 </tr>
                             </thead>
@@ -1407,6 +1392,31 @@ window.viewCustomerOrders = function(customerId, customerName) {
                     const sourceColor = isHistoryOrder ? '#9333ea' : '#3b82f6';
                     const sourceLabel = isHistoryOrder ? 'Legacy' : 'Production';
                     
+                    // Payment status badge + balance (shop customers only).
+                    const payStatus = order.payment_status || null;
+                    const payColors = { paid: '#059669', partial: '#b45309', unpaid: '#dc2626', settled: '#64748b' };
+                    const payLabels = { paid: 'Paid', partial: 'Partial', unpaid: 'Unpaid', settled: 'Settled' };
+                    const payColor = payColors[payStatus] || '#9ca3af';
+                    const paymentBadge = payStatus
+                        ? `<span style="display: inline-flex; align-items: center; padding: 4px 8px; border-radius: 12px; font-size: 12px; font-weight: 600; background-color: ${payColor}20; color: ${payColor};">${payLabels[payStatus] || payStatus}</span>`
+                        : '<span style="color: #9ca3af;">—</span>';
+                    const bal = (order.balance_remaining === null || order.balance_remaining === undefined) ? null : order.balance_remaining;
+                    const balanceCell = (bal !== null && bal > 0.01)
+                        ? `<span style="color: #b91c1c; font-weight: 600;">PKR ${Math.round(bal).toLocaleString()}</span>`
+                        : '<span style="color: #9ca3af;">—</span>';
+                    // Regular customers: online-invoice approval state instead of payment/balance.
+                    const apState = order.approval_state || null;
+                    const apColors = { pending_l1: '#b45309', pending_l2: '#2563eb', approved: '#059669' };
+                    const apLabels = { pending_l1: 'Pending L1', pending_l2: 'Pending L2', approved: 'Approved' };
+                    const apColor = apColors[apState] || '#9ca3af';
+                    const approvalBadge = apState
+                        ? `<span style="display: inline-flex; align-items: center; padding: 4px 8px; border-radius: 12px; font-size: 12px; font-weight: 600; background-color: ${apColor}20; color: ${apColor};">${apLabels[apState] || apState}</span>`
+                        : '<span style="color: #9ca3af;">—</span>';
+                    const extraCells = isShop
+                        ? `<td style="padding: 12px; text-align: center;">${paymentBadge}</td>
+                           <td style="padding: 12px; text-align: right;">${balanceCell}</td>`
+                        : `<td style="padding: 12px; text-align: center;">${approvalBadge}</td>`;
+
                     // Different action buttons for history vs production orders
                     const actionButtons = isHistoryOrder ? `
                         <button onclick="viewHistoryOrderDetails(${order.id}, '${order.order_number}')" 
@@ -1444,6 +1454,7 @@ window.viewCustomerOrders = function(customerId, customerName) {
                             </td>
                             <td style="padding: 12px; color: #6b7280;">${order.line_items_count || 0} items</td>
                             <td style="padding: 12px; text-align: right; font-weight: 600; color: #1f2937;">PKR ${Math.round(order.total_price || 0).toLocaleString()}</td>
+                            ${extraCells}
                             <td style="padding: 12px; text-align: center;">
                                 ${actionButtons}
                             </td>
@@ -1476,8 +1487,10 @@ window.viewCustomerOrders = function(customerId, customerName) {
                             </span>
                             ` : ''}
                         </div>
-                        <div style="font-size: 14px; font-weight: 600; color: #059669;">
-                            Total: PKR ${totalSpent.toLocaleString()}
+                        <div style="display: flex; gap: 16px; align-items: center;">
+                            <div style="font-size: 14px; font-weight: 600; color: #059669;">
+                                Lifetime: PKR ${totalSpent.toLocaleString()}
+                            </div>
                         </div>
                     </div>
                 `;
@@ -1493,10 +1506,143 @@ window.viewCustomerOrders = function(customerId, customerName) {
         });
 };
 
+// ===== Unified customer modal — inline orders section (tiles + filter chips + invoice table) =====
+// Rendered inside the Customer Details modal by loadCustomerOrdersInline().
+
+function buildCustomerInvoiceRow(order, isShop) {
+    const statusColor = order.order_status === 'completed' ? '#059669' :
+                        order.order_status === 'delivered' ? '#059669' :
+                        order.order_status === 'pending' ? '#d97706' :
+                        order.order_status === 'cancelled' ? '#dc2626' : '#6b7280';
+    const isHistoryOrder = order.source_type === 'history';
+
+    const payStatus = order.payment_status || null;
+    const payColors = { paid: '#059669', partial: '#b45309', unpaid: '#dc2626', settled: '#64748b' };
+    const payLabels = { paid: 'Paid', partial: 'Partial', unpaid: 'Unpaid', settled: 'Settled' };
+    const payColor = payColors[payStatus] || '#9ca3af';
+    const paymentBadge = payStatus
+        ? `<span style="display:inline-flex;align-items:center;padding:4px 8px;border-radius:12px;font-size:12px;font-weight:600;background-color:${payColor}20;color:${payColor};">${payLabels[payStatus] || payStatus}</span>`
+        : '<span style="color:#9ca3af;">—</span>';
+    const bal = (order.balance_remaining === null || order.balance_remaining === undefined) ? null : order.balance_remaining;
+    const balanceCell = (bal !== null && bal > 0.01)
+        ? `<span style="color:#b91c1c;font-weight:600;">PKR ${Math.round(bal).toLocaleString()}</span>`
+        : '<span style="color:#9ca3af;">—</span>';
+    const apState = order.approval_state || null;
+    const apColors = { pending_l1: '#b45309', pending_l2: '#2563eb', approved: '#059669' };
+    const apLabels = { pending_l1: 'Pending L1', pending_l2: 'Pending L2', approved: 'Approved' };
+    const apColor = apColors[apState] || '#9ca3af';
+    const approvalBadge = apState
+        ? `<span style="display:inline-flex;align-items:center;padding:4px 8px;border-radius:12px;font-size:12px;font-weight:600;background-color:${apColor}20;color:${apColor};">${apLabels[apState] || apState}</span>`
+        : '<span style="color:#9ca3af;">—</span>';
+    const extraCells = isShop
+        ? `<td style="padding:12px;text-align:center;">${paymentBadge}</td><td style="padding:12px;text-align:right;">${balanceCell}</td>`
+        : `<td style="padding:12px;text-align:center;">${approvalBadge}</td>`;
+
+    const actionButtons = isHistoryOrder
+        ? `<button onclick="viewHistoryOrderDetails(${order.id}, '${order.order_number}')" style="padding:6px 12px;background:#9333ea;color:white;border:none;border-radius:6px;cursor:pointer;font-size:12px;">View</button>`
+        : `<button onclick="viewOrderDetailsFromCustomer(${order.id})" style="padding:6px 12px;background:#3b82f6;color:white;border:none;border-radius:6px;cursor:pointer;font-size:12px;margin-right:4px;">View</button>
+           <button onclick="editOrderFromCustomer(${order.id})" style="padding:6px 12px;background:#059669;color:white;border:none;border-radius:6px;cursor:pointer;font-size:12px;">Edit</button>`;
+
+    return `
+        <tr style="border-bottom:1px solid #f3f4f6;">
+            <td style="padding:12px;font-weight:600;color:#1f2937;">#${order.order_number || order.id}${isHistoryOrder ? ' <span style="margin-left:4px;padding:2px 6px;background:#f3e8ff;color:#9333ea;font-size:10px;border-radius:4px;">Legacy</span>' : ''}</td>
+            <td style="padding:12px;color:#6b7280;">${window.formatDateLocal(order.order_date)}</td>
+            <td style="padding:12px;"><span style="display:inline-flex;align-items:center;padding:4px 8px;border-radius:12px;font-size:12px;font-weight:500;background-color:${statusColor}20;color:${statusColor};">${order.order_status ? order.order_status.charAt(0).toUpperCase() + order.order_status.slice(1) : 'N/A'}</span></td>
+            <td style="padding:12px;color:#6b7280;">${order.line_items_count || 0} items</td>
+            <td style="padding:12px;text-align:right;font-weight:600;color:#1f2937;">PKR ${Math.round(order.total_price || 0).toLocaleString()}</td>
+            ${extraCells}
+            <td style="padding:12px;text-align:center;">${actionButtons}</td>
+        </tr>`;
+}
+
+function filterCustomerInvoices(status) {
+    const state = window.__custInv;
+    if (!state) return;
+    const rows = (status === 'all')
+        ? state.orders
+        : state.orders.filter(o => state.isShop ? (o.payment_status === status) : (o.approval_state === status));
+    const body = document.getElementById('custInvBody');
+    const cols = state.isShop ? 8 : 7;
+    if (body) {
+        body.innerHTML = rows.length
+            ? rows.map(o => buildCustomerInvoiceRow(o, state.isShop)).join('')
+            : `<tr><td colspan="${cols}" style="padding:20px;text-align:center;color:#9ca3af;">No invoices in this filter.</td></tr>`;
+    }
+    document.querySelectorAll('[data-invchip]').forEach(c => {
+        const on = c.getAttribute('data-invchip') === status;
+        c.style.background = on ? '#4f46e5' : '#fff';
+        c.style.color = on ? '#fff' : '#6b7280';
+        c.style.borderColor = on ? '#4f46e5' : '#d1d5db';
+    });
+}
+
+function buildCustomerOrdersSection(data) {
+    if (!data || !data.success) return '<div style="color:#ef4444;padding:16px;">Could not load orders.</div>';
+    const orders = data.orders || [];
+    const isShop = !!data.is_shop;
+    const sum = data.summary || {};
+    if (orders.length === 0) return '<div style="text-align:center;color:#6b7280;padding:20px;">No orders found for this customer.</div>';
+
+    // Receivable + oldest-pending tiles. Receivable matches the approvals page exactly.
+    const rLabel = sum.receivable_label || (isShop ? 'Outstanding' : 'Pending approval');
+    const rAmount = Number(sum.receivable_amount || 0);
+    const rCount = Number(sum.receivable_count || 0);
+    const pendingOrders = orders.filter(o => isShop ? (o.balance_remaining !== null && o.balance_remaining > 0.01) : (o.approval_state === 'pending_l1'));
+    let oldestAge = null, oldestNum = null;
+    pendingOrders.forEach(o => { const d = new Date(o.order_date); if (!isNaN(d.getTime())) { const age = Math.floor((Date.now() - d.getTime()) / 86400000); if (oldestAge === null || age > oldestAge) { oldestAge = age; oldestNum = o.order_number; } } });
+    const tile = (cap, big, sub, alert) => `<div style="flex:1 1 160px;min-width:160px;border:1px solid ${alert ? '#fecaca' : '#e5e7eb'};background:${alert ? '#fef2f2' : '#f9fafb'};border-radius:12px;padding:12px 14px;"><div style="font-size:11px;text-transform:uppercase;letter-spacing:.04em;font-weight:700;color:${alert ? '#b91c1c' : '#9ca3af'};">${cap}</div><div style="font-size:19px;font-weight:800;color:${alert ? '#b91c1c' : '#111827'};margin-top:2px;">${big}</div><div style="font-size:12px;color:#6b7280;margin-top:2px;">${sub || '&nbsp;'}</div></div>`;
+    const tilesHtml = `<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px;">
+        ${tile(rLabel, rAmount > 0.01 ? ('PKR ' + Math.round(rAmount).toLocaleString()) : 'PKR 0', rCount > 0 ? (rCount + ' invoice' + (rCount > 1 ? 's' : '')) : 'nothing pending', rAmount > 0.01)}
+        ${tile('Oldest pending', oldestAge !== null ? (oldestAge + ' days') : '—', oldestNum || '', false)}
+    </div>`;
+
+    // Filter chips — only show a status chip when it has rows.
+    const chipDefs = isShop
+        ? [['unpaid', 'Unpaid'], ['partial', 'Partial'], ['paid', 'Paid'], ['settled', 'Settled']]
+        : [['pending_l1', 'Pending L1'], ['pending_l2', 'Pending L2'], ['approved', 'Approved']];
+    const countFor = (key) => orders.filter(o => isShop ? o.payment_status === key : o.approval_state === key).length;
+    const chip = (key, label, count, on) => `<span data-invchip="${key}" onclick="filterCustomerInvoices('${key}')" style="cursor:pointer;font-size:12.5px;font-weight:600;padding:5px 11px;border-radius:999px;border:1px solid ${on ? '#4f46e5' : '#d1d5db'};background:${on ? '#4f46e5' : '#fff'};color:${on ? '#fff' : '#6b7280'};">${label} <span style="opacity:.75;">${count}</span></span>`;
+    let chipsHtml = `<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px;">${chip('all', 'All', orders.length, true)}`;
+    chipDefs.forEach(([k, l]) => { const c = countFor(k); if (c > 0) chipsHtml += chip(k, l, c, false); });
+    chipsHtml += '</div>';
+
+    const header = `<tr style="background-color:#f9fafb;border-bottom:1px solid #e5e7eb;">
+            <th style="padding:12px;text-align:left;font-size:12px;font-weight:600;color:#374151;text-transform:uppercase;">Order #</th>
+            <th style="padding:12px;text-align:left;font-size:12px;font-weight:600;color:#374151;text-transform:uppercase;">Date</th>
+            <th style="padding:12px;text-align:left;font-size:12px;font-weight:600;color:#374151;text-transform:uppercase;">Status</th>
+            <th style="padding:12px;text-align:left;font-size:12px;font-weight:600;color:#374151;text-transform:uppercase;">Items</th>
+            <th style="padding:12px;text-align:right;font-size:12px;font-weight:600;color:#374151;text-transform:uppercase;">Total</th>
+            ${isShop ? `<th style="padding:12px;text-align:center;font-size:12px;font-weight:600;color:#374151;text-transform:uppercase;">Payment</th><th style="padding:12px;text-align:right;font-size:12px;font-weight:600;color:#374151;text-transform:uppercase;">Balance</th>` : `<th style="padding:12px;text-align:center;font-size:12px;font-weight:600;color:#374151;text-transform:uppercase;">Approval</th>`}
+            <th style="padding:12px;text-align:center;font-size:12px;font-weight:600;color:#374151;text-transform:uppercase;">Actions</th>
+        </tr>`;
+    const bodyRows = orders.map(o => buildCustomerInvoiceRow(o, isShop)).join('');
+
+    // Stash for the filter chips.
+    window.__custInv = { orders, isShop };
+
+    return tilesHtml + chipsHtml + `
+        <div style="overflow-x:auto;border:1px solid #e5e7eb;border-radius:8px;">
+            <table style="width:100%;border-collapse:collapse;">
+                <thead>${header}</thead>
+                <tbody id="custInvBody">${bodyRows}</tbody>
+            </table>
+        </div>`;
+}
+
+function loadCustomerOrdersInline(customerId) {
+    const el = document.getElementById('customerOrdersInline');
+    if (!el) return;
+    fetch(`/customers/${customerId}/orders`)
+        .then(r => r.json())
+        .then(data => { el.innerHTML = buildCustomerOrdersSection(data); })
+        .catch(e => { console.error('orders inline load failed', e); el.innerHTML = '<div style="color:#ef4444;padding:16px;">Could not load orders.</div>'; });
+}
+
 // Functions to integrate with existing order modals (these will call the same functions used in orders page)
 window.viewOrderDetailsFromCustomer = function(orderId) {
-    // Close customer orders modal first
+    // Close the customer modal(s) first — orders live in the unified modal now.
     window.closeModal('customerOrdersModal');
+    window.closeModal('viewCustomerModal');
     
     // Check if the main order modal functions exist (from orders page)
     if (typeof window.viewOrderDetails === 'function') {
@@ -1508,8 +1654,9 @@ window.viewOrderDetailsFromCustomer = function(orderId) {
 };
 
 window.editOrderFromCustomer = function(orderId) {
-    // Close customer orders modal first
+    // Close the customer modal(s) first — orders live in the unified modal now.
     window.closeModal('customerOrdersModal');
+    window.closeModal('viewCustomerModal');
     
     // Check if the main order edit functions exist (from orders page)
     if (typeof window.editOrder === 'function') {
@@ -2492,33 +2639,17 @@ function removePromoImage() {
 
 @section('content')
 <div class="container-fixed">
-    <div class="flex flex-wrap items-center lg:items-end justify-between gap-5 pb-7.5">
+    {{-- padding-left keeps the title clear of the floating sidebar-collapse
+         button that overlaps the content's top-left corner (page-scoped fix). --}}
+    <div class="flex flex-wrap items-center lg:items-end justify-between gap-5 pb-7.5" style="padding-left: 44px;">
         <div class="flex flex-col justify-center gap-2">
             <h1 class="text-xl font-semibold leading-none text-foreground">Customers</h1>
             <div class="flex items-center gap-2 text-sm font-medium text-muted-foreground">
                 Manage your customer database and relationships
             </div>
         </div>
-        
-        <div class="flex items-center gap-2.5">
-            <div class="flex items-center gap-3 text-sm">
-                <a href="{{ route('customers.index', array_merge(request()->except(['activity', 'page']), ['activity' => '30day'])) }}"
-                   class="flex items-center gap-2 px-3 py-1.5 rounded-full transition-all cursor-pointer {{ request('activity') === '30day' ? 'bg-green-100 ring-2 ring-green-400 font-semibold' : 'hover:bg-green-50' }}">
-                    <div class="w-3 h-3 bg-green-500 rounded-full"></div>
-                    <span>{{ $stats['active_30_days'] }} 30-Day Active</span>
-                </a>
-                <a href="{{ route('customers.index', array_merge(request()->except(['activity', 'page']), ['activity' => '90day'])) }}"
-                   class="flex items-center gap-2 px-3 py-1.5 rounded-full transition-all cursor-pointer {{ request('activity') === '90day' ? 'bg-orange-100 ring-2 ring-orange-400 font-semibold' : 'hover:bg-orange-50' }}">
-                    <div class="w-3 h-3 bg-orange-500 rounded-full"></div>
-                    <span>{{ $stats['active_90_days'] }} 90-Day Active</span>
-                </a>
-                <a href="{{ route('customers.index', request()->except(['activity', 'page'])) }}"
-                   class="flex items-center gap-2 px-3 py-1.5 rounded-full transition-all cursor-pointer {{ !request('activity') ? 'bg-blue-100 ring-2 ring-blue-400 font-semibold' : 'hover:bg-blue-50' }}">
-                    <div class="w-3 h-3 bg-blue-500 rounded-full"></div>
-                    <span>{{ $stats['total_customers'] }} Total</span>
-                </a>
-            </div>
-        </div>
+        {{-- Activity stats live in the single stat card below (Jul-2026: removed
+             the duplicate top-right pills that repeated the same three figures). --}}
     </div>
 </div>
 
@@ -2578,7 +2709,7 @@ function removePromoImage() {
             </div>
 
             <!-- Compact Search and Filters Section -->
-            <div class="px-4 py-3 bg-gray-50 border-b border-gray-200">
+            <div class="px-4 py-3 bg-gray-50 border-b border-gray-200" id="customersFilterBar">
                 <div class="flex items-center gap-2">
                     <div class="flex-1 min-w-48">
                         <div class="relative">
@@ -2824,7 +2955,7 @@ function removePromoImage() {
 
 <!-- View Customer Modal -->
 <div id="viewCustomerModal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background-color: rgba(0,0,0,0.5); z-index: 1000;">
-    <div style="position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); background: white; border-radius: 12px; width: 90%; max-width: 800px; max-height: 90vh; overflow-y: auto;">
+    <div style="position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); background: white; border-radius: 12px; width: 94%; max-width: 1080px; max-height: 90vh; overflow-y: auto;">
         <div style="padding: 24px; border-bottom: 1px solid #e5e7eb;">
             <div style="display: flex; justify-content: space-between; align-items: center;">
                 <h3 style="font-size: 20px; font-weight: 600; margin: 0;">Customer Details</h3>

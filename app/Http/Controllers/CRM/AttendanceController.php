@@ -162,9 +162,11 @@ class AttendanceController extends Controller
                 'a.expected_shift_end',
                 'a.late_minutes',
                 'a.overtime_minutes',
-                // Meter readings
+                // Meter readings + their photo proof (present/absent shown as icons)
                 'a.meter_start',
                 'a.meter_end',
+                'a.picture_start',
+                'a.picture_end',
                 // Location tracking fields
                 'a.checkin_latitude',
                 'a.checkin_longitude',
@@ -227,6 +229,11 @@ class AttendanceController extends Controller
             $row->shift_name = $shiftData['shift_name'];
             $row->shift_source = $shiftData['source'];
 
+            // Unified per-day classification (working|off|holiday|not_joined) so a
+            // no-login day on a holiday / weekly off / before the hire date is NOT
+            // painted red "Absent". Leave is layered on the frontend from leave_status.
+            $row->day_kind = $shiftService->dayKind($row->user_id, $selectedDate);
+
             // Per-row late/overtime minutes — prefer the frozen snapshot, else compute
             // for the selected date. The frontend should DISPLAY these, not recompute.
             if (!$row->login_time) {
@@ -265,17 +272,27 @@ class AttendanceController extends Controller
                 $userIdsWithAttendance[] = $row->user_id;
             }
             
-            // Recalculate distance based on user's current assigned location
+            // Recalculate distance against the SHIFT location for the selected date —
+            // the SAME base the mobile check-in measured against — NOT the rider's
+            // default assigned location. $shiftData (resolved per-date above) carries
+            // location_id, so a rider at LaCarne today is measured vs LaCarne, and a
+            // past date uses that day's shift location (calculateDistanceFromBase falls
+            // back to assigned→primary if the shift has no explicit location).
             if ($row->checkin_latitude && $row->checkin_longitude) {
                 $distanceResult = $locationService->calculateDistanceFromBase(
                     $row->checkin_latitude,
                     $row->checkin_longitude,
-                    $row->user_id
+                    $row->user_id,
+                    $shiftData['location_id'] ?? null
                 );
-                
-                // Update with recalculated values
-                $row->checkin_distance_from_base = $distanceResult['distance_meters'];
-                $row->is_remote_checkin = $distanceResult['is_remote'] ? 1 : 0;
+
+                // Update with recalculated values — but keep the frozen check-in value
+                // if the recompute couldn't resolve a base (no location configured), so
+                // a config gap never blanks a real distance.
+                if ($distanceResult['distance_meters'] !== null) {
+                    $row->checkin_distance_from_base = $distanceResult['distance_meters'];
+                    $row->is_remote_checkin = $distanceResult['is_remote'] ? 1 : 0;
+                }
                 $row->assigned_office_location = $distanceResult['base_location']->location_name ?? null;
             }
         }
@@ -310,8 +327,360 @@ class AttendanceController extends Controller
                 }
             }
         }
-        
-        return response()->json(['success' => true, 'data' => $rows]);
+
+        // ── Meter-flag inputs (Phase B): yesterday's end meter (for the company-bike
+        //    overnight check) + the company_bike flag. The frontend computes the actual
+        //    flags from these + the thresholds below. Fully guarded — a missing column
+        //    or no prior data never breaks the daily view.
+        $userIds = $rows->pluck('user_id')->filter()->values()->all();
+        $prevMeter = []; $bikeSet = []; $graceByUser = [];
+        if (!empty($userIds)) {
+            try {
+                $ph = implode(',', array_fill(0, count($userIds), '?'));
+                $prev = DB::select("
+                    SELECT a.user_id, a.meter_end, a.attendance_date
+                    FROM t_ops_attendance a
+                    INNER JOIN (
+                        SELECT user_id, MAX(attendance_date) as md FROM t_ops_attendance
+                        WHERE user_id IN ($ph) AND attendance_date < ? AND meter_end IS NOT NULL
+                        GROUP BY user_id
+                    ) l ON a.user_id = l.user_id AND a.attendance_date = l.md
+                ", array_merge($userIds, [$selectedDate]));
+                foreach ($prev as $p) {
+                    $prevMeter[$p->user_id] = ['end' => $p->meter_end, 'date' => $p->attendance_date];
+                }
+            } catch (\Throwable $e) { /* no prior meters → no overnight flag */ }
+            try {
+                $hasBike  = \Illuminate\Support\Facades\Schema::hasColumn('t_ops_rider_profile', 'company_bike');
+                $hasGrace = \Illuminate\Support\Facades\Schema::hasColumn('t_ops_rider_profile', 'overnight_grace_km');
+                if ($hasBike) {
+                    $cols = $hasGrace ? ['user_id', 'company_bike', 'overnight_grace_km'] : ['user_id', 'company_bike'];
+                    foreach (DB::table('t_ops_rider_profile')->whereIn('user_id', $userIds)->where('company_bike', 1)->get($cols) as $prof) {
+                        $bikeSet[$prof->user_id] = true;
+                        if ($hasGrace && $prof->overnight_grace_km !== null && $prof->overnight_grace_km !== '') {
+                            $graceByUser[$prof->user_id] = (float) $prof->overnight_grace_km;
+                        }
+                    }
+                }
+            } catch (\Throwable $e) { /* column not added yet → no bike flags */ }
+        }
+        $defaultGrace = (float) $this->attendanceConfig('ATTENDANCE_OVERNIGHT_GRACE_KM', 30);
+        // Inline context for the Today view: this-month lateness (always) and
+        // absent-this-year (only for a rider who is actually absent today, so the
+        // heavier year scan runs on a bounded set).
+        $cycle = $this->attendanceCycle();
+        $monthStart = date('Y-m-01', strtotime($selectedDate));
+        foreach ($rows as $row) {
+            $pm = $prevMeter[$row->user_id] ?? null;
+            $row->prev_meter_end = $pm['end'] ?? null;
+            $row->prev_meter_date = $pm['date'] ?? null;
+            $row->company_bike = isset($bikeSet[$row->user_id]) ? 1 : 0;
+            // Effective overnight grace: per-rider override → global default.
+            $row->overnight_grace_km = $graceByUser[$row->user_id] ?? $defaultGrace;
+
+            // Month-to-date total late minutes (same source as the Month tab).
+            try {
+                $lo = $shiftService->sumLateOvertimeMinutes((int) $row->user_id, $monthStart, $selectedDate);
+                $row->month_late_minutes = (int) ($lo['late_minutes'] ?? 0);
+            } catch (\Throwable $e) { $row->month_late_minutes = 0; }
+
+            // Absent-this-year — only when this row is genuinely absent for the selected
+            // day (working day, no login, not on approved/pending leave).
+            $onLeave = $row->leave_request_id
+                && in_array(strtolower((string) $row->leave_status), ['approved', 'pending'], true);
+            $isAbsentToday = empty($row->login_time) && (($row->day_kind ?? 'working') === 'working') && !$onLeave;
+            $row->year_absent_days = $isAbsentToday
+                ? $this->yearAbsentDays((int) $row->user_id, $shiftService, $cycle, $selectedDate)
+                : null;
+        }
+
+        $config = [
+            'meter_gps_warn_km' => (float) $this->attendanceConfig('ATTENDANCE_METER_GPS_WARN_KM', 10),
+            'overnight_grace_km' => $defaultGrace,
+        ];
+
+        return response()->json(['success' => true, 'data' => $rows, 'config' => $config]);
+    }
+
+    /** Read a t_fin_config value with a default (never throws — a config hiccup must
+     *  not break the attendance page). Used for the meter-flag thresholds. */
+    private function attendanceConfig(string $key, $default)
+    {
+        try {
+            $v = DB::table('t_fin_config')->where('config_key', $key)->value('config_value');
+            return ($v === null || $v === '') ? $default : $v;
+        } catch (\Throwable $e) {
+            return $default;
+        }
+    }
+
+    /**
+     * Absent working-days for a user within the configured cycle
+     * (cycle start → min(today, cycle end)). A date counts only when dayKind==='working'
+     * (not off / holiday / before hire) AND the user was not on an approved leave AND had
+     * no login. This is the SINGLE definition shared by the Month tab and the Today view,
+     * so the "absent this year" number is consistent everywhere.
+     */
+    private function yearAbsentDays(int $userId, \App\Services\ShiftResolutionService $shiftService, array $cycle, string $today): int
+    {
+        $yearEndEff = min($today, $cycle['end']);
+        return count($this->absentWorkingDates($userId, $shiftService, $cycle['start'], $yearEndEff));
+    }
+
+    /**
+     * The exact absent-working DATES for a user in [$start,$end] — the list behind the
+     * yearAbsentDays()/monthly-absent COUNTS (count === this list's size), so the drill-down
+     * a manager sees can never disagree with the number they clicked.
+     */
+    private function absentWorkingDates(int $userId, \App\Services\ShiftResolutionService $shiftService, string $start, string $end): array
+    {
+        if ($start > $end) { return []; }
+        $leaveDates = $this->approvedLeaveDates($userId, $start, $end);
+        $presentDates = [];
+        foreach (DB::table('t_ops_attendance')->where('user_id', $userId)
+                    ->whereBetween('attendance_date', [$start, $end])
+                    ->whereNotNull('login_time')->where('login_time', '!=', '')
+                    ->pluck('attendance_date') as $ad) {
+            $presentDates[substr((string) $ad, 0, 10)] = true;
+        }
+        $out = [];
+        $cur = new \DateTime($start);
+        $endO = new \DateTime($end);
+        while ($cur <= $endO) {
+            $ds = $cur->format('Y-m-d');
+            if (!isset($presentDates[$ds]) && !isset($leaveDates[$ds])
+                && $shiftService->dayKind($userId, $ds) === 'working') {
+                $out[] = $ds;
+            }
+            $cur->modify('+1 day');
+        }
+        return $out;
+    }
+
+    /** Approved-leave dates (Y-m-d => true) for a user, clamped to [$start,$end]. */
+    private function approvedLeaveDates(int $userId, string $start, string $end): array
+    {
+        $dates = [];
+        $leaves = DB::table('t_req_master as r')
+            ->join('t_req_category as c', 'c.id', '=', 'r.category_id')
+            ->where('c.category_code', 'leave')
+            ->where('r.requester_user_id', $userId)
+            ->where('r.status', 'approved')
+            ->where('r.leave_start_date', '<=', $end)
+            ->where('r.leave_end_date', '>=', $start)
+            ->select('r.leave_start_date', 'r.leave_end_date', 'r.leave_type')
+            ->get();
+        foreach ($leaves as $lv) {
+            $ls = max($start, substr((string) $lv->leave_start_date, 0, 10));
+            $le = min($end, substr((string) $lv->leave_end_date, 0, 10));
+            for ($c = new \DateTime($ls); $c <= new \DateTime($le); $c->modify('+1 day')) {
+                $dates[$c->format('Y-m-d')] = $lv->leave_type ?: 'Leave';
+            }
+        }
+        return $dates;
+    }
+
+    /**
+     * Exact dates behind a Month-tab number (absent/leave, month or year cycle). Powers the
+     * click-to-see-dates drill-down. type ∈ month_absent | month_leave | year_absent | year_leave.
+     */
+    public function dateBreakdown(Request $request)
+    {
+        $userId = (int) $request->input('user_id');
+        $type = $request->input('type');
+        $month = $request->input('month'); // Y-m (for month_* types)
+        if (!$userId || !in_array($type, ['month_absent', 'month_leave', 'year_absent', 'year_leave'], true)) {
+            return response()->json(['success' => false, 'message' => 'Bad request'], 400);
+        }
+        $shiftService = new ShiftResolutionService();
+        $today = date('Y-m-d');
+        $cycle = $this->attendanceCycle();
+
+        if (str_starts_with($type, 'month_')) {
+            if (!preg_match('/^\d{4}-\d{2}$/', (string) $month)) {
+                return response()->json(['success' => false, 'message' => 'Bad month'], 400);
+            }
+            $start = "$month-01";
+            $end = date('Y-m-t', strtotime($start));
+        } else {
+            $start = $cycle['start'];
+            $end = $cycle['end'];
+        }
+
+        if (str_ends_with($type, '_absent')) {
+            // Absent is only meaningful up to today (future working days aren't absences yet).
+            $dates = $this->absentWorkingDates($userId, $shiftService, $start, min($end, $today));
+            $items = array_map(fn($d) => ['date' => $d, 'label' => null], $dates);
+        } else {
+            $leaveMap = $this->approvedLeaveDates($userId, $start, $end);
+            ksort($leaveMap);
+            $items = [];
+            foreach ($leaveMap as $d => $ltype) { $items[] = ['date' => $d, 'label' => $ltype]; }
+        }
+
+        return response()->json(['success' => true, 'type' => $type, 'count' => count($items), 'dates' => $items]);
+    }
+
+    /**
+     * The configured yearly attendance cycle (['start'=>Y-m-d,'end'=>Y-m-d]) used for
+     * "leaves this year" / "absent this year". The owner sets it in Attendance →
+     * Settings (e.g. Jun→May), so it's NOT a fixed Jan–Dec calendar. Falls back to the
+     * current calendar year when unset or invalid — preserving the old behaviour.
+     */
+    private function attendanceCycle(): array
+    {
+        try {
+            $s = DB::table('t_fin_config')->where('config_key', 'ATTENDANCE_CYCLE_START')->value('config_value');
+            $e = DB::table('t_fin_config')->where('config_key', 'ATTENDANCE_CYCLE_END')->value('config_value');
+            if ($s && $e && strtotime((string) $s) && strtotime((string) $e)) {
+                $s = substr((string) $s, 0, 10);
+                $e = substr((string) $e, 0, 10);
+                if ($s <= $e) {
+                    return ['start' => $s, 'end' => $e];
+                }
+            }
+        } catch (\Throwable $ex) { /* fall through to calendar year */ }
+        $y = date('Y');
+        return ['start' => "$y-01-01", 'end' => "$y-12-31"];
+    }
+
+    /**
+     * Save the attendance policy settings (year cycle + meter thresholds) from the
+     * Attendance → Settings modal. Upserts t_fin_config keys; validates the cycle.
+     */
+    public function saveAttendanceSettings(Request $request)
+    {
+        $validator = \Illuminate\Support\Facades\Validator::make($request->all(), [
+            'cycle_start' => 'nullable|date',
+            'cycle_end' => 'nullable|date|after_or_equal:cycle_start',
+            'meter_gps_warn_km' => 'nullable|numeric|min:0|max:1000',
+            'overnight_grace_km' => 'nullable|numeric|min:0|max:1000',
+        ]);
+        if ($validator->fails()) {
+            return response()->json(['success' => false, 'message' => $validator->errors()->first()], 422);
+        }
+        $put = function ($key, $value) {
+            $exists = DB::table('t_fin_config')->where('config_key', $key)->exists();
+            if ($exists) {
+                DB::table('t_fin_config')->where('config_key', $key)->update(['config_value' => $value, 'updated_at' => now()]);
+            } else {
+                DB::table('t_fin_config')->insert(['config_key' => $key, 'config_value' => $value, 'description' => 'Attendance policy setting', 'created_at' => now(), 'updated_at' => now()]);
+            }
+        };
+        try {
+            if ($request->filled('cycle_start') && $request->filled('cycle_end')) {
+                $put('ATTENDANCE_CYCLE_START', substr($request->cycle_start, 0, 10));
+                $put('ATTENDANCE_CYCLE_END', substr($request->cycle_end, 0, 10));
+            }
+            if ($request->filled('meter_gps_warn_km'))  { $put('ATTENDANCE_METER_GPS_WARN_KM', (string) (float) $request->meter_gps_warn_km); }
+            if ($request->filled('overnight_grace_km')) { $put('ATTENDANCE_OVERNIGHT_GRACE_KM', (string) (float) $request->overnight_grace_km); }
+            return response()->json(['success' => true, 'message' => 'Attendance settings saved.']);
+        } catch (\Throwable $e) {
+            \Log::error('saveAttendanceSettings failed', ['error' => $e->getMessage()]);
+            return response()->json(['success' => false, 'message' => 'Could not save the settings.'], 500);
+        }
+    }
+
+    /** Current attendance policy settings for the settings modal. */
+    public function getAttendanceSettings()
+    {
+        $cycle = $this->attendanceCycle();
+        return response()->json([
+            'success' => true,
+            'cycle_start' => $cycle['start'],
+            'cycle_end' => $cycle['end'],
+            'meter_gps_warn_km' => (float) $this->attendanceConfig('ATTENDANCE_METER_GPS_WARN_KM', 10),
+            'overnight_grace_km' => (float) $this->attendanceConfig('ATTENDANCE_OVERNIGHT_GRACE_KM', 30),
+        ]);
+    }
+
+    /**
+     * Apply a leave for a rider from the attendance page (manager on-behalf). Creates a
+     * standard t_req_master leave request. Because a manager is granting it, it's marked
+     * approved immediately, with an audit note recording who applied it. Overlapping
+     * leave is rejected (same rule as the normal request form). A rider applying for
+     * themselves still uses the normal request/approval flow — this endpoint is the
+     * manager's shortcut only.
+     */
+    public function applyLeave(Request $request)
+    {
+        $validator = \Illuminate\Support\Facades\Validator::make($request->all(), [
+            'user_id' => 'required|integer|exists:t_sys_user,id',
+            'leave_start_date' => 'required|date',
+            'leave_end_date' => 'required|date|after_or_equal:leave_start_date',
+            'note' => 'nullable|string|max:500',
+        ]);
+        if ($validator->fails()) {
+            return response()->json(['success' => false, 'message' => $validator->errors()->first()], 422);
+        }
+
+        $userId = (int) $request->user_id;
+        $start = $request->leave_start_date;
+        $end = $request->leave_end_date;
+
+        try {
+            $catId = DB::table('t_req_category')->where('category_code', 'leave')->value('id');
+            if (!$catId) {
+                return response()->json(['success' => false, 'message' => 'Leave category is not configured.'], 500);
+            }
+
+            // Reject overlap with an existing pending/approved leave (same guard the
+            // normal request form uses) so a day isn't double-counted.
+            $overlap = DB::table('t_req_master as r')
+                ->where('r.category_id', $catId)
+                ->where('r.requester_user_id', $userId)
+                ->whereIn('r.status', ['approved', 'pending'])
+                ->where('r.leave_start_date', '<=', $end)
+                ->where('r.leave_end_date', '>=', $start)
+                ->value('r.request_number');
+            if ($overlap) {
+                return response()->json([
+                    'success' => false,
+                    'message' => "This rider already has a leave covering those dates ({$overlap})."
+                ], 422);
+            }
+
+            $days = \Carbon\Carbon::parse($start)->diffInDays(\Carbon\Carbon::parse($end)) + 1;
+            $managerId = auth()->id();
+            $managerName = DB::table('t_sys_user')->where('id', $managerId)->value('fullname') ?: 'Manager';
+            $note = trim((string) $request->input('note', ''));
+            $desc = ($note !== '' ? $note . ' — ' : '')
+                . 'Applied on behalf by ' . $managerName . ' via Attendance on ' . now()->format('d M Y H:i');
+
+            $id = DB::table('t_req_master')->insertGetId([
+                'request_number' => \App\Models\Request\RequestModel::generateRequestNumber(),
+                'category_id' => $catId,
+                'requester_user_id' => $userId,
+                'title' => 'Leave',
+                'description' => $desc,
+                'business_unit_id' => 1,
+                'leave_start_date' => $start,
+                'leave_end_date' => $end,
+                'leave_type' => 'annual',
+                'leave_days' => $days,
+                'status' => 'approved',
+                'priority' => 'normal',
+                'requires_level_1' => 1,
+                'requires_level_2' => 0,
+                'level_1_status' => 'approved',
+                'settlement_status' => 'not_required',
+                'remarks' => 'Manager-applied leave (auto-approved)',
+                'submitted_at' => now(),
+                'completed_at' => now(),
+                'created_by' => $managerId,
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+
+            \Log::info('Manager-applied leave', [
+                'leave_id' => $id, 'user_id' => $userId, 'by' => $managerId, 'from' => $start, 'to' => $end, 'days' => $days,
+            ]);
+
+            return response()->json(['success' => true, 'message' => "Leave approved — {$days} day" . ($days > 1 ? 's' : '') . '.', 'id' => $id]);
+        } catch (\Throwable $e) {
+            \Log::error('Apply-leave failed', ['error' => $e->getMessage(), 'user_id' => $userId]);
+            return response()->json(['success' => false, 'message' => 'Could not apply the leave. Please try again.'], 500);
+        }
     }
 
     // Store new attendance record
@@ -432,6 +801,9 @@ class AttendanceController extends Controller
                     $query->where('av.is_visible', '=', 1)
                           ->orWhereNull('av.is_visible');
                 })
+                // Only ACTIVE users (matches the Today view's default) — former/inactive
+                // staff shouldn't clutter the monthly totals with 100%-absent rows.
+                ->where('u.is_active', 1)
             ->select(
                     'u.id as user_id',
                 'u.fullname',
@@ -593,6 +965,7 @@ class AttendanceController extends Controller
         }
         
         // Calculate leave_days and absent_days for each user
+        $cycle = $this->attendanceCycle(); // configured yearly window (once, for the loop)
         // Also add absent day records to the daily array for easier tracking
         foreach ($byUser as $userId => &$userData) {
             $userData['leave_days'] = count($userData['leave_dates']);
@@ -664,24 +1037,44 @@ class AttendanceController extends Controller
             unset($userData['leave_dates']);
             unset($userData['processed_attendance_ids']);
 
-            // Approved leaves for current year
+            // Approved leaves for current year. Use OVERLAP with the year window (not
+            // fully-contained) so a leave spanning New Year — e.g. Dec 30 → Jan 2 — is
+            // still counted; each leave's days are then clamped to the year before
+            // counting (the old start>=Jan1 AND end<=Dec31 test dropped such leaves).
+            // Yearly window comes from the CONFIGURED cycle (e.g. Jun→May), not a fixed
+            // Jan–Dec calendar. Resolved once before the loop below.
             $currentYear = date('Y');
+            $yearStart = $cycle['start'];
+            $yearEnd = $cycle['end'];
             $yearLeaveDays = 0;
             $yearLeaves = DB::table('t_req_master as r')
                 ->join('t_req_category as c', 'c.id', '=', 'r.category_id')
                 ->where('c.category_code', 'leave')
                 ->where('r.requester_user_id', $userId)
                 ->where('r.status', 'approved')
-                ->where('r.leave_start_date', '>=', "{$currentYear}-01-01")
-                ->where('r.leave_end_date', '<=', "{$currentYear}-12-31")
+                ->where('r.leave_start_date', '<=', $yearEnd)
+                ->where('r.leave_end_date', '>=', $yearStart)
                 ->select('r.leave_start_date', 'r.leave_end_date')
                 ->get();
+            $yStart = \Carbon\Carbon::parse($yearStart);
+            $yEnd = \Carbon\Carbon::parse($yearEnd);
             foreach ($yearLeaves as $yl) {
-                $yearLeaveDays += \Carbon\Carbon::parse($yl->leave_start_date)
-                    ->diffInDays(\Carbon\Carbon::parse($yl->leave_end_date)) + 1;
+                $s = \Carbon\Carbon::parse($yl->leave_start_date);
+                $e = \Carbon\Carbon::parse($yl->leave_end_date);
+                if ($s->lt($yStart)) { $s = $yStart->copy(); }
+                if ($e->gt($yEnd)) { $e = $yEnd->copy(); }
+                if ($e->gte($s)) {
+                    $yearLeaveDays += $s->diffInDays($e) + 1;
+                }
             }
             $userData['leaves_taken_year'] = $yearLeaveDays;
-            $userData['leaves_year'] = (int) $currentYear;
+            $userData['leaves_year'] = (int) substr($yearStart, 0, 4); // cycle start year (label/compat)
+            $userData['cycle_start'] = $yearStart;
+            $userData['cycle_end'] = $yearEnd;
+
+            // Absent THIS YEAR (cycle start → today), using the SAME working-day-aware
+            // definition as the Today view — shared helper so the number can't drift.
+            $userData['absent_days_year'] = $this->yearAbsentDays($userId, $shiftService, $cycle, $today);
         }
         
         Log::info('Monthly report processed', [
@@ -803,9 +1196,12 @@ class AttendanceController extends Controller
                 ], 400);
             }
 
-            // Calculate date range (30 days before from_date)
-            $endDate = $fromDate;
-            $startDate = date('Y-m-d', strtotime($fromDate . ' -30 days'));
+            // Calculate date range (30 days before from_date). NEVER extend into the
+            // future — the Month tab opens this with a date late in the month, and an
+            // unclamped range painted every future working day "Absent" (inflating the
+            // summary too). Clamp the end to today, then anchor the 30 days on that.
+            $endDate = min($fromDate, date('Y-m-d'));
+            $startDate = date('Y-m-d', strtotime($endDate . ' -30 days'));
 
             // Get user info
             $user = DB::table('t_sys_user as u')
@@ -1045,6 +1441,57 @@ class AttendanceController extends Controller
                     $record->last_delivery_time = '-';
                 }
             }
+
+            // ── Fill in days that have NO attendance row so the detail list shows the
+            //    full picture — an ABSENT day must not silently disappear (that was the
+            //    bug: Jul 1 had no row so it wasn't shown). Off days, public holidays and
+            //    pre-hire days are skipped (not attendance events). Every row also gets a
+            //    `status` so the frontend colours it consistently.
+            $byDate = [];
+            foreach ($records as $r) {
+                $r->attendance_date = substr((string) $r->attendance_date, 0, 10);
+                $onLeave = $r->leave_request_id && in_array(strtolower((string) $r->leave_status), ['approved', 'pending']);
+                if ($onLeave)                                 $r->status = 'on_leave';
+                elseif ($r->login_time && $r->late_minutes > 0) $r->status = 'late';
+                elseif ($r->login_time)                        $r->status = 'present';
+                else                                           $r->status = 'absent';
+                $byDate[$r->attendance_date] = $r;
+            }
+            // Leave dates covering this range (approved/pending).
+            $leaveDates = [];
+            foreach (DB::table('t_req_master as lr')
+                        ->join('t_req_category as lc', 'lc.id', '=', 'lr.category_id')
+                        ->where('lc.category_code', 'leave')
+                        ->where('lr.requester_user_id', $userId)
+                        ->whereIn('lr.status', ['approved', 'pending'])
+                        ->where('lr.leave_start_date', '<=', $endDate)
+                        ->where('lr.leave_end_date', '>=', $startDate)
+                        ->get(['lr.leave_start_date', 'lr.leave_end_date']) as $lv) {
+                $ls = max($startDate, substr((string) $lv->leave_start_date, 0, 10));
+                $le = min($endDate, substr((string) $lv->leave_end_date, 0, 10));
+                for ($c = new \DateTime($ls); $c <= new \DateTime($le); $c->modify('+1 day')) {
+                    $leaveDates[$c->format('Y-m-d')] = true;
+                }
+            }
+            // Rebuild the list newest-first, inserting absent/leave fillers for gaps.
+            $full = [];
+            for ($cur = new \DateTime($endDate), $startObj = new \DateTime($startDate); $cur >= $startObj; $cur->modify('-1 day')) {
+                $ds = $cur->format('Y-m-d');
+                if (isset($byDate[$ds])) { $full[] = $byDate[$ds]; continue; }
+                $kind = $shiftService->dayKind($userId, $ds);
+                if ($kind === 'off' || $kind === 'holiday' || $kind === 'not_joined') { continue; }
+                $full[] = (object) [
+                    'attendance_date' => $ds,
+                    'login_time' => null, 'logout_time' => null,
+                    'hours_worked' => 0, 'late_minutes' => 0, 'overtime_minutes' => 0,
+                    'total_orders_delivered' => 0, 'first_delivery_time' => '-', 'last_delivery_time' => '-',
+                    'meter_start' => null, 'meter_end' => null, 'meter_distance' => null,
+                    'picture_start' => null, 'picture_end' => null,
+                    'leave_request_id' => null, 'leave_status' => null,
+                    'status' => isset($leaveDates[$ds]) ? 'on_leave' : 'absent',
+                ];
+            }
+            $records = collect($full);
 
             return response()->json([
                 'success' => true,

@@ -269,16 +269,22 @@ Route::middleware(['auth'])->group(function () {
     Route::get('/attendance/reports', function() { return view('pages.attendance.reports'); })->name('attendance.reports');
     Route::get('/attendance/data', [\App\Http\Controllers\CRM\AttendanceController::class, 'data'])->name('attendance.data');
     Route::post('/attendance', [\App\Http\Controllers\CRM\AttendanceController::class, 'store'])->name('attendance.store');
+    Route::post('/attendance/apply-leave', [\App\Http\Controllers\CRM\AttendanceController::class, 'applyLeave'])->name('attendance.apply-leave');
     Route::get('/attendance/summary', [\App\Http\Controllers\CRM\AttendanceController::class, 'summary'])->name('attendance.summary');
     Route::get('/attendance/monthly-report', [\App\Http\Controllers\CRM\AttendanceController::class, 'monthlyReport'])->name('attendance.monthly-report');
     Route::get('/attendance/employee-details', [\App\Http\Controllers\CRM\AttendanceController::class, 'employeeDetails'])->name('attendance.employee-details');
+    Route::get('/attendance/date-breakdown', [\App\Http\Controllers\CRM\AttendanceController::class, 'dateBreakdown'])->name('attendance.date-breakdown');
     Route::get('/attendance/gps-audit', [\App\Http\Controllers\CRM\AttendanceController::class, 'gpsReadingsAudit'])->name('attendance.gps-audit');
     Route::get('/attendance/users-visibility', [\App\Http\Controllers\CRM\AttendanceController::class, 'getUsersVisibility'])->name('attendance.users-visibility');
     Route::post('/attendance/update-visibility', [\App\Http\Controllers\CRM\AttendanceController::class, 'updateUserVisibility'])->name('attendance.update-visibility');
     Route::post('/attendance/update-delivery-rider', [\App\Http\Controllers\CRM\AttendanceController::class, 'updateDeliveryRider'])->name('attendance.update-delivery-rider');
-    
+    // Attendance policy settings (year cycle + meter thresholds)
+    Route::get('/attendance/settings', [\App\Http\Controllers\CRM\AttendanceController::class, 'getAttendanceSettings'])->name('attendance.settings.get');
+    Route::post('/attendance/settings', [\App\Http\Controllers\CRM\AttendanceController::class, 'saveAttendanceSettings'])->name('attendance.settings.save');
+
     // Company Locations Management (for attendance tracking)
     Route::get('/attendance/locations', [\App\Http\Controllers\CRM\CompanyLocationsController::class, 'index'])->name('attendance.locations');
+    Route::post('/attendance/settings/require-location', [\App\Http\Controllers\CRM\CompanyLocationsController::class, 'setRequireLocation'])->name('attendance.require-location');
     Route::get('/attendance/locations/data', [\App\Http\Controllers\CRM\CompanyLocationsController::class, 'getLocations'])->name('attendance.locations.data');
     Route::post('/attendance/locations', [\App\Http\Controllers\CRM\CompanyLocationsController::class, 'store'])->name('attendance.locations.store');
     Route::put('/attendance/locations/{id}', [\App\Http\Controllers\CRM\CompanyLocationsController::class, 'update'])->name('attendance.locations.update');

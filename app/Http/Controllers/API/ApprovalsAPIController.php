@@ -453,10 +453,11 @@ class ApprovalsAPIController extends Controller
                         \App\Models\FIN\LedgerModel::STATUS_PENDING_L2,
                     ]);
             })
-            // Jul-2026 (owner decision): fully-paid orders linger for 7 days
-            // (so a mistaken payment can still be voided), then drop off the
+            // Jul-2026 (owner decision): fully-paid orders linger for 10 days
+            // (so a mistaken payment can still be voided — the UI rolls them up
+            // under a collapsible "Recently paid" section), then drop off the
             // Shop tab. "Recent" = an active payment row recorded in the last
-            // 7 days. NULL payment_status counts as not-paid. MIRROR of the
+            // 10 days. NULL payment_status counts as not-paid. MIRROR of the
             // web ApprovalController::getOnlineShopItems clause.
             ->where(function ($q) {
                 $q->whereNull('payment_status')
@@ -466,7 +467,7 @@ class ApprovalsAPIController extends Controller
                             ->from('t_crm_order_payments')
                             ->whereColumn('t_crm_order_payments.order_id', 't_crm_prod_order.id')
                             ->where('t_crm_order_payments.status', 'active')
-                            ->where('t_crm_order_payments.created_at', '>=', now()->subDays(7));
+                            ->where('t_crm_order_payments.created_at', '>=', now()->subDays(10));
                     });
             })
             ->with('customer:id,first_name,last_name,company,phone,phone_original')

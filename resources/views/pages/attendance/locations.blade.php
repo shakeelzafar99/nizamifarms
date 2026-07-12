@@ -21,6 +21,29 @@
     </div>
   </div>
 
+  <!-- Mandatory-location rule -->
+  <div class="bg-white rounded-lg shadow-md p-5 mb-6 flex items-start justify-between gap-4">
+    <div>
+      <div class="flex items-center gap-2">
+        <span class="text-lg">📍</span>
+        <h2 class="text-base font-semibold text-gray-900">Require riders to be at their location to check in</h2>
+      </div>
+      <p class="text-sm text-gray-600 mt-1 max-w-3xl">
+        When on, a rider can only mark attendance from the mobile app while their GPS is inside their
+        shift location's radius (set per location above). If they're too far — or their location can't be
+        read — check-in is blocked. You can still mark someone present yourself from
+        <span class="font-medium">Attendance → Mark Attendance</span>. Default: off.
+      </p>
+      <p id="reqLocStatus" class="text-sm font-semibold mt-2 {{ $requireLocation ? 'text-green-700' : 'text-gray-500' }}">
+        {{ $requireLocation ? 'On — riders must be at their location' : 'Off — riders can check in from anywhere' }}
+      </p>
+    </div>
+    <label class="relative inline-flex items-center cursor-pointer shrink-0 mt-1">
+      <input type="checkbox" id="requireLocationToggle" class="sr-only peer" {{ $requireLocation ? 'checked' : '' }} onchange="saveRequireLocation(this)">
+      <div class="w-12 h-7 bg-gray-300 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-5 after:content-[''] after:absolute after:top-1 after:left-1 after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-green-600"></div>
+    </label>
+  </div>
+
   <!-- Locations Table -->
   <div class="bg-white rounded-lg shadow-md overflow-hidden">
     <table class="min-w-full divide-y divide-gray-200">
@@ -367,6 +390,32 @@ let availableUsers = [];
 document.addEventListener('DOMContentLoaded', function() {
   loadLocations();
 });
+
+// Toggle the "riders must be at their location to check in" rule.
+async function saveRequireLocation(el) {
+  const enabled = el.checked;
+  const status = document.getElementById('reqLocStatus');
+  el.disabled = true;
+  try {
+    const res = await fetch('/attendance/settings/require-location', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').content
+      },
+      body: JSON.stringify({ enabled })
+    });
+    const data = await res.json();
+    if (!data.success) throw new Error(data.message || 'Save failed');
+    status.textContent = enabled ? 'On — riders must be at their location' : 'Off — riders can check in from anywhere';
+    status.className = 'text-sm font-semibold mt-2 ' + (enabled ? 'text-green-700' : 'text-gray-500');
+  } catch (e) {
+    el.checked = !enabled; // revert on failure
+    alert('Could not save the setting. Please try again.');
+  } finally {
+    el.disabled = false;
+  }
+}
 
 // Load all locations
 async function loadLocations() {

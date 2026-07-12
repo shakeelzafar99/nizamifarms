@@ -58,8 +58,16 @@ class HolidayController extends Controller
      */
     public function store(Request $request)
     {
+        // holiday_end_date is optional — when given, the whole from–end range is added
+        // as one action (e.g. an Eid break) instead of one date at a time. Each day
+        // that already exists is skipped, not errored, so re-adding an overlapping range
+        // is safe.
+        // PAST dates are allowed on purpose: the owner backfills historical holidays so
+        // past working-day/attendance math is correct (an Eid that was missed shouldn't
+        // read as everyone Absent). clearAllShiftCaches() below re-computes affected days.
         $validator = Validator::make($request->all(), [
-            'holiday_date' => 'required|date|after_or_equal:today|unique:t_ops_public_holidays,holiday_date',
+            'holiday_date' => 'required|date',
+            'holiday_end_date' => 'nullable|date|after_or_equal:holiday_date',
             'holiday_name' => 'required|string|max:200',
             'description' => 'nullable|string'
         ]);
@@ -72,22 +80,52 @@ class HolidayController extends Controller
         }
 
         try {
-            $holiday = PublicHolidayModel::create([
-                'holiday_date' => $request->holiday_date,
-                'holiday_name' => $request->holiday_name,
-                'description' => $request->description,
-                'is_active' => true,
-                'created_by' => auth()->id(),
-                'updated_by' => auth()->id()
-            ]);
+            $start = \Carbon\Carbon::parse($request->holiday_date)->startOfDay();
+            $end = $request->filled('holiday_end_date')
+                ? \Carbon\Carbon::parse($request->holiday_end_date)->startOfDay()
+                : $start->copy();
+            if ($end->lt($start)) {
+                $end = $start->copy();
+            }
+            // Guard a runaway range (fat-fingered year etc.).
+            if ($start->diffInDays($end) > 60) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'That range is more than 60 days — please add it in smaller pieces.'
+                ], 422);
+            }
+
+            $created = 0; $skipped = 0;
+            for ($d = $start->copy(); $d->lte($end); $d->addDay()) {
+                $ds = $d->format('Y-m-d');
+                if (PublicHolidayModel::whereDate('holiday_date', $ds)->exists()) {
+                    $skipped++;
+                    continue;
+                }
+                PublicHolidayModel::create([
+                    'holiday_date' => $ds,
+                    'holiday_name' => $request->holiday_name,
+                    'description' => $request->description,
+                    'is_active' => true,
+                    'created_by' => auth()->id(),
+                    'updated_by' => auth()->id()
+                ]);
+                $created++;
+            }
 
             // Clear shift cache since holidays affect working days calculation
             $this->shiftService->clearAllShiftCaches();
 
+            $message = $created > 0
+                ? ($created . ' holiday' . ($created > 1 ? ' days' : '') . ' added'
+                    . ($skipped > 0 ? " ({$skipped} already existed)" : ''))
+                : 'Those dates are already marked as holidays';
+
             return response()->json([
                 'success' => true,
-                'message' => 'Holiday added successfully',
-                'data' => $holiday
+                'message' => $message,
+                'created' => $created,
+                'skipped' => $skipped
             ]);
         } catch (\Exception $e) {
             return response()->json([

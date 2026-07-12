@@ -3606,6 +3606,9 @@ class RiderController extends Controller
                     'end' => $todayShift['shift_end'], // null for start-only shifts
                     'location_name' => $todayShift['location_name'] ?? null,
                 ],
+                // Manager's "must be at your location to check in" rule (default off).
+                // The app uses this to require a real GPS fix before check-in.
+                'require_location' => $this->attendanceRequiresLocation(),
                 'pending_shift_ack' => $pendingAckData,
             ]);
         } catch (\Exception $e) {
@@ -3621,6 +3624,24 @@ class RiderController extends Controller
      * Check in for today
      * Optionally accepts meter picture and GPS location
      */
+    /**
+     * Is the manager's "riders must be at their location to check in" rule ON?
+     * Stored as t_fin_config ATTENDANCE_REQUIRE_LOCATION ('1' = on). Defaults to
+     * OFF when the row is absent or unreadable — a config hiccup must NEVER block
+     * check-in.
+     */
+    private function attendanceRequiresLocation(): bool
+    {
+        try {
+            $v = \DB::table('t_fin_config')
+                ->where('config_key', 'ATTENDANCE_REQUIRE_LOCATION')
+                ->value('config_value');
+            return $v !== null && (string) $v === '1';
+        } catch (\Throwable $e) {
+            return false;
+        }
+    }
+
     public function checkIn(Request $request)
     {
         try {
@@ -3648,6 +3669,33 @@ class RiderController extends Controller
 
             // Process location data for check-in
             $locationData = $this->processCheckinLocation($request, $user->id);
+
+            // Mandatory-location gate (manager-toggled, default OFF): a rider may check
+            // in ONLY when GPS confirms they're within their shift location's radius.
+            // Blocks a remote check-in AND a check-in with no usable location (can't
+            // confirm → deny). The manager's WEB "Mark Attendance" is exempt (separate
+            // path, no GPS) and is the intended override for genuine GPS failures.
+            if ($this->attendanceRequiresLocation()) {
+                if (!$locationData) {
+                    return response()->json([
+                        'success' => false,
+                        'require_location' => true,
+                        'message' => 'Location is required to check in. Turn on GPS/location and try again from your work location.',
+                    ], 422);
+                }
+                if (!empty($locationData['is_remote'])) {
+                    $where = $locationData['base_name'] ?? 'your assigned location';
+                    $dist = isset($locationData['distance'])
+                        ? LocationService::formatDistance((int) $locationData['distance'])
+                        : null;
+                    return response()->json([
+                        'success' => false,
+                        'require_location' => true,
+                        'message' => ($dist ? "You're $dist from $where. " : '')
+                            . "You can only check in at $where.",
+                    ], 422);
+                }
+            }
 
             // Store meter picture if provided
             $picturePath = null;
@@ -3831,6 +3879,10 @@ class RiderController extends Controller
             ],
             'is_remote' => $distanceInfo['is_remote'],
             'distance' => $distanceInfo['distance_meters'],
+            // Name of the base we measured against (for the mandatory-location block
+            // message); null when no base is configured for this rider.
+            'base_name' => $distanceInfo['base_location']->location_name ?? null,
+            'has_base' => !empty($distanceInfo['base_location']),
         ];
     }
 
@@ -10173,13 +10225,21 @@ class RiderController extends Controller
                 ->select('latitude', 'longitude', 'accuracy', 'captured_at')
                 ->first();
             
-            // ⭐ Calculate distance from office using LocationService
+            // ⭐ Calculate distance from office using LocationService — against TODAY's
+            // shift location (same base check-in uses), not the rider's default assigned
+            // location, so a rider working at LaCarne today reads distance-from-LaCarne.
             $distanceInfo = null;
             if ($riderLocation) {
+                $shiftLocId = null;
+                try {
+                    $shiftLocId = (new \App\Services\ShiftResolutionService())
+                        ->getUserShift($riderId, now()->format('Y-m-d'))['location_id'] ?? null;
+                } catch (\Throwable $e) { /* fall back to assigned → primary */ }
                 $distanceInfo = \App\Services\LocationService::calculateDistanceFromBase(
                     $riderLocation->latitude,
                     $riderLocation->longitude,
-                    $riderId
+                    $riderId,
+                    $shiftLocId
                 );
             }
             
@@ -14249,11 +14309,33 @@ class RiderController extends Controller
             // Resolve shifts using ShiftResolutionService
             $shiftService = new \App\Services\ShiftResolutionService();
             $formattedData = [];
-            
+
+            // Main-office id: the app shows a rider's 📍 location pin only when it's
+            // NOT the main office — the common case stays quiet, a pin means "elsewhere".
+            $primaryLocationId = (int) (DB::table('t_ops_company_locations')
+                ->where('is_primary', 1)->where('is_active', 1)->value('id') ?? 0);
+
             foreach ($query as $row) {
                 // Resolve the shift FOR THE SELECTED DATE (not today) so past dates use
                 // the shift that was actually in effect then.
                 $shiftData = $shiftService->getUserShift($row->user_id, $selectedDate);
+
+                // Distance from base against the SHIFT location for the date (same base
+                // the web attendance view + mobile check-in use) — NOT the rider's default
+                // office. Recompute so a rider working at LaCarne today reads
+                // distance-from-LaCarne, even if their check-in predates this feature.
+                $checkinDistance = $row->checkin_distance_from_base;
+                $isRemoteCheckin = $row->is_remote_checkin ?? 0;
+                if ($row->checkin_latitude && $row->checkin_longitude) {
+                    $distInfo = \App\Services\LocationService::calculateDistanceFromBase(
+                        $row->checkin_latitude, $row->checkin_longitude,
+                        $row->user_id, $shiftData['location_id'] ?? null
+                    );
+                    if ($distInfo['distance_meters'] !== null) {
+                        $checkinDistance = $distInfo['distance_meters'];
+                        $isRemoteCheckin = $distInfo['is_remote'] ? 1 : 0;
+                    }
+                }
 
                 // Calculate hours and late/OT status
                 $hours = 0;
@@ -14306,6 +14388,11 @@ class RiderController extends Controller
                     'shift_start' => $shiftData['shift_start'],
                     'shift_end' => $shiftData['shift_end'],
                     'shift_name' => $shiftData['shift_name'],
+                    // Where the rider is expected today (assignment → default → primary).
+                    'shift_location_name' => $shiftData['location_name'] ?? null,
+                    'shift_location_is_primary' => !empty($shiftData['location_id'])
+                        ? ((int) $shiftData['location_id'] === $primaryLocationId)
+                        : true,
                     'is_late' => $isLate,
                     'late_minutes' => $lateMinutes,
                     'is_overtime' => $isOvertime,
@@ -14324,8 +14411,8 @@ class RiderController extends Controller
                     // Location data
                     'checkin_latitude' => $row->checkin_latitude ?? null,
                     'checkin_longitude' => $row->checkin_longitude ?? null,
-                    'checkin_distance_from_base' => $row->checkin_distance_from_base ?? null,
-                    'is_remote_checkin' => $row->is_remote_checkin ?? 0,
+                    'checkin_distance_from_base' => $checkinDistance,
+                    'is_remote_checkin' => $isRemoteCheckin,
                     'checkout_latitude' => $row->checkout_latitude ?? null,
                     'checkout_longitude' => $row->checkout_longitude ?? null,
                     // ⭐ Road distance (auto-calculated on checkout) - PRIMARY indicator

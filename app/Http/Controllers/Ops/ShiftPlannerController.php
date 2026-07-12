@@ -145,6 +145,10 @@ class ShiftPlannerController extends Controller
                     'shift_name' => $shift['shift_name'],
                     'start' => $shift['shift_start'],
                     'end' => $shift['shift_end'],
+                    // Resolved location for THIS day (assignment → default → primary).
+                    // The grid pins a day only when it differs from the rider's usual.
+                    'location_id' => $shift['location_id'] ?? null,
+                    'location_name' => $shift['location_name'] ?? null,
                     'is_off' => $isOff,
                     'is_holiday' => $isHoliday,
                     'is_override' => $isOverride,
@@ -182,6 +186,22 @@ class ShiftPlannerController extends Controller
             }
 
             $def = $svc->userDefaultLocation($uid); // rider's default office (pre-selected on assign)
+
+            // The rider's USUAL location = their current open-ended primary row's
+            // explicit location, else their default. Day cells whose resolved
+            // location differs from this get a 📍 pin in the grid — so a one-day
+            // LaCarne cover stands out while a whole week at the usual place shows
+            // no pins at all.
+            $primaryRow = $rows->filter(function ($r) use ($today) {
+                    $f = $r->effective_from ? $r->effective_from->format('Y-m-d') : null;
+                    return is_null($r->effective_to) && ($f === null || $f <= $today);
+                })
+                ->sortByDesc(fn ($r) => $r->effective_from ? $r->effective_from->format('Y-m-d') : '0000-00-00')
+                ->first();
+            $usualLocationId = ($primaryRow && !empty($primaryRow->location_id))
+                ? (int) $primaryRow->location_id
+                : $def['location_id'];
+
             $riders[] = [
                 'user_id' => $uid,
                 'name' => $u->fullname,
@@ -189,6 +209,7 @@ class ShiftPlannerController extends Controller
                 'has_phone' => (int) ($u->has_phone ?? 0) === 1,
                 'default_location_id' => $def['location_id'],
                 'default_location_name' => $def['location_name'],
+                'usual_location_id' => $usualLocationId,
                 'primary' => [
                     'shift_name' => $primary['shift_name'],
                     'start' => $primary['shift_start'],

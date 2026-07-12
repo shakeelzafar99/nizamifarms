@@ -66,9 +66,16 @@
     </div>
     
     <form id="holidayForm" class="p-6 space-y-4">
-      <div>
-        <label class="block text-sm font-medium text-gray-700 mb-1">Holiday Date <span class="text-red-500">*</span></label>
-        <input type="date" id="holidayDate" class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500" required>
+      <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px;">
+        <div>
+          <label class="block text-sm font-medium text-gray-700 mb-1">Holiday Date <span class="text-red-500">*</span></label>
+          <input type="date" id="holidayDate" onchange="syncHolidayEndMin()" class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500" required>
+        </div>
+        <div>
+          <label class="block text-sm font-medium text-gray-700 mb-1">End Date <span class="text-gray-400 font-normal">(optional)</span></label>
+          <input type="date" id="holidayEndDate" class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500">
+          <p class="text-xs text-gray-500 mt-1">Leave blank for a single day. Set it for a break (e.g. Eid).</p>
+        </div>
       </div>
 
       <div>
@@ -101,6 +108,14 @@ document.addEventListener('DOMContentLoaded', function() {
   document.getElementById('holidayDate').min = new Date().toISOString().split('T')[0];
   loadHolidays();
 });
+
+// Keep the end date >= the start date (a range can't run backwards).
+function syncHolidayEndMin() {
+  const start = document.getElementById('holidayDate').value;
+  const endEl = document.getElementById('holidayEndDate');
+  endEl.min = start || new Date().toISOString().split('T')[0];
+  if (endEl.value && start && endEl.value < start) endEl.value = '';
+}
 
 async function loadHolidays() {
   const year = document.getElementById('yearFilter').value;
@@ -163,6 +178,7 @@ document.getElementById('holidayForm').addEventListener('submit', async function
   
   const payload = {
     holiday_date: document.getElementById('holidayDate').value,
+    holiday_end_date: document.getElementById('holidayEndDate').value || null,
     holiday_name: document.getElementById('holidayName').value,
     description: document.getElementById('holidayDescription').value
   };

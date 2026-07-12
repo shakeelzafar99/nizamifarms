@@ -13,44 +13,23 @@
   <div class="flex justify-between items-center mb-6 relative" style="z-index: 10;">
     <h1 class="text-2xl font-semibold text-gray-900">Attendance Management</h1>
     <div class="flex gap-2 items-center">
-      <a href="/shift-planner" class="px-4 py-2 bg-white text-gray-700 rounded-lg hover:bg-gray-100 transition font-semibold shadow-sm border border-gray-300">
-        📅 Shift Planner
-      </a>
-      <a href="/attendance/reports" class="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition font-semibold shadow-md border-2 border-blue-700">
-        Reports
-      </a>
-      <div class="flex items-center gap-2 ml-2">
-        <label for="activeFilter" class="text-sm text-gray-700">Show:</label>
-        <select id="activeFilter" class="px-3 py-2 border border-gray-300 rounded-lg text-sm" onchange="onActiveFilterChange()">
-          <option value="active" selected>Active Users</option>
-          <option value="all">All Users</option>
-        </select>
-      </div>
-      <div class="flex items-center gap-2 ml-2">
-        <label for="locationFilter" class="text-sm text-gray-700">Location:</label>
-        <select id="locationFilter" class="px-3 py-2 border border-gray-300 rounded-lg text-sm" onchange="filterByLocation()">
-          <option value="all" selected>All</option>
-          <option value="onsite">Onsite</option>
-          <option value="remote">Remote</option>
-          <option value="no_location">No Location</option>
-        </select>
-      </div>
-      <button 
+      <button
         type="button"
-        onclick="toggleAddForm()" 
-        id="toggleFormBtn" 
+        onclick="toggleAddForm()"
+        id="toggleFormBtn"
         class="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition font-semibold shadow-md"
         style="position: relative; z-index: 20; pointer-events: auto; cursor: pointer;"
       >
         ➕ Mark Attendance
       </button>
-      <a 
-        href="/requests/create"
-        class="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition font-semibold shadow-md inline-block text-center"
-        style="text-decoration: none;"
+      <button
+        type="button"
+        onclick="openApplyLeave()"
+        style="background:#16a34a;color:#ffffff;"
+        class="px-4 py-2 rounded-lg transition font-semibold shadow-md text-center hover:opacity-90"
       >
-        📝 Leave Request
-      </a>
+        📝 Apply Leave
+      </button>
       <!-- Settings Dropdown -->
       <div class="relative inline-block" id="settingsDropdown">
         <button 
@@ -66,7 +45,19 @@
         <!-- Dropdown Menu -->
         <div id="settingsMenu" class="hidden absolute right-0 mt-2 w-56 bg-white rounded-lg shadow-xl border border-gray-200 z-50">
           <div class="py-2">
-            <a 
+            <a
+              href="/attendance/reports"
+              class="block px-4 py-3 text-gray-800 hover:bg-gray-100 transition font-medium"
+            >
+              📊 Full Reports (print)
+            </a>
+            <a
+              href="/riders"
+              class="block px-4 py-3 text-gray-800 hover:bg-gray-100 transition font-medium"
+            >
+              👤 Rider Profiles
+            </a>
+            <a
               href="/attendance/locations"
               class="block px-4 py-3 text-gray-800 hover:bg-gray-100 transition font-medium"
             >
@@ -97,15 +88,86 @@
             >
               👥 Customize User List
             </button>
-            <button 
+            <button
               type="button"
-              onclick="openFuelRateModal(); toggleSettingsMenu();" 
+              onclick="openFuelRateModal(); toggleSettingsMenu();"
               class="w-full text-left block px-4 py-3 text-gray-800 hover:bg-gray-100 transition font-medium"
             >
               ⛽ Fuel Rate Groups
             </button>
+            <button
+              type="button"
+              onclick="openAttendanceRules(); toggleSettingsMenu();"
+              class="w-full text-left block px-4 py-3 text-gray-800 hover:bg-gray-100 transition font-medium"
+            >
+              📐 Attendance Rules
+            </button>
           </div>
         </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Date breakdown modal (exact dates behind a Month-tab count) -->
+  <div id="dateBreakdownModal" style="display:none;position:fixed;inset:0;z-index:10001;background:rgba(0,0,0,0.5);align-items:center;justify-content:center;padding:16px;" onclick="if(event.target===this)closeDateBreakdown()">
+    <div style="background:#ffffff;border-radius:12px;box-shadow:0 20px 40px rgba(0,0,0,0.25);max-width:420px;width:100%;padding:20px 22px;max-height:80vh;display:flex;flex-direction:column;">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:4px;">
+        <div>
+          <h2 id="bdTitle" style="font-size:16px;font-weight:700;color:#111827;margin:0;">Dates</h2>
+          <div id="bdSub" style="font-size:12px;color:#6B7280;margin-top:2px;"></div>
+        </div>
+        <button type="button" onclick="closeDateBreakdown()" style="background:none;border:none;font-size:24px;line-height:1;color:#9ca3af;cursor:pointer;">&times;</button>
+      </div>
+      <div id="bdBody" style="overflow:auto;margin-top:8px;"></div>
+    </div>
+  </div>
+
+  <!-- Attendance Rules Modal (year cycle + meter thresholds) -->
+  <div id="attRulesModal" style="display:none;position:fixed;inset:0;z-index:10000;background:rgba(0,0,0,0.5);align-items:center;justify-content:center;padding:16px;" onclick="if(event.target===this)closeAttendanceRules()">
+    <div style="background:#ffffff;border-radius:12px;box-shadow:0 20px 40px rgba(0,0,0,0.25);max-width:520px;width:100%;padding:24px;max-height:90vh;overflow:auto;">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+        <h2 style="font-size:18px;font-weight:700;color:#111827;margin:0;">📐 Attendance Rules</h2>
+        <button type="button" onclick="closeAttendanceRules()" style="background:none;border:none;font-size:26px;line-height:1;color:#9ca3af;cursor:pointer;">&times;</button>
+      </div>
+      <p style="font-size:12.5px;color:#6b7280;margin:0 0 18px;">These policy settings drive the yearly counters and the meter warnings. They do not affect salary.</p>
+
+      <!-- Year cycle -->
+      <div style="border:1px solid #e5e7eb;border-radius:10px;padding:14px;margin-bottom:14px;">
+        <div style="font-weight:700;color:#111827;font-size:14px;margin-bottom:2px;">📅 Yearly cycle</div>
+        <div style="font-size:12px;color:#6b7280;margin-bottom:12px;">The 12-month window for "leaves this year" and "absent this year". Not fixed to January — set it to your cycle (e.g. June → May).</div>
+        <div style="display:flex;gap:12px;flex-wrap:wrap;">
+          <div style="flex:1;min-width:150px;">
+            <label style="display:block;font-size:12px;font-weight:600;color:#374151;margin-bottom:4px;">Cycle start</label>
+            <input type="date" id="ruleCycleStart" style="width:100%;border:2px solid #d1d5db;border-radius:8px;padding:9px 10px;font-size:14px;">
+          </div>
+          <div style="flex:1;min-width:150px;">
+            <label style="display:block;font-size:12px;font-weight:600;color:#374151;margin-bottom:4px;">Cycle end</label>
+            <input type="date" id="ruleCycleEnd" style="width:100%;border:2px solid #d1d5db;border-radius:8px;padding:9px 10px;font-size:14px;">
+          </div>
+        </div>
+        <div id="ruleCycleHint" style="font-size:11.5px;color:#2563eb;margin-top:8px;"></div>
+      </div>
+
+      <!-- Meter thresholds -->
+      <div style="border:1px solid #e5e7eb;border-radius:10px;padding:14px;margin-bottom:18px;">
+        <div style="font-weight:700;color:#111827;font-size:14px;margin-bottom:12px;">🏍 Meter checks</div>
+        <div style="display:flex;gap:12px;flex-wrap:wrap;">
+          <div style="flex:1;min-width:150px;">
+            <label style="display:block;font-size:12px;font-weight:600;color:#374151;margin-bottom:4px;">GPS mismatch warn (km)</label>
+            <input type="number" min="0" step="1" id="ruleGpsWarn" style="width:100%;border:2px solid #d1d5db;border-radius:8px;padding:9px 10px;font-size:14px;">
+            <div style="font-size:11px;color:#9ca3af;margin-top:4px;">Warn when meter distance differs from road/GPS by more than this.</div>
+          </div>
+          <div style="flex:1;min-width:150px;">
+            <label style="display:block;font-size:12px;font-weight:600;color:#374151;margin-bottom:4px;">Overnight bike grace (km)</label>
+            <input type="number" min="0" step="1" id="ruleOvernight" style="width:100%;border:2px solid #d1d5db;border-radius:8px;padding:9px 10px;font-size:14px;">
+            <div style="font-size:11px;color:#9ca3af;margin-top:4px;">Default for company-bike riders. Can be overridden per rider on the Riders page.</div>
+          </div>
+        </div>
+      </div>
+
+      <div style="display:flex;justify-content:flex-end;gap:10px;">
+        <button type="button" onclick="closeAttendanceRules()" style="padding:10px 16px;border-radius:8px;border:1px solid #d1d5db;background:#ffffff;color:#374151;font-weight:600;cursor:pointer;">Cancel</button>
+        <button type="button" id="ruleSaveBtn" onclick="saveAttendanceRules()" style="padding:10px 18px;border-radius:8px;border:none;background:#16a34a;color:#ffffff;font-weight:700;cursor:pointer;">Save rules</button>
       </div>
     </div>
   </div>
@@ -185,9 +247,10 @@
       >
         🗑️ Clear All
       </button>
-      <button 
-        onclick="saveAttendance()" 
-        class="px-6 py-4 bg-green-600 text-white rounded-lg hover:bg-green-700 transition font-semibold text-base shadow-lg"
+      <button
+        onclick="saveAttendance()"
+        style="background:#16a34a;color:#ffffff;"
+        class="px-6 py-4 rounded-lg hover:opacity-90 transition font-semibold text-base shadow-lg"
       >
         💾 Save Attendance
       </button>
@@ -195,88 +258,69 @@
     </div>
   </div>
 
+  <!-- Tabs: Today / Month / Calendar (segmented control) -->
+  <div class="mb-4">
+    <div class="inline-flex bg-gray-100 rounded-xl p-1 gap-1 border border-gray-200">
+      <button id="tabBtnToday" onclick="switchAttTab('today')" class="px-5 py-2 text-sm font-semibold rounded-lg transition bg-white text-blue-700 shadow-sm">📋 Today</button>
+      <button id="tabBtnMonth" onclick="switchAttTab('month')" class="px-5 py-2 text-sm font-semibold rounded-lg transition text-gray-600 hover:text-gray-900">📅 Month</button>
+      <button id="tabBtnCalendar" onclick="switchAttTab('calendar')" class="px-5 py-2 text-sm font-semibold rounded-lg transition text-gray-600 hover:text-gray-900">🗓️ Calendar</button>
+    </div>
+  </div>
+
+  <!-- ===== TODAY TAB (existing daily view — unchanged) ===== -->
+  <div id="tabToday">
+
   <!-- Summary Cards - Elegant Horizontal Row -->
   <div class="bg-white border border-gray-200 rounded-lg shadow-sm p-3 mb-4">
     <div class="flex justify-between items-center mb-2">
-      <h3 class="text-sm font-semibold text-gray-700">Summary</h3>
-      <div class="flex bg-gray-100 rounded-lg p-0.5">
-        <button 
-          id="btnDaySummary" 
-          onclick="toggleSummaryPeriod('day')" 
-          class="px-3 py-1 rounded-md text-xs font-medium bg-blue-600 text-white transition"
-        >
-          Today
-        </button>
-        <button 
-          id="btnMonthSummary" 
-          onclick="toggleSummaryPeriod('month')" 
-          class="px-3 py-1 rounded-md text-xs font-medium text-gray-600 hover:text-gray-900 transition"
-        >
-          This Month
-        </button>
-      </div>
+      <h3 class="text-sm font-semibold text-gray-700">Summary <span class="font-normal text-gray-400">· selected day</span></h3>
+      <a href="#" onclick="switchAttTab('month'); return false;" class="text-xs font-medium" style="color:#2563EB;">Monthly totals →</a>
     </div>
-    
-    <!-- All 6 cards in one elegant horizontal row -->
-    <div class="flex items-stretch justify-between gap-1">
-      <div class="flex-1 text-center p-2 rounded-lg hover:bg-gray-50 transition min-w-0">
-        <div class="flex justify-center mb-1">
-          <div class="w-8 h-8 bg-green-100 rounded-full flex items-center justify-center">
-            <span class="text-base">✓</span>
-          </div>
-        </div>
-        <p class="text-xl font-bold text-green-600" id="cardPresent">0</p>
-        <p class="text-xs text-gray-500 whitespace-nowrap">Present</p>
-      </div>
 
-      <div class="flex-1 text-center p-2 rounded-lg hover:bg-gray-50 transition min-w-0">
-        <div class="flex justify-center mb-1">
-          <div class="w-8 h-8 bg-blue-100 rounded-full flex items-center justify-center">
-            <span class="text-base">⏰</span>
-          </div>
+    <!-- Slim stat strip — one number per status, colour-dot coded. Inline styles are
+         intentional: the app purges un-compiled utility classes, so colours must be inline. -->
+    <div style="display:flex;align-items:stretch;flex-wrap:wrap;">
+      <div style="flex:1;min-width:90px;padding:4px 14px 4px 4px;border-right:1px solid #F1F5F9;">
+        <div style="display:flex;align-items:baseline;gap:6px;">
+          <span style="width:8px;height:8px;border-radius:50%;background:#22C55E;display:inline-block;"></span>
+          <span style="font-size:22px;font-weight:700;color:#16A34A;line-height:1;" id="cardPresent">0</span>
         </div>
-        <p class="text-xl font-bold text-blue-600" id="cardOnTime">0</p>
-        <p class="text-xs text-gray-500 whitespace-nowrap">On Time</p>
+        <div style="font-size:11px;color:#6B7280;margin-top:3px;">Present</div>
       </div>
-
-      <div class="flex-1 text-center p-2 rounded-lg hover:bg-gray-50 transition min-w-0">
-        <div class="flex justify-center mb-1">
-          <div class="w-8 h-8 bg-red-100 rounded-full flex items-center justify-center">
-            <span class="text-base">⚠</span>
-          </div>
+      <div style="flex:1;min-width:90px;padding:4px 14px;border-right:1px solid #F1F5F9;">
+        <div style="display:flex;align-items:baseline;gap:6px;">
+          <span style="width:8px;height:8px;border-radius:50%;background:#3B82F6;display:inline-block;"></span>
+          <span style="font-size:22px;font-weight:700;color:#2563EB;line-height:1;" id="cardOnTime">0</span>
         </div>
-        <p class="text-xl font-bold text-red-600" id="cardLate">0</p>
-        <p class="text-xs text-gray-500 whitespace-nowrap">Late</p>
+        <div style="font-size:11px;color:#6B7280;margin-top:3px;">On time</div>
       </div>
-
-      <div class="flex-1 text-center p-2 rounded-lg hover:bg-gray-50 transition min-w-0">
-        <div class="flex justify-center mb-1">
-          <div class="w-8 h-8 bg-purple-100 rounded-full flex items-center justify-center">
-            <span class="text-base">⏱</span>
-          </div>
+      <div style="flex:1;min-width:90px;padding:4px 14px;border-right:1px solid #F1F5F9;">
+        <div style="display:flex;align-items:baseline;gap:6px;">
+          <span style="width:8px;height:8px;border-radius:50%;background:#F59E0B;display:inline-block;"></span>
+          <span style="font-size:22px;font-weight:700;color:#D97706;line-height:1;" id="cardLate">0</span>
         </div>
-        <p class="text-xl font-bold text-purple-600" id="cardOvertime">0</p>
-        <p class="text-xs text-gray-500 whitespace-nowrap">Overtime</p>
+        <div style="font-size:11px;color:#6B7280;margin-top:3px;">Late</div>
       </div>
-
-      <div class="flex-1 text-center p-2 rounded-lg hover:bg-gray-50 transition min-w-0">
-        <div class="flex justify-center mb-1">
-          <div class="w-8 h-8 bg-orange-100 rounded-full flex items-center justify-center">
-            <span class="text-base">🏖️</span>
-          </div>
+      <div style="flex:1;min-width:90px;padding:4px 14px;border-right:1px solid #F1F5F9;">
+        <div style="display:flex;align-items:baseline;gap:6px;">
+          <span style="width:8px;height:8px;border-radius:50%;background:#8B5CF6;display:inline-block;"></span>
+          <span style="font-size:22px;font-weight:700;color:#7C3AED;line-height:1;" id="cardOvertime">0</span>
         </div>
-        <p class="text-xl font-bold text-orange-600" id="cardOnLeave">0</p>
-        <p class="text-xs text-gray-500 whitespace-nowrap">On Leave</p>
+        <div style="font-size:11px;color:#6B7280;margin-top:3px;">Overtime</div>
       </div>
-
-      <div class="flex-1 text-center p-2 rounded-lg hover:bg-gray-50 transition min-w-0">
-        <div class="flex justify-center mb-1">
-          <div class="w-8 h-8 bg-gray-200 rounded-full flex items-center justify-center">
-            <span class="text-base">❌</span>
-          </div>
+      <div style="flex:1;min-width:90px;padding:4px 14px;border-right:1px solid #F1F5F9;">
+        <div style="display:flex;align-items:baseline;gap:6px;">
+          <span style="width:8px;height:8px;border-radius:50%;background:#F97316;display:inline-block;"></span>
+          <span style="font-size:22px;font-weight:700;color:#EA580C;line-height:1;" id="cardOnLeave">0</span>
         </div>
-        <p class="text-xl font-bold text-gray-700" id="cardAbsent">0</p>
-        <p class="text-xs text-gray-500 whitespace-nowrap">Absent</p>
+        <div style="font-size:11px;color:#6B7280;margin-top:3px;">On leave</div>
+      </div>
+      <div style="flex:1;min-width:90px;padding:4px 4px 4px 14px;">
+        <div style="display:flex;align-items:baseline;gap:6px;">
+          <span style="width:8px;height:8px;border-radius:50%;background:#EF4444;display:inline-block;"></span>
+          <span style="font-size:22px;font-weight:700;color:#DC2626;line-height:1;" id="cardAbsent">0</span>
+        </div>
+        <div style="font-size:11px;color:#6B7280;margin-top:3px;">Absent</div>
       </div>
     </div>
   </div>
@@ -306,29 +350,25 @@
           </button>
         </div>
 
-        <!-- User Filter (Admin Only) -->
-        <div id="userFilterSection" class="flex items-center gap-2">
-          <label class="text-sm font-medium text-gray-700">Show:</label>
-          <select 
-            id="userFilter" 
-            class="px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 text-sm"
-            onchange="loadAttendanceForDate()"
-          >
-            <option value="all">All Users</option>
-            <option value="riders">Riders Only</option>
-            <option value="staff">Staff Only</option>
+        <!-- Filters (moved here from the header — they only affect the Today view) -->
+        <div class="flex items-center gap-2 flex-wrap">
+          <select id="activeFilter" class="px-3 py-2 border border-gray-300 rounded-lg text-sm" onchange="onActiveFilterChange()" title="Active vs all users">
+            <option value="active" selected>Active users</option>
+            <option value="all">All users</option>
           </select>
-        </div>
-
-        <!-- Status Filter -->
-        <div class="flex items-center gap-2">
-          <label class="text-sm font-medium text-gray-700">Filter:</label>
-          <select 
-            id="statusFilter" 
-            class="px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 text-sm"
-            onchange="filterTableByStatus()"
-          >
-            <option value="all">All Status</option>
+          <select id="userFilter" class="px-3 py-2 border border-gray-300 rounded-lg text-sm" onchange="loadAttendanceForDate()" title="Role">
+            <option value="all">Everyone</option>
+            <option value="riders">Riders only</option>
+            <option value="staff">Staff only</option>
+          </select>
+          <select id="locationFilter" class="px-3 py-2 border border-gray-300 rounded-lg text-sm" onchange="filterByLocation()" title="Location">
+            <option value="all" selected>All locations</option>
+            <option value="onsite">On-site</option>
+            <option value="remote">Remote</option>
+            <option value="no_location">No location</option>
+          </select>
+          <select id="statusFilter" class="px-3 py-2 border border-gray-300 rounded-lg text-sm" onchange="filterTableByStatus()" title="Status">
+            <option value="all">All status</option>
             <option value="present">Present</option>
             <option value="late">Late</option>
             <option value="overtime">Overtime</option>
@@ -338,27 +378,84 @@
       </div>
     </div>
 
+    <!-- Meter-attention strip (only shows when something needs attention today) -->
+    <div id="meterAttention" class="hidden px-4 pb-2 flex flex-wrap gap-2"></div>
+
     <!-- Table -->
     <div class="overflow-x-auto">
       <table class="min-w-full divide-y divide-gray-200">
         <thead class="bg-gray-50">
           <tr>
             <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Employee</th>
-            <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Expected Shift</th>
             <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">In → Out</th>
             <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Location</th>
-            <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Distance</th>
+            <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Meter</th>
             <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Hours</th>
-            <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Leave</th>
             <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Actions</th>
           </tr>
         </thead>
         <tbody id="attBody" class="bg-white divide-y divide-gray-200">
           <tr>
-            <td colspan="8" class="px-4 py-8 text-center text-gray-500 text-sm">Loading attendance records...</td>
+            <td colspan="6" class="px-4 py-8 text-center text-gray-500 text-sm">Loading attendance records...</td>
           </tr>
         </tbody>
       </table>
+    </div>
+  </div>
+  </div><!-- /#tabToday -->
+
+  <!-- ===== MONTH TAB ===== -->
+  <div id="tabMonth" class="hidden">
+    <div class="bg-white border border-gray-200 rounded-lg shadow-sm p-4 mb-4 flex items-center justify-between flex-wrap gap-3">
+      <div class="flex items-center gap-2">
+        <button onclick="monthStep(-1)" class="px-3 py-1.5 border border-gray-300 rounded-lg text-sm hover:bg-gray-50">← Prev</button>
+        <input type="month" id="monthPicker" onchange="loadMonthTab()" class="px-3 py-1.5 border border-gray-300 rounded-lg text-sm">
+        <button onclick="monthStep(1)" class="px-3 py-1.5 border border-gray-300 rounded-lg text-sm hover:bg-gray-50">Next →</button>
+      </div>
+      <div class="flex items-center gap-2">
+        <span class="text-xs text-gray-500">Month totals — plus leave and absences for the year cycle <span id="monthCycleLabel" style="font-weight:600;color:#6b7280;"></span>.</span>
+        <button onclick="exportMonthCsv()" class="px-3 py-1.5 bg-white border border-gray-300 rounded-lg text-sm hover:bg-gray-50">📥 CSV</button>
+      </div>
+    </div>
+    <div class="bg-white border border-gray-200 rounded-lg shadow-sm overflow-x-auto">
+      <table class="min-w-full divide-y divide-gray-200">
+        <thead class="bg-gray-50">
+          <tr>
+            <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase">Employee</th>
+            <th class="px-4 py-3 text-center text-xs font-semibold text-gray-500 uppercase">Present</th>
+            <th class="px-4 py-3 text-center text-xs font-semibold text-gray-500 uppercase">Absent (mo)</th>
+            <th class="px-4 py-3 text-center text-xs font-semibold text-gray-500 uppercase">Leave (mo)</th>
+            <th class="px-4 py-3 text-center text-xs font-semibold text-gray-500 uppercase">Late (mo)</th>
+            <th class="px-4 py-3 text-center text-xs font-semibold text-purple-500 uppercase">Leave (yr)</th>
+            <th class="px-4 py-3 text-center text-xs font-semibold text-red-500 uppercase">Absent (yr)</th>
+          </tr>
+        </thead>
+        <tbody id="monthBody" class="bg-white divide-y divide-gray-100">
+          <tr><td colspan="7" class="px-4 py-8 text-center text-gray-400 text-sm">Loading…</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- ===== CALENDAR TAB ===== -->
+  <div id="tabCalendar" class="hidden">
+    <div class="bg-white border border-gray-200 rounded-lg shadow-sm p-4 mb-4 flex items-center justify-between flex-wrap gap-3">
+      <div class="flex items-center gap-2">
+        <button onclick="calStep(-1)" class="px-3 py-1.5 border border-gray-300 rounded-lg text-sm hover:bg-gray-50">←</button>
+        <span id="calLabel" class="text-sm font-semibold text-gray-800 min-w-[140px] text-center"></span>
+        <button onclick="calStep(1)" class="px-3 py-1.5 border border-gray-300 rounded-lg text-sm hover:bg-gray-50">→</button>
+      </div>
+      <div class="flex items-center gap-3 text-xs" style="color:#6B7280;">
+        <span class="inline-flex items-center gap-1"><span style="width:10px;height:10px;background:#FEE2E2;border:1px solid #FCA5A5;border-radius:3px;display:inline-block;"></span> Holiday</span>
+        <span id="calHint">Click a day to add a holiday — or click a start day then an end day for a range.</span>
+        <button id="calCancelBtn" onclick="calCancelSelect()" style="display:none;background:#EF4444;color:#fff;padding:3px 10px;border-radius:6px;font-weight:600;">Cancel</button>
+      </div>
+    </div>
+    <div class="bg-white border border-gray-200 rounded-lg shadow-sm p-4">
+      <div style="display:grid;grid-template-columns:repeat(7,1fr);gap:6px;margin-bottom:6px;" class="text-center text-xs font-semibold text-gray-400">
+        <div>Mon</div><div>Tue</div><div>Wed</div><div>Thu</div><div>Fri</div><div>Sat</div><div>Sun</div>
+      </div>
+      <div id="calGrid" style="display:grid;grid-template-columns:repeat(7,1fr);gap:6px;"></div>
     </div>
   </div>
 </div>
@@ -484,6 +581,41 @@
       >
         💾 Save
       </button>
+    </div>
+  </div>
+</div>
+
+<!-- Apply Leave Modal (manager applies leave on a rider's behalf → auto-approved) -->
+<div id="applyLeaveModal" style="display:none;position:fixed;inset:0;z-index:10000;background:rgba(0,0,0,0.5);align-items:center;justify-content:center;padding:16px;" onclick="closeApplyLeave()">
+  <div class="bg-white rounded-xl shadow-2xl w-full max-w-md" style="max-height:90vh;overflow-y:auto;" onclick="event.stopPropagation();">
+    <div class="px-5 py-4 border-b border-gray-200 flex items-center justify-between">
+      <h3 class="text-lg font-semibold text-gray-900">📝 Apply leave</h3>
+      <button onclick="closeApplyLeave()" class="text-gray-400 hover:text-gray-600 text-2xl leading-none">&times;</button>
+    </div>
+    <div class="p-5 space-y-4">
+      <div>
+        <label class="block text-sm font-medium text-gray-700 mb-1">Rider / staff</label>
+        <select id="leaveUser" class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500"></select>
+      </div>
+      <div class="grid grid-cols-2 gap-3">
+        <div>
+          <label class="block text-sm font-medium text-gray-700 mb-1">From</label>
+          <input type="date" id="leaveFrom" onchange="syncLeaveToMin()" class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500">
+        </div>
+        <div>
+          <label class="block text-sm font-medium text-gray-700 mb-1">To</label>
+          <input type="date" id="leaveTo" class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500">
+        </div>
+      </div>
+      <div>
+        <label class="block text-sm font-medium text-gray-700 mb-1">Note <span class="text-gray-400 font-normal">(optional)</span></label>
+        <input type="text" id="leaveNote" maxlength="500" placeholder="e.g. family emergency" class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500">
+      </div>
+      <p class="text-xs text-gray-500">You're granting this leave — it's approved right away and logged under your name. Days on leave won't be counted as absent.</p>
+    </div>
+    <div class="px-5 py-4 border-t border-gray-200 flex justify-end gap-2">
+      <button onclick="closeApplyLeave()" class="px-4 py-2 border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50 text-sm">Cancel</button>
+      <button id="leaveSubmitBtn" onclick="submitApplyLeave()" style="background:#16a34a;color:#ffffff;" class="px-4 py-2 rounded-lg hover:opacity-90 text-sm font-semibold">Approve leave</button>
     </div>
   </div>
 </div>
@@ -1003,6 +1135,8 @@ async function loadAttendanceForDate() {
     const attRes = await fetch(`/attendance/data?date=${date}&active_filter=${activeFilter}`);
     const attJson = await attRes.json();
     const attendanceData = attJson.success ? attJson.data : [];
+    // Meter-flag thresholds (with sane defaults if the endpoint omits them).
+    window.attConfig = attJson.config || {meter_gps_warn_km: 10, overnight_grace_km: 30};
     
     // Just use the attendance API data directly - it already has correct shifts!
     // The backend now returns ALL users (not just those with attendance/leave)
@@ -1024,15 +1158,17 @@ async function loadAttendanceForDate() {
     updateSummaryCards(filteredData);
   } catch(e) {
     console.error('Error loading attendance', e);
-    document.getElementById('attBody').innerHTML = '<tr><td colspan="8" class="px-4 py-8 text-center text-red-500 text-sm">Error loading data</td></tr>';
+    document.getElementById('attBody').innerHTML = '<tr><td colspan="6" class="px-4 py-8 text-center text-red-500 text-sm">Error loading data</td></tr>';
   }
 }
 
 function renderAttendanceTable(data) {
   const body = document.getElementById('attBody');
-  
+
+  renderMeterAttention(data);
+
   if (!data || data.length === 0) {
-    body.innerHTML = '<tr><td colspan="8" class="px-4 py-8 text-center text-gray-500 text-sm">No attendance records found for this date</td></tr>';
+    body.innerHTML = '<tr><td colspan="6" class="px-4 py-8 text-center text-gray-500 text-sm">No attendance records found for this date</td></tr>';
     return;
   }
 
@@ -1054,22 +1190,23 @@ function renderAttendanceTable(data) {
     return `
       <tr class="hover:bg-gray-50" style="border-left:3px solid ${attStatusColor(r, lateBy)}" data-status="${getRowStatus(r, lateBy, overtime)}" data-location="${locationBadge.type}">
         <td class="px-4 py-3 text-sm font-medium">
-          <button 
+          <button
             onclick="showEmployeeDetails(${r.user_id}, \`${(r.fullname || '').replace(/`/g, '')}\`, '${r.attendance_date}')"
             class="text-blue-600 hover:text-blue-800 hover:underline font-medium cursor-pointer text-left"
             title="View last 30 days attendance with order details"
           >
             ${r.fullname || '#' + r.user_id}
           </button>
-          <div class="mt-1">${attStatusPill(r, lateBy, overtime)}</div>
-        </td>
-        <td class="px-4 py-3 text-sm">
-          <button type="button"
-            onclick="openShiftChange({userId:${r.user_id}, userName:\`${(r.fullname||'').replace(/`/g,'')}\`, onSaved: loadAttendanceForDate})"
-            class="text-left cursor-pointer group" title="Click to change this rider's shift">
-            <div class="font-medium text-gray-900 group-hover:text-red-700 group-hover:underline">${r.shift_name || 'Default Shift'} <span class="text-gray-300 group-hover:text-red-500">✎</span></div>
-            <div class="text-xs text-gray-500">${r.shift_start || '09:00'}${r.shift_end ? ' - ' + r.shift_end : ' onwards'}</div>
-          </button>
+          <div class="mt-1" style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
+            ${attStatusPill(r, lateBy, overtime)}
+            <button type="button"
+              onclick="openShiftChange({userId:${r.user_id}, userName:\`${(r.fullname||'').replace(/`/g,'')}\`, onSaved: loadAttendanceForDate})"
+              title="${r.shift_start || '09:00'}${r.shift_end ? ' – ' + r.shift_end : ' onwards'} — click to change this rider's shift"
+              style="background:none;border:none;padding:0;font-size:11px;color:#6B7280;cursor:pointer;white-space:nowrap;">
+              · ${r.shift_name || 'Default Shift'} <span style="color:#D1D5DB;">✎</span>
+            </button>
+          </div>
+          ${attInlineContext(r)}
         </td>
         <td class="px-4 py-3 text-sm whitespace-nowrap">
           <span class="${r.login_time ? (lateBy.isLate ? 'text-red-600 font-medium' : 'text-gray-900') : 'text-gray-300'}">${r.login_time || '–'}</span>
@@ -1081,22 +1218,14 @@ function renderAttendanceTable(data) {
         <td class="px-4 py-3 text-sm">
           ${locationBadge.html}
         </td>
-        
-        <!-- Distance Column (Meter + GPS) -->
-        <td class="px-4 py-3 text-sm">
-          ${getDistanceBadge(r)}
-        </td>
-        
-        <td class="px-4 py-3 text-sm ${hours === '-' ? 'text-gray-300' : 'text-gray-600'}">${hours}</td>
 
-        <!-- Leave badge -->
-        ${r.leave_request_id ? `
-        <td class="px-4 py-3 text-sm">
-            <span class="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium ${r.leave_status === 'approved' ? 'bg-green-100 text-green-700' : (r.leave_status === 'pending' ? 'bg-yellow-100 text-yellow-700' : 'bg-red-100 text-red-700')}">
-              ${r.leave_type_from_req || 'Leave'} · ${r.leave_status}
-            </span>
-          </td>
-        ` : '<td class="px-4 py-3 text-sm text-gray-300">–</td>'}
+        <!-- Meter Column: "127 km 📷📷 details" + integrity flags -->
+        <td class="px-4 py-3 text-sm" style="white-space:nowrap;">
+          <div>${getDistanceBadge(r)}</div>
+          ${getMeterFlags(r)}
+        </td>
+
+        <td class="px-4 py-3 text-sm ${hours === '-' ? 'text-gray-300' : 'text-gray-600'}">${hours}</td>
         <td class="px-4 py-3 text-sm">
           <div class="flex gap-2" style="position: relative; z-index: 5;">
             ${!r.logout_time ? `
@@ -1142,7 +1271,11 @@ function renderAttendanceTable(data) {
 }
 
 function getRowStatus(r, lateBy, overtime) {
-  if (!r.login_time) return 'absent';
+  const onLeave = r.leave_request_id && ['approved','pending'].includes(String(r.leave_status || '').toLowerCase());
+  if (onLeave) return 'leave';
+  // No login: only a genuine working day is "absent"; off/holiday/not-joined are
+  // their own status so the Absent filter doesn't sweep them in.
+  if (!r.login_time) return ((r.day_kind || 'working') === 'working') ? 'absent' : (r.day_kind || 'off');
   if (overtime.hasOvertime) return 'overtime';
   if (lateBy.isLate) return 'late';
   return 'present';
@@ -1152,9 +1285,15 @@ function getRowStatus(r, lateBy, overtime) {
 // (replaces the old separate Late By / Overtime columns).
 function attStatusPill(r, lateBy, overtime) {
   const onLeave = r.leave_request_id && ['approved','pending'].includes(String(r.leave_status || '').toLowerCase());
+  const kind = r.day_kind || 'working';
   let label, bg, fg;
   if (onLeave)            { label = 'On leave';                bg = '#E6ECFD'; fg = '#1D4ED8'; }
-  else if (!r.login_time) { label = 'Absent';                 bg = '#EEF1F5'; fg = '#5B6B84'; }
+  // A no-login day only counts as Absent on a genuine working day. Holiday / weekly
+  // off / before-hire-date show a neutral gray chip, never red.
+  else if (!r.login_time && kind === 'holiday')     { label = 'Holiday';    bg = '#EEF1F5'; fg = '#5B6B84'; }
+  else if (!r.login_time && kind === 'off')         { label = 'Off day';    bg = '#EEF1F5'; fg = '#5B6B84'; }
+  else if (!r.login_time && kind === 'not_joined')  { label = 'Not joined'; bg = '#EEF1F5'; fg = '#94A3B8'; }
+  else if (!r.login_time) { label = 'Absent';                 bg = '#FDE7E7'; fg = '#B42318'; }
   else if (lateBy.isLate) { label = 'Late ' + lateBy.duration; bg = '#FBEEDC'; fg = '#B45309'; }
   else                    { label = 'On time';                bg = '#E6F3EB'; fg = '#15803D'; }
   let html = `<span style="display:inline-block; font-size:11px; font-weight:600; padding:1px 8px; border-radius:20px; background:${bg}; color:${fg};">${label}</span>`;
@@ -1164,11 +1303,61 @@ function attStatusPill(r, lateBy, overtime) {
   return html;
 }
 
+// Small inline context under the status pill:
+//   • month-to-date lateness (amber) — always shown when > 0, so a manager sees the
+//     accumulating pattern without opening the Month tab.
+//   • "Nth absence this year" (red) — only when the rider is absent today, so an
+//     unexplained no-show is instantly weighed against their yearly record.
+function attInlineContext(r) {
+  const bits = [];
+  // Leave detail (the old Leave column, folded in): type + approval state.
+  if (r.leave_request_id) {
+    const st = String(r.leave_status || '').toLowerCase();
+    const [bg, fg, bd] = st === 'approved' ? ['#DCFCE7', '#15803D', '#86EFAC']
+                       : st === 'pending'  ? ['#FEF9C3', '#854D0E', '#FDE047']
+                       :                     ['#FEE2E2', '#B42318', '#FCA5A5'];
+    bits.push(`<span title="Leave request ${st}" style="display:inline-flex;align-items:center;gap:3px;font-size:11px;font-weight:600;color:${fg};background:${bg};border:1px solid ${bd};border-radius:5px;padding:1px 6px;">🏖 ${r.leave_type_from_req || 'Leave'} · ${st}</span>`);
+  }
+  const mlate = Number(r.month_late_minutes) || 0;
+  if (mlate > 0) {
+    const h = Math.floor(mlate / 60), m = mlate % 60;
+    const txt = h > 0 ? `${h}h ${m}m` : `${m}m`;
+    bits.push(`<span title="Total late so far this month" style="display:inline-flex;align-items:center;gap:3px;font-size:11px;font-weight:600;color:#92400E;background:#FEF3C7;border:1px solid #FDE68A;border-radius:5px;padding:1px 6px;">⏰ ${txt} this mo</span>`);
+  }
+  const ya = r.year_absent_days;
+  if (ya != null && Number(ya) > 0) {
+    const n = Number(ya);
+    const ord = (n % 10 === 1 && n % 100 !== 11) ? 'st' : (n % 10 === 2 && n % 100 !== 12) ? 'nd' : (n % 10 === 3 && n % 100 !== 13) ? 'rd' : 'th';
+    bits.push(`<span title="Absent working-days so far this year cycle (including today)" style="display:inline-flex;align-items:center;gap:3px;font-size:11px;font-weight:700;color:#B42318;background:#FDE7E7;border:1px solid #FCA5A5;border-radius:5px;padding:1px 6px;">📅 ${n}${ord} absence this yr</span>`);
+  }
+  if (!bits.length) return '';
+  return `<div style="display:flex;flex-wrap:wrap;gap:4px;margin-top:4px;">${bits.join('')}</div>`;
+}
+
+// Meter-photo proof icons for the distance cell. A rider who logged a meter reading
+// should also have snapped the odometer: a camera with photo on file is CLICKABLE
+// (opens the photo via the shared viewMeterPicturePath viewer); a greyed camera =
+// reading present but NO photo (can't be verified).
+function getMeterPhotoIcons(r) {
+  const icons = [];
+  const path = v => (v && v !== '-') ? String(v).replace(/'/g, "\\'") : null;
+  const cam = (p, title) => p
+    ? `<button type="button" onclick="viewMeterPicturePath('${p}')" title="${title}: photo attached — click to view" style="background:none;border:none;padding:0;cursor:pointer;font-size:12px;line-height:1;">📷</button>`
+    : `<span title="${title}: no photo" style="font-size:12px;filter:grayscale(1);opacity:0.4;line-height:1;">📷</span>`;
+  if (r.meter_start != null && r.meter_start !== '') icons.push(cam(path(r.picture_start), 'Start meter'));
+  if (r.meter_end != null && r.meter_end !== '')   icons.push(cam(path(r.picture_end), 'End meter'));
+  if (!icons.length) return '';
+  return `<span style="display:inline-flex;gap:3px;margin-left:5px;vertical-align:middle;">${icons.join('')}</span>`;
+}
+
 // Left-edge accent colour per row status (scannable at a glance).
 function attStatusColor(r, lateBy) {
   const onLeave = r.leave_request_id && ['approved','pending'].includes(String(r.leave_status || '').toLowerCase());
+  const kind = r.day_kind || 'working';
   if (onLeave) return '#1D4ED8';
-  if (!r.login_time) return '#CBD5E1';
+  // Genuine absence (a working day with no login) stands out red; off/holiday/
+  // not-joined stay neutral gray.
+  if (!r.login_time) return (kind === 'working') ? '#EF4444' : '#CBD5E1';
   if (lateBy.isLate) return '#F59E0B';
   return '#22C55E';
 }
@@ -1189,38 +1378,37 @@ function getLocationBadge(record) {
   if (record.checkin_latitude && record.checkin_longitude) {
     const mapsUrl = `https://www.google.com/maps?q=${record.checkin_latitude},${record.checkin_longitude}`;
     
+    // Name of the base the distance was measured against (the SHIFT location for
+    // the selected date, recomputed server-side) — "7.9 km from LaCarne" tells the
+    // manager which pin the number is relative to; a bare "away" doesn't.
+    const escLoc = s => String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+    const baseName = record.assigned_office_location ? escLoc(record.assigned_office_location) : null;
+
+    // Compact dot-pill (inline-styled, purge-safe). A small coloured dot replaces the
+    // oversized tick/pin SVGs; the whole pill links to Google Maps.
+    const pill = (bg, fg, dot, text) => `
+      <a href="${mapsUrl}" target="_blank" title="Click to view on Google Maps"
+         style="display:inline-flex;align-items:center;gap:5px;padding:2px 8px;border-radius:20px;font-size:11px;font-weight:600;background:${bg};color:${fg};text-decoration:none;white-space:nowrap;">
+        <span style="width:7px;height:7px;border-radius:50%;background:${dot};display:inline-block;flex:none;"></span>${text}
+      </a>`;
+
     if (record.is_remote_checkin == 1) {
-      // Remote check-in (>2km from office)
+      // Remote check-in (outside the base location's radius)
       const distanceKm = (record.checkin_distance_from_base / 1000).toFixed(1);
       return {
         type: 'remote',
-        html: `
-          <a href="${mapsUrl}" target="_blank" class="inline-flex items-center px-2 py-1 rounded-full text-xs font-semibold bg-red-100 text-red-700 hover:bg-red-200 transition cursor-pointer" title="Click to view on Google Maps">
-            <svg class="w-3 h-3 mr-1" fill="currentColor" viewBox="0 0 20 20">
-              <path fill-rule="evenodd" d="M5.05 4.05a7 7 0 119.9 9.9L10 18.9l-4.95-4.95a7 7 0 010-9.9zM10 11a2 2 0 100-4 2 2 0 000 4z" clip-rule="evenodd"/>
-            </svg>
-            ${distanceKm} km away
-          </a>
-        `
+        html: pill('#FEE2E2', '#B42318', '#EF4444', `${distanceKm} km ${baseName ? 'from ' + baseName : 'away'}`)
       };
     } else {
-      // Onsite check-in (≤2km from office)
-      const distanceText = record.checkin_distance_from_base 
-        ? (record.checkin_distance_from_base < 1000 
-            ? `${Math.round(record.checkin_distance_from_base)}m` 
+      // Onsite check-in (within the base location's radius)
+      const distanceText = record.checkin_distance_from_base
+        ? (record.checkin_distance_from_base < 1000
+            ? `${Math.round(record.checkin_distance_from_base)}m`
             : `${(record.checkin_distance_from_base / 1000).toFixed(1)}km`)
         : '';
-      
       return {
         type: 'onsite',
-        html: `
-          <a href="${mapsUrl}" target="_blank" class="inline-flex items-center px-2 py-1 rounded-full text-xs font-semibold bg-green-100 text-green-700 hover:bg-green-200 transition cursor-pointer" title="Click to view on Google Maps">
-            <svg class="w-3 h-3 mr-1" fill="currentColor" viewBox="0 0 20 20">
-              <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd"/>
-            </svg>
-            At office${distanceText ? ` (${distanceText})` : ''}
-          </a>
-        `
+        html: pill('#DCFCE7', '#15803D', '#22C55E', `At ${baseName || 'office'}${distanceText ? ` · ${distanceText}` : ''}`)
       };
     }
   }
@@ -1228,161 +1416,418 @@ function getLocationBadge(record) {
   // Check-in without location (GPS failed or denied)
   return {
     type: 'no_location',
-    html: `
-      <span class="inline-flex items-center px-2 py-1 rounded-full text-xs font-semibold bg-gray-100 text-gray-600" title="Location not captured">
-        <svg class="w-3 h-3 mr-1" fill="currentColor" viewBox="0 0 20 20">
-          <path fill-rule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-8-3a1 1 0 00-.867.5 1 1 0 11-1.731-1A3 3 0 0113 8a3.001 3.001 0 01-2 2.83V11a1 1 0 11-2 0v-1a1 1 0 011-1 1 1 0 100-2zm0 8a1 1 0 100-2 1 1 0 000 2z" clip-rule="evenodd"/>
-        </svg>
-        No location
-      </span>
-    `
+    html: `<span title="Location not captured" style="display:inline-flex;align-items:center;gap:5px;padding:2px 8px;border-radius:20px;font-size:11px;font-weight:600;background:#F3F4F6;color:#6B7280;white-space:nowrap;"><span style="width:7px;height:7px;border-radius:50%;background:#9CA3AF;display:inline-block;flex:none;"></span>No location</span>`
   };
+}
+
+/**
+ * Meter-integrity flags shown under the distance detail:
+ *   ⛽ no meter        — a rider finished the day (checked out) but logged no meter reading
+ *   ⚠ N km off         — meter vs tracked (road/GPS) distance differ beyond the threshold
+ *                        (accuracy warning only, never blocks anything)
+ *   🏍 +N km overnight — company-bike rider whose start meter exceeds yesterday's end meter
+ *                        beyond the grace → the bike was used off company hours
+ * Thresholds come from window.attConfig (backend t_fin_config, defaults 10 / 25 km).
+ */
+// ── Tabs: Today / Month / Calendar ───────────────────────────────────────────
+let monthData = [];
+function switchAttTab(tab) {
+  ['today','month','calendar'].forEach(t => {
+    const cap = t.charAt(0).toUpperCase() + t.slice(1);
+    const panel = document.getElementById('tab' + cap);
+    const btn = document.getElementById('tabBtn' + cap);
+    if (panel) panel.classList.toggle('hidden', t !== tab);
+    if (btn) {
+      const active = (t === tab);
+      btn.classList.toggle('bg-white', active);
+      btn.classList.toggle('text-blue-700', active);
+      btn.classList.toggle('shadow-sm', active);
+      btn.classList.toggle('text-gray-600', !active);
+    }
+  });
+  if (tab === 'month') loadMonthTab();
+  if (tab === 'calendar') loadCalendarTab();
+}
+
+// ---- Month tab ----
+function currentMonthValue() {
+  const el = document.getElementById('monthPicker');
+  if (el && el.value) return el.value;
+  const d = new Date();
+  return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0');
+}
+function monthStep(delta) {
+  const parts = currentMonthValue().split('-');
+  const d = new Date(Number(parts[0]), Number(parts[1]) - 1 + delta, 1);
+  document.getElementById('monthPicker').value = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0');
+  loadMonthTab();
+}
+async function loadMonthTab() {
+  const monthEl = document.getElementById('monthPicker');
+  if (monthEl && !monthEl.value) monthEl.value = currentMonthValue();
+  const body = document.getElementById('monthBody');
+  body.innerHTML = '<tr><td colspan="7" class="px-4 py-8 text-center text-gray-400 text-sm">Loading…</td></tr>';
+  try {
+    const res = await fetch('/attendance/monthly-report?month=' + currentMonthValue());
+    const json = await res.json();
+    monthData = json.success ? (json.data || []) : [];
+    renderMonthBody(monthData);
+  } catch (e) {
+    body.innerHTML = '<tr><td colspan="7" class="px-4 py-8 text-center text-red-500 text-sm">Failed to load</td></tr>';
+  }
+}
+function fmtMinsShort(n) { n = Number(n) || 0; const h = Math.floor(n / 60), m = n % 60; return h > 0 ? `${h}h ${m}m` : `${m}m`; }
+function fmtCycleShort(d) {
+  if (!d) return '';
+  const p = String(d).split('-'); if (p.length !== 3) return d;
+  const m = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  return m[parseInt(p[1],10)-1] + " '" + p[0].slice(2);
+}
+function renderMonthBody(data) {
+  const body = document.getElementById('monthBody');
+  const lbl = document.getElementById('monthCycleLabel');
+  if (lbl) {
+    const c0 = data[0] || {};
+    lbl.textContent = (c0.cycle_start && c0.cycle_end) ? '(' + fmtCycleShort(c0.cycle_start) + ' → ' + fmtCycleShort(c0.cycle_end) + ')' : '';
+  }
+  if (!data.length) { body.innerHTML = '<tr><td colspan="7" class="px-4 py-8 text-center text-gray-400 text-sm">No data for this month</td></tr>'; return; }
+  const sorted = [...data].sort((a, b) => String(a.fullname || '').localeCompare(String(b.fullname || '')));
+  // A clickable count → opens the exact-dates drill-down. Zero shows a muted dash so the
+  // eye skips it. stopPropagation keeps the row's own "open 30-day detail" from also firing.
+  const numCell = (val, color, uid, nm, type) => {
+    const n = Number(val) || 0;
+    if (n <= 0) return `<td class="px-4 py-3 text-sm" style="text-align:center;color:#D1D5DB;">–</td>`;
+    return `<td class="px-4 py-3 text-sm" style="text-align:center;">
+      <button type="button" onclick="event.stopPropagation(); showDateBreakdown(${uid}, '${nm}', '${type}')"
+        title="Click to see the exact dates"
+        style="background:none;border:none;cursor:pointer;font-weight:700;color:${color};text-decoration:underline;text-decoration-style:dotted;text-underline-offset:2px;font-size:13px;">${n}</button>
+    </td>`;
+  };
+  body.innerHTML = sorted.map(u => {
+    const late = Number(u.total_late_minutes) || 0;
+    const lateStyle = late > 300 ? 'background:#FEE2E2;color:#B91C1C;' : (late > 0 ? 'background:#FEF3C7;color:#92400E;' : 'background:#F3F4F6;color:#9CA3AF;');
+    const uid = u.user_id;
+    const nm = String(u.fullname || '').replace(/'/g, "\\'");
+    return `<tr class="hover:bg-gray-50 cursor-pointer" onclick="openMonthDetail(${uid}, '${nm}')">
+      <td class="px-4 py-3 text-sm" style="font-weight:600;color:#1F2937;">${u.fullname || ''}</td>
+      <td class="px-4 py-3 text-sm text-center" style="color:#374151;">${u.present_days || 0}</td>
+      ${numCell(u.absent_days, '#DC2626', uid, nm, 'month_absent')}
+      ${numCell(u.leave_days, '#2563EB', uid, nm, 'month_leave')}
+      <td class="px-4 py-3 text-center"><span style="display:inline-block;padding:2px 8px;border-radius:5px;font-size:12px;font-weight:600;${lateStyle}">${fmtMinsShort(late)}</span></td>
+      ${numCell(u.leaves_taken_year, '#7C3AED', uid, nm, 'year_leave')}
+      ${numCell(u.absent_days_year, '#B91C1C', uid, nm, 'year_absent')}
+    </tr>`;
+  }).join('');
+}
+function openMonthDetail(userId, name) {
+  if (typeof showEmployeeDetails === 'function') showEmployeeDetails(userId, name, currentMonthValue() + '-28');
+}
+
+// ---- Month-tab date drill-down (exact dates behind a clicked count) ----
+const BREAKDOWN_META = {
+  month_absent: { title: 'Absent days',       sub: 'this month',      color: '#DC2626', icon: '❌' },
+  month_leave:  { title: 'Leave days',        sub: 'this month',      color: '#2563EB', icon: '🏖' },
+  year_leave:   { title: 'Leave days',        sub: 'this year cycle', color: '#7C3AED', icon: '🏖' },
+  year_absent:  { title: 'Absent days',       sub: 'this year cycle', color: '#B91C1C', icon: '❌' },
+};
+async function showDateBreakdown(userId, name, type) {
+  const meta = BREAKDOWN_META[type] || { title: 'Dates', sub: '', color: '#374151', icon: '📅' };
+  const modal = document.getElementById('dateBreakdownModal');
+  document.getElementById('bdTitle').textContent = `${meta.icon} ${meta.title} — ${name}`;
+  document.getElementById('bdSub').textContent = meta.sub;
+  const bodyEl = document.getElementById('bdBody');
+  bodyEl.innerHTML = '<div style="padding:24px;text-align:center;color:#9CA3AF;font-size:13px;">Loading…</div>';
+  modal.style.display = 'flex';
+  try {
+    const res = await fetch(`/attendance/date-breakdown?user_id=${userId}&type=${type}&month=${currentMonthValue()}`);
+    const json = await res.json();
+    const dates = (json && json.success) ? (json.dates || []) : [];
+    if (!dates.length) {
+      bodyEl.innerHTML = '<div style="padding:24px;text-align:center;color:#9CA3AF;font-size:13px;">No dates found.</div>';
+      return;
+    }
+    const dow = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+    const mon = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+    const rows = dates.map(item => {
+      const d = new Date(item.date + 'T00:00:00');
+      const label = `${dow[d.getDay()]}, ${d.getDate()} ${mon[d.getMonth()]} ${d.getFullYear()}`;
+      const tag = item.label ? `<span style="font-size:11px;color:${meta.color};background:${meta.color}14;border-radius:5px;padding:1px 7px;font-weight:600;">${String(item.label).replace(/</g,'&lt;')}</span>` : '';
+      return `<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:8px 4px;border-bottom:1px solid #F3F4F6;">
+        <span style="font-size:13px;color:#111827;">${label}</span>${tag}
+      </div>`;
+    }).join('');
+    bodyEl.innerHTML = `<div style="font-size:12px;color:#6B7280;margin-bottom:8px;">${dates.length} day${dates.length>1?'s':''}</div>${rows}`;
+  } catch (e) {
+    bodyEl.innerHTML = '<div style="padding:24px;text-align:center;color:#DC2626;font-size:13px;">Could not load the dates.</div>';
+  }
+}
+function closeDateBreakdown() { document.getElementById('dateBreakdownModal').style.display = 'none'; }
+function exportMonthCsv() {
+  if (!monthData.length) { alert('Nothing to export.'); return; }
+  let csv = 'Employee,Present,Absent (month),Leave (month),Late minutes,Leave (year),Absent (year)\n';
+  [...monthData].sort((a, b) => String(a.fullname || '').localeCompare(String(b.fullname || ''))).forEach(u => {
+    csv += `"${(u.fullname || '').replace(/"/g, '""')}",${u.present_days || 0},${u.absent_days || 0},${u.leave_days || 0},${u.total_late_minutes || 0},${u.leaves_taken_year || 0},${u.absent_days_year || 0}\n`;
+  });
+  const blob = new Blob([csv], { type: 'text/csv' });
+  const a = document.createElement('a'); a.href = URL.createObjectURL(blob);
+  a.download = `attendance-${currentMonthValue()}.csv`; a.click();
+}
+
+// ---- Calendar tab ----
+let calYear, calMonth, calHolidays = {};
+async function loadCalendarTab() {
+  if (calYear === undefined) { const d = new Date(); calYear = d.getFullYear(); calMonth = d.getMonth(); }
+  try {
+    const res = await fetch('/holidays/list?year=' + calYear);
+    const json = await res.json();
+    calHolidays = {};
+    (json.data || []).forEach(h => { calHolidays[h.holiday_date] = h.holiday_name; });
+  } catch (e) { calHolidays = {}; }
+  renderCalendar();
+}
+let calRangeStart = null; // 'Y-m-d' while picking a range end, else null
+function calStep(delta) {
+  calMonth += delta;
+  if (calMonth < 0) { calMonth = 11; calYear--; }
+  else if (calMonth > 11) { calMonth = 0; calYear++; }
+  loadCalendarTab();
+}
+function calCancelSelect() { calRangeStart = null; renderCalendar(); }
+function updateCalHint() {
+  const hint = document.getElementById('calHint');
+  const cancel = document.getElementById('calCancelBtn');
+  if (calRangeStart) {
+    if (hint) hint.textContent = `Start: ${calRangeStart}. Now click the last day of the holiday (or the same day for one day).`;
+    if (cancel) cancel.style.display = 'inline-block';
+  } else {
+    if (hint) hint.textContent = 'Click a day to add a holiday — or click a start day then an end day for a range.';
+    if (cancel) cancel.style.display = 'none';
+  }
+}
+function renderCalendar() {
+  const label = document.getElementById('calLabel');
+  const grid = document.getElementById('calGrid');
+  const monthNames = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+  label.textContent = monthNames[calMonth] + ' ' + calYear;
+  const first = new Date(calYear, calMonth, 1);
+  const startDow = (first.getDay() + 6) % 7; // Mon = 0
+  const daysInMonth = new Date(calYear, calMonth + 1, 0).getDate();
+  const pad = n => String(n).padStart(2, '0');
+  let html = '';
+  for (let i = 0; i < startDow; i++) html += '<div></div>';
+  for (let day = 1; day <= daysInMonth; day++) {
+    const ds = `${calYear}-${pad(calMonth + 1)}-${pad(day)}`;
+    const isHol = calHolidays[ds];
+    const isStart = (ds === calRangeStart);
+    let box = 'background:#ffffff;border:1px solid #e5e7eb;';
+    if (isHol) box = 'background:#FEE2E2;border:1px solid #FCA5A5;';
+    if (isStart) box = 'background:#DBEAFE;border:2px solid #2563EB;';
+    const nameHtml = isHol ? `<div style="font-size:9px;color:#b91c1c;line-height:1.1;margin-top:2px;overflow:hidden;">${String(isHol).replace(/</g,'&lt;')}</div>` : '';
+    const t = isHol ? 'Click to remove this holiday' : (calRangeStart ? 'Click to set as the end day' : 'Click to add a holiday');
+    html += `<div title="${t}" onclick="calDayClick('${ds}')" onmouseover="this.style.filter='brightness(0.97)'" onmouseout="this.style.filter=''" style="min-height:48px;border-radius:8px;padding:5px 6px;cursor:pointer;${box}">
+      <div style="font-size:12px;font-weight:600;color:${isHol ? '#b91c1c' : (isStart ? '#1D4ED8' : '#374151')}">${day}</div>${nameHtml}
+    </div>`;
+  }
+  grid.innerHTML = html;
+  updateCalHint();
+}
+async function calDayClick(ds) {
+  const csrf = document.querySelector('meta[name="csrf-token"]').content;
+  // Clicking an existing holiday always means "remove it".
+  if (calHolidays[ds]) {
+    calRangeStart = null;
+    if (!confirm(`Remove holiday "${calHolidays[ds]}" on ${ds}?`)) { renderCalendar(); return; }
+    try {
+      const res = await fetch('/holidays/list?year=' + calYear);
+      const json = await res.json();
+      const h = (json.data || []).find(x => x.holiday_date === ds);
+      if (!h) { loadCalendarTab(); return; }
+      const del = await fetch('/holidays/' + h.id, { method: 'DELETE', headers: { 'X-CSRF-TOKEN': csrf } });
+      const dj = await del.json();
+      if (dj.success) loadCalendarTab(); else alert(dj.message || 'Could not remove the holiday.');
+    } catch (e) { alert('Could not remove the holiday.'); }
+    return;
+  }
+  // First click sets the range start; second click sets the end. No date typing.
+  if (!calRangeStart) {
+    calRangeStart = ds;
+    renderCalendar();
+    return;
+  }
+  const from = calRangeStart <= ds ? calRangeStart : ds;
+  const to = calRangeStart <= ds ? ds : calRangeStart;
+  calRangeStart = null;
+  const label = (from === to) ? from : `${from} → ${to}`;
+  const name = prompt(`Holiday name for ${label}:`);
+  renderCalendar();
+  if (!name) return;
+  try {
+    const res = await fetch('/holidays', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': csrf },
+      body: JSON.stringify({ holiday_date: from, holiday_end_date: (from === to ? null : to), holiday_name: name })
+    });
+    const json = await res.json();
+    if (json.success) loadCalendarTab(); else alert(json.message || 'Could not add the holiday.');
+  } catch (e) { alert('Could not add the holiday.'); }
+}
+
+// ── Apply-leave modal (manager on-behalf, auto-approved) ─────────────────────
+function openApplyLeave() {
+  const sel = document.getElementById('leaveUser');
+  const seen = {};
+  const opts = (allAttendanceData || [])
+    .filter(u => u.user_id && !seen[u.user_id] && (seen[u.user_id] = true))
+    .sort((a, b) => String(a.fullname || '').localeCompare(String(b.fullname || '')))
+    .map(u => `<option value="${u.user_id}">${(u.fullname || ('#' + u.user_id))}</option>`).join('');
+  sel.innerHTML = opts || '<option value="">No users loaded — load a date first</option>';
+  const today = (document.getElementById('tableDate') || {}).value || new Date().toISOString().split('T')[0];
+  document.getElementById('leaveFrom').value = today;
+  document.getElementById('leaveTo').value = today;
+  document.getElementById('leaveTo').min = today;
+  document.getElementById('leaveNote').value = '';
+  document.getElementById('applyLeaveModal').style.display = 'flex';
+}
+function closeApplyLeave() { document.getElementById('applyLeaveModal').style.display = 'none'; }
+function syncLeaveToMin() {
+  const f = document.getElementById('leaveFrom').value;
+  const to = document.getElementById('leaveTo');
+  to.min = f || '';
+  if (to.value && f && to.value < f) to.value = f;
+}
+async function submitApplyLeave() {
+  const btn = document.getElementById('leaveSubmitBtn');
+  const payload = {
+    user_id: document.getElementById('leaveUser').value,
+    leave_start_date: document.getElementById('leaveFrom').value,
+    leave_end_date: document.getElementById('leaveTo').value,
+    note: document.getElementById('leaveNote').value
+  };
+  if (!payload.user_id || !payload.leave_start_date || !payload.leave_end_date) { alert('Pick a person and both dates.'); return; }
+  btn.disabled = true; btn.textContent = 'Approving…';
+  try {
+    const res = await fetch('/attendance/apply-leave', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').content },
+      body: JSON.stringify(payload)
+    });
+    const json = await res.json();
+    if (json.success) {
+      closeApplyLeave();
+      alert(json.message || 'Leave approved.');
+      if (typeof loadAttendanceForDate === 'function') loadAttendanceForDate();
+    } else {
+      alert(json.message || 'Could not apply the leave.');
+    }
+  } catch (e) {
+    alert('Could not apply the leave. Please try again.');
+  } finally {
+    btn.disabled = false; btn.textContent = 'Approve leave';
+  }
+}
+
+// Summary strip above the table: counts of riders needing a meter reading and
+// company-bike riders flagged for overnight use today. Hidden when all clear.
+// Effective overnight grace for a row: per-rider override (sent on the row) → global default.
+function rowGrace(r) {
+  const cfg = window.attConfig || {};
+  if (r && r.overnight_grace_km != null && r.overnight_grace_km !== '') return Number(r.overnight_grace_km);
+  return Number(cfg.overnight_grace_km != null ? cfg.overnight_grace_km : 30);
+}
+function renderMeterAttention(data) {
+  const el = document.getElementById('meterAttention');
+  if (!el) return;
+  let missing = 0, overnight = 0;
+  (data || []).forEach(r => {
+    if (!r.login_time) return;
+    const isRider = r.role_name && String(r.role_name).toLowerCase().includes('rider');
+    const hasPair = r.meter_start != null && r.meter_end != null;
+    if (isRider && r.logout_time && !hasPair) missing++;
+    if (Number(r.company_bike) === 1 && r.prev_meter_end != null && r.meter_start != null
+        && (Number(r.meter_start) - Number(r.prev_meter_end)) > rowGrace(r)) overnight++;
+  });
+  const chips = [];
+  if (missing > 0) chips.push(`<span style="display:inline-flex;align-items:center;gap:4px;padding:4px 10px;border-radius:20px;font-size:12px;font-weight:600;background:#FEF3C7;color:#92400E;border:1px solid #FDE68A;">⛽ ${missing} rider${missing>1?'s':''} without a meter reading</span>`);
+  if (overnight > 0) chips.push(`<span style="display:inline-flex;align-items:center;gap:4px;padding:4px 10px;border-radius:20px;font-size:12px;font-weight:700;background:#FEE2E2;color:#B91C1C;border:1px solid #FCA5A5;">🏍 ${overnight} overnight bike flag${overnight>1?'s':''}</span>`);
+  el.innerHTML = chips.join('');
+  el.classList.toggle('hidden', chips.length === 0);
+}
+
+function getMeterFlags(record) {
+  if (!record.login_time) return '';
+  const cfg = window.attConfig || {meter_gps_warn_km: 10, overnight_grace_km: 30};
+  const chips = [];
+  const isRider = record.role_name && String(record.role_name).toLowerCase().includes('rider');
+  const hasMeterPair = record.meter_start != null && record.meter_end != null;
+
+  const chip = (bg, fg, bd, txt, title) => `<span style="display:inline-flex;align-items:center;gap:3px;padding:1px 6px;border-radius:5px;font-size:11px;font-weight:600;background:${bg};color:${fg};border:1px solid ${bd};" title="${title}">${txt}</span>`;
+
+  if (isRider && record.logout_time && !hasMeterPair) {
+    chips.push(chip('#FEF3C7', '#92400E', '#FDE68A', '⛽ no meter', 'Checked out without a meter reading'));
+  }
+
+  const meter = record.meter_distance;
+  const compare = (record.road_distance_km != null) ? record.road_distance_km
+                : (record.gps_distance != null ? record.gps_distance : null);
+  if (meter != null && compare != null) {
+    const diff = Math.abs(Number(meter) - Number(compare));
+    if (diff > Number(cfg.meter_gps_warn_km)) {
+      chips.push(chip('#FEF9C3', '#854D0E', '#FDE047', `⚠ ${Math.round(diff)} km off`, `Meter ${meter} km vs tracked ${Math.round(compare)} km — differ by ${Math.round(diff)} km; reading may be inaccurate`));
+    }
+  }
+
+  if (Number(record.company_bike) === 1 && record.prev_meter_end != null && record.meter_start != null) {
+    const overnight = Number(record.meter_start) - Number(record.prev_meter_end);
+    const grace = rowGrace(record);
+    if (overnight > grace) {
+      chips.push(chip('#FEE2E2', '#B91C1C', '#FCA5A5', `🏍 +${Math.round(overnight)} km overnight`, `Start meter ${record.meter_start} − yesterday's end ${record.prev_meter_end} = ${Math.round(overnight)} km overnight (grace ${grace} km)`));
+    }
+  }
+
+  if (!chips.length) return '';
+  return `<div class="flex flex-wrap gap-1 mt-1">${chips.join('')}</div>`;
 }
 
 /**
  * ⭐ Get distance badge HTML showing meter, road distance (primary), and GPS distance
  */
+// One-line meter cell (the approved mockup): "127 km 📷📷 details".
+// The meter reading is what the manager scans daily; road distance, GPS trail,
+// coverage %, No-GPS state etc. all live behind the "details" link (the GPS-audit
+// modal already renders the full meter/road/GPS comparison + trail stats).
 function getDistanceBadge(record) {
-  // No attendance = no distance
   if (!record.login_time) {
-    return '<span class="text-gray-400 text-xs">-</span>';
+    return '<span style="color:#D1D5DB;font-size:12px;">–</span>';
   }
-  
   const hasMeter = record.meter_distance !== null && record.meter_distance !== undefined;
-  const hasRoadDistance = record.road_distance_km !== null && record.road_distance_km !== undefined;
+  const hasRoad = record.road_distance_km !== null && record.road_distance_km !== undefined;
   const hasGps = record.gps_distance !== null && record.gps_distance !== undefined;
   const gpsReadings = record.gps_readings_count || 0;
-  
-  // Neither available
-  if (!hasMeter && !hasRoadDistance && !hasGps) {
-    if (record.logout_time) {
-      // Has logout but no distance data
-      return `
-        <button 
-          type="button"
-          onclick="showGpsAudit(${record.user_id}, '${(record.fullname || '').replace(/'/g, "\\'")}', '${record.attendance_date}')"
-          class="text-gray-400 text-xs hover:text-blue-600 hover:underline cursor-pointer"
-          title="Click to audit GPS readings"
-        >
-          No data
-        </button>
-      `;
-    }
-    return '<span class="text-gray-400 text-xs">-</span>';
-  }
-  
-  let html = '<div class="flex flex-col gap-1">';
-  
-  // Meter distance
+
+  const details = `<button type="button"
+    onclick="showGpsAudit(${record.user_id}, '${(record.fullname || '').replace(/'/g, "\\'")}', '${record.attendance_date}')"
+    style="background:none;border:none;padding:0;margin-left:6px;font-size:11px;font-weight:600;color:#2563EB;cursor:pointer;text-decoration:underline;vertical-align:middle;"
+    title="Road + GPS distance and the tracking audit">details</button>`;
+
   if (hasMeter) {
-    html += `
-      <div class="flex items-center gap-1">
-        <span class="text-xs font-medium text-blue-700 bg-blue-50 px-1.5 py-0.5 rounded" title="Meter reading">
-          🛣️ ${record.meter_distance} km
-        </span>
-      </div>
-    `;
+    return `<span style="font-size:13px;font-weight:600;color:#111827;vertical-align:middle;">${record.meter_distance} km</span>${getMeterPhotoIcons(record)}${details}`;
   }
-  
-  // ⭐ ROAD DISTANCE - PRIMARY indicator (most accurate, uses actual roads)
-  if (hasRoadDistance) {
-    const roadSource = record.road_distance_source === 'openrouteservice' ? '🛣️' : '📏';
-    const roadTitle = record.road_distance_source === 'openrouteservice' 
-      ? 'Road distance via OpenRouteService (actual roads)'
-      : 'Calculated distance (straight-line fallback)';
-    
-    html += `
-      <button 
-        type="button"
-        onclick="showGpsAudit(${record.user_id}, '${(record.fullname || '').replace(/'/g, "\\'")}', '${record.attendance_date}')"
-        class="flex items-center gap-1 cursor-pointer hover:opacity-80"
-        title="${roadTitle}. Click for details."
-      >
-        <span class="text-xs font-medium text-purple-700 bg-purple-50 px-1.5 py-0.5 rounded">
-          ${roadSource} ${record.road_distance_km} km
-        </span>
-        <span class="text-[10px] text-purple-500 font-medium">road</span>
-      </button>
-    `;
-  } else if (!record.logout_time && gpsReadings > 0) {
-    // Day not ended yet - show "calculating" badge
-    html += `
-      <span class="text-[10px] text-gray-500 bg-gray-50 px-1.5 py-0.5 rounded" title="Road distance will be calculated on checkout">
-        🛣️ in progress...
-      </span>
-    `;
+  if (hasRoad) {
+    // No meter reading — fall back to the tracked road distance, clearly marked.
+    return `<span title="Tracked road distance (no meter reading)" style="font-size:12px;color:#6B7280;vertical-align:middle;">🛰 ${record.road_distance_km} km</span>${details}`;
   }
-  
-  // GPS distance with coverage % and audit button (shown as secondary)
-  const coverage = record.gps_coverage_percent;
-  
-  if (hasGps && !hasRoadDistance) {
-    // Only show GPS if no road distance (avoid redundancy)
-    // Compare with meter if both exist
-    let gpsClass = 'text-green-700 bg-green-50';
-    let gpsIcon = '📍';
-    
-    if (hasMeter && record.meter_distance > 0) {
-      const diff = Math.abs(record.gps_distance - record.meter_distance);
-      const diffPercent = (diff / record.meter_distance) * 100;
-      
-      if (diffPercent > 30) {
-        gpsClass = 'text-orange-700 bg-orange-50';
-        gpsIcon = '⚠️';
-      }
-    }
-    
-    // Coverage color coding
-    let coverageClass = 'text-green-600';
-    if (coverage !== null && coverage < 50) coverageClass = 'text-red-500';
-    else if (coverage !== null && coverage < 80) coverageClass = 'text-orange-500';
-    
-    html += `
-      <button 
-        type="button"
-        onclick="showGpsAudit(${record.user_id}, '${(record.fullname || '').replace(/'/g, "\\'")}', '${record.attendance_date}')"
-        class="flex items-center gap-1 cursor-pointer hover:opacity-80"
-        title="GPS: ${record.gps_distance} km (straight-line), ${gpsReadings} readings. Click to audit."
-      >
-        <span class="text-xs font-medium ${gpsClass} px-1.5 py-0.5 rounded">
-          ${gpsIcon} ${record.gps_distance} km
-        </span>
-        <span class="text-[10px] ${coverageClass} font-medium">${coverage !== null ? coverage + '%' : gpsReadings + ' pts'}</span>
-      </button>
-    `;
-  } else if (hasMeter && gpsReadings > 0 && !hasRoadDistance) {
-    // Has meter and some GPS readings but couldn't calculate distance (rider stationary)
-    let coverageClass = 'text-green-600';
-    if (coverage !== null && coverage < 50) coverageClass = 'text-red-500';
-    else if (coverage !== null && coverage < 80) coverageClass = 'text-orange-500';
-    
-    html += `
-      <button 
-        type="button"
-        onclick="showGpsAudit(${record.user_id}, '${(record.fullname || '').replace(/'/g, "\\'")}', '${record.attendance_date}')"
-        class="flex items-center gap-1 cursor-pointer hover:opacity-80"
-        title="${gpsReadings} GPS readings, ${coverage || '?'}% coverage. Click to audit."
-      >
-        <span class="text-[10px] text-gray-500">📍 stationary</span>
-        <span class="text-[10px] ${coverageClass} font-medium">${coverage !== null ? coverage + '%' : gpsReadings + ' pts'}</span>
-      </button>
-    `;
-  } else if (hasMeter) {
-    // Only meter, no GPS at all
-    html += `
-      <button 
-        type="button"
-        onclick="showGpsAudit(${record.user_id}, '${(record.fullname || '').replace(/'/g, "\\'")}', '${record.attendance_date}')"
-        class="text-xs text-red-500 hover:text-red-700 cursor-pointer"
-        title="No GPS readings. Click to audit."
-      >
-        ⚠️ No GPS
-      </button>
-    `;
+  if (hasGps) {
+    return `<span title="GPS straight-line distance (no meter reading)" style="font-size:12px;color:#6B7280;vertical-align:middle;">🛰 ${record.gps_distance} km</span>${details}`;
   }
-  
-  html += '</div>';
-  return html;
+  if (!record.logout_time && gpsReadings > 0) {
+    // Day still running — distance settles at checkout.
+    return `<span style="font-size:11px;color:#9CA3AF;vertical-align:middle;">tracking…</span>${details}`;
+  }
+  if (record.logout_time) {
+    // Day ended with nothing recorded — audit link only.
+    return `<span style="font-size:12px;color:#D1D5DB;vertical-align:middle;">–</span>${details}`;
+  }
+  return '<span style="color:#D1D5DB;font-size:12px;">–</span>';
 }
 
 function filterTableByStatus() {
@@ -1445,8 +1890,9 @@ function updateSummaryCards(data) {
         overtime++;
       }
     }
-    // Absent (no attendance and no leave)
-    else {
+    // Absent ONLY on a genuine working day. A no-login day that's a weekly off, a
+    // public holiday, or before the rider's hire date is not an absence.
+    else if ((r.day_kind || 'working') === 'working') {
       absent++;
     }
   });
@@ -2106,29 +2552,21 @@ async function showEmployeeDetails(userId, fullname, fromDate) {
       const formattedDate = date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
       const rowBg = index % 2 === 0 ? '#f9fafb' : 'white';
       
-      // Determine status: On Leave, Present, Late, or Absent
+      // Prefer the backend-provided status (covers the filled-in absent/leave rows);
+      // fall back to the login/leave heuristic for older responses.
       const isOnLeave = day.leave_request_id && (day.leave_status === 'approved' || day.leave_status === 'pending');
       const isPresent = day.login_time && day.login_time !== '-';
       const isLate = isPresent && day.late_minutes > 0;
-      
-      let status, statusBg, statusColor;
-      if (isOnLeave) {
-        status = 'On Leave';
-        statusBg = '#dbeafe';
-        statusColor = '#1e40af';
-      } else if (isLate) {
-        status = 'Late';
-        statusBg = '#fee2e2';
-        statusColor = '#991b1b';
-      } else if (isPresent) {
-        status = 'Present';
-        statusBg = '#dcfce7';
-        statusColor = '#166534';
-      } else {
-        status = 'Absent';
-        statusBg = '#fef2f2';
-        statusColor = '#991b1b';
-      }
+      const st = day.status || (isOnLeave ? 'on_leave' : (isLate ? 'late' : (isPresent ? 'present' : 'absent')));
+      const statusMap = {
+        present:  ['Present',  '#dcfce7', '#166534'],
+        late:     ['Late',     '#fee2e2', '#991b1b'],
+        absent:   ['Absent',   '#fef2f2', '#991b1b'],
+        on_leave: ['On Leave', '#dbeafe', '#1e40af'],
+        off:      ['Off',      '#f3f4f6', '#6b7280'],
+        holiday:  ['Holiday',  '#f3f4f6', '#6b7280'],
+      };
+      const [status, statusBg, statusColor] = statusMap[st] || statusMap.absent;
       
       const loginTime = day.login_time || '-';
       const logoutTime = day.logout_time || '-';
@@ -2753,6 +3191,84 @@ window.closeGpsAudit = closeGpsAudit;
 // ========================================
 var fuelRateGroups = [];
 var fuelAllRiders = [];
+
+// ---- Attendance Rules (year cycle + meter thresholds) ----
+async function openAttendanceRules() {
+  var modal = document.getElementById('attRulesModal');
+  modal.style.display = 'flex';
+  updateRuleCycleHint();
+  try {
+    var csrfToken = document.querySelector('meta[name="csrf-token"]')?.content || '';
+    var resp = await fetch('/attendance/settings', { headers: { 'Accept': 'application/json', 'X-CSRF-TOKEN': csrfToken } });
+    var data = await resp.json();
+    if (data && data.success) {
+      document.getElementById('ruleCycleStart').value = data.cycle_start || '';
+      document.getElementById('ruleCycleEnd').value = data.cycle_end || '';
+      document.getElementById('ruleGpsWarn').value = data.meter_gps_warn_km != null ? data.meter_gps_warn_km : 10;
+      document.getElementById('ruleOvernight').value = data.overnight_grace_km != null ? data.overnight_grace_km : 30;
+      updateRuleCycleHint();
+    }
+  } catch(e) {
+    console.error('Failed to load attendance settings:', e);
+  }
+  // live hint as the user edits the dates
+  document.getElementById('ruleCycleStart').oninput = updateRuleCycleHint;
+  document.getElementById('ruleCycleEnd').oninput = updateRuleCycleHint;
+}
+
+function closeAttendanceRules() {
+  document.getElementById('attRulesModal').style.display = 'none';
+}
+
+function updateRuleCycleHint() {
+  var s = document.getElementById('ruleCycleStart').value;
+  var e = document.getElementById('ruleCycleEnd').value;
+  var hint = document.getElementById('ruleCycleHint');
+  if (!s || !e) { hint.textContent = ''; return; }
+  var fmt = function(d) {
+    var parts = d.split('-');
+    if (parts.length !== 3) return d;
+    var months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+    return months[parseInt(parts[1],10)-1] + ' ' + parseInt(parts[2],10) + ', ' + parts[0];
+  };
+  if (s > e) { hint.style.color = '#dc2626'; hint.textContent = '⚠ Cycle end must be on or after the start.'; return; }
+  hint.style.color = '#2563eb';
+  hint.textContent = 'Cycle: ' + fmt(s) + ' → ' + fmt(e);
+}
+
+async function saveAttendanceRules() {
+  var s = document.getElementById('ruleCycleStart').value;
+  var e = document.getElementById('ruleCycleEnd').value;
+  if (s && e && s > e) { alert('Cycle end must be on or after the cycle start.'); return; }
+  var btn = document.getElementById('ruleSaveBtn');
+  var orig = btn.textContent;
+  btn.disabled = true; btn.textContent = 'Saving…';
+  try {
+    var csrfToken = document.querySelector('meta[name="csrf-token"]')?.content || '';
+    var resp = await fetch('/attendance/settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Accept': 'application/json', 'X-CSRF-TOKEN': csrfToken },
+      body: JSON.stringify({
+        cycle_start: s,
+        cycle_end: e,
+        meter_gps_warn_km: document.getElementById('ruleGpsWarn').value,
+        overnight_grace_km: document.getElementById('ruleOvernight').value
+      })
+    });
+    var data = await resp.json();
+    if (data && data.success) {
+      closeAttendanceRules();
+      if (typeof loadMonthTab === 'function') { try { loadMonthTab(); } catch(_){} }
+      alert('Attendance rules saved.');
+    } else {
+      alert('Could not save: ' + (data.message || 'Unknown error'));
+    }
+  } catch(err) {
+    console.error('saveAttendanceRules failed:', err);
+    alert('Could not save the attendance rules.');
+  }
+  btn.disabled = false; btn.textContent = orig;
+}
 
 async function openFuelRateModal() {
   var modal = document.getElementById('fuelRateModal');

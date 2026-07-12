@@ -210,6 +210,18 @@ class ShiftResolutionService
      */
     public function calculateWorkingDays(int $userId, string $startDate, string $endDate): int
     {
+        // Never count days before the user's hire date — they weren't employed yet,
+        // so those days must not read as "absent". hire_date NULL → no clamp → result
+        // is byte-identical to the pre-hire-date behaviour (safe until the owner fills
+        // dates on the Riders page). Applies equally to salary and reports (one source).
+        $hire = $this->userHireDate($userId);
+        if ($hire && $hire > $startDate) {
+            $startDate = $hire;
+            if ($startDate > $endDate) {
+                return 0; // hired after the whole range
+            }
+        }
+
         // Get public holidays in this range
         $holidays = PublicHolidayModel::getHolidaysInRange($startDate, $endDate);
 
@@ -236,6 +248,51 @@ class ShiftResolutionService
         }
 
         return $workingDays;
+    }
+
+    /**
+     * In-request memo of each user's hire date (Y-m-d) or null. Read from the rider
+     * profile; a non-rider / missing profile has none → no hire clamp anywhere.
+     */
+    private static array $hireMemo = [];
+    public function userHireDate(int $userId): ?string
+    {
+        if (!array_key_exists($userId, self::$hireMemo)) {
+            $v = null;
+            try {
+                $v = DB::table('t_ops_rider_profile')->where('user_id', $userId)->value('hire_date');
+            } catch (\Throwable $e) { /* no profile / column → no clamp */ }
+            self::$hireMemo[$userId] = $v ? substr((string) $v, 0, 10) : null;
+        }
+        return self::$hireMemo[$userId];
+    }
+
+    /**
+     * THE single per-day classification every attendance surface should use to decide
+     * whether a no-login day is really "absent" vs a day that shouldn't count. Returns:
+     *   'not_joined' — the date is before the user's hire date
+     *   'holiday'    — a public holiday
+     *   'off'        — the user's weekly off (per the shift resolved for THAT date)
+     *   'working'    — a normal expected working day
+     * Leave is intentionally NOT resolved here (callers already compute leave sets and
+     * overlay it); present/late/absent is overlaid by the caller from the attendance row.
+     * This is the read-only twin of calculateWorkingDays' per-day test — keep them in sync.
+     */
+    public function dayKind(int $userId, string $date): string
+    {
+        $hire = $this->userHireDate($userId);
+        if ($hire && $date < $hire) {
+            return 'not_joined';
+        }
+        if (PublicHolidayModel::isHoliday($date)) {
+            return 'holiday';
+        }
+        $dow = (int) date('N', strtotime($date)); // 1=Mon .. 7=Sun
+        $workingDows = $this->getUserShift($userId, $date)['working_days'];
+        if (!in_array($dow, $workingDows, true)) {
+            return 'off';
+        }
+        return 'working';
     }
 
     /**
@@ -461,6 +518,7 @@ class ShiftResolutionService
                 unset(self::$shiftMemo[$k]);
             }
         }
+        unset(self::$hireMemo[$userId]); // hire date may have changed
 
         Log::info("Cleared shift cache for user {$userId}");
     }
@@ -477,6 +535,7 @@ class ShiftResolutionService
         $ver = (int) Cache::get('shift_cache_ver', 1);
         Cache::forever('shift_cache_ver', $ver + 1);
         self::$shiftMemo = [];
+        self::$hireMemo = [];
 
         Log::info('Bumped shift cache version to ' . ($ver + 1));
     }

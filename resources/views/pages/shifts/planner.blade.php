@@ -20,6 +20,7 @@
   .chip-off { background:repeating-linear-gradient(135deg,#F8FAFC,#F8FAFC 5px,#EEF2F7 5px,#EEF2F7 10px); color:#94a3b8; border-style:dashed; border-color:#e2e8f0; }
   .chip-holiday { background:#FEF3F2; color:#B42318; border-color:#FECDCA; }
   .chip-nm { font-weight:600; }
+  .chip-loc { display:inline-flex; align-items:center; gap:2px; font-size:9.5px; font-weight:700; background:#E6F1FB; color:#185FA5; border-radius:20px; padding:0 6px; margin-top:1px; align-self:flex-start; }
   .col-today { background:#FFFDF5; }
   .rider-cb { margin-right:8px; }
   .pchip { display:inline-flex; align-items:center; gap:5px; font-size:11px; font-weight:600; background:#EEF2F7; color:#334155; border:1px solid var(--line); border-radius:6px; padding:2px 7px; font-variant-numeric:tabular-nums; }
@@ -305,7 +306,14 @@ function renderGrid() {
       let cls='chip-work', body='';
       if (c.is_holiday) { cls='chip-holiday'; body=`<span>Holiday</span>`; }
       else if (c.is_off) { cls='chip-off'; body=`<span>Off</span>`; }
-      else { cls = c.is_override?'chip-override':'chip-work'; body=`<span class="chip-nm">${c.start}${c.end?'–'+c.end:'+'}</span><span class="text-[10px] opacity-70">${c.shift_name}</span>`; }
+      else {
+        cls = c.is_override?'chip-override':'chip-work';
+        // 📍 pin ONLY when this day's location differs from the rider's usual one —
+        // a normal week shows no pins, so a pin always means "different place that day".
+        const locPin = (c.location_id && r.usual_location_id && c.location_id !== r.usual_location_id)
+          ? `<span class="chip-loc" title="At ${escapeHtml(c.location_name||'')} this day">📍 ${escapeHtml(c.location_name||'')}</span>` : '';
+        body=`<span class="chip-nm">${c.start}${c.end?'–'+c.end:'+'}</span><span class="text-[10px] opacity-70">${c.shift_name}</span>${locPin}`;
+      }
       return `<td class="${isToday?'col-today':''}"><span class="cell-chip ${cls}">${body}</span></td>`;
     }).join('');
 

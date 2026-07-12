@@ -758,6 +758,8 @@ let groupedItems = [];
 // customer at a time (one bank transfer has one payer).
 let shopSelectedOrderIds = new Set();
 let shopSelectedCustomer = null;
+// Shop names whose "Recently paid" rollup is currently expanded (collapsed by default).
+let shopPaidExpanded = new Set();
 let searchTimeout;
 // ⭐ Receiving bank accounts for dropdown
 const receivingAccounts = @json($receivingAccounts ?? []);
@@ -1030,7 +1032,7 @@ function renderItems(groups) {
                     </div>
                 </div>
                 <div class="customer-items">
-                    ${group.items.map(item => renderShopRow(item)).join('')}
+                    ${renderShopGroupBody(group)}
                 </div>
             </div>`;
             return;
@@ -1166,6 +1168,48 @@ function renderShopRow(item) {
             </div>
         </div>
     `;
+}
+
+// Shop group body: outstanding invoices shown normally; fully-paid ones (still
+// within the 10-day window) collapse under a "Recently paid" rollup so they
+// stay reachable (void) without cluttering the outstanding list. Older paid
+// invoices aren't returned by the server — their permanent record is the
+// customer history view.
+function renderShopGroupBody(group) {
+    const items = group.items || [];
+    const outstanding = items.filter(it => (parseFloat(it.balance_remaining) || 0) > 0.01);
+    const paid = items.filter(it => (parseFloat(it.balance_remaining) || 0) <= 0.01);
+    let html = outstanding.map(item => renderShopRow(item)).join('');
+    if (paid.length) {
+        const expanded = shopPaidExpanded.has(group.customer);
+        const paidTotal = paid.reduce((s, it) => s + (parseFloat(it.amount) || 0), 0);
+        const key = parseInt(paid[0].order_id); // stable numeric id for this group's rollup
+        html += `
+            <div class="shop-paid-rollup">
+                <div class="shop-paid-toggle" onclick="togglePaidRollup(${key}, '${escapeHtml(group.customer)}')"
+                     style="cursor:pointer; display:flex; align-items:center; gap:8px; padding:10px 14px; background:#F0FDF4; border-top:1px solid #DCFCE7; color:#065F46; font-size:13px; font-weight:600;">
+                    <span id="paidArrow_${key}" style="display:inline-block; transition:transform .15s; transform:rotate(${expanded ? 90 : 0}deg);">▸</span>
+                    <span>🧾 Recently paid (${paid.length}) · Rs. ${numberFormat(paidTotal)}</span>
+                    <span style="margin-left:auto; font-weight:500; color:#16A34A; font-size:11px;">last 10 days</span>
+                </div>
+                <div id="paidBody_${key}" style="display:${expanded ? 'block' : 'none'};">
+                    ${paid.map(item => renderShopRow(item)).join('')}
+                </div>
+            </div>`;
+    }
+    return html;
+}
+
+// Expand/collapse a shop's "Recently paid" rollup in place (no full re-render,
+// so scroll position is kept). The Set persists the state across re-renders.
+function togglePaidRollup(key, customer) {
+    const wasExpanded = shopPaidExpanded.has(customer);
+    if (wasExpanded) shopPaidExpanded.delete(customer);
+    else shopPaidExpanded.add(customer);
+    const body = document.getElementById('paidBody_' + key);
+    const arrow = document.getElementById('paidArrow_' + key);
+    if (body) body.style.display = wasExpanded ? 'none' : 'block';
+    if (arrow) arrow.style.transform = 'rotate(' + (wasExpanded ? 0 : 90) + 'deg)';
 }
 
 // Shop tab — add an incremental payment against a shop order.

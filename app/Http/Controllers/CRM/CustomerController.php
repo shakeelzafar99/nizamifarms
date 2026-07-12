@@ -98,13 +98,18 @@ class CustomerController extends Controller
         if (!empty($customerIds)) {
             $combinedStats = $this->getCombinedCustomerStats($customerIds);
             
+            // Per-customer receivable (Outstanding for shops / Pending approval
+            // for regulars) — matches the approvals page.
+            $receivables = $this->getCustomerReceivables($customerIds);
+
             // Transform paginator items to include combined stats
-            $customers->getCollection()->transform(function($customer) use ($combinedStats) {
+            $customers->getCollection()->transform(function($customer) use ($combinedStats, $receivables) {
                 $stats = $combinedStats[$customer->id] ?? null;
                 if ($stats) {
                     $customer->total_orders = $stats->combined_order_count;
                     $customer->total_spent = $stats->combined_total_spent;
                 }
+                $this->applyReceivable($customer, $receivables);
                 return $customer;
             });
         }
@@ -455,14 +460,15 @@ class CustomerController extends Controller
             if (!empty($customerIds)) {
                 // Get combined stats from both production and history in ONE query
                 $combinedStats = $this->getCombinedCustomerStats($customerIds);
-                
+                $receivables = $this->getCustomerReceivables($customerIds);
+
                 // Merge combined stats into customer objects
                 $regionMap = DB::table('t_ops_delivery_region')
                     ->where('is_active', 1)
                     ->pluck('name', 'id')
                     ->toArray();
 
-                $customers = $customers->map(function($customer) use ($combinedStats, $regionMap) {
+                $customers = $customers->map(function($customer) use ($combinedStats, $regionMap, $receivables) {
                     $stats = $combinedStats[$customer->id] ?? null;
                     if ($stats) {
                         $customer->total_orders = $stats->combined_order_count;
@@ -470,6 +476,7 @@ class CustomerController extends Controller
                     }
                     $customer->delivery_region_name = $customer->delivery_region_id
                         ? ($regionMap[$customer->delivery_region_id] ?? null) : null;
+                    $this->applyReceivable($customer, $receivables);
                     return $customer;
                 });
             }
@@ -549,8 +556,85 @@ class CustomerController extends Controller
         foreach ($stats as $stat) {
             $result[$stat->customer_id] = $stat;
         }
-        
+
         return $result;
+    }
+
+    /**
+     * Per-customer "money to chase", batched for a page of customers. The figure
+     * matches the approvals page EXACTLY (verified): shops use the Shop tab's
+     * order-based outstanding, regulars use the L1 tab's ledger-based pending.
+     * Both are computed for every id; the caller picks by customer_type.
+     *
+     * @return array<int, array{shop_owed: float, shop_count: int, reg_pending: float, reg_count: int}>
+     */
+    private function getCustomerReceivables(array $customerIds): array
+    {
+        $result = [];
+        if (empty($customerIds)) {
+            return $result;
+        }
+        $ph = implode(',', array_fill(0, count($customerIds), '?'));
+
+        // SHOP outstanding — DELIVERED + online method + NOT invoice-settled.
+        // Mirrors ApprovalController::getOnlineShopItems.
+        $shop = DB::select("
+            SELECT o.customer_id,
+                   COALESCE(SUM(GREATEST(0, o.total_price - COALESCE(o.total_paid, 0))), 0) AS owed,
+                   SUM(CASE WHEN (o.total_price - COALESCE(o.total_paid, 0)) > 0.01 THEN 1 ELSE 0 END) AS cnt
+            FROM t_crm_prod_order o
+            WHERE o.customer_id IN ($ph)
+              AND o.order_status = 'delivered'
+              AND o.payment_method IN ('online', 'Online', 'bank_transfer', 'card', 'online_payment')
+              AND NOT EXISTS (
+                  SELECT 1 FROM t_fin_ledger l
+                  WHERE l.order_id = o.id AND l.transaction_type = 'invoice'
+                    AND l.approval_status IN ('approved', 'pending_l2')
+              )
+            GROUP BY o.customer_id
+        ", $customerIds);
+
+        // REGULAR L1 pending — mode online, no request, pending/pending_l1.
+        // Mirrors ApprovalController::getOnlineL1Items.
+        $reg = DB::select("
+            SELECT o.customer_id,
+                   COALESCE(SUM(l.amount), 0) AS pending,
+                   COUNT(*) AS cnt
+            FROM t_fin_ledger l
+            JOIN t_crm_prod_order o ON o.id = l.order_id
+            WHERE o.customer_id IN ($ph)
+              AND l.mode = 'online'
+              AND l.request_id IS NULL
+              AND l.approval_status IN ('pending', 'pending_l1')
+            GROUP BY o.customer_id
+        ", $customerIds);
+
+        foreach ($customerIds as $cid) {
+            $result[$cid] = ['shop_owed' => 0.0, 'shop_count' => 0, 'reg_pending' => 0.0, 'reg_count' => 0];
+        }
+        foreach ($shop as $r) {
+            $result[$r->customer_id]['shop_owed'] = (float) $r->owed;
+            $result[$r->customer_id]['shop_count'] = (int) $r->cnt;
+        }
+        foreach ($reg as $r) {
+            $result[$r->customer_id]['reg_pending'] = (float) $r->pending;
+            $result[$r->customer_id]['reg_count'] = (int) $r->cnt;
+        }
+        return $result;
+    }
+
+    /**
+     * Attach receivable_amount / receivable_count / receivable_label to a
+     * customer from a getCustomerReceivables() map, choosing shop vs regular by
+     * type. Shared by index() and filter() so both list paths stay identical.
+     */
+    private function applyReceivable($customer, array $receivables): void
+    {
+        $isShop = $customer->customer_type === CustomerModel::TYPE_SHOP;
+        $rec = $receivables[$customer->id] ?? null;
+        $customer->receivable_amount = $rec ? (float) ($isShop ? $rec['shop_owed'] : $rec['reg_pending']) : 0.0;
+        $customer->receivable_count  = $rec ? (int) ($isShop ? $rec['shop_count'] : $rec['reg_count']) : 0;
+        $customer->receivable_label  = $isShop ? 'Outstanding' : 'Pending approval';
     }
 
     public function orders($id)
@@ -562,6 +646,18 @@ class CustomerController extends Controller
             // Get COMBINED orders (Production + History)
             // =========================================
             
+            // An order counts as "settled" if it was booked through the REGULAR
+            // invoice-approval flow (an approved / pending_l2 invoice ledger row)
+            // — the same rule the Shop approvals tab uses to exclude such orders.
+            // These older orders carry total_paid = 0 even though nothing is owed,
+            // so we flag them here and treat them as Settled (not Unpaid).
+            $ledgerInvoice = \App\Models\FIN\LedgerModel::TYPE_INVOICE;
+            $settledStatuses = "'" . \App\Models\FIN\LedgerModel::STATUS_APPROVED
+                . "','" . \App\Models\FIN\LedgerModel::STATUS_PENDING_L2 . "'";
+            $invoiceSettledExpr = "EXISTS(SELECT 1 FROM t_fin_ledger l WHERE l.order_id = o.id "
+                . "AND l.transaction_type = '{$ledgerInvoice}' "
+                . "AND l.approval_status IN ({$settledStatuses})) as invoice_settled";
+
             // 1. Get production orders (non-Shopify) with line item count
             $prodOrders = DB::table('t_crm_prod_order as o')
                 ->leftJoin(DB::raw('(SELECT order_id, COUNT(*) as line_items_count FROM t_crm_prod_order_line_item GROUP BY order_id) as li'), 'o.id', '=', 'li.order_id')
@@ -573,6 +669,9 @@ class CustomerController extends Controller
                 ->select(
                     'o.id', 'o.order_number', 'o.order_date', 'o.order_status',
                     'o.total_price', 'o.external_source', 'o.payment_method', 'o.note',
+                    // Payment tracking (for the "invoices + payment status" view).
+                    'o.payment_status', 'o.total_paid',
+                    DB::raw($invoiceSettledExpr),
                     DB::raw('COALESCE(li.line_items_count, 0) as line_items_count'),
                     DB::raw("'production' as source_type")
                 )
@@ -587,6 +686,10 @@ class CustomerController extends Controller
                     ->select(
                         'o.id', 'o.order_number', 'o.order_date', 'o.order_status',
                         'o.total_price', 'o.external_source', 'o.payment_method', 'o.note',
+                        // Legacy history orders have no payment tracking — emit
+                        // NULLs so the mapped shape matches the production rows.
+                        DB::raw('NULL as payment_status'), DB::raw('NULL as total_paid'),
+                        DB::raw('NULL as invoice_settled'),
                         DB::raw('COALESCE(li.line_items_count, 0) as line_items_count'),
                         DB::raw("'history' as source_type")
                     )
@@ -597,16 +700,94 @@ class CustomerController extends Controller
             $allOrders = $prodOrders->concat($historyOrders)
                 ->sortByDesc('order_date')
                 ->values();
-            
+
+            $isShop = $customer->isShop();
+            // Same online-method set the Shop approvals tab uses — a shop's
+            // outstanding must count ONLY these (a COD shop order isn't owed
+            // through this flow).
+            $onlineMethods = ['online', 'Online', 'bank_transfer', 'card', 'online_payment'];
+
+            // ---- Regular customers: per-order online-invoice APPROVAL state ---
+            // (pending_l1 / pending_l2 / approved) for the per-invoice badges.
+            // The summary L1 total itself comes from getCustomerReceivables below
+            // so it matches the approvals L1 tab exactly. Not built for shops.
+            $approvalStateByOrder = [];
+            if (!$isShop) {
+                $prodIds = $prodOrders->pluck('id')->all();
+                if (!empty($prodIds)) {
+                    $ledgerRows = \App\Models\FIN\LedgerModel::whereIn('order_id', $prodIds)
+                        ->where('mode', 'online')
+                        ->whereNull('request_id')
+                        ->whereIn('approval_status', [
+                            \App\Models\FIN\LedgerModel::STATUS_PENDING,
+                            \App\Models\FIN\LedgerModel::STATUS_PENDING_L1,
+                            \App\Models\FIN\LedgerModel::STATUS_PENDING_L2,
+                            \App\Models\FIN\LedgerModel::STATUS_APPROVED,
+                        ])
+                        ->get(['order_id', 'approval_status', 'amount']);
+                    $rank = ['pending_l1' => 3, 'pending_l2' => 2, 'approved' => 1];
+                    foreach ($ledgerRows as $lr) {
+                        // 'pending' is legacy L1 — normalize so it matches the L1 tab.
+                        $state = in_array($lr->approval_status, ['pending', 'pending_l1'], true)
+                            ? 'pending_l1' : $lr->approval_status;
+                        $existing = $approvalStateByOrder[$lr->order_id] ?? null;
+                        if ($existing === null || ($rank[$state] ?? 0) > ($rank[$existing] ?? 0)) {
+                            $approvalStateByOrder[$lr->order_id] = $state;
+                        }
+                    }
+                }
+            }
+
+            // ---- Receivable summary — computed by the SAME batched helper the
+            // customers LIST and the approvals page use, so the detail tile can
+            // never drift from the list chip / approvals for either type. ----
+            $rec = $this->getCustomerReceivables([$id])[$id]
+                ?? ['shop_owed' => 0.0, 'shop_count' => 0, 'reg_pending' => 0.0, 'reg_count' => 0];
+            $recAmount = $isShop ? $rec['shop_owed'] : $rec['reg_pending'];
+            $recCount  = $isShop ? $rec['shop_count'] : $rec['reg_count'];
+
             return response()->json([
-                'success' => true, 
-                'orders' => $allOrders->map(function($order) {
+                'success' => true,
+                // Shops settle invoices incrementally (order-based balance);
+                // regulars settle via invoice approval (ledger state). The UI
+                // shows the right column set per type via this flag.
+                'is_shop' => $isShop,
+                'orders' => $allOrders->map(function($order) use ($isShop, $onlineMethods, $approvalStateByOrder) {
+                    $isProduction = $order->source_type === 'production';
+                    $isDelivered  = ($order->order_status ?? '') === 'delivered';
+                    $invoiceSettled = $isProduction && (int) ($order->invoice_settled ?? 0) === 1;
+                    $isOnline = $isProduction && in_array($order->payment_method, $onlineMethods, true);
+                    $rawPaid = ($isProduction && $order->total_paid !== null) ? (float) $order->total_paid : 0.0;
+
+                    $paymentStatus = null; $displayPaid = null; $balanceRemaining = null; $approvalState = null;
+
+                    if ($isShop) {
+                        // Per-invoice payment state for shop online orders.
+                        if (!$isProduction) {
+                            // legacy history — leave blank
+                        } elseif ($invoiceSettled) {
+                            $paymentStatus = 'settled'; $displayPaid = (float) $order->total_price; $balanceRemaining = 0.0;
+                        } elseif ($isOnline && $isDelivered) {
+                            $paymentStatus = $order->payment_status ?? 'unpaid';
+                            $displayPaid = $rawPaid;
+                            $balanceRemaining = max(0, (float) $order->total_price - $rawPaid);
+                        }
+                        // else: non-online / not-delivered shop order → '—'
+                    } else {
+                        // Regular: online-invoice approval state (pending_l1/l2/approved).
+                        $approvalState = $isProduction ? ($approvalStateByOrder[$order->id] ?? null) : null;
+                    }
+
                     return [
                         'id' => $order->id,
                         'order_number' => $order->order_number,
                         'order_date' => $order->order_date,
                         'order_status' => $order->order_status,
                         'total_price' => $order->total_price,
+                        'payment_status' => $paymentStatus,
+                        'total_paid' => $displayPaid,
+                        'balance_remaining' => $balanceRemaining,
+                        'approval_state' => $approvalState,
                         'line_items_count' => $order->line_items_count,
                         'external_source' => $order->external_source ?? 'csv_import',
                         'payment_method' => $order->payment_method,
@@ -617,7 +798,18 @@ class CustomerController extends Controller
                 'summary' => [
                     'production_orders' => $prodOrders->count(),
                     'history_orders' => $historyOrders->count(),
-                    'total_orders' => $allOrders->count()
+                    'total_orders' => $allOrders->count(),
+                    // Shop figures (order-based) + regular figures (ledger L1),
+                    // both from getCustomerReceivables so they equal the list chip.
+                    'outstanding_balance' => (float) $rec['shop_owed'],
+                    'unpaid_count' => (int) $rec['shop_count'],
+                    'pending_approval_amount' => (float) $rec['reg_pending'],
+                    'pending_approval_count' => (int) $rec['reg_count'],
+                    // Unified "money to chase" figure the UI shows directly — it
+                    // matches the Shop tab (shops) / L1 tab (regulars).
+                    'receivable_label'  => $isShop ? 'Outstanding' : 'Pending approval',
+                    'receivable_amount' => (float) $recAmount,
+                    'receivable_count'  => (int) $recCount,
                 ]
             ]);
         } catch (\Exception $e) {
