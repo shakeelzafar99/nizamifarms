@@ -1,4 +1,4 @@
-@extends('layouts.app')
+@extends(request()->boolean('embed') ? 'layouts.embed' : 'layouts.app')
 
 @section('title', 'Messages')
 
@@ -3698,13 +3698,17 @@ select.wa-mgr-input { background: #fff; cursor: pointer; }
         document.getElementById('waTemplateModal').style.display = 'none';
     };
 
-    function buildOrderDropdown(idx, varNum) {
+    function buildOrderDropdown(idx, varNum, preselectLatest) {
         let html = `<select class="wa-tpl-param-in" data-tpl="${idx}" data-var="${varNum}" style="padding:8px 10px;">`;
-        html += `<option value="">-- Select Order --</option>`;
-        tplCustomerOrders.forEach(o => {
+        // preselectLatest (Start Conversation): default to the customer's most
+        // recent order (tplCustomerOrders is newest-first, any status) instead of
+        // leaving "-- Select Order --" selected. The operator can still change it.
+        html += `<option value=""${preselectLatest ? '' : ' selected'}>-- Select Order --</option>`;
+        tplCustomerOrders.forEach((o, oi) => {
             const dt = o.order_date ? new Date(o.order_date).toLocaleDateString('en-GB', {day:'2-digit',month:'short',year:'numeric'}) : '';
             const label = `${o.order_number} — ${dt} — Rs ${Number(o.total||0).toLocaleString()} (${o.status||''})`;
-            html += `<option value="${esc(o.order_number)}">${esc(label)}</option>`;
+            const sel = (preselectLatest && oi === 0) ? ' selected' : '';
+            html += `<option value="${esc(o.order_number)}"${sel}>${esc(label)}</option>`;
         });
         html += `</select>`;
         return html;
@@ -3727,10 +3731,20 @@ select.wa-mgr-input { background: #fff; cursor: pointer; }
             }
             if (t.variable_count > 0) {
                 html += '<div class="wa-tpl-params">';
+                const isStartConvo = (t.name === 'start_conversation');
                 for (let i = 1; i <= t.variable_count; i++) {
                     if (i >= 2 && tplCustomerOrders.length > 0) {
+                        // Order-number variable. Start Conversation defaults to the
+                        // customer's latest order (any status); others stay unpicked.
                         html += `<label style="font-size:11px;color:#6b7280;margin-bottom:2px;display:block;">Variable {{${i}}} — Order Number</label>`;
-                        html += buildOrderDropdown(idx, i);
+                        html += buildOrderDropdown(idx, i, isStartConvo);
+                    } else if (i >= 2 && isStartConvo) {
+                        // Start Conversation with a NEW customer (no order on file):
+                        // prefill a plausible-looking dummy order so the send isn't
+                        // blocked (Meta rejects an empty variable) and it still reads
+                        // naturally to the customer. The operator can edit it.
+                        html += `<label style="font-size:11px;color:#6b7280;margin-bottom:2px;display:block;">Variable {{${i}}} — Order Number (no order on file — dummy)</label>`;
+                        html += `<input class="wa-tpl-param-in" data-tpl="${idx}" data-var="${i}" placeholder="Variable {{${i}}}" value="NF-999" />`;
                     } else {
                         const defaultVal = (i === 1 && activeConv) ? esc(activeConv.customer_name || '') : '';
                         html += `<input class="wa-tpl-param-in" data-tpl="${idx}" data-var="${i}" placeholder="Variable {{${i}}}" value="${defaultVal}" />`;

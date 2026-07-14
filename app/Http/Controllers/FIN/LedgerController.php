@@ -9,6 +9,7 @@ use App\Models\FIN\AccountModel;
 use App\Models\FIN\InvoiceSettlementModel;
 use App\Models\Request\RequestCategoryModel;
 use App\Models\SysAdmin\RoleApprovalLevelModel;
+use App\Services\FIN\BalancePostingService;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
@@ -723,6 +724,24 @@ class LedgerController extends Controller
                 $ledger->comments = ($ledger->comments ?? '') . " | Destination changed from Account ID {$originalTo} to {$request->override_destination_account_id}";
             }
 
+            // ⭐ [Ledger L2] If this approval OVERRIDES the destination/source TO a bank-category
+            // account, the physical bank must be named — otherwise the override could mint an
+            // untagged online row. Fires ONLY on an explicit override to a bank; the effective bank
+            // is applied to the row further below (resolveReceivingBankId). Normal approvals (no
+            // override) are unaffected, so the 22 existing pending ONLINE deposits are NOT blocked.
+            $overrodeToBank = $request->override_destination_account_id
+                && optional(AccountModel::find($request->override_destination_account_id))->account_category === AccountModel::CATEGORY_BANK;
+            $overrodeFromBank = $request->override_source_account_id
+                && optional(AccountModel::find($request->override_source_account_id))->account_category === AccountModel::CATEGORY_BANK;
+            if (($overrodeToBank || $overrodeFromBank) && !$request->receiving_account_id && !$ledger->receiving_account_id) {
+                DB::rollBack();
+                $msg = 'This override moves money through a bank — select which bank before approving.';
+                if ($request->ajax() || $request->wantsJson()) {
+                    return response()->json(['success' => false, 'message' => $msg], 422);
+                }
+                return back()->with('error', $msg);
+            }
+
             // ================== APPROVAL LEVEL LOGIC ==================
             // Determine current level from status
             $currentLevel = 1;
@@ -758,40 +777,35 @@ class LedgerController extends Controller
                 }
             }
 
-            // Decide new status
+            // Decide new status. Balances are applied below by BalancePostingService::apply()
+            // which is idempotent on balance_updated — so L1 applies once, L2 is a no-op, and the
+            // "posted at L1, still shows in L2 so Taimur can roll back" behaviour is preserved
+            // (reject()/revertToPending() call reverse() to undo an L1 posting). The engine owns
+            // balance_updated; the status branches no longer set it manually.
             $finalApproval = false;
-            $shouldUpdateBalances = false;
             $forceFullApproval = $request->boolean('force_full_approval', false);
-            
+
             // ⭐ If force_full_approval is requested, check if user has L2 rights
             $userHasL2Rights = RoleApprovalLevelModel::userHasApprovalLevel(auth()->id(), 2);
-            
+
             if ($currentLevel === 1 && $requiresL2 && !($forceFullApproval && $userHasL2Rights)) {
                 // L1 → L2 pending: balance is applied now, L2 is verification only
                 $ledger->approval_status = LedgerModel::STATUS_PENDING_L2;
                 $ledger->comments = ($ledger->comments ?? '') .
                     " | L1 approved by User ID " . auth()->id();
-                $shouldUpdateBalances = true;
-                $ledger->balance_updated = 1;
             } elseif ($currentLevel === 2) {
-                // L2 approval: verification step — mark approved, skip balance if already applied at L1
+                // L2 approval: verification step — mark approved (balance already applied at L1)
                 $ledger->approval_status = LedgerModel::STATUS_APPROVED;
                 $ledger->approved_by = auth()->id();
                 $ledger->approval_date = now();
                 $finalApproval = true;
-                $shouldUpdateBalances = !$ledger->balance_updated;
-                if (!$ledger->balance_updated) {
-                    $ledger->balance_updated = 1;
-                }
             } else {
                 // Final approval: single-level, or force_full with L2 rights
                 $ledger->approval_status = LedgerModel::STATUS_APPROVED;
                 $ledger->approved_by = auth()->id();
                 $ledger->approval_date = now();
                 $finalApproval = true;
-                $shouldUpdateBalances = true;
-                $ledger->balance_updated = 1;
-                
+
                 if ($forceFullApproval && $currentLevel === 1 && $requiresL2 && $userHasL2Rights) {
                     $ledger->comments = ($ledger->comments ?? '') .
                         " | Fully approved (L1+L2) by User ID " . auth()->id() . " with L2 rights";
@@ -869,22 +883,14 @@ class LedgerController extends Controller
             $fromAccount = $ledger->fromAccount;
             $toAccount = $ledger->toAccount;
 
-            // Update balances: at L1 (early reflect), force-full, or L2 for historical records without balance_updated
-            if ($shouldUpdateBalances) {
-                if ($fromAccount->account_type === 'asset') {
-                    $fromAccount->current_balance -= $ledger->amount;
-                } else {
-                    $fromAccount->current_balance += $ledger->amount;
-                }
-                $fromAccount->save();
-
-                if ($toAccount->account_type === 'asset') {
-                    $toAccount->current_balance += $ledger->amount;
-                } else {
-                    $toAccount->current_balance -= $ledger->amount;
-                }
-                $toAccount->save();
-            }
+            // Apply balances via the single canonical engine. Idempotent on balance_updated:
+            // applies once at L1 (early reflect) / force-full / single-level, and is a no-op at L2
+            // (already applied) or for a historical row that somehow already carries the flag.
+            (new BalancePostingService())->apply($ledger);
+            // Refresh the in-memory account objects so any code below reads post-apply balances.
+            $ledger->load(['fromAccount', 'toAccount']);
+            $fromAccount = $ledger->fromAccount;
+            $toAccount = $ledger->toAccount;
 
             // ========== SETTLEMENT PROCESSING ==========
             // If this is an employee deposit with settlement intent, process it
@@ -1060,9 +1066,8 @@ class LedgerController extends Controller
                 throw new \Exception("This transaction does not require L2 approval");
             }
 
-            // Move to L2 pending and apply balances (L2 is verification only)
+            // Move to L2 pending; balances applied below via the engine (L2 is verification only).
             $ledger->approval_status = LedgerModel::STATUS_PENDING_L2;
-            $ledger->balance_updated = 1;
             $ledger->comments = ($ledger->comments ?? '') .
                 " | L1 approved by User ID " . auth()->id() . " (L1-only approval)";
 
@@ -1104,26 +1109,9 @@ class LedgerController extends Controller
 
             $ledger->save();
 
-            // Update account balances at L1 stage (reflects in ledger immediately)
-            $ledger->load(['fromAccount', 'toAccount']);
-            $fromAccount = $ledger->fromAccount;
-            $toAccount = $ledger->toAccount;
-
-            if ($fromAccount && $toAccount) {
-                if ($fromAccount->account_type === 'asset') {
-                    $fromAccount->current_balance -= $ledger->amount;
-                } else {
-                    $fromAccount->current_balance += $ledger->amount;
-                }
-                $fromAccount->save();
-
-                if ($toAccount->account_type === 'asset') {
-                    $toAccount->current_balance += $ledger->amount;
-                } else {
-                    $toAccount->current_balance -= $ledger->amount;
-                }
-                $toAccount->save();
-            }
+            // Apply balances at L1 via the single canonical engine (idempotent; L2 verification
+            // will not re-apply, and reject()/revertToPending() reverse() to roll back).
+            (new BalancePostingService())->apply($ledger);
 
             DB::commit();
 
@@ -1195,37 +1183,19 @@ class LedgerController extends Controller
                                    "Rejection Reason: " . $request->rejection_reason;
             }
 
-            // Reverse account balances if they were already applied at L1
+            // Reverse account balances if they were already applied at L1 — the "roll back an L1
+            // mistake" path. The engine is the exact inverse of approve()'s apply() and no-ops if
+            // nothing was applied.
             if ($ledger->balance_updated) {
-                $fromAccount = $ledger->fromAccount;
-                $toAccount = $ledger->toAccount;
-
-                if ($fromAccount && $toAccount) {
-                    if ($fromAccount->account_type === 'asset') {
-                        $fromAccount->current_balance += $ledger->amount;
-                    } else {
-                        $fromAccount->current_balance -= $ledger->amount;
-                    }
-                    $fromAccount->save();
-
-                    if ($toAccount->account_type === 'asset') {
-                        $toAccount->current_balance -= $ledger->amount;
-                    } else {
-                        $toAccount->current_balance += $ledger->amount;
-                    }
-                    $toAccount->save();
-
-                    $ledger->balance_updated = 0;
-                    $ledger->comments = ($ledger->comments ? $ledger->comments . "\n" : '') .
-                        "Balance reversed due to L2 rejection by User ID " . auth()->id();
-
-                    Log::info("Reversed account balances on L2 rejection", [
-                        'ledger_id' => $ledger->id,
-                        'amount' => $ledger->amount,
-                        'from_account' => $fromAccount->id,
-                        'to_account' => $toAccount->id
-                    ]);
-                }
+                (new BalancePostingService())->reverse($ledger);
+                $ledger->comments = ($ledger->comments ? $ledger->comments . "\n" : '') .
+                    "Balance reversed due to L2 rejection by User ID " . auth()->id();
+                Log::info("Reversed account balances on L2 rejection", [
+                    'ledger_id' => $ledger->id,
+                    'amount' => $ledger->amount,
+                    'from_account' => $ledger->from_account_id,
+                    'to_account' => $ledger->to_account_id,
+                ]);
             }
             
             $ledger->save();
@@ -1351,31 +1321,13 @@ class LedgerController extends Controller
                 throw new \Exception('This transaction has linked settlements and cannot be reverted here.');
             }
 
-            // Reverse the balances EXACTLY like reject() (the canonical inverse
-            // of approve()). Only when they were actually applied.
+            // Reverse the balances EXACTLY like reject() (the canonical inverse of approve()).
+            // Only when they were actually applied. The engine no-ops if the flag is already 0.
             if ($ledger->balance_updated) {
-                $fromAccount = $ledger->fromAccount;
-                $toAccount = $ledger->toAccount;
-
-                if ($fromAccount && $toAccount) {
-                    if ($fromAccount->account_type === 'asset') {
-                        $fromAccount->current_balance += $ledger->amount;
-                    } else {
-                        $fromAccount->current_balance -= $ledger->amount;
-                    }
-                    $fromAccount->save();
-
-                    if ($toAccount->account_type === 'asset') {
-                        $toAccount->current_balance -= $ledger->amount;
-                    } else {
-                        $toAccount->current_balance += $ledger->amount;
-                    }
-                    $toAccount->save();
-
-                    $ledger->balance_updated = 0;
-                } else {
+                if (!$ledger->from_account_id || !$ledger->to_account_id) {
                     throw new \Exception('Linked accounts are missing; cannot safely reverse balances.');
                 }
+                (new BalancePostingService())->reverse($ledger);
             }
 
             // Send it back to the start of the approval queue (Level 1). This
@@ -1691,15 +1643,34 @@ class LedgerController extends Controller
             $transaction->updated_by = auth()->id();
             $transaction->save();
 
-            // Update account balances if amount changed
-            if ($amountDifference != 0) {
+            // Update account balances by the DELTA, using the VendorController convention —
+            // verified against production data (every vendor's stored balance equals
+            // SUM(purchases) − SUM(payments) exactly):
+            //   vendor_purchase (expense → vendor):  BOTH legs +amount
+            //     (expense accumulates; vendor owed MORE — positive balance = we owe him)
+            //   vendor_payment  (cash/bank → vendor): BOTH legs −amount
+            //     (till/bank drops; vendor owed LESS)
+            // So an amount edit moves both accounts by +diff (purchase) / −diff (payment).
+            // [Ledger L1 fix — B5, corrected in L3 review] The original code added +diff to BOTH
+            // accounts for BOTH types — right for purchases, wrong for payments (a Bank→Vendor
+            // payment edited up moved Bank UP). The first fix used approve()'s asset-aware rule —
+            // right for payments, wrong for purchases (vendor moved DOWN on an upward edit,
+            // because the purchase row is oriented expense→vendor, not vendor→expense).
+            // Guard on approval_status: vendor rows are created APPROVED with balances applied
+            // at creation but WITHOUT balance_updated being set (VendorController + legacy
+            // imports), so the flag cannot be trusted here — approved ⇒ applied is the reliable
+            // rule for vendor transactions. A pending row (if one ever exists) must not move
+            // balances (approve() applies them later).
+            if ($amountDifference != 0 && $transaction->approval_status === LedgerModel::STATUS_APPROVED) {
+                $sign = $transaction->transaction_type === LedgerModel::TYPE_VENDOR_PURCHASE ? 1 : -1;
+
                 if ($transaction->fromAccount) {
-                    $transaction->fromAccount->current_balance += $amountDifference;
+                    $transaction->fromAccount->current_balance += $sign * $amountDifference;
                     $transaction->fromAccount->save();
                 }
-                
+
                 if ($transaction->toAccount) {
-                    $transaction->toAccount->current_balance += $amountDifference;
+                    $transaction->toAccount->current_balance += $sign * $amountDifference;
                     $transaction->toAccount->save();
                 }
             }

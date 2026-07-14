@@ -494,22 +494,11 @@ class SalarySlipController extends Controller
                         'amount' => $ledger->amount
                     ]);
                     
-                    // Reverse account balances
-                    if ($ledger->from_account_id) {
-                        $fromAccount = \App\Models\FIN\AccountModel::find($ledger->from_account_id);
-                        if ($fromAccount) {
-                            $fromAccount->current_balance += $ledger->amount; // Add back the amount
-                            $fromAccount->save();
-                            Log::info('Reversed from_account balance', [
-                                'account_id' => $fromAccount->id,
-                                'account_name' => $fromAccount->account_name,
-                                'new_balance' => $fromAccount->current_balance
-                            ]);
-                        }
-                    }
-                    
-                    // Note: We don't update to_account (employee cash) as it was never updated during salary payment
-                    
+                    // Reverse via the canonical engine (payment source +). The employee-cash leg is
+                    // skipped automatically because salary_payment is an excluded type — matching the
+                    // note that to_account was never touched. Self-guards on balance_updated.
+                    (new \App\Services\FIN\BalancePostingService())->reverse($ledger);
+
                     // Delete the ledger entry
                     $ledger->delete();
                     Log::info('Ledger entry deleted');
@@ -677,14 +666,11 @@ class SalarySlipController extends Controller
                 'created_by' => auth()->id()
             ]);
 
-            // Update account balances
-            $paymentSource->current_balance -= $slip->net_salary; // Payment source decreases
-            $paymentSource->save();
-
-            // IMPORTANT: DO NOT update employee cash balance for salary payments
-            // Salary is a personal payment TO the employee, not company cash they're holding
-            // Employee balance should only track: invoices, expenses, deposits (company money)
-            // $employeeCashAccount->current_balance += $slip->net_salary; // REMOVED - see explanation above
+            // Apply via the canonical engine (payment source −). 'salary_payment' is an EXCLUDED
+            // employee-cash type, so the engine AUTOMATICALLY skips the employee leg — enforcing the
+            // rule that salary is a personal payment TO the employee, not company cash they hold
+            // (replaces the hand-maintained commented-out credit). Row-locked; sets balance_updated.
+            (new \App\Services\FIN\BalancePostingService())->apply($ledger);
 
             Log::info("Salary payment posted to ledger", [
                 'slip_id' => $slip->id,

@@ -653,7 +653,7 @@ class VendorController extends Controller
             $billImagePath = $this->handleImageUpload($request, 'bill_image', $vendor);
 
             // Create ledger entry
-            LedgerModel::create([
+            $ledger = LedgerModel::create([
                 'transaction_date' => $request->transaction_date,
                 'transaction_type' => LedgerModel::TYPE_VENDOR_PURCHASE,
                 'description' => $request->description ?: "Purchase from {$vendor->vendor_name}",
@@ -667,12 +667,9 @@ class VendorController extends Controller
                 'created_by' => auth()->id()
             ]);
 
-            // Update balances
-            $purchaseAccount->current_balance += $request->amount;
-            $purchaseAccount->save();
-            
-            $vendor->account->current_balance += $request->amount;
-            $vendor->account->save();
+            // Apply via the canonical engine (vendor_purchase: purchases/expense +, vendor owed +),
+            // row-locked; sets balance_updated. Same net move as the old inline code.
+            (new \App\Services\FIN\BalancePostingService())->apply($ledger);
 
             DB::commit();
 
@@ -828,13 +825,11 @@ class VendorController extends Controller
                 'comments' => "Paid from: {$paymentAccount->account_name}"
             ]);
 
-            // Update balances (only if approved)
+            // Apply via the canonical engine when approved (vendor_payment: vendor owed −, till/bank −),
+            // row-locked; sets balance_updated. A pending payment stays flag=0 and is applied later by
+            // the online approval (approve() → engine). Same net move as the old inline code.
             if ($approvalStatus === LedgerModel::STATUS_APPROVED) {
-                $vendor->account->current_balance -= $request->amount;
-                $vendor->account->save();
-                
-                $paymentAccount->current_balance -= $request->amount;
-                $paymentAccount->save();
+                (new \App\Services\FIN\BalancePostingService())->apply($ledger);
             }
 
             DB::commit();
@@ -955,12 +950,9 @@ class VendorController extends Controller
                 ]);
             }
 
-            // Update balances
-            $purchaseAccount->current_balance += $grandTotal;
-            $purchaseAccount->save();
-            
-            $vendor->account->current_balance += $grandTotal;
-            $vendor->account->save();
+            // Apply via the canonical engine (vendor_purchase: purchases +, vendor owed +), row-locked;
+            // sets balance_updated. Same net move as the old inline code.
+            (new \App\Services\FIN\BalancePostingService())->apply($ledger);
 
             DB::commit();
 
@@ -1197,35 +1189,14 @@ class VendorController extends Controller
             }
 
             $isPurchase = $transaction->transaction_type === LedgerModel::TYPE_VENDOR_PURCHASE;
-            $amount = $transaction->amount;
 
-            // Reverse account balances
-            if ($isPurchase) {
-                // Reverse purchase: decrease vendor balance and purchase account balance
-                $vendorAccount->current_balance -= $amount;
-                $vendorAccount->save();
-
-                // Get and update purchase account
-                $purchaseAccount = AccountModel::find($transaction->from_account_id);
-                if ($purchaseAccount) {
-                    $purchaseAccount->current_balance -= $amount;
-                    $purchaseAccount->save();
-                }
-            } else {
-                // Reverse payment: increase vendor balance and payment source balance
-                // Only if the transaction was approved
-                if ($transaction->approval_status === LedgerModel::STATUS_APPROVED) {
-                    $vendorAccount->current_balance += $amount;
-                    $vendorAccount->save();
-
-                    // Get and update payment source account
-                    $paymentAccount = AccountModel::find($transaction->from_account_id);
-                    if ($paymentAccount) {
-                        $paymentAccount->current_balance += $amount;
-                        $paymentAccount->save();
-                    }
-                }
-            }
+            // Reverse via the canonical engine — exact inverse of the vendor posting (purchase → both
+            // legs −, payment → both legs +). Self-guards on balance_updated and is idempotent.
+            // REQUIRES the vendor flag backfill (LEDGER-L3-VENDOR-FLAG-BACKFILL.sql) to have run first:
+            // legacy vendor rows were applied but carry balance_updated=0, so without the backfill the
+            // engine would treat them as un-applied and SKIP the reversal. After the backfill every
+            // applied vendor row is flag=1 and reverses correctly. The row is hard-deleted below.
+            (new \App\Services\FIN\BalancePostingService())->reverse($transaction);
 
             // Delete associated line items if it's a weighted purchase
             if ($isPurchase) {

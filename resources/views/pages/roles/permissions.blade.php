@@ -1,308 +1,447 @@
-{{-- resources/views/pages/roles/permissions.blade.php --}}
+{{-- resources/views/pages/roles/permissions.blade.php
+     Phase 3 (Jul-2026) redesign. Groups mirror the sidebar; only the 6 enforced keys
+     are surfaced as normal controls, the dead keys move to a collapsed "Legacy" drawer
+     (still submitted, so a save stays byte-identical), the web_menu_* restricted-menu
+     keys get their first real UI (amber card), and manage_asset_categories is added.
+     Colors live in a scoped <style> (hex) because the app's Tailwind color utilities
+     are purged — structural utilities only from Tailwind. Form field names, action,
+     method and the BU section are unchanged. --}}
 
 @extends('layouts.app')
 
-@section('title', 'Manage Permissions')
+@section('title', 'Role Access — Web')
 
 @section('content')
-<div class="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-    <div class="mb-6 flex justify-between items-center">
+<style>
+  .nfp-wrap { max-width: 920px; margin: 0 auto; padding: 24px 16px 120px; color: #111827; }
+  .nfp-head { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; margin-bottom: 6px; }
+  .nfp-ava { width: 44px; height: 44px; border-radius: 11px; background: #EFF6FF; color: #1D4ED8; display: grid; place-items: center; font-weight: 800; font-size: 16px; flex: none; }
+  .nfp-title { font-size: 20px; font-weight: 750; margin: 0; }
+  .nfp-sub { font-size: 12.5px; color: #6B7280; margin: 2px 0 0; }
+  .nfp-head-actions { margin-left: auto; display: flex; gap: 8px; flex-wrap: wrap; }
+  .nfp-btn { appearance: none; cursor: pointer; border: 1px solid #D1D5DB; background: #fff; color: #374151; border-radius: 8px; padding: 8px 14px; font-size: 13px; font-weight: 600; text-decoration: none; display: inline-flex; align-items: center; }
+  .nfp-btn:hover { background: #F9FAFB; }
+
+  .nfp-tabs { display: inline-flex; gap: 2px; background: #F3F4F6; border: 1px solid #E5E7EB; border-radius: 9px; padding: 3px; margin: 14px 0 4px; }
+  .nfp-tab { appearance: none; border: 0; cursor: pointer; font-size: 13px; font-weight: 600; color: #4B5563; background: transparent; padding: 7px 16px; border-radius: 7px; text-decoration: none; }
+  .nfp-tab.is-on { background: #fff; color: #1D4ED8; box-shadow: 0 1px 2px rgba(0,0,0,.08); }
+
+  .nfp-authbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 12px 0 2px; padding: 10px 12px; background: #F9FAFB; border: 1px solid #EEF1F5; border-radius: 10px; }
+  .nfp-authlbl { font-size: 10.5px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: #9CA3AF; }
+  .nfp-authchip { appearance: none; cursor: pointer; border: 1px solid #D1D5DB; background: #fff; color: #4B5563; border-radius: 20px; padding: 6px 14px; font-size: 12.5px; font-weight: 650; display: inline-flex; align-items: center; gap: 7px; }
+  .nfp-authchip::before { content: ''; width: 7px; height: 7px; border-radius: 50%; background: #CBD5E1; flex: none; }
+  .nfp-authchip[aria-pressed="true"] { border-color: #059669; background: #ECFDF5; color: #059669; }
+  .nfp-authchip[aria-pressed="true"]::before { background: #059669; }
+  .nfp-authchip:disabled { opacity: .6; cursor: default; }
+  .nfp-authhint { font-size: 11px; color: #9CA3AF; margin-left: auto; }
+
+  .nfp-legend { display: flex; flex-wrap: wrap; gap: 8px 18px; font-size: 11.5px; color: #6B7280; margin: 12px 0 4px; }
+  .nfp-legend b { color: #374151; }
+
+  .nfp-tools { position: sticky; top: 0; z-index: 5; background: #fff; padding: 10px 0; display: flex; align-items: center; gap: 12px; flex-wrap: wrap; border-bottom: 1px solid #EEF1F5; }
+  .nfp-find { flex: 1; min-width: 200px; display: flex; align-items: center; gap: 8px; border: 1px solid #E5E7EB; border-radius: 9px; padding: 9px 12px; background: #F9FAFB; }
+  .nfp-find input { border: 0; outline: 0; background: transparent; font-size: 13px; width: 100%; color: #111827; }
+  .nfp-changes { font-size: 12px; color: #D97706; font-weight: 650; display: none; }
+  .nfp-changes.is-on { display: inline; }
+
+  .nfp-group { padding: 18px 0 4px; border-bottom: 1px solid #F1F3F6; }
+  .nfp-group > h3 { margin: 0 0 2px; font-size: 12px; font-weight: 750; letter-spacing: .05em; text-transform: uppercase; color: #111827; display: flex; align-items: center; gap: 8px; }
+  .nfp-group-tag { font-size: 9.5px; font-weight: 700; letter-spacing: .03em; text-transform: uppercase; color: #1D4ED8; background: #EFF6FF; padding: 2px 8px; border-radius: 20px; }
+  .nfp-ghint { margin: 0 0 10px; font-size: 11.5px; color: #9CA3AF; }
+
+  .nfp-row { display: flex; align-items: center; gap: 14px; padding: 9px 10px; border-radius: 10px; }
+  .nfp-row:hover { background: #F9FAFB; }
+  .nfp-row .meta { flex: 1; min-width: 0; }
+  .nfp-row .name { font-size: 13.5px; font-weight: 600; color: #111827; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .nfp-row .name code { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 11px; color: #9CA3AF; font-weight: 500; }
+  .nfp-row .help { font-size: 11.5px; color: #9CA3AF; margin-top: 1px; }
+  .nfp-row.legacy .name { color: #9CA3AF; font-weight: 500; }
+
+  input.nfp-cb { width: 18px; height: 18px; flex: none; accent-color: #2563EB; cursor: pointer; }
+  input.nfp-cb.on { accent-color: #059669; }
+
+  .nfp-tag { font-size: 9.5px; font-weight: 800; letter-spacing: .03em; text-transform: uppercase; padding: 2px 7px; border-radius: 20px; }
+  .nfp-tag.enforced { color: #059669; background: #ECFDF5; }
+  .nfp-tag.new { color: #7C3AED; background: #F5F3FF; }
+  .nfp-tag.dead { color: #6B7280; background: #F3F4F6; border: 1px solid #E5E7EB; }
+
+  .nfp-tier { display: inline-flex; background: #F3F4F6; border: 1px solid #E5E7EB; border-radius: 9px; padding: 3px; gap: 2px; flex: none; }
+  .nfp-tier button { appearance: none; border: 0; cursor: pointer; font-size: 11.5px; font-weight: 650; color: #6B7280; background: transparent; padding: 6px 12px; border-radius: 6px; }
+  .nfp-tier button:hover { color: #374151; }
+  .nfp-tier button[aria-pressed="true"] { background: #fff; color: #1D4ED8; box-shadow: 0 1px 2px rgba(0,0,0,.1); }
+  .nfp-tier button.off[aria-pressed="true"] { color: #6B7280; }
+
+  .nfp-warncard { margin: 16px 0 6px; border: 1px solid #F59E0B; border-radius: 12px; background: #FFFBEB; padding: 16px 18px; }
+  .nfp-warncard h3 { margin: 0 0 4px; font-size: 13px; font-weight: 750; color: #B45309; display: flex; align-items: center; gap: 8px; }
+  .nfp-warncard p { margin: 0 0 12px; font-size: 12px; color: #6B7280; }
+  .nfp-wrow { display: flex; align-items: center; gap: 10px; padding: 7px 4px; font-size: 13px; color: #374151; }
+  .nfp-wrow input { width: 16px; height: 16px; accent-color: #D97706; flex: none; }
+  .nfp-wrow code { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 11px; color: #9CA3AF; margin-left: auto; }
+
+  details.nfp-legacydraw { margin: 12px 0 4px; border: 1px dashed #D1D5DB; border-radius: 12px; overflow: hidden; }
+  details.nfp-legacydraw > summary { cursor: pointer; list-style: none; padding: 12px 16px; background: #F9FAFB; color: #4B5563; font-size: 12.5px; font-weight: 650; display: flex; align-items: center; gap: 8px; }
+  details.nfp-legacydraw > summary::-webkit-details-marker { display: none; }
+  details.nfp-legacydraw > summary .chev { transition: transform .18s; }
+  details.nfp-legacydraw[open] > summary .chev { transform: rotate(90deg); }
+  .nfp-legacybody { padding: 6px 12px 14px; }
+  .nfp-legacybody .note { font-size: 11.5px; color: #6B7280; padding: 4px 6px 8px; }
+
+  .nfp-bucard { margin: 18px 0 6px; border: 1px solid #E5E7EB; border-radius: 12px; padding: 16px 18px; background: #FAFAFB; }
+  .nfp-bucard h3 { margin: 0 0 4px; font-size: 13px; font-weight: 750; color: #111827; }
+  .nfp-bucard p.hint { margin: 0 0 12px; font-size: 12px; color: #6B7280; }
+  .nfp-bucard label.fld { display: block; font-size: 12px; font-weight: 650; color: #374151; margin: 10px 0 4px; }
+  .nfp-bucard select { width: 100%; padding: 8px 10px; border: 1px solid #D1D5DB; border-radius: 8px; background: #fff; font-size: 13px; color: #111827; }
+  .nfp-bucard .bu-list { background: #fff; border: 1px solid #E5E7EB; border-radius: 8px; padding: 8px; }
+  .nfp-bucard .bu-list label { display: flex; align-items: center; gap: 10px; padding: 6px 6px; font-size: 13px; }
+
+  .nfp-savebar { position: fixed; left: 0; right: 0; bottom: 0; z-index: 20; background: #fff; border-top: 1px solid #E5E7EB; box-shadow: 0 -4px 16px -8px rgba(0,0,0,.2); padding: 12px 16px; display: flex; align-items: center; gap: 12px; }
+  .nfp-savebar .inner { max-width: 920px; margin: 0 auto; width: 100%; display: flex; align-items: center; gap: 12px; }
+  .nfp-save { appearance: none; border: 0; cursor: pointer; background: #2563EB; color: #fff; font-weight: 700; font-size: 13.5px; padding: 10px 20px; border-radius: 9px; margin-left: auto; }
+  .nfp-save:hover { background: #1D4ED8; }
+</style>
+
+<div class="nfp-wrap">
+    <div class="nfp-head">
+        <div class="nfp-ava">{{ strtoupper(substr($role->urole_name ?? 'R', 0, 2)) }}</div>
         <div>
-            <h2 class="text-2xl font-bold text-gray-900">Manage Permissions</h2>
-            <p class="mt-1 text-sm text-gray-600">Role: <span class="font-semibold">{{ $role->urole_name }}</span> ({{ ucfirst($role->type) }})</p>
+            <h2 class="nfp-title">{{ $role->urole_name }}</h2>
+            <p class="nfp-sub">Role Access · type <strong>{{ ucfirst($role->type) }}</strong>
+               @isset($roleUserCount) · {{ $roleUserCount }} user{{ $roleUserCount == 1 ? '' : 's' }}@endisset</p>
         </div>
-        <div class="flex gap-3">
-            <button type="button" 
-                    onclick="if(confirm('Reset to default permissions for {{ $role->type }} role?')) { window.location='{{ route('roles.permissions.defaults', $role->id) }}' }"
-                    class="px-4 py-2 bg-gray-100 border border-gray-300 rounded-md text-sm font-medium text-gray-700 hover:bg-gray-200">
+        <div class="nfp-head-actions">
+            <button type="button" class="nfp-btn"
+                    onclick="if(confirm('Reset to default permissions for the {{ $role->type }} role? This overwrites the current selections.')) { window.location='{{ route('roles.permissions.defaults', $role->id) }}' }">
                 Set Defaults for {{ ucfirst($role->type) }}
             </button>
-            <a href="{{ route('roles.index') }}" 
-               class="px-4 py-2 border border-gray-300 rounded-md text-sm font-medium text-gray-700 bg-white hover:bg-gray-50">
-                Back to Roles
-            </a>
+            <a href="{{ route('roles.index') }}" class="nfp-btn">Back to Roles</a>
         </div>
     </div>
 
-    <form method="POST" action="{{ route('roles.permissions.update', $role->id) }}">
+    <div class="nfp-tabs">
+        <span class="nfp-tab is-on">Web</span>
+        <a class="nfp-tab" href="{{ route('roles.mobile-permissions', $role->id) }}">Mobile</a>
+    </div>
+
+    {{-- Approval authority (moved here from Request Settings; same table + endpoints).
+         Interactive for users who can manage request settings; read-only otherwise.
+         Changes apply immediately (AJAX), separate from the permission Save button. --}}
+    <div class="nfp-authbar" id="nfp-authbar" data-role-id="{{ $role->id }}">
+        <span class="nfp-authlbl">Approval authority</span>
+        <button type="button" class="nfp-authchip" data-level="1" data-id="{{ $approvalL1Id ?? '' }}"
+                aria-pressed="{{ !empty($approvalL1Id) ? 'true' : 'false' }}" {{ empty($canManageApprovals) ? 'disabled' : '' }}>
+            Level 1 approver
+        </button>
+        <button type="button" class="nfp-authchip" data-level="2" data-id="{{ $approvalL2Id ?? '' }}"
+                aria-pressed="{{ !empty($approvalL2Id) ? 'true' : 'false' }}" {{ empty($canManageApprovals) ? 'disabled' : '' }}>
+            Level 2 approver
+        </button>
+        <span class="nfp-authhint">A role can hold both. @if(empty($canManageApprovals))Read-only — needs the Requests-settings permission.@else Changes apply immediately.@endif</span>
+    </div>
+
+    <div class="nfp-legend">
+        <span><span class="nfp-tag enforced">Enforced</span> actually checked in code</span>
+        <span><span class="nfp-tag new">New</span> was previously grantable only by DB edit</span>
+        <span><b>Off / Own / All</b> = one control for a view / view-all pair</span>
+        <span><b>Legacy</b> drawer = keys nothing checks (kept, not deleted)</span>
+    </div>
+
+    <form method="POST" action="{{ route('roles.permissions.update', $role->id) }}" id="nfp-form">
         @csrf
         @method('PUT')
 
-        <div class="bg-white shadow overflow-hidden sm:rounded-lg">
-            <div class="px-6 py-4 bg-blue-50 border-b border-blue-100">
-                <p class="text-sm text-blue-800">
-                    <strong>💡 Tip:</strong> Permissions with "<em>(vs own)</em>" control whether users see all records or only their own data.
-                    Uncheck these for riders to restrict them to their own records.
-                </p>
+        <div class="nfp-tools">
+            <div class="nfp-find">
+                <span aria-hidden="true">🔍</span>
+                <input type="text" id="nfp-search" placeholder="Filter permissions…" autocomplete="off" spellcheck="false">
             </div>
+            <span class="nfp-changes" id="nfp-changes">● unsaved changes</span>
+        </div>
 
-            <div class="p-6 space-y-8">
-
-                <!-- Core Access -->
-                <div class="space-y-3">
-                    <h3 class="text-lg font-semibold text-gray-900 border-b-2 border-gray-200 pb-2">📊 Core Access</h3>
-                    @foreach([
-                        'view_dashboard' => ['label' => 'View Dashboard', 'help' => 'Access to main dashboard'],
-                    ] as $key => $config)
-                    <label class="flex items-start hover:bg-gray-50 p-2 rounded">
-                        <input type="checkbox" name="permissions[{{ $key }}]" value="1" 
-                               {{ ($currentPermissions[$key] ?? false) ? 'checked' : '' }}
-                               class="mt-1 rounded border-gray-300 text-blue-600 shadow-sm focus:border-blue-300 focus:ring focus:ring-blue-200 focus:ring-opacity-50">
-                        <div class="ml-3">
-                            <span class="text-sm font-medium text-gray-900">{{ $config['label'] }}</span>
-                            <p class="text-xs text-gray-500">{{ $config['help'] }}</p>
-                        </div>
-                    </label>
-                    @endforeach
+        {{-- ============ Orders & Dispatch ============ --}}
+        <div class="nfp-group">
+            <h3>Orders &amp; Dispatch <span class="nfp-group-tag">Orders</span></h3>
+            {{-- Orders tier: view_orders (Own) + view_all_orders (All, enforced) --}}
+            <div class="nfp-row">
+                <div class="meta">
+                    <div class="name">Orders <span class="nfp-tag enforced">Enforced</span> <code>view_orders · view_all_orders</code></div>
+                    <div class="help">Off = no access · Own only = assigned orders (view_orders) · All = every order (view_all_orders, the enforced one)</div>
                 </div>
-
-                <!-- Orders & Deliveries -->
-                <div class="space-y-3">
-                    <h3 class="text-lg font-semibold text-gray-900 border-b-2 border-blue-200 pb-2">📦 Orders & Deliveries</h3>
-                    @foreach([
-                        'view_orders' => ['label' => 'View Orders', 'help' => 'Access to orders page'],
-                        'view_all_orders' => ['label' => 'View All Orders (vs own assigned)', 'help' => 'See all orders. Uncheck = riders see only assigned orders', 'highlight' => true],
-                        'edit_orders' => ['label' => 'Edit Orders', 'help' => 'Show edit button and allow modifications'],
-                        'view_shopify_orders' => ['label' => 'View Shopify Orders', 'help' => 'See orders from Shopify. Uncheck to hide Shopify orders', 'highlight' => true],
-                        'view_order_status' => ['label' => 'Manage Order Status', 'help' => 'Change order statuses'],
-                        'view_status_history' => ['label' => 'View Status History', 'help' => 'See order status change history'],
-                        'assign_riders' => ['label' => 'Assign Riders to Orders', 'help' => 'Assign delivery riders'],
-                        'bulk_operations' => ['label' => 'Bulk Operations', 'help' => 'Bulk status changes and assignments'],
-                    ] as $key => $config)
-                    <label class="flex items-start hover:bg-gray-50 p-2 rounded {{ ($config['highlight'] ?? false) ? 'bg-yellow-50' : '' }}">
-                        <input type="checkbox" name="permissions[{{ $key }}]" value="1" 
-                               {{ ($currentPermissions[$key] ?? false) ? 'checked' : '' }}
-                               class="mt-1 rounded border-gray-300 text-blue-600 shadow-sm focus:border-blue-300 focus:ring focus:ring-blue-200 focus:ring-opacity-50">
-                        <div class="ml-3 flex-1">
-                            <span class="text-sm font-medium text-gray-900">{{ $config['label'] }}</span>
-                            <p class="text-xs {{ ($config['highlight'] ?? false) ? 'text-yellow-700 font-medium' : 'text-gray-500' }}">{{ $config['help'] }}</p>
-                        </div>
-                    </label>
-                    @endforeach
+                <div class="nfp-tier" data-nf-tier>
+                    <input type="checkbox" class="nfp-tierbox" name="permissions[view_orders]" value="1" data-nf-own hidden {{ ($currentPermissions['view_orders'] ?? false) ? 'checked' : '' }}>
+                    <input type="checkbox" class="nfp-tierbox" name="permissions[view_all_orders]" value="1" data-nf-all hidden {{ ($currentPermissions['view_all_orders'] ?? false) ? 'checked' : '' }}>
+                    <button type="button" class="off" data-v="off" aria-pressed="false">Off</button>
+                    <button type="button" data-v="own" aria-pressed="false">Own only</button>
+                    <button type="button" data-v="all" aria-pressed="false">All</button>
                 </div>
-
-                <!-- Invoices & Quantities -->
-                <div class="space-y-3">
-                    <h3 class="text-lg font-semibold text-gray-900 border-b-2 border-green-200 pb-2">💰 Invoices & Quantities</h3>
-                    @foreach([
-                        'view_invoices' => ['label' => 'View Invoices', 'help' => 'Access to invoices page'],
-                        'view_all_invoices' => ['label' => 'View All Invoices (vs own orders)', 'help' => 'See all invoices. Uncheck = riders see only invoices for their assigned orders', 'highlight' => true],
-                        'view_open_quantities' => ['label' => 'View Open Order Quantities', 'help' => 'Access to open quantities page. Uncheck to hide page from riders', 'highlight' => true],
-                    ] as $key => $config)
-                    <label class="flex items-start hover:bg-gray-50 p-2 rounded {{ ($config['highlight'] ?? false) ? 'bg-yellow-50' : '' }}">
-                        <input type="checkbox" name="permissions[{{ $key }}]" value="1" 
-                               {{ ($currentPermissions[$key] ?? false) ? 'checked' : '' }}
-                               class="mt-1 rounded border-gray-300 text-blue-600 shadow-sm focus:border-blue-300 focus:ring focus:ring-blue-200 focus:ring-opacity-50">
-                        <div class="ml-3 flex-1">
-                            <span class="text-sm font-medium text-gray-900">{{ $config['label'] }}</span>
-                            <p class="text-xs {{ ($config['highlight'] ?? false) ? 'text-yellow-700 font-medium' : 'text-gray-500' }}">{{ $config['help'] }}</p>
-                        </div>
-                    </label>
-                    @endforeach
+            </div>
+            @foreach([
+                'create_orders' => ['Create Orders', 'Create new orders (gates the create button on the Orders page)'],
+                'view_shopify_orders' => ['Shopify Approval Queue', 'See orders from the Shopify approval queue'],
+                'view_open_quantities' => ['Open Order Quantities', 'Access the Open Order Quantities dashboard'],
+            ] as $key => $cfg)
+            <label class="nfp-row">
+                <div class="meta">
+                    <div class="name">{{ $cfg[0] }} <span class="nfp-tag enforced">Enforced</span> <code>{{ $key }}</code></div>
+                    <div class="help">{{ $cfg[1] }}</div>
                 </div>
+                <input type="checkbox" class="nfp-cb on" name="permissions[{{ $key }}]" value="1" {{ ($currentPermissions[$key] ?? false) ? 'checked' : '' }}>
+            </label>
+            @endforeach
+        </div>
 
-                <!-- Riders -->
-                <div class="space-y-3">
-                    <h3 class="text-lg font-semibold text-gray-900 border-b-2 border-purple-200 pb-2">🏍️ Riders</h3>
-                    @foreach([
-                        'view_riders' => ['label' => 'View Riders List', 'help' => 'Access to riders page'],
-                        'view_all_riders' => ['label' => 'View All Riders (vs only self)', 'help' => 'See all riders. Uncheck = riders see only themselves', 'highlight' => true],
-                        'edit_riders' => ['label' => 'Edit Rider Profiles', 'help' => 'Modify rider information and shifts'],
-                    ] as $key => $config)
-                    <label class="flex items-start hover:bg-gray-50 p-2 rounded {{ ($config['highlight'] ?? false) ? 'bg-yellow-50' : '' }}">
-                        <input type="checkbox" name="permissions[{{ $key }}]" value="1" 
-                               {{ ($currentPermissions[$key] ?? false) ? 'checked' : '' }}
-                               class="mt-1 rounded border-gray-300 text-blue-600 shadow-sm focus:border-blue-300 focus:ring focus:ring-blue-200 focus:ring-opacity-50">
-                        <div class="ml-3 flex-1">
-                            <span class="text-sm font-medium text-gray-900">{{ $config['label'] }}</span>
-                            <p class="text-xs {{ ($config['highlight'] ?? false) ? 'text-yellow-700 font-medium' : 'text-gray-500' }}">{{ $config['help'] }}</p>
-                        </div>
-                    </label>
-                    @endforeach
+        {{-- ============ Approvals & Requests ============ --}}
+        <div class="nfp-group">
+            <h3>Approvals &amp; Requests <span class="nfp-group-tag">Approvals</span></h3>
+            <div class="nfp-row">
+                <div class="meta">
+                    <div class="name">Requests <span class="nfp-tag enforced">Enforced</span> <code>view_requests · view_all_requests</code></div>
+                    <div class="help">Off = no access · Own only = own requests (view_requests) · All = every request (view_all_requests, the enforced one)</div>
                 </div>
-
-                <!-- Customers & Products -->
-                <div class="space-y-3">
-                    <h3 class="text-lg font-semibold text-gray-900 border-b-2 border-pink-200 pb-2">👥 Customers & Products</h3>
-                    @foreach([
-                        'view_customers' => ['label' => 'View Customers', 'help' => 'Access to customers page'],
-                        'edit_customers' => ['label' => 'Edit Customers', 'help' => 'Modify customer information'],
-                        'view_products' => ['label' => 'View Products', 'help' => 'Access to products page'],
-                        'edit_products' => ['label' => 'Edit Products', 'help' => 'Modify product information'],
-                    ] as $key => $config)
-                    <label class="flex items-start hover:bg-gray-50 p-2 rounded">
-                        <input type="checkbox" name="permissions[{{ $key }}]" value="1" 
-                               {{ ($currentPermissions[$key] ?? false) ? 'checked' : '' }}
-                               class="mt-1 rounded border-gray-300 text-blue-600 shadow-sm focus:border-blue-300 focus:ring focus:ring-blue-200 focus:ring-opacity-50">
-                        <div class="ml-3 flex-1">
-                            <span class="text-sm font-medium text-gray-900">{{ $config['label'] }}</span>
-                            <p class="text-xs text-gray-500">{{ $config['help'] }}</p>
-                        </div>
-                    </label>
-                    @endforeach
+                <div class="nfp-tier" data-nf-tier>
+                    <input type="checkbox" class="nfp-tierbox" name="permissions[view_requests]" value="1" data-nf-own hidden {{ ($currentPermissions['view_requests'] ?? false) ? 'checked' : '' }}>
+                    <input type="checkbox" class="nfp-tierbox" name="permissions[view_all_requests]" value="1" data-nf-all hidden {{ ($currentPermissions['view_all_requests'] ?? false) ? 'checked' : '' }}>
+                    <button type="button" class="off" data-v="off" aria-pressed="false">Off</button>
+                    <button type="button" data-v="own" aria-pressed="false">Own only</button>
+                    <button type="button" data-v="all" aria-pressed="false">All</button>
                 </div>
-
-                <!-- Attendance -->
-                <div class="space-y-3">
-                    <h3 class="text-lg font-semibold text-gray-900 border-b-2 border-indigo-200 pb-2">📅 Attendance</h3>
-                    @foreach([
-                        'view_attendance' => ['label' => 'View Attendance', 'help' => 'Access to attendance pages'],
-                        'view_all_attendance' => ['label' => 'View All Attendance (vs own)', 'help' => 'See all attendance records. Uncheck = riders see only their own', 'highlight' => true],
-                    ] as $key => $config)
-                    <label class="flex items-start hover:bg-gray-50 p-2 rounded {{ ($config['highlight'] ?? false) ? 'bg-yellow-50' : '' }}">
-                        <input type="checkbox" name="permissions[{{ $key }}]" value="1" 
-                               {{ ($currentPermissions[$key] ?? false) ? 'checked' : '' }}
-                               class="mt-1 rounded border-gray-300 text-blue-600 shadow-sm focus:border-blue-300 focus:ring focus:ring-blue-200 focus:ring-opacity-50">
-                        <div class="ml-3 flex-1">
-                            <span class="text-sm font-medium text-gray-900">{{ $config['label'] }}</span>
-                            <p class="text-xs {{ ($config['highlight'] ?? false) ? 'text-yellow-700 font-medium' : 'text-gray-500' }}">{{ $config['help'] }}</p>
-                        </div>
-                    </label>
-                    @endforeach
+            </div>
+            <label class="nfp-row">
+                <div class="meta">
+                    <div class="name">Requests Setup <span class="nfp-tag enforced">Enforced</span> <code>manage_request_settings</code></div>
+                    <div class="help">Access the Requests Setup screen (request types, sub-categories, approval routing)</div>
                 </div>
+                <input type="checkbox" class="nfp-cb on" name="permissions[manage_request_settings]" value="1" {{ ($currentPermissions['manage_request_settings'] ?? false) ? 'checked' : '' }}>
+            </label>
+        </div>
 
-                <!-- Requests & Approvals -->
-                <div class="space-y-3">
-                    <h3 class="text-lg font-semibold text-gray-900 border-b-2 border-orange-200 pb-2">📝 Requests & Approvals</h3>
-                    @foreach([
-                        'view_requests' => ['label' => 'View Requests', 'help' => 'Access to requests page'],
-                        'view_all_requests' => ['label' => 'View All Requests (vs own)', 'help' => 'See all requests. Uncheck = riders see only their own', 'highlight' => true],
-                        'create_requests' => ['label' => 'Create Requests', 'help' => 'Submit new requests (leave, etc.)'],
-                        'approve_requests' => ['label' => 'Approve/Reject Requests', 'help' => 'Act on pending requests'],
-                        'manage_request_settings' => ['label' => 'Manage Request Settings', 'help' => 'Configure approval workflows'],
-                    ] as $key => $config)
-                    <label class="flex items-start hover:bg-gray-50 p-2 rounded {{ ($config['highlight'] ?? false) ? 'bg-yellow-50' : '' }}">
-                        <input type="checkbox" name="permissions[{{ $key }}]" value="1" 
-                               {{ ($currentPermissions[$key] ?? false) ? 'checked' : '' }}
-                               class="mt-1 rounded border-gray-300 text-blue-600 shadow-sm focus:border-blue-300 focus:ring focus:ring-blue-200 focus:ring-opacity-50">
-                        <div class="ml-3 flex-1">
-                            <span class="text-sm font-medium text-gray-900">{{ $config['label'] }}</span>
-                            <p class="text-xs {{ ($config['highlight'] ?? false) ? 'text-yellow-700 font-medium' : 'text-gray-500' }}">{{ $config['help'] }}</p>
-                        </div>
-                    </label>
-                    @endforeach
+        {{-- ============ Finance ============ --}}
+        <div class="nfp-group">
+            <h3>Finance <span class="nfp-group-tag">Finance</span></h3>
+            <label class="nfp-row">
+                <div class="meta">
+                    <div class="name">Manage Asset Categories <span class="nfp-tag new">New</span> <code>manage_asset_categories</code></div>
+                    <div class="help">Create / edit fixed-asset categories (enforced on the Add Asset screen)</div>
                 </div>
+                <input type="checkbox" class="nfp-cb" name="permissions[manage_asset_categories]" value="1" {{ ($currentPermissions['manage_asset_categories'] ?? false) ? 'checked' : '' }}>
+            </label>
+        </div>
 
-                <!-- Administration -->
-                <div class="space-y-3">
-                    <h3 class="text-lg font-semibold text-gray-900 border-b-2 border-red-200 pb-2">⚙️ Administration</h3>
-                    @foreach([
-                        'view_users' => ['label' => 'Manage Users', 'help' => 'Create and edit user accounts'],
-                        'view_roles' => ['label' => 'Manage Roles', 'help' => 'Create and edit roles & permissions'],
-                        'view_logs' => ['label' => 'View Error Logs', 'help' => 'Access system error logs'],
-                        'view_operations' => ['label' => 'Access Operations', 'help' => 'Imports, bulk actions, advanced features'],
-                    ] as $key => $config)
-                    <label class="flex items-start hover:bg-gray-50 p-2 rounded">
-                        <input type="checkbox" name="permissions[{{ $key }}]" value="1" 
-                               {{ ($currentPermissions[$key] ?? false) ? 'checked' : '' }}
-                               class="mt-1 rounded border-gray-300 text-blue-600 shadow-sm focus:border-blue-300 focus:ring focus:ring-blue-200 focus:ring-opacity-50">
-                        <div class="ml-3 flex-1">
-                            <span class="text-sm font-medium text-gray-900">{{ $config['label'] }}</span>
-                            <p class="text-xs text-gray-500">{{ $config['help'] }}</p>
-                        </div>
-                    </label>
-                    @endforeach
-                </div>
+        {{-- ============ Restricted Web Menu (web_menu_*) ============ --}}
+        <div class="nfp-warncard">
+            <h3>⚠ Restricted-menu mode <span class="nfp-tag dead">special</span></h3>
+            <p>If <b>any</b> box below is ticked, users in this role see <b>only</b> the ticked sections on the web sidebar — everything else disappears. Leave all unticked for the normal full menu.</p>
+            @foreach([
+                'web_menu_hq' => 'HQ · Executive only',
+                'web_menu_dashboards' => 'Dashboards only',
+                'web_menu_invoices' => 'Invoices / Approvals only',
+                'web_menu_customers' => 'Customers only',
+                'web_menu_finance' => 'Finance only',
+            ] as $key => $label)
+            <label class="nfp-wrow">
+                <input type="checkbox" name="permissions[{{ $key }}]" value="1" {{ ($currentPermissions[$key] ?? false) ? 'checked' : '' }}>
+                {{ $label }} <code>{{ $key }}</code>
+            </label>
+            @endforeach
+        </div>
 
-                <!-- Business Unit Access -->
-                <div class="space-y-4 bg-gradient-to-r from-purple-50 to-indigo-50 p-6 rounded-lg border border-purple-200">
-                    <h3 class="text-lg font-semibold text-gray-900 border-b-2 border-purple-300 pb-2">🏢 Business Unit Access</h3>
-                    <p class="text-sm text-purple-700 mb-4">
-                        Control which business units users with this role can access for expenses, vendors, and company accounts.
-                    </p>
-                    
-                    <div class="space-y-4">
-                        <div>
-                            <label class="block text-sm font-semibold text-gray-800 mb-2">Access Type</label>
-                            <select name="business_unit_access" id="business_unit_access" 
-                                    onchange="toggleBusinessUnitOptions()"
-                                    class="w-full px-3 py-2 border-2 border-purple-300 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-purple-500 bg-white text-gray-900">
-                                <option value="all" {{ ($role->business_unit_access ?? 'all') == 'all' ? 'selected' : '' }}>
-                                    All Business Units (Full Access)
-                                </option>
-                                <option value="single" {{ ($role->business_unit_access ?? '') == 'single' ? 'selected' : '' }}>
-                                    Single Business Unit Only
-                                </option>
-                                <option value="multiple" {{ ($role->business_unit_access ?? '') == 'multiple' ? 'selected' : '' }}>
-                                    Multiple Business Units
-                                </option>
-                            </select>
-                            <p class="text-xs text-gray-500 mt-1">
-                                "All" = sees all company accounts | "Single/Multiple" = only sees accounts tagged to assigned units
-                            </p>
-                        </div>
-                        
-                        <div id="default_bu_section">
-                            <label class="block text-sm font-semibold text-gray-800 mb-2">Default Business Unit</label>
-                            <select name="default_business_unit_id" 
-                                    class="w-full px-3 py-2 border-2 border-purple-300 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-purple-500 bg-white text-gray-900">
-                                @foreach($businessUnits ?? [] as $bu)
-                                    <option value="{{ $bu->id }}" {{ ($role->default_business_unit_id ?? 1) == $bu->id ? 'selected' : '' }}
-                                            style="color: {{ $bu->color_hex ?? '#374151' }}">
-                                        {{ $bu->name }} {{ $bu->short_code ? '(' . $bu->short_code . ')' : '' }}
-                                    </option>
-                                @endforeach
-                            </select>
-                            <p class="text-xs text-gray-500 mt-1">Pre-selected when creating expenses or vendors</p>
-                        </div>
-                        
-                        <div id="multiple_bu_section" style="display: none;">
-                            <label class="block text-sm font-semibold text-gray-800 mb-2">Assigned Business Units</label>
-                            <div class="space-y-2 bg-white p-4 rounded-lg border border-purple-200">
-                                @foreach($businessUnits ?? [] as $bu)
-                                    <label class="flex items-center hover:bg-purple-50 p-2 rounded">
-                                        <input type="checkbox" name="assigned_business_units[]" value="{{ $bu->id }}"
-                                               {{ in_array($bu->id, $assignedBusinessUnits ?? []) ? 'checked' : '' }}
-                                               class="rounded border-gray-300 text-purple-600 shadow-sm focus:ring-purple-500">
-                                        <span class="ml-3 text-sm font-medium" style="color: {{ $bu->color_hex ?? '#374151' }}">
-                                            {{ $bu->name }} {{ $bu->short_code ? '(' . $bu->short_code . ')' : '' }}
-                                        </span>
-                                    </label>
-                                @endforeach
-                            </div>
-                            <p class="text-xs text-gray-500 mt-1">Select which business units this role can access</p>
-                        </div>
+        {{-- ============ Legacy drawer (dead keys, still submitted) ============ --}}
+        @php
+            $nfLegacy = [
+                'view_dashboard' => 'View Dashboard',
+                'edit_orders' => 'Edit Orders',
+                'view_order_status' => 'Manage Order Status',
+                'view_status_history' => 'View Status History',
+                'assign_riders' => 'Assign Riders to Orders',
+                'bulk_operations' => 'Bulk Operations',
+                'view_invoices' => 'View Invoices',
+                'view_all_invoices' => 'View All Invoices',
+                'view_riders' => 'View Riders List',
+                'view_all_riders' => 'View All Riders',
+                'edit_riders' => 'Edit Rider Profiles',
+                'view_customers' => 'View Customers',
+                'edit_customers' => 'Edit Customers',
+                'view_products' => 'View Products',
+                'edit_products' => 'Edit Products',
+                'view_attendance' => 'View Attendance',
+                'view_all_attendance' => 'View All Attendance',
+                'create_requests' => 'Create Requests',
+                'approve_requests' => 'Approve / Reject Requests',
+                'view_users' => 'Manage Users',
+                'view_roles' => 'Manage Roles',
+                'view_logs' => 'View Error Logs',
+                'view_operations' => 'Access Operations',
+            ];
+        @endphp
+        <details class="nfp-legacydraw">
+            <summary>
+                <svg class="chev" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"/></svg>
+                Legacy — currently no effect ({{ count($nfLegacy) }})
+                <span class="nfp-tag dead" style="margin-left:8px">hidden by default</span>
+            </summary>
+            <div class="nfp-legacybody">
+                <div class="note">Defined years ago but checked nowhere in the code. Kept in the database and still saved — just not presented as working toggles. (The two tier "Own only" halves — <code>view_orders</code>, <code>view_requests</code> — are also unenforced today.)</div>
+                @foreach($nfLegacy as $key => $label)
+                <label class="nfp-row legacy">
+                    <div class="meta">
+                        <div class="name">{{ $label }} <span class="nfp-tag dead">no effect</span> <code>{{ $key }}</code></div>
                     </div>
-                </div>
+                    <input type="checkbox" class="nfp-cb" name="permissions[{{ $key }}]" value="1" {{ ($currentPermissions[$key] ?? false) ? 'checked' : '' }}>
+                </label>
+                @endforeach
+            </div>
+        </details>
 
+        {{-- ============ Business Unit Access (unchanged mechanics) ============ --}}
+        <div class="nfp-bucard">
+            <h3>🏢 Business Unit Access</h3>
+            <p class="hint">Which business units this role can access for expenses, vendors and company accounts.</p>
+            <label class="fld">Access Type</label>
+            <select name="business_unit_access" id="business_unit_access" onchange="toggleBusinessUnitOptions()">
+                <option value="all" {{ ($role->business_unit_access ?? 'all') == 'all' ? 'selected' : '' }}>All Business Units (Full Access)</option>
+                <option value="single" {{ ($role->business_unit_access ?? '') == 'single' ? 'selected' : '' }}>Single Business Unit Only</option>
+                <option value="multiple" {{ ($role->business_unit_access ?? '') == 'multiple' ? 'selected' : '' }}>Multiple Business Units</option>
+            </select>
+            <div id="default_bu_section">
+                <label class="fld">Default Business Unit</label>
+                <select name="default_business_unit_id">
+                    @foreach($businessUnits ?? [] as $bu)
+                        <option value="{{ $bu->id }}" {{ ($role->default_business_unit_id ?? 1) == $bu->id ? 'selected' : '' }} style="color: {{ $bu->color_hex ?? '#374151' }}">
+                            {{ $bu->name }} {{ $bu->short_code ? '(' . $bu->short_code . ')' : '' }}
+                        </option>
+                    @endforeach
+                </select>
+            </div>
+            <div id="multiple_bu_section" style="display: none;">
+                <label class="fld">Assigned Business Units</label>
+                <div class="bu-list">
+                    @foreach($businessUnits ?? [] as $bu)
+                        <label>
+                            <input type="checkbox" name="assigned_business_units[]" value="{{ $bu->id }}" {{ in_array($bu->id, $assignedBusinessUnits ?? []) ? 'checked' : '' }} style="accent-color:#7C3AED">
+                            <span style="color: {{ $bu->color_hex ?? '#374151' }}">{{ $bu->name }} {{ $bu->short_code ? '(' . $bu->short_code . ')' : '' }}</span>
+                        </label>
+                    @endforeach
+                </div>
             </div>
         </div>
 
-        <div class="mt-6 flex justify-end gap-3">
-            <a href="{{ route('roles.index') }}" 
-               class="px-4 py-2 border border-gray-300 rounded-md text-sm font-medium text-gray-700 bg-white hover:bg-gray-50">
-                Cancel
-            </a>
-            <button type="submit" 
-                    class="px-4 py-2 bg-blue-600 border border-transparent rounded-md text-sm font-medium text-white hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500">
-                💾 Save Permissions
-            </button>
+        <div class="nfp-savebar">
+            <div class="inner">
+                <span class="nfp-changes" id="nfp-changes2">● unsaved changes — remember to save</span>
+                <button type="submit" class="nfp-save">💾 Save Web Permissions</button>
+            </div>
         </div>
     </form>
 </div>
 
 <script>
-function toggleBusinessUnitOptions() {
-    const accessType = document.getElementById('business_unit_access').value;
-    const multipleBuSection = document.getElementById('multiple_bu_section');
-    const defaultBuSection = document.getElementById('default_bu_section');
-    
-    if (accessType === 'all') {
-        multipleBuSection.style.display = 'none';
-        defaultBuSection.style.display = 'block';
-    } else if (accessType === 'single') {
-        multipleBuSection.style.display = 'none';
-        defaultBuSection.style.display = 'block';
-    } else if (accessType === 'multiple') {
-        multipleBuSection.style.display = 'block';
-        defaultBuSection.style.display = 'block';
-    }
-}
+(function () {
+    "use strict";
+    // Tier controls → drive the two hidden checkboxes with the real permission names.
+    document.querySelectorAll('[data-nf-tier]').forEach(function (t) {
+        var own = t.querySelector('[data-nf-own]');
+        var all = t.querySelector('[data-nf-all]');
+        var btns = t.querySelectorAll('button[data-v]');
+        function sync() {
+            var v = all.checked ? 'all' : (own.checked ? 'own' : 'off');
+            btns.forEach(function (b) { b.setAttribute('aria-pressed', b.getAttribute('data-v') === v ? 'true' : 'false'); });
+        }
+        btns.forEach(function (b) {
+            b.addEventListener('click', function () {
+                var v = b.getAttribute('data-v');
+                own.checked = (v === 'own' || v === 'all');
+                all.checked = (v === 'all');
+                sync();
+                markChanged();
+            });
+        });
+        sync();
+    });
 
-// Initialize on page load
-document.addEventListener('DOMContentLoaded', function() {
-    toggleBusinessUnitOptions();
-});
+    // Unsaved-changes hint.
+    function markChanged() {
+        var a = document.getElementById('nfp-changes');
+        var b = document.getElementById('nfp-changes2');
+        if (a) a.classList.add('is-on');
+        if (b) b.classList.add('is-on');
+    }
+    window.__nfpMarkChanged = markChanged;
+    document.getElementById('nfp-form').addEventListener('change', markChanged);
+
+    // Filter.
+    var search = document.getElementById('nfp-search');
+    if (search) {
+        search.addEventListener('input', function () {
+            var term = this.value.trim().toLowerCase();
+            document.querySelectorAll('.nfp-group, .nfp-warncard, .nfp-legacydraw').forEach(function (grp) {
+                var rows = grp.querySelectorAll('.nfp-row, .nfp-wrow');
+                var any = false;
+                rows.forEach(function (r) {
+                    var txt = (r.textContent || '').toLowerCase();
+                    var m = !term || txt.indexOf(term) !== -1;
+                    r.style.display = m ? '' : 'none';
+                    if (m) any = true;
+                });
+                grp.style.display = (!term || any) ? '' : 'none';
+            });
+            if (term) { var d = document.querySelector('.nfp-legacydraw'); if (d) d.open = true; }
+        });
+    }
+
+    // Business Unit section (unchanged behaviour).
+    window.toggleBusinessUnitOptions = function () {
+        var accessType = document.getElementById('business_unit_access').value;
+        var multipleBuSection = document.getElementById('multiple_bu_section');
+        var defaultBuSection = document.getElementById('default_bu_section');
+        multipleBuSection.style.display = (accessType === 'multiple') ? 'block' : 'none';
+        defaultBuSection.style.display = 'block';
+    };
+    document.addEventListener('DOMContentLoaded', window.toggleBusinessUnitOptions);
+    window.toggleBusinessUnitOptions();
+
+    // Approval-authority chips → immediate AJAX to the existing Request-Settings
+    // endpoints (same table the old card wrote). Separate from the permission Save.
+    (function () {
+        var bar = document.getElementById('nfp-authbar');
+        if (!bar) return;
+        var tokenEl = document.querySelector('#nfp-form input[name=_token]');
+        var token = tokenEl ? tokenEl.value : '';
+        var roleId = bar.getAttribute('data-role-id');
+        var assignUrl = "{{ route('requests.settings.roles.assign') }}";
+        var removeUrlTpl = "{{ route('requests.settings.roles.remove', '__ID__') }}";
+        bar.querySelectorAll('.nfp-authchip').forEach(function (chip) {
+            if (chip.disabled) return;
+            chip.addEventListener('click', function () {
+                var level = chip.getAttribute('data-level');
+                var id = chip.getAttribute('data-id');
+                var on = chip.getAttribute('aria-pressed') === 'true';
+                chip.disabled = true;
+                var req;
+                if (on && id) {
+                    req = fetch(removeUrlTpl.replace('__ID__', id), {
+                        method: 'DELETE',
+                        headers: { 'X-CSRF-TOKEN': token, 'X-Requested-With': 'XMLHttpRequest', 'Accept': 'application/json' }
+                    });
+                } else {
+                    req = fetch(assignUrl, {
+                        method: 'POST',
+                        headers: { 'X-CSRF-TOKEN': token, 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest', 'Accept': 'application/json' },
+                        body: JSON.stringify({ role_id: roleId, approval_level: level })
+                    });
+                }
+                req.then(function (r) { return r.json().catch(function () { return {}; }); })
+                   .then(function (d) {
+                       if (d && d.success) {
+                           if (on) { chip.setAttribute('aria-pressed', 'false'); chip.setAttribute('data-id', ''); }
+                           else { chip.setAttribute('aria-pressed', 'true'); chip.setAttribute('data-id', d.data && d.data.id ? d.data.id : ''); }
+                       } else {
+                           alert((d && d.message) || 'Could not update approval level.');
+                       }
+                   })
+                   .catch(function () { alert('Network error updating approval level.'); })
+                   .finally(function () { chip.disabled = false; });
+            });
+        });
+    })();
+})();
 </script>
 @endsection
-

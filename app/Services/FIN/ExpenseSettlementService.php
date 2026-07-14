@@ -81,18 +81,34 @@ class ExpenseSettlementService
                 ]);
             }
             
+            // ⭐ Per-bank tag inheritance (Ledger L1, B3): if the settlement lands on the ONLINE
+            // bank account, carry the physical-bank tag of the rider's most recent deposit to that
+            // account, so the bank balance stays correct instead of an untagged row.
+            $settlementBankId = null;
+            if ($settlementDestination->account_category === AccountModel::CATEGORY_BANK) {
+                $riderCashAccount = AccountModel::where('user_id', $expenseRequest->requester_user_id)
+                    ->where('account_category', 'employee_cash')->first();
+                $settlementBankId = LedgerModel::when($riderCashAccount, fn($q) => $q->where('from_account_id', $riderCashAccount->id))
+                    ->where('to_account_id', $settlementDestination->id)
+                    ->where('transaction_type', LedgerModel::TYPE_EMPLOYEE_DEPOSIT)
+                    ->whereNotNull('receiving_account_id')
+                    ->orderByDesc('transaction_date')->orderByDesc('id')
+                    ->value('receiving_account_id');
+            }
+
             // 5. Create SETTLEMENT ledger transaction
             // This is a NEW transaction that "bridges the gap"
             $settlementLedger = LedgerModel::create([
                 'transaction_date' => now(),
                 'transaction_type' => LedgerModel::TYPE_SETTLEMENT,
-                'description' => "Settlement for Expense #{$expenseRequest->request_number}" 
+                'description' => "Settlement for Expense #{$expenseRequest->request_number}"
                                 . ($expenseRequest->expense_category ? " - {$expenseRequest->expense_category}" : '')
                                 . ($expenseRequest->requester ? " ({$expenseRequest->requester->fullname})" : ''),
                 'from_account_id' => $expenseFund->id,
                 'to_account_id' => $settlementDestination->id,
                 'amount' => $expenseRequest->amount,
                 'mode' => LedgerModel::MODE_CASH, // Internal transfer
+                'receiving_account_id' => $settlementBankId,
                 'approval_status' => LedgerModel::STATUS_APPROVED,
                 'approval_date' => now(),
                 'approved_by' => auth()->id(),
@@ -103,22 +119,10 @@ class ExpenseSettlementService
                 'created_by' => auth()->id()
             ]);
             
-            // 6. Update balances based on account type
-            // From account (Expense Fund)
-            if ($expenseFund->account_type === 'asset') {
-                $expenseFund->current_balance -= $expenseRequest->amount;
-            } else {
-                $expenseFund->current_balance += $expenseRequest->amount;
-            }
-            $expenseFund->save();
-            
-            // To account (Settlement Destination)
-            if ($settlementDestination->account_type === 'asset') {
-                $settlementDestination->current_balance += $expenseRequest->amount;
-            } else {
-                $settlementDestination->current_balance -= $expenseRequest->amount;
-            }
-            $settlementDestination->save();
+            // 6. Apply balances via the canonical engine (EXP_FUND −, till +; both asset, so every
+            // convention agrees — zero net change vs the old asset-aware block). Row-locked; sets
+            // balance_updated so the reversal path can undo it correctly.
+            (new \App\Services\FIN\BalancePostingService())->apply($settlementLedger);
             
             // 7. Update expense request metadata
             $expenseRequest->settlement_status = 'settled';

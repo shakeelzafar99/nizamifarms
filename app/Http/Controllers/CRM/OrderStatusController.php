@@ -32,11 +32,21 @@ class OrderStatusController extends Controller
 
     /**
      * Get all statuses (API)
+     *
+     * By default excludes "legacy" statuses so they don't appear in order-status pickers
+     * (the orders page dropdown, etc.). The management Hub passes ?all=1 to see everything.
      */
-    public function getAllStatuses(): JsonResponse
+    public function getAllStatuses(Request $request): JsonResponse
     {
         try {
             $statuses = $this->statusService->getAllStatuses();
+
+            if (!$request->boolean('all')) {
+                $statuses = $statuses
+                    ->reject(fn ($s) => ($s->lane ?? 'journey') === 'legacy')
+                    ->values();
+            }
+
             return response()->json([
                 'success' => true,
                 'data' => $statuses
@@ -84,19 +94,32 @@ class OrderStatusController extends Controller
                 'icon' => 'nullable|string|max:20',  // Emojis are typically 1-4 chars
                 'show_in_mobile' => 'nullable|boolean',
                 'visible_to_roles' => 'nullable|array',
-                'visible_to_roles.*' => 'integer'
+                'visible_to_roles.*' => 'integer',
+                // Order Status Hub behaviour columns
+                'counts_in_quantities' => 'nullable|boolean',
+                'auto_prepares' => 'nullable|boolean',
+                'lane' => 'nullable|in:journey,offtrack,legacy',
+                'send_to_customer_app' => 'nullable|boolean',
+                'customer_app_alias' => 'nullable|string|max:50'
             ]);
-            
+
             // Convert simple color name to CSS class if needed
             if (isset($validated['color_class']) && !str_starts_with($validated['color_class'], 'bg-')) {
                 $validated['color_class'] = 'bg-' . $validated['color_class'] . '-100';
             }
-            
+
             // Ensure is_final is boolean
             $validated['is_final'] = $validated['is_final'] ?? false;
-            
+
             // Default show_in_mobile to true if not specified
             $validated['show_in_mobile'] = $validated['show_in_mobile'] ?? true;
+
+            // Hub defaults for a NEW status: counts in quantities, not out-the-door,
+            // normal journey lane, and customer updates OFF until deliberately enabled.
+            $validated['counts_in_quantities'] = $validated['counts_in_quantities'] ?? true;
+            $validated['auto_prepares'] = $validated['auto_prepares'] ?? false;
+            $validated['lane'] = $validated['lane'] ?? 'journey';
+            $validated['send_to_customer_app'] = $validated['send_to_customer_app'] ?? false;
             
             // Convert empty array to null for visible_to_roles (null = all roles)
             if (isset($validated['visible_to_roles']) && empty($validated['visible_to_roles'])) {
@@ -138,7 +161,13 @@ class OrderStatusController extends Controller
                 'icon' => 'nullable|string|max:20',  // Emojis are typically 1-4 chars
                 'show_in_mobile' => 'nullable|boolean',
                 'visible_to_roles' => 'nullable|array',
-                'visible_to_roles.*' => 'integer'
+                'visible_to_roles.*' => 'integer',
+                // Order Status Hub behaviour columns
+                'counts_in_quantities' => 'nullable|boolean',
+                'auto_prepares' => 'nullable|boolean',
+                'lane' => 'nullable|in:journey,offtrack,legacy',
+                'send_to_customer_app' => 'nullable|boolean',
+                'customer_app_alias' => 'nullable|string|max:50'
             ]);
             
             // Convert simple color name to CSS class if needed
@@ -188,8 +217,12 @@ class OrderStatusController extends Controller
             'order_id' => 'required|integer|exists:t_crm_prod_order,id',
             'status_code' => 'required|string|exists:t_crm_order_status_master,status_code',
             'notes' => 'nullable|string|max:1000',
-            'confirmed' => 'nullable|boolean' // For ledger reversal confirmation
+            'confirmed' => 'nullable|boolean', // For ledger reversal confirmation
+            'bring_back' => 'nullable|boolean' // Operator chose to return prepared items to the queue
         ]);
+
+        // Capture the status the order is in BEFORE the change, for the bring-back check below.
+        $bringBackFromStatus = OrderModel::where('id', $request->order_id)->value('order_status');
 
         // ================================================================
         // LEDGER REVERSAL DETECTION FOR CANCELLATION
@@ -254,6 +287,19 @@ class OrderStatusController extends Controller
             $request->status_code,
             $request->notes
         );
+
+        // BRING-BACK: the operator moved an order back across the "out the door" line and chose to
+        // return its prepared items to the "to prepare" queue. Guarded server-side so a stray flag
+        // can only ever act on a genuine backward move (was out-the-door, now isn't).
+        if ($result['success'] && $request->boolean('bring_back') && $bringBackFromStatus) {
+            $rules = app(\App\Services\CRM\OrderStatusRuleService::class);
+            $wasOutTheDoor = in_array($bringBackFromStatus, $rules->outTheDoor(), true);
+            $nowOutTheDoor = in_array($request->status_code, $rules->outTheDoor(), true);
+            if ($wasOutTheDoor && !$nowOutTheDoor) {
+                $bb = $this->statusService->unprepareItems($request->order_id);
+                $result['bring_back'] = $bb;
+            }
+        }
 
         return response()->json($result, $result['success'] ? 200 : 400);
     }

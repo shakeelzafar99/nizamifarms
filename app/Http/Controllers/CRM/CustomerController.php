@@ -1258,30 +1258,12 @@ class CustomerController extends Controller
         foreach ($invoices as $invoice) {
             \DB::beginTransaction();
             try {
-                // If L1 already posted balances (balance_updated=1), reverse them
-                // so we don't double count once payments start posting.
-                if ((int) $invoice->balance_updated === 1) {
-                    $fromAccount = \App\Models\FIN\AccountModel::find($invoice->from_account_id);
-                    $toAccount   = \App\Models\FIN\AccountModel::find($invoice->to_account_id);
-                    $amount = (float) $invoice->amount;
-                    if ($fromAccount) {
-                        // Mirror-reverse of the approve() posting logic.
-                        if ($fromAccount->account_type === 'asset') {
-                            $fromAccount->current_balance += $amount;
-                        } else {
-                            $fromAccount->current_balance -= $amount;
-                        }
-                        $fromAccount->save();
-                    }
-                    if ($toAccount) {
-                        if ($toAccount->account_type === 'asset') {
-                            $toAccount->current_balance -= $amount;
-                        } else {
-                            $toAccount->current_balance += $amount;
-                        }
-                        $toAccount->save();
-                    }
-                }
+                // If L1 already posted balances, reverse them via the canonical engine (self-guards
+                // on balance_updated; the exact inverse of the invoice posting) so we don't double
+                // count once payments start posting. In practice the query only matches pending /
+                // pending_l1 rows (never applied), so this is a safety no-op — but it stays correct
+                // and consistent if a flag=1 row ever reaches here.
+                (new \App\Services\FIN\BalancePostingService())->reverse($invoice);
 
                 $orderId = $invoice->order_id;
                 $invoice->delete();

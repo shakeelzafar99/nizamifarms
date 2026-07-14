@@ -65,7 +65,7 @@
   #hq-root h2.sec .hint{font-weight:500;letter-spacing:0;text-transform:none;color:var(--faint);font-size:11.5px}
 
   #hq-root .grid{display:grid;gap:12px}
-  #hq-root .kpis{grid-template-columns:repeat(6,1fr)}
+  #hq-root .kpis{grid-template-columns:repeat(4,1fr)}
   #hq-root .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px 16px;min-width:0}
   #hq-root .card.click{cursor:pointer;transition:border-color .12s, box-shadow .12s}
   #hq-root .card.click:hover{border-color:var(--line2);box-shadow:0 2px 10px rgba(28,25,23,.06)}
@@ -387,6 +387,9 @@
   function renderClosing(){
     var c=data.closing; if(!c)return;
     var cur=c.current, prev=c.previous, dv=c.derived, isQb=(c.unit==='qb');
+    // Open month compares the elapsed window to the SAME window last month
+    // (the backend mirrors it); closed months are full-vs-full.
+    var cmp=c.is_open?'vs same days last month':'vs last month';
     function card(def,label,val,sub,drill){
       var iBtn='<button class="i-btn" type="button" onclick="event.stopPropagation();hqDef(\''+def+'\')" aria-label="How is '+esc(label)+' calculated?">i</button>';
       var open=drill?(' onclick="hqDrill(\''+drill+'\')" onkeydown="if(event.key===\'Enter\')hqDrill(\''+drill+'\')" tabindex="0" role="button"'):'';
@@ -403,20 +406,18 @@
     var revLabel = isQb ? 'Booked revenue' : 'Delivered revenue';
     var revSub   = isQb
       ? deltaChip(cur.revenue,prev.revenue)+' vs last season · '+rs(cur.delivered_revenue)+' delivered'
-      : deltaChip(cur.revenue,prev.revenue)+' vs last month';
+      : deltaChip(cur.revenue,prev.revenue)+' '+cmp;
     var ordLabel = isQb ? 'Orders booked' : 'Orders delivered';
     var ordSub   = isQb
       ? deltaChip(cur.orders,prev.orders)+' · '+rsS(cur.delivered_orders)+' delivered · AOV '+rs(dv.aov)
       : deltaChip(cur.orders,prev.orders)+' · ≈'+dv.orders_per_work_day+' / day · AOV '+rs(dv.aov);
+    // Gross & Net profit intentionally live ONLY in the P&L flow below (each
+    // with its own ⓘ) — this row is the activity/scale snapshot, no duplication.
     var cards=[
       card('rev',revLabel,rs(cur.revenue),revSub,'revenue'),
       card('ord',ordLabel,rsS(cur.orders),ordSub,'revenue'),
       card('kg',isQb?'Quantity booked':'Quantity sold',qtyVal,qtySub,'revenue'),
-      card('cus','Customers ordered',rsS(cur.customers),'<span class="delta up">+'+rsS(cur.new_customers)+' new</span> first-time','customers'),
-      isQb
-        ? card('qbcost','Qurbani costs',rs(cur.expenses),'animal + ops costs — booked as <strong>expenses</strong>','expense')
-        : card('gp','Gross profit',rs(cur.gross_profit),'<strong>'+dv.gp_margin+'%</strong> of revenue','vendor'),
-      card('np','Net profit',rs(cur.net_profit),'<strong>'+dv.np_margin+'%</strong> · '+rs(dv.net_per_work_day)+' / work day ('+c.working_days+')','expense')
+      card('cus','Customers ordered',rsS(cur.customers),'<span class="delta up">+'+rsS(cur.new_customers)+' new</span> first-time','customers')
     ];
     $('hqKpis').innerHTML=cards.join('');
 
@@ -424,23 +425,24 @@
     var flow, plHint;
     if(isQb){
       plHint='Booked revenue − Qurbani expenses = Season net profit (no vendor step — Qurbani has no vendors)';
-      flow=[{l:'Booked revenue',v:cur.revenue,d:'revenue'},{op:'−'},
-            {l:'Qurbani expenses (incl. animals)',v:cur.expenses,d:'expense'},{op:'='},
-            {l:'Season net profit',v:cur.net_profit,r:dv.np_margin+'% NP margin',res:1,d:'expense'}];
+      flow=[{l:'Booked revenue',v:cur.revenue,d:'revenue',def:'rev'},{op:'−'},
+            {l:'Qurbani expenses (incl. animals)',v:cur.expenses,d:'expense',def:'qbcost'},{op:'='},
+            {l:'Season net profit',v:cur.net_profit,r:dv.np_margin+'% NP margin',res:1,d:'expense',def:'np'}];
     }else{
       plHint='Revenue − Vendor purchases = Gross profit · − Expenses = Net profit';
-      flow=[{l:'Delivered revenue',v:cur.revenue,d:'revenue'},{op:'−'},
-            {l:'Vendor purchases',v:cur.vendor_purchases,d:'vendor'},{op:'='},
-            {l:'Gross profit',v:cur.gross_profit,r:dv.gp_margin+'% GP margin',res:1,d:'vendor'},{op:'−'},
-            {l:'Expenses',v:cur.expenses,d:'expense'},{op:'='},
-            {l:'Net profit',v:cur.net_profit,r:dv.np_margin+'% NP margin',res:1,d:'expense'}];
+      flow=[{l:'Delivered revenue',v:cur.revenue,d:'revenue',def:'rev'},{op:'−'},
+            {l:'Vendor purchases',v:cur.vendor_purchases,d:'vendor',def:'vendor'},{op:'='},
+            {l:'Gross profit',v:cur.gross_profit,r:dv.gp_margin+'% GP margin',res:1,d:'vendor',def:'gp'},{op:'−'},
+            {l:'Expenses',v:cur.expenses,d:'expense',def:'expense'},{op:'='},
+            {l:'Net profit',v:cur.net_profit,r:dv.np_margin+'% NP margin · '+rs(dv.net_per_work_day)+'/work day',res:1,d:'expense',def:'np'}];
     }
     $('hqPlHead').querySelector('.hint').textContent=plHint;
     $('hqPlFlow').style.gridTemplateColumns=isQb?'1fr auto 1fr auto 1fr':'';
     $('hqPlFlow').innerHTML=flow.map(function(f,i){
       if(f.op)return '<div class="pl-op'+((i===3||i===7)?' brk':'')+'">'+f.op+'</div>';
+      var iBtn=f.def?'<button class="i-btn" type="button" onclick="event.stopPropagation();hqDef(\''+f.def+'\')" aria-label="How is '+esc(f.l)+' calculated?">i</button>':'';
       return '<div class="pl-cell'+(f.res?' result':'')+' card click" tabindex="0" role="button" onclick="hqDrill(\''+f.d+'\')">'+
-        '<div class="k-label">'+esc(f.l)+'</div><div class="k-val">'+rs(f.v)+'</div>'+
+        '<div class="k-label">'+esc(f.l)+iBtn+'</div><div class="k-val">'+rs(f.v)+'</div>'+
         (f.r?'<div class="ratio">'+f.r+'</div>':'')+'</div>';
     }).join('');
 
@@ -561,11 +563,20 @@
         ['Formula','Distinct customers (by <code>phone</code>) with a delivery in the window'],
         ['New','<span class="var">'+rsS(cur.new_customers)+'</span> placed their <span class="var">first-ever order</span> in this window (by <code>first_order_date</code>)'],
         ['Unit rule',unitRule]]},
+      vendor:{t:'Vendor purchases',v:rs(cur.vendor_purchases),r:[
+        ['Formula','Sum of <span class="var">approved / L2</span> vendor purchase bills dated in the window'],
+        ['Window','Bill date within <span class="var">'+win+'</span>'],
+        ['Unit rule',unitRule],
+        ['Honest caveat','Purchases-based, not stock-matched — heavy month-end buying inflates it and corrects next month']]},
       gp:{t:'Gross profit',v:rs(cur.gross_profit),r:[
         ['Formula','Delivered revenue − Vendor purchases'],
         ['Values','<span class="var">'+rs(cur.revenue)+'</span> − <span class="var">'+rs(cur.vendor_purchases)+'</span> = <span class="var">'+rs(cur.gross_profit)+'</span> ('+dv.gp_margin+'%)'],
         ['Vendor purchases','Approved / L2 vendor bills dated in the month for '+U+' vendors'],
         ['Honest caveat','This is <span class="var">purchases-based</span> GP, not stock-matched cost — heavy month-end buying dips it, and it corrects next month.']]},
+      expense:{t:'Expenses',v:rs(cur.expenses),r:[
+        ['Formula','Sum of <span class="var">approved / L2</span> expense ledger entries dated in the window'],
+        ['Window','Expense date within <span class="var">'+win+'</span>'],
+        ['Unit rule',unitRule]]},
       qbcost:{t:'Qurbani costs',v:rs(cur.expenses),r:[
         ['Formula','Sum of approved <span class="var">Qurbani-category</span> expenses in the season'],
         ['Includes','Animal purchases (booked as expenses — Qurbani has no vendor ledger), slaughter, transport, ops'],
@@ -706,16 +717,21 @@
       },
       note:'Segregation by which bank received each payment (Bank Balances page figures). Not yet reconciled with the ONLINE ledger — the health tile shows the gap.'},
     receivables:{crumb:['Working capital','Receivables'],url:function(){return '/hq/drill/receivables?unit='+state.unit;},
-      custom:function(d){
-        function typePill(t){ return t==='shop' ? '<span class="pillm online">shop</span>' : esc(t); }
-        var rows=(d.customers||[]).map(function(r){return '<tr><td>'+esc(r.who)+'</td><td>'+typePill(r.type)+'</td><td>'+rsS(r.invoices||1)+'</td><td>'+rsS(r.amount)+'</td><td>'+esc(r.oldest)+'</td><td>'+(r.age>30?'<span class="pillm late">'+r.age+' d</span>':r.age+' d')+'</td></tr>';});
-        var extra=(d.rider&&d.rider>0)?'<tr><td>Riders — cash to settle</td><td><span class="pillm cash">rider</span></td><td>—</td><td>'+rsS(d.rider)+'</td><td>—</td><td>—</td></tr>':'';
-        var note=(state.unit==='qb')
-          ? 'This season’s delivered Qurbani orders with an unpaid balance. Older seasons are treated as closed.'
-          : 'Regular rows = pending invoices in Online Approvals · Shop rows = the Shop tab’s outstanding. Legacy records are treated as closed; Qurbani balances live in the Qurbani view.';
-        return '<table class="dt"><thead><tr><th>Who</th><th>Type</th><th>Inv</th><th>Amount</th><th>Oldest</th><th>Age</th></tr></thead><tbody>'+rows.join('')+extra+'</tbody></table>'+
-          '<div class="p-note" style="border:0;padding:12px 2px 0">'+note+'</div>';
-      }},
+      cols:['Receivable type','Customers','Total','≤30 days','>30 days · pending'],
+      map:function(r){return [esc(r.label),
+        (r.customers==null?'—':rsS(r.customers)),
+        rsS(r.total),
+        (r.fresh==null?'—':rsS(r.fresh)),
+        (r.aging==null?'—':(r.aging>0?'<span class="pillm late">'+rsS(r.aging)+'</span>':'0'))];},
+      total:function(rows){var c=0,t=0,f=0,a=0;rows.forEach(function(r){c+=r.customers||0;t+=r.total||0;f+=r.fresh||0;a+=r.aging||0;});
+        return ['Total',rsS(c),rsS(t),rsS(f),(a>0?'<span class="pillm late">'+rsS(a)+'</span>':'0')];},
+      note:function(){return state.unit==='qb'
+        ? 'This season’s delivered Qurbani orders with an unpaid balance. Older seasons are treated as closed. Click the row for the customers.'
+        : 'Regular = Online Approvals “All Pending” · Shops = the Shop tab’s outstanding · Riders = cash to settle. Fresh vs pending split by invoice age (30 days). Legacy records are treated as closed; Qurbani balances live in the Qurbani view. Click a type for its customers.';},
+      l2:{crumb:function(r){return r.label;},
+        url:function(r){return '/hq/drill/receivables?unit='+state.unit+'&type='+encodeURIComponent(r.type);},
+        cols:['Who','Inv','Amount','Oldest','Age'],
+        map:function(r){return [esc(r.who),rsS(r.invoices||1),rsS(r.amount),esc(r.oldest),(r.age>30?'<span class="pillm late">'+r.age+' d</span>':r.age+' d')];}}},
     payables:{crumb:['Working capital','Payables'],url:function(){return '/hq/drill/payables';},
       cols:['Vendor','Unit','Balance'],map:function(r){return [esc(r.vendor),esc(r.unit),rsS(r.balance)];}},
     assets:{crumb:['Working capital','Fixed assets'],url:function(){return '/hq/drill/assets?unit='+state.unit;},
@@ -742,7 +758,7 @@
   };
   window.hqCloseDrill=function(){ $('hqDrillScrim').classList.remove('on'); $('hqPanel').classList.remove('on'); };
   window.hqDrillBack=function(){ drill.level=1; renderDrill(); };
-  window.hqDrillRow=function(idx){ var d=DRILL[drill.key]; if(!d.l2)return; drill.row=drill.l1[idx]; drill.level=2; renderDrill(); };
+  window.hqDrillRow=function(idx){ var d=DRILL[drill.key]; if(!d.l2)return; var row=drill.l1[idx]; if(!row||row.no_drill)return; drill.row=row; drill.level=2; renderDrill(); };
 
   function renderDrill(){
     var d=DRILL[drill.key]; if(!d)return;
@@ -757,8 +773,9 @@
 
     if(d.local){
       var rows=d.rows();
+      var lnote=(typeof d.note==='function')?d.note():d.note;
       $('hqPBody').innerHTML=tbl(d.cols,rows,false)+
-        (d.note?'<div class="p-note" style="border:0;padding:12px 2px 0">'+esc(d.note)+'</div>':'');
+        (lnote?'<div class="p-note" style="border:0;padding:12px 2px 0">'+esc(lnote)+'</div>':'');
       return;
     }
     var url=l2?d.l2.url(drill.row):d.url();
@@ -770,10 +787,12 @@
       if(!list.length){$('hqPBody').innerHTML='<div class="p-empty">Nothing here for this period.</div>';return;}
       var clickable=!l2&&d.l2;
       var body='<table class="dt"><thead><tr>'+src.cols.map(function(c){return '<th>'+esc(c)+'</th>';}).join('')+'</tr></thead><tbody>';
-      body+=list.map(function(r,i){return '<tr'+(clickable?' class="rowclick" onclick="hqDrillRow('+i+')"':'')+'>'+src.map(r).map(function(c){return '<td>'+c+'</td>';}).join('')+'</tr>';}).join('');
+      body+=list.map(function(r,i){var rc=clickable&&!r.no_drill;return '<tr'+(rc?' class="rowclick" onclick="hqDrillRow('+i+')"':'')+'>'+src.map(r).map(function(c){return '<td>'+c+'</td>';}).join('')+'</tr>';}).join('');
       if(!l2&&d.total)body+='<tr class="total">'+d.total(list).map(function(c){return '<td>'+c+'</td>';}).join('')+'</tr>';
       body+='</tbody></table>';
-      if(clickable)body+='<div class="p-note" style="border:0;padding:12px 2px 0">Click a row for the underlying entries.</div>';
+      var dnote=(!l2)?((typeof d.note==='function')?d.note():d.note):null;
+      if(dnote)body+='<div class="p-note" style="border:0;padding:12px 2px 0">'+esc(dnote)+'</div>';
+      else if(clickable)body+='<div class="p-note" style="border:0;padding:12px 2px 0">Click a row for the underlying entries.</div>';
       $('hqPBody').innerHTML=body;
     }).catch(function(e){ $('hqPBody').innerHTML='<div class="p-empty">Could not load ('+esc(e.message)+').</div>'; });
   }
@@ -815,7 +834,11 @@
     }).catch(function(e){ $('hqGSales').classList.remove('loading'); showErr(e.message); });
   }
   function growthKey(){ return state.unit+'_'+state.year+'_'+state.month; }
-  function deltaVs(cur,prev,goodUp){ return deltaChip(cur,prev,goodUp)+' vs last '+(state.unit==='qb'?'season':'month'); }
+  function deltaVs(cur,prev,goodUp){
+    var lbl = state.unit==='qb' ? 'vs last season'
+      : ((data.growth&&data.growth.is_open) ? 'vs same days last month' : 'vs last month');
+    return deltaChip(cur,prev,goodUp)+' '+lbl;
+  }
 
   function renderGrowth(){
     var g=data.growth; if(!g)return;

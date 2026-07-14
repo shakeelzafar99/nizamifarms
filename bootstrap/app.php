@@ -18,8 +18,11 @@ return Application::configure(basePath: dirname(__DIR__))
         ]);
 
         // Server-to-server auth for the customer-app pull endpoints (Phase 2).
+        // block.rider — server-side gate for the Operations / bulk-import area
+        // (mirrors the sidebar's non-rider visibility rule; blocks rider-only accounts).
         $middleware->alias([
             'customer.app' => \App\Http\Middleware\EnsureCustomerAppAuth::class,
+            'block.rider' => \App\Http\Middleware\BlockRiderAccess::class,
         ]);
     })
     ->withExceptions(function (Exceptions $exceptions) {

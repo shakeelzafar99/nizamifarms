@@ -567,7 +567,7 @@ class RequestModel extends BaseModel
                 'amount' => $order->total_price,
                 'mode' => \App\Models\FIN\LedgerModel::MODE_ONLINE,
                 'approval_status' => \App\Models\FIN\LedgerModel::STATUS_PENDING_L2,
-                'balance_updated' => 1,
+                'balance_updated' => 0, // engine applies below and sets this
                 'settlement_status' => 'open',
                 'settled_amount' => 0.00,
                 'order_id' => $order->id,
@@ -575,13 +575,10 @@ class RequestModel extends BaseModel
                 'created_by' => $this->updated_by ?? auth()->id() ?? 1,
                 'comments' => "Approved via request #{$this->request_number} - Awaiting L2 verification"
             ]);
-            
-            // Apply balances immediately (L2 is verification only)
-            $salesAccount->current_balance -= $order->total_price;
-            $salesAccount->save();
-            
-            $onlineAccount->current_balance += $order->total_price;
-            $onlineAccount->save();
+
+            // Apply balances immediately via the canonical engine (L2 is verification only). Same
+            // net move as before (revenue −, ONLINE +), now row-locked; engine sets balance_updated.
+            (new \App\Services\FIN\BalancePostingService())->apply($ledger);
             
             // Link ledger to order
             $order->ledger_transaction_id = $ledger->id;

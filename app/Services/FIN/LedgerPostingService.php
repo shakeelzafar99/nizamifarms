@@ -38,7 +38,20 @@ class LedgerPostingService
             if ($order->order_status !== 'delivered') {
                 return ['success' => false, 'message' => 'Order must be delivered to post to ledger'];
             }
-            
+
+            // ⭐ [Ledger L3] Qurbani orders are ALWAYS settled through the incremental order_payment
+            // flow (like shop online), NEVER a full invoice. The caller's hasPreReceivedPayments()
+            // guard was timing-dependent: a qurbani order delivered BEFORE its payment was recorded
+            // slipped past it, posted an invoice, and the later payment DOUBLE-BOOKED it
+            // (QUR26-607/883/890). This type-based skip is timing-independent and closes that hole.
+            if ($order->qurbani_day || $order->qurbani_slot || $order->qurbani_region || $order->qurbani_delivery_type) {
+                Log::info("Skipping invoice posting - qurbani order (settled via payments)", [
+                    'order_id' => $order->id,
+                    'order_number' => $order->order_number,
+                ]);
+                return ['success' => true, 'message' => 'Qurbani order — settled via payments, invoice posting skipped'];
+            }
+
             // Load customer relationship if not already loaded
             if (!$order->relationLoaded('customer')) {
                 $order->load('customer');
@@ -59,6 +72,18 @@ class LedgerPostingService
             }
 
             DB::beginTransaction();
+
+            // Concurrency guard (D6): lock the order row and RE-CHECK under the lock, so two
+            // simultaneous delivery submissions can't both slip past the early ledger_transaction_id
+            // check and post two invoices for the same order. The early check above stays as a cheap
+            // fast-path; this is the race-safe one. (Backstopped at the DB level by the unique
+            // active-invoice-per-order index — see LEDGER-L3-CONCURRENCY-GUARDS.sql.)
+            $lockedOrder = OrderModel::where('id', $order->id)->lockForUpdate()->first();
+            if ($lockedOrder && $lockedOrder->ledger_transaction_id) {
+                DB::rollBack();
+                Log::info("Order already has ledger entry (locked re-check)", ['order_id' => $order->id]);
+                return ['success' => true, 'message' => 'Already posted'];
+            }
 
             $salesAccount = ConfigModel::getSalesRevenueAccount();
             if (!$salesAccount) {
@@ -204,7 +229,7 @@ class LedgerPostingService
                 'amount' => $order->total_price,
                 'mode' => $mode,
                 'approval_status' => $approvalStatus,
-                'balance_updated' => $applyBalanceNow ? 1 : 0,
+                'balance_updated' => 0, // engine owns this (applies below when it should reflect now)
                 'settlement_status' => 'open',
                 'settled_amount' => 0.00,
                 'approval_date' => $approvalStatus === LedgerModel::STATUS_APPROVED ? now() : null,
@@ -213,13 +238,12 @@ class LedgerPostingService
                 'created_by' => auth()->id() ?? 1
             ]);
 
-            // Update account balances if approved or pending_l2 (L2 is verification only)
+            // Apply balances via the canonical engine when this row should reflect now (approved or
+            // pending_l2 — L2 is verification only). Same net move as before (revenue −, holder +),
+            // now with account row-locking; the engine sets balance_updated. pending_l1 stays flag=0
+            // and is applied later when the online approval posts it.
             if ($applyBalanceNow) {
-                $salesAccount->current_balance -= $order->total_price;
-                $salesAccount->save();
-                
-                $toAccount->current_balance += $order->total_price;
-                $toAccount->save();
+                (new BalancePostingService())->apply($ledger);
             }
 
             // Link ledger to order
@@ -365,16 +389,15 @@ class LedgerPostingService
                 'comments' => "Paid from: {$fundingAccount->account_name}"
             ]);
 
-            // Update account balances
-            $fundingAccount->current_balance -= $request->amount; // Funding decreases
-            $fundingAccount->save();
-            
-            $expenseAccount->current_balance += $request->amount; // Expense increases
-            $expenseAccount->save();
+            // Apply via the canonical engine (funding −, expense +), row-locked; sets balance_updated.
+            // Same net move as the old inline code. If the expense was paid from a rider's held cash
+            // (from = employee_cash), that leg IS applied (expense is NOT an excluded type), which is
+            // the intended R1 behaviour — the held-cash shortage is later bridged by the settlement.
+            (new BalancePostingService())->apply($ledger);
 
             // Link ledger to request
             $request->ledger_transaction_id = $ledger->id;
-            
+
             // Mark settlement status
             $this->markSettlementStatus($request, $fundingAccount);
             
@@ -514,17 +537,17 @@ class LedgerPostingService
                 'external_source' => 'hr_salary_advance',
                 'external_ref_id' => $request->request_number,
                 'created_by' => $request->requester_user_id,
+                'balance_updated' => 0, // engine applies below and sets this
                 'comments' => "Paid from: {$fundingAccount->account_name}"
             ]);
 
-            // Update account balances
-            $fundingAccount->current_balance -= $request->amount; // Funding decreases
-            $fundingAccount->save();
-            
-            // IMPORTANT: DO NOT update employee cash balance for salary advances
-            // Salary advances are personal payments TO the employee, not company cash they're holding
-            // Employee balance should only track: invoices, expenses, deposits (company money)
-            // $employeeCashAccount->current_balance += $request->amount; // REMOVED - see explanation above
+            // Apply balances via the canonical engine. It debits the funding account (asset −) and,
+            // because 'salary_advance' is an EXCLUDED employee-cash type, AUTOMATICALLY skips the
+            // employee-cash leg — enforcing centrally the rule that a salary advance is a personal
+            // payment TO the employee, not company cash they hold. Replaces the manual funding debit
+            // plus the deliberately-omitted employee-cash credit (which used to be a hand-maintained
+            // comment that the engine now guarantees).
+            (new BalancePostingService())->apply($ledger);
 
             // Link ledger to request
             $request->ledger_transaction_id = $ledger->id;
@@ -584,74 +607,6 @@ class LedgerPostingService
         );
     }
 
-    /**
-     * Approve online transaction and update balances
-     */
-    public function approveOnlineTransaction($ledgerId, $userId = null)
-    {
-        try {
-            DB::beginTransaction();
-
-            $ledger = LedgerModel::findOrFail($ledgerId);
-
-            // Check if already approved
-            if ($ledger->approval_status === LedgerModel::STATUS_APPROVED) {
-                return ['success' => false, 'message' => 'Transaction already approved'];
-            }
-
-            // Check if it's an online transaction
-            if ($ledger->mode !== LedgerModel::MODE_ONLINE) {
-                return ['success' => false, 'message' => 'Not an online transaction'];
-            }
-
-            // Update ledger
-            $ledger->approval_status = LedgerModel::STATUS_APPROVED;
-            $ledger->approval_date = now();
-            $ledger->approved_by = $userId ?? auth()->id();
-
-            // Only update balances if not already applied (e.g. at L1 stage)
-            if (!$ledger->balance_updated) {
-                $fromAccount = $ledger->fromAccount;
-                $toAccount = $ledger->toAccount;
-
-                if ($fromAccount && $toAccount) {
-                    $fromAccount->current_balance -= $ledger->amount;
-                    $fromAccount->save();
-
-                    $toAccount->current_balance += $ledger->amount;
-                    $toAccount->save();
-                }
-                $ledger->balance_updated = 1;
-            }
-
-            $ledger->save();
-
-            DB::commit();
-
-            Log::info("Online transaction approved", [
-                'ledger_id' => $ledgerId,
-                'amount' => $ledger->amount
-            ]);
-
-            return [
-                'success' => true,
-                'message' => 'Transaction approved successfully'
-            ];
-
-        } catch (\Exception $e) {
-            DB::rollBack();
-            Log::error("Failed to approve online transaction", [
-                'ledger_id' => $ledgerId,
-                'error' => $e->getMessage()
-            ]);
-
-            return [
-                'success' => false,
-                'message' => 'Failed to approve transaction: ' . $e->getMessage()
-            ];
-        }
-    }
-    
     /**
      * Mark expense settlement status based on payment source
      * 

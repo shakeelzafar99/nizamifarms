@@ -995,7 +995,7 @@ document.addEventListener('DOMContentLoaded', function() {
                             <input type="date" name="leave_end_date" class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500" onchange="calculateQuickLeaveDays()">
                         </div>
                     </div>
-                    <input type="hidden" name="leave_type" value="annual">
+                    <input type="hidden" name="leave_type" value="planned">
                     <div id="quick-leave-days-info" class="mb-4 p-3 bg-blue-50 border border-blue-200 rounded-lg" style="display: none;">
                         <span class="text-sm text-blue-800 font-medium" id="quick-leave-days-text"></span>
                     </div>

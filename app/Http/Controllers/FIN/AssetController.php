@@ -198,14 +198,9 @@ class AssetController extends Controller
                 'comments' => "Asset: {$assetCode}"
             ]);
 
-            // Update account balances
-            // Decrease payment account
-            $paymentAccount->current_balance -= $request->purchase_amount;
-            $paymentAccount->save();
-
-            // Increase fixed assets account
-            $fixedAssetsAccount->current_balance += $request->purchase_amount;
-            $fixedAssetsAccount->save();
+            // Apply via the canonical engine (payment −, fixed asset +; both asset, all conventions
+            // agree). Row-locked; sets balance_updated. Same net move as the old inline code.
+            (new \App\Services\FIN\BalancePostingService())->apply($ledger);
             
             // Get category for useful life
             $category = AssetCategoryModel::find($request->category_id);
@@ -515,12 +510,8 @@ class AssetController extends Controller
                 'comments' => "Asset: {$assetCode}"
             ]);
 
-            // Update balances
-            $paymentAccount->current_balance -= $request->purchase_amount;
-            $paymentAccount->save();
-            
-            $fixedAssetsAccount->current_balance += $request->purchase_amount;
-            $fixedAssetsAccount->save();
+            // Apply via the canonical engine (payment −, fixed asset +). Row-locked; sets balance_updated.
+            (new \App\Services\FIN\BalancePostingService())->apply($ledger);
             
             // Get category
             $category = AssetCategoryModel::find($request->category_id);

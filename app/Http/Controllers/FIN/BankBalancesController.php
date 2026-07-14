@@ -109,6 +109,19 @@ class BankBalancesController extends Controller
             : collect();
         $ledgerOnlineBalance = (float) $onlineAccounts->sum('balance');
 
+        // ⭐ [Ledger L2] Reconciliation tripwire. In a fully-reconciled system,
+        // (tracked-across-banks + untagged) should equal the ledger online balance.
+        // Manual ⚖ per-bank adjustments deliberately move a bank toward its real
+        // statement (Taimur's backdoor), so they are SUBTRACTED — a legitimate manual
+        // correction must never trip the alarm. What remains is the "unexplained gap":
+        // bank opening balances not yet set + the ONLINE account's stored-balance drift,
+        // both resolved at the one-time re-baseline (NOT by draining the untagged bucket,
+        // which shifts money from untagged to a bank 1:1 and doesn't change this number).
+        $netManualAdjustments = (float) \DB::table('t_fin_bank_balance_adjustment')->sum('amount');
+        $reconGap = round(($sumBalances + $unassigned) - $ledgerOnlineBalance - $netManualAdjustments, 2);
+        // Green under Rs 1k, amber under Rs 100k, red beyond — tune later if needed.
+        $reconStatus = abs($reconGap) < 1000 ? 'green' : (abs($reconGap) < 100000 ? 'amber' : 'red');
+
         // Only the Taimur role can fix untagged rows (assign a bank).
         $isTaimur = auth()->user()?->roles()
             ->whereRaw('LOWER(urole_name) = ?', ['taimur'])
@@ -126,6 +139,9 @@ class BankBalancesController extends Controller
             'trackedPlusUnassigned' => $sumBalances + $unassigned,
             'onlineAccounts' => $onlineAccounts,
             'ledgerOnlineBalance' => $ledgerOnlineBalance,
+            'netManualAdjustments' => $netManualAdjustments,
+            'reconGap' => $reconGap,
+            'reconStatus' => $reconStatus,
             'isTaimur' => $isTaimur,
         ]);
     }

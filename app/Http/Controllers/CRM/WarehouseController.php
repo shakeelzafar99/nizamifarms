@@ -311,7 +311,13 @@ class WarehouseController extends Controller
             ]);
             
             DB::commit();
-            
+
+            // NOTE: the store-transfer PUSH is sent as a COMBINED, debounced alert
+            // (5-10 min batch) by FirebaseService::flushDueTransferAlerts(), triggered
+            // from the store/khaas polling endpoints — never one push per move. So we
+            // deliberately do NOT push here. (The in-app banner shows the live pending
+            // count immediately via its own poll.)
+
             return response()->json([
                 'success' => true,
                 'message' => "Transfer of {$quantity} units initiated. Pending admin approval.",
@@ -471,9 +477,15 @@ class WarehouseController extends Controller
      */
     public function getPendingTransfers(Request $request)
     {
+        // Piggyback the combined store-transfer alert flush on this 30s poll (no cron).
+        // Runs AFTER the response is sent, and is mutex-gated to ~once/25s internally.
+        app()->terminating(function () {
+            try { app(\App\Services\FirebaseService::class)->flushDueTransferAlerts(); } catch (\Throwable $e) {}
+        });
+
         try {
             $businessUnitId = $request->input('business_unit_id');
-            
+
             $query = WarehouseTransferModel::where('status', WarehouseTransferModel::STATUS_PENDING)
                 ->with(['product:id,title', 'variant:id,title,sku', 'requester:id,fullname'])
                 ->orderBy('created_at', 'asc');
@@ -1023,6 +1035,12 @@ class WarehouseController extends Controller
      */
     public function getKhaasBadges(Request $request)
     {
+        // Piggyback the combined store-transfer alert flush on the mover's 30s khaas
+        // poll too (no cron). Mutex-gated internally so it stays ~once/25s overall.
+        app()->terminating(function () {
+            try { app(\App\Services\FirebaseService::class)->flushDueTransferAlerts(); } catch (\Throwable $e) {}
+        });
+
         try {
             $businessUnitId = $request->input('business_unit_id');
             if (!$businessUnitId) {
@@ -1773,7 +1791,7 @@ class WarehouseController extends Controller
         DB::beginTransaction();
         try {
             // Create ledger entry (same pattern as VendorController::recordPurchase)
-            \App\Models\FIN\LedgerModel::create([
+            $ledger = \App\Models\FIN\LedgerModel::create([
                 'transaction_date' => now()->toDateString(),
                 'transaction_type' => \App\Models\FIN\LedgerModel::TYPE_VENDOR_PURCHASE,
                 'description' => $description,
@@ -1787,12 +1805,9 @@ class WarehouseController extends Controller
                 'comments' => "Auto-recorded from storage order receipt",
             ]);
 
-            // Update account balances (same as VendorController::recordPurchase)
-            $purchaseAccount->current_balance += $totalAmount;
-            $purchaseAccount->save();
-
-            $vendor->account->current_balance += $totalAmount;
-            $vendor->account->save();
+            // Apply via the canonical engine (vendor_purchase: purchases +, vendor owed +), row-locked;
+            // sets balance_updated. Same net move as the old inline code.
+            (new \App\Services\FIN\BalancePostingService())->apply($ledger);
 
             DB::commit();
 

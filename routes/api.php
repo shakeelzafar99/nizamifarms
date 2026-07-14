@@ -224,6 +224,7 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('/attendance/today', [\App\Http\Controllers\API\RiderController::class, 'getTodayAttendance']);
         Route::post('/attendance/check-in', [\App\Http\Controllers\API\RiderController::class, 'checkIn']);
         Route::post('/attendance/check-out', [\App\Http\Controllers\API\RiderController::class, 'checkOut']);
+        Route::post('/attendance/confirm-cash', [\App\Http\Controllers\API\RiderController::class, 'confirmCash']);
         Route::post('/attendance/upload-meter-picture', [\App\Http\Controllers\API\RiderController::class, 'uploadMeterPicture']);
         Route::get('/attendance/monthly', [\App\Http\Controllers\API\RiderController::class, 'getMonthlyAttendance']);
         Route::get('/attendance/petrol-rate', [\App\Http\Controllers\API\RiderController::class, 'getPetrolRate']);
@@ -233,10 +234,25 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('/requests/categories', [\App\Http\Controllers\API\RiderController::class, 'getRequestCategories']);
         Route::get('/requests', [\App\Http\Controllers\API\RiderController::class, 'getRequests']);
         Route::post('/requests', [\App\Http\Controllers\API\RiderController::class, 'createRequest']);
+
+        // Leave approvals (manager) — gated by the 'approve_leaves' mobile permission;
+        // reuse the exact web leave logic (AttendanceController) via thin wrappers.
+        Route::get('/leaves/pending', [\App\Http\Controllers\API\RiderController::class, 'mobilePendingLeaves']);
+        Route::post('/leaves/{id}/approve', [\App\Http\Controllers\API\RiderController::class, 'mobileApproveLeave']);
+        Route::post('/leaves/{id}/reject', [\App\Http\Controllers\API\RiderController::class, 'mobileRejectLeave']);
         
         // Salary
     Route::get('/salary', [\App\Http\Controllers\API\RiderController::class, 'getSalaryInfo']);
     Route::get('/salary/slips/{slipId}', [\App\Http\Controllers\API\RiderController::class, 'getSalarySlipDetails']);
+
+        // Payroll (Phase G — new engine; manager grid + rider self-view)
+        Route::prefix('payroll')->group(function () {
+            Route::get('/my', [\App\Http\Controllers\API\PayrollController::class, 'mySalary']);            // rider self
+            Route::get('/month', [\App\Http\Controllers\API\PayrollController::class, 'managerMonth']);     // manager grid
+            Route::post('/set-salary', [\App\Http\Controllers\API\PayrollController::class, 'managerSetSalary']);
+            Route::post('/give-advance', [\App\Http\Controllers\API\PayrollController::class, 'managerGiveAdvance']);
+            Route::post('/pay', [\App\Http\Controllers\API\PayrollController::class, 'managerPay']);
+        });
     
     // Approvals (Admin/Manager users)
     Route::prefix('approvals')->group(function () {
@@ -568,6 +584,8 @@ Route::middleware('auth:sanctum')->group(function () {
     
     // Store Mode - Requests (uses same controller as web for consistency, under /api prefix)
     Route::post('/requests/store', [\App\Http\Controllers\Request\RequestController::class, 'store']);
+    // Lightweight feed for the in-app "new leave added" banner (count + newest id).
+    Route::get('/requests/leave-alert', [\App\Http\Controllers\Request\RequestController::class, 'leaveAlertSummary']);
     Route::post('/requests/{id}/approve', [\App\Http\Controllers\Request\RequestApprovalController::class, 'approve']);
     Route::post('/requests/{id}/reject', [\App\Http\Controllers\Request\RequestApprovalController::class, 'reject']);
     

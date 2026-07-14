@@ -116,11 +116,110 @@ class FirebaseService
     }
 
     /**
+     * Combined (debounced) store-transfer alerts. Instead of one push per moved
+     * item, this batches all pending Warehouse->Store transfers per store into ONE
+     * push once the batch has SETTLED (no new move for 5 min) or CAPPED (oldest is
+     * 10 min old). Poll-driven — called from the store/khaas polling endpoints via
+     * app()->terminating(), NOT a cron. A cache mutex keeps it to ~once per 25s no
+     * matter how many pollers hit it. Each transfer is stamped alert_batched_at so
+     * it's alerted at most once; already-accepted (status != pending) transfers are
+     * never alerted. Targets the 'receive_store_transfer_alerts' permission group.
+     */
+    public function flushDueTransferAlerts(): void
+    {
+        // Run at most once per ~25s regardless of how many endpoints trigger us.
+        if (!\Cache::add('store_transfer_alert_flush_lock', 1, 25)) {
+            return;
+        }
+
+        try {
+            $model = \App\Models\CRM\WarehouseTransferModel::class;
+            $now = now();
+            $settleBefore = $now->copy()->subMinutes(5);  // batch is "done" if newest move >= 5 min old
+            $capBefore    = $now->copy()->subMinutes(10); // never wait longer than 10 min
+
+            // Group pending, not-yet-alerted store transfers by business unit.
+            $groups = $model::where('status', $model::STATUS_PENDING)
+                ->where('to_location', 'store')
+                ->whereNull('alert_batched_at')
+                ->selectRaw('business_unit_id, COUNT(*) as cnt, MIN(created_at) as oldest, MAX(created_at) as newest')
+                ->groupBy('business_unit_id')
+                ->get();
+
+            foreach ($groups as $g) {
+                $newest = $g->newest ? \Carbon\Carbon::parse($g->newest) : null;
+                $oldest = $g->oldest ? \Carbon\Carbon::parse($g->oldest) : null;
+                $settled = $newest && $newest->lte($settleBefore);
+                $capped  = $oldest && $oldest->lte($capBefore);
+                if (!$settled && !$capped) {
+                    continue; // batch still forming — wait for it to settle
+                }
+
+                $transfers = $model::where('status', $model::STATUS_PENDING)
+                    ->where('to_location', 'store')
+                    ->whereNull('alert_batched_at')
+                    ->where('business_unit_id', $g->business_unit_id)
+                    ->with('product:id,title')
+                    ->orderBy('created_at')
+                    ->get();
+                if ($transfers->isEmpty()) {
+                    continue;
+                }
+
+                $count = $transfers->count();
+                if ($count === 1) {
+                    $t0 = $transfers->first();
+                    $qty = rtrim(rtrim(number_format((float) $t0->quantity, 2, '.', ''), '0'), '.');
+                    $name = optional($t0->product)->title ?? 'Frozen product';
+                    $body = "{$qty} × {$name} — tap to accept.";
+                } else {
+                    $body = "{$count} frozen items arrived at the store — tap to accept.";
+                }
+
+                $this->sendToPermissionGroup('receive_store_transfer_alerts', [
+                    'title' => 'Frozen stock arrived',
+                    'body'  => $body,
+                ], [
+                    'type'        => 'store_transfer_pending',
+                    'transfer_id' => (string) $transfers->last()->id,
+                    'count'       => (string) $count,
+                ], 'store_transfers');
+
+                // Stamp them so this batch never re-alerts.
+                $model::whereIn('id', $transfers->pluck('id')->all())
+                    ->update(['alert_batched_at' => $now]);
+            }
+        } catch (\Throwable $e) {
+            Log::warning('flushDueTransferAlerts failed', ['error' => $e->getMessage()]);
+        }
+    }
+
+    /**
+     * Notify management that a NEW leave request was added and is pending review.
+     * Fired at leave-create time (pending leaves only). Targets the
+     * 'receive_leave_alerts' mobile-permission group.
+     */
+    public function notifyLeaveAdded(int $requestId, string $applicantName, ?string $dateRange = null, ?int $excludeUserId = null): void
+    {
+        $body = $dateRange
+            ? "{$applicantName} applied for leave ({$dateRange}) — tap to review."
+            : "{$applicantName} applied for leave — tap to review.";
+
+        $this->sendToPermissionGroup('receive_leave_alerts', [
+            'title' => 'New leave request',
+            'body'  => $body,
+        ], [
+            'type'       => 'leave_added',
+            'request_id' => (string) $requestId,
+        ], 'leave_updates', $excludeUserId);
+    }
+
+    /**
      * Generic: send notifications to all users with a given permission
      */
-    protected function sendToPermissionGroup(string $permissionCode, array $notification, array $data, string $channelId = 'whatsapp_messages'): void
+    protected function sendToPermissionGroup(string $permissionCode, array $notification, array $data, string $channelId = 'whatsapp_messages', ?int $excludeUserId = null): void
     {
-        $this->sendToPermissionGroups([$permissionCode], $notification, $data, $channelId);
+        $this->sendToPermissionGroups([$permissionCode], $notification, $data, $channelId, $excludeUserId);
     }
 
     /**
@@ -128,7 +227,7 @@ class FirebaseService
      * mobile permissions. Used e.g. for WhatsApp messages where either a
      * full or limited viewer should receive the push.
      */
-    protected function sendToPermissionGroups(array $permissionCodes, array $notification, array $data, string $channelId = 'whatsapp_messages'): void
+    protected function sendToPermissionGroups(array $permissionCodes, array $notification, array $data, string $channelId = 'whatsapp_messages', ?int $excludeUserId = null): void
     {
         if (!$this->projectId || !file_exists($this->credentialsPath)) {
             Log::debug('Firebase: Skipping push notification (not configured)');
@@ -149,6 +248,11 @@ class FirebaseService
             }
 
             foreach ($tokens as $tokenRecord) {
+                // Never notify the actor about their own action (e.g. the manager
+                // who just created the leave, or the requester who initiated it).
+                if ($excludeUserId !== null && (int) $tokenRecord->user_id === $excludeUserId) {
+                    continue;
+                }
                 $this->sendToDevice($accessToken, $tokenRecord->fcm_token, $notification, $data, $channelId);
             }
         } catch (\Exception $e) {

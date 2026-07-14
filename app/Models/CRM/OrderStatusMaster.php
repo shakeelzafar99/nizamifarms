@@ -25,6 +25,12 @@ class OrderStatusMaster extends BaseModel
         'icon',
         'show_in_mobile',          // Whether this status appears in mobile app
         'visible_to_roles',         // JSON array of role IDs (null = all roles)
+        // Order Status Hub (Jul-2026) behaviour columns
+        'counts_in_quantities',     // Feeds the Open-Order Quantities "to prepare" list
+        'auto_prepares',            // "Out the door": items treated as prepared, hidden from both qty views
+        'lane',                     // journey | offtrack | legacy (Hub organisation)
+        'send_to_customer_app',     // Whether a status change is pushed to the customer app
+        'customer_app_alias',       // What the customer app should show instead of the raw code
         'created_by',
         'updated_by'
     ];
@@ -34,7 +40,10 @@ class OrderStatusMaster extends BaseModel
         'is_final' => 'boolean',
         'show_in_mobile' => 'boolean',
         'visible_to_roles' => 'array',  // Auto JSON encode/decode
-        'sequence_order' => 'integer'
+        'sequence_order' => 'integer',
+        'counts_in_quantities' => 'boolean',
+        'auto_prepares' => 'boolean',
+        'send_to_customer_app' => 'boolean'
     ];
 
     // Relationships
@@ -129,10 +138,15 @@ class OrderStatusMaster extends BaseModel
      */
     public static function getStatusesForMobile($user)
     {
-        $statuses = static::active()
-            ->where('show_in_mobile', true)
-            ->ordered()
-            ->get();
+        $query = static::active()->where('show_in_mobile', true);
+
+        // Status Hub: never offer a "legacy" (retiring) status in the mobile picker.
+        // Guarded so this is safe even before the Hub migration has run.
+        if (\Schema::hasColumn('t_crm_order_status_master', 'lane')) {
+            $query->where('lane', '!=', 'legacy');
+        }
+
+        $statuses = $query->ordered()->get();
         
         // Filter by role visibility
         return $statuses->filter(function($status) use ($user) {

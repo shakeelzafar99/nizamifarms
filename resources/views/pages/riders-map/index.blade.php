@@ -2076,11 +2076,14 @@ function dtRenderOrdersWithOfficeReturns(orders, officeReturns, showDispatchInfo
 }
 
 function dtRenderSingleOrder(o, showDispatchInfo) {
-    const seqMatch = o.delivery_priority !== null && o.actual_sequence === o.delivery_priority;
-    const seqClass = o.delivery_priority !== null ? (seqMatch ? 'match' : 'mismatch') : '';
-    const seqTitle = o.delivery_priority !== null
-        ? (seqMatch ? `Priority ${o.delivery_priority} — delivered in correct sequence` : `Priority ${o.delivery_priority} — delivered as #${o.actual_sequence}`)
-        : 'No priority set';
+    // Use the stable dispatch-order rank (planned_sequence) from the server, NOT the
+    // raw delivery_priority (which can be renumbered mid-route and collide).
+    const planned = (o.planned_sequence === undefined || o.planned_sequence === null) ? null : o.planned_sequence;
+    const seqMatch = planned !== null && o.actual_sequence === planned;
+    const seqClass = planned !== null ? (seqMatch ? 'match' : 'mismatch') : '';
+    const seqTitle = planned !== null
+        ? (seqMatch ? `Planned stop #${planned} — delivered in that position` : `Planned stop #${planned} — actually delivered #${o.actual_sequence}`)
+        : 'Not dispatched (no planned position)';
 
     let etaHtml = '';
     if (showDispatchInfo && o.eta_comparison) {
@@ -2090,9 +2093,9 @@ function dtRenderSingleOrder(o, showDispatchInfo) {
         etaHtml = '<span class="dt-time" style="color:#d1d5db;">No ETA</span>';
     }
 
-    const priorityHtml = o.delivery_priority !== null
-        ? `<span class="dt-badge ${seqMatch ? 'green' : 'red'}" style="font-size:10px; padding:1px 5px;" title="${seqTitle}">P${o.delivery_priority}${!seqMatch ? '→#' + o.actual_sequence : ''}</span>`
-        : (showDispatchInfo ? '<span class="dt-badge gray" style="font-size:10px; padding:1px 5px;">No priority</span>' : '');
+    const priorityHtml = planned !== null
+        ? `<span class="dt-badge ${seqMatch ? 'green' : 'amber'}" style="font-size:10px; padding:1px 5px;" title="${seqTitle}">${seqMatch ? '✓ on plan' : 'plan #' + planned}</span>`
+        : (showDispatchInfo ? '<span class="dt-badge gray" style="font-size:10px; padding:1px 5px;">Not dispatched</span>' : '');
 
     let locHtml = '';
     if (o.delivered_at_verified) {
@@ -2249,7 +2252,7 @@ function rrRiderIssueItems(r){
 }
 function rrHasIssues(r){
     const {items, stopItems, oddRoutes, missed} = rrRiderIssueItems(r);
-    return items.length>0 || stopItems.length>0 || oddRoutes.length>0 || !!missed || !!r.lateness;
+    return items.length>0 || stopItems.length>0 || oddRoutes.length>0 || !!missed || !!r.lateness || !!(r.checkout && r.checkout.flagged) || !!r.bike_meter;
 }
 // short manager-friendly line for a missed-dispatch event
 function rrMissedChips(m){
@@ -2319,6 +2322,32 @@ function rrRenderIssues(){
                     </div>`;
         }).join('');
         const oddHtml = oddRoutes.map(l => `<div style="font-size:13px;padding:2px 0;">${rrChip('odd route '+l.trav_km+' km for '+l.straight_km+' km','warn')}<span style="color:#6b7280;font-size:12px;"> ${rrEsc(l.from)} → ${rrEsc(l.to)}</span></div>`).join('');
+        const co = r.checkout;
+        const checkoutHtml = (co && co.flagged) ? `<div style="display:flex;gap:8px;align-items:baseline;flex-wrap:wrap;font-size:13px;padding:2px 0;">
+                    <span style="min-width:130px;color:#6b7280;">checkout</span>
+                    ${rrChip('checked out '+co.pin_distance_m+' m from '+rrEsc(co.customer_name||'address')+"'s saved pin",'warn')}
+                    <span style="font-family:monospace;font-size:11.5px;color:#2E64A6;">${rrEsc(co.order_number||'')}</span>
+                    <span style="color:#6b7280;font-size:12px;">at ${co.logout_time||''}</span>
+                </div>` : '';
+        // Company-bike meter issues (info only — no action): overnight grace and/or no reading.
+        const bm = r.bike_meter;
+        let bikeGraceHtml = '';
+        if (bm && bm.grace) {
+            const g = bm.grace;
+            bikeGraceHtml += `<div style="display:flex;gap:8px;align-items:baseline;flex-wrap:wrap;font-size:13px;padding:2px 0;">
+                    <span style="min-width:130px;color:#6b7280;">company bike</span>
+                    ${rrChip('🏍 '+g.overnight_km+' km overnight (grace '+g.grace_km+' km)','warn')}
+                    <span style="color:#6b7280;font-size:12px;">start ${g.meter_start} − prev end ${g.prev_meter_end}${g.prev_date?' ('+g.prev_date+')':''}</span>
+                </div>`;
+        }
+        if (bm && bm.no_meter) {
+            const which = bm.no_meter.missing === 'both' ? 'start & end' : bm.no_meter.missing;
+            bikeGraceHtml += `<div style="display:flex;gap:8px;align-items:baseline;flex-wrap:wrap;font-size:13px;padding:2px 0;">
+                    <span style="min-width:130px;color:#6b7280;">company bike</span>
+                    ${rrChip('⛽ no meter reading ('+which+' missing)','warn')}
+                    <span style="color:#6b7280;font-size:12px;">bike km can't be tracked</span>
+                </div>`;
+        }
         const sev = rrSeverityRank(r) >= 2 ? 'r' : 'a';
         return `<div style="padding:10px 14px;border-bottom:1px solid #eef;">
                     <div style="font-weight:650;font-size:14px;display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
@@ -2330,7 +2359,7 @@ function rrRenderIssues(){
                             <a href="#" onclick="openDispatchDetail(${r.user_id});return false;" style="font-size:12px;color:#2E64A6;text-decoration:none;border:1px solid #C4D3E2;border-radius:4px;padding:1px 8px;background:#EEF4FA;">🚀 dispatch detail</a>
                         </span>
                     </div>
-                    <div style="margin-top:5px;">${missedHtml}${rowsHtml}${stopsHtml}${oddHtml}</div>
+                    <div style="margin-top:5px;">${missedHtml}${rowsHtml}${stopsHtml}${oddHtml}${checkoutHtml}${bikeGraceHtml}</div>
                 </div>`;
     }).join('');
 
@@ -2346,6 +2375,8 @@ function rrSeverityRank(r){
     (r.orders||[]).forEach(o => { rrOrderIssues(o).forEach(x => { if(x.sev==='crit') rank=Math.max(rank,2); else if(x.sev!=='info') rank=Math.max(rank,1); }); });
     (r.stops||[]).forEach(s => { if(rrNum(s.on_board) > 0) rank=Math.max(rank,2); });
     if((r.odd_routes||[]).length) rank=Math.max(rank,1);
+    if(r.checkout && r.checkout.flagged) rank=Math.max(rank,1);
+    if(r.bike_meter) rank=Math.max(rank,1);
     return rank;
 }
 

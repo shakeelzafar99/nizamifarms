@@ -123,8 +123,9 @@
                             </div>
                         </div>
 
-                        <!-- Hidden field: Leave Type defaults to 'annual' -->
-                        <input type="hidden" name="leave_type" value="annual">
+                        <!-- Hidden field: Leave Type defaults to 'planned' (advance);
+                             self-service same-day applies are set to 'emergency' server-side. -->
+                        <input type="hidden" name="leave_type" value="planned">
 
                         <div class="mb-6">
                             <div class="kt-alert kt-alert-info" id="leave-days-info" style="display: none;">

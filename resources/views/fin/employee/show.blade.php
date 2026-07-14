@@ -741,8 +741,12 @@
                                                     -
                                                 @endif
                                             </td>
-                                            <td class="px-6 py-3 whitespace-nowrap text-right text-sm font-bold {{ $transaction->running_balance > 0 ? 'text-green-600' : ($transaction->running_balance < 0 ? 'text-red-600' : 'text-gray-900') }}">
-                                                Rs. {{ number_format($transaction->running_balance, 2) }}
+                                            <td class="px-6 py-3 whitespace-nowrap text-right text-sm font-bold {{ is_null($transaction->running_balance) ? 'text-gray-300' : ($transaction->running_balance > 0 ? 'text-green-600' : ($transaction->running_balance < 0 ? 'text-red-600' : 'text-gray-900')) }}">
+                                                @if(is_null($transaction->running_balance))
+                                                    <span title="Not yet in the balance (pending / not applied)">—</span>
+                                                @else
+                                                    Rs. {{ number_format($transaction->running_balance, 2) }}
+                                                @endif
                                             </td>
                                         </tr>
                                     @endforeach
@@ -819,8 +823,12 @@
                                     -
                                 @endif
                             </td>
-                            <td class="px-6 py-4 whitespace-nowrap text-right text-sm font-bold {{ $transaction->running_balance > 0 ? 'text-green-600' : ($transaction->running_balance < 0 ? 'text-red-600' : 'text-gray-900') }}">
-                                Rs. {{ number_format($transaction->running_balance, 2) }}
+                            <td class="px-6 py-4 whitespace-nowrap text-right text-sm font-bold {{ is_null($transaction->running_balance) ? 'text-gray-300' : ($transaction->running_balance > 0 ? 'text-green-600' : ($transaction->running_balance < 0 ? 'text-red-600' : 'text-gray-900')) }}">
+                                @if(is_null($transaction->running_balance))
+                                    <span title="Not yet in the balance (pending / not applied)">—</span>
+                                @else
+                                    Rs. {{ number_format($transaction->running_balance, 2) }}
+                                @endif
                             </td>
                         </tr>
                     @endforeach
@@ -1187,9 +1195,9 @@
                 <!-- Destination Account (Managers/Admins) -->
                 <div class="p-3 bg-blue-50 border border-blue-200 rounded-md">
                     <label class="block text-sm font-medium text-blue-900 mb-2">💰 Deposit To (Default: NF Cash):</label>
-                    <select name="destination_account_id" 
+                    <select name="destination_account_id" id="deposit_destination_account" onchange="renderDepositBankPicker()"
                             class="w-full px-3 py-2 border border-blue-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500">
-                        <option value="">NF Cash (Main Till)</option>
+                        <option value="" data-account-category="cash">NF Cash (Main Till)</option>
                         @php
                             $destinationAccounts = \App\Models\FIN\AccountModel::where('is_active', 1)
                                 ->whereIn('account_code', ['ONLINE', 'NF_CASH'])
@@ -1198,12 +1206,20 @@
                                 ->get();
                         @endphp
                         @foreach($destinationAccounts as $dest)
-                            <option value="{{ $dest->id }}">
+                            <option value="{{ $dest->id }}" data-account-category="{{ $dest->account_category }}">
                                 {{ $dest->account_name }} (Rs. {{ number_format($dest->current_balance, 2) }})
                             </option>
                         @endforeach
                     </select>
                     <p class="text-xs text-blue-700 mt-1">⚠️ All deposits require approval. Approver can change destination.</p>
+
+                    <!-- ⭐ Receiving bank — mandatory when depositing to the ONLINE bank account (Ledger L1, B2) -->
+                    <div id="depositBankField" class="mt-3" style="display:none;">
+                        <label class="block text-sm font-medium text-blue-900 mb-2">🏦 Which bank? <span class="text-red-500">*</span></label>
+                        <div id="depositBankChips" style="display:flex; flex-wrap:wrap; gap:6px;"></div>
+                        <input type="hidden" name="receiving_account_id" id="deposit_receiving_account_id" value="">
+                        <p class="text-xs text-blue-700 mt-1">The physical bank the cash is deposited into.</p>
+                    </div>
                 </div>
                 @else
                 <!-- RIDERS: Simplified Form -->
@@ -1867,14 +1883,22 @@
                 <!-- To Account -->
                 <div class="mb-4">
                     <label for="transfer_to_account" class="block text-sm font-medium text-gray-700">Transfer To *</label>
-                    <select id="transfer_to_account" name="to_account_id" required class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md">
+                    <select id="transfer_to_account" name="to_account_id" required onchange="renderEmpTransferBankPicker()" class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md">
                         <option value="">Select destination account...</option>
                         @foreach(\App\Models\FIN\AccountModel::where('is_active', 1)->whereIn('account_category', ['cash', 'bank'])->get() as $acc)
                             @if($acc->id != $account->id)
-                                <option value="{{ $acc->id }}">{{ $acc->account_name }} (Rs. {{ number_format($acc->current_balance, 2) }})</option>
+                                <option value="{{ $acc->id }}" data-account-category="{{ $acc->account_category }}">{{ $acc->account_name }} (Rs. {{ number_format($acc->current_balance, 2) }})</option>
                             @endif
                         @endforeach
                     </select>
+                </div>
+
+                <!-- ⭐ Receiving bank — mandatory when the transfer touches the ONLINE bank account (Ledger L1, B1) -->
+                <div id="empTransferBankField" class="mb-4" style="display:none;">
+                    <label class="block text-sm font-medium text-gray-700 mb-2">🏦 Which bank? <span class="text-red-500">*</span></label>
+                    <div id="empTransferBankChips" style="display:flex; flex-wrap:wrap; gap:6px;"></div>
+                    <input type="hidden" name="receiving_account_id" id="emp_transfer_receiving_account_id" value="">
+                    <p class="mt-1 text-xs text-gray-500">The physical bank this transfer goes through — keeps per-bank balances correct.</p>
                 </div>
 
                 <!-- Amount -->
@@ -2107,8 +2131,56 @@ function openDepositModal() {
     if (modalContent) modalContent.scrollTop = 0;
     
     document.body.style.overflow = 'hidden';
+    renderDepositBankPicker();
     console.log('Modal opened successfully');
 }
+
+// ⭐ "Which bank?" picker for the Deposit modal (Ledger L1, B2). Shown + required
+// when the deposit destination is the ONLINE bank account. Reuses the banks list
+// already loaded for the transfer picker (empTransferReceivingBanks).
+function depositDestIsBank() {
+    var sel = document.getElementById('deposit_destination_account');
+    if (!sel) return false;
+    var opt = sel.options[sel.selectedIndex];
+    return !!(opt && opt.dataset && opt.dataset.accountCategory === 'bank');
+}
+function selectDepositBank(id) {
+    var h = document.getElementById('deposit_receiving_account_id'); if (h) h.value = id;
+    renderDepositBankPicker();
+}
+function renderDepositBankPicker() {
+    var field = document.getElementById('depositBankField');
+    var chips = document.getElementById('depositBankChips');
+    var hidden = document.getElementById('deposit_receiving_account_id');
+    if (!field || !chips || !hidden) return;
+    var banks = (typeof empTransferReceivingBanks !== 'undefined') ? empTransferReceivingBanks : [];
+    if (!depositDestIsBank() || banks.length === 0) {
+        field.style.display = 'none';
+        hidden.value = '';
+        return;
+    }
+    field.style.display = 'block';
+    var current = hidden.value;
+    chips.innerHTML = banks.map(function (b) {
+        var active = String(current) === String(b.id);
+        var color = b.color_hex || '#3B82F6';
+        var bal = (b.balance !== undefined && b.balance !== null)
+            ? ' · Rs ' + Math.round(Number(b.balance)).toLocaleString() : '';
+        return '<button type="button" onclick="selectDepositBank(' + b.id + ')" style="padding:6px 14px; border-radius:16px; border:1px solid ' + (active ? color : '#CBD5E1') + '; background:' + (active ? color : '#F1F5F9') + '; color:' + (active ? '#fff' : '#475569') + '; font-size:13px; font-weight:600; cursor:pointer;">' + (b.short_code || b.name) + '<span style="font-weight:500; opacity:0.85;">' + bal + '</span></button>';
+    }).join('');
+}
+document.addEventListener('DOMContentLoaded', function () {
+    var depForm = document.querySelector('#depositModal form');
+    if (depForm) {
+        depForm.addEventListener('submit', function (e) {
+            if (depositDestIsBank() && !document.getElementById('deposit_receiving_account_id').value) {
+                e.preventDefault();
+                alert('Select which bank this deposit goes to.');
+            }
+        });
+    }
+});
+
 function closeDepositModal() {
     const modal = document.getElementById('depositModal');
     if (modal) {
@@ -3412,12 +3484,67 @@ function closeCompanyPaymentModal() {
 function openCompanyTransferModal() {
     document.getElementById('companyTransferModal').classList.remove('hidden');
     document.getElementById('transfer_date').valueAsDate = new Date();
+    renderEmpTransferBankPicker();
 }
 
 function closeCompanyTransferModal() {
     document.getElementById('companyTransferModal').classList.add('hidden');
     document.getElementById('companyTransferForm').reset();
+    var h = document.getElementById('emp_transfer_receiving_account_id'); if (h) h.value = '';
+    renderEmpTransferBankPicker();
 }
+
+// ⭐ "Which bank?" picker for the Company Transfer modal (Ledger L1, B1). Shown +
+// required when a side of the transfer is the ONLINE bank account. The FROM account
+// is fixed (this page's account); the TO account is chosen in the dropdown.
+var empTransferReceivingBanks = @json($receivingBanks ?? []);
+var empTransferFromCategory = @json($account->account_category);
+
+function empTransferTouchesBank() {
+    if (empTransferFromCategory === 'bank') return true;
+    var toSel = document.getElementById('transfer_to_account');
+    var opt = toSel && toSel.options[toSel.selectedIndex];
+    return !!(opt && opt.dataset && opt.dataset.accountCategory === 'bank');
+}
+
+function selectEmpTransferBank(id) {
+    document.getElementById('emp_transfer_receiving_account_id').value = id;
+    renderEmpTransferBankPicker();
+}
+
+function renderEmpTransferBankPicker() {
+    var field = document.getElementById('empTransferBankField');
+    var chips = document.getElementById('empTransferBankChips');
+    var hidden = document.getElementById('emp_transfer_receiving_account_id');
+    if (!field || !chips || !hidden) return;
+    if (!empTransferTouchesBank() || empTransferReceivingBanks.length === 0) {
+        field.style.display = 'none';
+        hidden.value = '';
+        return;
+    }
+    field.style.display = 'block';
+    var current = hidden.value;
+    chips.innerHTML = empTransferReceivingBanks.map(function (b) {
+        var active = String(current) === String(b.id);
+        var color = b.color_hex || '#3B82F6';
+        var bal = (b.balance !== undefined && b.balance !== null)
+            ? ' · Rs ' + Math.round(Number(b.balance)).toLocaleString() : '';
+        return '<button type="button" onclick="selectEmpTransferBank(' + b.id + ')" style="padding:6px 14px; border-radius:16px; border:1px solid ' + (active ? color : '#CBD5E1') + '; background:' + (active ? color : '#F1F5F9') + '; color:' + (active ? '#fff' : '#475569') + '; font-size:13px; font-weight:600; cursor:pointer;">' + (b.short_code || b.name) + '<span style="font-weight:500; opacity:0.85;">' + bal + '</span></button>';
+    }).join('');
+}
+
+// Block submit if a bank is involved but none was picked (defense in depth; server also enforces).
+document.addEventListener('DOMContentLoaded', function () {
+    var form = document.getElementById('companyTransferForm');
+    if (form) {
+        form.addEventListener('submit', function (e) {
+            if (empTransferTouchesBank() && !document.getElementById('emp_transfer_receiving_account_id').value) {
+                e.preventDefault();
+                alert('Select which bank this transfer goes through.');
+            }
+        });
+    }
+});
 
 function toggleReceiptSource() {
     const sourceType = document.querySelector('input[name="receipt_source_type"]:checked').value;

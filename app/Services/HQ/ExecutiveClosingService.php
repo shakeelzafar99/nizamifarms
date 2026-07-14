@@ -578,6 +578,7 @@ class ExecutiveClosingService
         return [
             'unit'         => $unit,
             'is_season'    => $isQb,
+            'is_open'      => $closing['is_open'],
             'period_label' => $closing['period_label'],
             'sales' => [
                 'aov'           => $aov,
@@ -965,6 +966,20 @@ class ExecutiveClosingService
             ])->all();
     }
 
+    /**
+     * SQL expression for an expense's MEANINGFUL category — the request's
+     * `expense_category` (e.g. "Staff Salaries" / "Petrol" / "Rent" / "Food"),
+     * the same field the Finance expense screen groups by. Falls back to the
+     * request TYPE then "Uncategorised". Requires t_req_master aliased `r` and
+     * t_req_category aliased `rc` in the query. (The request type — rc.category_name
+     * — is almost always just "Expense Reimbursement", i.e. a useless one-bucket
+     * breakdown; expense_category is the real split shown to the owner.)
+     */
+    private static function expenseCategoryExpr(): string
+    {
+        return "COALESCE(NULLIF(TRIM(r.expense_category), ''), rc.category_name, 'Uncategorised')";
+    }
+
     /** Expenses → Level 1: per-category for the unit + month. */
     public function expenseByCategory(string $unit, int $year, int $month): array
     {
@@ -992,7 +1007,7 @@ class ExecutiveClosingService
         }
 
         $rows = $q->select(
-            DB::raw('COALESCE(rc.category_name, "Uncategorised") as category'),
+            DB::raw(self::expenseCategoryExpr() . ' as category'),
             DB::raw('COUNT(*) as entries'),
             DB::raw('SUM(l.amount) as amount')
         )->groupBy('category')->orderByDesc('amount')->get();
@@ -1019,7 +1034,7 @@ class ExecutiveClosingService
             ->where('l.transaction_type', LedgerModel::TYPE_EXPENSE)
             ->whereIn('l.approval_status', self::POSTED_STATUSES)
             ->whereBetween('l.transaction_date', [$start, $end])
-            ->where(DB::raw('COALESCE(rc.category_name, "Uncategorised")'), $category);
+            ->where(DB::raw(self::expenseCategoryExpr()), $category);
 
         if ($unit === self::UNIT_QB) {
             QurbaniFinanceFilter::applyToLedgerQuery($q, 'l', QurbaniFinanceFilter::MODE_INCLUDE);
@@ -1084,96 +1099,143 @@ class ExecutiveClosingService
     }
 
     /**
-     * Working capital → receivables drill. Mirrors ONLINE APPROVALS: regular =
-     * pending invoices grouped by customer; shop = the Shop tab's outstanding
-     * grouped by customer; plus rider cash and current-season Qurbani balances.
+     * Working capital → receivables L1 SUMMARY: one row per receivable TYPE
+     * (Regular / Shops / Riders) with the total and a 30-day aging split
+     * (fresh ≤30d vs pending >30d). Regular & Shops drill to their customer list
+     * (receivablesByType); Riders is a single settlement balance (no_drill). For
+     * Qurbani it is the single "season unpaid" row. Totals reconcile with the
+     * working-capital Receivables card because the per-type bases here are
+     * identical to regularPendingReceivable / shopOutstandingReceivable /
+     * qurbaniSeasonReceivable.
      */
-    public function receivablesAged(string $unit = self::UNIT_NF): array
+    public function receivablesSummary(string $unit = self::UNIT_NF): array
+    {
+        $unit = $this->normalizeUnit($unit);
+        if ($unit === self::UNIT_QB) {
+            return [$this->receivableSummaryRow('qurbani', 'Qurbani season · unpaid', $this->receivableRows($unit, 'qurbani'))];
+        }
+        $rider = round(AccountModel::getTotalEmployeeCashCalculatedBalance(), 0);
+        return [
+            $this->receivableSummaryRow('regular', 'Regular · pending approvals', $this->receivableRows($unit, 'regular')),
+            $this->receivableSummaryRow('shop', 'Shops · outstanding', $this->receivableRows($unit, 'shop')),
+            [
+                'type' => 'rider', 'label' => 'Riders · cash to settle',
+                'customers' => null, 'total' => $rider, 'fresh' => null, 'aging' => null,
+                'no_drill' => true,
+            ],
+        ];
+    }
+
+    /** Fold a type's customer rows into a summary line (count + fresh/aging split). */
+    private function receivableSummaryRow(string $type, string $label, array $rows): array
+    {
+        $total = 0.0; $aging = 0.0;
+        foreach ($rows as $r) { $total += $r['amount']; $aging += $r['aging']; }
+        return [
+            'type'      => $type,
+            'label'     => $label,
+            'customers' => count($rows),
+            'total'     => round($total),
+            'fresh'     => round($total - $aging),
+            'aging'     => round($aging),
+            'no_drill'  => count($rows) === 0,
+        ];
+    }
+
+    /** Working capital → receivables L2: the customers behind ONE type. */
+    public function receivablesByType(string $unit, string $type): array
+    {
+        $unit = $this->normalizeUnit($unit);
+        if ($unit === self::UNIT_QB) {
+            $type = 'qurbani';
+        } elseif (!in_array($type, ['regular', 'shop'], true)) {
+            $type = 'regular';
+        }
+        return $this->receivableRows($unit, $type);
+    }
+
+    /**
+     * Per-customer receivable rows for ONE type, each carrying a 30-day `aging`
+     * amount (invoice/order-level, so the summary's fresh/pending split is exact).
+     * The cutoff is a self-formatted datetime string, so direct interpolation is
+     * injection-safe. Bases mirror the working-capital card + ONLINE APPROVALS.
+     */
+    private function receivableRows(string $unit, string $type): array
     {
         $now = Carbon::now();
+        $cut = $now->copy()->subDays(30)->toDateTimeString();
 
-        // Qurbani view: this season's unpaid delivered orders, per customer.
-        if ($this->normalizeUnit($unit) === self::UNIT_QB) {
+        if ($type === 'qurbani') {
             $prefix = 'QUR' . $now->format('y') . '%';
-            $customers = DB::table('t_crm_prod_order as o')
+            $rows = DB::table('t_crm_prod_order as o')
                 ->leftJoin('t_crm_prod_customer as c', 'c.id', '=', 'o.customer_id')
                 ->where('o.order_number', 'like', $prefix)
                 ->whereIn('o.order_status', self::DELIVERED_STATUSES)
                 ->whereColumn('o.total_paid', '<', 'o.total_price')
                 ->select(
-                    DB::raw('COALESCE(o.customer_id, 0) as cid'),
                     DB::raw('MAX(TRIM(CONCAT(COALESCE(c.first_name,""), " ", COALESCE(c.last_name,"")))) as name'),
                     DB::raw('COUNT(*) as invoices'),
                     DB::raw('SUM(o.total_price - COALESCE(o.total_paid,0)) as outstanding'),
+                    DB::raw("SUM(CASE WHEN o.order_date < '$cut' THEN (o.total_price - COALESCE(o.total_paid,0)) ELSE 0 END) as aging"),
                     DB::raw('MIN(o.order_date) as oldest')
                 )
                 ->groupBy(DB::raw('COALESCE(o.customer_id, 0)'))
-                ->orderByDesc('outstanding')->limit(200)->get()
-                ->map(fn ($r) => $this->recvRow($r->name, 'qurbani', (float) $r->outstanding, $r->oldest, $now, (int) $r->invoices))
-                ->all();
-            return ['customers' => $customers, 'rider' => 0];
+                ->orderByDesc('outstanding')->limit(200)->get();
+        } elseif ($type === 'shop') {
+            $rows = DB::table('t_crm_prod_order as o')
+                ->join('t_crm_prod_customer as c', 'c.id', '=', 'o.customer_id')
+                ->where('c.customer_type', 'shop')
+                ->whereIn('o.payment_method', ['online', 'Online', 'bank_transfer', 'card', 'online_payment'])
+                ->where('o.order_status', 'delivered')
+                ->whereNotExists(function ($q) {
+                    $q->select(DB::raw(1))->from('t_fin_ledger as l')
+                        ->whereColumn('l.order_id', 'o.id')
+                        ->where('l.transaction_type', LedgerModel::TYPE_INVOICE)
+                        ->whereIn('l.approval_status', [
+                            LedgerModel::STATUS_APPROVED,
+                            LedgerModel::STATUS_PENDING_L2,
+                        ]);
+                })
+                ->select(
+                    DB::raw('MAX(TRIM(CONCAT(COALESCE(c.first_name,""), " ", COALESCE(c.last_name,"")))) as name'),
+                    DB::raw('COUNT(*) as invoices'),
+                    DB::raw('SUM(GREATEST(o.total_price - COALESCE(o.total_paid,0), 0)) as outstanding'),
+                    DB::raw("SUM(CASE WHEN o.order_date < '$cut' THEN GREATEST(o.total_price - COALESCE(o.total_paid,0), 0) ELSE 0 END) as aging"),
+                    DB::raw('MIN(o.order_date) as oldest')
+                )
+                ->groupBy('o.customer_id')
+                ->havingRaw('outstanding > 0')
+                ->orderByDesc('outstanding')->limit(200)->get();
+        } else { // regular
+            $rows = DB::table('t_fin_ledger as l')
+                ->leftJoin('t_crm_prod_order as o', 'o.id', '=', 'l.order_id')
+                ->leftJoin('t_crm_prod_customer as c', 'c.id', '=', 'o.customer_id')
+                ->whereIn('l.approval_status', [
+                    LedgerModel::STATUS_PENDING,
+                    LedgerModel::STATUS_PENDING_L1,
+                    LedgerModel::STATUS_PENDING_L2,
+                ])
+                ->whereNull('l.request_id')
+                ->where('l.mode', LedgerModel::MODE_ONLINE)
+                ->where(function ($w) {
+                    $w->whereNull('c.customer_type')->orWhere('c.customer_type', '!=', 'shop');
+                })
+                ->select(
+                    DB::raw('MAX(TRIM(CONCAT(COALESCE(c.first_name,""), " ", COALESCE(c.last_name,"")))) as name'),
+                    DB::raw('COUNT(*) as invoices'),
+                    DB::raw('SUM(l.amount) as outstanding'),
+                    DB::raw("SUM(CASE WHEN l.transaction_date < '$cut' THEN l.amount ELSE 0 END) as aging"),
+                    DB::raw('MIN(l.transaction_date) as oldest')
+                )
+                ->groupBy(DB::raw('COALESCE(o.customer_id, 0)'))
+                ->orderByDesc('outstanding')->limit(200)->get();
         }
 
-        // Regular: pending online invoices grouped by customer.
-        $regular = DB::table('t_fin_ledger as l')
-            ->leftJoin('t_crm_prod_order as o', 'o.id', '=', 'l.order_id')
-            ->leftJoin('t_crm_prod_customer as c', 'c.id', '=', 'o.customer_id')
-            ->whereIn('l.approval_status', [
-                LedgerModel::STATUS_PENDING,
-                LedgerModel::STATUS_PENDING_L1,
-                LedgerModel::STATUS_PENDING_L2,
-            ])
-            ->whereNull('l.request_id')
-            ->where('l.mode', LedgerModel::MODE_ONLINE)
-            ->where(function ($w) {
-                $w->whereNull('c.customer_type')->orWhere('c.customer_type', '!=', 'shop');
-            })
-            ->select(
-                DB::raw('COALESCE(o.customer_id, 0) as cid'),
-                DB::raw('MAX(TRIM(CONCAT(COALESCE(c.first_name,""), " ", COALESCE(c.last_name,"")))) as name'),
-                DB::raw('COUNT(*) as invoices'),
-                DB::raw('SUM(l.amount) as outstanding'),
-                DB::raw('MIN(l.transaction_date) as oldest')
-            )
-            ->groupBy(DB::raw('COALESCE(o.customer_id, 0)'))
-            ->orderByDesc('outstanding')->limit(200)->get()
-            ->map(fn ($r) => $this->recvRow($r->name, 'regular', (float) $r->outstanding, $r->oldest, $now, (int) $r->invoices))
-            ->all();
-
-        // Shop: outstanding delivered online orders grouped by customer.
-        $shop = DB::table('t_crm_prod_order as o')
-            ->join('t_crm_prod_customer as c', 'c.id', '=', 'o.customer_id')
-            ->where('c.customer_type', 'shop')
-            ->whereIn('o.payment_method', ['online', 'Online', 'bank_transfer', 'card', 'online_payment'])
-            ->where('o.order_status', 'delivered')
-            ->whereNotExists(function ($q) {
-                $q->select(DB::raw(1))->from('t_fin_ledger as l')
-                    ->whereColumn('l.order_id', 'o.id')
-                    ->where('l.transaction_type', LedgerModel::TYPE_INVOICE)
-                    ->whereIn('l.approval_status', [
-                        LedgerModel::STATUS_APPROVED,
-                        LedgerModel::STATUS_PENDING_L2,
-                    ]);
-            })
-            ->select(
-                'o.customer_id as cid',
-                DB::raw('MAX(TRIM(CONCAT(COALESCE(c.first_name,""), " ", COALESCE(c.last_name,"")))) as name'),
-                DB::raw('COUNT(*) as invoices'),
-                DB::raw('SUM(GREATEST(o.total_price - COALESCE(o.total_paid,0), 0)) as outstanding'),
-                DB::raw('MIN(o.order_date) as oldest')
-            )
-            ->groupBy('o.customer_id')
-            ->havingRaw('outstanding > 0')
-            ->orderByDesc('outstanding')->limit(200)->get()
-            ->map(fn ($r) => $this->recvRow($r->name, 'shop', (float) $r->outstanding, $r->oldest, $now, (int) $r->invoices))
-            ->all();
-
-        $customers = array_merge($shop, $regular);
-        usort($customers, fn ($a, $b) => $b['amount'] <=> $a['amount']);
-
-        $rider = round(AccountModel::getTotalEmployeeCashCalculatedBalance(), 0);
-
-        return ['customers' => $customers, 'rider' => $rider];
+        return $rows->map(function ($r) use ($type, $now) {
+            $row = $this->recvRow($r->name, $type, (float) $r->outstanding, $r->oldest, $now, (int) $r->invoices);
+            $row['aging'] = round((float) $r->aging);
+            return $row;
+        })->all();
     }
 
     private function recvRow(?string $name, string $type, float $amount, $oldest, Carbon $now, int $invoices): array
@@ -1687,7 +1749,24 @@ class ExecutiveClosingService
             return [$s, $e];
         }
         $ref = Carbon::create($year, $month, 1)->subMonth();
-        return [$ref->copy()->startOfMonth(), $ref->copy()->endOfMonth()->endOfDay()];
+        $prevStart = $ref->copy()->startOfMonth();
+        $prevEnd   = $ref->copy()->endOfMonth()->endOfDay();
+
+        // When the requested period is the CURRENT (open) month, the current
+        // window is only the elapsed part of the month (period() ends it at
+        // "now"). Mirror that same span onto the previous month so the deltas
+        // compare like-for-like — the first N days of this month vs the first N
+        // days of last month — instead of a partial month against a full one
+        // (which made every open month read as a big drop). The guard only ever
+        // SHRINKS the previous window, never extends it past the real month end.
+        $now = Carbon::now();
+        if ($year === (int) $now->year && $month === (int) $now->month) {
+            $mirrorEnd = $prevStart->copy()->addDays((int) $now->day - 1)->endOfDay();
+            if ($mirrorEnd->lt($prevEnd)) {
+                $prevEnd = $mirrorEnd;
+            }
+        }
+        return [$prevStart, $prevEnd];
     }
 
     /** Calendar days in the window minus active public holidays. */

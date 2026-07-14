@@ -244,42 +244,17 @@ class OrderRiderController extends Controller
         $ledger->comments = ($ledger->comments ? $ledger->comments . "\n\n" : '') . "REVERSED: {$reason}";
         $ledger->save();
         
-        // Reverse balances ONLY if the transaction was approved
-        if ($wasApproved) {
-            $fromAccount = $ledger->fromAccount;
-            $toAccount = $ledger->toAccount;
-            
-            if ($fromAccount) {
-                // Reverse the debit (add back)
-                $fromAccount->current_balance += $ledger->amount;
-                $fromAccount->save();
-                
-                Log::info("Reversed balance for from_account", [
-                    'account_id' => $fromAccount->id,
-                    'account_name' => $fromAccount->account_name,
-                    'amount_added_back' => $ledger->amount,
-                    'new_balance' => $fromAccount->current_balance
-                ]);
-            }
-            
-            if ($toAccount) {
-                // Reverse the credit (subtract back)
-                $toAccount->current_balance -= $ledger->amount;
-                $toAccount->save();
-                
-                Log::info("Reversed balance for to_account", [
-                    'account_id' => $toAccount->id,
-                    'account_name' => $toAccount->account_name,
-                    'amount_subtracted' => $ledger->amount,
-                    'new_balance' => $toAccount->current_balance
-                ]);
-            }
-        }
-        
+        // Reverse the balance move via the canonical engine. Self-guards on balance_updated, so it
+        // also reverses a row applied at L1 (pending_l2) — fixing the old `$wasApproved` guard that
+        // leaked money when an order was reassigned/reverted during the L1→L2 window. Engine reverse
+        // is the exact inverse of the invoice/order_payment posting (income +, holder −).
+        $balancesReversed = (bool) $ledger->balance_updated;
+        (new \App\Services\FIN\BalancePostingService())->reverse($ledger);
+
         Log::info("Ledger entry reversed", [
             'ledger_id' => $ledger->id,
             'was_approved' => $wasApproved,
-            'balances_reversed' => $wasApproved,
+            'balances_reversed' => $balancesReversed,
             'reason' => $reason
         ]);
     }

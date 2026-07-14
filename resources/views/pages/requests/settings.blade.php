@@ -2,118 +2,68 @@
 
 @extends('layouts.app')
 
-@section('title', 'Request Settings')
+@section('title', 'Requests Setup')
 
 @section('content')
 
+<style>
+    /* Requests Setup (Phase 4) — scoped hex styles; Tailwind color utilities are
+       purged in this app, so anything colored must be spelled out here or inline. */
+    .nfrs-head { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+    .nfrs-ava { width: 44px; height: 44px; border-radius: 11px; background: #FFFBEB; color: #B45309; display: grid; place-items: center; font-weight: 800; font-size: 18px; flex: none; }
+    .nfrs-title { font-size: 20px; font-weight: 700; margin: 0; color: #111827; }
+    .nfrs-sub { font-size: 12.5px; color: #6B7280; margin: 2px 0 0; }
+    .nfrs-moved { display: flex; gap: 12px; align-items: flex-start; padding: 14px 16px; border: 1px solid #BFDBFE; background: #EFF6FF; border-radius: 12px; font-size: 12.5px; color: #374151; }
+    .nfrs-moved b { color: #1D4ED8; }
+    .nfrs-rolechips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+    .nfrs-rolechip { display: inline-flex; align-items: center; gap: 6px; font-size: 11.5px; font-weight: 650; padding: 4px 10px; border-radius: 20px; background: #fff; border: 1px solid #D1D5DB; color: #374151; text-decoration: none; }
+    .nfrs-rolechip:hover { border-color: #93C5FD; color: #1D4ED8; }
+    .nfrs-rolechip .lvl { font-size: 9px; font-weight: 800; letter-spacing: .04em; padding: 1px 5px; border-radius: 999px; }
+    .nfrs-rolechip .lvl.l1 { background: #ECFDF5; color: #059669; }
+    .nfrs-rolechip .lvl.l2 { background: #EFF6FF; color: #1D4ED8; }
+</style>
+
 <div class="kt-container-fixed">
     <div class="grid gap-5 lg:gap-7.5">
-        
+
         <!-- Page Header -->
         <div class="flex items-center justify-between">
-            <div>
-                <h1 class="text-2xl font-semibold">Request Workflow Settings</h1>
-                <p class="text-gray-600 mt-1">Configure approval levels and category requirements</p>
+            <div class="nfrs-head">
+                <div class="nfrs-ava">⚙</div>
+                <div>
+                    <h1 class="nfrs-title">Requests Setup</h1>
+                    <p class="nfrs-sub">Request types, expense sub-categories &amp; approval routing</p>
+                </div>
             </div>
             <a href="{{ route('requests.index') }}" class="kt-btn kt-btn-light">
                 <i class="ki-filled ki-left"></i> Back to Requests
             </a>
         </div>
 
-        <!-- Approval Level Assignments -->
-        <div class="kt-card">
-            <div class="kt-card-header">
-                <h3 class="kt-card-title">Approval Level Assignments</h3>
-            </div>
-            
-            <div class="kt-card-body">
-                <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
-                    
-                    <!-- Level 1 Approvers -->
-                    <div>
-                        <h4 class="text-lg font-semibold mb-4 flex items-center gap-2">
-                            <span class="w-8 h-8 rounded-full bg-blue-500 text-white flex items-center justify-center">1</span>
-                            Level 1 Approvers
-                        </h4>
-                        
-                        <div class="mb-4">
-                            <select id="level1-role-select" class="kt-select mb-2">
-                                <option value="">Select role to add...</option>
-                                @foreach($roles as $role)
-                                <option value="{{ $role->id }}">{{ $role->urole_name }}</option>
-                                @endforeach
-                            </select>
-                            <button onclick="assignRoleToLevel(1)" class="kt-btn kt-btn-sm kt-btn-primary w-full">
-                                <i class="ki-filled ki-plus"></i> Add to Level 1
-                            </button>
-                        </div>
-
-                        <div class="space-y-2">
-                            @forelse($level1Roles as $roleLevel)
-                            <div class="flex items-center justify-between p-3 bg-gray-50 rounded">
-                                <span class="font-medium">{{ $roleLevel->role->urole_name }}</span>
-                                <button onclick="removeRoleFromLevel({{ $roleLevel->id }})" 
-                                        class="kt-btn kt-btn-sm kt-btn-danger">
-                                    <i class="ki-filled ki-trash"></i>
-                                </button>
-                            </div>
-                            @empty
-                            <div class="p-4 bg-blue-50 border border-blue-200 rounded">
-                                <p class="text-sm text-blue-800 font-medium mb-2">👆 No Level 1 approvers assigned yet</p>
-                                <p class="text-xs text-blue-600">Select a role above and click "Add to Level 1" to start. Level 1 approvers can give first-stage approval to requests.</p>
-                            </div>
-                            @endforelse
-                        </div>
-                    </div>
-
-                    <!-- Level 2 Approvers -->
-                    <div>
-                        <h4 class="text-lg font-semibold mb-4 flex items-center gap-2">
-                            <span class="w-8 h-8 rounded-full bg-purple-500 text-white flex items-center justify-center">2</span>
-                            Level 2 Approvers
-                        </h4>
-                        
-                        <div class="mb-4">
-                            <select id="level2-role-select" class="kt-select mb-2">
-                                <option value="">Select role to add...</option>
-                                @foreach($roles as $role)
-                                <option value="{{ $role->id }}">{{ $role->urole_name }}</option>
-                                @endforeach
-                            </select>
-                            <button onclick="assignRoleToLevel(2)" class="kt-btn kt-btn-sm kt-btn-primary w-full">
-                                <i class="ki-filled ki-plus"></i> Add to Level 2
-                            </button>
-                        </div>
-
-                        <div class="space-y-2">
-                            @forelse($level2Roles as $roleLevel)
-                            <div class="flex items-center justify-between p-3 bg-gray-50 rounded">
-                                <span class="font-medium">{{ $roleLevel->role->urole_name }}</span>
-                                <button onclick="removeRoleFromLevel({{ $roleLevel->id }})" 
-                                        class="kt-btn kt-btn-sm kt-btn-danger">
-                                    <i class="ki-filled ki-trash"></i>
-                                </button>
-                            </div>
-                            @empty
-                            <div class="p-4 bg-purple-50 border border-purple-200 rounded">
-                                <p class="text-sm text-purple-800 font-medium mb-2">👆 No Level 2 approvers assigned yet</p>
-                                <p class="text-xs text-purple-600">Level 2 is optional. Assign roles here for requests that need final approval after Level 1. If no roles assigned, only Level 1 approval is required.</p>
-                            </div>
-                            @endforelse
-                        </div>
-                    </div>
-                </div>
-
-                <div class="mt-6 p-4 bg-green-50 border border-green-200 rounded">
-                    <p class="text-sm text-gray-700 mb-2">
-                        <strong>✅ Quick Start Guide:</strong>
-                    </p>
-                    <ol class="text-xs text-gray-600 space-y-1 ml-4 list-decimal">
-                        <li><strong>Assign Level 1 approvers</strong> - These roles can approve requests (e.g., Managers, Supervisors)</li>
-                        <li><strong>Optionally assign Level 2</strong> - For requests needing final approval (e.g., Admins, Directors)</li>
-                        <li><strong>Configure categories below</strong> - Choose which categories need one level vs two levels</li>
-                        <li><strong>Done!</strong> Users can now submit and approve requests</li>
-                    </ol>
+        {{-- Approval levels MOVED (Phase 4): who approves at L1/L2 is now edited on each
+             role's Access page (Roles → permissions), which shows the same data as chips.
+             This read-only summary keeps the at-a-glance answer to "who are my approvers?".
+             Same table (t_sys_role_approval_level); no behaviour change. --}}
+        <div class="nfrs-moved">
+            <div>
+                <b>Approval levels have moved.</b> Who can approve at Level 1 / Level 2 is now set on each
+                role's Access page (<a href="{{ route('roles.index') }}" style="color:#1D4ED8;text-decoration:underline;">Roles</a> → permissions → "Approval authority" chips).
+                Current approvers — click a role to manage it:
+                <div class="nfrs-rolechips">
+                    @forelse($level1Roles as $roleLevel)
+                        <a class="nfrs-rolechip" href="{{ route('roles.permissions.manage', $roleLevel->role_id) }}">
+                            <span class="lvl l1">L1</span> {{ $roleLevel->role->urole_name }}
+                        </a>
+                    @empty
+                        <span class="nfrs-rolechip"><span class="lvl l1">L1</span> none assigned</span>
+                    @endforelse
+                    @forelse($level2Roles as $roleLevel)
+                        <a class="nfrs-rolechip" href="{{ route('roles.permissions.manage', $roleLevel->role_id) }}">
+                            <span class="lvl l2">L2</span> {{ $roleLevel->role->urole_name }}
+                        </a>
+                    @empty
+                        <span class="nfrs-rolechip"><span class="lvl l2">L2</span> none assigned</span>
+                    @endforelse
                 </div>
             </div>
         </div>
@@ -127,52 +77,91 @@
                 </button>
             </div>
             <div class="kt-card-body">
-                <p class="text-sm text-gray-600 mb-4">Toggle "In Expenses" to control which types appear in the Expense Management screen. Types with a mobile permission code will only be visible to roles that have that permission assigned.</p>
-                <div class="overflow-x-auto">
+                @php
+                    // Two kinds of category share this table: forms people submit vs
+                    // ledger buckets money approvals flow through. Split for clarity.
+                    $ledgerCodes = ['employee_deposit', 'vendor_payment', 'account_transfer', 'invoice_approval', 'invoice_adjustment'];
+                    $formCats   = $categories->filter(fn($c) => !in_array($c->category_code, $ledgerCodes));
+                    $ledgerCats = $categories->filter(fn($c) =>  in_array($c->category_code, $ledgerCodes));
+                @endphp
+
+                {{-- Request forms: what people actually submit from the app --}}
+                <h4 class="font-semibold text-sm text-gray-800 mb-1">Request forms</h4>
+                <p class="text-sm text-gray-600 mb-3">Types people submit from the app. "In Expenses" controls whether a type appears on the web Expense Management screen. A mobile permission code hides a type <strong>in the mobile app only</strong> — the web Expense screen is controlled purely by "In Expenses".</p>
+                <div class="overflow-x-auto mb-7">
                     <table class="w-full text-sm">
                         <thead class="bg-gray-50 border-b">
                             <tr>
-                                <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Icon</th>
-                                <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Code</th>
-                                <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Name</th>
+                                <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Type</th>
                                 <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Description</th>
                                 <th class="px-3 py-2 text-center text-xs font-medium text-gray-500 uppercase">In Expenses</th>
-                                <th class="px-3 py-2 text-center text-xs font-medium text-gray-500 uppercase">BU Type</th>
                                 <th class="px-3 py-2 text-center text-xs font-medium text-gray-500 uppercase">Form Type</th>
-                                <th class="px-3 py-2 text-center text-xs font-medium text-gray-500 uppercase">Mobile Permission</th>
                                 <th class="px-3 py-2 text-center text-xs font-medium text-gray-500 uppercase">Active</th>
                                 <th class="px-3 py-2 text-center text-xs font-medium text-gray-500 uppercase">Actions</th>
                             </tr>
                         </thead>
                         <tbody>
-                            @foreach($categories as $cat)
+                            @foreach($formCats as $cat)
                             <tr class="border-b hover:bg-gray-50" id="typeRow-{{ $cat->id }}"
-                                data-id="{{ $cat->id }}"
-                                data-code="{{ $cat->category_code }}"
-                                data-name="{{ $cat->category_name }}"
-                                data-desc="{{ $cat->description }}"
-                                data-icon="{{ $cat->icon }}"
-                                data-show="{{ $cat->show_in_expenses ? '1' : '0' }}"
-                                data-bu="{{ $cat->expense_bu_type ?? '' }}"
-                                data-form="{{ $cat->form_type ?? 'general' }}"
-                                data-perm="{{ $cat->mobile_permission_code ?? '' }}"
-                                data-active="{{ $cat->is_active ? '1' : '0' }}"
-                                data-seq="{{ $cat->sequence_order }}">
-                                <td class="px-3 py-2 text-lg">{{ $cat->icon ?: '?' }}</td>
-                                <td class="px-3 py-2 font-mono text-xs text-gray-500">{{ $cat->category_code }}</td>
-                                <td class="px-3 py-2 font-medium">{{ $cat->category_name }}</td>
-                                <td class="px-3 py-2 text-xs text-gray-500">{{ Str::limit($cat->description, 40) }}</td>
+                                data-id="{{ $cat->id }}" data-code="{{ $cat->category_code }}" data-name="{{ $cat->category_name }}"
+                                data-desc="{{ $cat->description }}" data-icon="{{ $cat->icon }}" data-show="{{ $cat->show_in_expenses ? '1' : '0' }}"
+                                data-bu="{{ $cat->expense_bu_type ?? '' }}" data-form="{{ $cat->form_type ?? 'general' }}"
+                                data-perm="{{ $cat->mobile_permission_code ?? '' }}" data-active="{{ $cat->is_active ? '1' : '0' }}" data-seq="{{ $cat->sequence_order }}">
+                                <td class="px-3 py-2">
+                                    <div class="flex items-center gap-2">
+                                        <span class="text-lg">{{ $cat->icon ?: '📋' }}</span>
+                                        <div>
+                                            <div class="font-medium">{{ $cat->category_name }}@if($cat->mobile_permission_code)<span title="Hidden in the mobile app for roles without this permission" style="margin-left:5px;font-size:9px;font-weight:700;background:#F0FDFA;color:#0F766E;border-radius:20px;padding:1px 6px;">📱 {{ $cat->mobile_permission_code }}</span>@endif</div>
+                                            <div class="font-mono text-xs text-gray-400">{{ $cat->category_code }}</div>
+                                        </div>
+                                    </div>
+                                </td>
+                                <td class="px-3 py-2 text-xs text-gray-500">{{ Str::limit($cat->description, 44) }}</td>
                                 <td class="px-3 py-2 text-center">
                                     <input type="checkbox" class="kt-checkbox" {{ $cat->show_in_expenses ? 'checked' : '' }}
                                            onchange="quickToggle({{ $cat->id }}, 'show_in_expenses', this.checked)" title="Toggle expense management visibility">
                                 </td>
-                                <td class="px-3 py-2 text-center text-xs">{{ $cat->expense_bu_type ?? '—' }}</td>
                                 <td class="px-3 py-2 text-center text-xs">{{ $cat->form_type ?? 'general' }}</td>
-                                <td class="px-3 py-2 text-center text-xs font-mono">{{ $cat->mobile_permission_code ?? '—' }}</td>
                                 <td class="px-3 py-2 text-center">{!! $cat->is_active ? '<span class="text-green-600">✓</span>' : '<span class="text-red-400">✗</span>' !!}</td>
-                                <td class="px-3 py-2 text-center">
-                                    <button onclick="editTypeRow({{ $cat->id }})" class="kt-btn kt-btn-xs kt-btn-light">Edit</button>
+                                <td class="px-3 py-2 text-center"><button onclick="editTypeRow({{ $cat->id }})" class="kt-btn kt-btn-xs kt-btn-light">Edit</button></td>
+                            </tr>
+                            @endforeach
+                        </tbody>
+                    </table>
+                </div>
+
+                {{-- Ledger approval categories: system money approvals, not user forms --}}
+                <h4 class="font-semibold text-sm text-gray-800 mb-1">Ledger approval categories</h4>
+                <p class="text-sm text-gray-600 mb-3">System buckets that money approvals flow through (deposits, vendor payments, transfers, invoices). Nobody submits these as a request — they only carry the approval settings configured below. The In-Expenses / Form / BU options don't apply here.</p>
+                <div class="overflow-x-auto">
+                    <table class="w-full text-sm">
+                        <thead class="bg-gray-50 border-b">
+                            <tr>
+                                <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Category</th>
+                                <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Description</th>
+                                <th class="px-3 py-2 text-center text-xs font-medium text-gray-500 uppercase">Active</th>
+                                <th class="px-3 py-2 text-center text-xs font-medium text-gray-500 uppercase">Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @foreach($ledgerCats as $cat)
+                            <tr class="border-b hover:bg-gray-50" id="typeRow-{{ $cat->id }}"
+                                data-id="{{ $cat->id }}" data-code="{{ $cat->category_code }}" data-name="{{ $cat->category_name }}"
+                                data-desc="{{ $cat->description }}" data-icon="{{ $cat->icon }}" data-show="{{ $cat->show_in_expenses ? '1' : '0' }}"
+                                data-bu="{{ $cat->expense_bu_type ?? '' }}" data-form="{{ $cat->form_type ?? 'general' }}"
+                                data-perm="{{ $cat->mobile_permission_code ?? '' }}" data-active="{{ $cat->is_active ? '1' : '0' }}" data-seq="{{ $cat->sequence_order }}">
+                                <td class="px-3 py-2">
+                                    <div class="flex items-center gap-2">
+                                        <span class="text-lg">{{ $cat->icon ?: '📒' }}</span>
+                                        <div>
+                                            <div class="font-medium">{{ $cat->category_name }}</div>
+                                            <div class="font-mono text-xs text-gray-400">{{ $cat->category_code }}</div>
+                                        </div>
+                                    </div>
                                 </td>
+                                <td class="px-3 py-2 text-xs text-gray-500">{{ Str::limit($cat->description, 52) }}</td>
+                                <td class="px-3 py-2 text-center">{!! $cat->is_active ? '<span class="text-green-600">✓</span>' : '<span class="text-red-400">✗</span>' !!}</td>
+                                <td class="px-3 py-2 text-center"><button onclick="editTypeRow({{ $cat->id }})" class="kt-btn kt-btn-xs kt-btn-light">Edit</button></td>
                             </tr>
                             @endforeach
                         </tbody>
@@ -332,24 +321,24 @@
                             </button>
                         </div>
                         
-                        <!-- Quick View -->
-                        <div class="flex gap-4 text-sm">
-                            <span class="flex items-center gap-1">
-                                <input type="checkbox" 
-                                       class="kt-checkbox" 
-                                       data-category-id="{{ $category->id }}"
-                                       data-field="requires_level_1"
+                        <!-- How many approval steps this category needs (saves immediately) -->
+                        <div class="flex items-center gap-5 text-sm flex-wrap">
+                            <span class="text-xs text-gray-500 uppercase font-semibold" style="letter-spacing:.04em;">Approval steps needed</span>
+                            <label class="flex items-center gap-1 cursor-pointer">
+                                <input type="checkbox" class="kt-checkbox"
+                                       data-category-id="{{ $category->id }}" data-field="requires_level_1"
+                                       onchange="saveRequires({{ $category->id }})"
                                        {{ $category->approvalConfig && $category->approvalConfig->requires_level_1 ? 'checked' : '' }}>
-                                <label>Requires L1</label>
-                            </span>
-                            <span class="flex items-center gap-1">
-                                <input type="checkbox" 
-                                       class="kt-checkbox" 
-                                       data-category-id="{{ $category->id }}"
-                                       data-field="requires_level_2"
+                                Needs Level-1 approval
+                            </label>
+                            <label class="flex items-center gap-1 cursor-pointer">
+                                <input type="checkbox" class="kt-checkbox"
+                                       data-category-id="{{ $category->id }}" data-field="requires_level_2"
+                                       onchange="saveRequires({{ $category->id }})"
                                        {{ $category->approvalConfig && $category->approvalConfig->requires_level_2 ? 'checked' : '' }}>
-                                <label>Requires L2</label>
-                            </span>
+                                Needs Level-2 approval
+                            </label>
+                            <span id="reqsaved-{{ $category->id }}" style="display:none;font-size:11px;color:#059669;font-weight:600;">✓ saved</span>
                         </div>
                         
                         <!-- Detailed Configuration (Hidden by default) -->
@@ -458,28 +447,11 @@
                                 </div>
                             </div>
                             
-                            <!-- Additional Settings -->
-                            <div class="mt-3 pt-3 border-t">
-                                <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
-                                    <div>
-                                        <label class="text-xs text-gray-600">Auto-Approve Threshold (Optional)</label>
-                                        <input type="number" 
-                                               class="kt-input kt-input-sm w-full" 
-                                               data-category-id="{{ $category->id }}"
-                                               data-field="auto_approve_threshold"
-                                               value="{{ $category->approvalConfig ? $category->approvalConfig->auto_approve_threshold : '' }}"
-                                               placeholder="e.g., 5000"
-                                               step="0.01"
-                                               min="0">
-                                        <p class="text-xs text-gray-500 mt-1">Requests below this amount auto-approve</p>
-                                    </div>
-                                </div>
-                            </div>
-                            
-                            <div class="mt-3 flex justify-end">
-                                <button onclick="saveCategoryConfigAndRouting({{ $category->id }})" 
+                            <div class="mt-3 flex items-center justify-end gap-3">
+                                <span class="text-xs" style="color:#B45309;">⚠ Saving replaces this category's existing routing rows with the ones above.</span>
+                                <button onclick="saveCategoryConfigAndRouting({{ $category->id }})"
                                         class="kt-btn kt-btn-sm kt-btn-primary">
-                                    <i class="ki-filled ki-check"></i> Save Configuration
+                                    <i class="ki-filled ki-check"></i> Save Routing
                                 </button>
                             </div>
                         </div>
@@ -561,12 +533,32 @@ function removeRoutingRow(button) {
     }
 }
 
-// Save category configuration and routing
+// Save "needs L1/L2" immediately when a checkbox changes (no expand/Save needed).
+function saveRequires(categoryId) {
+    const l1 = document.querySelector(`input[data-category-id="${categoryId}"][data-field="requires_level_1"]`).checked;
+    const l2 = document.querySelector(`input[data-category-id="${categoryId}"][data-field="requires_level_2"]`).checked;
+    fetch(`/requests/settings/categories/${categoryId}/config`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': '{{ csrf_token() }}' },
+        body: JSON.stringify({ requires_level_1: l1, requires_level_2: l2 })
+    })
+    .then(r => r.json())
+    .then(data => {
+        const el = document.getElementById('reqsaved-' + categoryId);
+        if (data.success) {
+            if (el) { el.style.display = ''; setTimeout(() => { el.style.display = 'none'; }, 1500); }
+        } else {
+            alert('Could not save: ' + (data.message || 'error'));
+        }
+    })
+    .catch(e => { console.error(e); alert('Network error saving approval steps.'); });
+}
+
+// Save category routing (and the "needs L1/L2" state) from the expanded panel.
 function saveCategoryConfigAndRouting(categoryId) {
     // Get basic config
     const requiresL1 = document.querySelector(`input[data-category-id="${categoryId}"][data-field="requires_level_1"]`).checked;
     const requiresL2 = document.querySelector(`input[data-category-id="${categoryId}"][data-field="requires_level_2"]`).checked;
-    const threshold = document.querySelector(`input[data-category-id="${categoryId}"][data-field="auto_approve_threshold"]`).value;
 
     // Build routing rules array from UI
     const rules = [];
@@ -603,8 +595,7 @@ function saveCategoryConfigAndRouting(categoryId) {
         },
         body: JSON.stringify({
             requires_level_1: requiresL1,
-            requires_level_2: requiresL2,
-            auto_approve_threshold: threshold || null
+            requires_level_2: requiresL2
         })
     })
     .then(response => response.json())
@@ -642,67 +633,10 @@ function saveCategoryConfigAndRouting(categoryId) {
     });
 }
 
-function assignRoleToLevel(level) {
-    const selectId = level === 1 ? 'level1-role-select' : 'level2-role-select';
-    const roleId = document.getElementById(selectId).value;
-    
-    if (!roleId) {
-        alert('Please select a role');
-        return;
-    }
-    
-    fetch('{{ route("requests.settings.roles.assign") }}', {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json',
-            'X-CSRF-TOKEN': '{{ csrf_token() }}'
-        },
-        body: JSON.stringify({
-            role_id: roleId,
-            approval_level: level
-        })
-    })
-    .then(response => response.json())
-    .then(data => {
-        if (data.success) {
-            alert('Role assigned successfully!');
-            location.reload();
-        } else {
-            alert('Error: ' + data.message);
-        }
-    })
-    .catch(error => {
-        console.error('Error:', error);
-        alert('An error occurred. Please try again.');
-    });
-}
-
-function removeRoleFromLevel(id) {
-    if (!confirm('Remove this role from the approval level?')) {
-        return;
-    }
-    
-    fetch(`/requests/settings/roles/level/${id}`, {
-        method: 'DELETE',
-        headers: {
-            'Content-Type': 'application/json',
-            'X-CSRF-TOKEN': '{{ csrf_token() }}'
-        }
-    })
-    .then(response => response.json())
-    .then(data => {
-        if (data.success) {
-            alert('Role removed successfully!');
-            location.reload();
-        } else {
-            alert('Error: ' + data.message);
-        }
-    })
-    .catch(error => {
-        console.error('Error:', error);
-        alert('An error occurred. Please try again.');
-    });
-}
+// NOTE (Phase 4): assignRoleToLevel/removeRoleFromLevel moved to the Role Access
+// screens (approval-authority chips on pages/roles/permissions + mobile-permissions).
+// The endpoints (requests.settings.roles.assign / .remove) are still owned by
+// RequestSettingsController and used from there — only this page's editing UI moved.
 
 // ======= REQUEST TYPE MANAGEMENT =======
 
@@ -750,9 +684,9 @@ function showCreateTypeModal() {
                     <div><label class="text-xs text-gray-600">Name *</label><input id="tm_name" class="kt-input kt-input-sm w-full" placeholder="e.g. Qurbani"></div>
                 </div>
                 <div><label class="text-xs text-gray-600">Description</label><input id="tm_desc" class="kt-input kt-input-sm w-full" placeholder="Short description"></div>
-                <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
-                    <div><label class="text-xs text-gray-600">Icon (emoji)</label><input id="tm_icon" class="kt-input kt-input-sm w-full" placeholder="🐄"></div>
-                    <div><label class="text-xs text-gray-600">Color Class</label><input id="tm_color" class="kt-input kt-input-sm w-full" value="bg-gray-500" placeholder="bg-amber-500"></div>
+                <div>
+                    <label class="text-xs text-gray-600">Icon (emoji)</label>
+                    <input id="tm_icon" class="kt-input kt-input-sm w-full" placeholder="🐄">
                 </div>
                 <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
                     <div><label class="text-xs text-gray-600">Show in Expense Management</label><select id="tm_show_expenses" class="kt-select kt-select-sm w-full"><option value="0">No</option><option value="1">Yes</option></select></div>
@@ -785,7 +719,7 @@ function submitCreateType() {
             category_name: name,
             description: document.getElementById('tm_desc').value.trim() || null,
             icon: document.getElementById('tm_icon').value.trim() || null,
-            color_class: document.getElementById('tm_color').value.trim() || 'bg-gray-500',
+            color_class: 'bg-gray-500',
             show_in_expenses: document.getElementById('tm_show_expenses').value === '1',
             expense_bu_type: document.getElementById('tm_bu_type').value || null,
             form_type: document.getElementById('tm_form_type').value || 'general',

@@ -1,5 +1,115 @@
 @extends('layouts.app')
 
+@push('custom_css')
+{{-- NF (Jul-2026): Same fix as products/create.blade.php. This page was authored
+     with the LEGACY Metronic class vocabulary (card / form-control / form-select /
+     form-label / badge / container-fixed / checkbox / btn), but the deployed
+     stylesheet is Metronic v9 which only defines the kt- prefixed equivalents, so
+     none of these legacy classes exist in any loaded CSS and the form rendered
+     unstyled. This backfills ONLY the legacy classes this page uses, on the theme's
+     own tokens (--primary, --border, --input, --foreground, --muted, --radius,
+     --destructive) so it matches the app and follows light/dark automatically.
+     Page-scoped (custom_css renders only for this view). The first block is kept
+     byte-identical to create.blade.php's; the "edit-only extras" block below adds
+     the classes unique to this page. Reversible: delete this whole @push block. --}}
+<style>
+    /* ---- Layout container (mirrors .kt-container-fixed) ---- */
+    .container-fixed { width: 100%; flex-grow: 1; padding-inline: 1.5rem; }
+    @media (min-width: 80rem) {
+        .container-fixed { margin-inline: auto; max-width: 80rem; padding-inline: 1.875rem; }
+    }
+
+    /* ---- Utilities used on this page that the purged build dropped ---- */
+    @media (min-width: 768px)  { .md\:grid-cols-4 { grid-template-columns: repeat(4, minmax(0, 1fr)); } }
+    @media (min-width: 1024px) {
+        .lg\:grid-cols-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+        .lg\:items-end   { align-items: flex-end; }
+    }
+    .gap-2\.5 { gap: 0.625rem; }
+    .ml-2     { margin-left: 0.5rem; }
+    .pb-7\.5  { padding-bottom: 1.875rem; }
+    .text-md  { font-size: 1rem; line-height: 1.5rem; }
+    .text-danger  { color: var(--destructive); }
+    .text-success { color: #17c653; }
+    .bg-amber-50      { background-color: #fffbeb; }
+    .border-amber-200 { border-color: #fde68a; }
+    .border-blue-200  { border-color: #bfdbfe; }
+
+    /* ---- Card ---- */
+    .card {
+        background: var(--background);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-lg);
+        box-shadow: 0 1px 2px rgba(16, 24, 40, .04), 0 1px 3px rgba(16, 24, 40, .06);
+    }
+    .card-header {
+        display: flex; align-items: center; justify-content: space-between; gap: .75rem;
+        padding: 1.125rem 1.5rem; border-bottom: 1px solid var(--border);
+    }
+    .card-body  { padding: 1.5rem; }
+    .card-title { font-weight: 600; color: var(--foreground); }
+
+    /* ---- Form controls (mirror .kt-input / .kt-select) ---- */
+    .form-label { display: inline-flex; align-items: center; font-size: .8125rem; font-weight: 500; color: var(--foreground); }
+    .form-label.required::after { content: "*"; color: var(--destructive); margin-left: 2px; }
+    .form-control,
+    .form-select {
+        display: block; width: 100%; padding: .55rem .75rem; font-size: .875rem; line-height: 1.4;
+        color: var(--foreground); background-color: var(--background);
+        border: 1px solid var(--input); border-radius: var(--radius-md);
+        transition: border-color .15s ease, box-shadow .15s ease; appearance: none;
+    }
+    .form-select {
+        padding-right: 2.25rem; background-repeat: no-repeat;
+        background-position: right .625rem center; background-size: 1.1rem;
+        background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20' fill='none' stroke='%23667085' stroke-width='1.75'%3E%3Cpath d='M6 8l4 4 4-4'/%3E%3C/svg%3E");
+    }
+    .form-control:focus,
+    .form-select:focus { outline: none; border-color: var(--primary); box-shadow: 0 0 0 3px rgba(19, 121, 240, .15); }
+    .form-control::placeholder { color: var(--muted-foreground); }
+    .form-hint { font-size: .75rem; color: var(--muted-foreground); }
+
+    /* ---- Checkbox (keep the native input, tint it; hide the legacy indicator span) ---- */
+    .checkbox { cursor: pointer; }
+    .checkbox input[type="checkbox"] { width: 1.05rem; height: 1.05rem; accent-color: var(--primary); cursor: pointer; }
+    .checkbox-indicator { display: none; }
+
+    /* ---- Badge / pill ---- */
+    .badge {
+        display: inline-flex; align-items: center; gap: .3rem; padding: .25rem .6rem;
+        font-size: .75rem; font-weight: 500; line-height: 1; border-radius: 9999px;
+        color: var(--foreground); background: var(--muted);
+    }
+    .badge-light   { background: var(--muted); color: var(--foreground); }
+    .badge-outline { background: transparent; border: 1px solid var(--border); }
+
+    /* ---- Light button variant (kt-btn base exists; only -light color was missing) ---- */
+    .kt-btn-light { background: var(--background); color: var(--foreground); border: 1px solid var(--border); }
+    .kt-btn-light:hover { background: var(--muted); }
+
+    /* ===== edit-only extras (classes unique to this page) ===== */
+    /* More responsive grid variants used by the variant editor */
+    @media (min-width: 768px)  { .md\:grid-cols-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); } .md\:grid-cols-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+    @media (min-width: 1024px) { .lg\:grid-cols-4 { grid-template-columns: repeat(4, minmax(0, 1fr)); } }
+
+    /* Legacy .btn (only the SKU-unlock button; it also carries inline styles) */
+    .btn { display: inline-flex; align-items: center; justify-content: center; gap: .35rem; cursor: pointer; font-weight: 500; line-height: 1; border-radius: var(--radius-md); }
+    .btn-sm { font-size: .8125rem; }
+
+    /* Hover utilities used on remove-variant buttons / links */
+    .hover\:bg-red-50:hover   { background-color: #fef2f2; }
+    .hover\:text-blue-800:hover { color: #1e40af; }
+
+    /* Extra text colors */
+    .text-info      { color: #0ea5e9; }
+    .text-purple-600 { color: #9333ea; }
+    .text-amber-600 { color: #d97706; }
+    .text-amber-700 { color: #b45309; }
+    .text-red-500   { color: #ef4444; }
+    .text-red-600   { color: #dc2626; }
+</style>
+@endpush
+
 @section('content')
 <div class="container-fixed">
     <div class="flex flex-wrap items-center lg:items-end justify-between gap-5 pb-7.5">

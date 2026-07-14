@@ -77,7 +77,9 @@ class CustomerAppController extends Controller
                     'success'  => true,
                     'tracking' => null,
                     'reason'   => 'not_out_for_delivery',
-                    'order_status' => $order->order_status,
+                    // Status Hub: mask aliased statuses here too (gate above stays on RAW status).
+                    'order_status' => app(\App\Services\CRM\OrderStatusRuleService::class)
+                                        ->customerAlias($order->order_status) ?? $order->order_status,
                 ], 200);
             }
 
@@ -222,7 +224,9 @@ class CustomerAppController extends Controller
                 'order_number'    => $this->stripShopifyPrefix($order->order_number),
                 'nf_order_number' => $order->order_number,
                 'source'          => $this->sourceFromOrderNumber($order->order_number),
-                'status'          => $order->order_status,
+                // Status Hub: mask any status the owner has aliased for the customer app.
+                'status'          => app(\App\Services\CRM\OrderStatusRuleService::class)
+                                        ->customerAlias($order->order_status) ?? $order->order_status,
                 'eta_window'      => $isHistory ? null : $this->etaWindowFor($order),
                 'placed_at'       => $order->order_date
                     ? \Carbon\Carbon::parse($order->order_date)->toIso8601String() : null,
@@ -351,11 +355,14 @@ class CustomerAppController extends Controller
             $collectLineMeta('t_crm_prod_order_line_item', $orders->where('source_type', 'production')->pluck('id')->all(), 'production');
             $collectLineMeta('t_crm_history_order_line_item', $orders->where('source_type', 'history')->pluck('id')->all(), 'history');
 
+            // Status Hub: mask any status the owner has aliased for the customer app.
+            $statusRules = app(\App\Services\CRM\OrderStatusRuleService::class);
+
             $rows = $orders->map(fn ($o) => [
                 'order_number'    => $this->stripShopifyPrefix($o->order_number),
                 'nf_order_number' => $o->order_number,
                 'source'          => $this->sourceFromOrderNumber($o->order_number),
-                'status'          => $o->order_status,
+                'status'          => $statusRules->customerAlias($o->order_status) ?? $o->order_status,
                 'placed_at'       => $o->order_date
                     ? \Carbon\Carbon::parse($o->order_date)->toIso8601String() : null,
                 'total'           => (float) $o->total_price,
@@ -839,7 +846,9 @@ class CustomerAppController extends Controller
                 return response()->json([
                     'success'      => false,
                     'message'      => 'Payment method can no longer be changed for this order.',
-                    'order_status' => $order->order_status,
+                    // Status Hub: mask aliased statuses (the $blocked gate stays on RAW status).
+                    'order_status' => app(\App\Services\CRM\OrderStatusRuleService::class)
+                                        ->customerAlias($order->order_status) ?? $order->order_status,
                 ], 422);
             }
 

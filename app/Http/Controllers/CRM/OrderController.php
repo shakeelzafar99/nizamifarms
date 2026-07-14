@@ -233,6 +233,34 @@ class OrderController extends Controller
             }
         }
 
+        // Jul-2026 — Invoice-sent tick for the INITIAL server-rendered page. filter()
+        // computes the same flag for AJAX refetches; without this, a full page load /
+        // hard refresh painted plain WhatsApp buttons until the first in-page refetch.
+        // Same single bulk lookup (indexed: idx_wa_msg_related_order), same non-fatal
+        // guard — on any error the ticks simply don't show, the page never breaks.
+        try {
+            $pageOrders = collect($orders->items());
+            $invNums = $pageOrders->pluck('order_number')->filter()->unique()->values()->all();
+            if (!empty($invNums)) {
+                $sentMap = \App\Models\WhatsApp\MessageModel::query()
+                    ->whereIn('related_order_number', $invNums)
+                    ->where('direction', 'outbound')
+                    ->where('content', 'LIKE', 'Invoice #%')
+                    ->where('status', '!=', 'failed')
+                    ->selectRaw('related_order_number, MAX(created_at) as sent_at')
+                    ->groupBy('related_order_number')
+                    ->pluck('sent_at', 'related_order_number')
+                    ->all();
+                foreach ($pageOrders as $o) {
+                    $n = $o->order_number ?? '';
+                    $o->invoice_sent = ($n !== '' && isset($sentMap[$n]));
+                    $o->invoice_sent_at = ($n !== '') ? ($sentMap[$n] ?? null) : null;
+                }
+            }
+        } catch (\Throwable $e) {
+            // non-fatal — ticks just don't show on first paint
+        }
+
         return view('pages.orders.index', compact('orders', 'source', 'tab', 'shopifyCount', 'approvalsCount', 'otherCount', 'openCount', 'canViewShopify', 'canViewAllOrders', 'user', 'paymentProofMap'));
     }
 
@@ -541,6 +569,25 @@ class OrderController extends Controller
                 ], 422);
             }
 
+            // Concurrency guard (D6): this path previously ran with NO transaction, so the
+            // payment + ledger + balance move were not atomic and the engine's account lock could
+            // not hold. Wrap it: lock the order row so simultaneous submissions serialize, then
+            // reject an identical payment recorded moments ago (double-click / retry). A genuine
+            // split payment differs in amount or arrives seconds+ later, so it is never blocked.
+            \DB::beginTransaction();
+            \App\Models\CRM\OrderModel::where('id', $order->id)->lockForUpdate()->first();
+            $recentDuplicate = \App\Models\CRM\OrderPaymentModel::where('order_id', $order->id)
+                ->where('amount', $amount)
+                ->where('payment_method', $paymentMethod)
+                ->where('created_by', $user->id)
+                ->where('status', 'active')
+                ->where('created_at', '>=', now()->subSeconds(8))
+                ->exists();
+            if ($recentDuplicate) {
+                \DB::rollBack();
+                return response()->json(['success' => false, 'message' => 'An identical payment was just recorded a moment ago. If this is a genuine second payment, refresh and re-enter it.'], 422);
+            }
+
             $payment = \App\Models\CRM\OrderPaymentModel::create([
                 'order_id' => $order->id,
                 'amount' => $amount,
@@ -612,7 +659,7 @@ class OrderController extends Controller
                 // cash) so per-bank balances reconcile against the ONLINE account.
                 'receiving_account_id' => $receivingAccountId,
                 'approval_status' => \App\Models\FIN\LedgerModel::STATUS_APPROVED,
-                'balance_updated' => 1,
+                'balance_updated' => 0, // engine applies below and sets this
                 'settlement_status' => 'settled',
                 'settled_amount' => $amount,
                 'settled_at' => now(),
@@ -625,11 +672,11 @@ class OrderController extends Controller
             $payment->ledger_transaction_id = $ledger->id;
             $payment->save();
 
-            $toAccount->current_balance += $amount;
-            $toAccount->save();
-            $salesAccount->current_balance -= $amount;
-            $salesAccount->save();
+            // Apply via the canonical engine (revenue −, holder +), row-locked; sets balance_updated.
+            (new \App\Services\FIN\BalancePostingService())->apply($ledger);
             $order->recalculatePaymentStatus();
+
+            \DB::commit();
 
             return response()->json([
                 'success' => true,
@@ -637,8 +684,10 @@ class OrderController extends Controller
                 'payment' => $payment,
             ]);
         } catch (\Illuminate\Validation\ValidationException $e) {
+            if (\DB::transactionLevel() > 0) { \DB::rollBack(); }
             return response()->json(['success' => false, 'message' => $e->errors()], 422);
         } catch (\Exception $e) {
+            if (\DB::transactionLevel() > 0) { \DB::rollBack(); }
             \Log::error('Failed to add qurbani payment', ['order_id' => $id, 'error' => $e->getMessage()]);
             return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
         }
@@ -809,6 +858,22 @@ class OrderController extends Controller
             throw new \RuntimeException('Select which bank received this online payment.');
         }
 
+        // Concurrency / double-submit guard (D6). Runs inside the caller's transaction: lock the
+        // order row so two simultaneous submissions for the same order serialize, then reject an
+        // identical payment recorded moments ago (double-click / retry). A legitimate split payment
+        // differs in amount or arrives seconds+ later, so this never blocks a real second payment.
+        \App\Models\CRM\OrderModel::where('id', $order->id)->lockForUpdate()->first();
+        $recentDuplicate = \App\Models\CRM\OrderPaymentModel::where('order_id', $order->id)
+            ->where('amount', $amount)
+            ->where('payment_method', $paymentMethod)
+            ->where('created_by', $user->id)
+            ->where('status', 'active')
+            ->where('created_at', '>=', now()->subSeconds(8))
+            ->exists();
+        if ($recentDuplicate) {
+            throw new \RuntimeException('An identical payment was just recorded a moment ago. If this is a genuine second payment, refresh the page and re-enter it.');
+        }
+
         $salesAccount = \App\Models\FIN\ConfigModel::getSalesRevenueAccount();
         if (!$salesAccount) {
             throw new \RuntimeException('Sales revenue account not configured');
@@ -880,7 +945,7 @@ class OrderController extends Controller
             // so per-bank balances reconcile against the ONLINE account.
             'receiving_account_id' => $receivingAccountId,
             'approval_status' => \App\Models\FIN\LedgerModel::STATUS_APPROVED,
-            'balance_updated' => 1,
+            'balance_updated' => 0, // engine applies below and sets this
             'settlement_status' => 'settled',
             'settled_amount' => $amount,
             'settled_at' => now(),
@@ -893,10 +958,8 @@ class OrderController extends Controller
         $payment->ledger_transaction_id = $ledger->id;
         $payment->save();
 
-        $toAccount->current_balance += $amount;
-        $toAccount->save();
-        $salesAccount->current_balance -= $amount;
-        $salesAccount->save();
+        // Apply via the canonical engine (revenue −, holder +), row-locked; sets balance_updated.
+        (new \App\Services\FIN\BalancePostingService())->apply($ledger);
         $order->recalculatePaymentStatus();
 
         return ['payment' => $payment, 'ledger' => $ledger];
@@ -1603,8 +1666,14 @@ class OrderController extends Controller
             $adjustmentId = null;
             
             // Check if this update is from a webhook (external source)
-            $isWebhookUpdate = $request->has('_skip_ledger_adjustment') || 
-                               (isset($validated['_skip_ledger_adjustment']) && $validated['_skip_ledger_adjustment']);
+            // ⭐ [Ledger L1, D2] The skip flag can no longer be spoofed by an interactive edit.
+            // The ONLY legitimate setter is the server-side webhook sync (OrderModel::storeOrderFromApi,
+            // a model-level update that never reaches this HTTP endpoint). So a request carrying the
+            // flag WHILE authenticated as a web user is a manual edit and must NOT skip the ledger
+            // adjustment; only a non-authenticated (server/webhook) context may.
+            $isWebhookUpdate = ($request->has('_skip_ledger_adjustment')
+                                || (isset($validated['_skip_ledger_adjustment']) && $validated['_skip_ledger_adjustment']))
+                               && !auth()->check();
             
             if ($order->ledger_transaction_id && !$isWebhookUpdate) {
                 $ledger = \App\Models\FIN\LedgerModel::find($order->ledger_transaction_id);
@@ -1626,9 +1695,29 @@ class OrderController extends Controller
                         // ⭐ Check if user should get auto-approval (L2 rights OR Taimur)
                         $currentUser = auth()->user();
                         $userHasL2Rights = \App\Models\SysAdmin\RoleApprovalLevelModel::userHasApprovalLevel($currentUser->id, 2);
-                        $isTaimur = strtolower($currentUser->email ?? '') === 'taimur@nizamifarms.pk';
-                        $shouldAutoApprove = $userHasL2Rights || $isTaimur;
-                        
+                        // ⭐ [Ledger L1, D3] Auto-approve (post-invoice correction) is granted by L2
+                        // approval rights OR the explicit 'ledger_privileged_corrections' permission.
+                        // Replaces a DEAD hardcoded email check for 'taimur@nizamifarms.pk' (his real
+                        // address is .com, so it never matched — he already qualifies via L2 rights).
+                        // Behaviour-preserving + future-proof (a non-L2 user can be granted the perm).
+                        $shouldAutoApprove = $userHasL2Rights
+                            || (method_exists($currentUser, 'hasPermission') && $currentUser->hasPermission('ledger_privileged_corrections'));
+
+                        // ⭐ [Ledger L3] PENDING invoice (pending/pending_l1, balances never applied):
+                        // the edit is folded INTO the invoice itself, for EVERY editor. The pending
+                        // row's amount is rewritten (there are no balances to move yet) and the L1
+                        // approver sees — and approves — the corrected figure: the invoice approval
+                        // IS the human control. A separate pending adjustment (whose approval could
+                        // race the invoice's own approval) is never created for a pending invoice.
+                        $isPendingInvoice = !$ledger->balance_updated
+                            && in_array($ledger->approval_status, [
+                                   \App\Models\FIN\LedgerModel::STATUS_PENDING,
+                                   \App\Models\FIN\LedgerModel::STATUS_PENDING_L1,
+                               ], true);
+                        if ($isPendingInvoice) {
+                            $shouldAutoApprove = true; // audit row saved approved; invoice approval is the gate
+                        }
+
                         // Determine approval statuses based on auto-approve
                         if ($shouldAutoApprove) {
                             // L2 user or Taimur: Auto-approve all levels
@@ -1666,17 +1755,52 @@ class OrderController extends Controller
                         
                         // ⭐ If auto-approved, immediately apply the adjustment to ledger
                         if ($shouldAutoApprove) {
-                            // Update the ledger amount directly
-                            $ledger->amount = $newAmount;
-                            $ledger->comments = ($ledger->comments ?? '') . 
-                                " | Amount adjusted from Rs. " . number_format($oldAmount, 2) . " to Rs. " . number_format($newAmount, 2) . 
-                                " (Auto-approved by " . $currentUser->fullname . " on " . now()->format('Y-m-d H:i:s') . ")";
-                            $ledger->save();
-                            
-                            // Also update the order total_price in case there's a mismatch
-                            // (This is already handled by the order update below, but we ensure consistency)
-                            
+                            // POST-SETTLEMENT correction guard (Ledger L1, owner-ruled Option A):
+                            // if this invoice is ALREADY settled, the rider has handed the cash over
+                            // and his balance MUST NOT move. His balance is CALCULATED from invoice
+                            // amounts, so rewriting the amount is exactly what would move him and
+                            // create the "phantom" drift (the Haider/Asim case). So we DO NOT rewrite
+                            // the amount/settlement of a settled invoice — we only annotate it. The
+                            // LedgerAdjustment row above is the audit trail; the order total updates
+                            // below (revenue is order-based). Unsettled invoices keep the existing
+                            // behaviour (rider still holds the money → his open balance correctly
+                            // follows the corrected amount).
+                            $isSettledInvoice = ($ledger->settlement_status === 'settled');
+                            if ($isSettledInvoice) {
+                                $ledger->comments = ($ledger->comments ?? '') .
+                                    " | Post-settlement correction Rs. " . number_format($oldAmount, 2) . " → Rs. " . number_format($newAmount, 2) .
+                                    " ABSORBED — invoice + rider balance unchanged (by " . $currentUser->fullname . " on " . now()->format('Y-m-d H:i:s') . ")";
+                                $ledger->save(); // comment ONLY — amount + settlement untouched
+                            } elseif ($ledger->balance_updated) {
+                                // ⭐ [Ledger L3] APPLIED but unsettled (pending_l2/approved): correct
+                                // through the ENGINE BRACKET — take the old amount out of the books,
+                                // rewrite, post the new amount — so the applied balances follow the
+                                // correction EXACTLY. (The old code rewrote the amount only, leaving
+                                // stored balances applied at the old figure: a per-edit stored drift
+                                // on REV + the holder that only the riders' calculated display hid,
+                                // and a wrong-amount reversal risk on later reject/cancel.)
+                                $engine = new \App\Services\FIN\BalancePostingService();
+                                $engine->reverse($ledger);          // old amount out of the books
+                                $ledger->amount = $newAmount;
+                                $ledger->comments = ($ledger->comments ?? '') .
+                                    " | Amount adjusted from Rs. " . number_format($oldAmount, 2) . " to Rs. " . number_format($newAmount, 2) .
+                                    " (Auto-approved by " . $currentUser->fullname . " on " . now()->format('Y-m-d H:i:s') . ")";
+                                $ledger->save();
+                                $engine->apply($ledger);            // new amount into the books
+                            } else {
+                                // PENDING invoice (pending/pending_l1) — nothing applied yet, so the
+                                // amount rewrite is the whole correction. The approvals queue shows
+                                // this row's amount, so the approver sees + approves the new figure;
+                                // the engine posts it at L1 approval.
+                                $ledger->amount = $newAmount;
+                                $ledger->comments = ($ledger->comments ?? '') .
+                                    " | Amount adjusted from Rs. " . number_format($oldAmount, 2) . " to Rs. " . number_format($newAmount, 2) .
+                                    " (pre-approval edit by " . $currentUser->fullname . " on " . now()->format('Y-m-d H:i:s') . " — takes effect at invoice approval)";
+                                $ledger->save();
+                            }
+
                             \Log::info("Ledger adjustment AUTO-APPROVED for order update", [
+                                'post_settlement_absorbed' => $isSettledInvoice,
                                 'order_id' => $order->id,
                                 'order_number' => $order->order_number,
                                 'adjustment_id' => $adjustment->id,
@@ -1686,7 +1810,7 @@ class OrderController extends Controller
                                 'ledger_id' => $ledger->id,
                                 'auto_approved_by' => $currentUser->fullname,
                                 'user_has_l2_rights' => $userHasL2Rights,
-                                'is_taimur' => $isTaimur,
+                                'auto_approve_via' => $userHasL2Rights ? 'l2_rights' : 'ledger_privileged_corrections',
                                 'source' => 'webapp_manual_edit_auto_approved'
                             ]);
                         } else {
@@ -2254,8 +2378,15 @@ class OrderController extends Controller
     
     public function store(Request $request)
     {
-        // Check permission
-        if (!auth()->user()->hasPermission('create_orders')) {
+        // Check permission. The mobile app creates orders via POST /api/orders and is
+        // gated by the MOBILE 'create_orders' permission; the web screen keeps the WEB
+        // permission. The transitional OR keeps web-granted roles working before the
+        // matching mobile grant is seeded (Phase 0.7 SQL). The web path is unchanged.
+        $user = auth()->user();
+        $canCreateOrders = $request->is('api/*')
+            ? ($user->hasMobilePermission('create_orders') || $user->hasPermission('create_orders'))
+            : $user->hasPermission('create_orders');
+        if (!$canCreateOrders) {
             return response()->json([
                 'success' => false,
                 'message' => 'You do not have permission to create orders.'
@@ -3378,9 +3509,13 @@ class OrderController extends Controller
             $deliveryDate = $request->get('delivery_date', '');
             $orderMonth = $request->get('order_month', '');
             $deliveryMonth = $request->get('delivery_month', '');
-            
-            // Check permissions
-            $canViewShopify = $user->hasPermission('view_shopify_orders');
+
+            // Check permissions. Mobile (rider-mode) requests may view the Shopify queue
+            // via the MOBILE 'view_shopify_orders' permission; web keeps the web permission.
+            // Transitional OR keeps web-granted roles working before the mobile grant is
+            // seeded (Phase 0.7). Non-mobile (web) behaviour is unchanged.
+            $canViewShopify = $user->hasPermission('view_shopify_orders')
+                || ($request->is('api/rider/*') && $user->hasMobilePermission('view_shopify_orders'));
             $canViewAllOrders = $user->hasPermission('view_all_orders');
             
             // Start with base query based on source
@@ -3577,8 +3712,29 @@ class OrderController extends Controller
                 }
             }
 
+            // Invoice-sent map: order_number → latest successful invoice-send time,
+            // so the orders page can show an "invoice sent" tick. One indexed bulk
+            // query (related_order_number); failed sends excluded. Non-fatal.
+            $invoiceSentMap = [];
+            try {
+                $invOrderNumbers = $orders->pluck('order_number')->filter()->unique()->values()->all();
+                if (!empty($invOrderNumbers)) {
+                    $invoiceSentMap = \App\Models\WhatsApp\MessageModel::query()
+                        ->whereIn('related_order_number', $invOrderNumbers)
+                        ->where('direction', 'outbound')
+                        ->where('content', 'LIKE', 'Invoice #%')
+                        ->where('status', '!=', 'failed')
+                        ->selectRaw('related_order_number, MAX(created_at) as sent_at')
+                        ->groupBy('related_order_number')
+                        ->pluck('sent_at', 'related_order_number')
+                        ->all();
+                }
+            } catch (\Throwable $e) {
+                $invoiceSentMap = [];
+            }
+
             // Add customer order count and region info to each order
-            $orders->transform(function($order) use ($customerOrderCounts, $regionMap, $dispatcherNames, $customerReplyMap, $orderReplyMap) {
+            $orders->transform(function($order) use ($customerOrderCounts, $regionMap, $dispatcherNames, $customerReplyMap, $orderReplyMap, $invoiceSentMap) {
                 $orderCount = $customerOrderCounts[$order->customer_id] ?? 0;
                 $isNewCustomer = $orderCount <= 1;
 
@@ -3595,6 +3751,12 @@ class OrderController extends Controller
                 $perOrderReply = (!empty($order->order_number) && isset($orderReplyMap[$order->order_number]))
                     ? $orderReplyMap[$order->order_number] : null;
                 $order->customer_reply = $perOrderReply ?? ($customerReplyMap[$order->customer_id] ?? null);
+
+                // Invoice-sent tick (orders page): has a successful invoice template
+                // gone out via the API for this order, and when.
+                $invNum = $order->order_number ?? '';
+                $order->invoice_sent = ($invNum !== '' && isset($invoiceSentMap[$invNum]));
+                $order->invoice_sent_at = ($invNum !== '') ? ($invoiceSentMap[$invNum] ?? null) : null;
 
                 return $order;
             });
@@ -4079,15 +4241,12 @@ class OrderController extends Controller
             
             $dateRange = $request->get('date_range', 0); // Days to look back (0 = all time)
 
-            // Get excluded statuses from global settings (not from request)
-            $statusSetting = \DB::table('t_crm_open_quantities_settings')
-                ->where('setting_key', 'excluded_statuses')
-                ->first();
-            $excludedStatuses = $statusSetting ? json_decode($statusSetting->setting_value, true) : ['delivered', 'completed', 'cancelled', 'refunded'];
-            if (!is_array($excludedStatuses)) {
-                $excludedStatuses = ['delivered', 'completed', 'cancelled', 'refunded'];
-            }
-            
+            // Excluded statuses now come from the central Order-Status rule service.
+            // Phase 1: this returns the exact same value as the legacy read (this
+            // environment's excluded_statuses setting → literal fallback), just centralised
+            // so the Status Hub can own it later. No behaviour change.
+            $excludedStatuses = app(\App\Services\CRM\OrderStatusRuleService::class)->quantitiesExcluded();
+
             Log::debug('Open Quantities Excluded Statuses:', ['excluded' => $excludedStatuses]);
             
             // DEBUG: Show orders that SHOULD be included
@@ -4540,42 +4699,17 @@ class OrderController extends Controller
         $ledger->comments = ($ledger->comments ? $ledger->comments . "\n\n" : '') . "REVERSED: {$reason}";
         $ledger->save();
         
-        // Reverse balances ONLY if the transaction was approved
-        if ($wasApproved) {
-            $fromAccount = $ledger->fromAccount;
-            $toAccount = $ledger->toAccount;
-            
-            if ($fromAccount) {
-                // Reverse the debit (add back)
-                $fromAccount->current_balance += $ledger->amount;
-                $fromAccount->save();
-                
-                \Log::info("Reversed balance for from_account", [
-                    'account_id' => $fromAccount->id,
-                    'account_name' => $fromAccount->account_name,
-                    'amount_added_back' => $ledger->amount,
-                    'new_balance' => $fromAccount->current_balance
-                ]);
-            }
-            
-            if ($toAccount) {
-                // Reverse the credit (subtract back)
-                $toAccount->current_balance -= $ledger->amount;
-                $toAccount->save();
-                
-                \Log::info("Reversed balance for to_account", [
-                    'account_id' => $toAccount->id,
-                    'account_name' => $toAccount->account_name,
-                    'amount_subtracted' => $ledger->amount,
-                    'new_balance' => $toAccount->current_balance
-                ]);
-            }
-        }
-        
+        // Reverse the balance move via the canonical engine. Self-guards on balance_updated, so it
+        // also reverses a row applied at L1 (pending_l2) — fixing the old `$wasApproved` guard that
+        // leaked money when an order was reversed during the L1→L2 window. Engine reverse is the
+        // exact inverse of the invoice/order_payment posting (income +, holder −).
+        $balancesReversed = (bool) $ledger->balance_updated;
+        (new \App\Services\FIN\BalancePostingService())->reverse($ledger);
+
         \Log::info("Ledger entry reversed", [
             'ledger_id' => $ledger->id,
             'was_approved' => $wasApproved,
-            'balances_reversed' => $wasApproved,
+            'balances_reversed' => $balancesReversed,
             'reason' => $reason
         ]);
     }
@@ -5298,6 +5432,10 @@ class OrderController extends Controller
                         ]
                     );
             }
+
+            // Bust the central status-rule cache so the new exclusions apply immediately
+            // (the rule service memoises the excluded list for 60s).
+            app(\App\Services\CRM\OrderStatusRuleService::class)->bustCache();
 
             Log::info('Open quantities settings updated by user: ' . $user->fullname, [
                 'user_id' => $user->id,

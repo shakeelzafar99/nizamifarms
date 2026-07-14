@@ -74,12 +74,48 @@
 .text-red-800 { color: #991b1b !important; }
 .text-teal-700 { color: #0f766e !important; }
 .text-teal-800 { color: #115e59 !important; }
+
+/* NF Phase 4B — Operations page grouped into sections via CSS order (no DOM moves,
+   so every card / form / script / id is untouched). The explicit grid definition
+   guarantees a grid context (so `order` works) even if the Tailwind grid utilities
+   are absent from the purged build; it mirrors the same 1/2/3-column breakpoints. */
+/* Two columns max: with 2–4 cards per themed section, two columns fill each
+   section's rows exactly (2, 4, 2), so no stranded half-empty columns — the "big
+   gaps" came from spreading tiny sections across three columns. Rows are
+   EQUAL-HEIGHT (default stretch): the two cards in a row share one frame, and each
+   card bottom-anchors its final element (action button), so uneven content never
+   leaves layout holes — just clean aligned card frames. */
+#nf-ops-grid { display: grid; grid-template-columns: repeat(1, minmax(0, 1fr)); gap: 1.5rem; }
+@media (min-width: 900px) { #nf-ops-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+#nf-ops-grid .nf-op-sec { grid-column: 1 / -1; margin-top: 10px; margin-bottom: -10px; }
+#nf-ops-grid .nf-op-card { display: flex; flex-direction: column; }
+#nf-ops-grid .nf-op-card > :last-child { margin-top: auto; }
+#nf-ops-grid .nf-op-sec h2 { font-size: 12px !important; font-weight: 700 !important; text-transform: uppercase; letter-spacing: 0.06em; color: #6b7280 !important; margin: 0; }
+#nf-ops-grid .nf-op-sec.nf-op-danger-head h2 { color: #dc2626 !important; }
+#nf-ops-grid.nf-legacy-collapsed .nf-op-legacy { display: none !important; }
+#nf-legacy-toggle { background: transparent; border: 0; cursor: pointer; display: inline-flex; align-items: center; gap: 8px; font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; color: #6b7280; padding: 0; }
+#nf-legacy-toggle:hover { color: #374151; }
+#nf-legacy-toggle .chev { transition: transform 0.18s ease; display: inline-block; }
+#nf-ops-grid:not(.nf-legacy-collapsed) #nf-legacy-toggle .chev { transform: rotate(90deg); }
+#nf-ops-grid .nf-op-card.nf-op-danger { border-color: #dc2626 !important; box-shadow: inset 0 0 0 1px #dc2626; grid-column: 1 / -1; }
 </style>
 @endverbatim
 <div class="container mx-auto px-4 py-6" style="max-width: 1400px;">
     <h1 class="text-2xl font-semibold text-gray-900 mb-6">Operations</h1>
 
-    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 nf-legacy-collapsed" id="nf-ops-grid">
+        {{-- NF Phase 4B: full-width section headers, positioned among the cards purely by
+             CSS `order` (assigned in the script below). No card is moved in the DOM. --}}
+        <div class="nf-op-sec" style="order:5"><h2>📦 Data &amp; Sync</h2></div>
+        <div class="nf-op-sec" style="order:20"><h2>💰 Finance Controls</h2></div>
+        <div class="nf-op-sec" style="order:30"><h2>📱 App &amp; Seasonal</h2></div>
+        <div class="nf-op-sec" style="order:40">
+            <button type="button" id="nf-legacy-toggle" onclick="nfToggleLegacy()" aria-expanded="false">
+                <span class="chev">▸</span> Legacy &amp; pre-launch tools <span style="font-weight:600;color:#9ca3af;text-transform:none;letter-spacing:0;">· 7 loaders from before the platform went live</span>
+            </button>
+        </div>
+        <div class="nf-op-sec nf-op-danger-head" style="order:50"><h2>🗑️ Danger Zone</h2></div>
+
         <!-- App Update Notification Card -->
         <div class="bg-white border border-gray-200 rounded-lg p-6 shadow-sm">
             <div class="flex items-center justify-between mb-4">
@@ -1553,6 +1589,55 @@ function submitAssetCategory(event) {
 <!-- Include the same Import modal markup used on Orders page -->
 @include('pages.orders.partials.import-modal')
 @include('pages.products.partials.import-products-modal')
+
+<script>
+// NF Phase 4B — group the Operations cards into themed sections purely via CSS `order`
+// (keyed by each card's title, so no card is moved in the DOM and every form/script/id
+// is untouched). A card whose title isn't recognised stays at order 0 — visible and
+// fully functional, just un-sectioned — so this can never hide or break a card.
+(function () {
+    var grid = document.getElementById('nf-ops-grid');
+    if (!grid) return;
+    var cfg = {
+        // Active tools
+        'Import Products': [10],
+        '📍 Geocode Customer Addresses': [11],
+        '⚙️ Ledger Settings': [21],
+        '🧾 Find Missed Payment Proofs': [22],
+        '💸 Manage Expense Categories': [23],
+        '📦 Manage Asset Categories': [24],
+        '📲 App Update Notification': [31],
+        '🐄 Qurbani Mode': [32],
+        // Legacy & pre-launch loaders (owner: Imports + Bulk Delivery unused since go-live)
+        'Imports': [41, 'legacy'],
+        'Bulk Delivery Status': [42, 'legacy'],
+        '📜 Import Historical Orders': [43, 'legacy'],
+        '📅 Update History Delivery Dates': [44, 'legacy'],
+        'Import Rider Assignments': [45, 'legacy'],
+        'Import Attendance': [46, 'legacy'],
+        'Import Legacy Expense Sheet': [47, 'legacy'],
+        // Danger
+        '🗑️ Clear Legacy Data (Testing)': [51, 'danger']
+    };
+    var cards = Array.prototype.slice.call(grid.querySelectorAll(':scope > div.bg-white'));
+    cards.forEach(function (c) {
+        var h2 = c.querySelector('h2');
+        var conf = h2 ? cfg[h2.textContent.trim()] : null;
+        if (!conf) return;
+        c.classList.add('nf-op-card');
+        c.style.order = conf[0];
+        if (conf[1]) c.classList.add('nf-op-' + conf[1]);
+    });
+
+})();
+
+function nfToggleLegacy() {
+    var grid = document.getElementById('nf-ops-grid');
+    var collapsed = grid.classList.toggle('nf-legacy-collapsed');
+    var btn = document.getElementById('nf-legacy-toggle');
+    if (btn) btn.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+}
+</script>
 
 @endsection
 

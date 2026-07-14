@@ -232,7 +232,7 @@ class ShopBulkPaymentService
                     // per-bank balances reconcile against the ONLINE account.
                     'receiving_account_id' => $receivingAccountId,
                     'approval_status' => LedgerModel::STATUS_APPROVED,
-                    'balance_updated' => 1,
+                    'balance_updated' => 0, // engine applies this row's slice below
                     'settlement_status' => 'settled',
                     'settled_amount' => $slice,
                     'settled_at' => now(),
@@ -244,6 +244,11 @@ class ShopBulkPaymentService
 
                 $payment->ledger_transaction_id = $ledger->id;
                 $payment->save();
+
+                // Apply THIS slice via the canonical engine (revenue −, holder +), row-locked; sets
+                // balance_updated. Replaces the old single batched apply below — the sum of the
+                // per-slice moves is identical, and each row's flag is now genuinely true.
+                (new \App\Services\FIN\BalancePostingService())->apply($ledger);
 
                 $order->recalculatePaymentStatus();
 
@@ -259,13 +264,8 @@ class ShopBulkPaymentService
                 ];
             }
 
-            // Apply the account balances ONCE for the whole batch (= sum of the
-            // slices), the same net movement as N single payments.
+            // Balances were already applied per-slice above via the engine (sum = the whole batch).
             $applied = $appliedTotalCents / 100;
-            $toAccount->current_balance += $applied;
-            $toAccount->save();
-            $salesAccount->current_balance -= $applied;
-            $salesAccount->save();
 
             $customerName = trim(($customer->first_name ?? '') . ' ' . ($customer->last_name ?? ''))
                 ?: ($customer->company ?: 'Shop');

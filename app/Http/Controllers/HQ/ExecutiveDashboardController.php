@@ -137,7 +137,12 @@ class ExecutiveDashboardController extends Controller
     {
         $this->guard();
         $unit = strtolower((string) $request->get('unit', 'nf'));
-        return $this->ok($this->svc->receivablesAged($unit));
+        $type = trim((string) $request->get('type', ''));
+        // No type → Level 1 summary (by receivable type + aging); type → the
+        // Level 2 customer list behind that type.
+        return $this->ok($type !== ''
+            ? $this->svc->receivablesByType($unit, $type)
+            : $this->svc->receivablesSummary($unit));
     }
 
     public function payables(Request $request)

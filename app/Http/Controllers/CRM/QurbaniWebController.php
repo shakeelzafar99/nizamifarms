@@ -1029,19 +1029,11 @@ class QurbaniWebController extends Controller
                 if ($payment->ledger_transaction_id) {
                     $ledger = \App\Models\FIN\LedgerModel::find($payment->ledger_transaction_id);
                     if ($ledger) {
-                        $wasApproved = $ledger->approval_status === \App\Models\FIN\LedgerModel::STATUS_APPROVED;
-                        if ($wasApproved) {
-                            $fromAccount = $ledger->fromAccount;
-                            $toAccount = $ledger->toAccount;
-                            if ($fromAccount) {
-                                $fromAccount->current_balance += $ledger->amount;
-                                $fromAccount->save();
-                            }
-                            if ($toAccount) {
-                                $toAccount->current_balance -= $ledger->amount;
-                                $toAccount->save();
-                            }
-                        }
+                        // Reverse via the engine: self-guards on balance_updated (also reverses
+                        // pending_l2 rows applied at L1 — fixes the delete-during-L1→L2 leak) AND is
+                        // idempotent, so the "remaining ledgers" sweep below cannot double-reverse a
+                        // payment row that also carries this order_id.
+                        (new \App\Services\FIN\BalancePostingService())->reverse($ledger);
                     }
                 }
             }
@@ -1051,18 +1043,9 @@ class QurbaniWebController extends Controller
             // 2. Reverse any remaining ledger entries for this order (delivery entries etc.)
             $remainingLedgers = \App\Models\FIN\LedgerModel::where('order_id', $id)->get();
             foreach ($remainingLedgers as $ledger) {
-                if ($ledger->approval_status === \App\Models\FIN\LedgerModel::STATUS_APPROVED) {
-                    $fromAccount = $ledger->fromAccount;
-                    $toAccount = $ledger->toAccount;
-                    if ($fromAccount) {
-                        $fromAccount->current_balance += $ledger->amount;
-                        $fromAccount->save();
-                    }
-                    if ($toAccount) {
-                        $toAccount->current_balance -= $ledger->amount;
-                        $toAccount->save();
-                    }
-                }
+                // Engine self-guards (balance_updated) + is idempotent, so rows already reversed in
+                // the payments loop above are safely skipped, and pending_l2 rows are reversed too.
+                (new \App\Services\FIN\BalancePostingService())->reverse($ledger);
             }
             DB::table('t_fin_ledger')->where('order_id', $id)->delete();
 

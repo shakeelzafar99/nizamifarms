@@ -14,8 +14,12 @@ class RoleController extends Controller
         $roles = RoleModel::withCount('userRoles')
             ->with('mobilePermissions')
             ->paginate(10);
-        
-        return view('pages.roles.index', compact('roles'));
+
+        // Approval-authority indicators (Phase 3): which roles are L1 / L2 approvers.
+        $approvalL1 = \App\Models\SysAdmin\RoleApprovalLevelModel::getRolesByLevel(1)->pluck('id')->toArray();
+        $approvalL2 = \App\Models\SysAdmin\RoleApprovalLevelModel::getRolesByLevel(2)->pluck('id')->toArray();
+
+        return view('pages.roles.index', compact('roles', 'approvalL1', 'approvalL2'));
     }
 
     public function show($id)

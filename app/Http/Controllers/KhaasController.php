@@ -1187,6 +1187,11 @@ class KhaasController extends Controller
             ]);
 
             DB::commit();
+
+            // Store-transfer push is sent as a COMBINED, debounced alert by
+            // FirebaseService::flushDueTransferAlerts() (triggered from the polling
+            // endpoints), never one push per move — so nothing to send here.
+
             return back()->with('success', "Transfer of {$quantity} units initiated. Pending approval.");
         } catch (\Exception $e) {
             DB::rollBack();

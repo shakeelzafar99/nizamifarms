@@ -162,7 +162,7 @@ Route::middleware(['auth'])->group(function () {
                 ->where('is_active', 1)->distinct()->count('fcm_token'),
         ];
         return view('admin.operations', compact('appUpdateInfo'));
-    })->name('admin.operations');
+    })->name('admin.operations')->middleware('block.rider');
 
     // Line-item quick-note presets (chips shown next to the per-line-item
     // "Add note" box). Shared team-wide list; same controller backs the mobile
@@ -171,6 +171,12 @@ Route::middleware(['auth'])->group(function () {
     Route::get('/line-item-quick-notes', [\App\Http\Controllers\CRM\LineItemQuickNoteController::class, 'index'])->name('line-item-quick-notes.index');
     Route::post('/line-item-quick-notes', [\App\Http\Controllers\CRM\LineItemQuickNoteController::class, 'store'])->name('line-item-quick-notes.store');
     Route::delete('/line-item-quick-notes/{id}', [\App\Http\Controllers\CRM\LineItemQuickNoteController::class, 'destroy'])->name('line-item-quick-notes.destroy');
+
+    // Per-user UI preferences (Phase 5 — "Customize menu"). Scoped to auth()->id();
+    // a user only ever reads/writes their own row. Guarded server-side against a
+    // missing t_sys_user_setting table, so the feature is inert until the SQL runs.
+    Route::get('/me/settings/sidebar', [\App\Http\Controllers\SysAdmin\UserSettingController::class, 'getSidebar'])->name('me.settings.sidebar.get');
+    Route::post('/me/settings/sidebar', [\App\Http\Controllers\SysAdmin\UserSettingController::class, 'saveSidebar'])->name('me.settings.sidebar.save');
 
     Route::get('/orders', [OrderController::class, 'index'])->name('orders.index');
     Route::get('/orders/filter', [OrderController::class, 'filter'])->name('orders.filter');
@@ -251,12 +257,13 @@ Route::middleware(['auth'])->group(function () {
     // touching any payment row. Used by the "✏️ Edit stamp" popover on
     // invoice.blade.
     Route::post('/orders/{id}/paid-stamp', [OrderController::class, 'updatePaidStamp'])->name('orders.paid-stamp.update');
-    Route::post('/operations/rider-import', [\App\Http\Controllers\CRM\OperationsController::class, 'importRiderAssignments'])->name('operations.rider-import');
-    Route::post('/operations/attendance-import', [\App\Http\Controllers\CRM\OperationsController::class, 'importAttendance'])->name('operations.attendance-import');
-    Route::post('/operations/history-import', [\App\Http\Controllers\CRM\OperationsController::class, 'importHistoryOrders'])->name('operations.history-import');
-    Route::post('/operations/history-delivery-update', [\App\Http\Controllers\CRM\OperationsController::class, 'updateHistoryDeliveryDates'])->name('operations.history-delivery-update');
+    // Operations import/broadcast endpoints — staff only (rider accounts blocked server-side).
+    Route::post('/operations/rider-import', [\App\Http\Controllers\CRM\OperationsController::class, 'importRiderAssignments'])->name('operations.rider-import')->middleware('block.rider');
+    Route::post('/operations/attendance-import', [\App\Http\Controllers\CRM\OperationsController::class, 'importAttendance'])->name('operations.attendance-import')->middleware('block.rider');
+    Route::post('/operations/history-import', [\App\Http\Controllers\CRM\OperationsController::class, 'importHistoryOrders'])->name('operations.history-import')->middleware('block.rider');
+    Route::post('/operations/history-delivery-update', [\App\Http\Controllers\CRM\OperationsController::class, 'updateHistoryDeliveryDates'])->name('operations.history-delivery-update')->middleware('block.rider');
     // App-release broadcast: push "update available" to all active mobile devices (Operations page button)
-    Route::post('/operations/notify-app-update', [\App\Http\Controllers\CRM\OperationsController::class, 'notifyAppUpdate'])->name('operations.notify-app-update');
+    Route::post('/operations/notify-app-update', [\App\Http\Controllers\CRM\OperationsController::class, 'notifyAppUpdate'])->name('operations.notify-app-update')->middleware('block.rider');
     
     // Rider profile management
     Route::get('/riders', [\App\Http\Controllers\CRM\RiderProfileController::class, 'index'])->name('riders.index');
@@ -270,6 +277,12 @@ Route::middleware(['auth'])->group(function () {
     Route::get('/attendance/data', [\App\Http\Controllers\CRM\AttendanceController::class, 'data'])->name('attendance.data');
     Route::post('/attendance', [\App\Http\Controllers\CRM\AttendanceController::class, 'store'])->name('attendance.store');
     Route::post('/attendance/apply-leave', [\App\Http\Controllers\CRM\AttendanceController::class, 'applyLeave'])->name('attendance.apply-leave');
+    Route::get('/attendance/pending-leaves', [\App\Http\Controllers\CRM\AttendanceController::class, 'pendingLeaves'])->name('attendance.pending-leaves');
+    Route::post('/attendance/leave-request/{id}/approve', [\App\Http\Controllers\CRM\AttendanceController::class, 'approveLeaveRequest'])->name('attendance.leave-approve');
+    Route::post('/attendance/leave-request/{id}/reject', [\App\Http\Controllers\CRM\AttendanceController::class, 'rejectLeaveRequest'])->name('attendance.leave-reject');
+    Route::post('/attendance/grant-leave', [\App\Http\Controllers\CRM\AttendanceController::class, 'grantLeave'])->name('attendance.grant-leave');
+    Route::get('/attendance/leave-balance', [\App\Http\Controllers\CRM\AttendanceController::class, 'leaveBalance'])->name('attendance.leave-balance');
+    Route::post('/attendance/toggle-day-tag', [\App\Http\Controllers\CRM\AttendanceController::class, 'toggleDayTag'])->name('attendance.toggle-day-tag');
     Route::get('/attendance/summary', [\App\Http\Controllers\CRM\AttendanceController::class, 'summary'])->name('attendance.summary');
     Route::get('/attendance/monthly-report', [\App\Http\Controllers\CRM\AttendanceController::class, 'monthlyReport'])->name('attendance.monthly-report');
     Route::get('/attendance/employee-details', [\App\Http\Controllers\CRM\AttendanceController::class, 'employeeDetails'])->name('attendance.employee-details');
@@ -554,8 +567,8 @@ Route::middleware(['auth'])->group(function () {
         });
     });
 
-    // Bulk Status Update Routes (Admin only)
-    Route::prefix('admin')->group(function () {
+    // Bulk Status Update Routes (Admin only) — mass LIVE order status change; staff only.
+    Route::prefix('admin')->middleware('block.rider')->group(function () {
         Route::get('/bulk-status-update', [\App\Http\Controllers\CRM\BulkStatusUpdateController::class, 'showUploadForm'])->name('admin.bulk-status-update');
         Route::post('/bulk-status-update', [\App\Http\Controllers\CRM\BulkStatusUpdateController::class, 'processUpload'])->name('admin.bulk-status-update.process');
     });
@@ -708,7 +721,7 @@ Route::middleware(['auth'])->group(function () {
     Route::put('/products/{id}', [\App\Http\Controllers\CRM\ProductController::class, 'update'])->name('products.update');
     Route::delete('/products/{id}', [\App\Http\Controllers\CRM\ProductController::class, 'destroy'])->name('products.destroy');
     Route::post('/products/import', [\App\Http\Controllers\CRM\ProductController::class, 'importProducts'])->name('products.import');
-    Route::post('/products/import-all', [\App\Http\Controllers\CRM\ProductController::class, 'importAllProducts'])->name('products.import-all');
+    Route::post('/products/import-all', [\App\Http\Controllers\CRM\ProductController::class, 'importAllProducts'])->name('products.import-all')->middleware('block.rider');
     Route::post('/products/{id}/sync', [\App\Http\Controllers\CRM\ProductController::class, 'syncProduct'])->name('products.sync');
     
     // Shipping Configuration Routes
@@ -961,8 +974,8 @@ Route::middleware(['auth'])->group(function () {
             Route::post('/{id}/adjust-balance', [\App\Http\Controllers\FIN\AccountController::class, 'adjustBalance'])->name('adjust-balance');
         });
         
-        // Import Routes
-        Route::prefix('import')->name('import.')->group(function () {
+        // Import Routes — legacy finance data import + DANGER clear-legacy (balance reset); staff only.
+        Route::prefix('import')->name('import.')->middleware('block.rider')->group(function () {
             Route::get('/', [\App\Http\Controllers\FIN\ImportController::class, 'index'])->name('index');
             Route::get('/create', [\App\Http\Controllers\FIN\ImportController::class, 'create'])->name('create');
             Route::post('/legacy', [\App\Http\Controllers\FIN\ImportController::class, 'importLegacy'])->name('legacy');
@@ -1121,6 +1134,15 @@ Route::middleware(['auth'])->group(function () {
             Route::post('/{userId}/activate', [\App\Http\Controllers\HR\EmployeeProfileController::class, 'activate'])->name('activate');
         });
         
+        // Payroll (Phase G — the one-screen monthly payroll)
+        Route::prefix('payroll')->name('payroll.')->group(function () {
+            Route::get('/', [\App\Http\Controllers\HR\PayrollController::class, 'index'])->name('index');
+            Route::get('/data', [\App\Http\Controllers\HR\PayrollController::class, 'data'])->name('data');
+            Route::post('/set-salary', [\App\Http\Controllers\HR\PayrollController::class, 'setSalary'])->name('set-salary');
+            Route::post('/give-advance', [\App\Http\Controllers\HR\PayrollController::class, 'giveAdvance'])->name('give-advance');
+            Route::post('/pay', [\App\Http\Controllers\HR\PayrollController::class, 'pay'])->name('pay');
+        });
+
         // Salary Slips
         Route::prefix('salary-slips')->name('salary-slips.')->group(function () {
             Route::get('/', [\App\Http\Controllers\HR\SalarySlipController::class, 'index'])->name('index');

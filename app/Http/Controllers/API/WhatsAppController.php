@@ -493,7 +493,7 @@ class WhatsAppController extends Controller
                     $proofRows = DB::table('t_fin_payment_signal')
                         ->whereIn('matched_customer_id', $custIds)
                         ->whereIn('status', ['matched', 'amount_mismatch'])
-                        ->get(['matched_customer_id', 'matched_order_id', 'source', 'status']);
+                        ->get(['id', 'matched_customer_id', 'matched_order_id', 'source', 'status', 'paired_signal_id']);
                     // Drop signals whose order's online approval is already approved —
                     // the badge is an action prompt, not a permanent flag.
                     $settledOrders = array_flip(
@@ -501,16 +501,37 @@ class WhatsAppController extends Controller
                             $proofRows->pluck('matched_order_id')->all()
                         )
                     );
+                    $proofRowsByCustomer = [];
                     foreach ($proofRows as $r) {
                         if ($r->matched_order_id !== null && isset($settledOrders[(int) $r->matched_order_id])) {
                             continue;
                         }
                         $c = $r->matched_customer_id;
-                        $proofByCustomer[$c] ??= ['wa' => false, 'email' => false, 'matched' => false, 'mismatch' => false];
+                        $proofByCustomer[$c] ??= ['wa' => false, 'email' => false, 'matched' => false, 'mismatch' => false, 'verified_pair' => false];
                         if ($r->source === 'whatsapp') $proofByCustomer[$c]['wa'] = true;
                         if ($r->source === 'email')    $proofByCustomer[$c]['email'] = true;
                         if ($r->status === 'matched')  $proofByCustomer[$c]['matched'] = true;
                         if ($r->status === 'amount_mismatch') $proofByCustomer[$c]['mismatch'] = true;
+                        $proofRowsByCustomer[$c][(int) $r->id] = $r;
+                    }
+                    // "Verified" needs a GENUINE cross-source pair (mirrors
+                    // PaymentProofStatusService::summarise): a WhatsApp row bound to
+                    // an email row both ways, at least one matched. Pairing already
+                    // enforces same amount + same receiving bank, so a stray bank
+                    // email in the customer's history no longer greens the inbox.
+                    foreach ($proofRowsByCustomer as $c => $rows) {
+                        foreach ($rows as $r) {
+                            if ($r->source !== 'whatsapp' || empty($r->paired_signal_id)) {
+                                continue;
+                            }
+                            $mate = $rows[(int) $r->paired_signal_id] ?? null;
+                            if ($mate && $mate->source === 'email'
+                                && (int) $mate->paired_signal_id === (int) $r->id
+                                && ($r->status === 'matched' || $mate->status === 'matched')) {
+                                $proofByCustomer[$c]['verified_pair'] = true;
+                                break;
+                            }
+                        }
                     }
                 }
             }
@@ -522,7 +543,7 @@ class WhatsAppController extends Controller
                 $proof = null;
                 $pf = $conv->customer_id ? ($proofByCustomer[$conv->customer_id] ?? null) : null;
                 if ($pf) {
-                    if ($pf['wa'] && $pf['email'] && $pf['matched']) {
+                    if (!empty($pf['verified_pair'])) {
                         $pStatus = \App\Services\Payments\Signals\PaymentProofStatusService::VERIFIED;
                     } elseif ($pf['mismatch'] && !$pf['matched']) {
                         $pStatus = \App\Services\Payments\Signals\PaymentProofStatusService::AMOUNT_MISMATCH;

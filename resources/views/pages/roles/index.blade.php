@@ -88,13 +88,23 @@
                                             $roleHasStore = in_array('access_store_mode', $roleMobilePerms);
                                             $roleHasKhaas = in_array('access_khaas_mode', $roleMobilePerms);
                                         @endphp
-                                        @if($roleHasStore || $roleHasKhaas)
-                                        <div class="flex gap-1 mt-1">
+                                        @php
+                                            $roleIsL1 = in_array($role->id, $approvalL1 ?? []);
+                                            $roleIsL2 = in_array($role->id, $approvalL2 ?? []);
+                                        @endphp
+                                        @if($roleHasStore || $roleHasKhaas || $roleIsL1 || $roleIsL2)
+                                        <div class="flex gap-1 mt-1" style="flex-wrap:wrap;">
                                             @if($roleHasStore)
                                                 <span style="display:inline-block;padding:1px 5px;border-radius:4px;font-size:9px;font-weight:600;background-color:#f3e8ff;color:#7c3aed;border:1px solid #c4b5fd;">🏪 Store</span>
                                             @endif
                                             @if($roleHasKhaas)
                                                 <span style="display:inline-block;padding:1px 5px;border-radius:4px;font-size:9px;font-weight:600;background-color:#fffbeb;color:#d97706;border:1px solid #fcd34d;">🌿 Khaas</span>
+                                            @endif
+                                            @if($roleIsL1)
+                                                <span title="Level 1 approver" style="display:inline-block;padding:1px 5px;border-radius:4px;font-size:9px;font-weight:600;background-color:#ecfdf5;color:#059669;border:1px solid #a7f3d0;">✓ L1</span>
+                                            @endif
+                                            @if($roleIsL2)
+                                                <span title="Level 2 approver" style="display:inline-block;padding:1px 5px;border-radius:4px;font-size:9px;font-weight:600;background-color:#eff6ff;color:#1d4ed8;border:1px solid #bfdbfe;">✓ L2</span>
                                             @endif
                                         </div>
                                         @endif

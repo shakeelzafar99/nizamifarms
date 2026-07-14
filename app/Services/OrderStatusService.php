@@ -123,6 +123,8 @@ class OrderStatusService
             $data['created_by'] = auth()->id();
             $status = OrderStatusMaster::create($data);
 
+            $this->reconcileQuantitiesExclusion($status);
+
             return [
                 'success' => true,
                 'message' => 'Status created successfully',
@@ -162,6 +164,8 @@ class OrderStatusService
             $data['updated_by'] = auth()->id();
             $status->update($data);
 
+            $this->reconcileQuantitiesExclusion($status);
+
             return [
                 'success' => true,
                 'message' => 'Status updated successfully',
@@ -178,6 +182,105 @@ class OrderStatusService
                 'success' => false,
                 'message' => 'Failed to update status: ' . $e->getMessage()
             ];
+        }
+    }
+
+    /**
+     * Keep the Open-Order Quantities `excluded_statuses` setting in step with a status's
+     * `counts_in_quantities` flag, then bust the rule-service cache so it applies at once.
+     *
+     * Surgical on purpose: it only adds/removes THIS status's code, so it never clobbers other
+     * entries (e.g. ones set from the legacy gear modal). The quantities engine still reads the
+     * setting, so this is what makes the Hub's "count in quantities" toggle actually take effect
+     * without changing how the endpoints compute exclusion.
+     */
+    private function reconcileQuantitiesExclusion(OrderStatusMaster $status): void
+    {
+        try {
+            $row = DB::table('t_crm_open_quantities_settings')
+                ->where('setting_key', 'excluded_statuses')
+                ->first();
+
+            $excluded = $row ? json_decode($row->setting_value, true) : [];
+            if (!is_array($excluded)) {
+                $excluded = [];
+            }
+            $excluded = array_values(array_unique($excluded));
+
+            $code = $status->status_code;
+            $shouldExclude = !$status->counts_in_quantities; // counts=false => excluded from quantities
+
+            if ($shouldExclude && !in_array($code, $excluded, true)) {
+                $excluded[] = $code;
+            } elseif (!$shouldExclude && in_array($code, $excluded, true)) {
+                $excluded = array_values(array_filter($excluded, fn ($c) => $c !== $code));
+            }
+
+            DB::table('t_crm_open_quantities_settings')->updateOrInsert(
+                ['setting_key' => 'excluded_statuses'],
+                [
+                    'setting_value' => json_encode(array_values($excluded)),
+                    'setting_type' => 'status_filter',
+                    'updated_by_user_id' => auth()->id(),
+                    'updated_at' => now(),
+                ]
+            );
+
+            app(\App\Services\CRM\OrderStatusRuleService::class)->bustCache();
+        } catch (\Throwable $e) {
+            // Never fail the status save because of the sync; the 60s cache TTL self-heals.
+            Log::warning('reconcileQuantitiesExclusion failed', ['error' => $e->getMessage()]);
+        }
+    }
+
+    /**
+     * "Bring back" every prepared line item on an order to the to-prepare queue: clear
+     * preparation_status and restore the inventory that was deducted. Mirrors the manual
+     * un-mark endpoints (OrderController / RiderController) so behaviour is identical.
+     * Non-throwing — a failure here must not undo the status change that already happened.
+     */
+    public function unprepareItems(int $orderId): array
+    {
+        try {
+            $order = OrderModel::with('lineItems')->find($orderId);
+            if (!$order) {
+                return ['success' => false, 'unprepared' => 0, 'restored' => 0];
+            }
+
+            $hasSource = \Schema::hasColumn('t_crm_prod_order_line_item', 'prepared_source');
+            $unprepared = 0;
+            $restored = 0;
+
+            foreach ($order->lineItems as $lineItem) {
+                if ($lineItem->preparation_status === 'preparing') {
+                    $wasDeducted = $lineItem->inventory_deducted;
+                    $lineItem->preparation_status = null;
+                    if ($hasSource) {
+                        $lineItem->prepared_source = null;
+                    }
+                    $lineItem->updated_by = auth()->id();
+                    $lineItem->save();
+                    $unprepared++;
+
+                    if ($wasDeducted && $lineItem->restoreInventory()) {
+                        $restored++;
+                    }
+                }
+            }
+
+            Log::info('Bring-back: items returned to prepare queue', [
+                'order_id' => $orderId,
+                'unprepared' => $unprepared,
+                'inventory_restored' => $restored,
+            ]);
+
+            return ['success' => true, 'unprepared' => $unprepared, 'restored' => $restored];
+        } catch (\Exception $e) {
+            Log::error('OrderStatusService::unprepareItems failed', [
+                'order_id' => $orderId,
+                'error' => $e->getMessage(),
+            ]);
+            return ['success' => false, 'unprepared' => 0, 'restored' => 0];
         }
     }
 

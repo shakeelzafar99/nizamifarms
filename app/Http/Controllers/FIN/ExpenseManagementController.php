@@ -855,36 +855,11 @@ class ExpenseManagementController extends Controller
                 $ledger = LedgerModel::find($expenseRequest->ledger_transaction_id);
                 
                 if ($ledger && $ledger->approval_status === LedgerModel::STATUS_APPROVED) {
-                    // Reverse account balances
-                    $fromAccount = $ledger->fromAccount;
-                    $toAccount = $ledger->toAccount;
-                    
-                    if ($fromAccount) {
-                        // Add amount back to from_account (was deducted)
-                        $fromAccount->current_balance += $ledger->amount;
-                        $fromAccount->save();
-                        
-                        Log::info("Reversed from_account balance", [
-                            'account_id' => $fromAccount->id,
-                            'account_name' => $fromAccount->account_name,
-                            'amount_added' => $ledger->amount,
-                            'new_balance' => $fromAccount->current_balance
-                        ]);
-                    }
-                    
-                    if ($toAccount) {
-                        // Subtract amount from to_account (was added)
-                        $toAccount->current_balance -= $ledger->amount;
-                        $toAccount->save();
-                        
-                        Log::info("Reversed to_account balance", [
-                            'account_id' => $toAccount->id,
-                            'account_name' => $toAccount->account_name,
-                            'amount_subtracted' => $ledger->amount,
-                            'new_balance' => $toAccount->current_balance
-                        ]);
-                    }
-                    
+                    // Reverse balances via the canonical engine (funding +, expense −); self-guards on
+                    // balance_updated and clears it — fixing the old bug where a reversed row kept
+                    // flag=1. REQUIRES the expense flag backfill for legacy rows applied with flag=0.
+                    (new \App\Services\FIN\BalancePostingService())->reverse($ledger);
+
                     // Mark ledger entry as reversed
                     $ledger->approval_status = LedgerModel::STATUS_REVERSED;
                     $ledger->comments = ($ledger->comments ? $ledger->comments . "\n" : '') . 
@@ -899,20 +874,10 @@ class ExpenseManagementController extends Controller
                 $settlementLedger = LedgerModel::find($expenseRequest->settlement_transaction_id);
                 
                 if ($settlementLedger && $settlementLedger->approval_status === LedgerModel::STATUS_APPROVED) {
-                    // Reverse settlement balances
-                    $fromAccount = $settlementLedger->fromAccount;
-                    $toAccount = $settlementLedger->toAccount;
-                    
-                    if ($fromAccount) {
-                        $fromAccount->current_balance += $settlementLedger->amount;
-                        $fromAccount->save();
-                    }
-                    
-                    if ($toAccount) {
-                        $toAccount->current_balance -= $settlementLedger->amount;
-                        $toAccount->save();
-                    }
-                    
+                    // Reverse settlement balances via the canonical engine (EXP_FUND +, till −);
+                    // self-guards on balance_updated and clears it.
+                    (new \App\Services\FIN\BalancePostingService())->reverse($settlementLedger);
+
                     $settlementLedger->approval_status = LedgerModel::STATUS_REVERSED;
                     $settlementLedger->comments = ($settlementLedger->comments ? $settlementLedger->comments . "\n" : '') . 
                         "DELETED (settlement reversal) by {$user->fullname} on " . now()->format('Y-m-d H:i:s');

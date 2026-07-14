@@ -104,6 +104,57 @@ class RequestController extends Controller
     }
 
     /**
+     * Lightweight summary for the in-app "new leave added" banner.
+     * Returns the count of pending leave requests + the newest request id (the
+     * banner uses latest_id as a high-water mark so it only alerts on genuinely
+     * NEW leaves, never the existing backlog) + a short title for the newest one.
+     * Audience is gated on the mobile side by the 'receive_leave_alerts' permission.
+     */
+    public function leaveAlertSummary(Request $request)
+    {
+        try {
+            $agg = DB::table('t_req_master as r')
+                ->join('t_req_category as c', 'c.id', '=', 'r.category_id')
+                ->where('c.category_code', 'leave')
+                ->where('r.status', RequestModel::STATUS_PENDING)
+                ->selectRaw('COUNT(*) as cnt, MAX(r.id) as latest_id')
+                ->first();
+
+            $count = (int) ($agg->cnt ?? 0);
+            $latestId = (int) ($agg->latest_id ?? 0);
+            $latestTitle = null;
+
+            if ($latestId > 0) {
+                $latest = DB::table('t_req_master as r')
+                    ->leftJoin('t_sys_user as u', 'u.id', '=', 'r.requester_user_id')
+                    ->where('r.id', $latestId)
+                    ->select('u.fullname', 'r.leave_start_date', 'r.leave_end_date')
+                    ->first();
+                if ($latest) {
+                    $name = $latest->fullname ?: 'An employee';
+                    $range = '';
+                    if ($latest->leave_start_date) {
+                        $s = date('M j', strtotime($latest->leave_start_date));
+                        $e = $latest->leave_end_date ? date('M j', strtotime($latest->leave_end_date)) : $s;
+                        $range = ($s === $e) ? $s : "{$s} – {$e}";
+                    }
+                    $latestTitle = trim($name . ($range ? " · {$range}" : ''));
+                }
+            }
+
+            return response()->json([
+                'success' => true,
+                'count' => $count,
+                'latest_id' => $latestId,
+                'latest_title' => $latestTitle,
+            ]);
+        } catch (\Exception $e) {
+            \Log::error('leaveAlertSummary failed', ['error' => $e->getMessage()]);
+            return response()->json(['success' => true, 'count' => 0, 'latest_id' => 0, 'latest_title' => null]);
+        }
+    }
+
+    /**
      * Show create request form
      */
     public function create()
@@ -233,6 +284,36 @@ class RequestController extends Controller
                     'success' => false,
                     'message' => "Leave already raised for {$existingStart} - {$existingEnd} ({$overlapping->request_number}). Cannot create overlapping leave request."
                 ], 422);
+            }
+        }
+
+        // ── Leave policy (single pool + same-day cap). Applies only to a rider applying
+        //    for THEMSELVES; a manager creating a leave for someone else is unbound
+        //    (that path is the Attendance apply-leave). Sets $policyLeaveType so the row
+        //    records how it was applied (planned = advance, emergency = same-day).
+        $policyLeaveType = null;
+        if ($request->filled('leave_start_date') && $request->filled('leave_end_date')) {
+            $catForPolicy = RequestCategoryModel::find($validated['category_id']);
+            $actorId = (int) auth()->id();
+            $forUserId = (int) ($validated['requester_user_id'] ?? $actorId);
+            if ($catForPolicy && $catForPolicy->category_code === 'leave') {
+                if ($forUserId === $actorId) {
+                    $policyRes = (new \App\Services\HR\LeavePolicyService())->validateApplication(
+                        $forUserId, $validated['leave_start_date'], $validated['leave_end_date'],
+                        date('Y-m-d'), date('H:i')
+                    );
+                    if (!$policyRes['ok']) {
+                        return response()->json(['success' => false, 'message' => $policyRes['message']], 422);
+                    }
+                    // planned = applied in advance; emergency = same-day (feeds the cap).
+                    $policyLeaveType = $policyRes['is_sameday'] ? 'emergency' : 'planned';
+                } else {
+                    // Manager creating a leave FOR someone else: honor their explicit
+                    // choice but whitelist it — anything other than 'emergency'
+                    // (including legacy/junk values) is stored as 'planned'.
+                    $posted = strtolower(trim((string) ($validated['leave_type'] ?? '')));
+                    $policyLeaveType = $posted === 'emergency' ? 'emergency' : 'planned';
+                }
             }
         }
 
@@ -409,7 +490,9 @@ class RequestController extends Controller
                 'business_unit_id' => $validated['business_unit_id'] ?? 1,
                 'leave_start_date' => $validated['leave_start_date'] ?? null,
                 'leave_end_date' => $validated['leave_end_date'] ?? null,
-                'leave_type' => $validated['leave_type'] ?? null,
+                // Self-service leaves record how they were applied (casual/emergency);
+                // manager/other paths keep whatever was passed.
+                'leave_type' => $policyLeaveType ?? ($validated['leave_type'] ?? null),
                 'leave_days' => $leaveDays,
                 'attachments' => $attachments,
                 'status' => $overallStatus,
@@ -467,7 +550,36 @@ class RequestController extends Controller
 
             DB::commit();
 
-            $autoApprovedNote = ($userHasL1 || $userHasL2) && $overallStatus === RequestModel::STATUS_APPROVED 
+            // ⭐ Alert management (permission: receive_leave_alerts) when a NEW leave
+            // request is added and is pending review. Skips auto-approved leaves and
+            // never notifies the creator about their own entry. Best-effort.
+            if (($category->category_code ?? null) === 'leave'
+                && $overallStatus === RequestModel::STATUS_PENDING) {
+                try {
+                    $applicantName = 'An employee';
+                    if ($requesterId === $loggedInUser->id) {
+                        $applicantName = $loggedInUser->fullname ?: 'An employee';
+                    } elseif (isset($requesterUser) && $requesterUser) {
+                        $applicantName = $requesterUser->fullname ?: 'An employee';
+                    }
+                    $range = null;
+                    if ($requestModel->leave_start_date) {
+                        $s = date('M j', strtotime($requestModel->leave_start_date));
+                        $e2 = $requestModel->leave_end_date ? date('M j', strtotime($requestModel->leave_end_date)) : $s;
+                        $range = ($s === $e2) ? $s : "{$s} – {$e2}";
+                    }
+                    app(\App\Services\FirebaseService::class)->notifyLeaveAdded(
+                        (int) $requestModel->id,
+                        $applicantName,
+                        $range,
+                        (int) $loggedInUser->id
+                    );
+                } catch (\Throwable $e) {
+                    \Log::warning('Leave alert failed (web/store)', ['error' => $e->getMessage()]);
+                }
+            }
+
+            $autoApprovedNote = ($userHasL1 || $userHasL2) && $overallStatus === RequestModel::STATUS_APPROVED
                 ? ' (Auto-approved)' 
                 : '';
             

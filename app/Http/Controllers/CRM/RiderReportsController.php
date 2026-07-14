@@ -231,6 +231,7 @@ class RiderReportsController extends Controller
                                     array_filter($rep['stops'], fn ($s) => !empty($s['is_unknown'])))),
                 'gaps'        => $rep['gaps'],
                 'odd_routes'  => $rep['odd_routes'] ?? [],
+                'checkout'    => $rep['checkout'] ?? null,  // Phase H checkout-location audit
                 'missed_dispatch' => null,
             ];
         }
@@ -260,7 +261,143 @@ class RiderReportsController extends Controller
         }
         unset($r);
 
+        // Merge company-bike meter issues (info-only): overnight grace exceeded and/or no meter
+        // reading recorded. Fully guarded — non-bike riders, no meter, or a missing column never
+        // surface here.
+        foreach ($this->bikeMeterIssues($date) as $rid => $bm) {
+            if (isset($out[$rid])) {
+                $out[$rid]['bike_meter'] = $bm;
+            } else {
+                // A flagged rider with no delivery/trail data still deserves the flag.
+                $out[$rid] = [
+                    'user_id' => $rid, 'rider_name' => $bm['rider_name'] ?: 'Rider',
+                    'day' => ['rider_name' => $bm['rider_name'], 'delivered_count' => 0, 'eta_total' => 0,
+                              'ontime_count' => 0, 'has_verified_count' => 0, 'at_verified_count' => 0],
+                    'orders' => [], 'stops' => [], 'gaps' => [], 'odd_routes' => [],
+                    'missed_dispatch' => null, 'lateness' => null, 'bike_meter' => $bm,
+                ];
+            }
+        }
+        foreach ($out as $rid => &$r) {
+            if (!array_key_exists('bike_meter', $r)) { $r['bike_meter'] = null; }
+        }
+        unset($r);
+
         return $out;
+    }
+
+    /**
+     * Company-bike meter issues on $date. Per rider, either or both of:
+     *   - grace   : start meter is more than (per-rider or default) grace km above the previous
+     *               day's end meter (used the bike off-hours).
+     *   - no_meter: checked in without recording the start meter, or checked out without an end
+     *               meter — so their bike km can't be tracked. (missing = start|end|both)
+     * Returns [userId => ['rider_name'=>, 'grace'=>?, 'no_meter'=>?]]. Fully guarded so a missing
+     * column, a non-bike rider, or a rider who didn't come simply produces nothing (never errors).
+     */
+    private function bikeMeterIssues(string $date): array
+    {
+        $out = [];
+        try {
+            if (!\Illuminate\Support\Facades\Schema::hasColumn('t_ops_rider_profile', 'company_bike')) {
+                return $out; // feature column not deployed yet
+            }
+            $hasGrace = \Illuminate\Support\Facades\Schema::hasColumn('t_ops_rider_profile', 'overnight_grace_km');
+
+            // Company-bike riders + their per-rider grace override (if any).
+            $cols = $hasGrace ? ['user_id', 'overnight_grace_km'] : ['user_id'];
+            $bikeRiders = DB::table('t_ops_rider_profile')->where('company_bike', 1)->get($cols);
+            if ($bikeRiders->isEmpty()) {
+                return $out;
+            }
+            $ids = $bikeRiders->pluck('user_id')->all();
+            $graceByUser = [];
+            foreach ($bikeRiders as $b) {
+                if ($hasGrace && $b->overnight_grace_km !== null && $b->overnight_grace_km !== '') {
+                    $graceByUser[$b->user_id] = (float) $b->overnight_grace_km;
+                }
+            }
+            $defaultGrace = (float) $this->attConfig('ATTENDANCE_OVERNIGHT_GRACE_KM', 30);
+
+            // Today's attendance for those riders (only riders who actually came in today).
+            $today = DB::table('t_ops_attendance')
+                ->whereIn('user_id', $ids)->where('attendance_date', $date)
+                ->get(['user_id', 'login_time', 'logout_time', 'meter_start', 'meter_end'])
+                ->keyBy('user_id');
+            if ($today->isEmpty()) {
+                return $out;
+            }
+
+            // Previous end meter per rider (most recent attendance_date < $date with a meter_end).
+            $ph = implode(',', array_fill(0, count($ids), '?'));
+            $prev = DB::select("
+                SELECT a.user_id, a.meter_end, a.attendance_date
+                FROM t_ops_attendance a
+                INNER JOIN (
+                    SELECT user_id, MAX(attendance_date) AS md FROM t_ops_attendance
+                    WHERE user_id IN ($ph) AND attendance_date < ? AND meter_end IS NOT NULL AND meter_end != ''
+                    GROUP BY user_id
+                ) l ON a.user_id = l.user_id AND a.attendance_date = l.md
+            ", array_merge($ids, [$date]));
+            $prevEnd = [];
+            foreach ($prev as $p) { $prevEnd[$p->user_id] = ['end' => $p->meter_end, 'date' => $p->attendance_date]; }
+
+            $names = DB::table('t_sys_user')->whereIn('id', $ids)->pluck('fullname', 'id');
+            $has = fn ($v) => $v !== null && $v !== '';
+
+            foreach ($today as $uid => $att) {
+                $checkedIn  = $has($att->login_time);
+                $checkedOut = $has($att->logout_time);
+                $hasStart   = $has($att->meter_start);
+                $hasEnd     = $has($att->meter_end);
+                if (!$checkedIn && !$checkedOut) { continue; } // never actually worked
+
+                // No-meter: checked in without a start, or checked out without an end.
+                $missStart = $checkedIn && !$hasStart;
+                $missEnd   = $checkedOut && !$hasEnd;
+                $noMeter = null;
+                if ($missStart || $missEnd) {
+                    $noMeter = ['missing' => $missStart && $missEnd ? 'both' : ($missStart ? 'start' : 'end')];
+                }
+
+                // Grace: needs a start meter today + a prior end meter to compare against.
+                $grace = null;
+                if ($hasStart && isset($prevEnd[$uid])) {
+                    $start = (float) $att->meter_start;
+                    $pend  = (float) $prevEnd[$uid]['end'];
+                    $g     = $graceByUser[$uid] ?? $defaultGrace;
+                    $over  = $start - $pend;
+                    if ($over > $g) {
+                        $grace = [
+                            'overnight_km'   => (int) round($over),
+                            'grace_km'       => (int) round($g),
+                            'meter_start'    => (int) round($start),
+                            'prev_meter_end' => (int) round($pend),
+                            'prev_date'      => $prevEnd[$uid]['date'],
+                        ];
+                    }
+                }
+
+                if ($grace || $noMeter) {
+                    $out[$uid] = ['rider_name' => $names[$uid] ?? 'Rider', 'grace' => $grace, 'no_meter' => $noMeter];
+                }
+            }
+        } catch (\Throwable $e) {
+            \Log::warning('bikeMeterIssues failed (non-fatal)', ['date' => $date, 'error' => $e->getMessage()]);
+            return [];
+        }
+        return $out;
+    }
+
+    /** t_fin_config read with a default — never throws (a config hiccup must not break reports). */
+    private function attConfig(string $key, $default)
+    {
+        try {
+            $v = DB::table('t_fin_config')->where('config_key', $key)->value('config_value');
+            return ($v === null || $v === '') ? $default : $v;
+        } catch (\Throwable $e) {
+            return $default;
+        }
     }
 
     /**

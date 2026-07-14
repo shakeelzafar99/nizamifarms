@@ -168,31 +168,9 @@ class AccountModel extends BaseModel
         return $query;
     }
 
-    /**
-     * Helper Methods
-     */
-    public function updateBalance($amount, $isCredit = true)
-    {
-        if ($isCredit) {
-            // Credit increases: Liabilities, Income, Equity
-            // Credit decreases: Assets, Expenses
-            if (in_array($this->account_type, [self::TYPE_LIABILITY, self::TYPE_INCOME, self::TYPE_EQUITY])) {
-                $this->current_balance += $amount;
-            } else {
-                $this->current_balance -= $amount;
-            }
-        } else {
-            // Debit increases: Assets, Expenses
-            // Debit decreases: Liabilities, Income, Equity
-            if (in_array($this->account_type, [self::TYPE_ASSET, self::TYPE_EXPENSE])) {
-                $this->current_balance += $amount;
-            } else {
-                $this->current_balance -= $amount;
-            }
-        }
-        
-        $this->save();
-    }
+    // [Ledger L5 cleanup] Removed dead updateBalance() helper (0 callers). It used an income-as-
+    // credit-normal convention that CONFLICTS with how revenue is actually stored here (negative),
+    // so it was a latent landmine. All balance mutation now goes through BalancePostingService.
 
     public function getBalanceAttribute()
     {

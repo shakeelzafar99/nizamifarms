@@ -308,7 +308,29 @@ class PaymentProofStatusService
         $hasMismatch = $signals->where('status', PaymentSignal::STATUS_AMOUNT_MISMATCH)->isNotEmpty();
         $hasMatched  = $signals->where('status', PaymentSignal::STATUS_MATCHED)->isNotEmpty();
 
-        if ($hasWa && $hasEmail && $hasMatched) {
+        // "Verified" (green) requires a GENUINE cross-source pair: a WhatsApp
+        // screenshot and a bank email BOUND to each other (paired_signal_id, both
+        // directions) as the SAME payment, with the pair matched. The matcher only
+        // pairs two signals when they agree on amount (to the rupee) AND landed in
+        // the same receiving bank, so a stray/unrelated email merely attached to
+        // the order can no longer green-light it — the order stays "proof received"
+        // until the real bank email for THAT payment arrives. (Previously any
+        // screenshot + any email + any match on the order sufficed, which let an
+        // unrelated bank credit falsely verify it.)
+        $byId = $signals->keyBy('id');
+        $hasVerifiedPair = $signals->contains(function ($s) use ($byId) {
+            if ($s->source !== PaymentSignal::SOURCE_WHATSAPP || empty($s->paired_signal_id)) {
+                return false;
+            }
+            $mate = $byId->get($s->paired_signal_id);
+            return $mate
+                && $mate->source === PaymentSignal::SOURCE_EMAIL
+                && (int) $mate->paired_signal_id === (int) $s->id
+                && ($s->status === PaymentSignal::STATUS_MATCHED
+                    || $mate->status === PaymentSignal::STATUS_MATCHED);
+        });
+
+        if ($hasVerifiedPair) {
             $status = self::VERIFIED;
         } elseif ($hasMismatch && !$hasMatched) {
             $status = self::AMOUNT_MISMATCH;

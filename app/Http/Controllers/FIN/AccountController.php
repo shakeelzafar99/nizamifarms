@@ -309,6 +309,18 @@ class AccountController extends Controller
             DB::beginTransaction();
 
             $account = AccountModel::findOrFail($id);
+
+            // ⭐ [Ledger L2, B4] The ONLINE (bank-category) account must be adjusted PER BANK on the
+            // Bank Balances page (⚖ Adjust), which tags the correct physical bank via
+            // t_fin_bank_balance_adjustment. A generic equity↔ONLINE adjustment here would create an
+            // UNTAGGED online row AND double-count against that per-bank system. Route Taimur to the
+            // proper per-bank backdoor instead of blocking his ability to correct balances.
+            if ($account->account_category === AccountModel::CATEGORY_BANK) {
+                DB::rollBack();
+                return redirect()->route('fin.bank-balances')
+                    ->with('error', 'To correct a bank balance, use the ⚖ Adjust action on the Bank Balances page — it records the adjustment against the specific bank and keeps per-bank tracking correct.');
+            }
+
             $equityAccount = AccountModel::getByCode('EQUITY_OPENING');
 
             if (!$equityAccount) {

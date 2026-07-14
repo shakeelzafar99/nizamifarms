@@ -459,6 +459,7 @@ class ReportsController extends Controller
 
             // Group expenses by date with NF/Khaas split per day.
             $expensesByDate = [];
+            $expensesByCategory = []; // ALSO group by expense sub-category (Salaries, Food, ...)
             $expenseTotal = 0;
             $expenseCount = 0;
             $expensesNfTotal    = 0;
@@ -485,16 +486,38 @@ class ReportsController extends Controller
                     'bu_code' => $exp->bu_code,
                 ];
                 $expensesByDate[$date]['total'] += $exp->amount;
+
+                // ALSO accumulate by expense sub-category (Salaries / Food / Maintenance …).
+                $catKey = $category ?? 'Uncategorized';
+                if (!isset($expensesByCategory[$catKey])) {
+                    $expensesByCategory[$catKey] = ['category' => $catKey, 'total' => 0, 'total_nf' => 0, 'total_khaas' => 0, 'count' => 0, 'items' => []];
+                }
+                $expensesByCategory[$catKey]['items'][] = [
+                    'description' => $exp->description,
+                    'amount' => round($exp->amount, 2),
+                    'user' => $exp->created_by ?? 'Unknown',
+                    'date' => $date,
+                    'entry_date' => $exp->entry_date,
+                    'bu_code' => $exp->bu_code,
+                ];
+                $expensesByCategory[$catKey]['total'] += $exp->amount;
+                $expensesByCategory[$catKey]['count']++;
+
                 if ($isKhaas) {
                     $expensesByDate[$date]['total_khaas'] += $exp->amount;
                     $expensesKhaasTotal += $exp->amount;
+                    $expensesByCategory[$catKey]['total_khaas'] += $exp->amount;
                 } else {
                     $expensesByDate[$date]['total_nf'] += $exp->amount;
                     $expensesNfTotal += $exp->amount;
+                    $expensesByCategory[$catKey]['total_nf'] += $exp->amount;
                 }
                 $expenseTotal += $exp->amount;
                 $expenseCount++;
             }
+            // Sort expense categories by total desc for the breakdown view.
+            $expensesByCategory = array_values($expensesByCategory);
+            usort($expensesByCategory, fn($a, $b) => $b['total'] <=> $a['total']);
             
             // Get vendor purchases grouped by date (excluding Qurbani),
             // tagged with NF/KHAAS bu_code for the drill-down split.
@@ -520,6 +543,7 @@ class ReportsController extends Controller
             ", [$startDate->format('Y-m-d'), $endDate->format('Y-m-d'), LedgerModel::TYPE_VENDOR_PURCHASE, LedgerModel::STATUS_APPROVED]);
 
             $purchasesByDate = [];
+            $purchasesByVendor = []; // ALSO group by vendor → date (daily within each vendor)
             $purchaseTotal = 0;
             $purchaseCount = 0;
             $vendorNfTotal    = 0;
@@ -546,16 +570,45 @@ class ReportsController extends Controller
                     'bu_code' => $vp->bu_code,
                 ];
                 $purchasesByDate[$date]['total'] += $vp->amount;
+
+                // ALSO group by vendor, then by date within the vendor.
+                $vkey = $vendorName ?? 'Unknown Vendor';
+                if (!isset($purchasesByVendor[$vkey])) {
+                    $purchasesByVendor[$vkey] = ['vendor_name' => $vkey, 'total' => 0, 'total_nf' => 0, 'total_khaas' => 0, 'count' => 0, 'by_date' => []];
+                }
+                if (!isset($purchasesByVendor[$vkey]['by_date'][$date])) {
+                    $purchasesByVendor[$vkey]['by_date'][$date] = ['date' => $date, 'total' => 0, 'items' => []];
+                }
+                $purchasesByVendor[$vkey]['by_date'][$date]['items'][] = [
+                    'description' => $vp->description,
+                    'amount' => round($vp->amount, 2),
+                    'user' => $vp->created_by ?? 'Unknown',
+                    'entry_date' => $vp->entry_date,
+                    'bu_code' => $vp->bu_code,
+                ];
+                $purchasesByVendor[$vkey]['by_date'][$date]['total'] += $vp->amount;
+                $purchasesByVendor[$vkey]['total'] += $vp->amount;
+                $purchasesByVendor[$vkey]['count']++;
+
                 if ($isKhaas) {
                     $purchasesByDate[$date]['total_khaas'] += $vp->amount;
                     $vendorKhaasTotal += $vp->amount;
+                    $purchasesByVendor[$vkey]['total_khaas'] += $vp->amount;
                 } else {
                     $purchasesByDate[$date]['total_nf'] += $vp->amount;
                     $vendorNfTotal += $vp->amount;
+                    $purchasesByVendor[$vkey]['total_nf'] += $vp->amount;
                 }
                 $purchaseTotal += $vp->amount;
                 $purchaseCount++;
             }
+            // Flatten each vendor's date map and sort vendors by total desc.
+            $purchasesByVendor = array_values($purchasesByVendor);
+            foreach ($purchasesByVendor as &$pv) {
+                $pv['by_date'] = array_values($pv['by_date']);
+            }
+            unset($pv);
+            usort($purchasesByVendor, fn($a, $b) => $b['total'] <=> $a['total']);
             
             // Get asset purchases grouped by transaction date
             $assetsRaw = DB::select("
@@ -623,6 +676,7 @@ class ReportsController extends Controller
                         'total_khaas' => round($expensesKhaasTotal, 2),
                         'count' => $expenseCount,
                         'by_date' => array_values($expensesByDate),
+                        'by_category' => $expensesByCategory, // Salaries / Food / Maintenance …
                     ],
                     'vendor_purchases' => [
                         'total' => round($purchaseTotal, 2),
@@ -630,6 +684,7 @@ class ReportsController extends Controller
                         'total_khaas' => round($vendorKhaasTotal, 2),
                         'count' => $purchaseCount,
                         'by_date' => array_values($purchasesByDate),
+                        'by_vendor' => $purchasesByVendor, // vendor → daily breakdown
                     ],
                     'asset_purchases' => [
                         'total' => round($assetTotal, 2),

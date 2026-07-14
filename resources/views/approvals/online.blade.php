@@ -390,6 +390,39 @@
         color: #059669;
         min-width: 120px;
     }
+
+    /* ── In-app WhatsApp chat drawer (opens the customer's chat in a right-side
+          panel on THIS page, instead of navigating away to /messages) ── */
+    .wa-chat-overlay {
+        position: fixed; inset: 0; z-index: 1200;
+        background: rgba(15, 23, 42, .45);
+        display: none; justify-content: flex-end;
+        opacity: 0; transition: opacity .2s ease;
+    }
+    .wa-chat-overlay.open { display: flex; opacity: 1; }
+    .wa-chat-drawer {
+        width: min(560px, 94vw); height: 100%;
+        background: #fff; display: flex; flex-direction: column;
+        box-shadow: -8px 0 28px rgba(0, 0, 0, .22);
+        transform: translateX(100%); transition: transform .25s ease;
+    }
+    .wa-chat-overlay.open .wa-chat-drawer { transform: translateX(0); }
+    .wa-chat-drawer-hdr {
+        display: flex; align-items: center; justify-content: space-between;
+        gap: 10px; padding: 10px 14px; background: #075E54; color: #fff; flex-shrink: 0;
+    }
+    .wa-chat-drawer-title {
+        font-weight: 700; font-size: 15px; overflow: hidden;
+        text-overflow: ellipsis; white-space: nowrap;
+    }
+    .wa-chat-drawer-actions { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
+    .wa-chat-drawer-btn {
+        background: rgba(255, 255, 255, .15); color: #fff; border: none; border-radius: 6px;
+        width: 30px; height: 30px; display: inline-flex; align-items: center; justify-content: center;
+        cursor: pointer; font-size: 15px; text-decoration: none; line-height: 1;
+    }
+    .wa-chat-drawer-btn:hover { background: rgba(255, 255, 255, .3); }
+    .wa-chat-frame { flex: 1; width: 100%; border: none; }
 </style>
 @endpush
 
@@ -548,6 +581,25 @@
             <button onclick="closeBulkAssignBank()" style="padding:8px 16px; border:none; background:#0369A1; color:#fff; border-radius:8px; cursor:pointer; font-weight:600; font-size:13px;">Done</button>
         </div>
     </div>
+</div>
+
+{{-- In-app WhatsApp chat drawer. Opened by the group-header 💬 button; embeds
+     the Messages chat for that customer (/messages?embed=1&focus_phone=…) so
+     staff can read/reply without leaving the approvals page. --}}
+<div id="waChatOverlay" class="wa-chat-overlay" aria-hidden="true"
+     onclick="if (event.target === this) closeWaChatDrawer()">
+    <aside class="wa-chat-drawer" role="dialog" aria-label="WhatsApp chat">
+        <div class="wa-chat-drawer-hdr">
+            <span class="wa-chat-drawer-title" id="waChatDrawerTitle">💬 WhatsApp</span>
+            <div class="wa-chat-drawer-actions">
+                <a id="waChatDrawerFull" class="wa-chat-drawer-btn" href="#" target="_blank"
+                   title="Open the full Messages page in a new tab">↗</a>
+                <button type="button" class="wa-chat-drawer-btn" onclick="closeWaChatDrawer()"
+                        title="Close">✕</button>
+            </div>
+        </div>
+        <iframe id="waChatFrame" class="wa-chat-frame" title="WhatsApp chat" src="about:blank"></iframe>
+    </aside>
 </div>
 
 @endsection
@@ -1024,9 +1076,9 @@ function renderItems(groups) {
                         <button class="approve-group-btn" style="background: #EEF2FF; color: #4F46E5; border: 1px solid #C7D2FE;" onclick="selectAllShopGroup(${shopFirstSelectable})" title="Select all unpaid invoices of ${escapeHtml(group.customer)} for a bulk payment">☑ All</button>
                         ` : ''}
                         ${group.customer_phone && formatPhoneForWhatsApp(group.customer_phone) ? `
-                        <a href="https://wa.me/${formatPhoneForWhatsApp(group.customer_phone)}" target="_blank"
+                        <button type="button" onclick="openWaChatDrawer(this.dataset.waPhone, this.dataset.waName)" data-wa-phone="${escapeHtml(group.customer_phone)}" data-wa-name="${escapeHtml(group.customer)}"
                            class="approve-group-btn" style="background: #25D366; text-decoration: none; display: inline-flex; align-items: center; gap: 4px; color: white;"
-                           title="WhatsApp ${escapeHtml(group.customer)}">💬</a>
+                           title="Open in-app WhatsApp chat with ${escapeHtml(group.customer)}">💬</button>
                         ` : ''}
                         <button class="approve-group-btn" style="background: #EEF2FF; color: #4F46E5; border: 1px solid #C7D2FE;" onclick="openCustomerReport('${escapeHtml(group.customer)}')" title="Generate report for ${escapeHtml(group.customer)}">📋</button>
                     </div>
@@ -1055,11 +1107,11 @@ function renderItems(groups) {
                     <div class="customer-actions">
                         <span class="customer-total">Rs. ${numberFormat(group.total_amount)}</span>
                         ${group.customer_phone && formatPhoneForWhatsApp(group.customer_phone) ? `
-                        <a href="https://wa.me/${formatPhoneForWhatsApp(group.customer_phone)}" target="_blank"
+                        <button type="button" onclick="openWaChatDrawer(this.dataset.waPhone, this.dataset.waName)" data-wa-phone="${escapeHtml(group.customer_phone)}" data-wa-name="${escapeHtml(group.customer)}"
                            class="approve-group-btn" style="background: #25D366; text-decoration: none; display: inline-flex; align-items: center; gap: 4px; color: white;" 
-                           title="WhatsApp ${escapeHtml(group.customer)}">
+                           title="Open in-app WhatsApp chat with ${escapeHtml(group.customer)}">
                             💬
-                        </a>
+                        </button>
                         ` : ''}
                         ${!isApproved ? `
                         ${group.customer_phone && formatPhoneForWhatsApp(group.customer_phone) ? `
@@ -3413,5 +3465,40 @@ async function refreshReceivingAccountsData() {
         // Silently fail - chips will update on next page load
     }
 }
+
+// ── In-app WhatsApp chat drawer ──────────────────────────────────────────────
+// Opens the customer's WhatsApp conversation in a right-side drawer on THIS
+// page (embedding the Messages chat via an iframe) instead of navigating away.
+function openWaChatDrawer(phone, name) {
+    if (!phone) return;
+    const overlay = document.getElementById('waChatOverlay');
+    const frame   = document.getElementById('waChatFrame');
+    const title   = document.getElementById('waChatDrawerTitle');
+    const full    = document.getElementById('waChatDrawerFull');
+    if (!overlay || !frame) return;
+    // embed=1 → chrome-less Messages layout; focus_phone auto-opens the chat.
+    frame.src = '/messages?embed=1&focus_phone=' + encodeURIComponent(phone);
+    if (full)  full.href = '/messages?focus_phone=' + encodeURIComponent(phone);
+    if (title) title.textContent = '💬 ' + (name || 'WhatsApp');
+    overlay.classList.add('open');
+    overlay.setAttribute('aria-hidden', 'false');
+    document.body.style.overflow = 'hidden';
+}
+function closeWaChatDrawer() {
+    const overlay = document.getElementById('waChatOverlay');
+    const frame   = document.getElementById('waChatFrame');
+    if (!overlay) return;
+    overlay.classList.remove('open');
+    overlay.setAttribute('aria-hidden', 'true');
+    document.body.style.overflow = '';
+    // Unload the iframe so its polling/network stops while the drawer is closed.
+    if (frame) frame.src = 'about:blank';
+}
+document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape') {
+        const o = document.getElementById('waChatOverlay');
+        if (o && o.classList.contains('open')) closeWaChatDrawer();
+    }
+});
 </script>
 @endpush

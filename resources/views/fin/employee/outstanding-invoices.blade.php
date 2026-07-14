@@ -1,5 +1,26 @@
 @extends('layouts.app')
 
+@push('custom_css')
+{{-- NF (Jul-2026): several Tailwind colour utilities are purged from the built
+     styles.css (the @vite build is off), so elements that rely on them for a
+     coloured BACKGROUND render with none — and any text-white / light text on
+     top becomes invisible. Most visible here: the purple rider header bars,
+     where the rider name and Total Outstanding amount showed white-on-white.
+     Backfill the exact purged classes used on this page that carry light text.
+     Page-scoped (only renders with this view). --}}
+<style>
+    .bg-gradient-to-r.from-purple-600.to-indigo-600 {
+        background-image: linear-gradient(to right, #9333ea, #4f46e5);
+    }
+    .text-purple-100 { color: #ede9fe; }
+    /* count/amount badges that use text-white on a purged solid background */
+    .bg-green-600  { background-color: #16a34a; }
+    .bg-red-500    { background-color: #ef4444; }
+    .bg-yellow-600 { background-color: #ca8a04; }
+    .bg-orange-900 { background-color: #7c2d12; }
+</style>
+@endpush
+
 @section('content')
 <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
     
@@ -726,6 +747,16 @@
                     <div>
                         <h3 class="text-base font-bold text-white">{{ $riderData['account']->account_name }}</h3>
                         <p class="text-xs text-purple-100">{{ $riderData['account']->account_code }} • {{ $riderData['invoice_count'] }} invoice(s)</p>
+                        @if(!empty($riderData['cash_confirmation']))
+                            @php
+                                $cc = $riderData['cash_confirmation'];
+                                $ccIssue = (($cc->cash_confirm_status ?? 'confirmed') === 'issue');
+                            @endphp
+                            <span style="display:inline-flex;align-items:center;gap:4px;margin-top:5px;padding:2px 9px;border-radius:9999px;font-size:11px;font-weight:700;background:{{ $ccIssue ? '#fde68a' : '#dcfce7' }};color:{{ $ccIssue ? '#92400e' : '#166534' }};"
+                                  title="Rider {{ $ccIssue ? 'flagged the cash amount as wrong' : 'confirmed the cash he is holding' }} at check-out">
+                                {{ $ccIssue ? '⚠️ Flagged issue' : '✓ Confirmed' }} · Rs. {{ number_format($cc->cash_confirmed_amount ?? 0, 0) }} · {{ \Carbon\Carbon::parse($cc->cash_confirmed_at)->format('M j, g:i A') }}
+                            </span>
+                        @endif
                     </div>
                 </div>
                 <div class="text-right">

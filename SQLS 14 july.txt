@@ -1,0 +1,653 @@
+ALTER TABLE t_ops_rider_profile ADD COLUMN company_bike TINYINT(1) NOT NULL DEFAULT 0;
+
+ALTER TABLE t_ops_rider_profile
+  ADD COLUMN IF NOT EXISTS overnight_grace_km INT NULL;
+  
+-- 1) Add the two mobile permission codes (only if missing)
+INSERT INTO t_sys_mobile_permission
+    (permission_code, permission_name, permission_group, description, display_order, is_active, created_at, updated_at)
+SELECT 'create_orders', 'Create Orders', 'store_mode_orders',
+       'Create new orders / invoices from the app (store mode).', 17, 1, NOW(), NOW()
+FROM DUAL
+WHERE NOT EXISTS (SELECT 1 FROM t_sys_mobile_permission WHERE permission_code = 'create_orders');
+
+INSERT INTO t_sys_mobile_permission
+    (permission_code, permission_name, permission_group, description, display_order, is_active, created_at, updated_at)
+SELECT 'view_shopify_orders', 'View Shopify Orders', 'store_mode_orders',
+       'View the Shopify order queue from the app (store mode).', 19, 1, NOW(), NOW()
+FROM DUAL
+WHERE NOT EXISTS (SELECT 1 FROM t_sys_mobile_permission WHERE permission_code = 'view_shopify_orders');
+
+-- 2) Mirror-grant: every role holding the WEB key also gets the matching MOBILE grant
+INSERT INTO t_sys_role_mobile_permission (role_id, mobile_permission_id, created_at)
+SELECT DISTINCT rp.role_id, mp.id, NOW()
+FROM t_sys_role_permissions rp
+JOIN t_sys_mobile_permission mp ON mp.permission_code = rp.permission_key
+WHERE rp.permission_key IN ('create_orders', 'view_shopify_orders')
+  AND rp.is_allowed = 1
+  AND NOT EXISTS (
+      SELECT 1 FROM t_sys_role_mobile_permission rmp
+      WHERE rmp.role_id = rp.role_id AND rmp.mobile_permission_id = mp.id
+  );
+  
+  
+  CREATE TABLE IF NOT EXISTS t_sys_user_setting (
+    id             BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    user_id        BIGINT UNSIGNED NOT NULL,
+    setting_key    VARCHAR(100)    NOT NULL,
+    setting_value  TEXT            NULL,
+    created_at     TIMESTAMP       NULL DEFAULT NULL,
+    updated_at     TIMESTAMP       NULL DEFAULT NULL,
+    PRIMARY KEY (id),
+    UNIQUE KEY uq_user_setting (user_id, setting_key),
+    KEY idx_user_setting_user (user_id)
+);
+
+
+-- =====================================================================================
+-- Order Status Hub — Phase 0 schema + backfill (July 2026)
+-- =====================================================================================
+-- Run this ONCE on LOCAL, then ONCE on PRODUCTION (hand-run, as usual).
+-- Plan: ORDER-STATUS-HUB-PLAN-JUL2026.md (workspace root).
+--
+-- WHAT THIS DOES
+--   Adds behaviour columns to the order-status table so the new "Status Hub" screen
+--   can own the rules that are currently hardcoded in many places. It is INTENTIONALLY
+--   INERT: only two of the new columns (auto_prepares, and the setting read) are read by
+--   the Phase-1 code, and they are backfilled to reproduce TODAY's behaviour EXACTLY.
+--   Everything else is populated now so the Hub has correct starting data later, but no
+--   running code reads it yet. Nothing about orders, quantities, or money changes when
+--   you run this.
+--
+-- SAFETY
+--   * All columns are ADDED with safe defaults — existing rows keep working untouched.
+--   * counts_in_quantities is derived from THIS environment's own excluded-statuses
+--     setting, so it mirrors exactly what your Quantities tab already excludes here.
+--   * No rows are deleted. `priority`, `dispatch`, and the duplicate `on-hold` are LEFT
+--     ACTIVE on purpose (owner marks them legacy later from the Hub, if ever).
+--   * Run each ALTER only once (MariaDB has no "ADD COLUMN IF NOT EXISTS"). If you re-run
+--     and see "Duplicate column name", the column is already there — skip that ALTER.
+--
+-- ROLLBACK (only if you must): the columns are additive; dropping them restores the
+--   original schema:
+--     ALTER TABLE t_crm_order_status_master
+--       DROP COLUMN counts_in_quantities, DROP COLUMN auto_prepares, DROP COLUMN lane,
+--       DROP COLUMN send_to_customer_app, DROP COLUMN customer_app_alias;
+--     ALTER TABLE t_crm_prod_order_line_item DROP COLUMN prepared_source;
+--     DELETE FROM t_crm_open_quantities_settings WHERE setting_key = 'bring_back_mode';
+-- =====================================================================================
+
+-- ---------------------------------------------------------------------------
+-- 1) Columns on the status master
+-- ---------------------------------------------------------------------------
+ALTER TABLE t_crm_order_status_master
+  ADD COLUMN counts_in_quantities TINYINT(1) NOT NULL DEFAULT 1 AFTER is_final,
+  ADD COLUMN auto_prepares        TINYINT(1) NOT NULL DEFAULT 0 AFTER counts_in_quantities,
+  ADD COLUMN lane                 VARCHAR(20) NOT NULL DEFAULT 'journey' AFTER auto_prepares,
+  ADD COLUMN send_to_customer_app TINYINT(1) NOT NULL DEFAULT 1 AFTER lane,
+  ADD COLUMN customer_app_alias   VARCHAR(50) DEFAULT NULL AFTER send_to_customer_app;
+
+-- Provenance of a line item's "prepared" mark: 'auto' (set by a status change) vs
+-- 'manual' (a staff member pressed Prepare). Lets a future "bring back" un-mark only the
+-- auto ones and leave hand-packed bags alone. Existing marks stay NULL = treat as manual.
+ALTER TABLE t_crm_prod_order_line_item
+  ADD COLUMN prepared_source VARCHAR(10) DEFAULT NULL AFTER preparation_status;
+
+-- ---------------------------------------------------------------------------
+-- 2) Backfill — reproduce today's behaviour exactly (per environment)
+-- ---------------------------------------------------------------------------
+
+-- counts_in_quantities: 0 for every status THIS environment currently excludes from the
+-- Quantities normal view (read straight from your own excluded_statuses setting), else 1.
+-- Guarantees the Hub starts with the same "counted" set you already have.
+-- (Verified working on the dev replica. IF prod's MySQL/MariaDB is older and errors on
+--  JSON_CONTAINS/JSON_QUOTE, use this equivalent manual statement instead — it hardcodes
+--  the current live setting value ["cancelled","refunded","pending"]:
+--    UPDATE t_crm_order_status_master
+--    SET counts_in_quantities = IF(status_code IN ('cancelled','refunded','pending'), 0, 1);
+--  Check the live value first via the Quantities gear icon if unsure.)
+UPDATE t_crm_order_status_master m
+SET m.counts_in_quantities = CASE
+    WHEN JSON_CONTAINS(
+           COALESCE((SELECT s.setting_value
+                       FROM t_crm_open_quantities_settings s
+                      WHERE s.setting_key = 'excluded_statuses'), '[]'),
+           JSON_QUOTE(m.status_code)
+         ) = 1
+    THEN 0 ELSE 1 END;
+
+-- auto_prepares = "past the orange line": entering this status auto-marks items prepared
+-- and the order leaves BOTH quantities views. This is the exact hardcoded set the
+-- Prepared view uses today (same in code on every environment).
+UPDATE t_crm_order_status_master
+SET auto_prepares = 1
+WHERE status_code IN ('out_for_delivery', 'delivered', 'completed');
+
+-- lane groups the Hub UI (journey / off-track / legacy). INERT — nothing reads `lane` yet.
+-- Off-track = never counted, closes the order. Legacy = kept for history, hidden from
+-- pickers. Only `completed` is shelved now (all its orders are old); priority/dispatch/
+-- the duplicate on-hold are deliberately LEFT on the journey lane and active.
+UPDATE t_crm_order_status_master SET lane = 'offtrack' WHERE status_code IN ('cancelled', 'refunded');
+UPDATE t_crm_order_status_master SET lane = 'legacy'   WHERE status_code = 'completed';
+
+-- customer_app_alias: what the customer app should show instead of the raw code. INERT
+-- until the customer-app phase. `completed` is a legacy twin of delivered.
+UPDATE t_crm_order_status_master SET customer_app_alias = 'delivered' WHERE status_code = 'completed';
+
+-- bring_back_mode: when an order is moved back before the orange line, ASK the operator
+-- whether to send the items back to the prepare list or keep them prepared. INERT until
+-- the bring-back phase. Insert only if not already present.
+INSERT INTO t_crm_open_quantities_settings (setting_key, setting_value, setting_type)
+SELECT 'bring_back_mode', 'ask', 'other' FROM DUAL
+WHERE NOT EXISTS (
+  SELECT 1 FROM t_crm_open_quantities_settings WHERE setting_key = 'bring_back_mode'
+);
+
+-- ---------------------------------------------------------------------------
+-- 3) Verify (eyeball the result — no changes, just a read)
+-- ---------------------------------------------------------------------------
+-- Expect: cancelled/refunded/pending (+ whatever your setting excludes) => counts=0;
+--         out_for_delivery/delivered/completed => auto_prepares=1;
+--         cancelled/refunded => lane offtrack; completed => lane legacy, alias delivered;
+--         priority/dispatch/on-hold => lane journey, counts=1, still active.
+SELECT status_code, status_name, is_active, is_final,
+       counts_in_quantities, auto_prepares, lane, send_to_customer_app, customer_app_alias
+FROM t_crm_order_status_master
+ORDER BY sequence_order;
+
+
+-- =====================================================================
+-- LEDGER L3 — Vendor balance_updated backfill (Set B prerequisite)
+-- Generated 2026-07-12. Run on LOCAL first, verify, then PROD.
+--
+-- WHY
+--   The balance engine decides whether to UNDO a ledger row by reading its
+--   `balance_updated` flag ("is this row's money currently in the account
+--   balances?"). Vendor purchase/payment rows were created by VendorController
+--   (and WarehouseController) with their balances APPLIED but the flag never
+--   set — so they read balance_updated=0 while their money is in fact applied.
+--
+--   Before the vendor delete/edit paths are switched to the engine, this flag
+--   must tell the truth, or the engine would think "nothing was applied" and
+--   SKIP the reversal on delete → leaving the vendor balance wrong.
+--
+-- WHAT (and why it is safe)
+--   Sets balance_updated=1 on approved vendor rows that currently read 0.
+--   * FLAG-ONLY: does NOT touch current_balance — no money moves. Every
+--     vendor's balance stays exactly `SUM(purchases) − SUM(payments)`.
+--   * Verified on the synced replica: ALL vendor rows are approval_status
+--     'approved', deleteTransaction() HARD-DELETES on removal (never leaves a
+--     reversed-in-place row), and 0 of the flag-0 rows carry any reversal
+--     marker — so every flag-0 vendor row is genuinely applied-and-unflagged.
+--   * Idempotent: re-running is a no-op (already-1 rows are untouched).
+--   Expected rows changed: 1,493 (874 vendor_purchase + 619 vendor_payment)
+--   as of 2026-07-12; re-count with the BEFORE query if the data has moved.
+--
+-- ORDER OF OPERATIONS (important)
+--   Run this BEFORE deploying the Set B vendor code (which routes delete/edit
+--   through the engine). Backfill first, then code.
+-- =====================================================================
+
+-- BEFORE: how many rows will change, and current vendor balance integrity.
+SELECT 'will_flip_to_1' AS metric, COUNT(*) AS value
+FROM t_fin_ledger
+WHERE transaction_type IN ('vendor_purchase','vendor_payment')
+  AND approval_status = 'approved'
+  AND (balance_updated = 0 OR balance_updated IS NULL);
+
+-- The backfill (flag only; no balance change).
+UPDATE t_fin_ledger
+SET balance_updated = 1
+WHERE transaction_type IN ('vendor_purchase','vendor_payment')
+  AND approval_status = 'approved'
+  AND (balance_updated = 0 OR balance_updated IS NULL);
+
+-- AFTER: prove every vendor's stored balance still equals purchases − payments
+-- (unchanged by a flag-only update). Any row here = investigate before PROD.
+SELECT a.account_code,
+       ROUND(a.current_balance, 2) AS stored,
+       ROUND(
+         IFNULL((SELECT SUM(l.amount) FROM t_fin_ledger l
+                  WHERE l.to_account_id = a.id AND l.transaction_type = 'vendor_purchase'
+                    AND l.approval_status = 'approved'), 0)
+       - IFNULL((SELECT SUM(l.amount) FROM t_fin_ledger l
+                  WHERE l.to_account_id = a.id AND l.transaction_type = 'vendor_payment'
+                    AND l.approval_status = 'approved'), 0), 2) AS purchases_minus_payments
+FROM t_fin_accounts a
+WHERE a.account_category IN ('vendor', 'vendor_payable')
+  AND ROUND(a.current_balance, 2) <> ROUND(
+         IFNULL((SELECT SUM(l.amount) FROM t_fin_ledger l
+                  WHERE l.to_account_id = a.id AND l.transaction_type = 'vendor_purchase'
+                    AND l.approval_status = 'approved'), 0)
+       - IFNULL((SELECT SUM(l.amount) FROM t_fin_ledger l
+                  WHERE l.to_account_id = a.id AND l.transaction_type = 'vendor_payment'
+                    AND l.approval_status = 'approved'), 0), 2);
+-- ^ Expect ZERO rows returned. (Pre-existing drift, if any, is unrelated to this flag change.)
+
+
+-- =====================================================================
+-- LEDGER L3 — Expense balance_updated backfill (Set C prerequisite)
+-- Generated 2026-07-12. Run on LOCAL first, verify, then PROD.
+--
+-- WHY (same idea as the vendor backfill)
+--   Expense rows were posted by LedgerPostingService::postExpenseFromRequest
+--   with their balances APPLIED (funding −, expense +) but the balance_updated
+--   flag never set. Before the expense delete/reverse paths switch to the
+--   engine, the flag must tell the truth or the engine would SKIP the reversal.
+--
+-- WHAT (two flag-only statements — NO money moves)
+--   (1) Applied expenses  : approved + flag0  → flag1   (the ones reverse needs)
+--   (2) Truthful cleanup   : already-reversed rows that still read flag1 → flag0
+--       (expense + expense_settlement). These were reversed by the old code,
+--       which moved the balance back but forgot to clear the flag. Setting them
+--       to 0 makes the flag honest and prevents any future double-reverse.
+--   Settlement (expense_settlement) applied rows are ALREADY flag1 → no (1) needed.
+--
+-- SAFE because: reversed expense rows carry status='reversed' (excluded from (1));
+--   the reverse path hard-guards on status='approved' so reversed rows are never
+--   re-touched; verified on the replica that vendor-style integrity holds.
+--   Idempotent. Expected: (1) ~1,046 rows; (2) ~24 rows (21 expense + 3 settlement)
+--   as of 2026-07-12 — re-count with the BEFORE queries.
+--
+-- ORDER: run BEFORE deploying the Set C expense code. Backfill first, then code.
+-- =====================================================================
+
+-- BEFORE
+SELECT 'applied_to_flag1' AS metric, COUNT(*) v FROM t_fin_ledger
+  WHERE transaction_type='expense' AND approval_status='approved'
+    AND (balance_updated=0 OR balance_updated IS NULL)
+UNION ALL
+SELECT 'reversed_to_flag0', COUNT(*) FROM t_fin_ledger
+  WHERE transaction_type IN ('expense','expense_settlement')
+    AND approval_status='reversed' AND balance_updated=1;
+
+-- (1) Applied-but-unflagged expenses → flag=1.
+UPDATE t_fin_ledger SET balance_updated = 1
+WHERE transaction_type = 'expense'
+  AND approval_status = 'approved'
+  AND (balance_updated = 0 OR balance_updated IS NULL);
+
+-- (2) Reversed rows that still read flag=1 → flag=0 (make the flag truthful).
+UPDATE t_fin_ledger SET balance_updated = 0
+WHERE transaction_type IN ('expense','expense_settlement')
+  AND approval_status = 'reversed'
+  AND balance_updated = 1;
+
+-- AFTER: EXP_FUND + the expense accounts are unchanged by a flag-only update.
+-- (Spot check: expense-fund stored balance before vs after must be identical.)
+SELECT account_code, ROUND(current_balance,2) AS stored
+FROM t_fin_accounts WHERE account_code IN ('EXP_FUND','NF_CASH','EXP_PURCHASES');
+
+START TRANSACTION;
+
+-- Haider  (+20,368.50 : EQUITY_OPENING -> rider)   [manager-confirmed]
+INSERT INTO t_fin_ledger
+  (transaction_date, transaction_type, from_account_id, to_account_id, amount,
+   approval_status, balance_updated, mode, settlement_status,
+   description, comments, transaction_reference, created_at)
+SELECT '2026-07-12', 'balance_correction',
+       (SELECT id FROM t_fin_accounts WHERE account_code = 'EQUITY_OPENING'),
+       (SELECT id FROM t_fin_accounts WHERE account_code = 'CASH_EMP_HAIDER'),
+       20368.50, 'approved', 1, 'cash', 'settled',
+       'One-time sediment correction to match Daily-Close sheet (Haider)',
+       'Ledger L4 one-off; manager-confirmed cash-in-hand = 3,739.80',
+       'LEDGER-L4-SEDIMENT', NOW()
+WHERE NOT EXISTS (SELECT 1 FROM t_fin_ledger WHERE transaction_reference = 'LEDGER-L4-SEDIMENT'
+    AND to_account_id = (SELECT id FROM t_fin_accounts WHERE account_code = 'CASH_EMP_HAIDER'));
+
+-- Asim Tahir  (+8,948.10 : EQUITY_OPENING -> rider)   -- confirm with Taimur before PROD
+INSERT INTO t_fin_ledger
+  (transaction_date, transaction_type, from_account_id, to_account_id, amount,
+   approval_status, balance_updated, mode, settlement_status,
+   description, comments, transaction_reference, created_at)
+SELECT '2026-07-12', 'balance_correction',
+       (SELECT id FROM t_fin_accounts WHERE account_code = 'EQUITY_OPENING'),
+       (SELECT id FROM t_fin_accounts WHERE account_code = 'CASH_EMP_ASIM_TAHIR___INDRIVE'),
+       8948.10, 'approved', 1, 'cash', 'settled',
+       'One-time sediment correction to match Daily-Close sheet (Asim Tahir)',
+       'Ledger L4 one-off; manager-confirmed cash-in-hand = 10,833.60',
+       'LEDGER-L4-SEDIMENT', NOW()
+WHERE NOT EXISTS (SELECT 1 FROM t_fin_ledger WHERE transaction_reference = 'LEDGER-L4-SEDIMENT'
+    AND to_account_id = (SELECT id FROM t_fin_accounts WHERE account_code = 'CASH_EMP_ASIM_TAHIR___INDRIVE'));
+
+-- Waseem  (-10,000.00 : rider -> EQUITY_OPENING)   -- confirm with Taimur before PROD
+INSERT INTO t_fin_ledger
+  (transaction_date, transaction_type, from_account_id, to_account_id, amount,
+   approval_status, balance_updated, mode, settlement_status,
+   description, comments, transaction_reference, created_at)
+SELECT '2026-07-12', 'balance_correction',
+       (SELECT id FROM t_fin_accounts WHERE account_code = 'CASH_EMP_WASEEM'),
+       (SELECT id FROM t_fin_accounts WHERE account_code = 'EQUITY_OPENING'),
+       10000.00, 'approved', 1, 'cash', 'settled',
+       'One-time sediment correction to match Daily-Close sheet (Waseem)',
+       'Ledger L4 one-off; books say +10,000 residue since May, sheet blank -> zero it',
+       'LEDGER-L4-SEDIMENT', NOW()
+WHERE NOT EXISTS (SELECT 1 FROM t_fin_ledger WHERE transaction_reference = 'LEDGER-L4-SEDIMENT'
+    AND from_account_id = (SELECT id FROM t_fin_accounts WHERE account_code = 'CASH_EMP_WASEEM'));
+
+COMMIT;
+
+-- VERIFY after commit — expected: Haider 3739.80, Asim 10833.60, Waseem 0.00
+SELECT a.account_code,
+       ROUND(a.opening_balance
+         + IFNULL((SELECT SUM(l.amount) FROM t_fin_ledger l WHERE l.to_account_id = a.id AND l.approval_status='approved'
+             AND l.transaction_type NOT IN ('salary_payment','salary_advance','reimbursement_payment','reimbursement_accrual')),0)
+         - IFNULL((SELECT SUM(l.amount) FROM t_fin_ledger l WHERE l.from_account_id = a.id AND l.approval_status='approved'
+             AND l.transaction_type NOT IN ('salary_payment','salary_advance','reimbursement_payment','reimbursement_accrual')),0), 2)
+       AS calculated_balance
+FROM t_fin_accounts a
+WHERE a.account_code IN ('CASH_EMP_HAIDER','CASH_EMP_ASIM_TAHIR___INDRIVE','CASH_EMP_WASEEM');
+
+-- To undo everything:  DELETE FROM t_fin_ledger WHERE transaction_reference = 'LEDGER-L4-SEDIMENT';
+
+-- =====================================================================
+-- LEDGER L3 — Concurrency backstop: one live invoice per order (DB-enforced)
+-- Generated 2026-07-12 for MariaDB 10.4. Run on LOCAL first, verify, then PROD.
+-- Run in a quiet moment: this rebuilds t_fin_ledger (adds a stored column), which
+-- briefly locks the table. ~16k rows = a few seconds.
+--
+-- WHY
+--   The app now locks the order row before posting an invoice (race-safe). This is
+--   the DB-level BELT-AND-SUSPENDERS: even if two requests somehow both tried to
+--   insert an invoice for the same order, the database refuses the second one.
+--
+-- HOW
+--   MariaDB has no partial index, so we add a PERSISTENT generated column that equals
+--   the order_id ONLY for a LIVE invoice (invoice type, not reversed/rejected) and is
+--   NULL otherwise, then put a UNIQUE index on it. Unique indexes allow many NULLs, so
+--   non-invoice / reversed / rejected rows never collide — only two LIVE invoices for
+--   the same order do. The column auto-updates when approval_status changes, so a
+--   reversed invoice frees the slot and a re-invoice (reverse-then-post) works fine.
+--
+-- SAFE: verified 0 orders currently have >1 live invoice (the index would fail to
+--   build otherwise), and the only re-invoice path (payment-method change) reverses
+--   the old invoice BEFORE posting the new one.
+-- =====================================================================
+
+-- PRE-CHECK — must return 0 rows, or clean up the duplicates before proceeding.
+SELECT order_id, COUNT(*) AS live_invoices
+FROM t_fin_ledger
+WHERE transaction_type = 'invoice'
+  AND order_id IS NOT NULL
+  AND approval_status NOT IN ('reversed','rejected')
+GROUP BY order_id
+HAVING COUNT(*) > 1;
+
+-- THE GUARD.
+ALTER TABLE t_fin_ledger
+  ADD COLUMN active_invoice_order_id INT
+    GENERATED ALWAYS AS (
+      CASE WHEN transaction_type = 'invoice'
+            AND approval_status NOT IN ('reversed','rejected')
+           THEN order_id ELSE NULL END
+    ) PERSISTENT,
+  ADD UNIQUE INDEX uniq_active_invoice_per_order (active_invoice_order_id);
+
+-- VERIFY it built.
+SHOW INDEX FROM t_fin_ledger WHERE Key_name = 'uniq_active_invoice_per_order';
+
+-- ROLLBACK (if ever needed):
+--   ALTER TABLE t_fin_ledger
+--     DROP INDEX uniq_active_invoice_per_order,
+--     DROP COLUMN active_invoice_order_id;
+
+
+-- =====================================================================
+-- LEDGER L3 — Close stale pending invoice adjustments (queue cleanup)
+-- Generated 2026-07-13. Run on LOCAL first, verify, then PROD.
+--
+-- WHY
+--   214 pending amount-change requests sit in the adjustments queue. The owner's
+--   Daily-Close reconciliation (2026-07-12) matched the books at their CURRENT
+--   amounts — so corrections requested before it are superseded by that sign-off.
+--   Breakdown (as of 2026-07-13):
+--     * 98 on REVERSED invoices + 1 on a REJECTED one → dead rows, nothing to correct.
+--     * 40 on SETTLED invoices → moot (approving one only annotates; rider protected).
+--     * 73 on APPROVED+OPEN invoices, ALL requested ≤ 2026-06-20 → superseded by the
+--       Daily-Close sign-off (applying them NOW would move riders OFF the agreed sheet).
+--     * 2 on PENDING_L1 invoices (2026-07-10) → KEPT. After the code fix these are safe
+--       to action from the approvals screen (amount-only; no balances move).
+--
+-- WHAT
+--   Marks the stale 212 as REJECTED with an explanatory note. NO ledger amounts and
+--   NO balances are touched — this is queue housekeeping only. Idempotent.
+-- =====================================================================
+
+-- BEFORE: expect 212
+SELECT COUNT(*) AS will_close
+FROM t_fin_ledger_adjustments a
+JOIN t_fin_ledger l ON l.id = a.ledger_id
+WHERE a.adjustment_status = 'pending'
+  AND (
+        l.approval_status IN ('reversed','rejected')
+     OR (l.transaction_type = 'invoice' AND l.settlement_status = 'settled')
+     OR (l.approval_status = 'approved' AND a.requested_at < '2026-07-01')
+  );
+
+-- THE CLEANUP
+UPDATE t_fin_ledger_adjustments a
+JOIN t_fin_ledger l ON l.id = a.ledger_id
+SET a.adjustment_status = 'rejected',
+    a.level_1_status    = 'rejected',
+    a.level_2_status    = 'rejected',
+    a.finalized_at      = NOW(),
+    a.level_1_comments  = CONCAT(IFNULL(a.level_1_comments,''),
+      ' [AUTO-CLOSED 2026-07-13: superseded — invoice reversed/settled or amounts signed off in the Daily-Close reconciliation of 2026-07-12. No balances or amounts were changed.]')
+WHERE a.adjustment_status = 'pending'
+  AND (
+        l.approval_status IN ('reversed','rejected')
+     OR (l.transaction_type = 'invoice' AND l.settlement_status = 'settled')
+     OR (l.approval_status = 'approved' AND a.requested_at < '2026-07-01')
+  );
+
+-- AFTER: what remains pending (expect 2, both on pending_l1 invoices from 2026-07-10;
+-- action them from the approvals screen after the code deploy — they are amount-only now)
+SELECT a.id, a.ledger_id, l.approval_status AS invoice_status,
+       a.old_amount, a.new_amount, a.requested_at
+FROM t_fin_ledger_adjustments a
+JOIN t_fin_ledger l ON l.id = a.ledger_id
+WHERE a.adjustment_status = 'pending';
+
+
+-- ==========================================================================
+-- Attendance revamp — Phase E schema  (run once on LOCAL, then PROD)
+-- Owner-run, manual. Portable plain SQL. Safe to re-run (IF NOT EXISTS).
+-- ==========================================================================
+
+-- Leave ledger: every ADJUSTMENT to a rider's leave balance (on top of the
+-- yearly quota). One row = one +/- change, with who/why.
+--   source = 'manual'       manager granted extra leaves (+days)
+--   source = 'overtime'     earned from overtime hours (+days)          [Phase F]
+--   source = 'late_penalty' cumulative lateness deduction (-days)        [Phase F]
+--   source = 'half_day'     manager gave a half-day for a late day (-0.5)[Phase F]
+-- Built SIGNED (days can be negative) with the full source list from day one
+-- so Phase F needs no schema change — it just writes more rows here.
+--
+-- MySQL note: `IF NOT EXISTS` on CREATE TABLE is standard. The ENUM already
+-- lists every source; no ALTER needed later.
+CREATE TABLE IF NOT EXISTS t_hr_leave_grant (
+  id         INT AUTO_INCREMENT PRIMARY KEY,
+  user_id    INT NOT NULL,
+  days       DECIMAL(5,1) NOT NULL,                       -- signed: +grant / -penalty
+  reason     VARCHAR(200) NULL,
+  source     ENUM('manual','overtime','late_penalty','half_day') NOT NULL DEFAULT 'manual',
+  effective_date DATE NULL,                               -- which cycle it belongs to; NULL = created_at date
+  created_by INT NULL,
+  created_at DATETIME NULL,
+  updated_at DATETIME NULL,
+  INDEX idx_leave_grant_user (user_id),
+  INDEX idx_leave_grant_eff (effective_date)
+);
+
+-- "Not needed" day tags: a manager marks a rider as not required on a given day.
+-- That day is PAID AS PRESENT — it stays a working day (per-day pay unchanged) but is
+-- NOT counted as absent, and the attendance shows "Not needed" instead of a red Absent.
+-- One row per (rider, day); UNIQUE prevents duplicates.
+CREATE TABLE IF NOT EXISTS t_ops_day_tag (
+  id         INT AUTO_INCREMENT PRIMARY KEY,
+  user_id    INT NOT NULL,
+  tag_date   DATE NOT NULL,
+  tag        VARCHAR(30) NOT NULL DEFAULT 'not_needed',
+  note       VARCHAR(200) NULL,
+  created_by INT NULL,
+  created_at DATETIME NULL,
+  UNIQUE KEY uq_day_tag_user_date (user_id, tag_date),
+  INDEX idx_day_tag_date (tag_date)
+);
+
+-- Leave-policy settings live in t_fin_config (created on first Save in
+-- Attendance → Settings → Attendance Rules). No schema needed for them:
+--   LEAVE_QUOTA_TOTAL      = 10     (yearly pool per cycle)
+--   LEAVE_SAMEDAY_CAP      = 4      (max same-day applications per cycle)
+--   LEAVE_SAMEDAY_CUTOFF   = 10:00  (same-day applications allowed until this local time)
+--   SHIFT_TARGET_HOURS     = 9      (worked hours before overtime starts counting)
+-- (Documentation only — nothing to run for these.)
+
+
+-- =============================================================================
+-- SEED: "Start Conversation" WhatsApp template (Jul 2026)  —  2 variables
+--
+-- PURPOSE: lets staff OPEN a fresh WhatsApp session with a customer whose 24-hour
+-- free-messaging window is closed (or who never messaged us). WhatsApp only lets
+-- the FIRST message be an approved TEMPLATE; once the customer replies, the 24h
+-- free-text window opens and you can chat normally.
+--
+-- VARIABLES:
+--   {{1}} = customer name   (auto-filled from the conversation)
+--   {{2}} = order number    (app auto-fills the customer's LATEST order — any
+--                            status, incl. delivered/cancelled — or a dummy for
+--                            a brand-new customer with no order on file, so Meta
+--                            does not reject the send for an empty variable)
+--
+-- =============================================================================
+-- ⚠️  This template must already be CREATED + APPROVED in Meta (done) with the
+--     EXACT name + language + variable count below. The app only passes the NAME
+--     and the {{1}}/{{2}} values to Meta; if Meta has no approved template with
+--     this exact name/language, the send FAILS.
+--       Name:     start_conversation      (lowercase; MUST match `name`)
+--       Language: English (en)
+--       Body (Meta, keep {{1}} and {{2}}):
+--         Hi {{1}},
+--         I'm reaching out to you regarding your order {{2}} with Nizami Farms.
+--         Please reply to this message, and our team will assist you
+-- =============================================================================
+--
+-- SAFE TO RE-RUN: keyed on the UNIQUE (name, language) index; ON DUPLICATE KEY
+-- UPDATE refreshes the copy in place, never creating a duplicate. No money/ledger
+-- impact. Run on LOCAL (dev) and PROD, then clear cache so the picker refreshes:
+--   DEV:  php artisan cache:clear      PROD:  /xclean
+-- =============================================================================
+
+INSERT INTO `t_wa_templates`
+    (`name`, `display_name`, `category`, `language`, `status`,
+     `header_text`, `body_text`, `footer_text`,
+     `variable_count`, `has_buttons`, `button_labels`, `show_in`,
+     `is_default`, `is_active`, `is_qurbani_only`, `is_regular_only`,
+     `created_at`, `updated_at`)
+VALUES
+    ('start_conversation',
+     'Start Conversation',
+     'utility',
+     'en',
+     'approved',
+     NULL,
+     'Hi {{1}},\n\nI''m reaching out to you regarding your order {{2}} with Nizami Farms. Please reply to this message, and our team will assist you',
+     NULL,
+     2,                                    -- variable_count: {{1}}=name, {{2}}=order number
+     0, NULL,                              -- no buttons
+     'messages,customers,orders,online_approvals',   -- where it shows in manual pickers
+     0, 1, 0, 0,                           -- is_default=0, is_active=1, is_qurbani_only=0, is_regular_only=0 (Common)
+     NOW(), NOW())
+ON DUPLICATE KEY UPDATE
+     `display_name`   = VALUES(`display_name`),
+     `category`       = VALUES(`category`),
+     `status`         = VALUES(`status`),
+     `body_text`      = VALUES(`body_text`),
+     `variable_count` = VALUES(`variable_count`),
+     `show_in`        = VALUES(`show_in`),
+     `is_active`      = VALUES(`is_active`);
+
+-- Verify:
+-- SELECT id, name, display_name, variable_count, show_in, status, is_active
+--   FROM t_wa_templates WHERE name = 'start_conversation';
+-- =============================================================================
+
+
+-- =============================================================================
+-- Migration: rider cash-held confirmation at check-out (Jul 2026)
+--
+-- Adds two columns to the attendance row so a rider can CONFIRM, at check-out,
+-- the exact cash he is still holding against him (the "open" Daily Closing
+-- amount). Purely a record for the manager — no ledger/settlement impact.
+--
+--   cash_confirmed_amount = the figure he confirmed
+--   cash_confirmed_at     = when he confirmed it
+--
+-- If he dismisses the popup without confirming, both stay NULL (the gap is the
+-- signal). Idempotent columns; safe to re-run. Run on LOCAL (dev) and PROD.
+-- =============================================================================
+
+ALTER TABLE `t_ops_attendance`
+    ADD COLUMN IF NOT EXISTS `cash_confirmed_amount` DECIMAL(12,2) NULL DEFAULT NULL
+        COMMENT 'Cash the rider confirmed holding at check-out (Daily Closing open amount)',
+    ADD COLUMN IF NOT EXISTS `cash_confirmed_at` DATETIME NULL DEFAULT NULL
+        COMMENT 'When the rider confirmed the cash-held amount',
+    ADD COLUMN IF NOT EXISTS `cash_confirm_status` VARCHAR(20) NULL DEFAULT NULL
+        COMMENT "'confirmed' = rider agreed; 'issue' = rider flagged the amount as wrong";
+
+-- Verify:
+-- SHOW COLUMNS FROM t_ops_attendance LIKE 'cash_confirm%';
+-- =============================================================================
+
+
+-- ============================================================================
+-- Payroll permission (July 2026) — `manage_payroll`
+-- Gates the new Payroll screen on BOTH web and mobile:
+--   web    : sidebar link + all /hr/payroll/* routes (view, generate, pay)
+--   mobile : /rider/payroll manager endpoints + the 🧾 Payroll button
+--
+-- Granted to: role 10 (Management — Shabib/owner) and role 14 (Taimur).
+-- Any other role can be granted later from the normal permissions screens
+-- (web: Roles → Permissions; mobile: Roles → Mobile Permissions) — the new
+-- permission appears there automatically after this script + code deploy.
+--
+-- Run once on LOCAL, then on PROD (manual). Idempotent — safe to re-run.
+-- ============================================================================
+
+-- ── WEB permission rows (t_sys_role_permissions) ────────────────────────────
+INSERT INTO t_sys_role_permissions (role_id, permission_key, permission_name, is_allowed, created_at, updated_at)
+SELECT 10, 'manage_payroll', 'Manage Payroll (view, generate & pay salaries)', 1, NOW(), NOW()
+WHERE NOT EXISTS (
+  SELECT 1 FROM t_sys_role_permissions WHERE role_id = 10 AND permission_key = 'manage_payroll'
+);
+
+INSERT INTO t_sys_role_permissions (role_id, permission_key, permission_name, is_allowed, created_at, updated_at)
+SELECT 14, 'manage_payroll', 'Manage Payroll (view, generate & pay salaries)', 1, NOW(), NOW()
+WHERE NOT EXISTS (
+  SELECT 1 FROM t_sys_role_permissions WHERE role_id = 14 AND permission_key = 'manage_payroll'
+);
+
+-- ── MOBILE permission (t_sys_mobile_permission + role links) ────────────────
+INSERT INTO t_sys_mobile_permission (permission_code, permission_name, permission_group, description, display_order, is_active, created_at, updated_at)
+SELECT 'manage_payroll', 'Manage Payroll', 'Store Mode', 'View the payroll month, set base salaries, give advances and pay the team from the mobile Payroll screen', 99, 1, NOW(), NOW()
+WHERE NOT EXISTS (
+  SELECT 1 FROM t_sys_mobile_permission WHERE permission_code = 'manage_payroll'
+);
+
+INSERT INTO t_sys_role_mobile_permission (role_id, mobile_permission_id, created_at)
+SELECT 10, mp.id, NOW()
+FROM t_sys_mobile_permission mp
+WHERE mp.permission_code = 'manage_payroll'
+  AND NOT EXISTS (
+    SELECT 1 FROM t_sys_role_mobile_permission rmp
+    WHERE rmp.role_id = 10 AND rmp.mobile_permission_id = mp.id
+  );
+
+INSERT INTO t_sys_role_mobile_permission (role_id, mobile_permission_id, created_at)
+SELECT 14, mp.id, NOW()
+FROM t_sys_mobile_permission mp
+WHERE mp.permission_code = 'manage_payroll'
+  AND NOT EXISTS (
+    SELECT 1 FROM t_sys_role_mobile_permission rmp
+    WHERE rmp.role_id = 14 AND rmp.mobile_permission_id = mp.id
+  );

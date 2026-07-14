@@ -400,6 +400,34 @@ class RiderController extends Controller
             $invoiceImageUrl = route('orders.invoice.pdf', ['id' => $order->id, 'download_image' => 1]);
             $invoicePdfUrl = route('orders.invoice.pdf', ['id' => $order->id, 'force_pdf' => 1]);
 
+            // ⭐ Payment proof (E3a — so the rider sees "payment received" before he
+            // knocks) + WhatsApp-reachability + first-order flags (E2 — so the UI can
+            // show a warning chip and know whether conversion will be blocked). Both
+            // non-fatal: a lookup error must not break order details.
+            $paymentProof = null;
+            try {
+                if (config('payment_signals.enabled')) {
+                    $ppMap = app(\App\Services\Payments\Signals\PaymentProofStatusService::class)
+                        ->forOrders([$order->id], suppressSettled: false);
+                    $paymentProof = $ppMap[$order->id] ?? null;
+                }
+            } catch (\Throwable $ppErr) {
+                $paymentProof = null;
+            }
+
+            $customerWaInvalid = false;
+            $isFirstOrder = false;
+            try {
+                $cust = $order->customer;
+                if ($cust && !$cust->isShop()) {
+                    $isFirstOrder = \App\Models\CRM\OrderModel::where('customer_id', $order->customer_id)->count() <= 1;
+                    $dialPhone = $cust->phone_normalized ?: ($cust->phone_original ?: $order->address_phone);
+                    $customerWaInvalid = app(\App\Services\WhatsAppService::class)->isNumberUndeliverable($dialPhone);
+                }
+            } catch (\Throwable $waErr) {
+                // non-fatal
+            }
+
             return response()->json([
                 'success' => true,
                 'order' => [
@@ -412,6 +440,9 @@ class RiderController extends Controller
                     'payment_method' => $order->payment_method,
                     'payment_type' => $isCash ? 'cash' : 'online',
                     'payment_label' => $isCash ? 'Cash' : 'Online',
+                    'payment_proof' => $paymentProof, // E3a: WhatsApp/bank proof status or null
+                    'customer_wa_invalid' => $customerWaInvalid, // E2: number can't receive WhatsApp
+                    'is_first_order' => $isFirstOrder, // E2: first order → rider online-conversion may be blocked
                     'customer' => [
                         'id' => $order->customer->id ?? null,
                         'name' => $order->customer ? trim($order->customer->first_name . ' ' . $order->customer->last_name) : 'N/A',
@@ -1130,11 +1161,21 @@ class RiderController extends Controller
             $scope = $request->input('scope', 'all');
 
             // ⭐ Start grace offset (minutes): pushes the whole route's start
-            //    time forward before the first leg. Rider Mode sends 5 so the
-            //    rider gets time to reach his motorbike (e.g. dispatch at 10:00
-            //    → first ETA is computed from 10:05). Store Mode omits it (0),
-            //    so existing store behaviour is unchanged. Clamped for safety.
-            $startOffsetMinutes = (int) $request->input('start_offset_minutes', 0);
+            //    time forward before the first leg so the rider has time to
+            //    reach his motorbike (e.g. dispatch at 10:00 → first ETA from
+            //    10:05).
+            //
+            //    If the client sends an explicit value we honour it (Rider Mode
+            //    sends 5). When it's ABSENT — a Store-Mode dispatch, e.g. a
+            //    manager pressing Dispatch for the rider — we still apply the
+            //    grace by DEFAULT on a first dispatch, because the rider is at
+            //    the office and equally needs time to get going. A mid-run
+            //    re-dispatch defaults to 0: the rider is already on the road,
+            //    so padding every ETA by 5 min would just make them read late.
+            //    (Previously Store Mode always got 0, so a manager-dispatched
+            //    route lost the head start — first stop ETA landed ~5 min early.)
+            $defaultOffsetMinutes = $origin['is_mid_run'] ? 0 : 5;
+            $startOffsetMinutes = (int) $request->input('start_offset_minutes', $defaultOffsetMinutes);
             $startOffsetMinutes = max(0, min(30, $startOffsetMinutes));
 
             // Get all out_for_delivery orders for this rider
@@ -1293,6 +1334,7 @@ class RiderController extends Controller
                 'rider_id' => $riderId,
                 'orders_count' => count($updatedOrders),
                 'total_duration_minutes' => round($cumulativeMinutes),
+                'start_offset_minutes' => $startOffsetMinutes,
             ]);
             
             $response = [
@@ -2510,7 +2552,39 @@ class RiderController extends Controller
                     'message' => 'Payment method is already set to ' . $newPaymentType,
                 ], 400);
             }
-            
+
+            // ⭐ WhatsApp-reachability guard (RIDER mode only). Don't let a rider
+            // convert a REGULAR customer's FIRST order to online when we already
+            // know the customer's WhatsApp can't receive messages — the bank-details
+            // payment message would just bounce. Managers (web) and store mode can
+            // still convert; this guard lives ONLY in this rider endpoint. Checks the
+            // SAME number the pay-change message would dial. Positive-evidence only
+            // and fail-open (isNumberUndeliverable), so it never wrongly blocks.
+            if ($newPaymentType === 'online') {
+                $order->loadMissing('customer');
+                $customer = $order->customer;
+                if ($customer && !$customer->isShop()) {
+                    $orderCount = OrderModel::where('customer_id', $order->customer_id)->count();
+                    if ($orderCount <= 1) { // first order for this customer
+                        $dialPhone = $customer->phone_normalized
+                            ?: ($customer->phone_original ?: $order->address_phone);
+                        if (app(\App\Services\WhatsAppService::class)->isNumberUndeliverable($dialPhone)) {
+                            \Log::info('Rider online-conversion blocked — customer WhatsApp undeliverable', [
+                                'order_id' => $order->id,
+                                'order_number' => $order->order_number,
+                                'rider_id' => $user->id,
+                                'customer_id' => $order->customer_id,
+                            ]);
+                            return response()->json([
+                                'success' => false,
+                                'wa_invalid' => true,
+                                'message' => "This customer's WhatsApp number can't receive messages, so the online payment details won't be delivered. Online conversion is blocked for first-time customers — please collect cash, or ask a manager to convert.",
+                            ], 422);
+                        }
+                    }
+                }
+            }
+
             // Map the payment type to actual payment method value
             $newPaymentMethod = $newPaymentType === 'cash' ? 'cash_on_delivery' : 'online_payment';
             
@@ -2528,9 +2602,33 @@ class RiderController extends Controller
                 'order_status' => $order->order_status
             ]);
 
+            // ⭐ Payment-proof awareness (E3b): when converting TO online, tell the
+            // rider if a WhatsApp/bank payment proof was already received for this
+            // order. The pay-change automation already SKIPS the bank-details
+            // message in that case (PaymentChangeInvoiceHandler::eligibility), so
+            // this flag only sets the rider's expectation ("no message will be
+            // sent"). Non-fatal.
+            $paymentProofReceived = false;
+            try {
+                if ($newPaymentType === 'online' && config('payment_signals.enabled')) {
+                    // suppressSettled:false — an ALREADY-APPROVED online payment must
+                    // also read as "received" here, mirroring the automation handler
+                    // (which skips both proof-received AND settled invoices).
+                    $st = app(\App\Services\Payments\Signals\PaymentProofStatusService::class)
+                        ->forOrder($order->id, suppressSettled: false)['status'] ?? \App\Services\Payments\Signals\PaymentProofStatusService::NONE;
+                    $paymentProofReceived = ($st !== \App\Services\Payments\Signals\PaymentProofStatusService::NONE);
+                }
+            } catch (\Throwable $ppErr) {
+                \Log::debug('Proof lookup on payment change skipped (non-fatal)', ['error' => $ppErr->getMessage()]);
+            }
+
+            $baseMsg = 'Payment method changed to ' . ($newPaymentType === 'cash' ? 'Cash' : 'Online/Bank');
             return response()->json([
                 'success' => true,
-                'message' => 'Payment method changed to ' . ($newPaymentType === 'cash' ? 'Cash' : 'Online/Bank'),
+                'message' => $paymentProofReceived
+                    ? $baseMsg . '. Payment was already received for this order — no payment message will be sent to the customer.'
+                    : $baseMsg,
+                'payment_proof_received' => $paymentProofReceived,
             ]);
             
         } catch (\Exception $e) {
@@ -3576,6 +3674,31 @@ class RiderController extends Controller
                 ];
             }
 
+            // Today's leave (if any) — lets the app show "leave applied / approved"
+            // on the Today card instead of "Not checked in / Apply for leave".
+            $todayLeave = null;
+            try {
+                $leaveCatId = \DB::table('t_req_category')->where('category_code', 'leave')->value('id');
+                if ($leaveCatId) {
+                    $lv = \DB::table('t_req_master')
+                        ->where('category_id', $leaveCatId)
+                        ->where('requester_user_id', $user->id)
+                        ->whereIn('status', ['approved', 'pending', 'pending_l1', 'pending_l2', 'submitted'])
+                        ->whereRaw('? BETWEEN leave_start_date AND leave_end_date', [$today])
+                        ->orderByDesc('id')
+                        ->first();
+                    if ($lv) {
+                        $todayLeave = [
+                            'id' => $lv->id,
+                            'status' => $lv->status,        // approved | pending | ...
+                            'type' => $lv->leave_type,      // planned | emergency
+                            'start' => substr((string) $lv->leave_start_date, 0, 10),
+                            'end' => substr((string) $lv->leave_end_date, 0, 10),
+                        ];
+                    }
+                }
+            } catch (\Throwable $e) { /* card just shows the normal state */ }
+
             return response()->json([
                 'success' => true,
                 'attendance' => $attendance ? [
@@ -3592,6 +3715,10 @@ class RiderController extends Controller
                     'is_remote_checkin' => $attendance->is_remote_checkin ?? 0,
                     'meter_start' => $attendance->meter_start ? (int) $attendance->meter_start : null,
                     'meter_end' => $attendance->meter_end ? (int) $attendance->meter_end : null,
+                    // Photo URLs so the app can show a "saved" tile with the thumbnail
+                    // instead of the bare upload button (additive; old APKs ignore).
+                    'picture_start' => !empty($attendance->picture_start) ? $this->getMeterPictureUrl($attendance->picture_start) : null,
+                    'picture_end' => !empty($attendance->picture_end) ? $this->getMeterPictureUrl($attendance->picture_end) : null,
                 ] : null,
                 'assigned_location' => $assignedLocation ? [
                     'name' => $assignedLocation->location_name,
@@ -3609,7 +3736,10 @@ class RiderController extends Controller
                 // Manager's "must be at your location to check in" rule (default off).
                 // The app uses this to require a real GPS fix before check-in.
                 'require_location' => $this->attendanceRequiresLocation(),
+                // Manager's "must check out at office or last delivery" rule (default off).
+                'checkout_rule' => $this->checkoutRuleEnabled(),
                 'pending_shift_ack' => $pendingAckData,
+                'today_leave' => $todayLeave,
             ]);
         } catch (\Exception $e) {
             \Log::error('Failed to get today attendance', [
@@ -3640,6 +3770,73 @@ class RiderController extends Controller
         } catch (\Throwable $e) {
             return false;
         }
+    }
+
+    /** Read a t_fin_config value with a default (never throws). */
+    private function attnConfig(string $key, $default)
+    {
+        try {
+            $v = \DB::table('t_fin_config')->where('config_key', $key)->value('config_value');
+            return ($v === null || $v === '') ? $default : $v;
+        } catch (\Throwable $e) {
+            return $default;
+        }
+    }
+
+    /** Is the mandatory-checkout rule turned on? (Phase H) */
+    private function checkoutRuleEnabled(): bool
+    {
+        return (string) $this->attnConfig('CHECKOUT_RULE_ENABLED', '0') === '1';
+    }
+
+    /**
+     * Phase H gate: when the checkout rule is ON, a rider may only check out at the office,
+     * or at his MOST RECENT delivery within the configured window + radius. Returns
+     * ['ok'=>true] to allow, else ['ok'=>false,'reason'=>..,'message'=>..]. Server-authoritative.
+     */
+    private function checkoutRuleResult(int $userId, $lat, $lng): array
+    {
+        if (!$this->checkoutRuleEnabled()) {
+            return ['ok' => true];
+        }
+        // No usable GPS → block with a distinct message (H-Q2).
+        if (is_null($lat) || is_null($lng) || !LocationService::isValidCoordinates($lat, $lng)) {
+            return ['ok' => false, 'reason' => 'no_gps', 'message' => 'Your location is off — turn it on to check out.'];
+        }
+        $lat = (float) $lat; $lng = (float) $lng;
+
+        // 1) Office (primary company location) within its radius.
+        $office = \DB::table('t_ops_company_locations')->where('is_primary', 1)->where('is_active', 1)
+            ->select('latitude', 'longitude', 'radius_meters')->first();
+        if ($office && $office->latitude !== null && $office->longitude !== null) {
+            $dOffice = $this->haversineDistance($lat, $lng, (float) $office->latitude, (float) $office->longitude);
+            if ($dOffice <= (float) ($office->radius_meters ?: 300)) {
+                return ['ok' => true, 'basis' => 'office'];
+            }
+        }
+
+        // 2) His MOST RECENT delivered order today, within window + radius (H-Q3).
+        $windowMins = (int) $this->attnConfig('CHECKOUT_DELIVERY_WINDOW_MINS', 15);
+        $radiusM    = (float) $this->attnConfig('CHECKOUT_DELIVERY_RADIUS_M', 150);
+        $last = \DB::table('t_crm_order_status_history as h')
+            ->join('t_crm_prod_order as o', 'o.id', '=', 'h.order_id')
+            ->where('h.status_code', 'delivered')
+            ->where('o.assigned_rider_user_id', $userId)
+            ->whereNotNull('h.delivery_latitude')->whereNotNull('h.delivery_longitude')
+            ->whereDate('h.changed_at', now()->toDateString())
+            ->orderByDesc('h.changed_at')
+            ->select('h.delivery_latitude', 'h.delivery_longitude', 'h.changed_at')
+            ->first();
+        if ($last) {
+            $ageMin = \Carbon\Carbon::parse($last->changed_at)->diffInMinutes(now(), false);
+            $dDrop = $this->haversineDistance($lat, $lng, (float) $last->delivery_latitude, (float) $last->delivery_longitude);
+            if ($ageMin >= 0 && $ageMin <= $windowMins && $dDrop <= $radiusM) {
+                return ['ok' => true, 'basis' => 'delivery'];
+            }
+        }
+
+        return ['ok' => false, 'reason' => 'wrong_place',
+            'message' => 'Check out at the office, or within ' . $windowMins . ' min at your last delivery.'];
     }
 
     public function checkIn(Request $request)
@@ -4693,6 +4890,18 @@ class RiderController extends Controller
                 return response()->json(['success' => false, 'message' => 'Already checked out today'], 400);
             }
 
+            // Phase H — mandatory checkout location (only when the manager turned it on).
+            // Must be at the office, or at his most recent delivery within window+radius.
+            $ruleCheck = $this->checkoutRuleResult($user->id, $request->input('latitude'), $request->input('longitude'));
+            if (!$ruleCheck['ok']) {
+                return response()->json([
+                    'success' => false,
+                    'checkout_rule' => true,
+                    'reason' => $ruleCheck['reason'],
+                    'message' => $ruleCheck['message'],
+                ], 422);
+            }
+
             // Process location data for check-out (no distance calculation)
             $locationData = $this->processCheckoutLocation($request, $user->id);
 
@@ -4744,6 +4953,19 @@ class RiderController extends Controller
                 ]);
             }
 
+            // ⭐ Cash-held snapshot: the exact amount still open against this rider
+            // in Daily Closing (cash collected from delivered orders, not yet
+            // submitted). Non-fatal — a computation error must NOT block checkout.
+            $cashHeld = null;
+            try {
+                $cashHeld = $this->getRiderCashHeld($user->id);
+            } catch (\Throwable $chErr) {
+                \Log::warning('Cash-held computation failed on check-out (non-fatal)', [
+                    'user_id' => $user->id,
+                    'error' => $chErr->getMessage(),
+                ]);
+            }
+
             return response()->json([
                 'success' => true,
                 'message' => 'Checked out successfully at ' . date('h:i A', strtotime($currentTime)),
@@ -4751,6 +4973,7 @@ class RiderController extends Controller
                 'picture_url' => $picturePath ? $this->getMeterPictureUrl($picturePath) : null,
                 'location_captured' => $locationData ? true : false,
                 'road_distance' => $roadDistanceResult, // ⭐ Include calculated road distance
+                'cash_held' => $cashHeld, // ⭐ null when zero balance or on compute failure
             ]);
         } catch (\Exception $e) {
             \Log::error('Failed to check out', [
@@ -4759,6 +4982,149 @@ class RiderController extends Controller
             ]);
             
             return response()->json(['success' => false, 'message' => 'Failed to check out: ' . $e->getMessage()], 500);
+        }
+    }
+
+    /**
+     * Snapshot of the cash a rider is still holding against him — the exact
+     * "open" amount he sees in Daily Closing. Mirrors getDailyClosing's math
+     * (open + partial invoice/order_payment outstanding on his employee_cash
+     * account, non-reversed) so the number ALWAYS matches what the manager sees.
+     * Also returns pending settlements (cash already handed over, awaiting the
+     * manager's approval) as a SEPARATE total. Returns null when he has no
+     * employee_cash account or there is nothing open and nothing pending.
+     *
+     * @return array|null
+     */
+    private function getRiderCashHeld(int $userId): ?array
+    {
+        $account = \App\Models\FIN\AccountModel::where('user_id', $userId)
+            ->where('account_category', \App\Models\FIN\AccountModel::CATEGORY_EMPLOYEE_CASH)
+            ->first();
+        if (!$account) {
+            return null;
+        }
+
+        // Open + partial invoice/order_payment rows to his account (non-reversed).
+        // "Not settled" = still owed → outstanding = amount - settled_amount.
+        $rows = \App\Models\FIN\LedgerModel::whereIn('transaction_type', [
+                \App\Models\FIN\LedgerModel::TYPE_INVOICE,
+                \App\Models\FIN\LedgerModel::TYPE_ORDER_PAYMENT,
+            ])
+            ->where('to_account_id', $account->id)
+            ->where('approval_status', '!=', \App\Models\FIN\LedgerModel::STATUS_REVERSED)
+            ->whereIn('settlement_status', ['open', 'partial']) // exact match to getDailyClosing's open+partial
+            ->with('order')
+            ->orderBy('transaction_date', 'desc')
+            ->get();
+
+        // Cash he has already SUBMITTED, awaiting manager approval. The invoices
+        // covered by these deposits are STILL 'open' in the ledger (they only
+        // settle on approval), so they must be excluded from "cash in hand" —
+        // he no longer holds that money. Same metadata convention as
+        // getDailyClosing: settlement_metadata.invoice_ids lists the covered rows.
+        $pending = \App\Models\FIN\LedgerModel::where('transaction_type', \App\Models\FIN\LedgerModel::TYPE_EMPLOYEE_DEPOSIT)
+            ->where('from_account_id', $account->id)
+            ->where('approval_status', \App\Models\FIN\LedgerModel::STATUS_PENDING)
+            ->where(function ($q) {
+                $q->where('description', 'LIKE', '%Settlement%')
+                  ->orWhere('description', 'LIKE', '%Partial Payment%');
+            })
+            ->get();
+        $pendingTotal = (float) $pending->sum('amount');
+        $pendingInvoiceIds = [];
+        foreach ($pending as $dep) {
+            $meta = $dep->settlement_metadata;
+            foreach (($meta['invoice_ids'] ?? []) as $iid) {
+                $pendingInvoiceIds[(int) $iid] = true;
+            }
+        }
+
+        $invoices = $rows->map(function ($inv) use ($pendingInvoiceIds) {
+            return [
+                'id' => $inv->id,
+                'order_number' => $inv->order ? $inv->order->order_number : 'N/A',
+                'customer_name' => $inv->order ? $inv->order->customer_name : null,
+                'date' => $inv->transaction_date ? $inv->transaction_date->format('Y-m-d') : null,
+                'amount' => (float) $inv->amount,
+                'settled_amount' => (float) ($inv->settled_amount ?? 0),
+                'outstanding' => (float) ($inv->amount - ($inv->settled_amount ?? 0)),
+                'is_pending_approval' => isset($pendingInvoiceIds[(int) $inv->id]),
+            ];
+        })->values();
+
+        $totalOutstanding = (float) $rows->sum(function ($inv) {
+            return $inv->amount - ($inv->settled_amount ?? 0);
+        });
+
+        // NET cash in hand = open invoices NOT covered by a pending submission.
+        $netCashInHand = (float) $rows->sum(function ($inv) use ($pendingInvoiceIds) {
+            if (isset($pendingInvoiceIds[(int) $inv->id])) {
+                return 0;
+            }
+            return $inv->amount - ($inv->settled_amount ?? 0);
+        });
+        $netInvoiceCount = $rows->filter(fn ($inv) => !isset($pendingInvoiceIds[(int) $inv->id]))->count();
+
+        // Nothing open and nothing pending → null (mobile skips the popup).
+        if ($totalOutstanding <= 0 && $pendingTotal <= 0) {
+            return null;
+        }
+
+        return [
+            'account_id' => $account->id,
+            'total_outstanding' => $totalOutstanding,
+            'invoice_count' => $rows->count(),
+            'net_cash_in_hand' => $netCashInHand,
+            'net_invoice_count' => $netInvoiceCount,
+            'invoices' => $invoices,
+            'pending_settlement_amount' => $pendingTotal,
+            'pending_settlement_count' => $pending->count(),
+        ];
+    }
+
+    /**
+     * Rider confirms (at check-out) the cash amount he is holding. Records the
+     * confirmed figure + timestamp on today's attendance row for the manager.
+     * Purely a record — no ledger/settlement impact. Idempotent per day.
+     */
+    public function confirmCash(Request $request)
+    {
+        try {
+            $user = Auth::user();
+            $today = now()->format('Y-m-d');
+
+            $validated = $request->validate([
+                'amount' => 'required|numeric|min:0',
+                'status' => 'nullable|in:confirmed,issue',
+            ]);
+            $status = $validated['status'] ?? 'confirmed';
+
+            $attendance = \DB::table('t_ops_attendance')
+                ->where('user_id', $user->id)
+                ->whereDate('attendance_date', $today)
+                ->first();
+
+            if (!$attendance) {
+                return response()->json(['success' => false, 'message' => 'No attendance record for today'], 404);
+            }
+
+            \DB::table('t_ops_attendance')
+                ->where('id', $attendance->id)
+                ->update([
+                    'cash_confirmed_amount' => $validated['amount'],
+                    'cash_confirmed_at' => now(),
+                    'cash_confirm_status' => $status,
+                    'updated_at' => now(),
+                ]);
+
+            return response()->json([
+                'success' => true,
+                'message' => $status === 'issue' ? 'Issue reported to the manager' : 'Cash amount confirmed',
+            ]);
+        } catch (\Exception $e) {
+            \Log::error('Failed to confirm cash held', ['error' => $e->getMessage()]);
+            return response()->json(['success' => false, 'message' => 'Failed to confirm: ' . $e->getMessage()], 500);
         }
     }
 
@@ -7339,6 +7705,27 @@ class RiderController extends Controller
                     $batchOrders = collect($batch['orders']);
                     $sortedByDelivery = $batchOrders->sortBy('delivered_at')->values();
 
+                    // Planned delivery order = the sequence committed at DISPATCH,
+                    // derived from each order's ETA (estimated_delivery_at) — NOT the
+                    // raw delivery_priority. delivery_priority is a live counter that
+                    // gets renumbered from 1 over the remaining stops whenever the
+                    // rider re-orders mid-route, so a finished batch can hold duplicate
+                    // priorities (two "P1"s) that misread the sequence. The ETA order
+                    // is assigned once per dispatch and is stable, giving a clean 1..N
+                    // planned rank. Orders without an ETA (rare — all batch orders were
+                    // dispatched) fall to the end, tie-broken by priority then id.
+                    $plannedOrder = $batchOrders->sortBy(function ($o) {
+                        $hasEta = empty($o['estimated_delivery_at']) ? '1' : '0';
+                        $eta    = $o['estimated_delivery_at'] ?? '9999-12-31 23:59:59';
+                        $prio   = str_pad((string) ($o['delivery_priority'] ?? 999999), 7, '0', STR_PAD_LEFT);
+                        $id     = str_pad((string) $o['id'], 12, '0', STR_PAD_LEFT);
+                        return "{$hasEta}|{$eta}|{$prio}|{$id}";
+                    })->values();
+                    $plannedRankById = [];
+                    foreach ($plannedOrder as $pi => $po) {
+                        $plannedRankById[$po['id']] = $pi + 1;
+                    }
+
                     $prioritySequenceMatch = 0;
                     $totalWithPriority = 0;
                     $prevDeliveryTime = null;
@@ -7346,10 +7733,11 @@ class RiderController extends Controller
                     $officeReturns = [];
 
                     foreach ($sortedByDelivery as $idx => $o) {
-                        if ($o['delivery_priority'] !== null) {
+                        // "In sequence" = delivered in its planned (dispatch) position.
+                        $plannedRank = $plannedRankById[$o['id']] ?? null;
+                        if ($plannedRank !== null) {
                             $totalWithPriority++;
-                            $expectedIdx = $batchOrders->sortBy('delivery_priority')->values()->search(fn($x) => $x['id'] === $o['id']);
-                            if ($expectedIdx === $idx) {
+                            if ($plannedRank === $idx + 1) {
                                 $prioritySequenceMatch++;
                             }
                         }
@@ -7370,7 +7758,7 @@ class RiderController extends Controller
                     $firstDelivery = $sortedByDelivery->first();
                     $lastDelivery = $sortedByDelivery->last();
                     $batchDurationMin = $firstDelivery && $lastDelivery
-                        ? \Carbon\Carbon::parse($firstDelivery['delivered_at'])->diffInMinutes(\Carbon\Carbon::parse($lastDelivery['delivered_at']))
+                        ? (int) round(\Carbon\Carbon::parse($firstDelivery['delivered_at'])->diffInMinutes(\Carbon\Carbon::parse($lastDelivery['delivered_at'])))
                         : 0;
 
                     $batchHasVerified = $batchOrders->filter(fn($o) => $o['has_verified_location'])->count();
@@ -7388,8 +7776,12 @@ class RiderController extends Controller
                     $batch['office_returns'] = $officeReturns;
                     $batch['has_verified_count'] = $batchHasVerified;
                     $batch['delivered_at_verified_count'] = $batchDeliveredAtVerified;
-                    $batch['orders'] = $sortedByDelivery->map(function($o, $idx) {
+                    $batch['orders'] = $sortedByDelivery->map(function($o, $idx) use ($plannedRankById) {
                         $o['actual_sequence'] = $idx + 1;
+                        // Stable dispatch-order rank (see $plannedOrder above); both
+                        // the web tracker and the mobile tracker render from this so
+                        // they stay in sync.
+                        $o['planned_sequence'] = $plannedRankById[$o['id']] ?? null;
                         return $o;
                     })->toArray();
                 }
@@ -8216,24 +8608,46 @@ class RiderController extends Controller
                 ]);
             }
 
-            // Approved leaves taken for the current year
-            $currentYear = date('Y');
-            $yearLeaveDays = 0;
-            $yearLeaveRequests = \App\Models\Request\RequestModel::where('requester_user_id', $user->id)
-                ->where('status', 'approved')
-                ->whereHas('category', fn($q) => $q->where('category_code', 'leave'))
-                ->where('leave_start_date', '>=', "{$currentYear}-01-01")
-                ->where('leave_end_date', '<=', "{$currentYear}-12-31")
-                ->get();
+            // Leave balance for the CONFIGURED cycle (not the calendar year). The
+            // LeavePolicyService is the single source of truth shared with the web app, so
+            // the rider sees the same numbers as the manager. `leave_balance` is additive
+            // (old APKs ignore it); `leaves_taken_year` is kept for back-compat but now
+            // correctly reflects the cycle, fixing the old calendar-year mismatch.
+            $leaveBal = (new \App\Services\HR\LeavePolicyService())->balance((int) $user->id);
+            $summary['leave_balance'] = $leaveBal;
+            $summary['leaves_taken_year'] = $leaveBal['taken_total'];
+            $summary['leaves_year'] = (int) substr($leaveBal['cycle_start'], 0, 4);
+            $summary['cycle_start'] = $leaveBal['cycle_start'];
+            $summary['cycle_end'] = $leaveBal['cycle_end'];
+            // "Absent this year" for the rider — the SAME shared definition the manager's
+            // Month tab uses (AttendanceYearService), so the two numbers can't disagree.
+            // leave_dates_year = the exact approved-leave dates behind "Used X of 10",
+            // so tapping the balance opens the list instantly (no extra request).
+            try {
+                $yearSvc = new \App\Services\HR\AttendanceYearService();
+                // Compute the absent DATES once → count is its size (identical to yearAbsentDays),
+                // and the list feeds the rider's tappable "This year absent" drill-down.
+                $yearEndEff = min(date('Y-m-d'), (string) $leaveBal['cycle_end']);
+                $absentDates = $yearSvc->absentWorkingDates(
+                    (int) $user->id,
+                    new \App\Services\ShiftResolutionService(),
+                    (string) $leaveBal['cycle_start'],
+                    $yearEndEff
+                );
+                $summary['absent_days_year'] = count($absentDates);
+                $summary['absent_dates_year'] = array_map(fn($d) => ['date' => $d], $absentDates);
 
-            foreach ($yearLeaveRequests as $lr) {
-                if ($lr->leave_start_date && $lr->leave_end_date) {
-                    $yearLeaveDays += \Carbon\Carbon::parse($lr->leave_start_date)
-                        ->diffInDays(\Carbon\Carbon::parse($lr->leave_end_date)) + 1;
-                }
+                $leaveMap = $yearSvc->approvedLeaveDates((int) $user->id, $leaveBal['cycle_start'], $leaveBal['cycle_end']);
+                ksort($leaveMap);
+                $summary['leave_dates_year'] = array_map(
+                    fn($d, $type) => ['date' => $d, 'type' => $type],
+                    array_keys($leaveMap), array_values($leaveMap)
+                );
+            } catch (\Throwable $e) {
+                $summary['absent_days_year'] = 0;
+                $summary['absent_dates_year'] = [];
+                $summary['leave_dates_year'] = [];
             }
-            $summary['leaves_taken_year'] = $yearLeaveDays;
-            $summary['leaves_year'] = (int) $currentYear;
 
             // Fetch petrol rate for this user from their assigned rate group
             $petrolRate = null;
@@ -8347,6 +8761,41 @@ class RiderController extends Controller
     /**
      * Get rider's requests
      */
+    /**
+     * Mobile leave approvals — thin, permission-gated wrappers that DELEGATE to the
+     * canonical web leave logic in AttendanceController so no business rule is
+     * duplicated (single-level approval, status->approved/rejected, rider app
+     * re-syncs via requester_sync_required; leave balance is derived by
+     * LeavePolicyService, so there is no quota write on approve). All three require
+     * the 'approve_leaves' mobile permission.
+     */
+    public function mobilePendingLeaves(Request $request)
+    {
+        $user = Auth::user();
+        if (!$user || !$user->hasMobilePermission('approve_leaves')) {
+            return response()->json(['success' => false, 'message' => 'You do not have leave-approval access.'], 403);
+        }
+        return app(\App\Http\Controllers\CRM\AttendanceController::class)->pendingLeaves($request);
+    }
+
+    public function mobileApproveLeave(Request $request, $id)
+    {
+        $user = Auth::user();
+        if (!$user || !$user->hasMobilePermission('approve_leaves')) {
+            return response()->json(['success' => false, 'message' => 'You do not have leave-approval access.'], 403);
+        }
+        return app(\App\Http\Controllers\CRM\AttendanceController::class)->approveLeaveRequest($request, $id);
+    }
+
+    public function mobileRejectLeave(Request $request, $id)
+    {
+        $user = Auth::user();
+        if (!$user || !$user->hasMobilePermission('approve_leaves')) {
+            return response()->json(['success' => false, 'message' => 'You do not have leave-approval access.'], 403);
+        }
+        return app(\App\Http\Controllers\CRM\AttendanceController::class)->rejectLeaveRequest($request, $id);
+    }
+
     public function getRequests(Request $request)
     {
         try {
@@ -8543,6 +8992,25 @@ class RiderController extends Controller
                 }
             }
 
+            // ── Leave policy (single pool + same-day cap), server-authoritative so an old
+            //    app build can't bypass it. Applies to the rider applying for themselves
+            //    (this endpoint always creates for Auth::user). Sets $policyLeaveType.
+            $policyLeaveType = null;
+            if ($request->filled('leave_start_date') && $request->filled('leave_end_date')) {
+                $catForPolicy = \App\Models\Request\RequestCategoryModel::find($validated['category_id']);
+                if ($catForPolicy && $catForPolicy->category_code === 'leave') {
+                    $policyRes = (new \App\Services\HR\LeavePolicyService())->validateApplication(
+                        (int) $user->id, $validated['leave_start_date'], $validated['leave_end_date'],
+                        date('Y-m-d'), date('H:i')
+                    );
+                    if (!$policyRes['ok']) {
+                        return response()->json(['success' => false, 'message' => $policyRes['message']], 422);
+                    }
+                    // planned = applied in advance; emergency = same-day (feeds the cap).
+                    $policyLeaveType = $policyRes['is_sameday'] ? 'emergency' : 'planned';
+                }
+            }
+
             // Verify category is allowed: legacy types + any expense-management enabled type
             try {
                 $allowedCategoryCodes = \App\Models\Request\RequestCategoryModel::where('is_active', 1)
@@ -8649,7 +9117,8 @@ class RiderController extends Controller
                 'business_unit_id' => $request->input('business_unit_id', 1),
                 'leave_start_date' => $validated['leave_start_date'] ?? null,
                 'leave_end_date' => $validated['leave_end_date'] ?? null,
-                'leave_type' => $validated['leave_type'] ?? null,
+                // Records how the leave was applied (casual = advance, emergency = same-day).
+                'leave_type' => $policyLeaveType ?? ($validated['leave_type'] ?? null),
                 'leave_days' => $leaveDays,
                 'attachments' => $attachments,
                 'status' => \App\Models\Request\RequestModel::STATUS_PENDING,
@@ -8671,6 +9140,29 @@ class RiderController extends Controller
                 'user_id' => $user->id,
                 'user_name' => $user->fullname,
             ]);
+
+            // ⭐ Alert management (permission: receive_leave_alerts) when a NEW leave
+            // request is added and is pending review. New pending leaves only;
+            // best-effort so a push failure never affects the request response.
+            if (($category->category_code ?? null) === 'leave'
+                && $newRequest->status === \App\Models\Request\RequestModel::STATUS_PENDING) {
+                try {
+                    $range = null;
+                    if ($newRequest->leave_start_date) {
+                        $s = date('M j', strtotime($newRequest->leave_start_date));
+                        $e2 = $newRequest->leave_end_date ? date('M j', strtotime($newRequest->leave_end_date)) : $s;
+                        $range = ($s === $e2) ? $s : "{$s} – {$e2}";
+                    }
+                    app(\App\Services\FirebaseService::class)->notifyLeaveAdded(
+                        (int) $newRequest->id,
+                        $user->fullname ?: 'An employee',
+                        $range,
+                        (int) $user->id
+                    );
+                } catch (\Throwable $e) {
+                    \Log::warning('Leave alert failed (mobile)', ['error' => $e->getMessage()]);
+                }
+            }
 
             return response()->json([
                 'success' => true,
@@ -9422,13 +9914,21 @@ class RiderController extends Controller
             $user = Auth::user();
             $userRoleIds = $user ? $user->roles()->pluck('t_sys_role.id')->toArray() : [];
             
-            $statuses = DB::table('t_crm_order_status_master')
+            $statusQuery = DB::table('t_crm_order_status_master')
                 ->where('is_active', 1)
                 ->where('show_in_mobile', 1)  // ⭐ Only show statuses enabled for mobile
                 // Exclude legacy status codes (keep only underscore versions)
-                ->whereNotIn('status_code', ['on-hold', 'on hold'])
+                ->whereNotIn('status_code', ['on-hold', 'on hold']);
+
+            // Status Hub: never offer "legacy" (retiring) statuses in the picker.
+            // Guarded so this stays safe if the Hub migration hasn't run yet.
+            if (\Schema::hasColumn('t_crm_order_status_master', 'lane')) {
+                $statusQuery->where('lane', '!=', 'legacy');
+            }
+
+            $statuses = $statusQuery
                 ->orderBy('sequence_order')
-                ->get(['id', 'status_code', 'status_name', 'icon', 'color_class', 'visible_to_roles', 'sequence_order']);
+                ->get(['id', 'status_code', 'status_name', 'icon', 'color_class', 'visible_to_roles', 'sequence_order', 'is_final']);
             
             // Filter by role visibility
             $filteredStatuses = $statuses->filter(function($status) use ($userRoleIds) {
@@ -9457,7 +9957,8 @@ class RiderController extends Controller
                     'status_name' => $status->status_name,
                     'icon' => $status->icon,
                     'color_class' => $status->color_class,
-                    'sequence_order' => $status->sequence_order  // ⭐ NEW: For sorting in mobile
+                    'sequence_order' => $status->sequence_order,  // For sorting in mobile
+                    'is_final' => (bool) $status->is_final         // For the closed-order gate (additive; old apps ignore it)
                 ];
             })->values();
             
@@ -11588,13 +12089,9 @@ class RiderController extends Controller
                 $hierarchy[] = 'orders';
             }
 
-            $statusSetting = DB::table('t_crm_open_quantities_settings')
-                ->where('setting_key', 'excluded_statuses')
-                ->first();
-            $excludedStatuses = $statusSetting ? json_decode($statusSetting->setting_value, true) : ['delivered', 'completed', 'cancelled', 'refunded'];
-            if (!is_array($excludedStatuses) || empty($excludedStatuses)) {
-                $excludedStatuses = ['delivered', 'completed', 'cancelled', 'refunded'];
-            }
+            // Central Order-Status rule service (Phase 1 = same values as before, centralised).
+            $statusRules = app(\App\Services\CRM\OrderStatusRuleService::class);
+            $excludedStatuses = $statusRules->quantitiesExcluded();
 
             // FIX: Use exclusive/priority-based JOIN to prevent duplicate rows
             // When SKU exists and matches, don't also match via product_id/variant_id
@@ -11669,7 +12166,7 @@ class RiderController extends Controller
             //    that list, so they must be excluded explicitly.
             if ($preparedOnly) {
                 $query->where('li.preparation_status', 'preparing')
-                      ->whereNotIn('o.order_status', ['out_for_delivery', 'delivered', 'completed']);
+                      ->whereNotIn('o.order_status', $statusRules->outTheDoor());
             } else {
                 $query->where(function($q) {
                     $q->whereNull('li.preparation_status')
@@ -12276,11 +12773,10 @@ class RiderController extends Controller
                 $hierarchy = $hierarchySetting ? json_decode($hierarchySetting->setting_value, true) : ['product_type', 'product_name'];
             }
             
-            $statusSetting = DB::table('t_crm_open_quantities_settings')
-                ->where('setting_key', 'excluded_statuses')
-                ->first();
-            $excludedStatuses = $statusSetting ? json_decode($statusSetting->setting_value, true) : ['delivered', 'completed', 'cancelled', 'refunded'];
-            
+            // Central Order-Status rule service (Phase 1 = same values as before, centralised).
+            $statusRules = app(\App\Services\CRM\OrderStatusRuleService::class);
+            $excludedStatuses = $statusRules->quantitiesExcluded();
+
             // Build base query - same as webapp with SKU-primary matching
             $query = DB::table('t_crm_prod_order_line_item as li')
                 ->join('t_crm_prod_order as o', 'li.order_id', '=', 'o.id')
@@ -12340,9 +12836,9 @@ class RiderController extends Controller
             //    endpoint so the standalone and split views stay consistent).
             if ($preparedOnly) {
                 $query->where('li.preparation_status', 'preparing')
-                      ->whereNotIn('o.order_status', ['out_for_delivery', 'delivered', 'completed']);
+                      ->whereNotIn('o.order_status', $statusRules->outTheDoor());
             }
-            
+
             // Default: Only show orders from last 20 days for performance
             $query->where('o.order_date', '>=', \Carbon\Carbon::now()->subDays(20));
             
@@ -13922,36 +14418,11 @@ class RiderController extends Controller
                 $ledger = \App\Models\FIN\LedgerModel::find($expenseRequest->ledger_transaction_id);
                 
                 if ($ledger && $ledger->approval_status === \App\Models\FIN\LedgerModel::STATUS_APPROVED) {
-                    // Reverse account balances
-                    $fromAccount = $ledger->fromAccount;
-                    $toAccount = $ledger->toAccount;
-                    
-                    if ($fromAccount) {
-                        // Add amount back to from_account (was deducted)
-                        $fromAccount->current_balance += $ledger->amount;
-                        $fromAccount->save();
-                        
-                        \Log::info("Reversed from_account balance", [
-                            'account_id' => $fromAccount->id,
-                            'account_name' => $fromAccount->account_name,
-                            'amount_added' => $ledger->amount,
-                            'new_balance' => $fromAccount->current_balance
-                        ]);
-                    }
-                    
-                    if ($toAccount) {
-                        // Subtract amount from to_account (was added)
-                        $toAccount->current_balance -= $ledger->amount;
-                        $toAccount->save();
-                        
-                        \Log::info("Reversed to_account balance", [
-                            'account_id' => $toAccount->id,
-                            'account_name' => $toAccount->account_name,
-                            'amount_subtracted' => $ledger->amount,
-                            'new_balance' => $toAccount->current_balance
-                        ]);
-                    }
-                    
+                    // Reverse balances via the canonical engine (funding +, expense −); self-guards on
+                    // balance_updated and clears it — fixing the old bug where a reversed row kept
+                    // flag=1. REQUIRES the expense flag backfill for legacy rows applied with flag=0.
+                    (new \App\Services\FIN\BalancePostingService())->reverse($ledger);
+
                     // Mark ledger entry as reversed (using valid status)
                     $ledger->approval_status = \App\Models\FIN\LedgerModel::STATUS_REVERSED;
                     $ledger->comments = ($ledger->comments ? $ledger->comments . "\n" : '') . 
@@ -13966,20 +14437,10 @@ class RiderController extends Controller
                 $settlementLedger = \App\Models\FIN\LedgerModel::find($expenseRequest->settlement_transaction_id);
                 
                 if ($settlementLedger && $settlementLedger->approval_status === \App\Models\FIN\LedgerModel::STATUS_APPROVED) {
-                    // Reverse settlement balances
-                    $fromAccount = $settlementLedger->fromAccount;
-                    $toAccount = $settlementLedger->toAccount;
-                    
-                    if ($fromAccount) {
-                        $fromAccount->current_balance += $settlementLedger->amount;
-                        $fromAccount->save();
-                    }
-                    
-                    if ($toAccount) {
-                        $toAccount->current_balance -= $settlementLedger->amount;
-                        $toAccount->save();
-                    }
-                    
+                    // Reverse settlement balances via the canonical engine (EXP_FUND +, till −);
+                    // self-guards on balance_updated and clears it.
+                    (new \App\Services\FIN\BalancePostingService())->reverse($settlementLedger);
+
                     $settlementLedger->approval_status = \App\Models\FIN\LedgerModel::STATUS_REVERSED;
                     $settlementLedger->comments = ($settlementLedger->comments ? $settlementLedger->comments . "\n" : '') . 
                         "DELETED (settlement reversal) by {$user->fullname} on " . now()->format('Y-m-d H:i:s');
@@ -14314,6 +14775,7 @@ class RiderController extends Controller
             // NOT the main office — the common case stays quiet, a pin means "elsewhere".
             $primaryLocationId = (int) (DB::table('t_ops_company_locations')
                 ->where('is_primary', 1)->where('is_active', 1)->value('id') ?? 0);
+            $checkoutClassifier = new \App\Services\Riders\CheckoutClassifierService();
 
             foreach ($query as $row) {
                 // Resolve the shift FOR THE SELECTED DATE (not today) so past dates use
@@ -14415,6 +14877,11 @@ class RiderController extends Controller
                     'is_remote_checkin' => $isRemoteCheckin,
                     'checkout_latitude' => $row->checkout_latitude ?? null,
                     'checkout_longitude' => $row->checkout_longitude ?? null,
+                    // Where he checked out (manager view): office / at a customer / elsewhere
+                    // (+ a flag if the delivery point was away from the saved address pin).
+                    'checkout_info' => ($row->logout_time && ($row->checkout_latitude ?? null) !== null)
+                        ? $checkoutClassifier->classify((int) $row->user_id, $selectedDate, $row->checkout_latitude, $row->checkout_longitude)
+                        : null,
                     // ⭐ Road distance (auto-calculated on checkout) - PRIMARY indicator
                     'road_distance_km' => $row->road_distance_km ?? null,
                     'road_distance_source' => $row->road_distance_source ?? null,
@@ -15191,6 +15658,9 @@ class RiderController extends Controller
                 $lateMinutes = $lateOt['late_minutes'];
                 $overtimeDays = $lateOt['overtime_days'];
                 $overtimeMinutes = $lateOt['overtime_minutes'];
+                // TARGET-based overtime (worked beyond the shift length) — manager display.
+                $overtimeTargetMinutes = (new \App\Services\HR\OvertimeService())
+                    ->overtimeMinutes($user->user_id, $startDate, $effectiveEndDate);
 
                 // Calculate working days using ShiftResolutionService (same as web app),
                 // only up to today for the current month.
@@ -15233,6 +15703,7 @@ class RiderController extends Controller
                     'late_minutes' => $lateMinutes,
                     'overtime_days' => $overtimeDays,
                     'overtime_minutes' => $overtimeMinutes,
+                    'overtime_target_minutes' => $overtimeTargetMinutes,
                     'total_hours' => round($totalHours, 1),
                     'working_days' => $workingDays,
                     'attendance_percentage' => $workingDays > 0 ? round(($presentDays / $workingDays) * 100, 1) : 0,
@@ -16179,7 +16650,25 @@ class RiderController extends Controller
             }
             
             // Group by rider for display
-            $invoicesByRider = $displayInvoices->groupBy('to_account_id')->map(function($riderInvoices) use ($invoiceToPendingSettlement, $settlementsByRider, $paymentProofMap) {
+            // Latest cash-held confirmation per rider (he confirmed / flagged the
+            // cash at check-out), keyed by user_id. Non-fatal.
+            $cashConfirmMap = collect();
+            try {
+                $riderUserIds = $displayInvoices->map(fn($inv) => $inv->toAccount?->user_id)->filter()->unique()->values()->all();
+                if (!empty($riderUserIds) && \Schema::hasColumn('t_ops_attendance', 'cash_confirm_status')) {
+                    $cashConfirmMap = \DB::table('t_ops_attendance')
+                        ->whereIn('user_id', $riderUserIds)
+                        ->whereNotNull('cash_confirmed_at')
+                        ->orderBy('cash_confirmed_at', 'desc')
+                        ->get(['user_id', 'cash_confirmed_amount', 'cash_confirmed_at', 'cash_confirm_status'])
+                        ->groupBy('user_id')
+                        ->map(fn($rows) => $rows->first());
+                }
+            } catch (\Throwable $e) {
+                $cashConfirmMap = collect();
+            }
+
+            $invoicesByRider = $displayInvoices->groupBy('to_account_id')->map(function($riderInvoices) use ($invoiceToPendingSettlement, $settlementsByRider, $paymentProofMap, $cashConfirmMap) {
                 $account = $riderInvoices->first()->toAccount;
                 $totalOutstanding = $riderInvoices->sum(function($invoice) {
                     return $invoice->amount - ($invoice->settled_amount ?? 0);
@@ -16230,7 +16719,8 @@ class RiderController extends Controller
                         ];
                     })->values(),
                     'total_outstanding' => $totalOutstanding,
-                    'invoice_count' => $riderInvoices->count()
+                    'invoice_count' => $riderInvoices->count(),
+                    'cash_confirmation' => $cashConfirmMap->get($account->user_id) ?? null,
                 ];
             })->values();
             
@@ -17018,8 +17508,20 @@ class RiderController extends Controller
     }
     
     /**
-     * ⭐ Update delivery priorities for orders (Store Mode only)
-     * Used by store managers to set delivery sequence for a rider's out_for_delivery orders
+     * ⭐ Update delivery priorities for orders (Store Mode + Rider Mode)
+     * Sets the delivery sequence for a rider's route. Accepts BOTH
+     * `out_for_delivery` (the live "van" block) and `processing` (the
+     * "up next" block the rider/manager pre-plans before dispatch).
+     *
+     * The caller sends ONE globally-numbered list, van block first
+     * (1..k) then the processing block (k+1..n). Keeping processing
+     * numbers above the van's is what makes the plan carry forward
+     * cleanly: when a processing order is later moved to
+     * out_for_delivery its number is already higher than every current
+     * van stop, so it lands at the bottom of the van — no collision,
+     * no re-plan needed. Reads sort by COALESCE(delivery_priority,999)
+     * and the clients derive contiguous "Stop N"/"Next N" labels from
+     * position, so gaps from partial moves never show.
      */
     public function updateDeliveryPriorities(Request $request)
     {
@@ -17071,7 +17573,10 @@ class RiderController extends Controller
             foreach ($priorities as $item) {
                 $order = OrderModel::where('id', $item['order_id'])
                     ->where('assigned_rider_user_id', $riderId)
-                    ->where('order_status', 'out_for_delivery') // Only out_for_delivery orders
+                    // Van block (out_for_delivery) + up-next block (processing).
+                    // Any other status in the payload (e.g. an order cancelled
+                    // since the client loaded) simply doesn't match and is skipped.
+                    ->whereIn('order_status', ['out_for_delivery', 'processing'])
                     ->first();
                 
                 if ($order) {

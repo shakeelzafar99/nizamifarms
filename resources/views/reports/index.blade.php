@@ -598,6 +598,9 @@
     let monthDetails = null;
     let expandedSections = {};
     let expandedDates = {};
+    let expandedCategories = {};   // By Category → expense sub-category drill
+    let expandedVendors = {};      // By Category → vendor drill
+    let expandedVendorDates = {};  // By Category → vendor → day drill
     let dailySummary = [];
     let expandedDays = {};
     let dayDetailsCache = {};
@@ -1087,25 +1090,11 @@
             <div class="detail-item-sub">${escapeHtml(item.customer_name)}</div>
         `);
         
-        // Expenses Section
-        html += renderSection('expenses', '💰 Expenses', d.expenses, '#FEE2E2', '#FEF2F2', (item, dateData) => {
-            const isDiff = item.entry_date !== dateData.date;
-            return `
-                <div class="detail-item-title">${escapeHtml(item.category || 'Expense')}</div>
-                <div class="detail-item-sub">By: ${escapeHtml(item.user)}</div>
-                ${isDiff ? `<div class="detail-item-date-bold">⚠️ Entered: ${formatShortDate(item.entry_date)}</div>` : ''}
-            `;
-        });
-        
-        // Vendor Purchases Section
-        html += renderSection('purchases', '🏭 Vendor Purchases', d.vendor_purchases, '#FEF3C7', '#FFFBEB', (item, dateData) => {
-            const isDiff = item.entry_date !== dateData.date;
-            return `
-                <div class="detail-item-title">${escapeHtml(item.vendor_name || 'Vendor')}</div>
-                <div class="detail-item-sub">By: ${escapeHtml(item.user)}</div>
-                ${isDiff ? `<div class="detail-item-date-bold">⚠️ Entered: ${formatShortDate(item.entry_date)}</div>` : ''}
-            `;
-        });
+        // Expenses Section — drill into expense sub-categories (Salaries, Food, Maintenance …).
+        html += renderExpensesByCategory('expenses', '💰 Expenses', d.expenses, '#FEE2E2', '#FEF2F2');
+
+        // Vendor Purchases Section — group by vendor name, then daily within each vendor.
+        html += renderVendorsByVendor('purchases', '🏭 Vendor Purchases', d.vendor_purchases, '#FEF3C7', '#FFFBEB');
         
         // Asset Purchases Section
         if (d.asset_purchases && (d.asset_purchases.count > 0 || d.asset_purchases.total > 0)) {
@@ -1226,6 +1215,149 @@
         return html;
     }
     
+    // By Category → Expenses grouped by sub-category (Salaries / Food / Maintenance …).
+    function renderExpensesByCategory(key, title, sectionData, headerBg, catBg) {
+        const isExpanded = expandedSections[key];
+        const cats = sectionData?.by_category || [];
+        let html = `<div class="section-card">
+            <div class="section-header" style="background:${headerBg}" onclick="toggleSection('${key}')">
+                <div class="section-header-left">
+                    <div class="section-title">${title}</div>
+                    <div class="section-count">${sectionData?.count || 0} transactions • ${cats.length} categories</div>
+                </div>
+                <div class="section-header-right">
+                    <span class="section-total">${formatCurrency(sectionData?.total)}</span>
+                    <span class="expand-icon">${isExpanded ? '▼' : '▶'}</span>
+                </div>
+            </div>`;
+        if (isExpanded) {
+            html += `<div class="section-content">`;
+            if (cats.length > 0) {
+                cats.forEach((cat, ci) => {
+                    const catOpen = expandedCategories[`${key}_${ci}`];
+                    html += `
+                        <div class="date-section" style="background:${catBg}">
+                            <div class="date-section-header" onclick="toggleCategory('${key}',${ci})">
+                                <span class="date-section-date">${escapeHtml(cat.category)}</span>
+                                <div class="date-section-right">
+                                    <span class="date-section-total">${formatCurrency(cat.total)}</span>
+                                    <span class="expand-icon">${catOpen ? '▼' : '▶'}</span>
+                                </div>
+                            </div>`;
+                    if (catOpen) {
+                        html += `<div class="date-items">`;
+                        (cat.items || []).forEach(item => {
+                            html += `
+                                <div class="detail-item">
+                                    <div class="detail-item-left">
+                                        <div class="detail-item-title">${escapeHtml(item.description || cat.category)}</div>
+                                        <div class="detail-item-sub">${formatShortDate(item.date)} • By: ${escapeHtml(item.user)}</div>
+                                    </div>
+                                    <div class="detail-item-amount">${formatCurrency(item.amount)}</div>
+                                </div>`;
+                        });
+                        html += `</div>`;
+                    }
+                    html += `</div>`;
+                });
+            } else {
+                html += `<div class="no-data-text">No expenses for this month</div>`;
+            }
+            html += `</div>`;
+        }
+        html += `</div>`;
+        return html;
+    }
+
+    // By Category → Vendor Purchases grouped by vendor, then daily within each vendor.
+    function renderVendorsByVendor(key, title, sectionData, headerBg, vendorBg) {
+        const isExpanded = expandedSections[key];
+        const vendors = sectionData?.by_vendor || [];
+        let html = `<div class="section-card">
+            <div class="section-header" style="background:${headerBg}" onclick="toggleSection('${key}')">
+                <div class="section-header-left">
+                    <div class="section-title">${title}</div>
+                    <div class="section-count">${sectionData?.count || 0} transactions • ${vendors.length} vendors</div>
+                </div>
+                <div class="section-header-right">
+                    <span class="section-total">${formatCurrency(sectionData?.total)}</span>
+                    <span class="expand-icon">${isExpanded ? '▼' : '▶'}</span>
+                </div>
+            </div>`;
+        if (isExpanded) {
+            html += `<div class="section-content">`;
+            if (vendors.length > 0) {
+                vendors.forEach((vendor, vi) => {
+                    const vOpen = expandedVendors[`${key}_${vi}`];
+                    const days = vendor.by_date || [];
+                    html += `
+                        <div class="date-section" style="background:${vendorBg}">
+                            <div class="date-section-header" onclick="toggleVendor('${key}',${vi})">
+                                <span class="date-section-date">${escapeHtml(vendor.vendor_name)}</span>
+                                <div class="date-section-right">
+                                    <span class="date-section-total">${formatCurrency(vendor.total)}</span>
+                                    <span class="expand-icon">${vOpen ? '▼' : '▶'}</span>
+                                </div>
+                            </div>`;
+                    if (vOpen) {
+                        html += `<div class="date-items">`;
+                        html += `<div class="detail-item-sub" style="padding:4px 12px">${days.length} day${days.length===1?'':'s'} • ${vendor.count} txn${vendor.count===1?'':'s'}</div>`;
+                        days.forEach((bd, di) => {
+                            const dOpen = expandedVendorDates[`${key}_${vi}_${di}`];
+                            html += `
+                                <div class="date-section" style="background:#ffffff">
+                                    <div class="date-section-header" onclick="toggleVendorDate('${key}',${vi},${di})">
+                                        <span class="date-section-date">${formatShortDate(bd.date)}</span>
+                                        <div class="date-section-right">
+                                            <span class="date-section-total">${formatCurrency(bd.total)}</span>
+                                            <span class="expand-icon">${dOpen ? '▼' : '▶'}</span>
+                                        </div>
+                                    </div>`;
+                            if (dOpen) {
+                                html += `<div class="date-items">`;
+                                (bd.items || []).forEach(item => {
+                                    html += `
+                                        <div class="detail-item">
+                                            <div class="detail-item-left">
+                                                <div class="detail-item-title">${escapeHtml(item.description || vendor.vendor_name)}</div>
+                                                <div class="detail-item-sub">By: ${escapeHtml(item.user)}</div>
+                                            </div>
+                                            <div class="detail-item-amount">${formatCurrency(item.amount)}</div>
+                                        </div>`;
+                                });
+                                html += `</div>`;
+                            }
+                            html += `</div>`;
+                        });
+                        html += `</div>`;
+                    }
+                    html += `</div>`;
+                });
+            } else {
+                html += `<div class="no-data-text">No vendor purchases for this month</div>`;
+            }
+            html += `</div>`;
+        }
+        html += `</div>`;
+        return html;
+    }
+
+    function toggleCategory(key, ci) {
+        const k = `${key}_${ci}`;
+        expandedCategories[k] = !expandedCategories[k];
+        renderMonthDetails();
+    }
+    function toggleVendor(key, vi) {
+        const k = `${key}_${vi}`;
+        expandedVendors[k] = !expandedVendors[k];
+        renderMonthDetails();
+    }
+    function toggleVendorDate(key, vi, di) {
+        const k = `${key}_${vi}_${di}`;
+        expandedVendorDates[k] = !expandedVendorDates[k];
+        renderMonthDetails();
+    }
+
     function toggleSection(key) {
         expandedSections[key] = !expandedSections[key];
         renderMonthDetails();

@@ -139,12 +139,28 @@
                     <div style="font-weight:700; color:#111827;">Rs. {{ number_format($ledgerOnlineBalance, 0) }}</div>
                 </div>
             </div>
+
+            {{-- ⭐ [Ledger L2] Reconciliation tripwire chip (manual ⚖ corrections already subtracted). --}}
+            @php
+                $reconColors = ['green' => ['#065F46','#D1FAE5','#10B981'], 'amber' => ['#92400E','#FEF3C7','#F59E0B'], 'red' => ['#991B1B','#FEE2E2','#EF4444']];
+                [$rcFg, $rcBg, $rcBorder] = $reconColors[$reconStatus ?? 'amber'];
+                $reconLabel = ($reconStatus ?? 'amber') === 'green' ? '✓ Reconciled' : (($reconStatus ?? '') === 'red' ? '⚠ Large unexplained gap' : 'Unexplained gap');
+            @endphp
+            <div style="margin-top:14px; display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
+                <span style="display:inline-flex; align-items:center; gap:8px; padding:6px 14px; border-radius:999px; background:{{ $rcBg }}; color:{{ $rcFg }}; border:1px solid {{ $rcBorder }}; font-weight:700; font-size:13px;">
+                    {{ $reconLabel }}: Rs. {{ number_format($reconGap ?? 0, 0) }}
+                </span>
+                @if(($netManualAdjustments ?? 0) != 0)
+                    <span style="font-size:12px; color:#6B7280;">manual ⚖ corrections of Rs. {{ number_format($netManualAdjustments, 0) }} already accounted for</span>
+                @endif
+            </div>
             <p style="font-size:11px; color:#9CA3AF; margin-top:10px;">
-                Once every bank has an opening balance and all online movements are tagged, the tracked
-                figure plus unassigned should track the ledger online balance. A growing gap means some
-                online movements are missing a bank tag. Manual ⚖ adjustments deliberately move a bank's
-                figure toward its REAL statement, so they widen this gap by design — that's the
-                correction, not an error.
+                (Tracked across banks + Unassigned) should equal the Ledger online balance. Manual ⚖
+                per-bank corrections are already subtracted here, so Taimur's manual fixes never trip
+                this. A remaining gap is bank opening balances not yet set and/or the online balance
+                awaiting its one-time re-baseline — draining the untagged bucket alone won't move it
+                (tagging shifts money from Unassigned to a bank 1-for-1). Once re-baselined, any NEW
+                gap means a fresh online movement is missing a bank tag.
             </p>
         </div>
     @endif

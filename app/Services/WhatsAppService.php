@@ -1819,6 +1819,59 @@ class WhatsAppService
         return $formatted;
     }
 
+    /**
+     * Positive-evidence check that a WhatsApp number CANNOT receive messages.
+     * Used to warn/block a rider from converting a first-time regular customer's
+     * order to online when our own sends to that number have bounced.
+     *
+     * Returns TRUE only with PROOF of undeliverability: at least one outbound
+     * message to the number failed with Meta error 131026 ("message
+     * undeliverable" — typically not on WhatsApp / can't receive) AND there is NO
+     * counter-evidence of reachability (no inbound message ever, and no outbound
+     * that reached delivered/read). No conversation / no history → FALSE — we
+     * never treat "no data" as invalid. Fail-open (FALSE) on any error, so a
+     * broken check can never wrongly block a conversion.
+     */
+    public function isNumberUndeliverable(?string $phone): bool
+    {
+        try {
+            $digits = preg_replace('/\D/', '', (string) $phone);
+            $last10 = substr($digits, -10);
+            if (strlen($last10) < 10) {
+                return false;
+            }
+
+            $conversationIds = ConversationModel::where('wa_phone', 'like', '%' . $last10)->pluck('id');
+            if ($conversationIds->isEmpty()) {
+                return false; // no conversation → no evidence either way
+            }
+
+            // Any proof the number DOES receive? (customer replied, or a send
+            // reached delivered/read.) If so, never flag it.
+            $reachable = MessageModel::whereIn('conversation_id', $conversationIds)
+                ->where(function ($q) {
+                    $q->where('direction', 'inbound')
+                      ->orWhere(function ($q2) {
+                          $q2->where('direction', 'outbound')->whereIn('status', ['delivered', 'read']);
+                      });
+                })
+                ->exists();
+            if ($reachable) {
+                return false;
+            }
+
+            // Positive proof of undeliverability: an outbound send failed 131026.
+            return MessageModel::whereIn('conversation_id', $conversationIds)
+                ->where('direction', 'outbound')
+                ->where('status', 'failed')
+                ->where('error_code', '131026')
+                ->exists();
+        } catch (\Throwable $e) {
+            Log::warning('isNumberUndeliverable check failed (fail-open)', ['error' => $e->getMessage()]);
+            return false;
+        }
+    }
+
     protected function sendRequest(array $payload): array
     {
         try {

@@ -129,38 +129,134 @@
         <h2 style="font-size:18px;font-weight:700;color:#111827;margin:0;">📐 Attendance Rules</h2>
         <button type="button" onclick="closeAttendanceRules()" style="background:none;border:none;font-size:26px;line-height:1;color:#9ca3af;cursor:pointer;">&times;</button>
       </div>
-      <p style="font-size:12.5px;color:#6b7280;margin:0 0 18px;">These policy settings drive the yearly counters and the meter warnings. They do not affect salary.</p>
+      <p style="font-size:12.5px;color:#6b7280;margin:0 0 14px;">Open a section to edit it. These settings drive the counters, warnings, leave and overtime — they do not change salary.</p>
 
       <!-- Year cycle -->
-      <div style="border:1px solid #e5e7eb;border-radius:10px;padding:14px;margin-bottom:14px;">
-        <div style="font-weight:700;color:#111827;font-size:14px;margin-bottom:2px;">📅 Yearly cycle</div>
-        <div style="font-size:12px;color:#6b7280;margin-bottom:12px;">The 12-month window for "leaves this year" and "absent this year". Not fixed to January — set it to your cycle (e.g. June → May).</div>
-        <div style="display:flex;gap:12px;flex-wrap:wrap;">
-          <div style="flex:1;min-width:150px;">
-            <label style="display:block;font-size:12px;font-weight:600;color:#374151;margin-bottom:4px;">Cycle start</label>
-            <input type="date" id="ruleCycleStart" style="width:100%;border:2px solid #d1d5db;border-radius:8px;padding:9px 10px;font-size:14px;">
+      <div style="border:1px solid #e5e7eb;border-radius:10px;margin-bottom:10px;overflow:hidden;">
+        <button type="button" onclick="toggleRuleSection('secCycle')" style="width:100%;display:flex;justify-content:space-between;align-items:center;background:#f9fafb;border:none;padding:12px 14px;cursor:pointer;">
+          <span style="font-weight:700;color:#111827;font-size:14px;">📅 Yearly cycle</span>
+          <span id="secCycleChev" style="color:#9ca3af;font-size:13px;">▾</span>
+        </button>
+        <div id="secCycle" style="display:block;padding:14px;border-top:1px solid #f1f5f9;">
+          <div style="font-size:12px;color:#6b7280;margin-bottom:12px;">The 12-month window for "leaves this year" and "absent this year". Not fixed to January — set it to your cycle (e.g. June → May).</div>
+          <div style="display:flex;gap:12px;flex-wrap:wrap;">
+            <div style="flex:1;min-width:150px;">
+              <label style="display:block;font-size:12px;font-weight:600;color:#374151;margin-bottom:4px;">Cycle start</label>
+              <input type="date" id="ruleCycleStart" style="width:100%;border:2px solid #d1d5db;border-radius:8px;padding:9px 10px;font-size:14px;">
+            </div>
+            <div style="flex:1;min-width:150px;">
+              <label style="display:block;font-size:12px;font-weight:600;color:#374151;margin-bottom:4px;">Cycle end</label>
+              <input type="date" id="ruleCycleEnd" style="width:100%;border:2px solid #d1d5db;border-radius:8px;padding:9px 10px;font-size:14px;">
+            </div>
           </div>
-          <div style="flex:1;min-width:150px;">
-            <label style="display:block;font-size:12px;font-weight:600;color:#374151;margin-bottom:4px;">Cycle end</label>
-            <input type="date" id="ruleCycleEnd" style="width:100%;border:2px solid #d1d5db;border-radius:8px;padding:9px 10px;font-size:14px;">
-          </div>
+          <div id="ruleCycleHint" style="font-size:11.5px;color:#2563eb;margin-top:8px;"></div>
         </div>
-        <div id="ruleCycleHint" style="font-size:11.5px;color:#2563eb;margin-top:8px;"></div>
       </div>
 
-      <!-- Meter thresholds -->
-      <div style="border:1px solid #e5e7eb;border-radius:10px;padding:14px;margin-bottom:18px;">
-        <div style="font-weight:700;color:#111827;font-size:14px;margin-bottom:12px;">🏍 Meter checks</div>
-        <div style="display:flex;gap:12px;flex-wrap:wrap;">
-          <div style="flex:1;min-width:150px;">
-            <label style="display:block;font-size:12px;font-weight:600;color:#374151;margin-bottom:4px;">GPS mismatch warn (km)</label>
-            <input type="number" min="0" step="1" id="ruleGpsWarn" style="width:100%;border:2px solid #d1d5db;border-radius:8px;padding:9px 10px;font-size:14px;">
-            <div style="font-size:11px;color:#9ca3af;margin-top:4px;">Warn when meter distance differs from road/GPS by more than this.</div>
+      <!-- Meter checks -->
+      <div style="border:1px solid #e5e7eb;border-radius:10px;margin-bottom:10px;overflow:hidden;">
+        <button type="button" onclick="toggleRuleSection('secMeter')" style="width:100%;display:flex;justify-content:space-between;align-items:center;background:#f9fafb;border:none;padding:12px 14px;cursor:pointer;">
+          <span style="font-weight:700;color:#111827;font-size:14px;">🏍 Meter checks</span>
+          <span id="secMeterChev" style="color:#9ca3af;font-size:13px;">▸</span>
+        </button>
+        <div id="secMeter" style="display:none;padding:14px;border-top:1px solid #f1f5f9;">
+          <div style="display:flex;gap:12px;flex-wrap:wrap;">
+            <div style="flex:1;min-width:150px;">
+              <label style="display:block;font-size:12px;font-weight:600;color:#374151;margin-bottom:4px;">GPS mismatch warn (km)</label>
+              <input type="number" min="0" step="1" id="ruleGpsWarn" style="width:100%;border:2px solid #d1d5db;border-radius:8px;padding:9px 10px;font-size:14px;">
+              <div style="font-size:11px;color:#9ca3af;margin-top:4px;">Warn when meter distance differs from road/GPS by more than this.</div>
+            </div>
+            <div style="flex:1;min-width:150px;">
+              <label style="display:block;font-size:12px;font-weight:600;color:#374151;margin-bottom:4px;">Overnight bike grace (km)</label>
+              <input type="number" min="0" step="1" id="ruleOvernight" style="width:100%;border:2px solid #d1d5db;border-radius:8px;padding:9px 10px;font-size:14px;">
+              <div style="font-size:11px;color:#9ca3af;margin-top:4px;">Default for company-bike riders. Can be overridden per rider on the Riders page.</div>
+            </div>
           </div>
-          <div style="flex:1;min-width:150px;">
-            <label style="display:block;font-size:12px;font-weight:600;color:#374151;margin-bottom:4px;">Overnight bike grace (km)</label>
-            <input type="number" min="0" step="1" id="ruleOvernight" style="width:100%;border:2px solid #d1d5db;border-radius:8px;padding:9px 10px;font-size:14px;">
-            <div style="font-size:11px;color:#9ca3af;margin-top:4px;">Default for company-bike riders. Can be overridden per rider on the Riders page.</div>
+        </div>
+      </div>
+
+      <!-- Leave policy -->
+      <div style="border:1px solid #e5e7eb;border-radius:10px;margin-bottom:10px;overflow:hidden;">
+        <button type="button" onclick="toggleRuleSection('secLeave')" style="width:100%;display:flex;justify-content:space-between;align-items:center;background:#f9fafb;border:none;padding:12px 14px;cursor:pointer;">
+          <span style="font-weight:700;color:#111827;font-size:14px;">🏖 Leave policy</span>
+          <span id="secLeaveChev" style="color:#9ca3af;font-size:13px;">▸</span>
+        </button>
+        <div id="secLeave" style="display:none;padding:14px;border-top:1px solid #f1f5f9;">
+          <div style="font-size:12px;color:#6b7280;margin-bottom:12px;">One yearly pool of leaves. A few of them may be applied the same day (emergency) up to a cap, before a cutoff time.</div>
+          <div style="display:flex;gap:12px;flex-wrap:wrap;">
+            <div style="flex:1;min-width:130px;">
+              <label style="display:block;font-size:12px;font-weight:600;color:#374151;margin-bottom:4px;">Leaves per year</label>
+              <input type="number" min="0" step="1" id="ruleLeaveTotal" style="width:100%;border:2px solid #d1d5db;border-radius:8px;padding:9px 10px;font-size:14px;">
+            </div>
+            <div style="flex:1;min-width:130px;">
+              <label style="display:block;font-size:12px;font-weight:600;color:#374151;margin-bottom:4px;">Same-day allowed</label>
+              <input type="number" min="0" step="1" id="ruleSamedayCap" style="width:100%;border:2px solid #d1d5db;border-radius:8px;padding:9px 10px;font-size:14px;">
+              <div style="font-size:11px;color:#9ca3af;margin-top:4px;">How many can be taken same-day (emergency).</div>
+            </div>
+            <div style="flex:1;min-width:130px;">
+              <label style="display:block;font-size:12px;font-weight:600;color:#374151;margin-bottom:4px;">Same-day cutoff</label>
+              <input type="time" id="ruleSamedayCutoff" style="width:100%;border:2px solid #d1d5db;border-radius:8px;padding:9px 10px;font-size:14px;">
+              <div style="font-size:11px;color:#9ca3af;margin-top:4px;">Same-day leave must be applied before this time.</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Overtime -->
+      <div style="border:1px solid #e5e7eb;border-radius:10px;margin-bottom:10px;overflow:hidden;">
+        <button type="button" onclick="toggleRuleSection('secOvertime')" style="width:100%;display:flex;justify-content:space-between;align-items:center;background:#f9fafb;border:none;padding:12px 14px;cursor:pointer;">
+          <span style="font-weight:700;color:#111827;font-size:14px;">⏱ Overtime</span>
+          <span id="secOvertimeChev" style="color:#9ca3af;font-size:13px;">▸</span>
+        </button>
+        <div id="secOvertime" style="display:none;padding:14px;border-top:1px solid #f1f5f9;">
+          <div style="display:flex;gap:12px;flex-wrap:wrap;">
+            <div style="flex:1;min-width:150px;">
+              <label style="display:block;font-size:12px;font-weight:600;color:#374151;margin-bottom:4px;">Shift length (hours)</label>
+              <input type="number" min="0" step="0.5" id="ruleTargetHours" style="width:100%;border:2px solid #d1d5db;border-radius:8px;padding:9px 10px;font-size:14px;">
+              <div style="font-size:11px;color:#9ca3af;margin-top:4px;">Checking out after this many hours starts counting overtime.</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Check-in rule -->
+      <div style="border:1px solid #e5e7eb;border-radius:10px;margin-bottom:16px;overflow:hidden;">
+        <button type="button" onclick="toggleRuleSection('secCheckin')" style="width:100%;display:flex;justify-content:space-between;align-items:center;background:#f9fafb;border:none;padding:12px 14px;cursor:pointer;">
+          <span style="font-weight:700;color:#111827;font-size:14px;">📍 Check-in rule</span>
+          <span id="secCheckinChev" style="color:#9ca3af;font-size:13px;">▸</span>
+        </button>
+        <div id="secCheckin" style="display:none;padding:14px;border-top:1px solid #f1f5f9;">
+          <div style="font-size:12px;color:#6b7280;margin-bottom:12px;">When on, a rider can only mark attendance from the app while their GPS is inside their shift location's radius (set per location on the Office Locations page). Too far — or no GPS — and check-in is blocked. You can still mark someone present yourself from Mark Attendance. Off = check in from anywhere.</div>
+          <label style="display:flex;align-items:center;gap:10px;cursor:pointer;">
+            <input type="checkbox" id="ruleCheckinRequireLocation" style="width:18px;height:18px;">
+            <span style="font-size:13px;font-weight:600;color:#374151;">Require riders to be at their shift location to check in</span>
+          </label>
+        </div>
+      </div>
+
+      <!-- Checkout rule -->
+      <div style="border:1px solid #e5e7eb;border-radius:10px;margin-bottom:16px;overflow:hidden;">
+        <button type="button" onclick="toggleRuleSection('secCheckout')" style="width:100%;display:flex;justify-content:space-between;align-items:center;background:#f9fafb;border:none;padding:12px 14px;cursor:pointer;">
+          <span style="font-weight:700;color:#111827;font-size:14px;">📍 Checkout rule</span>
+          <span id="secCheckoutChev" style="color:#9ca3af;font-size:13px;">▸</span>
+        </button>
+        <div id="secCheckout" style="display:none;padding:14px;border-top:1px solid #f1f5f9;">
+          <div style="font-size:12px;color:#6b7280;margin-bottom:12px;">When on, a rider can only check out at the office, or at his most recent delivery within the time window. Off = check out anywhere.</div>
+          <label style="display:flex;align-items:center;gap:10px;cursor:pointer;margin-bottom:12px;">
+            <input type="checkbox" id="ruleCheckoutEnabled" style="width:18px;height:18px;">
+            <span style="font-size:13px;font-weight:600;color:#374151;">Require checkout at office or last delivery</span>
+          </label>
+          <div style="display:flex;gap:12px;flex-wrap:wrap;">
+            <div style="flex:1;min-width:130px;">
+              <label style="display:block;font-size:12px;font-weight:600;color:#374151;margin-bottom:4px;">Delivery window (min)</label>
+              <input type="number" min="1" step="1" id="ruleCheckoutWindow" style="width:100%;border:2px solid #d1d5db;border-radius:8px;padding:9px 10px;font-size:14px;">
+              <div style="font-size:11px;color:#9ca3af;margin-top:4px;">Minutes after marking delivered that he may check out there.</div>
+            </div>
+            <div style="flex:1;min-width:130px;">
+              <label style="display:block;font-size:12px;font-weight:600;color:#374151;margin-bottom:4px;">Delivery radius (m)</label>
+              <input type="number" min="10" step="10" id="ruleCheckoutRadius" style="width:100%;border:2px solid #d1d5db;border-radius:8px;padding:9px 10px;font-size:14px;">
+              <div style="font-size:11px;color:#9ca3af;margin-top:4px;">How close his checkout must be to that delivery point.</div>
+            </div>
           </div>
         </div>
       </div>
@@ -269,6 +365,25 @@
 
   <!-- ===== TODAY TAB (existing daily view — unchanged) ===== -->
   <div id="tabToday">
+
+  <!-- Pending leave requests the rider submitted himself — approve/reject without leaving. -->
+  <div id="pendingLeavesCard" style="display:none;border:1px solid #FDE68A;background:#FFFBEB;border-radius:10px;padding:12px 14px;margin-bottom:16px;">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
+      <div style="font-size:13px;font-weight:700;color:#92400E;">🏖 Pending leave requests <span id="pendingLeavesCount" style="background:#F59E0B;color:#fff;border-radius:999px;padding:0 8px;font-size:11px;margin-left:4px;">0</span></div>
+      <a href="#" onclick="loadPendingLeaves(); return false;" style="font-size:11px;color:#92400E;text-decoration:underline;">refresh</a>
+    </div>
+    <div id="pendingLeavesBody"></div>
+  </div>
+
+  <!-- Company-bike meter issues (info only): overnight grace exceeded and/or no meter reading. -->
+  <div id="graceBreachCard" style="display:none;border:1px solid #FCA5A5;background:#FEF2F2;border-radius:10px;padding:12px 14px;margin-bottom:16px;">
+    <div style="display:flex;align-items:center;gap:6px;margin-bottom:8px;">
+      <span style="font-size:13px;font-weight:700;color:#991B1B;">🏍 Company bike — meter issues</span>
+      <span id="graceBreachCount" style="background:#DC2626;color:#fff;border-radius:999px;padding:0 8px;font-size:11px;">0</span>
+      <span style="font-size:11px;color:#9CA3AF;margin-left:4px;">(for information only)</span>
+    </div>
+    <div id="graceBreachBody"></div>
+  </div>
 
   <!-- Summary Cards - Elegant Horizontal Row -->
   <div class="bg-white border border-gray-200 rounded-lg shadow-sm p-3 mb-4">
@@ -426,12 +541,13 @@
             <th class="px-4 py-3 text-center text-xs font-semibold text-gray-500 uppercase">Absent (mo)</th>
             <th class="px-4 py-3 text-center text-xs font-semibold text-gray-500 uppercase">Leave (mo)</th>
             <th class="px-4 py-3 text-center text-xs font-semibold text-gray-500 uppercase">Late (mo)</th>
+            <th class="px-4 py-3 text-center text-xs font-semibold text-emerald-600 uppercase">OT (mo)</th>
             <th class="px-4 py-3 text-center text-xs font-semibold text-purple-500 uppercase">Leave (yr)</th>
             <th class="px-4 py-3 text-center text-xs font-semibold text-red-500 uppercase">Absent (yr)</th>
           </tr>
         </thead>
         <tbody id="monthBody" class="bg-white divide-y divide-gray-100">
-          <tr><td colspan="7" class="px-4 py-8 text-center text-gray-400 text-sm">Loading…</td></tr>
+          <tr><td colspan="8" class="px-4 py-8 text-center text-gray-400 text-sm">Loading…</td></tr>
         </tbody>
       </table>
     </div>
@@ -595,7 +711,8 @@
     <div class="p-5 space-y-4">
       <div>
         <label class="block text-sm font-medium text-gray-700 mb-1">Rider / staff</label>
-        <select id="leaveUser" class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500"></select>
+        <select id="leaveUser" onchange="loadLeaveBalanceChip()" class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500"></select>
+        <div id="leaveBalanceChip" style="margin-top:6px;font-size:12px;color:#6b7280;display:flex;align-items:center;gap:8px;flex-wrap:wrap;"></div>
       </div>
       <div class="grid grid-cols-2 gap-3">
         <div>
@@ -606,6 +723,14 @@
           <label class="block text-sm font-medium text-gray-700 mb-1">To</label>
           <input type="date" id="leaveTo" class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500">
         </div>
+      </div>
+      <div>
+        <label class="block text-sm font-medium text-gray-700 mb-1">Leave type</label>
+        <select id="leaveType" class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500">
+          <option value="planned" selected>📅 Planned (applied in advance)</option>
+          <option value="emergency">⚡ Emergency (same-day)</option>
+        </select>
+        <p class="text-xs text-gray-500" style="margin-top:4px;">No time cutoff applies to you. Emergency counts toward the rider's same-day allowance.</p>
       </div>
       <div>
         <label class="block text-sm font-medium text-gray-700 mb-1">Note <span class="text-gray-400 font-normal">(optional)</span></label>
@@ -910,7 +1035,8 @@ let deliveryRiderChanges = {};
 document.addEventListener('DOMContentLoaded', async function() {
   await loadAllUsers();
   loadAttendanceForDate();
-  
+  loadPendingLeaves();
+
   // Event delegation for action buttons
   const tbody = document.getElementById('attBody');
   if (tbody) {
@@ -1156,9 +1282,82 @@ async function loadAttendanceForDate() {
     
     renderAttendanceTable(filteredData);
     updateSummaryCards(filteredData);
+    // Grace-breach alert reflects ALL riders (not the current table filter).
+    renderGraceBreachBanner(allAttendanceData);
   } catch(e) {
     console.error('Error loading attendance', e);
     document.getElementById('attBody').innerHTML = '<tr><td colspan="6" class="px-4 py-8 text-center text-red-500 text-sm">Error loading data</td></tr>';
+  }
+}
+
+// ===== Pending leave requests (rider-submitted) — approve/reject inline =====
+function escLeave(s){ return String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+function leaveDateLabel(s){ try { return new Date(s+'T00:00:00').toLocaleDateString('en-GB',{weekday:'short',day:'numeric',month:'short'}); } catch(e){ return s; } }
+
+async function loadPendingLeaves() {
+  const card = document.getElementById('pendingLeavesCard');
+  const body = document.getElementById('pendingLeavesBody');
+  if (!card || !body) return;
+  try {
+    const res = await fetch('/attendance/pending-leaves', { headers: { 'Accept':'application/json' } });
+    const j = await res.json();
+    const reqs = (j.success && j.requests) ? j.requests : [];
+    if (!reqs.length) { card.style.display = 'none'; return; }
+    document.getElementById('pendingLeavesCount').textContent = reqs.length;
+    body.innerHTML = reqs.map(r => {
+      const range = r.start === r.end ? leaveDateLabel(r.start) : (leaveDateLabel(r.start) + ' → ' + leaveDateLabel(r.end));
+      const stale = r.upcoming ? '' : '<span style="font-size:10px;color:#9CA3AF;">(past)</span>';
+      return '<div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-top:1px solid #FDE68A;" data-leaverow="'+r.id+'">' +
+        '<div style="flex:1;min-width:0;">' +
+          '<div style="font-size:13px;font-weight:600;color:#111827;">'+escLeave(r.name)+' '+stale+'</div>' +
+          '<div style="font-size:12px;color:#6B7280;">'+range+' · '+r.days+' day'+(r.days>1?'s':'')+' · '+escLeave(r.type)+'</div>' +
+          (r.reason ? '<div style="font-size:11px;color:#9CA3AF;margin-top:1px;">'+escLeave(r.reason)+'</div>' : '') +
+        '</div>' +
+        '<button onclick="approveLeave('+r.id+', this)" style="background:#16A34A;color:#fff;border:none;border-radius:7px;padding:6px 12px;font-size:12px;font-weight:600;cursor:pointer;">Approve</button>' +
+        '<button onclick="rejectLeave('+r.id+', this)" style="background:#fff;color:#B91C1C;border:1px solid #FCA5A5;border-radius:7px;padding:6px 10px;font-size:12px;font-weight:600;cursor:pointer;">Reject</button>' +
+      '</div>';
+    }).join('');
+    card.style.display = 'block';
+  } catch(e) {
+    console.error('Error loading pending leaves', e);
+    card.style.display = 'none';
+  }
+}
+
+async function approveLeave(id, btn) {
+  btn.disabled = true; btn.textContent = '…';
+  try {
+    const res = await fetch('/attendance/leave-request/'+id+'/approve', {
+      method:'POST', headers:{ 'Content-Type':'application/json', 'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').content }
+    });
+    const j = await res.json();
+    if (!j.success) throw new Error(j.message || 'Failed');
+    // Remove the row, refresh both the list and the day table (approved rider stops showing Absent).
+    const row = document.querySelector('[data-leaverow="'+id+'"]'); if (row) row.remove();
+    await loadPendingLeaves();
+    if (typeof loadAttendanceForDate === 'function') loadAttendanceForDate();
+  } catch(e) {
+    alert('Could not approve: ' + (e.message || e));
+    btn.disabled = false; btn.textContent = 'Approve';
+  }
+}
+
+async function rejectLeave(id, btn) {
+  const reason = prompt('Reason for rejecting this leave (optional):', '');
+  if (reason === null) return; // cancelled
+  btn.disabled = true; btn.textContent = '…';
+  try {
+    const res = await fetch('/attendance/leave-request/'+id+'/reject', {
+      method:'POST', headers:{ 'Content-Type':'application/json', 'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').content },
+      body: JSON.stringify({ reason })
+    });
+    const j = await res.json();
+    if (!j.success) throw new Error(j.message || 'Failed');
+    const row = document.querySelector('[data-leaverow="'+id+'"]'); if (row) row.remove();
+    await loadPendingLeaves();
+  } catch(e) {
+    alert('Could not reject: ' + (e.message || e));
+    btn.disabled = false; btn.textContent = 'Reject';
   }
 }
 
@@ -1212,6 +1411,7 @@ function renderAttendanceTable(data) {
           <span class="${r.login_time ? (lateBy.isLate ? 'text-red-600 font-medium' : 'text-gray-900') : 'text-gray-300'}">${r.login_time || '–'}</span>
           <span class="text-gray-300 mx-1">→</span>
           <span class="${r.logout_time ? 'text-gray-900' : 'text-gray-300'}">${r.logout_time || '–'}</span>
+          ${checkoutChip(r.checkout_info)}
         </td>
 
         <!-- Location Badge Column -->
@@ -1250,7 +1450,7 @@ function renderAttendanceTable(data) {
             >
               📅
             </button>
-            <button 
+            <button
               type="button"
               class="quick-edit-btn px-2 py-1 bg-blue-100 text-blue-700 rounded hover:bg-blue-200 transition text-xs font-medium"
               data-user-id="${r.user_id}"
@@ -1263,11 +1463,38 @@ function renderAttendanceTable(data) {
             >
               ✏️
             </button>
+            ${(!r.login_time || r.day_kind === 'not_needed') ? `
+            <button type="button"
+              onclick="toggleNotNeeded(${r.user_id}, '${r.attendance_date}', ${r.day_kind === 'not_needed' ? 'true' : 'false'})"
+              title="${r.day_kind === 'not_needed' ? 'Marked not needed — click to undo' : 'Mark as not needed (paid, not counted absent)'}"
+              style="padding:4px 8px;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;border:1px solid ${r.day_kind === 'not_needed' ? '#c7d2fe' : '#e5e7eb'};background:${r.day_kind === 'not_needed' ? '#e0e7ff' : '#f9fafb'};color:${r.day_kind === 'not_needed' ? '#3730a3' : '#6b7280'};">🚫</button>
+            ` : ''}
           </div>
         </td>
       </tr>
     `;
   }).join('');
+}
+
+// Mark / unmark a rider as "not needed" for a day. Paid as present, never absent.
+async function toggleNotNeeded(uid, date, isTagged) {
+  const msg = isTagged
+    ? 'Remove the "not needed" mark for this day?'
+    : 'Mark this rider as NOT NEEDED for this day?\n\nIt will be treated as a normal paid day — not counted absent, no deduction.';
+  if (!confirm(msg)) return;
+  try {
+    const res = await fetch('/attendance/toggle-day-tag', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').content },
+      body: JSON.stringify({ user_id: uid, date: date })
+    });
+    const j = await res.json();
+    if (j.success) {
+      if (typeof loadAttendanceForDate === 'function') loadAttendanceForDate();
+    } else {
+      alert(j.message || 'Could not update the day.');
+    }
+  } catch (e) { alert('Could not update the day.'); }
 }
 
 function getRowStatus(r, lateBy, overtime) {
@@ -1293,6 +1520,9 @@ function attStatusPill(r, lateBy, overtime) {
   else if (!r.login_time && kind === 'holiday')     { label = 'Holiday';    bg = '#EEF1F5'; fg = '#5B6B84'; }
   else if (!r.login_time && kind === 'off')         { label = 'Off day';    bg = '#EEF1F5'; fg = '#5B6B84'; }
   else if (!r.login_time && kind === 'not_joined')  { label = 'Not joined'; bg = '#EEF1F5'; fg = '#94A3B8'; }
+  // A manager-tagged "not needed" day with no login — paid as present, never absent.
+  // (If the rider logged in anyway, normal On-time/Late below applies.)
+  else if (!r.login_time && kind === 'not_needed')  { label = 'Not needed'; bg = '#E6ECFD'; fg = '#3730A3'; }
   else if (!r.login_time) { label = 'Absent';                 bg = '#FDE7E7'; fg = '#B42318'; }
   else if (lateBy.isLate) { label = 'Late ' + lateBy.duration; bg = '#FBEEDC'; fg = '#B45309'; }
   else                    { label = 'On time';                bg = '#E6F3EB'; fg = '#15803D'; }
@@ -1466,14 +1696,14 @@ async function loadMonthTab() {
   const monthEl = document.getElementById('monthPicker');
   if (monthEl && !monthEl.value) monthEl.value = currentMonthValue();
   const body = document.getElementById('monthBody');
-  body.innerHTML = '<tr><td colspan="7" class="px-4 py-8 text-center text-gray-400 text-sm">Loading…</td></tr>';
+  body.innerHTML = '<tr><td colspan="8" class="px-4 py-8 text-center text-gray-400 text-sm">Loading…</td></tr>';
   try {
     const res = await fetch('/attendance/monthly-report?month=' + currentMonthValue());
     const json = await res.json();
     monthData = json.success ? (json.data || []) : [];
     renderMonthBody(monthData);
   } catch (e) {
-    body.innerHTML = '<tr><td colspan="7" class="px-4 py-8 text-center text-red-500 text-sm">Failed to load</td></tr>';
+    body.innerHTML = '<tr><td colspan="8" class="px-4 py-8 text-center text-red-500 text-sm">Failed to load</td></tr>';
   }
 }
 function fmtMinsShort(n) { n = Number(n) || 0; const h = Math.floor(n / 60), m = n % 60; return h > 0 ? `${h}h ${m}m` : `${m}m`; }
@@ -1490,7 +1720,7 @@ function renderMonthBody(data) {
     const c0 = data[0] || {};
     lbl.textContent = (c0.cycle_start && c0.cycle_end) ? '(' + fmtCycleShort(c0.cycle_start) + ' → ' + fmtCycleShort(c0.cycle_end) + ')' : '';
   }
-  if (!data.length) { body.innerHTML = '<tr><td colspan="7" class="px-4 py-8 text-center text-gray-400 text-sm">No data for this month</td></tr>'; return; }
+  if (!data.length) { body.innerHTML = '<tr><td colspan="8" class="px-4 py-8 text-center text-gray-400 text-sm">No data for this month</td></tr>'; return; }
   const sorted = [...data].sort((a, b) => String(a.fullname || '').localeCompare(String(b.fullname || '')));
   // A clickable count → opens the exact-dates drill-down. Zero shows a muted dash so the
   // eye skips it. stopPropagation keeps the row's own "open 30-day detail" from also firing.
@@ -1508,12 +1738,17 @@ function renderMonthBody(data) {
     const lateStyle = late > 300 ? 'background:#FEE2E2;color:#B91C1C;' : (late > 0 ? 'background:#FEF3C7;color:#92400E;' : 'background:#F3F4F6;color:#9CA3AF;');
     const uid = u.user_id;
     const nm = String(u.fullname || '').replace(/'/g, "\\'");
+    const ot = Number(u.overtime_target_minutes) || 0;
+    const otCell = ot > 0
+      ? `<td class="px-4 py-3 text-center"><button type="button" onclick="event.stopPropagation(); showDateBreakdown(${uid}, '${nm}', 'month_overtime')" title="Click to see the days" style="background:none;border:none;cursor:pointer;font-weight:700;color:#047857;text-decoration:underline;text-decoration-style:dotted;text-underline-offset:2px;font-size:13px;">${fmtMinsShort(ot)}</button></td>`
+      : `<td class="px-4 py-3 text-sm" style="text-align:center;color:#D1D5DB;">–</td>`;
     return `<tr class="hover:bg-gray-50 cursor-pointer" onclick="openMonthDetail(${uid}, '${nm}')">
       <td class="px-4 py-3 text-sm" style="font-weight:600;color:#1F2937;">${u.fullname || ''}</td>
       <td class="px-4 py-3 text-sm text-center" style="color:#374151;">${u.present_days || 0}</td>
       ${numCell(u.absent_days, '#DC2626', uid, nm, 'month_absent')}
       ${numCell(u.leave_days, '#2563EB', uid, nm, 'month_leave')}
       <td class="px-4 py-3 text-center"><span style="display:inline-block;padding:2px 8px;border-radius:5px;font-size:12px;font-weight:600;${lateStyle}">${fmtMinsShort(late)}</span></td>
+      ${otCell}
       ${numCell(u.leaves_taken_year, '#7C3AED', uid, nm, 'year_leave')}
       ${numCell(u.absent_days_year, '#B91C1C', uid, nm, 'year_absent')}
     </tr>`;
@@ -1529,6 +1764,7 @@ const BREAKDOWN_META = {
   month_leave:  { title: 'Leave days',        sub: 'this month',      color: '#2563EB', icon: '🏖' },
   year_leave:   { title: 'Leave days',        sub: 'this year cycle', color: '#7C3AED', icon: '🏖' },
   year_absent:  { title: 'Absent days',       sub: 'this year cycle', color: '#B91C1C', icon: '❌' },
+  month_overtime: { title: 'Overtime days',   sub: 'this month',      color: '#047857', icon: '⏱' },
 };
 async function showDateBreakdown(userId, name, type) {
   const meta = BREAKDOWN_META[type] || { title: 'Dates', sub: '', color: '#374151', icon: '📅' };
@@ -1686,22 +1922,64 @@ function openApplyLeave() {
   document.getElementById('leaveTo').value = today;
   document.getElementById('leaveTo').min = today;
   document.getElementById('leaveNote').value = '';
+  document.getElementById('leaveType').value = 'planned'; // default every open
   document.getElementById('applyLeaveModal').style.display = 'flex';
+  loadLeaveBalanceChip();
 }
 function closeApplyLeave() { document.getElementById('applyLeaveModal').style.display = 'none'; }
+
+// Show the chosen rider's current leave balance in the modal + a "give extra" link.
+async function loadLeaveBalanceChip() {
+  const chip = document.getElementById('leaveBalanceChip');
+  const uid = document.getElementById('leaveUser').value;
+  if (!chip) return;
+  if (!uid) { chip.innerHTML = ''; return; }
+  chip.innerHTML = '<span style="color:#9ca3af;">Loading balance…</span>';
+  try {
+    const res = await fetch('/attendance/leave-balance?user_id=' + uid);
+    const j = await res.json();
+    if (!j.success) { chip.innerHTML = ''; return; }
+    const b = j.balance;
+    const remColor = b.remaining <= 0 ? '#dc2626' : (b.remaining <= 2 ? '#d97706' : '#15803d');
+    chip.innerHTML =
+      `<span style="font-weight:600;color:${remColor};">${b.remaining} of ${b.effective_quota} leaves left</span>` +
+      `<span style="color:#9ca3af;">· same-day used ${b.sameday_used}/${b.sameday_cap}</span>` +
+      `<button type="button" onclick="grantExtraLeave(${uid})" style="background:none;border:none;color:#2563eb;cursor:pointer;text-decoration:underline;font-size:12px;padding:0;">＋ give extra days</button>`;
+  } catch (e) { chip.innerHTML = ''; }
+}
+
+async function grantExtraLeave(uid) {
+  const raw = prompt('How many extra leave days to give? (use a negative number to deduct)');
+  if (raw === null) return;
+  const days = parseFloat(raw);
+  if (!days || isNaN(days)) { alert('Enter a number of days.'); return; }
+  const reason = prompt('Reason (optional):') || '';
+  try {
+    const res = await fetch('/attendance/grant-leave', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').content },
+      body: JSON.stringify({ user_id: uid, days: days, reason: reason })
+    });
+    const j = await res.json();
+    alert(j.message || (j.success ? 'Done.' : 'Could not save.'));
+    if (j.success) loadLeaveBalanceChip();
+  } catch (e) { alert('Could not save the grant.'); }
+}
 function syncLeaveToMin() {
   const f = document.getElementById('leaveFrom').value;
   const to = document.getElementById('leaveTo');
   to.min = f || '';
   if (to.value && f && to.value < f) to.value = f;
 }
-async function submitApplyLeave() {
+async function submitApplyLeave(overrideQuota) {
   const btn = document.getElementById('leaveSubmitBtn');
   const payload = {
     user_id: document.getElementById('leaveUser').value,
     leave_start_date: document.getElementById('leaveFrom').value,
     leave_end_date: document.getElementById('leaveTo').value,
-    note: document.getElementById('leaveNote').value
+    note: document.getElementById('leaveNote').value,
+    leave_type: (document.getElementById('leaveType') || {}).value || 'planned',
+    override_quota: overrideQuota ? 1 : 0
   };
   if (!payload.user_id || !payload.leave_start_date || !payload.leave_end_date) { alert('Pick a person and both dates.'); return; }
   btn.disabled = true; btn.textContent = 'Approving…';
@@ -1716,13 +1994,18 @@ async function submitApplyLeave() {
       closeApplyLeave();
       alert(json.message || 'Leave approved.');
       if (typeof loadAttendanceForDate === 'function') loadAttendanceForDate();
+    } else if (json.needs_confirm) {
+      // Over quota — manager may still grant. Re-submit with override on confirm.
+      btn.disabled = false; btn.textContent = 'Approve leave';
+      if (confirm(json.message)) { submitApplyLeave(true); }
     } else {
       alert(json.message || 'Could not apply the leave.');
     }
   } catch (e) {
     alert('Could not apply the leave. Please try again.');
   } finally {
-    btn.disabled = false; btn.textContent = 'Approve leave';
+    if (!btn.disabled) { btn.textContent = 'Approve leave'; }
+    else { btn.disabled = false; btn.textContent = 'Approve leave'; }
   }
 }
 
@@ -1751,6 +2034,72 @@ function renderMeterAttention(data) {
   if (overnight > 0) chips.push(`<span style="display:inline-flex;align-items:center;gap:4px;padding:4px 10px;border-radius:20px;font-size:12px;font-weight:700;background:#FEE2E2;color:#B91C1C;border:1px solid #FCA5A5;">🏍 ${overnight} overnight bike flag${overnight>1?'s':''}</span>`);
   el.innerHTML = chips.join('');
   el.classList.toggle('hidden', chips.length === 0);
+}
+
+// Top alert banner for company-bike meter issues on the selected day (info only, no actions):
+//   • overnight grace exceeded (start meter − yesterday's end > grace), and/or
+//   • no meter reading recorded (checked in with no start, or out with no end).
+// Fully guarded — needs company_bike; non-bike / non-came riders never appear and never error.
+function renderGraceBreachBanner(data) {
+  const card = document.getElementById('graceBreachCard');
+  const body = document.getElementById('graceBreachBody');
+  if (!card || !body) return;
+  const has = v => v != null && v !== '';
+  const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
+  const rows = [];
+  (data || []).forEach(r => {
+    if (Number(r.company_bike) !== 1) return;
+    const checkedIn = has(r.login_time), checkedOut = has(r.logout_time);
+    if (!checkedIn && !checkedOut) return; // didn't work today
+    const chips = [];
+    // overnight grace exceeded
+    if (has(r.meter_start) && has(r.prev_meter_end) && (Number(r.meter_start) - Number(r.prev_meter_end)) > rowGrace(r)) {
+      const over = Math.round(Number(r.meter_start) - Number(r.prev_meter_end));
+      chips.push('<span style="font-size:12px;font-weight:700;color:#B91C1C;background:#FEE2E2;border:1px solid #FCA5A5;border-radius:6px;padding:1px 7px;">🏍 ' + over + ' km overnight</span>' +
+        '<span style="font-size:11.5px;color:#6B7280;margin-left:6px;">start ' + esc(r.meter_start) + ' − prev end ' + esc(r.prev_meter_end) + (r.prev_meter_date ? ' (' + esc(r.prev_meter_date) + ')' : '') + ' · grace ' + Math.round(rowGrace(r)) + ' km</span>');
+    }
+    // no meter reading recorded
+    const missStart = checkedIn && !has(r.meter_start);
+    const missEnd = checkedOut && !has(r.meter_end);
+    if (missStart || missEnd) {
+      const which = (missStart && missEnd) ? 'start & end' : (missStart ? 'start' : 'end');
+      chips.push('<span style="font-size:12px;font-weight:700;color:#92400E;background:#FEF3C7;border:1px solid #FDE68A;border-radius:6px;padding:1px 7px;">⛽ no meter reading (' + which + ' missing)</span>');
+    }
+    if (chips.length) rows.push({name: r.fullname || r.name || 'Rider', chips});
+  });
+
+  if (!rows.length) { card.style.display = 'none'; return; }
+  document.getElementById('graceBreachCount').textContent = rows.length;
+  body.innerHTML = rows.map(r =>
+    '<div style="display:flex;align-items:baseline;gap:8px;padding:6px 0;border-top:1px solid #FECACA;flex-wrap:wrap;">' +
+      '<span style="font-size:13px;font-weight:600;color:#111827;min-width:130px;">' + esc(r.name) + '</span>' +
+      '<span style="display:flex;flex-direction:column;gap:3px;">' + r.chips.map(c => '<span>' + c + '</span>').join('') + '</span>' +
+    '</div>'
+  ).join('');
+  card.style.display = 'block';
+}
+
+// Where the rider checked out (manager view). Gray = office, green = at a customer,
+// amber ⚠ = that delivery point was away from the address's saved pin, amber = elsewhere.
+function checkoutChip(info) {
+  if (!info || !info.status) return '';
+  let bg, fg, bd, text, title = '';
+  if (info.status === 'office') {
+    bg = '#F3F4F6'; fg = '#4B5563'; bd = '#E5E7EB'; text = '⇢ ' + info.label;
+  } else if (info.status === 'delivery') {
+    if (info.pin_away) {
+      bg = '#FEF3C7'; fg = '#92400E'; bd = '#FDE68A';
+      text = '⚠ ' + info.label + (info.pin_distance_m != null ? ' · ' + info.pin_distance_m + 'm off pin' : '');
+      title = 'Checked out at the delivery point, ' + (info.pin_distance_m || '?') + ' m from the saved address pin';
+    } else {
+      bg = '#DCFCE7'; fg = '#15803D'; bd = '#86EFAC'; text = '⇢ ' + info.label;
+    }
+  } else {
+    bg = '#FEF3C7'; fg = '#92400E'; bd = '#FDE68A'; text = '⇢ ' + info.label;
+  }
+  const esc = s => String(s).replace(/</g, '&lt;').replace(/"/g, '&quot;');
+  return `<div style="margin-top:3px;"><span title="${esc(title)}" style="display:inline-flex;align-items:center;font-size:11px;font-weight:600;color:${fg};background:${bg};border:1px solid ${bd};border-radius:5px;padding:1px 6px;white-space:normal;">${esc(text)}</span></div>`;
 }
 
 function getMeterFlags(record) {
@@ -2565,6 +2914,7 @@ async function showEmployeeDetails(userId, fullname, fromDate) {
         on_leave: ['On Leave', '#dbeafe', '#1e40af'],
         off:      ['Off',      '#f3f4f6', '#6b7280'],
         holiday:  ['Holiday',  '#f3f4f6', '#6b7280'],
+        not_needed: ['Not needed', '#e0e7ff', '#3730a3'],
       };
       const [status, statusBg, statusColor] = statusMap[st] || statusMap.absent;
       
@@ -3206,6 +3556,14 @@ async function openAttendanceRules() {
       document.getElementById('ruleCycleEnd').value = data.cycle_end || '';
       document.getElementById('ruleGpsWarn').value = data.meter_gps_warn_km != null ? data.meter_gps_warn_km : 10;
       document.getElementById('ruleOvernight').value = data.overnight_grace_km != null ? data.overnight_grace_km : 30;
+      document.getElementById('ruleLeaveTotal').value = data.leave_quota_total != null ? data.leave_quota_total : 10;
+      document.getElementById('ruleSamedayCap').value = data.leave_sameday_cap != null ? data.leave_sameday_cap : 4;
+      document.getElementById('ruleSamedayCutoff').value = data.leave_sameday_cutoff || '10:00';
+      document.getElementById('ruleTargetHours').value = data.shift_target_hours != null ? data.shift_target_hours : 9;
+      document.getElementById('ruleCheckoutEnabled').checked = (Number(data.checkout_rule_enabled) === 1);
+      document.getElementById('ruleCheckoutWindow').value = data.checkout_window_mins != null ? data.checkout_window_mins : 15;
+      document.getElementById('ruleCheckoutRadius').value = data.checkout_radius_m != null ? data.checkout_radius_m : 150;
+      document.getElementById('ruleCheckinRequireLocation').checked = (Number(data.require_location) === 1);
       updateRuleCycleHint();
     }
   } catch(e) {
@@ -3214,6 +3572,19 @@ async function openAttendanceRules() {
   // live hint as the user edits the dates
   document.getElementById('ruleCycleStart').oninput = updateRuleCycleHint;
   document.getElementById('ruleCycleEnd').oninput = updateRuleCycleHint;
+}
+
+// Accordion — one rule section open at a time.
+function toggleRuleSection(id) {
+  var ids = ['secCycle', 'secMeter', 'secLeave', 'secOvertime', 'secCheckin', 'secCheckout'];
+  ids.forEach(function (b) {
+    var body = document.getElementById(b);
+    var chev = document.getElementById(b + 'Chev');
+    if (!body) return;
+    var open = (b === id) && body.style.display === 'none';
+    body.style.display = open ? 'block' : 'none';
+    if (chev) chev.textContent = open ? '▾' : '▸';
+  });
 }
 
 function closeAttendanceRules() {
@@ -3252,7 +3623,15 @@ async function saveAttendanceRules() {
         cycle_start: s,
         cycle_end: e,
         meter_gps_warn_km: document.getElementById('ruleGpsWarn').value,
-        overnight_grace_km: document.getElementById('ruleOvernight').value
+        overnight_grace_km: document.getElementById('ruleOvernight').value,
+        leave_quota_total: document.getElementById('ruleLeaveTotal').value,
+        leave_sameday_cap: document.getElementById('ruleSamedayCap').value,
+        leave_sameday_cutoff: document.getElementById('ruleSamedayCutoff').value,
+        shift_target_hours: document.getElementById('ruleTargetHours').value,
+        checkout_rule_enabled: document.getElementById('ruleCheckoutEnabled').checked ? 1 : 0,
+        checkout_window_mins: document.getElementById('ruleCheckoutWindow').value,
+        checkout_radius_m: document.getElementById('ruleCheckoutRadius').value,
+        require_location: document.getElementById('ruleCheckinRequireLocation').checked ? 1 : 0
       })
     });
     var data = await resp.json();

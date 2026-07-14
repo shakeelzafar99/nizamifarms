@@ -124,10 +124,14 @@ class RiderDayReportService
 
         $day = $this->aggregateDay($userId, $riderName, $date, $orders, $stops, $gaps, $oddRoutes);
 
+        // Checkout audit: did he check out AT his last delivery point, when that point
+        // wasn't the address's verified pin? (Reuses the same at_verified rule.)
+        $checkout = $this->checkoutAudit($userId, $date, $orders);
+
         // shape order rows for storage
         $orderRows = array_map(fn ($o) => $this->orderRow($o), $orders);
 
-        return ['day' => $day, 'orders' => $orderRows, 'stops' => $stops, 'gaps' => $gaps, 'odd_routes' => $oddRoutes];
+        return ['day' => $day, 'orders' => $orderRows, 'stops' => $stops, 'gaps' => $gaps, 'odd_routes' => $oddRoutes, 'checkout' => $checkout];
     }
 
     // ---- data loaders -------------------------------------------------
@@ -250,6 +254,57 @@ class RiderDayReportService
             ];
         }
         return $out;
+    }
+
+    /**
+     * Checkout-location audit (Phase H, report-first — independent of the enforcement
+     * switch). Flags when the rider checked out AT his MOST RECENT delivery point, but
+     * that delivery point was NOT the address's verified pin (using the SAME unified
+     * at_verified_m rule as the delivered-order screen). Catches "marked delivered from
+     * the wrong place, then checked out there". Returns null when nothing to flag.
+     */
+    private function checkoutAudit(int $userId, string $date, array $orders): ?array
+    {
+        $att = DB::table('t_ops_attendance')
+            ->where('user_id', $userId)->whereDate('attendance_date', $date)
+            ->select('logout_time', 'checkout_latitude', 'checkout_longitude')->first();
+        if (!$att || empty($att->logout_time) || $att->checkout_latitude === null || $att->checkout_longitude === null) {
+            return null;
+        }
+        // most recent delivered order (orders are sorted ascending by _del_ts)
+        $last = !empty($orders) ? end($orders) : null;
+        if (!$last || $last['pin_lat'] === null) {
+            return null;
+        }
+        // was the checkout AT that delivery point (within the same radius the gate uses)?
+        $dToPin = $this->haversine((float) $att->checkout_latitude, (float) $att->checkout_longitude, $last['pin_lat'], $last['pin_lng']);
+        if ($dToPin > $this->checkoutRadiusM()) {
+            return null; // checked out elsewhere (office / another spot) — not this audit
+        }
+        // only flag when the address HAS a verified pin AND that delivery point is NOT
+        // "at verified" (i.e. the drop was recorded > at_verified_m from the saved pin).
+        if (empty($last['has_verified']) || $last['at_verified'] === null || (int) $last['at_verified'] === 1) {
+            return null;
+        }
+        return [
+            'flagged'            => 1,
+            'logout_time'        => substr((string) $att->logout_time, 0, 5),
+            'order_number'       => $last['order_number'],
+            'customer_name'      => $last['customer_name'],
+            'pin_distance_m'     => $last['pin_distance_m'],   // delivery point → verified pin
+            'checkout_to_pin_m'  => (int) round($dToPin),      // checkout → delivery point
+        ];
+    }
+
+    /** Checkout "at that delivery point" radius — same t_fin_config value the gate uses. */
+    private function checkoutRadiusM(): float
+    {
+        try {
+            $v = DB::table('t_fin_config')->where('config_key', 'CHECKOUT_DELIVERY_RADIUS_M')->value('config_value');
+            return ($v !== null && $v !== '') ? (float) $v : 150.0;
+        } catch (\Throwable $e) {
+            return 150.0;
+        }
     }
 
     // ---- per-order facts ----------------------------------------------

@@ -523,43 +523,87 @@ class EmployeeCashController extends Controller
 
         $totalInWindow = $ledger->count();
 
-        // Calculate running balance: compute balance up to the window start, then accumulate
-        $balanceBefore = $account->opening_balance;
-
-        $inBefore = LedgerModel::where('to_account_id', $id)
-            ->where('approval_status', LedgerModel::STATUS_APPROVED)
-            ->where('transaction_date', '<', $windowStart)
-            ->sum('amount');
-
-        $outBefore = LedgerModel::where('from_account_id', $id)
-            ->where('approval_status', LedgerModel::STATUS_APPROVED)
-            ->where('transaction_date', '<', $windowStart)
-            ->sum('amount');
-
-        $balanceBefore += $inBefore - $outBefore;
-
-        // Build balance map for transactions in the window (oldest first)
-        $orderedLedger = $ledger->sortBy([
-            ['transaction_date', 'asc'],
-            ['created_at', 'asc']
-        ]);
-
-        $runningBalance = $balanceBefore;
-        $balanceMap = [];
-        foreach ($orderedLedger as $transaction) {
-            if ($transaction->approval_status === LedgerModel::STATUS_APPROVED) {
-                if ($transaction->to_account_id == $account->id) {
-                    $runningBalance += $transaction->amount;
-                } else {
-                    $runningBalance -= $transaction->amount;
-                }
+        // Running balance — BACKWARD-ANCHORED from the header (the number shown at the top of the
+        // page), so the newest counted row ALWAYS equals the header and the two can never disagree.
+        // We start from the account's effective balance (calculated for employees, stored for
+        // company — the EXACT value the header renders) and walk the visible rows newest→oldest,
+        // un-applying each. Any legacy stored drift is absorbed into the implied pre-history (the
+        // oldest row's "before"), never shown. Nothing is stored per-row, so a backdated approval
+        // simply recomputes correctly on the next page view. [Ledger L3 — running-balance redesign]
+        //
+        // Which rows COUNT toward the balance (others show a dash — money not yet in the books):
+        //  - EMPLOYEE accounts: approved, excluding salary/advance/reimbursement (their header is the
+        //    calculated balance, which excludes these).
+        //  - COMPANY cash/bank: approved PLUS pending_l2 rows applied at L1 (balance_updated=1) — the
+        //    stored header includes that L1-posted money, so the column must too.
+        $excludedTypes = $isEmployeeAccount ? AccountModel::EXCLUDED_EMPLOYEE_CASH_TYPES : [];
+        $countsForBalance = function ($transaction) use ($isEmployeeAccount, $excludedTypes) {
+            if (in_array($transaction->transaction_type, $excludedTypes, true)) {
+                return false;
             }
-            $balanceMap[$transaction->id] = $runningBalance;
+            if ($transaction->approval_status === LedgerModel::STATUS_APPROVED) {
+                return true;
+            }
+            return !$isEmployeeAccount
+                && $transaction->approval_status === LedgerModel::STATUS_PENDING_L2
+                && (int) $transaction->balance_updated === 1;
+        };
+
+        // Anchor = header balance minus any counted movement AFTER the window end. For the default
+        // "up to today" view there are no later rows, so the anchor IS the header and the newest row
+        // lands exactly on it. Only a historical (past-dated) window pays for the two SUM queries.
+        $anchor = (float) $account->getEffectiveBalance();
+        $todayStr = \Carbon\Carbon::today()->format('Y-m-d');
+        if ($windowEnd < $todayStr) {
+            $statusFilter = function ($q) use ($isEmployeeAccount) {
+                $q->where('approval_status', LedgerModel::STATUS_APPROVED);
+                if (!$isEmployeeAccount) {
+                    $q->orWhere(function ($sub) {
+                        $sub->where('approval_status', LedgerModel::STATUS_PENDING_L2)
+                            ->where('balance_updated', 1);
+                    });
+                }
+            };
+            $inAfter = LedgerModel::where('to_account_id', $id)
+                ->where(function ($q) use ($statusFilter) { $statusFilter($q); })
+                ->where('transaction_date', '>', $windowEnd)
+                ->when(!empty($excludedTypes), fn($q) => $q->whereNotIn('transaction_type', $excludedTypes))
+                ->sum('amount');
+            $outAfter = LedgerModel::where('from_account_id', $id)
+                ->where(function ($q) use ($statusFilter) { $statusFilter($q); })
+                ->where('transaction_date', '>', $windowEnd)
+                ->when(!empty($excludedTypes), fn($q) => $q->whereNotIn('transaction_type', $excludedTypes))
+                ->sum('amount');
+            $anchor -= ((float) $inAfter - (float) $outAfter);
         }
 
-        // Attach running balances
-        $ledger->transform(function($transaction) use ($balanceMap, $account) {
-            $transaction->running_balance = $balanceMap[$transaction->id] ?? $account->current_balance;
+        // Walk the visible window newest→oldest. Each counted row's balance-AFTER = the current
+        // running value; then step back by that row's movement for the next (older) row. Non-counted
+        // rows get null (rendered as a dash) and do not move the balance.
+        $orderedAsc = $ledger->sortBy([
+            ['transaction_date', 'asc'],
+            ['created_at', 'asc'],
+            ['id', 'asc'],
+        ]);
+        $runningBalance = $anchor;
+        $balanceMap = [];
+        foreach ($orderedAsc->reverse() as $transaction) {
+            if ($countsForBalance($transaction)) {
+                $balanceMap[$transaction->id] = round($runningBalance, 2);
+                $movement = ($transaction->to_account_id == $account->id)
+                    ? (float) $transaction->amount
+                    : -(float) $transaction->amount;
+                $runningBalance -= $movement;
+            } else {
+                $balanceMap[$transaction->id] = null; // dash — not yet in the books
+            }
+        }
+
+        // Attach running balances (null = show a dash in the view).
+        $ledger->transform(function ($transaction) use ($balanceMap) {
+            $transaction->running_balance = array_key_exists($transaction->id, $balanceMap)
+                ? $balanceMap[$transaction->id]
+                : null;
             return $transaction;
         });
 
@@ -1090,7 +1134,20 @@ class EmployeeCashController extends Controller
             ->pluck('config_value')
             ->toArray();
 
-        return view('fin.employee.show', compact('account', 'ledger', 'summary', 'userRole', 'expenseRequests', 'expenseSummary', 'expenseCategories', 'dateFrom', 'dateTo', 'isEmployeeAccount', 'totalInWindow', 'dateNavigation', 'windowStart', 'windowEnd', 'hasExplicitFilter'));
+        // ⭐ Banks for the Company Transfer modal's "Which bank?" picker (Ledger L1, B1).
+        // Same shape the Transfer page uses (id/name/short_code/color + computed balance).
+        $bankBalances = app(\App\Services\FIN\BankBalanceService::class)->balancesByBank();
+        $receivingBanks = \App\Models\FIN\OnlineReceivingAccountModel::active()->ordered()
+            ->get(['id', 'name', 'short_code', 'color_hex', 'opening_balance'])
+            ->map(fn ($acc) => [
+                'id' => $acc->id,
+                'name' => $acc->name,
+                'short_code' => $acc->short_code,
+                'color_hex' => $acc->color_hex,
+                'balance' => $bankBalances[(int) $acc->id]['balance'] ?? (float) $acc->opening_balance,
+            ])->values();
+
+        return view('fin.employee.show', compact('account', 'ledger', 'summary', 'userRole', 'expenseRequests', 'expenseSummary', 'expenseCategories', 'dateFrom', 'dateTo', 'isEmployeeAccount', 'totalInWindow', 'dateNavigation', 'windowStart', 'windowEnd', 'hasExplicitFilter', 'receivingBanks'));
     }
 
     /**
@@ -1103,14 +1160,15 @@ class EmployeeCashController extends Controller
             'destination_account_id' => 'nullable|exists:t_fin_accounts,id',
             'description' => 'nullable|string|max:500',
             'transaction_date' => 'required|date',
-            'short_over' => 'nullable|numeric'
+            'short_over' => 'nullable|numeric',
+            'receiving_account_id' => 'nullable|integer|exists:t_fin_online_receiving_accounts,id',
         ]);
 
         try {
             DB::beginTransaction();
 
             $employeeAccount = AccountModel::findOrFail($id);
-            
+
             // Get destination account (user selection or default to NF Cash)
             if ($request->destination_account_id) {
                 $destinationAccount = AccountModel::findOrFail($request->destination_account_id);
@@ -1120,6 +1178,17 @@ class EmployeeCashController extends Controller
 
             if (!$destinationAccount) {
                 throw new \Exception("Destination account not found");
+            }
+
+            // ⭐ Per-bank tag (Ledger L1, B2): a deposit landing on the ONLINE bank account must
+            // name the physical bank so per-bank balances stay correct. Captured HERE so it flows
+            // through approval already tagged (avoids the "Unassigned" bucket). Server-mandatory.
+            $depositBankId = null;
+            if ($destinationAccount->account_category === AccountModel::CATEGORY_BANK) {
+                $depositBankId = $request->receiving_account_id;
+                if (!$depositBankId) {
+                    throw new \Exception("Select which bank this deposit goes to (per-bank tracking).");
+                }
             }
 
             // Check if amount exceeds employee balance
@@ -1139,6 +1208,7 @@ class EmployeeCashController extends Controller
                 'to_account_id' => $destinationAccount->id,
                 'amount' => $request->amount,
                 'mode' => LedgerModel::MODE_CASH,
+                'receiving_account_id' => $depositBankId,
                 'approval_status' => $approvalStatus,
                 'approval_date' => null,
                 'approved_by' => null,
@@ -1451,6 +1521,13 @@ class EmployeeCashController extends Controller
                 throw new \Exception("Destination account not found");
             }
 
+            // ⭐ [Ledger L1, B2] Settlements deposit to a cash till, not a bank. Bank deposits go
+            // through the Deposit form (which captures the physical bank). This blocks any crafted
+            // request from creating an untagged ONLINE settlement — the UI never offers a bank here.
+            if ($destinationAccount->account_category === AccountModel::CATEGORY_BANK) {
+                throw new \Exception("Settlements deposit to a cash till. To deposit into a bank, use the Deposit form.");
+            }
+
             // Calculate expected amount (remaining balance for partial invoices)
             $totalOutstanding = $selectedInvoices->sum(function($invoice) {
                 return $invoice->amount - ($invoice->settled_amount ?? 0);
@@ -1540,6 +1617,13 @@ class EmployeeCashController extends Controller
 
             if (!$destinationAccount) {
                 throw new \Exception("Destination account not found");
+            }
+
+            // ⭐ [Ledger L1, B2] Short-cash settlements deposit to a cash till, not a bank. Bank
+            // deposits go through the Deposit form (which captures the physical bank). Blocks any
+            // crafted request from creating an untagged ONLINE row — the UI never offers a bank here.
+            if ($destinationAccount->account_category === AccountModel::CATEGORY_BANK) {
+                throw new \Exception("Settlements deposit to a cash till. To deposit into a bank, use the Deposit form.");
             }
 
             // Verify selected invoices belong to this rider and are open or partial
@@ -2313,7 +2397,26 @@ class EmployeeCashController extends Controller
             }
 
             // Group by rider for display
-            $invoicesByRider = $displayInvoices->groupBy('to_account_id')->map(function($riderInvoices) use ($invoiceToPendingSettlement, $settlementsByRider, $statusFilter, $paymentProofMap) {
+            // Latest cash-held confirmation per rider (he confirmed the cash he is
+            // holding, or flagged the amount as wrong, at check-out). Keyed by
+            // user_id. Non-fatal (column may not exist yet before its migration).
+            $cashConfirmMap = collect();
+            try {
+                $riderUserIds = $displayInvoices->map(fn($inv) => $inv->toAccount?->user_id)->filter()->unique()->values()->all();
+                if (!empty($riderUserIds) && \Schema::hasColumn('t_ops_attendance', 'cash_confirm_status')) {
+                    $cashConfirmMap = \DB::table('t_ops_attendance')
+                        ->whereIn('user_id', $riderUserIds)
+                        ->whereNotNull('cash_confirmed_at')
+                        ->orderBy('cash_confirmed_at', 'desc')
+                        ->get(['user_id', 'cash_confirmed_amount', 'cash_confirmed_at', 'cash_confirm_status'])
+                        ->groupBy('user_id')
+                        ->map(fn($rows) => $rows->first());
+                }
+            } catch (\Throwable $e) {
+                $cashConfirmMap = collect();
+            }
+
+            $invoicesByRider = $displayInvoices->groupBy('to_account_id')->map(function($riderInvoices) use ($invoiceToPendingSettlement, $settlementsByRider, $statusFilter, $paymentProofMap, $cashConfirmMap) {
                 $account = $riderInvoices->first()->toAccount;
                 $totalOutstanding = $riderInvoices->sum(function($invoice) {
                     return $invoice->amount - ($invoice->settled_amount ?? 0);
@@ -2410,7 +2513,8 @@ class EmployeeCashController extends Controller
                         ];
                     }),
                     'total_outstanding' => $totalOutstanding,
-                    'invoice_count' => $riderInvoices->count()
+                    'invoice_count' => $riderInvoices->count(),
+                    'cash_confirmation' => $cashConfirmMap->get($account->user_id) ?? null,
                 ];
             });
             
@@ -3362,7 +3466,8 @@ class EmployeeCashController extends Controller
             'amount' => 'required|numeric|min:0.01',
             'to_account_id' => 'required|exists:t_fin_accounts,id',
             'description' => 'nullable|string|max:500',
-            'transaction_date' => 'required|date'
+            'transaction_date' => 'required|date',
+            'receiving_account_id' => 'nullable|integer|exists:t_fin_online_receiving_accounts,id',
         ]);
 
         try {
@@ -3370,12 +3475,25 @@ class EmployeeCashController extends Controller
 
             $fromAccount = AccountModel::findOrFail($id);
             $toAccount = AccountModel::findOrFail($request->to_account_id);
-            
+
             // Validate it's a company-to-company transfer
             $allowedCategories = [AccountModel::CATEGORY_CASH, AccountModel::CATEGORY_BANK];
-            if (!in_array($fromAccount->account_category, $allowedCategories) || 
+            if (!in_array($fromAccount->account_category, $allowedCategories) ||
                 !in_array($toAccount->account_category, $allowedCategories)) {
                 throw new \Exception("Transfers are only allowed between company accounts");
+            }
+
+            // ⭐ Per-bank tag (Ledger L1, B1): if either side is the ONLINE bank account, the
+            // physical bank MUST be named so per-bank balances stay correct (BankBalanceService is
+            // sides-based). Server-mandatory — closes the "transfer never asks which bank" leak.
+            $involvesBank = ($fromAccount->account_category === AccountModel::CATEGORY_BANK)
+                         || ($toAccount->account_category === AccountModel::CATEGORY_BANK);
+            $receivingAccountId = null;
+            if ($involvesBank) {
+                $receivingAccountId = $request->receiving_account_id;
+                if (!$receivingAccountId) {
+                    throw new \Exception("Select which bank this transfer goes through (per-bank tracking).");
+                }
             }
             
             if ($request->amount > $fromAccount->current_balance) {
@@ -3395,7 +3513,8 @@ class EmployeeCashController extends Controller
                 'from_account_id' => $fromAccount->id,
                 'to_account_id' => $toAccount->id,
                 'amount' => $request->amount,
-                'mode' => LedgerModel::MODE_CASH,
+                'mode' => $involvesBank ? LedgerModel::MODE_ONLINE : LedgerModel::MODE_CASH,
+                'receiving_account_id' => $receivingAccountId,
                 'approval_status' => LedgerModel::STATUS_APPROVED,
                 'approval_date' => now()->toDateString(),
                 'approved_by' => auth()->id(),

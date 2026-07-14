@@ -21,27 +21,16 @@
     </div>
   </div>
 
-  <!-- Mandatory-location rule -->
-  <div class="bg-white rounded-lg shadow-md p-5 mb-6 flex items-start justify-between gap-4">
-    <div>
-      <div class="flex items-center gap-2">
-        <span class="text-lg">📍</span>
-        <h2 class="text-base font-semibold text-gray-900">Require riders to be at their location to check in</h2>
-      </div>
-      <p class="text-sm text-gray-600 mt-1 max-w-3xl">
-        When on, a rider can only mark attendance from the mobile app while their GPS is inside their
-        shift location's radius (set per location above). If they're too far — or their location can't be
-        read — check-in is blocked. You can still mark someone present yourself from
-        <span class="font-medium">Attendance → Mark Attendance</span>. Default: off.
-      </p>
-      <p id="reqLocStatus" class="text-sm font-semibold mt-2 {{ $requireLocation ? 'text-green-700' : 'text-gray-500' }}">
-        {{ $requireLocation ? 'On — riders must be at their location' : 'Off — riders can check in from anywhere' }}
-      </p>
+  <!-- The "require riders at their location to check in" switch now lives with the other
+       attendance rules (Attendance → Settings → 📐 Attendance Rules → Check-in rule). This
+       page just manages the locations + radii that the rule enforces. -->
+  <div style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:10px;padding:12px 14px;margin-bottom:24px;display:flex;align-items:center;gap:10px;">
+    <span style="font-size:16px;">📍</span>
+    <div style="font-size:13px;color:#1e3a8a;">
+      The <b>“riders must be at their location to check in”</b> switch is now under
+      <b>Attendance → Settings → 📐 Attendance Rules → Check-in rule</b>
+      (currently <b>{{ $requireLocation ? 'ON' : 'OFF' }}</b>). Set each location’s radius below.
     </div>
-    <label class="relative inline-flex items-center cursor-pointer shrink-0 mt-1">
-      <input type="checkbox" id="requireLocationToggle" class="sr-only peer" {{ $requireLocation ? 'checked' : '' }} onchange="saveRequireLocation(this)">
-      <div class="w-12 h-7 bg-gray-300 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-5 after:content-[''] after:absolute after:top-1 after:left-1 after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-green-600"></div>
-    </label>
   </div>
 
   <!-- Locations Table -->

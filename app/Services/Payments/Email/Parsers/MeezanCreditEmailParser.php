@@ -21,8 +21,24 @@ class MeezanCreditEmailParser extends AbstractBankEmailParser
     {
         $haystack = $subject . "\n" . $body;
 
-        // Must look like a CREDIT (incoming) alert, not a debit/OTP/marketing mail.
-        $looksCredit = preg_match('/\b(credit|credited|received|deposit)\b/i', $haystack);
+        // ── Reject OUTGOING / debit alerts FIRST. Meezan sends the SAME templated
+        // mail (identical legal disclaimer) whether money LEAVES or ENTERS the
+        // account, so a debit must be excluded explicitly — otherwise an outgoing
+        // transfer is mis-read as an incoming customer payment. (Jul-2026: a "PKR
+        // 20,000 sent from your account" debit was ingested as a credit because the
+        // disclaimer's "…if you have received this message in error…" satisfied the
+        // credit test below.)
+        if (preg_match('/\b(?:sent from your account|debited from your account|has been debited|debit(?:ed)?\s+(?:alert|transaction|advice)|transferred from your account|withdrawn from your account)\b/i', $haystack)) {
+            return null;
+        }
+
+        // Ignore the boilerplate legal disclaimer when deciding "is this a credit?",
+        // so its stray "received" ("…if you have received this message…") can't
+        // stand in for a real credit phrase.
+        $creditScan = preg_replace('/(?:disclaimer\s*:|if you have received this message).*/is', '', $haystack) ?? $haystack;
+
+        // Must look like a CREDIT (incoming) alert, not an OTP/marketing mail.
+        $looksCredit = preg_match('/\b(credit|credited|received|deposit)\b/i', $creditScan);
         if (!$looksCredit) {
             return null;
         }

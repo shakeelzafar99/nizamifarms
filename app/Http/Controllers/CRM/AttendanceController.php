@@ -370,6 +370,7 @@ class AttendanceController extends Controller
         // heavier year scan runs on a bounded set).
         $cycle = $this->attendanceCycle();
         $monthStart = date('Y-m-01', strtotime($selectedDate));
+        $checkoutClassifier = new \App\Services\Riders\CheckoutClassifierService();
         foreach ($rows as $row) {
             $pm = $prevMeter[$row->user_id] ?? null;
             $row->prev_meter_end = $pm['end'] ?? null;
@@ -391,6 +392,12 @@ class AttendanceController extends Controller
             $isAbsentToday = empty($row->login_time) && (($row->day_kind ?? 'working') === 'working') && !$onLeave;
             $row->year_absent_days = $isAbsentToday
                 ? $this->yearAbsentDays((int) $row->user_id, $shiftService, $cycle, $selectedDate)
+                : null;
+
+            // Where did he check out? (manager view — office / at a customer / elsewhere,
+            // + a flag if the delivery point was away from the address's verified pin).
+            $row->checkout_info = ($row->logout_time && ($row->checkout_latitude ?? null) !== null)
+                ? $checkoutClassifier->classify((int) $row->user_id, $selectedDate, $row->checkout_latitude, $row->checkout_longitude)
                 : null;
         }
 
@@ -421,63 +428,24 @@ class AttendanceController extends Controller
      * no login. This is the SINGLE definition shared by the Month tab and the Today view,
      * so the "absent this year" number is consistent everywhere.
      */
+    // Absent/leave-date logic now lives in HR\AttendanceYearService so the web Month tab
+    // and the rider app share ONE definition. These thin wrappers keep call sites unchanged.
+    private ?\App\Services\HR\AttendanceYearService $yearSvcMemo = null;
+    private function yearSvc(): \App\Services\HR\AttendanceYearService
+    {
+        return $this->yearSvcMemo ??= new \App\Services\HR\AttendanceYearService();
+    }
     private function yearAbsentDays(int $userId, \App\Services\ShiftResolutionService $shiftService, array $cycle, string $today): int
     {
-        $yearEndEff = min($today, $cycle['end']);
-        return count($this->absentWorkingDates($userId, $shiftService, $cycle['start'], $yearEndEff));
+        return $this->yearSvc()->yearAbsentDays($userId, $shiftService, $cycle, $today);
     }
-
-    /**
-     * The exact absent-working DATES for a user in [$start,$end] — the list behind the
-     * yearAbsentDays()/monthly-absent COUNTS (count === this list's size), so the drill-down
-     * a manager sees can never disagree with the number they clicked.
-     */
     private function absentWorkingDates(int $userId, \App\Services\ShiftResolutionService $shiftService, string $start, string $end): array
     {
-        if ($start > $end) { return []; }
-        $leaveDates = $this->approvedLeaveDates($userId, $start, $end);
-        $presentDates = [];
-        foreach (DB::table('t_ops_attendance')->where('user_id', $userId)
-                    ->whereBetween('attendance_date', [$start, $end])
-                    ->whereNotNull('login_time')->where('login_time', '!=', '')
-                    ->pluck('attendance_date') as $ad) {
-            $presentDates[substr((string) $ad, 0, 10)] = true;
-        }
-        $out = [];
-        $cur = new \DateTime($start);
-        $endO = new \DateTime($end);
-        while ($cur <= $endO) {
-            $ds = $cur->format('Y-m-d');
-            if (!isset($presentDates[$ds]) && !isset($leaveDates[$ds])
-                && $shiftService->dayKind($userId, $ds) === 'working') {
-                $out[] = $ds;
-            }
-            $cur->modify('+1 day');
-        }
-        return $out;
+        return $this->yearSvc()->absentWorkingDates($userId, $shiftService, $start, $end);
     }
-
-    /** Approved-leave dates (Y-m-d => true) for a user, clamped to [$start,$end]. */
     private function approvedLeaveDates(int $userId, string $start, string $end): array
     {
-        $dates = [];
-        $leaves = DB::table('t_req_master as r')
-            ->join('t_req_category as c', 'c.id', '=', 'r.category_id')
-            ->where('c.category_code', 'leave')
-            ->where('r.requester_user_id', $userId)
-            ->where('r.status', 'approved')
-            ->where('r.leave_start_date', '<=', $end)
-            ->where('r.leave_end_date', '>=', $start)
-            ->select('r.leave_start_date', 'r.leave_end_date', 'r.leave_type')
-            ->get();
-        foreach ($leaves as $lv) {
-            $ls = max($start, substr((string) $lv->leave_start_date, 0, 10));
-            $le = min($end, substr((string) $lv->leave_end_date, 0, 10));
-            for ($c = new \DateTime($ls); $c <= new \DateTime($le); $c->modify('+1 day')) {
-                $dates[$c->format('Y-m-d')] = $lv->leave_type ?: 'Leave';
-            }
-        }
-        return $dates;
+        return $this->yearSvc()->approvedLeaveDates($userId, $start, $end);
     }
 
     /**
@@ -489,7 +457,7 @@ class AttendanceController extends Controller
         $userId = (int) $request->input('user_id');
         $type = $request->input('type');
         $month = $request->input('month'); // Y-m (for month_* types)
-        if (!$userId || !in_array($type, ['month_absent', 'month_leave', 'year_absent', 'year_leave'], true)) {
+        if (!$userId || !in_array($type, ['month_absent', 'month_leave', 'year_absent', 'year_leave', 'month_overtime'], true)) {
             return response()->json(['success' => false, 'message' => 'Bad request'], 400);
         }
         $shiftService = new ShiftResolutionService();
@@ -507,7 +475,15 @@ class AttendanceController extends Controller
             $end = $cycle['end'];
         }
 
-        if (str_ends_with($type, '_absent')) {
+        if ($type === 'month_overtime') {
+            // Days worked beyond the shift length + how much (label = "Xh Ym").
+            $ot = (new \App\Services\HR\OvertimeService())->overtimeForRange($userId, $start, min($end, $today));
+            $items = [];
+            foreach ($ot['dates'] as $d => $mins) {
+                $h = intdiv($mins, 60); $m = $mins % 60;
+                $items[] = ['date' => $d, 'label' => ($h > 0 ? $h . 'h ' . $m . 'm' : $m . 'm')];
+            }
+        } elseif (str_ends_with($type, '_absent')) {
             // Absent is only meaningful up to today (future working days aren't absences yet).
             $dates = $this->absentWorkingDates($userId, $shiftService, $start, min($end, $today));
             $items = array_map(fn($d) => ['date' => $d, 'label' => null], $dates);
@@ -555,6 +531,14 @@ class AttendanceController extends Controller
             'cycle_end' => 'nullable|date|after_or_equal:cycle_start',
             'meter_gps_warn_km' => 'nullable|numeric|min:0|max:1000',
             'overnight_grace_km' => 'nullable|numeric|min:0|max:1000',
+            'leave_quota_total' => 'nullable|numeric|min:0|max:365',
+            'leave_sameday_cap' => 'nullable|integer|min:0|max:365',
+            'leave_sameday_cutoff' => 'nullable|date_format:H:i',
+            'shift_target_hours' => 'nullable|numeric|min:0|max:24',
+            'checkout_rule_enabled' => 'nullable|in:0,1',
+            'checkout_window_mins' => 'nullable|integer|min:1|max:1440',
+            'checkout_radius_m' => 'nullable|integer|min:10|max:5000',
+            'require_location' => 'nullable|in:0,1',
         ]);
         if ($validator->fails()) {
             return response()->json(['success' => false, 'message' => $validator->errors()->first()], 422);
@@ -574,6 +558,17 @@ class AttendanceController extends Controller
             }
             if ($request->filled('meter_gps_warn_km'))  { $put('ATTENDANCE_METER_GPS_WARN_KM', (string) (float) $request->meter_gps_warn_km); }
             if ($request->filled('overnight_grace_km')) { $put('ATTENDANCE_OVERNIGHT_GRACE_KM', (string) (float) $request->overnight_grace_km); }
+            // Leave policy (single pool + same-day cap) + overtime target hours.
+            if ($request->filled('leave_quota_total'))    { $put('LEAVE_QUOTA_TOTAL', (string) (float) $request->leave_quota_total); }
+            if ($request->filled('leave_sameday_cap'))    { $put('LEAVE_SAMEDAY_CAP', (string) (int) $request->leave_sameday_cap); }
+            if ($request->filled('leave_sameday_cutoff')) { $put('LEAVE_SAMEDAY_CUTOFF', substr((string) $request->leave_sameday_cutoff, 0, 5)); }
+            if ($request->filled('shift_target_hours'))   { $put('SHIFT_TARGET_HOURS', (string) (float) $request->shift_target_hours); }
+            // Checkout rule (Phase H). enabled always written (a 0 is meaningful); numbers when present.
+            if ($request->has('checkout_rule_enabled'))   { $put('CHECKOUT_RULE_ENABLED', $request->checkout_rule_enabled ? '1' : '0'); }
+            if ($request->filled('checkout_window_mins')) { $put('CHECKOUT_DELIVERY_WINDOW_MINS', (string) (int) $request->checkout_window_mins); }
+            if ($request->filled('checkout_radius_m'))    { $put('CHECKOUT_DELIVERY_RADIUS_M', (string) (int) $request->checkout_radius_m); }
+            // Check-in rule: rider may only check in at their shift location. enabled always written.
+            if ($request->has('require_location'))        { $put('ATTENDANCE_REQUIRE_LOCATION', $request->require_location ? '1' : '0'); }
             return response()->json(['success' => true, 'message' => 'Attendance settings saved.']);
         } catch (\Throwable $e) {
             \Log::error('saveAttendanceSettings failed', ['error' => $e->getMessage()]);
@@ -591,6 +586,14 @@ class AttendanceController extends Controller
             'cycle_end' => $cycle['end'],
             'meter_gps_warn_km' => (float) $this->attendanceConfig('ATTENDANCE_METER_GPS_WARN_KM', 10),
             'overnight_grace_km' => (float) $this->attendanceConfig('ATTENDANCE_OVERNIGHT_GRACE_KM', 30),
+            'leave_quota_total' => (float) $this->attendanceConfig('LEAVE_QUOTA_TOTAL', 10),
+            'leave_sameday_cap' => (int) $this->attendanceConfig('LEAVE_SAMEDAY_CAP', 4),
+            'leave_sameday_cutoff' => (string) $this->attendanceConfig('LEAVE_SAMEDAY_CUTOFF', '10:00'),
+            'shift_target_hours' => (float) $this->attendanceConfig('SHIFT_TARGET_HOURS', 9),
+            'checkout_rule_enabled' => (int) $this->attendanceConfig('CHECKOUT_RULE_ENABLED', 0),
+            'checkout_window_mins' => (int) $this->attendanceConfig('CHECKOUT_DELIVERY_WINDOW_MINS', 15),
+            'checkout_radius_m' => (int) $this->attendanceConfig('CHECKOUT_DELIVERY_RADIUS_M', 150),
+            'require_location' => (int) $this->attendanceConfig('ATTENDANCE_REQUIRE_LOCATION', 0),
         ]);
     }
 
@@ -609,6 +612,8 @@ class AttendanceController extends Controller
             'leave_start_date' => 'required|date',
             'leave_end_date' => 'required|date|after_or_equal:leave_start_date',
             'note' => 'nullable|string|max:500',
+            'override_quota' => 'nullable|boolean',
+            'leave_type' => 'nullable|in:planned,emergency',
         ]);
         if ($validator->fails()) {
             return response()->json(['success' => false, 'message' => $validator->errors()->first()], 422);
@@ -617,11 +622,36 @@ class AttendanceController extends Controller
         $userId = (int) $request->user_id;
         $start = $request->leave_start_date;
         $end = $request->leave_end_date;
+        // Manager picks the kind explicitly (default planned). NO time cutoff applies
+        // to a manager — the 10:00 same-day rule only binds rider self-applies. An
+        // 'emergency' choice counts toward the rider's same-day allowance (cap query
+        // counts every emergency row), which is intended: the rider still took a
+        // same-day leave, regardless of who typed it in.
+        $leaveType = $request->input('leave_type') ?: 'planned';
 
         try {
             $catId = DB::table('t_req_category')->where('category_code', 'leave')->value('id');
             if (!$catId) {
                 return response()->json(['success' => false, 'message' => 'Leave category is not configured.'], 500);
+            }
+
+            // Manager is UNBOUND by the quota, but we warn once if this pushes the rider
+            // over his yearly balance — the frontend re-submits with override_quota=1.
+            $days = \Carbon\Carbon::parse($start)->diffInDays(\Carbon\Carbon::parse($end)) + 1;
+            $overQuota = false;
+            if (!$request->boolean('override_quota')) {
+                $bal = (new \App\Services\HR\LeavePolicyService())->balance($userId);
+                if ($days > $bal['remaining']) {
+                    $name = DB::table('t_sys_user')->where('id', $userId)->value('fullname') ?: 'This rider';
+                    $rem = $bal['remaining'] > 0 ? $bal['remaining'] : 0;
+                    return response()->json([
+                        'success' => false,
+                        'needs_confirm' => true,
+                        'message' => "{$name} has only {$rem} leave(s) left this year but this adds {$days}. Grant anyway (over quota)?",
+                    ], 200);
+                }
+            } else {
+                $overQuota = true;
             }
 
             // Reject overlap with an existing pending/approved leave (same guard the
@@ -640,12 +670,12 @@ class AttendanceController extends Controller
                 ], 422);
             }
 
-            $days = \Carbon\Carbon::parse($start)->diffInDays(\Carbon\Carbon::parse($end)) + 1;
             $managerId = auth()->id();
             $managerName = DB::table('t_sys_user')->where('id', $managerId)->value('fullname') ?: 'Manager';
             $note = trim((string) $request->input('note', ''));
             $desc = ($note !== '' ? $note . ' — ' : '')
-                . 'Applied on behalf by ' . $managerName . ' via Attendance on ' . now()->format('d M Y H:i');
+                . 'Applied on behalf by ' . $managerName . ' via Attendance on ' . now()->format('d M Y H:i')
+                . ($overQuota ? ' (over quota, granted by manager)' : '');
 
             $id = DB::table('t_req_master')->insertGetId([
                 'request_number' => \App\Models\Request\RequestModel::generateRequestNumber(),
@@ -656,7 +686,9 @@ class AttendanceController extends Controller
                 'business_unit_id' => 1,
                 'leave_start_date' => $start,
                 'leave_end_date' => $end,
-                'leave_type' => 'annual',
+                // Manager-chosen kind (default planned; emergency = same-day, counts
+                // toward the rider's same-day allowance). Never time-restricted here.
+                'leave_type' => $leaveType,
                 'leave_days' => $days,
                 'status' => 'approved',
                 'priority' => 'normal',
@@ -680,6 +712,230 @@ class AttendanceController extends Controller
         } catch (\Throwable $e) {
             \Log::error('Apply-leave failed', ['error' => $e->getMessage(), 'user_id' => $userId]);
             return response()->json(['success' => false, 'message' => 'Could not apply the leave. Please try again.'], 500);
+        }
+    }
+
+    /**
+     * Pending leave requests the rider submitted himself — shown on the Attendance page so the
+     * manager can clear them without leaving. Upcoming/current first; stale past ones included so
+     * nothing is silently stuck. (Manager-applied leaves are already approved, so excluded.)
+     */
+    public function pendingLeaves(Request $request)
+    {
+        try {
+            $catId = DB::table('t_req_category')->where('category_code', 'leave')->value('id');
+            if (!$catId) {
+                return response()->json(['success' => true, 'requests' => []]);
+            }
+            $rows = DB::table('t_req_master as r')
+                ->join('t_sys_user as u', 'u.id', '=', 'r.requester_user_id')
+                ->leftJoin('t_ops_attendance_visibility as av', 'av.user_id', '=', 'u.id')
+                ->where('r.category_id', $catId)
+                ->whereIn('r.status', ['pending', 'pending_l1', 'pending_l2', 'submitted'])
+                ->where('u.is_active', 1)
+                ->where(function ($q) {
+                    $q->whereNull('av.is_visible')->orWhere('av.is_visible', 1);
+                })
+                ->orderByRaw('CASE WHEN r.leave_end_date >= CURDATE() THEN 0 ELSE 1 END')
+                ->orderBy('r.leave_start_date')
+                ->limit(100)
+                ->get([
+                    'r.id', 'r.requester_user_id', 'u.fullname', 'r.leave_start_date', 'r.leave_end_date',
+                    'r.leave_type', 'r.leave_days', 'r.description', 'r.status', 'r.submitted_at', 'r.created_at',
+                ]);
+
+            $out = $rows->map(function ($r) {
+                $days = (int) ($r->leave_days ?: (\Carbon\Carbon::parse($r->leave_start_date)->diffInDays(\Carbon\Carbon::parse($r->leave_end_date)) + 1));
+                return [
+                    'id' => $r->id,
+                    'user_id' => $r->requester_user_id,
+                    'name' => $r->fullname,
+                    'start' => substr((string) $r->leave_start_date, 0, 10),
+                    'end' => substr((string) $r->leave_end_date, 0, 10),
+                    'days' => $days,
+                    'type' => $r->leave_type ?: 'leave',
+                    'reason' => $r->description,
+                    'upcoming' => substr((string) $r->leave_end_date, 0, 10) >= date('Y-m-d'),
+                    'submitted' => substr((string) ($r->submitted_at ?: $r->created_at), 0, 10),
+                ];
+            })->values();
+
+            return response()->json(['success' => true, 'requests' => $out, 'count' => $out->count()]);
+        } catch (\Throwable $e) {
+            \Log::error('pendingLeaves failed', ['error' => $e->getMessage()]);
+            return response()->json(['success' => false, 'message' => 'Could not load pending leaves.'], 500);
+        }
+    }
+
+    /**
+     * Approve a rider-submitted leave request from the Attendance page (manager authority —
+     * same effect as the on-behalf apply-leave: status→approved, so it counts as a leave and the
+     * rider stops showing Absent for those days). The rider's app re-syncs the status.
+     */
+    public function approveLeaveRequest(Request $request, $id)
+    {
+        try {
+            $catId = DB::table('t_req_category')->where('category_code', 'leave')->value('id');
+            $req = DB::table('t_req_master')->where('id', $id)->where('category_id', $catId)->first();
+            if (!$req) {
+                return response()->json(['success' => false, 'message' => 'Leave request not found.'], 404);
+            }
+            if ($req->status === 'approved') {
+                return response()->json(['success' => true, 'message' => 'Already approved.']);
+            }
+            if (in_array($req->status, ['rejected', 'cancelled'], true)) {
+                return response()->json(['success' => false, 'message' => 'This request was already ' . $req->status . '.'], 400);
+            }
+
+            $managerId = auth()->id();
+            $managerName = DB::table('t_sys_user')->where('id', $managerId)->value('fullname') ?: 'Manager';
+            DB::table('t_req_master')->where('id', $id)->update([
+                'status' => 'approved',
+                'level_1_status' => 'approved',
+                'remarks' => trim((string) $req->remarks . ' | Approved by ' . $managerName . ' via Attendance on ' . now()->format('d M Y H:i')),
+                'requester_sync_required' => 1,
+                'completed_at' => now(),
+                'updated_by' => $managerId,
+                'updated_at' => now(),
+            ]);
+            \Log::info('Leave request approved via attendance', ['leave_id' => $id, 'user_id' => $req->requester_user_id, 'by' => $managerId]);
+            return response()->json(['success' => true, 'message' => 'Leave approved.']);
+        } catch (\Throwable $e) {
+            \Log::error('approveLeaveRequest failed', ['id' => $id, 'error' => $e->getMessage()]);
+            return response()->json(['success' => false, 'message' => 'Could not approve the leave.'], 500);
+        }
+    }
+
+    /** Reject a rider-submitted leave request from the Attendance page (manager authority). */
+    public function rejectLeaveRequest(Request $request, $id)
+    {
+        try {
+            $catId = DB::table('t_req_category')->where('category_code', 'leave')->value('id');
+            $req = DB::table('t_req_master')->where('id', $id)->where('category_id', $catId)->first();
+            if (!$req) {
+                return response()->json(['success' => false, 'message' => 'Leave request not found.'], 404);
+            }
+            if (in_array($req->status, ['approved', 'rejected', 'cancelled'], true)) {
+                return response()->json(['success' => false, 'message' => 'This request was already ' . $req->status . '.'], 400);
+            }
+
+            $managerId = auth()->id();
+            $reason = trim((string) $request->input('reason', '')) ?: 'Rejected via Attendance';
+            DB::table('t_req_master')->where('id', $id)->update([
+                'status' => 'rejected',
+                'level_1_status' => 'rejected',
+                'rejection_reason' => $reason,
+                'requester_sync_required' => 1,
+                'completed_at' => now(),
+                'updated_by' => $managerId,
+                'updated_at' => now(),
+            ]);
+            \Log::info('Leave request rejected via attendance', ['leave_id' => $id, 'user_id' => $req->requester_user_id, 'by' => $managerId]);
+            return response()->json(['success' => true, 'message' => 'Leave rejected.']);
+        } catch (\Throwable $e) {
+            \Log::error('rejectLeaveRequest failed', ['id' => $id, 'error' => $e->getMessage()]);
+            return response()->json(['success' => false, 'message' => 'Could not reject the leave.'], 500);
+        }
+    }
+
+    /**
+     * Grant a rider EXTRA leave days on top of the yearly quota (manager action, audited).
+     * Writes a +days row to the leave ledger (t_hr_leave_grant). Requires the Phase-E SQL.
+     */
+    public function grantLeave(Request $request)
+    {
+        $validator = \Illuminate\Support\Facades\Validator::make($request->all(), [
+            'user_id' => 'required|integer|exists:t_sys_user,id',
+            'days' => 'required|numeric|not_in:0|min:-365|max:365',
+            'reason' => 'nullable|string|max:200',
+        ]);
+        if ($validator->fails()) {
+            return response()->json(['success' => false, 'message' => $validator->errors()->first()], 422);
+        }
+        if (!\Illuminate\Support\Facades\Schema::hasTable('t_hr_leave_grant')) {
+            return response()->json(['success' => false, 'message' => 'Leave-ledger table not set up yet — run the Phase-E SQL.'], 422);
+        }
+        try {
+            $userId = (int) $request->user_id;
+            $days = round((float) $request->days, 1);
+            DB::table('t_hr_leave_grant')->insert([
+                'user_id' => $userId,
+                'days' => $days,
+                'reason' => trim((string) $request->input('reason', '')) ?: null,
+                'source' => 'manual',
+                'effective_date' => now()->toDateString(),
+                'created_by' => auth()->id(),
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+            $bal = (new \App\Services\HR\LeavePolicyService())->balance($userId);
+            $verb = $days > 0 ? 'Granted' : 'Deducted';
+            return response()->json([
+                'success' => true,
+                'message' => "{$verb} " . abs($days) . " leave day(s). Balance is now {$bal['remaining']} of {$bal['effective_quota']}.",
+                'balance' => $bal,
+            ]);
+        } catch (\Throwable $e) {
+            \Log::error('Grant-leave failed', ['error' => $e->getMessage()]);
+            return response()->json(['success' => false, 'message' => 'Could not save the grant.'], 500);
+        }
+    }
+
+    /** Current leave balance for one rider (apply-leave modal + Riders page chips). */
+    public function leaveBalance(Request $request)
+    {
+        $userId = (int) $request->input('user_id');
+        if (!$userId) {
+            return response()->json(['success' => false, 'message' => 'user_id required'], 400);
+        }
+        return response()->json(['success' => true, 'balance' => (new \App\Services\HR\LeavePolicyService())->balance($userId)]);
+    }
+
+    /**
+     * Toggle a "not needed" day tag for a rider. A tagged day is PAID AS PRESENT — it is
+     * never counted as absent and no salary is deducted. Requires the Phase-E SQL.
+     */
+    public function toggleDayTag(Request $request)
+    {
+        $validator = \Illuminate\Support\Facades\Validator::make($request->all(), [
+            'user_id' => 'required|integer|exists:t_sys_user,id',
+            'date' => 'required|date',
+            'note' => 'nullable|string|max:200',
+        ]);
+        if ($validator->fails()) {
+            return response()->json(['success' => false, 'message' => $validator->errors()->first()], 422);
+        }
+        if (!\Illuminate\Support\Facades\Schema::hasTable('t_ops_day_tag')) {
+            return response()->json(['success' => false, 'message' => '"Not needed" is not set up yet — run the Phase-E SQL.'], 422);
+        }
+        try {
+            $userId = (int) $request->user_id;
+            $date = substr((string) $request->date, 0, 10);
+            $existing = DB::table('t_ops_day_tag')->where('user_id', $userId)->where('tag_date', $date)->first();
+            if ($existing) {
+                DB::table('t_ops_day_tag')->where('id', $existing->id)->delete();
+                $tagged = false;
+            } else {
+                DB::table('t_ops_day_tag')->insert([
+                    'user_id' => $userId,
+                    'tag_date' => $date,
+                    'tag' => 'not_needed',
+                    'note' => trim((string) $request->input('note', '')) ?: null,
+                    'created_by' => auth()->id(),
+                    'created_at' => now(),
+                ]);
+                $tagged = true;
+            }
+            // Bust the shift/tag cache so dayKind + salary see the change immediately.
+            (new ShiftResolutionService())->clearUserShiftCache($userId);
+            return response()->json([
+                'success' => true,
+                'tagged' => $tagged,
+                'message' => $tagged ? 'Marked as not needed — this day won\'t count as absent.' : 'Removed the "not needed" mark.',
+            ]);
+        } catch (\Throwable $e) {
+            \Log::error('toggleDayTag failed', ['error' => $e->getMessage()]);
+            return response()->json(['success' => false, 'message' => 'Could not update the day.'], 500);
         }
     }
 
@@ -978,6 +1234,11 @@ class AttendanceController extends Controller
             $userData['total_overtime_minutes'] = $lateOt['overtime_minutes'];
             $userData['late_days'] = $lateOt['late_days'];
             $userData['overtime_days'] = $lateOt['overtime_days'];
+
+            // TARGET-based overtime (worked beyond the configured shift length) — for the
+            // manager's "Overtime" column. Display-only; not the salary overtime above.
+            $userData['overtime_target_minutes'] = (new \App\Services\HR\OvertimeService())
+                ->overtimeMinutes($userId, $startDate, $effectiveEndDate);
 
             // Create a set of dates that have attendance records
             $attendanceDates = [];
@@ -1480,6 +1741,9 @@ class AttendanceController extends Controller
                 if (isset($byDate[$ds])) { $full[] = $byDate[$ds]; continue; }
                 $kind = $shiftService->dayKind($userId, $ds);
                 if ($kind === 'off' || $kind === 'holiday' || $kind === 'not_joined') { continue; }
+                // A tagged "not needed" day shows as its own status (paid, not absent).
+                $fillerStatus = isset($leaveDates[$ds]) ? 'on_leave'
+                              : ($kind === 'not_needed' ? 'not_needed' : 'absent');
                 $full[] = (object) [
                     'attendance_date' => $ds,
                     'login_time' => null, 'logout_time' => null,
@@ -1488,10 +1752,13 @@ class AttendanceController extends Controller
                     'meter_start' => null, 'meter_end' => null, 'meter_distance' => null,
                     'picture_start' => null, 'picture_end' => null,
                     'leave_request_id' => null, 'leave_status' => null,
-                    'status' => isset($leaveDates[$ds]) ? 'on_leave' : 'absent',
+                    'status' => $fillerStatus,
                 ];
             }
             $records = collect($full);
+            // Recompute absent from the actual per-day rows so the header matches what's
+            // shown and excludes "not needed" (paid) + leave days. Mirrors salary's absent.
+            $absentDays = $records->where('status', 'absent')->count();
 
             return response()->json([
                 'success' => true,

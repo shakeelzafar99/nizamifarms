@@ -268,6 +268,32 @@ class ShiftResolutionService
     }
 
     /**
+     * "Not needed" day tags (Y-m-d => true) per user — days a manager marked the rider as
+     * not required. Memoized + guarded: before the Phase-E SQL (t_ops_day_tag) exists, this
+     * is always empty → dayKind is byte-identical to before, salary untouched.
+     */
+    private static array $tagMemo = [];
+    private static ?bool $hasTagTable = null;
+    public function isDayTagged(int $userId, string $date): bool
+    {
+        if (!array_key_exists($userId, self::$tagMemo)) {
+            $set = [];
+            try {
+                if (self::$hasTagTable === null) {
+                    self::$hasTagTable = \Illuminate\Support\Facades\Schema::hasTable('t_ops_day_tag');
+                }
+                if (self::$hasTagTable) {
+                    foreach (DB::table('t_ops_day_tag')->where('user_id', $userId)->pluck('tag_date') as $d) {
+                        $set[substr((string) $d, 0, 10)] = true;
+                    }
+                }
+            } catch (\Throwable $e) { /* no table → no tags */ }
+            self::$tagMemo[$userId] = $set;
+        }
+        return isset(self::$tagMemo[$userId][$date]);
+    }
+
+    /**
      * THE single per-day classification every attendance surface should use to decide
      * whether a no-login day is really "absent" vs a day that shouldn't count. Returns:
      *   'not_joined' — the date is before the user's hire date
@@ -291,6 +317,12 @@ class ShiftResolutionService
         $workingDows = $this->getUserShift($userId, $date)['working_days'];
         if (!in_array($dow, $workingDows, true)) {
             return 'off';
+        }
+        // A manager-tagged "not needed" day is a would-be working day the rider wasn't
+        // required for → NOT absent. It's still a working day for pay (paid as present);
+        // only the display/absent surfaces treat it specially via this kind.
+        if ($this->isDayTagged($userId, $date)) {
+            return 'not_needed';
         }
         return 'working';
     }
@@ -519,6 +551,7 @@ class ShiftResolutionService
             }
         }
         unset(self::$hireMemo[$userId]); // hire date may have changed
+        unset(self::$tagMemo[$userId]);  // not-needed tags may have changed
 
         Log::info("Cleared shift cache for user {$userId}");
     }
@@ -536,6 +569,7 @@ class ShiftResolutionService
         Cache::forever('shift_cache_ver', $ver + 1);
         self::$shiftMemo = [];
         self::$hireMemo = [];
+        self::$tagMemo = [];
 
         Log::info('Bumped shift cache version to ' . ($ver + 1));
     }

@@ -200,25 +200,94 @@ class SalaryCalculationService
         }
 
         $presentDays = $attendance->present_days ?? 0;
-        
+
+        // "Not needed" days (manager-tagged) are PAID AS PRESENT: the day stays a working
+        // day (so the per-day rate is unchanged) but must NOT count as absent. Subtract the
+        // tagged working-days that would otherwise fall into absent (no login, not leave).
+        // Guarded: before the Phase-E t_ops_day_tag table exists this is 0 → byte-identical.
+        $notNeededDays = $this->notNeededPaidDays($userId, $startDate, $effectiveEndDate, $shiftService);
+
         Log::info('Salary calculation - attendance breakdown', [
             'user_id' => $userId,
             'month' => $month,
             'working_days' => $workingDays,
             'present_days' => $presentDays,
             'leave_days' => $leaveDays,
-            'absent_days' => max(0, $workingDays - $presentDays - $leaveDays)
+            'not_needed_days' => $notNeededDays,
+            'absent_days' => max(0, $workingDays - $presentDays - $leaveDays - $notNeededDays)
         ]);
 
         return [
             'working_days' => $workingDays,
             'present_days' => $presentDays,
-            'absent_days' => max(0, $workingDays - $presentDays - $leaveDays), // CRITICAL: Subtract leave days!
+            'absent_days' => max(0, $workingDays - $presentDays - $leaveDays - $notNeededDays), // subtract leave + not-needed
             'leave_days' => $leaveDays,
             'late_minutes' => $lateOt['late_minutes'],
             'overtime_minutes' => $lateOt['overtime_minutes'],
             'overtime_hours' => round($lateOt['overtime_minutes'] / 60, 2)
         ];
+    }
+
+    /**
+     * Public passthrough to the unified per-month attendance summary
+     * (working_days/present_days/absent_days/leave_days/late_minutes/overtime_minutes).
+     * The Payroll engine reuses THIS so its absent/late numbers are the same
+     * harness-proven values the salary slip uses. Read-only; does not change the slip path.
+     */
+    public function attendanceSummary(int $userId, string $month): array
+    {
+        return $this->getAttendanceData($userId, $month);
+    }
+
+    /**
+     * Count "not needed" tagged days in [start,end] that would otherwise be ABSENT — i.e.
+     * a would-be working day (dayKind='not_needed'), with no login, and not on leave. These
+     * are subtracted from absent so the rider is paid as present. Guarded: no table → 0.
+     */
+    protected function notNeededPaidDays(int $userId, string $start, string $end, \App\Services\ShiftResolutionService $shiftService): int
+    {
+        try {
+            if (!\Illuminate\Support\Facades\Schema::hasTable('t_ops_day_tag')) {
+                return 0;
+            }
+            $tagged = DB::table('t_ops_day_tag')->where('user_id', $userId)
+                ->whereBetween('tag_date', [$start, $end])->pluck('tag_date');
+            if ($tagged->isEmpty()) {
+                return 0;
+            }
+            // Dates the rider actually logged in (present) — never subtract these.
+            $login = [];
+            foreach (DB::table('t_ops_attendance')->where('user_id', $userId)
+                        ->whereBetween('attendance_date', [$start, $end])
+                        ->whereNotNull('login_time')->where('login_time', '!=', '')
+                        ->pluck('attendance_date') as $d) {
+                $login[substr((string) $d, 0, 10)] = true;
+            }
+            // Approved/pending leave dates in range — already handled as leave, never subtract.
+            $leave = [];
+            $leaveRequests = RequestModel::where('requester_user_id', $userId)
+                ->whereIn('status', ['approved', 'pending'])
+                ->whereHas('category', function ($q) { $q->where('category_code', 'leave'); })
+                ->where('leave_start_date', '<=', $end)
+                ->where('leave_end_date', '>=', $start)
+                ->get(['leave_start_date', 'leave_end_date']);
+            foreach ($leaveRequests as $lr) {
+                if (!$lr->leave_start_date || !$lr->leave_end_date) { continue; }
+                for ($c = new \DateTime($lr->leave_start_date); $c <= new \DateTime($lr->leave_end_date); $c->modify('+1 day')) {
+                    $leave[$c->format('Y-m-d')] = true;
+                }
+            }
+            $n = 0;
+            foreach ($tagged as $td) {
+                $ds = substr((string) $td, 0, 10);
+                if (isset($login[$ds]) || isset($leave[$ds])) { continue; }
+                if ($shiftService->dayKind($userId, $ds) === 'not_needed') { $n++; }
+            }
+            return $n;
+        } catch (\Throwable $e) {
+            \Log::warning('notNeededPaidDays failed', ['error' => $e->getMessage()]);
+            return 0;
+        }
     }
 
     /**

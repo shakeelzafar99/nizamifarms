@@ -245,7 +245,45 @@ class LedgerAdjustmentModel extends BaseModel
         if (!$ledger) {
             throw new \Exception("Ledger entry not found for adjustment {$this->id}");
         }
-        
+
+        // POST-SETTLEMENT correction guard (Ledger L1, owner-ruled Option A): a settled
+        // invoice's rider has already handed over the cash — his balance (which is
+        // CALCULATED from invoice amounts) must NOT move. So do NOT rewrite the amount,
+        // do NOT reopen/trim settlement, and do NOT move balances. The adjustment stands
+        // as the audit record and the order total carries the correction (revenue is
+        // order-based). Unsettled invoices keep the existing apply behaviour below.
+        if ($ledger->transaction_type === LedgerModel::TYPE_INVOICE && $ledger->settlement_status === 'settled') {
+            $ledger->comments = ($ledger->comments ?? '') .
+                " | Post-settlement correction Rs. " . number_format($ledger->amount, 2) . " → Rs. " . number_format($this->new_amount, 2) .
+                " ABSORBED — invoice + rider balance unchanged (adjustment #{$this->id})";
+            $ledger->save(); // comment ONLY
+            Log::info("Ledger adjustment ABSORBED (post-settlement, rider protected)", [
+                'adjustment_id' => $this->id,
+                'ledger_id'     => $ledger->id,
+                'old_amount'    => $ledger->amount,
+                'new_amount'    => $this->new_amount,
+                'order_id'      => $this->order_id,
+            ]);
+            return;
+        }
+
+        // ⭐ [Ledger L3] DEAD-ROW guard: a reversed/rejected invoice is out of the books (its
+        // balances were taken back out, or never entered). Rewriting its amount or moving
+        // balances would corrupt — annotate only. (98 stale pending adjustments sat on reversed
+        // invoices when this guard was added; approving one would have moved real money.)
+        if (in_array($ledger->approval_status, [LedgerModel::STATUS_REVERSED, LedgerModel::STATUS_REJECTED], true)) {
+            $ledger->comments = ($ledger->comments ?? '') .
+                " | Adjustment #{$this->id} (Rs. " . number_format($ledger->amount, 2) . " → Rs. " . number_format($this->new_amount, 2) .
+                ") NOT applied — invoice is {$ledger->approval_status} (dead row, nothing to correct)";
+            $ledger->save(); // comment ONLY
+            Log::info("Ledger adjustment skipped (invoice reversed/rejected)", [
+                'adjustment_id' => $this->id,
+                'ledger_id'     => $ledger->id,
+                'inv_status'    => $ledger->approval_status,
+            ]);
+            return;
+        }
+
         $oldAmount = $ledger->amount;
         $newAmount = $this->new_amount;
         $difference = $newAmount - $oldAmount;
@@ -301,39 +339,44 @@ class LedgerAdjustmentModel extends BaseModel
         
         $ledger->save();
         
-        // Update account balances by the difference
-        $fromAccount = $ledger->fromAccount;
-        $toAccount = $ledger->toAccount;
-        
-        if ($fromAccount) {
-            // For revenue accounts (from_account in invoices), decrease by difference
-            // If difference is positive (price increased), balance decreases more (more revenue)
-            // If difference is negative (price decreased), balance increases (less revenue)
-            $fromAccount->current_balance -= $difference;
-            $fromAccount->save();
-            
-            Log::info("Updated from_account balance", [
-                'account_id' => $fromAccount->id,
-                'account_code' => $fromAccount->account_code,
-                'old_balance' => $fromAccount->current_balance + $difference,
-                'new_balance' => $fromAccount->current_balance,
-                'change' => -$difference
-            ]);
-        }
-        
-        if ($toAccount) {
-            // For asset accounts (to_account in invoices), increase by difference
-            // If difference is positive (price increased), balance increases more (more receivable)
-            // If difference is negative (price decreased), balance decreases (less receivable)
-            $toAccount->current_balance += $difference;
-            $toAccount->save();
-            
-            Log::info("Updated to_account balance", [
-                'account_id' => $toAccount->id,
-                'account_code' => $toAccount->account_code,
-                'old_balance' => $toAccount->current_balance - $difference,
-                'new_balance' => $toAccount->current_balance,
-                'change' => $difference
+        // ⭐ [Ledger L3, D15 fix] Move balances by the difference ONLY if this row's money is
+        // actually in the books (the engine's balance_updated flag). A pending_l1 invoice edited
+        // before approval must rewrite the amount ONLY — its (corrected) amount enters the books
+        // later, when the invoice itself is approved and the engine applies it. Without this
+        // guard, approving the adjustment BEFORE the invoice moved balances that were never
+        // applied (proven: phantom ONLINE/REV movement from nothing).
+        if ($ledger->balance_updated) {
+            $fromAccount = $ledger->fromAccount;
+            $toAccount = $ledger->toAccount;
+
+            if ($fromAccount) {
+                // For revenue accounts (from_account in invoices), decrease by difference
+                $fromAccount->current_balance -= $difference;
+                $fromAccount->save();
+
+                Log::info("Updated from_account balance", [
+                    'account_id' => $fromAccount->id,
+                    'account_code' => $fromAccount->account_code,
+                    'change' => -$difference
+                ]);
+            }
+
+            if ($toAccount) {
+                // For asset accounts (to_account in invoices), increase by difference
+                $toAccount->current_balance += $difference;
+                $toAccount->save();
+
+                Log::info("Updated to_account balance", [
+                    'account_id' => $toAccount->id,
+                    'account_code' => $toAccount->account_code,
+                    'change' => $difference
+                ]);
+            }
+        } else {
+            Log::info("Balance move skipped — invoice not yet applied (amount rewrite only)", [
+                'adjustment_id' => $this->id,
+                'ledger_id' => $ledger->id,
+                'inv_status' => $ledger->approval_status,
             ]);
         }
         

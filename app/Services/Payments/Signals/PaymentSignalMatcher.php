@@ -541,6 +541,8 @@ class PaymentSignalMatcher
             }
         }
 
+        $myBank = $this->receivingBankKey($signal);
+
         return (clone $base)
             ->whereBetween('extracted_amount', [
                 (float) $signal->extracted_amount - $tol,
@@ -548,8 +550,64 @@ class PaymentSignalMatcher
             ])
             ->get()
             ->filter(fn ($s) => $this->paymentTime($s)->between($from, $to))
+            // Same-receiving-bank gate: a screenshot tags OUR receiving account and
+            // an email arrives FROM the bank that received the money — a real pair
+            // hit the SAME NF account. Block ONLY on a confident mismatch (both
+            // sides resolve to a receiving account and they differ), so an unread
+            // bank on either side never suppresses a genuine pair. (Jul-2026: an
+            // HBL-4403 screenshot must not corroborate with a Meezan credit alert.)
+            ->filter(function ($s) use ($myBank) {
+                $theirBank = $this->receivingBankKey($s);
+                return !($myBank !== null && $theirBank !== null && $myBank !== $theirBank);
+            })
             ->sortBy(fn ($s) => abs($this->paymentTime($s)->diffInSeconds($time)))
             ->first();
+    }
+
+    /**
+     * Canonical "which of OUR bank accounts received this money" for a signal, as
+     * an uppercased t_fin_online_receiving_accounts.short_code — or null when it
+     * can't be determined. A screenshot tags our receiving account directly
+     * (extracted_to_account_last4 / _short); an email credit alert arrives FROM the
+     * bank that received it (extracted_sender_bank = the route short_code). Both
+     * are normalised to the same chip vocabulary so the two sources compare
+     * apples-to-apples (e.g. an email "MEEZAN" and a screenshot last-4 "4237" both
+     * resolve to the chip "MBL-4237"). Returns null (→ never blocks a pair) rather
+     * than guess when nothing resolves.
+     */
+    private function receivingBankKey(PaymentSignal $signal): ?string
+    {
+        $accounts = DB::table('t_fin_online_receiving_accounts')
+            ->where('is_active', 1)
+            ->get(['short_code', 'name', 'account_last4']);
+        if ($accounts->isEmpty()) {
+            return null;
+        }
+
+        // 1) Screenshot: exact receiving-account last-4 (deterministic).
+        if ($signal->extracted_to_account_last4) {
+            $hit = $accounts->firstWhere('account_last4', $signal->extracted_to_account_last4);
+            if ($hit) {
+                return mb_strtoupper($hit->short_code);
+            }
+        }
+
+        // 2) A bank token — the screenshot's chip short_code, or the email's route
+        //    short_code. Resolve to a chip by exact short_code or a name substring
+        //    (bridges "MEEZAN" → the "MBL-4237" chip named "Meezan Bank Limited").
+        $token = $signal->source === PaymentSignal::SOURCE_EMAIL
+            ? $signal->extracted_sender_bank
+            : $signal->extracted_to_account_short;
+        if ($token !== null && trim((string) $token) !== '') {
+            $t = mb_strtolower(trim((string) $token));
+            $hit = $accounts->first(function ($a) use ($t) {
+                return mb_strtolower((string) $a->short_code) === $t
+                    || ($a->name && str_contains(mb_strtolower((string) $a->name), $t));
+            });
+            return $hit ? mb_strtoupper($hit->short_code) : mb_strtoupper($t);
+        }
+
+        return null;
     }
 
     /** When the customer actually sent the money (best available signal). */

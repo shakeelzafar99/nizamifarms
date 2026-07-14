@@ -872,9 +872,16 @@ class OrderModel extends BaseModel
                 
                 DB::table('t_ops_order_rider_history')->insert($insertData);
 
-                // Update denormalized column on order
+                // Update denormalized column on order.
+                // Reached only on a REAL (re)assignment — the same-rider case
+                // returns early above. Clearing delivery_priority drops the
+                // order out of the OLD rider's planned route and lets it join
+                // the NEW rider's list at the bottom (COALESCE(...,999) sorts
+                // nulls last), instead of injecting the old rider's stale stop
+                // number into the middle of the new rider's sequence.
                 $orderUpdateData = [
                     'assigned_rider_user_id' => $riderUserId,
+                    'delivery_priority' => null,
                     'updated_at' => Carbon::now()->format('Y-m-d H:i:s'),
                 ];
                 
@@ -1360,6 +1367,18 @@ class OrderModel extends BaseModel
 
                 // 3. Update the main order table
                 $this->order_status = $statusCode;
+                // Route hygiene: an order pulled OUT of the active run must not
+                // keep its planned delivery slot. Clear it so the remaining
+                // van/up-next stops close up (clients derive labels from
+                // position, so no gap shows). We intentionally do NOT clear on
+                // 'out_for_delivery' or 'processing' (that IS the carry-forward:
+                // a promoted or cancelled-back order keeps its number so the
+                // route is preserved), nor on 'delivered'/'completed' (the
+                // dispatch tracker compares planned delivery_priority vs the
+                // actual delivered sequence).
+                if (in_array($statusCode, ['on_hold', 'cancelled', 'refunded'], true)) {
+                    $this->delivery_priority = null;
+                }
                 if (method_exists($this, 'setAttribute')) {
                     $this->setAttribute('updated_by', $changedBy ?? (auth()->check() ? auth()->id() : 1));
                 }
@@ -1490,15 +1509,23 @@ class OrderModel extends BaseModel
                     }
                 }
 
-                // 5. If status changed to 'out_for_delivery' or 'delivered', auto-prepare all
-                // unprepared items and deduct their inventory. Items already marked as prepared
-                // will be skipped (their inventory_deducted flag is already 1).
-                // We include 'delivered' as a safety net in case an order skips out_for_delivery
-                // (e.g. bulk CSV import, direct delivery marking).
-                if (in_array($statusCode, ['out_for_delivery', 'delivered'])) {
+                // 5. If this status is an "out the door" status (auto_prepares in the Status Hub),
+                // auto-prepare all unprepared items and deduct their inventory. Items already marked
+                // as prepared will be skipped (their inventory_deducted flag is already 1).
+                // Historically this was hardcoded to out_for_delivery/delivered; it now reads the
+                // Status Hub so a new post-dispatch status the owner adds behaves the same way.
+                // (The rule service falls back to that exact literal if the Hub columns are absent.)
+                if (app(\App\Services\CRM\OrderStatusRuleService::class)->autoPreparesOn($statusCode)) {
                     try {
                         if (!$this->relationLoaded('lineItems')) {
                             $this->load('lineItems');
+                        }
+
+                        // Stamp provenance only if the column exists (deploy-order safe: if the
+                        // Status Hub migration hasn't run yet, we still auto-prepare + deduct).
+                        static $hasPreparedSource = null;
+                        if ($hasPreparedSource === null) {
+                            $hasPreparedSource = \Schema::hasColumn('t_crm_prod_order_line_item', 'prepared_source');
                         }
 
                         $autoPreparedCount = 0;
@@ -1507,6 +1534,9 @@ class OrderModel extends BaseModel
                             // Auto-mark as prepared if not already
                             if ($lineItem->preparation_status !== 'preparing') {
                                 $lineItem->preparation_status = 'preparing';
+                                if ($hasPreparedSource) {
+                                    $lineItem->prepared_source = 'auto';
+                                }
                                 $lineItem->save();
                                 $autoPreparedCount++;
                             }
@@ -1660,43 +1690,19 @@ class OrderModel extends BaseModel
                            "REVERSED: Order #{$this->order_number} was cancelled";
         $ledger->save();
         
-        // Reverse balances ONLY if the transaction was approved
-        if ($wasApproved) {
-            $fromAccount = $ledger->fromAccount;
-            $toAccount = $ledger->toAccount;
-            
-            if ($fromAccount) {
-                // Reverse the debit (add back)
-                $fromAccount->current_balance += $ledger->amount;
-                $fromAccount->save();
-                
-                \Log::info("Reversed balance for from_account (cancellation)", [
-                    'account_id' => $fromAccount->id,
-                    'account_name' => $fromAccount->account_name,
-                    'amount_added_back' => $ledger->amount,
-                    'new_balance' => $fromAccount->current_balance
-                ]);
-            }
-            
-            if ($toAccount) {
-                // Reverse the credit (subtract back)
-                $toAccount->current_balance -= $ledger->amount;
-                $toAccount->save();
-                
-                \Log::info("Reversed balance for to_account (cancellation)", [
-                    'account_id' => $toAccount->id,
-                    'account_name' => $toAccount->account_name,
-                    'amount_subtracted' => $ledger->amount,
-                    'new_balance' => $toAccount->current_balance
-                ]);
-            }
-        }
-        
+        // Reverse the balance move via the canonical engine. It self-guards on balance_updated, so
+        // it correctly reverses a row that was applied at L1 (pending_l2) as well as a fully approved
+        // one — fixing the old `$wasApproved` guard that LEAKED money when an order was cancelled
+        // during the L1→L2 window (it only reversed status===approved rows). Engine reverse is the
+        // exact inverse of the invoice/order_payment posting (income +, holder −).
+        $balancesReversed = (bool) $ledger->balance_updated;
+        (new \App\Services\FIN\BalancePostingService())->reverse($ledger);
+
         \Log::info("Ledger entry reversed for cancellation", [
             'ledger_id' => $ledger->id,
             'order_id' => $this->id,
             'was_approved' => $wasApproved,
-            'balances_reversed' => $wasApproved
+            'balances_reversed' => $balancesReversed
         ]);
     }
 

@@ -7885,6 +7885,16 @@ function openQuickStatusChange(orderId, currentStatus) {
             if (sel) {
                 sel.innerHTML = data.success ? data.data.map(s=>`<option value="${s.status_code}">${s.icon} ${s.status_name}</option>`).join('') : '';
                 sel.value = currentStatus || 'new';
+                // Status Hub: if the order's current status isn't in the picker (a legacy/retired
+                // status like 'completed'), insert it selected so the dropdown doesn't silently
+                // fall back to the first option and a blind Save can't demote the order.
+                if (currentStatus && sel.value !== currentStatus) {
+                    const opt = document.createElement('option');
+                    opt.value = currentStatus;
+                    opt.textContent = currentStatus.replace(/_/g,' ').replace(/\b\w/g,c=>c.toUpperCase()) + ' (legacy)';
+                    sel.insertBefore(opt, sel.firstChild);
+                    sel.value = currentStatus;
+                }
             }
             
             // Load timeline
@@ -7892,20 +7902,41 @@ function openQuickStatusChange(orderId, currentStatus) {
             const btn = document.getElementById('quickStatusSave');
             
             // Helper function to actually change the status
-            const changeStatus = async function(confirmed = false) {
+            const changeStatus = async function(confirmed = false, bringBack = undefined) {
                 try {
                 const status_code = document.getElementById('quickStatusSelect').value;
                 const notes = document.getElementById('quickStatusNotes').value;
-                    
-                    const payload = { 
-                        order_id: orderId, 
-                        status_code, 
-                        notes 
+
+                    // BRING-BACK: if this move takes the order back across the "out the door" line
+                    // (was auto-prepared, now going to a status that counts in Quantities), ask the
+                    // operator whether to return its items to the "to prepare" queue. Only asked once.
+                    if (bringBack === undefined) {
+                        const list = (data && data.data) || [];
+                        const byCode = c => list.find(s => s.status_code === c);
+                        const fromS = byCode(currentStatus), toS = byCode(status_code);
+                        const toCounts = toS && !(toS.counts_in_quantities === false || toS.counts_in_quantities === 0);
+                        if (fromS && toS && fromS.auto_prepares && !toS.auto_prepares && toCounts) {
+                            bringBack = confirm(
+                                'This order was dispatched, so its items are marked prepared.\n\n' +
+                                'Bring them back to the "to prepare" list?\n\n' +
+                                'OK = bring back (returns items to the queue + restores stock)\n' +
+                                'Cancel = keep them prepared'
+                            );
+                        }
+                    }
+
+                    const payload = {
+                        order_id: orderId,
+                        status_code,
+                        notes
                     };
-                    
+
                     // Add confirmation flag if this is a retry after confirmation
                     if (confirmed) {
                         payload.confirmed = true;
+                    }
+                    if (bringBack === true) {
+                        payload.bring_back = true;
                     }
                     
                     btn.textContent = 'Saving...';
@@ -11181,6 +11212,33 @@ function renderTableBody() {
         }
     });
 }
+
+// Build the "Send Invoice via WhatsApp" action button. When an invoice template
+// has already been successfully sent via the API for this order, show a small
+// green ✓ corner badge (the button stays clickable → resend) plus a tooltip with
+// when it was sent. Driven by order.invoice_sent / invoice_sent_at from
+// OrderController::filter. Used in every action-button row (identical markup).
+function sendInvoiceButtonHtml(order) {
+    const onum  = (order.order_number||'').replace(/'/g,"\\'");
+    const cname = (order.name || (order.customer ? ((order.customer.first_name||'')+' '+(order.customer.last_name||'')).trim() : '') || ((order.address_first_name||'')+' '+(order.address_last_name||'')).trim() || '').replace(/'/g,"\\'");
+    const phone = (order.customer_phone||order.address_phone||'').replace(/'/g,"\\'");
+    const total = parseFloat(order.total_price||0);
+    const sent  = !!order.invoice_sent;
+    let when = '';
+    if (sent && order.invoice_sent_at) {
+        try {
+            const d = new Date(String(order.invoice_sent_at).replace(' ', 'T'));
+            if (!isNaN(d.getTime())) when = ' · ' + d.toLocaleDateString('en-GB',{day:'2-digit',month:'short'}) + ' ' + d.toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'});
+        } catch (e) {}
+    }
+    const title = sent ? ('Invoice sent'+when+' · click to resend') : 'Send Invoice via WhatsApp';
+    const ring  = sent ? ' ring-1 ring-green-400' : '';
+    const badge = sent
+        ? '<span style="position:absolute;top:-4px;right:-4px;width:14px;height:14px;background:#16a34a;border:2px solid #fff;border-radius:9999px;display:flex;align-items:center;justify-content:center;"><svg width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"><path d="M5 13l4 4L19 7"/></svg></span>'
+        : '';
+    return `<button onclick="event.stopPropagation(); quickSendInvoiceWhatsApp(${order.id}, '${onum}', ${total}, '${cname}', '${phone}' )" class="relative inline-flex items-center justify-center w-7 h-7 text-green-600 bg-green-50 border border-green-200 rounded hover:bg-green-100 hover:border-green-300 transition-all duration-200${ring}" title="${title}"><svg class="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347z"/><path d="M12 2C6.477 2 2 6.477 2 12c0 1.89.525 3.66 1.438 5.168L2 22l4.832-1.438A9.955 9.955 0 0012 22c5.523 0 10-4.477 10-10S17.523 2 12 2z"/></svg>${badge}</button>`;
+}
+
 function getCellContent(order, columnId) {
     const formatDate = (dateStr) => {
         if (!dateStr) return '<span class="text-gray-400">-</span>';
@@ -11505,9 +11563,7 @@ function getCellContent(order, columnId) {
                             <button onclick="event.stopPropagation(); viewOrderDetails(${order.id})" class="inline-flex items-center justify-center w-7 h-7 text-blue-600 bg-blue-50 border border-blue-200 rounded hover:bg-blue-100 hover:border-blue-300 transition-all duration-200" title="View Order Details">
                                 <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/></svg>
                             </button>
-                            <button onclick="event.stopPropagation(); quickSendInvoiceWhatsApp(${order.id}, '${(order.order_number||'').replace(/'/g,"\\'")}', ${parseFloat(order.total_price||0)}, '${(order.name || (order.customer ? ((order.customer.first_name||'')+' '+(order.customer.last_name||'')).trim() : '') || ((order.address_first_name||'')+' '+(order.address_last_name||'')).trim() || '').replace(/'/g,"\\'")}', '${(order.customer_phone||order.address_phone||'').replace(/'/g,"\\'")}' )" class="inline-flex items-center justify-center w-7 h-7 text-green-600 bg-green-50 border border-green-200 rounded hover:bg-green-100 hover:border-green-300 transition-all duration-200" title="Send Invoice via WhatsApp">
-                                <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347z"/><path d="M12 2C6.477 2 2 6.477 2 12c0 1.89.525 3.66 1.438 5.168L2 22l4.832-1.438A9.955 9.955 0 0012 22c5.523 0 10-4.477 10-10S17.523 2 12 2z"/></svg>
-                            </button>
+                            ${sendInvoiceButtonHtml(order)}
                         </div>`;
                 } else {
                     // Pending approval - show approve/ignore/view
@@ -11537,9 +11593,7 @@ function getCellContent(order, columnId) {
                     <button onclick="event.stopPropagation(); openInBackground(ordersInvoiceUrl(${order.id}))" class="inline-flex items-center justify-center w-7 h-7 text-emerald-600 bg-emerald-50 border border-emerald-200 rounded hover:bg-emerald-100 hover:border-emerald-300 transition-all duration-200" title="View Invoice (PDF)">
                         <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
                     </button>
-                    <button onclick="event.stopPropagation(); quickSendInvoiceWhatsApp(${order.id}, '${(order.order_number||'').replace(/'/g,"\\'")}', ${parseFloat(order.total_price||0)}, '${(order.name || (order.customer ? ((order.customer.first_name||'')+' '+(order.customer.last_name||'')).trim() : '') || ((order.address_first_name||'')+' '+(order.address_last_name||'')).trim() || '').replace(/'/g,"\\'")}', '${(order.customer_phone||order.address_phone||'').replace(/'/g,"\\'")}' )" class="inline-flex items-center justify-center w-7 h-7 text-green-600 bg-green-50 border border-green-200 rounded hover:bg-green-100 hover:border-green-300 transition-all duration-200" title="Send Invoice via WhatsApp">
-                        <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347z"/><path d="M12 2C6.477 2 2 6.477 2 12c0 1.89.525 3.66 1.438 5.168L2 22l4.832-1.438A9.955 9.955 0 0012 22c5.523 0 10-4.477 10-10S17.523 2 12 2z"/></svg>
-                    </button>
+                    ${sendInvoiceButtonHtml(order)}
                 </div>`;
         default:
             return '';

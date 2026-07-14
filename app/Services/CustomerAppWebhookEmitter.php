@@ -78,11 +78,31 @@ class CustomerAppWebhookEmitter
 
             $isFirstEvent  = $this->isFirstEventForOrder($order);
             $rawNfStatus   = $order->order_status;
+            $rules         = app(\App\Services\CRM\OrderStatusRuleService::class);
+
+            // Status Hub: a status flagged "don't send to customer app" emits nothing — the
+            // customer simply keeps seeing the previous step. The first-ever event is exempt:
+            // it is always the 'accepted' acknowledgement so the app learns the order exists.
+            if (!$isFirstEvent && !$rules->sendToCustomerApp($rawNfStatus)) {
+                return;
+            }
+
+            // Otherwise send the alias if one is configured, else the raw code (as before).
             $customerStatus = $isFirstEvent
                 ? config('customer_app.first_event_status_override', 'accepted')
-                : $rawNfStatus;
+                : ($rules->customerAlias($rawNfStatus) ?? $rawNfStatus);
 
-            $payload = $this->buildPayload($order, $customerStatus, $previousNfStatus, $isFirstEvent);
+            // previous_status must not leak internal steps either: alias it, and if the
+            // previous status was itself hidden from the customer app, send null (from the
+            // customer's point of view that step never happened).
+            $customerPrevious = null;
+            if (!$isFirstEvent && $previousNfStatus !== null && $previousNfStatus !== '') {
+                $customerPrevious = $rules->sendToCustomerApp($previousNfStatus)
+                    ? ($rules->customerAlias($previousNfStatus) ?? $previousNfStatus)
+                    : null;
+            }
+
+            $payload = $this->buildPayload($order, $customerStatus, $customerPrevious, $isFirstEvent);
 
             DB::table('t_app_webhook_events')->insert([
                 'event_uuid'      => $payload['event_uuid'],
