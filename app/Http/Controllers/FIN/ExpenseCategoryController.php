@@ -24,6 +24,16 @@ class ExpenseCategoryController extends Controller
             'request_category_code' => 'nullable|string|max:50',
         ]);
 
+        // Salaries go through the Payroll screen — don't allow re-creating a
+        // "Staff Salaries" expense category (it was removed on purpose).
+        if (in_array(strtolower(trim((string) $request->input('category_name', ''))), ['staff salaries', 'staff salary'], true)) {
+            $msg = 'Staff salaries are handled by the Payroll screen and cannot be added as an expense category.';
+            if ($request->wantsJson() || $request->ajax() || $request->expectsJson()) {
+                return response()->json(['success' => false, 'message' => $msg], 422);
+            }
+            return redirect()->back()->with('error', $msg);
+        }
+
         try {
             $businessUnitId = $request->input('business_unit_id', 1); // Default to NF (BU 1)
             

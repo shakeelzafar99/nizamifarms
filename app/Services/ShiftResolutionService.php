@@ -401,6 +401,38 @@ class ShiftResolutionService
     }
 
     /**
+     * Per-day late minutes for the drill-down ("which days was I late"). Same
+     * frozen-snapshot-first rule as sumLateOvertimeMinutes(). Only returns days with late > 0.
+     * @return array<int,array{date:string,minutes:int}>
+     */
+    public function lateDaysBreakdown(int $userId, string $startDate, string $endDate): array
+    {
+        $rows = DB::table('t_ops_attendance')
+            ->where('user_id', $userId)
+            ->whereBetween('attendance_date', [$startDate, $endDate])
+            ->whereNotNull('login_time')
+            ->where('login_time', '!=', '')
+            ->orderBy('attendance_date')
+            ->get(['attendance_date', 'login_time', 'expected_shift_start', 'late_minutes']);
+
+        $out = [];
+        foreach ($rows as $r) {
+            $date = substr((string) $r->attendance_date, 0, 10);
+            if (!is_null($r->late_minutes)) {
+                $late = (int) $r->late_minutes;
+            } else {
+                $start = $r->expected_shift_start
+                    ?: (($this->getUserShift($userId, $date)['shift_start'] ?? '09:00') . ':00');
+                $s = strtotime($date . ' ' . $start);
+                $l = strtotime($date . ' ' . $r->login_time);
+                $late = ($l > $s) ? (int) (($l - $s) / 60) : 0;
+            }
+            if ($late > 0) { $out[] = ['date' => $date, 'minutes' => $late]; }
+        }
+        return $out;
+    }
+
+    /**
      * Get shift info for multiple users at once (bulk operation)
      * Returns array keyed by user_id
      * 

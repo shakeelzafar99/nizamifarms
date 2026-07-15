@@ -59,6 +59,14 @@
         <div class="kt-wrapper flex grow flex-col">
             @include('layouts.partials.header')
             <main class="grow pt-0" id="content" role="content">
+                @if(auth()->check() && auth()->user()->isReadOnly())
+                {{-- View-only account (permission account_read_only): browse everything,
+                     but every change is blocked by ReadOnlyGuard. Banner = awareness. --}}
+                <div style="display:flex;align-items:center;gap:8px;justify-content:center;background:#eaf2fc;color:#1c5cab;border-bottom:1px solid #cfe0f5;padding:7px 14px;font-size:12.5px;font-weight:600;">
+                    <i class="ki-filled ki-eye text-base"></i>
+                    <span>View-only mode — you can browse everything, but changes are disabled.</span>
+                </div>
+                @endif
                 @yield('content')
             </main>
             @include('layouts.partials.footer')

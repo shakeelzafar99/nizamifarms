@@ -446,6 +446,12 @@
             @endif
         </div>
 
+        {{-- Clear Legacy Data Card — RETIRED 2026-07-14. The platform is live; this pre-launch
+             tool permanently deletes imported ledger rows and RESETS ALL ACCOUNT BALANCES TO 0.
+             Hidden from the UI (and its endpoint disabled in ImportController::clearLegacyData) so
+             it can never be triggered by mistake. Re-enable by flipping @if(false) if ever needed
+             for a fresh re-import, but never on production data. --}}
+        @if(false)
         <!-- Clear Legacy Data Card -->
         <div class="bg-white border border-gray-200 rounded-lg p-6 shadow-sm">
             <div class="flex items-center justify-between mb-4">
@@ -507,6 +513,8 @@
                 </div>
             @endif
         </div>
+        @endif
+        {{-- end retired Clear Legacy Data Card --}}
 
         <!-- ⭐ Customer Address Geocoding Card -->
         <div class="bg-white border border-gray-200 rounded-lg p-6 shadow-sm">

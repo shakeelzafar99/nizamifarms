@@ -64,6 +64,24 @@ class User extends Authenticatable
     }
 
     /**
+     * View-only account? (permission `account_read_only`).
+     *
+     * Memoized per instance — the authenticated user is a per-request singleton,
+     * so this costs one query per request no matter how many blades ask. Used by
+     * ReadOnlyGuard (the hard block) and by blades/layout to hide write controls
+     * and show the view-only banner.
+     */
+    protected ?bool $readOnlyCache = null;
+
+    public function isReadOnly(): bool
+    {
+        if ($this->readOnlyCache === null) {
+            $this->readOnlyCache = $this->hasPermission('account_read_only');
+        }
+        return $this->readOnlyCache;
+    }
+
+    /**
      * Check if user has a specific mobile permission
      */
     public function hasMobilePermission(string $permissionCode): bool

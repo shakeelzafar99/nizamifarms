@@ -40,7 +40,7 @@
   .pr-chip.present { background: #ecfdf5; color: #047857; }
   .pr-chip.absent  { background: #fef2f2; color: #b91c1c; cursor: pointer; }
   .pr-chip.leave   { background: #eff6ff; color: #1d4ed8; cursor: pointer; }
-  .pr-chip.late    { background: #fff7ed; color: #c2410c; }
+  .pr-chip.late    { background: #fff7ed; color: #c2410c; cursor: pointer; }
   .pr-chip.ot      { background: #f5f3ff; color: #6d28d9; cursor: pointer; }
   .pr-chip.muted   { background: #f3f4f6; color: #9ca3af; }
   .pr-chip.paid    { background: #ecfdf5; color: #047857; }
@@ -51,6 +51,11 @@
   .pr-formula { font-size: 10.5px; color: #9ca3af; margin-top: 3px; }
   .pr-ded-input { width: 88px; height: 28px; border: 1px solid #d1d5db; border-radius: 6px; padding: 0 7px; font-size: 12.5px; text-align: right; margin-top: 4px; }
   .pr-ded-input.override { border-color: #c2410c; background: #fff7ed; }
+  .pr-chip.dim { opacity: .4; }
+  /* Manager bypass toggle for overtime bonus / late-leave deduction (applied on Pay). */
+  .pr-lvtog { display: inline-flex; align-items: center; gap: 4px; margin-top: 4px; font-size: 10.5px; font-weight: 700; cursor: pointer; user-select: none; border-radius: 6px; padding: 2px 7px; line-height: 1.4; }
+  .pr-lvtog.on  { color: #047857; background: #ecfdf5; }
+  .pr-lvtog.off { color: #9ca3af; background: #f3f4f6; }
 
   .pr-adv { color: #b45309; cursor: pointer; font-weight: 600; }
   .pr-adv.zero { color: #cbd5e1; cursor: default; font-weight: 400; }
@@ -241,7 +246,7 @@
       if (!j.success) throw new Error(j.message || 'Failed');
       CURMONTH = j.month;
       FUND = j.funding || { cash: null, banks: [] };
-      ROWS = (j.rows || []).map(r => ({ ...r, _selected: false, _lateOverride: null }));
+      ROWS = (j.rows || []).map(r => ({ ...r, _selected: false, _lateOverride: null, _skipOvertime: false, _skipLateLeave: false }));
       renderStrip();
       renderRows();
       buildFundModal();
@@ -301,7 +306,8 @@
         : '<span class="pr-chip muted">0 absent</span>') +
       (r.leave_days > 0
         ? ' <span class="pr-chip leave" data-drill="month_leave" data-uid="' + r.user_id + '">' + r.leave_days + ' leave</span>'
-        : '');
+        : '') +
+      '<div class="pr-formula"><span data-drill="leave_grants" data-uid="' + r.user_id + '" style="cursor:pointer;text-decoration:underline dotted;">leave history ›</span></div>';
 
     // late cell (with formula + free-form input when a cut applies)
     let lateCell;
@@ -311,19 +317,22 @@
       const flagTitle = r.late_flag === 'over_step'
         ? 'Late over ' + Math.round(r.late_step_min / 60) + 'h this month → salary cut for all late hours (no leave used).'
         : 'No leaves left to absorb lateness → salary cut for all late hours.';
-      lateCell = '<span class="pr-chip late">' + lateTxt + '</span><span class="pr-flag" title="' + flagTitle + '">⚠</span>' +
+      lateCell = '<span class="pr-chip late" data-drill="month_late" data-uid="' + r.user_id + '" title="Click to see the late days">' + lateTxt + '</span><span class="pr-flag" title="' + flagTitle + '">⚠</span>' +
         '<div class="pr-formula">' + fmt(r.per_hour) + '/hr × ' + (lm / 60).toFixed(1) + 'h</div>' +
         '<input type="number" class="pr-ded-input" data-lateded="' + i + '" value="' + Math.round(lateDed(r)) + '" min="0">';
     } else if (r.late_leave_deduct > 0) {
-      lateCell = '<span class="pr-chip late">' + lateTxt + '</span>' +
-        '<div class="pr-formula">−' + r.late_leave_deduct + ' leave (no pay cut)</div>';
+      // Recommendation: remove 1 leave for lateness. Manager can bypass (keep the leave); applied on Pay.
+      lateCell = '<span class="pr-chip late' + (r._skipLateLeave ? ' dim' : '') + '" data-drill="month_late" data-uid="' + r.user_id + '" title="Click to see the late days">' + lateTxt + '</span>' +
+        '<div class="pr-formula">−' + r.late_leave_deduct + ' leave (no pay cut)</div>' +
+        '<div class="pr-lvtog ' + (r._skipLateLeave ? 'off' : 'on') + '" data-skiplate="' + i + '" title="Deduct 1 leave for lateness? Click to toggle. Applied when you Pay.">' + (r._skipLateLeave ? '✕ kept (not deducted)' : '✓ will deduct') + '</div>';
     } else {
       lateCell = '<span class="pr-chip muted">' + lateTxt + '</span>' + (lm > 0 ? '<div class="pr-formula">within free buffer</div>' : '');
     }
 
-    // overtime
+    // overtime → bonus leave (manager can bypass; applied on Pay)
     const ot = r.bonus_leaves > 0
-      ? '<span class="pr-chip ot" data-drill="month_overtime" data-uid="' + r.user_id + '">+' + r.bonus_leaves + ' bonus leave' + (r.bonus_leaves > 1 ? 's' : '') + '</span>'
+      ? '<span class="pr-chip ot' + (r._skipOvertime ? ' dim' : '') + '" data-drill="month_overtime" data-uid="' + r.user_id + '" title="Click to see the overtime days">+' + r.bonus_leaves + ' bonus leave' + (r.bonus_leaves > 1 ? 's' : '') + '</span>' +
+        '<div class="pr-lvtog ' + (r._skipOvertime ? 'off' : 'on') + '" data-skipot="' + i + '" title="Give this overtime bonus to the employee? Click to toggle. Applied when you Pay.">' + (r._skipOvertime ? '✕ bypassed' : '✓ will add') + '</div>'
       : '<span class="pr-chip muted">—</span>';
 
     // advances (+ always offer "give advance")
@@ -342,7 +351,7 @@
       : '<span class="pr-chip unpaid">Unpaid</span>';
 
     return '<tr data-row="' + i + '"' + (r.paid ? ' style="opacity:.72;"' : '') + '>' +
-      '<td>' + (selectable ? '<input type="checkbox" class="pr-rowchk" data-chk="' + i + '">' : '') + '</td>' +
+      '<td>' + (selectable ? '<input type="checkbox" class="pr-rowchk" data-chk="' + i + '"' + (r._selected ? ' checked' : '') + '>' : '') + '</td>' +
       '<td><div class="pr-emp-name">' + esc(r.fullname) + '</div>' +
         (r.designation || r.employee_code ? '<div class="pr-emp-sub">' + esc([r.designation, r.employee_code].filter(Boolean).join(' · ')) + '</div>' : '') +
         (r.staff_expense_count > 0 ? '<div class="pr-dblpay" title="Already reimbursed via a Staff Salaries expense this month. Paying here would pay them twice.">⚠ ' + fmt(r.staff_expense_total) + ' via expense</div>' : '') + '</td>' +
@@ -385,6 +394,21 @@
     document.querySelectorAll('[data-paydetail="' + i + '"]').forEach(pd => {
       pd.onclick = () => showPaidDetail(r);
     });
+    // bypass toggles: overtime bonus + late-leave deduction (in-place, no full re-render)
+    const sot = document.querySelector('[data-skipot="' + i + '"]');
+    if (sot) sot.onclick = () => {
+      r._skipOvertime = !r._skipOvertime;
+      sot.classList.toggle('off', r._skipOvertime); sot.classList.toggle('on', !r._skipOvertime);
+      sot.textContent = r._skipOvertime ? '✕ bypassed' : '✓ will add';
+      const chip = sot.parentElement.querySelector('.pr-chip.ot'); if (chip) chip.classList.toggle('dim', r._skipOvertime);
+    };
+    const slate = document.querySelector('[data-skiplate="' + i + '"]');
+    if (slate) slate.onclick = () => {
+      r._skipLateLeave = !r._skipLateLeave;
+      slate.classList.toggle('off', r._skipLateLeave); slate.classList.toggle('on', !r._skipLateLeave);
+      slate.textContent = r._skipLateLeave ? '✕ kept (not deducted)' : '✓ will deduct';
+      const chip = slate.parentElement.querySelector('.pr-chip.late'); if (chip) chip.classList.toggle('dim', r._skipLateLeave);
+    };
   }
 
   function refreshMoney(r, i) {
@@ -528,6 +552,7 @@
     }
     if (d.advance_total > 0) html += line('Advances settled', '− ' + fmt(d.advance_total), true);
     if (d.bonus_leaves > 0) html += line('Overtime bonus', '+' + d.bonus_leaves + ' leave' + (d.bonus_leaves > 1 ? 's' : ''));
+    if (d.notes) html += line('Note', esc(d.notes));
     html += '<div class="pr-daterow" style="font-weight:700;border-top:2px solid #eef0f2;margin-top:4px;"><span class="dt">Net paid</span><span class="dt" style="color:#047857;">' + fmt(d.net) + '</span></div>';
     if (d.ledger_id) html += '<div style="padding:12px 14px;font-size:11.5px;color:#9ca3af;">Ledger entry #' + d.ledger_id + '</div>';
 
@@ -640,7 +665,7 @@
       month: CURMONTH,
       funding: fundType,
       bank_id: fundType === 'online' ? Number(bankId) : null,
-      items: sel.map(r => ({ user_id: r.user_id, net: Math.max(0, net(r)), late_deduction: lateDed(r) }))
+      items: sel.map(r => ({ user_id: r.user_id, net: Math.max(0, net(r)), late_deduction: lateDed(r), skip_overtime: !!r._skipOvertime, skip_late_leave: !!r._skipLateLeave }))
     };
     el('prPayConfirm').disabled = true; el('prPayConfirm').textContent = 'Paying…';
     try {

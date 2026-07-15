@@ -207,6 +207,17 @@ class SalaryCalculationService
         // Guarded: before the Phase-E t_ops_day_tag table exists this is 0 → byte-identical.
         $notNeededDays = $this->notNeededPaidDays($userId, $startDate, $effectiveEndDate, $shiftService);
 
+        // Absences use the SAME canonical definition as the attendance Month tab, the year count,
+        // the drill-down, and the rider app: a working-kind day (dayKind='working' — excludes
+        // off/holiday/before-hire/not-needed) with no login and no APPROVED leave. This replaces
+        // the old `working − present − leave − not_needed` formula, which over-excused when a leave
+        // fell on someone's OFF day (subtracting a day working_days never counted) and could drift
+        // from what managers see on screen. Pending leave counts as unexcused here (managers clear
+        // pending approvals before running payroll — owner rule, Jul 2026). not_needed is still
+        // excluded (dayKind handles it), so a "not needed" day is never deducted.
+        $absentDays = count((new AttendanceYearService())
+            ->absentWorkingDates($userId, $shiftService, $startDate, $effectiveEndDate));
+
         Log::info('Salary calculation - attendance breakdown', [
             'user_id' => $userId,
             'month' => $month,
@@ -214,13 +225,13 @@ class SalaryCalculationService
             'present_days' => $presentDays,
             'leave_days' => $leaveDays,
             'not_needed_days' => $notNeededDays,
-            'absent_days' => max(0, $workingDays - $presentDays - $leaveDays - $notNeededDays)
+            'absent_days' => $absentDays
         ]);
 
         return [
             'working_days' => $workingDays,
             'present_days' => $presentDays,
-            'absent_days' => max(0, $workingDays - $presentDays - $leaveDays - $notNeededDays), // subtract leave + not-needed
+            'absent_days' => $absentDays, // subtract leave + not-needed
             'leave_days' => $leaveDays,
             'late_minutes' => $lateOt['late_minutes'],
             'overtime_minutes' => $lateOt['overtime_minutes'],

@@ -125,6 +125,18 @@
                       </a>
                   </div>
                   @endif
+                  @if($nfWebCan('invoices_analysis'))
+                  {{-- Invoices — Analysis: read-only invoice explorer (NOT the operational
+                       Orders page). Distinct key from web_menu_invoices (→ /orders). --}}
+                  <div class="kt-menu-item" data-kt-menu-item-toggle="accordion" data-kt-menu-item-trigger="click">
+                      <a href="/invoices">
+                          <div class="kt-menu-link flex items-center grow cursor-pointer border border-transparent gap-[10px] ps-[10px] pe-[10px] py-[6px] hover:bg-gray-200 rounded-md transition-colors duration-200 group" tabindex="0">
+                              <span class="kt-menu-icon items-start text-gray-600 group-hover:text-gray-900 w-[20px]"><i class="ki-filled ki-document text-lg"></i></span>
+                              <span class="kt-menu-title text-sm font-medium text-gray-900 group-hover:text-gray-900">Invoices</span>
+                          </div>
+                      </a>
+                  </div>
+                  @endif
                   @if($nfWebCan('dashboards'))
                   <div class="kt-menu-item" data-kt-menu-item-toggle="accordion" data-kt-menu-item-trigger="click">
                       <a href="/dashboard">
@@ -151,6 +163,17 @@
                           <div class="kt-menu-link flex items-center grow cursor-pointer border border-transparent gap-[10px] ps-[10px] pe-[10px] py-[6px] hover:bg-gray-200 rounded-md transition-colors duration-200 group" tabindex="0">
                               <span class="kt-menu-icon items-start text-gray-600 group-hover:text-gray-900 w-[20px]"><i class="ki-filled ki-profile-circle text-lg"></i></span>
                               <span class="kt-menu-title text-sm font-medium text-gray-900 group-hover:text-gray-900">Customers</span>
+                          </div>
+                      </a>
+                  </div>
+                  @endif
+                  @if($nfWebCan('finance_hub'))
+                  {{-- Ledger Hub (read-only for view-only owners; write buttons hidden via $canWrite). --}}
+                  <div class="kt-menu-item" data-kt-menu-item-toggle="accordion" data-kt-menu-item-trigger="click">
+                      <a href="/finance/hub">
+                          <div class="kt-menu-link flex items-center grow cursor-pointer border border-transparent gap-[10px] ps-[10px] pe-[10px] py-[6px] hover:bg-gray-200 rounded-md transition-colors duration-200 group" tabindex="0">
+                              <span class="kt-menu-icon items-start text-gray-600 group-hover:text-gray-900 w-[20px]"><i class="ki-filled ki-bank text-lg"></i></span>
+                              <span class="kt-menu-title text-sm font-medium text-gray-900 group-hover:text-gray-900">Ledger Hub</span>
                           </div>
                       </a>
                   </div>
@@ -438,6 +461,17 @@
                           </button>
                       </div>
                       <div class="nf-section-body">
+                          {{-- Ledger Hub (beta): unified finance workspace. Parallel-run — the
+                               individual pages below stay live until it is phased in. --}}
+                          <div class="kt-menu-item" data-kt-menu-item-toggle="accordion" data-kt-menu-item-trigger="click">
+                              <a href="/finance/hub" title="New unified finance workspace (beta)">
+                                  <div class="kt-menu-link flex items-center grow cursor-pointer border border-transparent gap-[10px] ps-[10px] pe-[10px] py-[6px] hover:bg-gray-200 rounded-md transition-colors duration-200 group" tabindex="0">
+                                      <span class="kt-menu-icon items-start text-gray-600 group-hover:text-gray-900 w-[20px]"><i class="ki-filled ki-element-11 text-lg"></i></span>
+                                      <span class="kt-menu-title text-sm font-medium text-gray-900 group-hover:text-gray-900 flex-1">Ledger Hub</span>
+                                      <span class="kt-badge kt-badge-sm font-bold nf-badge" style="background:#E1F0E9;color:#0E7A52;">beta</span>
+                                  </div>
+                              </a>
+                          </div>
                           @php
                               $pendingInvoiceSettlements = \App\Models\FIN\LedgerModel::where('transaction_type', \App\Models\FIN\LedgerModel::TYPE_EMPLOYEE_DEPOSIT)
                                   ->where('approval_status', \App\Models\FIN\LedgerModel::STATUS_PENDING)

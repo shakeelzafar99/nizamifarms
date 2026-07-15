@@ -1285,6 +1285,20 @@ class ExecutiveClosingService
     //  CORE CLOSING COMPUTATION (one unit, one window)
     // =====================================================================
 
+    /**
+     * Public entry point for the Ledger Hub Overview. Returns the unit P&L
+     * (revenue / vendor_purchases / expenses / net_profit) over an ARBITRARY
+     * window using the SAME computation as the HQ closing, so the Hub's Sales
+     * card reconciles with the HQ dashboard by construction rather than by a
+     * parallel formula. Read-only; adds no behavior to HQ.
+     *   $unit ∈ {UNIT_ALL='all', UNIT_NF='nf', UNIT_KH='kh' (Frozen line-item split),
+     *            UNIT_QB='qb' (Qurbani: revenue − qurbani-category expenses, no vendor)}.
+     */
+    public function unitPnl(string $unit, Carbon $start, Carbon $end): array
+    {
+        return $this->computeClosing($unit, $start, $end);
+    }
+
     private function computeClosing(string $unit, Carbon $start, Carbon $end): array
     {
         if ($unit === self::UNIT_QB) {

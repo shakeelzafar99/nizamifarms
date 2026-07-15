@@ -1057,6 +1057,20 @@ Route::middleware(['auth'])->group(function () {
             Route::post('/mark-online-message-sent/{orderId}', [\App\Http\Controllers\FIN\EmployeeCashController::class, 'markOnlineMessageSentWeb'])->name('mark-online-message-sent');
         });
 
+        // Ledger Hub (parallel-run modern UI — additive; reads existing data, writes via existing
+        // endpoints; every old finance page stays live and untouched until phase-out).
+        Route::prefix('hub')->name('hub.')->group(function () {
+            Route::get('/', [\App\Http\Controllers\FIN\Hub\HubController::class, 'overview'])->name('overview');
+            Route::get('/accounts', [\App\Http\Controllers\FIN\Hub\HubController::class, 'accounts'])->name('accounts');
+            Route::get('/account/{id}', [\App\Http\Controllers\FIN\Hub\HubController::class, 'accountDetail'])->name('account');
+            Route::get('/data/transfer-accounts', [\App\Http\Controllers\FIN\Hub\HubController::class, 'transferAccountsData'])->name('transfer-accounts');
+            Route::get('/vendors', [\App\Http\Controllers\FIN\Hub\HubController::class, 'vendors'])->name('vendors');
+            Route::get('/vendor/{id}', [\App\Http\Controllers\FIN\Hub\HubController::class, 'vendorDetail'])->name('vendor');
+            Route::get('/banks', [\App\Http\Controllers\FIN\Hub\HubController::class, 'banks'])->name('banks');
+            Route::get('/bank/{id}', [\App\Http\Controllers\FIN\Hub\HubController::class, 'bankDetail'])->name('bank');
+            Route::get('/health', [\App\Http\Controllers\FIN\Hub\HubController::class, 'health'])->name('health');
+        });
+
         // Ledger Routes (Overall Ledger & Transfers)
         Route::prefix('ledger')->name('ledger.')->group(function () {
             Route::get('/', [\App\Http\Controllers\FIN\LedgerController::class, 'index'])->name('index');
@@ -1106,6 +1120,17 @@ Route::middleware(['auth'])->group(function () {
         });
     });
     
+    // Invoices — Analysis (Jul-2026). Read-only invoice explorer for owner/analyst
+    // logins; deliberately separate from the operational /orders page. All GET.
+    // Literal /data + /export are declared before the numeric {id} so the wildcard
+    // never swallows them.
+    Route::prefix('invoices')->name('invoices.')->group(function () {
+        Route::get('/', [\App\Http\Controllers\CRM\InvoiceAnalysisController::class, 'index'])->name('index');
+        Route::get('/data', [\App\Http\Controllers\CRM\InvoiceAnalysisController::class, 'data'])->name('data');
+        Route::get('/export', [\App\Http\Controllers\CRM\InvoiceAnalysisController::class, 'export'])->name('export');
+        Route::get('/{id}', [\App\Http\Controllers\CRM\InvoiceAnalysisController::class, 'detail'])->whereNumber('id')->name('detail');
+    });
+
     // ⭐ Reports (Web version of mobile store mode Reports tab)
     Route::get('/reports', function () {
         return view('reports.index');

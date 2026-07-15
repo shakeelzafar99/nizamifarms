@@ -223,7 +223,30 @@ class ExpenseManagementController extends Controller
 
         $salarySlips = $includeSalarySlips ? $salarySlipsQuery->orderBy('created_at', 'desc')->get() : collect([]);
         $totalSalaryExpenses = $salarySlips->sum('net_salary');
-        
+
+        // ── New Payroll screen payments (Phase G) ──────────────────
+        // t_hr_payroll_payment (the Payroll screen) replaced salary slips. Surface each
+        // paid salary as a "Salary" expense row — same treatment as slips above — so
+        // payroll salaries show in Expenses exactly like the old "Staff Salaries" entries
+        // did. Cash-basis: the net actually paid. Follows the same gating as slips.
+        $payrollPayments = collect([]);
+        if ($includeSalarySlips) {
+            $payrollQuery = DB::table('t_hr_payroll_payment as p')
+                ->leftJoin('t_sys_user as u', 'u.id', '=', 'p.user_id')
+                ->where('p.status', 'paid');
+            if ($dateFrom && $dateTo) {
+                $payrollQuery->whereRaw('DATE(p.paid_at) >= ?', [$dateFrom])
+                             ->whereRaw('DATE(p.paid_at) <= ?', [$dateTo]);
+            }
+            $payrollPayments = $payrollQuery
+                ->orderBy('p.paid_at', 'desc')
+                ->get(['p.id', 'p.user_id', 'p.net_salary', 'p.pay_month', 'p.paid_at', 'p.created_at', 'u.fullname']);
+        }
+        $totalPayrollExpenses = $payrollPayments->sum('net_salary');
+        // Fold payroll into the salary bucket so every downstream "Salary" aggregation
+        // (totals, category card, BU split) picks it up automatically.
+        $totalSalaryExpenses += $totalPayrollExpenses;
+
         // Transform salary slips to match expense format for unified display
         $salarySlipsForDisplay = $salarySlips->map(function($slip) {
             return (object) [
@@ -245,8 +268,30 @@ class ExpenseManagementController extends Controller
             ];
         });
         
-        // Merge expenses and salary slips for unified display
-        $allExpensesForDisplay = $allExpenses->concat($salarySlipsForDisplay)->sortByDesc('created_at');
+        // Transform payroll payments to the same expense shape for unified display.
+        $payrollForDisplay = $payrollPayments->map(function ($p) {
+            $when = $p->paid_at ?? $p->created_at;
+            return (object) [
+                'id' => 'PAYROLL-' . $p->id,
+                'payroll_id' => $p->id,
+                'type' => 'salary',
+                'request_number' => 'PAY-' . ($p->pay_month ?? '') . '-' . $p->user_id,
+                'created_at' => $when ? \Carbon\Carbon::parse($when) : now(),
+                'requester' => (object) ['fullname' => $p->fullname ?? 'Unknown'],
+                'requester_user_id' => $p->user_id,
+                'category' => (object) ['category_name' => 'Salary Payment', 'category_code' => 'salary'],
+                'expense_category' => 'Salary',
+                'amount' => $p->net_salary,
+                'paymentSourceAccount' => (object) ['account_name' => 'Payroll'],
+                'payment_source_account_id' => null,
+                'settlement_status' => 'not_applicable',
+                'status' => 'paid',
+                'ledger_transaction_id' => null,
+            ];
+        });
+
+        // Merge expenses, salary slips and payroll payments for unified display
+        $allExpensesForDisplay = $allExpenses->concat($salarySlipsForDisplay)->concat($payrollForDisplay)->sortByDesc('created_at');
         
         // Calculate KPIs
         $totalExpenses = $allExpenses->sum('amount') + $totalSalaryExpenses;
@@ -391,6 +436,13 @@ class ExpenseManagementController extends Controller
                 }
                 $expensesByCategoryUser['Salary'][$empName] += $slip->net_salary;
             }
+            foreach ($payrollPayments as $pp) {
+                $empName = $pp->fullname ?? 'Unknown';
+                if (!isset($expensesByCategoryUser['Salary'][$empName])) {
+                    $expensesByCategoryUser['Salary'][$empName] = 0;
+                }
+                $expensesByCategoryUser['Salary'][$empName] += $pp->net_salary;
+            }
         }
         
         arsort($expensesByCategory);
@@ -478,6 +530,11 @@ class ExpenseManagementController extends Controller
                 if (!isset($buUserMap['NF']['Salary'][$empName])) $buUserMap['NF']['Salary'][$empName] = 0.0;
                 $buUserMap['NF']['Salary'][$empName] += (float) $slip->net_salary;
             }
+            foreach ($payrollPayments as $pp) {
+                $empName = $pp->fullname ?? 'Unknown';
+                if (!isset($buUserMap['NF']['Salary'][$empName])) $buUserMap['NF']['Salary'][$empName] = 0.0;
+                $buUserMap['NF']['Salary'][$empName] += (float) $pp->net_salary;
+            }
         }
         // Sort each BU's categories desc + flatten to a [cat → ['total'=>x, 'users'=>...]]
         // structure that the Blade template can render with the
@@ -509,8 +566,8 @@ class ExpenseManagementController extends Controller
             'settled_count' => $settlementHistory->count(),
             'pending_approvals' => $pendingApprovals->sum('amount'),
             'pending_approvals_count' => $pendingApprovals->count(),
-            'total_salary_expenses' => $totalSalaryExpenses, // For debugging/display
-            'salary_slips_count' => $salarySlips->count(),
+            'total_salary_expenses' => $totalSalaryExpenses, // For debugging/display (slips + payroll)
+            'salary_slips_count' => $salarySlips->count() + $payrollPayments->count(),
             'top_categories' => $topCategories, // Top 10 categories + others
             'bu_breakdown' => $buBreakdown,     // Phase 4 — NF vs Khaas
         ];

@@ -94,6 +94,40 @@ class LeavePolicyService
     }
 
     /**
+     * Taken leave DAYS in the CURRENT cycle split into emergency (same-day, leave_type='emergency')
+     * vs planned (everything else). Counted per distinct date (no double-count); a date that is both
+     * is counted as emergency. Powers the "planned vs emergency" line on the manager detail screen.
+     */
+    public function takenByType(int $userId): array
+    {
+        $cycle = $this->cycle();
+        $emergency = [];
+        $planned = [];
+        try {
+            $rows = DB::table('t_req_master as r')
+                ->join('t_req_category as c', 'c.id', '=', 'r.category_id')
+                ->where('c.category_code', 'leave')
+                ->where('r.requester_user_id', $userId)
+                ->where('r.status', 'approved')
+                ->where('r.leave_start_date', '<=', $cycle['end'])
+                ->where('r.leave_end_date', '>=', $cycle['start'])
+                ->select('r.leave_start_date', 'r.leave_end_date', 'r.leave_type')
+                ->get();
+            foreach ($rows as $lv) {
+                $ls = max($cycle['start'], substr((string) $lv->leave_start_date, 0, 10));
+                $le = min($cycle['end'], substr((string) $lv->leave_end_date, 0, 10));
+                $isEmerg = strtolower((string) $lv->leave_type) === 'emergency';
+                for ($c = new \DateTime($ls); $c <= new \DateTime($le); $c->modify('+1 day')) {
+                    $d = $c->format('Y-m-d');
+                    if ($isEmerg) { $emergency[$d] = true; } else { $planned[$d] = true; }
+                }
+            }
+            foreach (array_keys($emergency) as $d) { unset($planned[$d]); } // emergency wins a shared date
+        } catch (\Throwable $e) { /* none */ }
+        return ['planned' => count($planned), 'emergency' => count($emergency)];
+    }
+
+    /**
      * How many SAME-DAY (emergency) applications the rider has made this cycle — the cap
      * counter. Counts REQUESTS (rows), not days, and includes pending ones (a pending
      * same-day request has already used a slot). Marked by leave_type='emergency' at apply.
@@ -130,6 +164,60 @@ class LeavePolicyService
     }
 
     /**
+     * The ledger adjustment split by SOURCE (overtime / late_penalty / manual / half_day),
+     * so surfaces can show WHERE a rider's extra/missing leaves came from instead of one
+     * opaque number. Signed (overtime + / late_penalty −). Same cycle-membership rule as
+     * ledgerAdjustment() — their totals always reconcile.
+     */
+    public function adjustmentBySource(int $userId, string $start, string $end): array
+    {
+        $out = ['overtime' => 0.0, 'late_penalty' => 0.0, 'manual' => 0.0, 'half_day' => 0.0];
+        if (!$this->grantTableExists()) { return $out; }
+        try {
+            $rows = DB::table('t_hr_leave_grant')
+                ->where('user_id', $userId)
+                ->whereRaw('COALESCE(effective_date, DATE(created_at)) BETWEEN ? AND ?', [$start, $end])
+                ->selectRaw('source, SUM(days) as total')
+                ->groupBy('source')
+                ->pluck('total', 'source');
+            foreach ($rows as $src => $total) {
+                $out[$src] = ($out[$src] ?? 0.0) + (float) $total;
+            }
+        } catch (\Throwable $e) { /* none */ }
+        return $out;
+    }
+
+    /**
+     * Dated, attributed leave-adjustment history for a rider in the current cycle — the raw
+     * t_hr_leave_grant rows joined to the actor's name. Powers the "who/when/why" history
+     * sheet on both the rider self-view and the manager screens. Newest first.
+     */
+    public function adjustments(int $userId): array
+    {
+        if (!$this->grantTableExists()) { return []; }
+        $cycle = $this->cycle();
+        try {
+            return DB::table('t_hr_leave_grant as g')
+                ->leftJoin('t_sys_user as u', 'u.id', '=', 'g.created_by')
+                ->where('g.user_id', $userId)
+                ->whereRaw('COALESCE(g.effective_date, DATE(g.created_at)) BETWEEN ? AND ?', [$cycle['start'], $cycle['end']])
+                ->orderByRaw('COALESCE(g.effective_date, DATE(g.created_at)) DESC')
+                ->orderBy('g.id', 'desc')
+                ->get(['g.days', 'g.source', 'g.reason', 'g.effective_date', 'g.created_at', 'u.fullname as by_name'])
+                ->map(fn ($g) => [
+                    'days'    => (float) $g->days,
+                    'source'  => $g->source,
+                    'reason'  => $g->reason,
+                    'date'    => $g->effective_date ? substr((string) $g->effective_date, 0, 10)
+                        : ($g->created_at ? substr((string) $g->created_at, 0, 10) : null),
+                    'by_name' => $g->by_name,
+                ])->toArray();
+        } catch (\Throwable $e) {
+            return [];
+        }
+    }
+
+    /**
      * Full balance snapshot for a rider in the CURRENT cycle. Every surface renders from
      * this so the number is identical everywhere.
      */
@@ -141,6 +229,7 @@ class LeavePolicyService
         $taken = $this->takenDays($userId, $cycle['start'], $cycle['end']);
         $samedayUsed = $this->samedayUsed($userId, $cycle['start'], $cycle['end']);
         $samedayCap = $this->samedayCap();
+        $bySource = $this->adjustmentBySource($userId, $cycle['start'], $cycle['end']);
 
         $effectiveQuota = $quota + $extra;          // extra can be negative (penalties)
         $remaining = $effectiveQuota - $taken;
@@ -148,6 +237,10 @@ class LeavePolicyService
         return [
             'quota_total'      => round($quota, 1),
             'extra_granted'    => round($extra, 1),
+            // Segregated so surfaces can show "+N earned from overtime" / "−N late" separately.
+            'earned_overtime'  => round($bySource['overtime'] ?? 0, 1),
+            'late_penalties'   => round($bySource['late_penalty'] ?? 0, 1),   // negative
+            'manual_adjust'    => round(($bySource['manual'] ?? 0) + ($bySource['half_day'] ?? 0), 1),
             'effective_quota'  => round($effectiveQuota, 1),
             'taken_total'      => round($taken, 1),
             'remaining'        => round($remaining, 1),

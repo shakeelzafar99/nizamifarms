@@ -76,8 +76,10 @@ class RolePermissionController extends Controller
             'web_menu_hq' => 'Restricted menu: HQ · Executive only',
             'web_menu_dashboards' => 'Restricted menu: Dashboards only',
             'web_menu_invoices' => 'Restricted menu: Invoices / Approvals only',
+            'web_menu_invoices_analysis' => 'Restricted menu: Invoices — Analysis (read-only explorer)',
             'web_menu_customers' => 'Restricted menu: Customers only',
             'web_menu_finance' => 'Restricted menu: Finance only',
+            'web_menu_finance_hub' => 'Restricted menu: Ledger Hub only',
         ];
     }
 

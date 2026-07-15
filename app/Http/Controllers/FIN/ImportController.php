@@ -116,6 +116,13 @@ class ImportController extends Controller
      */
     public function clearLegacyData(Request $request)
     {
+        // RETIRED 2026-07-14 — the platform is live. This pre-launch tool deletes imported ledger
+        // rows and RESETS ALL ACCOUNT BALANCES TO 0; it must never run against production data.
+        // The UI card is hidden (operations.blade.php) and this hard guard blocks the endpoint even
+        // if reached by a bookmarked URL or crafted POST. Remove this guard only for a deliberate
+        // fresh-import test on a throwaway database.
+        abort(403, 'This tool has been retired. Legacy data clearing is disabled on the live system.');
+
         $request->validate([
             'confirmation' => 'required|in:DELETE_ALL_LEGACY_DATA'
         ]);

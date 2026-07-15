@@ -146,6 +146,7 @@
                             <option value="">Select Expense Type</option>
                             @php
                                 $expenseCategories = \App\Models\FIN\ConfigModel::where('config_key', 'LIKE', 'EXPENSE_CATEGORY_%')
+                                    ->where('config_key', '!=', 'EXPENSE_CATEGORY_STAFF_SALARIES') // salaries go through Payroll now
                                     ->orderBy('config_value')
                                     ->pluck('config_value');
                             @endphp
