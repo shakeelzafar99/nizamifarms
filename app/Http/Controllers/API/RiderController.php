@@ -3005,8 +3005,9 @@ class RiderController extends Controller
             $businessUnitId = $request->input('business_unit_id');
             $requestCategoryCode = $request->input('request_category_code');
             
-            $query = \App\Models\FIN\ConfigModel::where('config_key', 'LIKE', 'EXPENSE_CATEGORY_%');
-            
+            $query = \App\Models\FIN\ConfigModel::where('config_key', 'LIKE', 'EXPENSE_CATEGORY_%')
+                ->where('config_key', '!=', 'EXPENSE_CATEGORY_STAFF_SALARIES'); // salaries go through Payroll now
+
             if ($businessUnitId) {
                 if ($businessUnitId == 1) {
                     $query->where(function($q) {
@@ -8910,6 +8911,16 @@ class RiderController extends Controller
                 'leave_type' => 'nullable|string',
                 'attachment_image' => 'nullable|image|max:5120',
             ]);
+
+            // Salaries are now handled exclusively by the Payroll screen. Block the legacy
+            // "Staff Salaries" expense category so a stale form / cached app can't post a
+            // duplicate salary expense.
+            if (in_array(strtolower(trim((string) ($validated['expense_category'] ?? ''))), ['staff salaries', 'staff salary'], true)) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Staff salaries must be paid from the Payroll screen, not entered as an expense.'
+                ], 422);
+            }
 
             // Duplicate check for petrol requests: one per attendance day
             if ($request->filled('attendance_id') && ($request->input('expense_category') === 'Petrol')) {
@@ -15434,6 +15445,16 @@ class RiderController extends Controller
                 }
             }
             
+            // Leave picture for the tappable Leave breakdown: balance (remaining of total),
+            // taken split planned vs emergency, and the dated overtime/late/manual adjustments.
+            // NOTE: overtime bonus (+) / late penalty (−) rows are written at PAYROLL time, so they
+            // appear here only AFTER the manager pays that month (by design — the pay step is the
+            // approval). Until then they're a preview on the Payroll screen only.
+            $leavePolicy = new \App\Services\HR\LeavePolicyService();
+            $leaveBalance = $leavePolicy->balance((int) $userId);
+            $leaveAdjustments = $leavePolicy->adjustments((int) $userId);
+            $leaveTakenSplit = $leavePolicy->takenByType((int) $userId);
+
             return response()->json([
                 'success' => true,
                 'employee' => [
@@ -15446,6 +15467,9 @@ class RiderController extends Controller
                     'working_days' => $workingDays,
                     'present_days' => $presentDays,
                     'on_leave_days' => $onLeaveDays,
+                    'leave_balance' => $leaveBalance,
+                    'leave_adjustments' => $leaveAdjustments,
+                    'leave_taken_split' => $leaveTakenSplit,
                     'absent_days' => $absentDays,
                     'late_days' => $lateDays,
                     'overtime_days' => $overtimeDays,
@@ -15672,24 +15696,21 @@ class RiderController extends Controller
                     }, \Carbon\Carbon::parse($effectiveEndDate));
                 }
                 
-                $absentDays = max(0, $workingDays - $presentDays - $leaveDays);
-                
-                // Approved leaves for current year
-                $currentYear = date('Y');
-                $yearLeaveDays = 0;
-                $yearLeaves = DB::table('t_req_master as r')
-                    ->join('t_req_category as c', 'c.id', '=', 'r.category_id')
-                    ->where('c.category_code', 'leave')
-                    ->where('r.requester_user_id', $user->user_id)
-                    ->where('r.status', 'approved')
-                    ->where('r.leave_start_date', '>=', "{$currentYear}-01-01")
-                    ->where('r.leave_end_date', '<=', "{$currentYear}-12-31")
-                    ->select('r.leave_start_date', 'r.leave_end_date')
-                    ->get();
-                foreach ($yearLeaves as $yl) {
-                    $yearLeaveDays += \Carbon\Carbon::parse($yl->leave_start_date)
-                        ->diffInDays(\Carbon\Carbon::parse($yl->leave_end_date)) + 1;
-                }
+                // Absent uses the SAME canonical definition as payroll / the web Month tab / the
+                // rider app (working-kind day, no login, no APPROVED leave — excludes not_needed via
+                // dayKind), so this manager report can't disagree with the payroll deduction. Replaces
+                // the old `working − present − leave` formula that ignored not_needed + off-day leaves.
+                $absentDays = count((new \App\Services\HR\AttendanceYearService())
+                    ->absentWorkingDates($user->user_id, $shiftService, $startDate, $effectiveEndDate));
+
+                // Leave BALANCE for the configured cycle (single source of truth shared with web +
+                // rider app) + the dated who/when/why adjustment history — so the manager sees
+                // "consumed of total, left" and can tap for the breakdown. Replaces the old
+                // calendar-year taken count that mismatched the balance everywhere else.
+                $leavePolicy = new \App\Services\HR\LeavePolicyService();
+                $leaveBal = $leavePolicy->balance((int) $user->user_id);
+                $leaveAdjustments = $leavePolicy->adjustments((int) $user->user_id);
+                $leaveTakenSplit = $leavePolicy->takenByType((int) $user->user_id);
 
                 $monthlyData[] = [
                     'user_id' => $user->user_id,
@@ -15707,8 +15728,13 @@ class RiderController extends Controller
                     'total_hours' => round($totalHours, 1),
                     'working_days' => $workingDays,
                     'attendance_percentage' => $workingDays > 0 ? round(($presentDays / $workingDays) * 100, 1) : 0,
-                    'leaves_taken_year' => $yearLeaveDays,
-                    'leaves_year' => (int) $currentYear,
+                    // Back-compat scalars (old APKs) now reflect the configured cycle, not calendar year.
+                    'leaves_taken_year' => $leaveBal['taken_total'],
+                    'leaves_year' => (int) substr($leaveBal['cycle_start'], 0, 4),
+                    // New (additive): full balance + dated adjustment history for the leave card.
+                    'leave_balance' => $leaveBal,
+                    'leave_adjustments' => $leaveAdjustments,
+                    'leave_taken_split' => $leaveTakenSplit,
                 ];
             }
             

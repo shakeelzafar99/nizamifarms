@@ -24,6 +24,15 @@ return Application::configure(basePath: dirname(__DIR__))
             'customer.app' => \App\Http\Middleware\EnsureCustomerAppAuth::class,
             'block.rider' => \App\Http\Middleware\BlockRiderAccess::class,
         ]);
+
+        // View-only accounts (permission `account_read_only`, e.g. the `adnan`
+        // owner login): may browse every web page but cannot make any change.
+        // Appended to the web group so it covers ALL web routes — the writes it
+        // blocks live on shared finance/orders/customer controllers that have no
+        // per-action gate of their own. Read verbs pass; see ReadOnlyGuard.
+        $middleware->web(append: [
+            \App\Http\Middleware\ReadOnlyGuard::class,
+        ]);
     })
     ->withExceptions(function (Exceptions $exceptions) {
         //

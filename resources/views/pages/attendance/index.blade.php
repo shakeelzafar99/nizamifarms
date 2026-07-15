@@ -542,7 +542,7 @@
             <th class="px-4 py-3 text-center text-xs font-semibold text-gray-500 uppercase">Leave (mo)</th>
             <th class="px-4 py-3 text-center text-xs font-semibold text-gray-500 uppercase">Late (mo)</th>
             <th class="px-4 py-3 text-center text-xs font-semibold text-emerald-600 uppercase">OT (mo)</th>
-            <th class="px-4 py-3 text-center text-xs font-semibold text-purple-500 uppercase">Leave (yr)</th>
+            <th class="px-4 py-3 text-center text-xs font-semibold text-purple-500 uppercase">Leave (bal)</th>
             <th class="px-4 py-3 text-center text-xs font-semibold text-red-500 uppercase">Absent (yr)</th>
           </tr>
         </thead>
@@ -713,6 +713,7 @@
         <label class="block text-sm font-medium text-gray-700 mb-1">Rider / staff</label>
         <select id="leaveUser" onchange="loadLeaveBalanceChip()" class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500"></select>
         <div id="leaveBalanceChip" style="margin-top:6px;font-size:12px;color:#6b7280;display:flex;align-items:center;gap:8px;flex-wrap:wrap;"></div>
+        <div id="leaveHistoryBox" style="display:none;margin-top:6px;font-size:12px;border-top:1px dashed #e5e7eb;padding-top:6px;"></div>
       </div>
       <div class="grid grid-cols-2 gap-3">
         <div>
@@ -1478,6 +1479,14 @@ function renderAttendanceTable(data) {
 
 // Mark / unmark a rider as "not needed" for a day. Paid as present, never absent.
 async function toggleNotNeeded(uid, date, isTagged) {
+  // Absent rows have no attendance record, so r.attendance_date is missing → fall back to the
+  // day the table is showing (the tag is always for the selected day). Fixes the
+  // "The date field must be a valid date" error when tagging a no-show.
+  if (!date || date === 'undefined' || date === 'null') {
+    const td = document.getElementById('tableDate');
+    date = td ? td.value : '';
+  }
+  if (!date) { alert('Please pick a valid date first.'); return; }
   const msg = isTagged
     ? 'Remove the "not needed" mark for this day?'
     : 'Mark this rider as NOT NEEDED for this day?\n\nIt will be treated as a normal paid day — not counted absent, no deduction.';
@@ -1749,13 +1758,102 @@ function renderMonthBody(data) {
       ${numCell(u.leave_days, '#2563EB', uid, nm, 'month_leave')}
       <td class="px-4 py-3 text-center"><span style="display:inline-block;padding:2px 8px;border-radius:5px;font-size:12px;font-weight:600;${lateStyle}">${fmtMinsShort(late)}</span></td>
       ${otCell}
-      ${numCell(u.leaves_taken_year, '#7C3AED', uid, nm, 'year_leave')}
+      ${leaveBalCell(u, uid, nm)}
       ${numCell(u.absent_days_year, '#B91C1C', uid, nm, 'year_absent')}
     </tr>`;
   }).join('');
 }
+// The "Leave (bal)" cell: remaining leaves up top (the number a manager decides on), with taken
+// context + where the extra/missing ones came from. Click → full balance + history summary.
+function leaveBalCell(u, uid, nm) {
+  if (u.leave_remaining == null || u.leave_remaining === undefined) {
+    // Balance unavailable (old cache / error) — fall back to the plain taken-count drill.
+    return numCell(u.leaves_taken_year, '#7C3AED', uid, nm, 'year_leave');
+  }
+  const rem = Number(u.leave_remaining);
+  const taken = Number(u.leaves_taken_year) || 0;
+  const quota = Number(u.leave_effective_quota) || 0;
+  const remColor = rem <= 0 ? '#DC2626' : (rem <= 2 ? '#D97706' : '#15803D');
+  const ot = Number(u.leave_earned_overtime) || 0;
+  const late = Number(u.leave_late_penalties) || 0;
+  const adj = Number(u.leave_manual_adjust) || 0;
+  let chips = '';
+  if (ot > 0) chips += `<span style="color:#6d28d9;">+${ot} OT</span> `;
+  if (late < 0) chips += `<span style="color:#c2410c;">${late} late</span> `;
+  if (adj !== 0) chips += `<span style="color:#6b7280;">${adj > 0 ? '+' : ''}${adj} adj</span> `;
+  return `<td class="px-4 py-3" style="text-align:center;">
+    <button type="button" onclick="event.stopPropagation(); showLeaveSummary(${uid}, '${nm}')" title="Leave balance + history"
+      style="background:none;border:none;cursor:pointer;padding:0;">
+      <div style="font-weight:800;font-size:14px;color:${remColor};line-height:1.1;">${rem}<span style="font-size:10px;font-weight:600;color:#9CA3AF;"> left</span></div>
+      <div style="font-size:10px;color:#9CA3AF;margin-top:1px;">${taken} of ${quota} taken</div>
+      ${chips ? `<div style="font-size:10px;margin-top:1px;">${chips.trim()}</div>` : ''}
+    </button>
+  </td>`;
+}
+
+// Full leave picture for one employee — balance formula + adjustment history (who/when/why) +
+// the dates actually taken. Reuses the date-breakdown modal shell.
+async function showLeaveSummary(uid, name) {
+  const u = monthData.find(x => String(x.user_id) === String(uid)) || {};
+  const modal = document.getElementById('dateBreakdownModal');
+  document.getElementById('bdTitle').textContent = `🏖 Leave — ${name}`;
+  document.getElementById('bdSub').textContent = 'balance · adjustments · dates taken (year cycle)';
+  const bodyEl = document.getElementById('bdBody');
+  bodyEl.innerHTML = '<div style="padding:24px;text-align:center;color:#9CA3AF;font-size:13px;">Loading…</div>';
+  modal.style.display = 'flex';
+
+  const rem = Number(u.leave_remaining) || 0;
+  const remColor = rem <= 0 ? '#DC2626' : (rem <= 2 ? '#D97706' : '#15803D');
+  const quotaBase = Number(u.leave_quota_total) || 0;
+  const ot = Number(u.leave_earned_overtime) || 0;
+  const late = Number(u.leave_late_penalties) || 0;
+  const adj = Number(u.leave_manual_adjust) || 0;
+  const taken = Number(u.leaves_taken_year) || 0;
+
+  const fRow = (label, val, color) => `<div style="display:flex;justify-content:space-between;padding:4px 0;font-size:13px;"><span style="color:#6B7280;">${label}</span><span style="font-weight:600;color:${color || '#111827'};">${val}</span></div>`;
+  let summary = `<div style="background:#F9FAFB;border:1px solid #F3F4F6;border-radius:8px;padding:10px 12px;margin-bottom:12px;">`;
+  summary += `<div style="text-align:center;margin-bottom:6px;"><span style="font-size:26px;font-weight:800;color:${remColor};">${rem}</span><span style="font-size:13px;color:#6B7280;font-weight:600;"> leaves left</span></div>`;
+  summary += fRow('Yearly quota', quotaBase);
+  if (ot > 0) summary += fRow('+ Overtime earned', '+' + ot, '#6d28d9');
+  if (late < 0) summary += fRow('− Late penalty', late, '#c2410c');
+  if (adj !== 0) summary += fRow((adj > 0 ? '+ ' : '− ') + 'Manual adjustment', (adj > 0 ? '+' : '') + adj, '#6b7280');
+  summary += fRow('− Taken', '−' + taken, '#2563eb');
+  summary += `<div style="border-top:1px dashed #E5E7EB;margin-top:4px;padding-top:4px;">` + fRow('= Remaining', rem, remColor) + `</div>`;
+  summary += `</div>`;
+
+  const dow = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'], mon = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  const fmtD = (ds) => { if (!ds) return ''; const d = new Date(ds + 'T00:00:00'); return `${dow[d.getDay()]}, ${d.getDate()} ${mon[d.getMonth()]} '${String(d.getFullYear()).slice(2)}`; };
+  const esc = (s) => String(s == null ? '' : s).replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+  try {
+    const [adjRes, takenRes] = await Promise.all([
+      fetch('/attendance/date-breakdown?type=leave_grants&user_id=' + uid).then(r => r.json()).catch(() => ({})),
+      fetch('/attendance/date-breakdown?type=year_leave&user_id=' + uid + '&month=' + currentMonthValue()).then(r => r.json()).catch(() => ({})),
+    ]);
+    const adjs = (adjRes && adjRes.success) ? (adjRes.dates || []) : [];
+    let adjHtml = `<div style="font-size:12px;font-weight:700;color:#374151;margin:4px 0 6px;">Adjustments — overtime / late / manual</div>`;
+    adjHtml += adjs.length
+      ? adjs.map(a => `<div style="display:flex;justify-content:space-between;gap:10px;padding:6px 4px;border-bottom:1px solid #F3F4F6;"><span style="font-size:12.5px;color:#111827;">${esc(a.label || '')}</span><span style="font-size:11px;color:#9CA3AF;white-space:nowrap;">${fmtD(a.date)}</span></div>`).join('')
+      : `<div style="font-size:12px;color:#9CA3AF;padding:4px;">None this cycle.</div>`;
+    const takens = (takenRes && takenRes.success) ? (takenRes.dates || []) : [];
+    let takenHtml = `<div style="font-size:12px;font-weight:700;color:#374151;margin:12px 0 6px;">Leave dates taken (${takens.length})</div>`;
+    takenHtml += takens.length
+      ? takens.map(t => `<div style="display:flex;justify-content:space-between;gap:10px;padding:6px 4px;border-bottom:1px solid #F3F4F6;"><span style="font-size:12.5px;color:#111827;">${fmtD(t.date)}</span>${t.label ? `<span style="font-size:11px;color:#7C3AED;background:#7C3AED14;border-radius:5px;padding:1px 7px;font-weight:600;">${esc(t.label)}</span>` : ''}</div>`).join('')
+      : `<div style="font-size:12px;color:#9CA3AF;padding:4px;">None this cycle.</div>`;
+    bodyEl.innerHTML = summary + adjHtml + takenHtml;
+  } catch (e) {
+    bodyEl.innerHTML = summary + '<div style="color:#DC2626;font-size:12px;padding:8px;">Could not load history.</div>';
+  }
+}
+
 function openMonthDetail(userId, name) {
-  if (typeof showEmployeeDetails === 'function') showEmployeeDetails(userId, name, currentMonthValue() + '-28');
+  if (typeof showEmployeeDetails !== 'function') return;
+  // Scope the detail to the SELECTED month (1st → last day), not a rolling 30-day window.
+  const m = currentMonthValue();                       // 'YYYY-MM'
+  const y = parseInt(m.slice(0, 4), 10), mo = parseInt(m.slice(5, 7), 10);
+  const start = m + '-01';
+  const end = m + '-' + String(new Date(y, mo, 0).getDate()).padStart(2, '0'); // last day of month
+  const label = new Date(m + '-01T00:00:00').toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
+  showEmployeeDetails(userId, name, end, start, end, label);
 }
 
 // ---- Month-tab date drill-down (exact dates behind a clicked count) ----
@@ -1933,6 +2031,9 @@ async function loadLeaveBalanceChip() {
   const chip = document.getElementById('leaveBalanceChip');
   const uid = document.getElementById('leaveUser').value;
   if (!chip) return;
+  // Reset the history drawer whenever the selected rider changes.
+  const hbox = document.getElementById('leaveHistoryBox');
+  if (hbox) { hbox.style.display = 'none'; hbox.innerHTML = ''; hbox.dataset.uid = ''; }
   if (!uid) { chip.innerHTML = ''; return; }
   chip.innerHTML = '<span style="color:#9ca3af;">Loading balance…</span>';
   try {
@@ -1941,11 +2042,43 @@ async function loadLeaveBalanceChip() {
     if (!j.success) { chip.innerHTML = ''; return; }
     const b = j.balance;
     const remColor = b.remaining <= 0 ? '#dc2626' : (b.remaining <= 2 ? '#d97706' : '#15803d');
+    // Where the extra/missing leaves came from — segregated so a grown quota isn't a mystery.
+    let breakdown = '';
+    if (b.earned_overtime > 0) breakdown += `<span style="color:#6d28d9;">+${b.earned_overtime} overtime</span>`;
+    if (b.late_penalties < 0) breakdown += `<span style="color:#c2410c;">${b.late_penalties} late</span>`;
+    if (b.manual_adjust && b.manual_adjust != 0) breakdown += `<span style="color:#6b7280;">${b.manual_adjust > 0 ? '+' : ''}${b.manual_adjust} adj</span>`;
     chip.innerHTML =
       `<span style="font-weight:600;color:${remColor};">${b.remaining} of ${b.effective_quota} leaves left</span>` +
       `<span style="color:#9ca3af;">· same-day used ${b.sameday_used}/${b.sameday_cap}</span>` +
+      breakdown +
+      `<button type="button" onclick="toggleLeaveHistory(${uid})" style="background:none;border:none;color:#2563eb;cursor:pointer;text-decoration:underline;font-size:12px;padding:0;">history ›</button>` +
       `<button type="button" onclick="grantExtraLeave(${uid})" style="background:none;border:none;color:#2563eb;cursor:pointer;text-decoration:underline;font-size:12px;padding:0;">＋ give extra days</button>`;
   } catch (e) { chip.innerHTML = ''; }
+}
+
+// Dated, attributed leave adjustments (overtime bonus / late penalty / manual) — who/when/why.
+async function toggleLeaveHistory(uid) {
+  const box = document.getElementById('leaveHistoryBox');
+  if (!box) return;
+  if (box.style.display !== 'none' && box.dataset.uid === String(uid)) { box.style.display = 'none'; return; }
+  const escLh = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  box.dataset.uid = String(uid);
+  box.style.display = 'block';
+  box.innerHTML = '<span style="color:#9ca3af;">Loading…</span>';
+  try {
+    const res = await fetch('/attendance/date-breakdown?type=leave_grants&user_id=' + uid);
+    const j = await res.json();
+    if (!j.success || !j.dates || !j.dates.length) {
+      box.innerHTML = '<span style="color:#9ca3af;">No overtime / late / manual leave adjustments this cycle.</span>';
+      return;
+    }
+    box.innerHTML = j.dates.map(d => {
+      const dt = d.date ? new Date(d.date + 'T00:00:00').toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }) : '';
+      return `<div style="display:flex;justify-content:space-between;gap:8px;padding:3px 0;border-bottom:1px solid #f3f4f6;"><span>${escLh(d.label || '')}</span><span style="color:#9ca3af;white-space:nowrap;">${dt}</span></div>`;
+    }).join('');
+  } catch (e) {
+    box.innerHTML = '<span style="color:#dc2626;">Could not load history.</span>';
+  }
 }
 
 async function grantExtraLeave(uid) {
@@ -2798,8 +2931,8 @@ async function saveShift(userId) {
 }
 
 // Employee Details Modal Functions
-async function showEmployeeDetails(userId, fullname, fromDate) {
-  console.log('showEmployeeDetails called:', { userId, fullname, fromDate });
+async function showEmployeeDetails(userId, fullname, fromDate, startDate, endDate, rangeLabel) {
+  console.log('showEmployeeDetails called:', { userId, fullname, fromDate, startDate, endDate });
   
   // If fromDate is null/undefined, use current selected date from date picker or today
   if (!fromDate || fromDate === 'null' || fromDate === 'undefined') {
@@ -2841,8 +2974,11 @@ async function showEmployeeDetails(userId, fullname, fromDate) {
   document.getElementById('detailsEmployeeName').textContent = fullname || 'Employee';
   
   try {
-    // Fetch employee details with order stats
-    const res = await fetch(`/attendance/employee-details?user_id=${userId}&from_date=${fromDate}`, {
+    // Fetch employee details with order stats. An explicit start/end (Month tab) scopes the
+    // whole detail to the selected month; without it the endpoint uses the rolling 30 days.
+    let detailUrl = `/attendance/employee-details?user_id=${userId}&from_date=${fromDate}`;
+    if (startDate && endDate) detailUrl += `&start_date=${startDate}&end_date=${endDate}`;
+    const res = await fetch(detailUrl, {
       headers: { 'Accept': 'application/json' }
     });
     
@@ -2865,7 +3001,7 @@ async function showEmployeeDetails(userId, fullname, fromDate) {
       const dateRange = startDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) + 
                        ' - ' + 
                        endDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
-    document.getElementById('detailsDateRange').textContent = dateRange + ' (Last 30 Days)';
+    document.getElementById('detailsDateRange').textContent = dateRange + ' (' + (rangeLabel || 'Last 30 Days') + ')';
     } catch(e) {
       console.error('Error formatting date range:', e);
       document.getElementById('detailsDateRange').textContent = 'Last 30 Days';

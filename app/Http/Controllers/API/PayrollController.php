@@ -99,6 +99,8 @@ class PayrollController extends Controller
             'items'   => 'required|array|min:1',
             'items.*.user_id' => 'required|integer',
             'items.*.late_deduction' => 'nullable|numeric|min:0',
+            'items.*.skip_overtime' => 'nullable|boolean',
+            'items.*.skip_late_leave' => 'nullable|boolean',
         ]);
         if ($v->fails()) {
             return response()->json(['success' => false, 'message' => $v->errors()->first()], 422);
@@ -120,6 +122,34 @@ class PayrollController extends Controller
             'message' => $msg,
             'paid' => $r['paid'], 'skipped' => $r['skipped'], 'failed' => $r['failed'], 'total' => $r['total'],
         ]);
+    }
+
+    /**
+     * Leave balance + dated/attributed adjustment history for a user.
+     * Self is always allowed (no manager permission); viewing SOMEONE ELSE requires manage_payroll.
+     * Shared by the rider self-view and the manager grid so the numbers can't disagree.
+     */
+    public function leaveHistory(Request $request)
+    {
+        $user = $request->user();
+        if (!$user) {
+            return response()->json(['success' => false, 'message' => 'Not authenticated.'], 401);
+        }
+        $targetId = (int) ($request->input('user_id') ?: $user->id);
+        if ($targetId !== (int) $user->id && !$user->hasMobilePermission('manage_payroll')) {
+            return response()->json(['success' => false, 'message' => "You don't have access to that."], 403);
+        }
+        try {
+            $svc = new \App\Services\HR\LeavePolicyService();
+            return response()->json([
+                'success' => true,
+                'balance' => $svc->balance($targetId),
+                'adjustments' => $svc->adjustments($targetId),
+            ]);
+        } catch (\Throwable $e) {
+            \Log::error('Mobile leaveHistory failed', ['user_id' => $targetId, 'error' => $e->getMessage()]);
+            return response()->json(['success' => false, 'message' => 'Could not load leave history.'], 500);
+        }
     }
 
     /** Rider: my own salary for a month (self — no manager permission needed). */

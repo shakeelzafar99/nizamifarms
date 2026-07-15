@@ -457,7 +457,7 @@ class AttendanceController extends Controller
         $userId = (int) $request->input('user_id');
         $type = $request->input('type');
         $month = $request->input('month'); // Y-m (for month_* types)
-        if (!$userId || !in_array($type, ['month_absent', 'month_leave', 'year_absent', 'year_leave', 'month_overtime'], true)) {
+        if (!$userId || !in_array($type, ['month_absent', 'month_leave', 'year_absent', 'year_leave', 'month_overtime', 'month_late', 'leave_grants'], true)) {
             return response()->json(['success' => false, 'message' => 'Bad request'], 400);
         }
         $shiftService = new ShiftResolutionService();
@@ -475,7 +475,21 @@ class AttendanceController extends Controller
             $end = $cycle['end'];
         }
 
-        if ($type === 'month_overtime') {
+        if ($type === 'leave_grants') {
+            // Dated, attributed leave adjustments (overtime bonus / late penalty / manual) for
+            // the current cycle — the "who/when/why" history. Cycle-scoped inside the service.
+            $adj = (new \App\Services\HR\LeavePolicyService())->adjustments($userId);
+            $srcLabels = ['overtime' => 'overtime bonus', 'late_penalty' => 'late penalty', 'manual' => 'manual grant', 'half_day' => 'half day'];
+            $items = [];
+            foreach ($adj as $a) {
+                if (empty($a['date'])) { continue; }
+                $days = (float) $a['days'];
+                $num = rtrim(rtrim(number_format(abs($days), 1), '0'), '.');
+                $lbl = ($days >= 0 ? '+' : '−') . $num . ' leave · ' . ($srcLabels[$a['source']] ?? $a['source'])
+                    . ($a['by_name'] ? ' · by ' . $a['by_name'] : '');
+                $items[] = ['date' => $a['date'], 'label' => $lbl];
+            }
+        } elseif ($type === 'month_overtime') {
             // Days worked beyond the shift length + how much (label = "Xh Ym").
             $ot = (new \App\Services\HR\OvertimeService())->overtimeForRange($userId, $start, min($end, $today));
             $items = [];
@@ -483,6 +497,13 @@ class AttendanceController extends Controller
                 $h = intdiv($mins, 60); $m = $mins % 60;
                 $items[] = ['date' => $d, 'label' => ($h > 0 ? $h . 'h ' . $m . 'm' : $m . 'm')];
             }
+        } elseif ($type === 'month_late') {
+            // Days the rider clocked in late + by how much (label = "Xh Ym late").
+            $lateDays = $shiftService->lateDaysBreakdown($userId, $start, min($end, $today));
+            $items = array_map(function ($d) {
+                $m = (int) $d['minutes']; $h = intdiv($m, 60); $mm = $m % 60;
+                return ['date' => $d['date'], 'label' => ($h > 0 ? $h . 'h ' . $mm . 'm late' : $mm . 'm late')];
+            }, $lateDays);
         } elseif (str_ends_with($type, '_absent')) {
             // Absent is only meaningful up to today (future working days aren't absences yet).
             $dates = $this->absentWorkingDates($userId, $shiftService, $start, min($end, $today));
@@ -1225,7 +1246,11 @@ class AttendanceController extends Controller
         // Also add absent day records to the daily array for easier tracking
         foreach ($byUser as $userId => &$userData) {
             $userData['leave_days'] = count($userData['leave_dates']);
-            $userData['absent_days'] = max(0, $userData['working_days'] - $userData['present_days'] - $userData['leave_days']);
+            // Absent (MO) uses the SAME canonical definition as Absent (YR), the month_absent
+            // drill, and the rider app: a working-kind day with no login and no approved leave.
+            // This excludes manager "not needed" tags (and off/holiday), so tagging a no-show
+            // "not needed" drops it here too — and the column now always matches its own drill.
+            $userData['absent_days'] = count($this->absentWorkingDates($userId, $shiftService, $startDate, $effectiveEndDate));
 
             // Per-date + snapshot-aware late/overtime totals (SAME helper as salary,
             // so this report and the salary slip always show identical numbers).
@@ -1336,6 +1361,21 @@ class AttendanceController extends Controller
             // Absent THIS YEAR (cycle start → today), using the SAME working-day-aware
             // definition as the Today view — shared helper so the number can't drift.
             $userData['absent_days_year'] = $this->yearAbsentDays($userId, $shiftService, $cycle, $today);
+
+            // Leave BALANCE + segregation for the "Leave (yr)" cell — remaining leaves and where
+            // the extra/missing ones came from (overtime earned vs late penalty vs manual). Same
+            // LeavePolicyService every leave surface shares, so the numbers can't disagree.
+            try {
+                $bal = (new \App\Services\HR\LeavePolicyService())->balance($userId);
+                $userData['leave_remaining']       = $bal['remaining'];
+                $userData['leave_effective_quota'] = $bal['effective_quota'];
+                $userData['leave_quota_total']     = $bal['quota_total'];
+                $userData['leave_earned_overtime'] = $bal['earned_overtime'];
+                $userData['leave_late_penalties']  = $bal['late_penalties'];
+                $userData['leave_manual_adjust']   = $bal['manual_adjust'];
+            } catch (\Throwable $e) {
+                $userData['leave_remaining'] = null;
+            }
         }
         
         Log::info('Monthly report processed', [
@@ -1457,12 +1497,19 @@ class AttendanceController extends Controller
                 ], 400);
             }
 
-            // Calculate date range (30 days before from_date). NEVER extend into the
-            // future — the Month tab opens this with a date late in the month, and an
-            // unclamped range painted every future working day "Absent" (inflating the
-            // summary too). Clamp the end to today, then anchor the 30 days on that.
-            $endDate = min($fromDate, date('Y-m-d'));
-            $startDate = date('Y-m-d', strtotime($endDate . ' -30 days'));
+            // Date range. The Month tab passes an explicit start_date/end_date (the SELECTED
+            // month) — honour it so the detail matches the month the manager is looking at, not a
+            // rolling window. Otherwise (Today tab) fall back to 30 days before from_date. Either
+            // way the end is clamped to today so future working days aren't painted "Absent".
+            $startParam = $request->input('start_date');
+            $endParam = $request->input('end_date');
+            if ($startParam && $endParam && strtotime((string) $startParam) && strtotime((string) $endParam)) {
+                $startDate = substr((string) $startParam, 0, 10);
+                $endDate = min(substr((string) $endParam, 0, 10), date('Y-m-d'));
+            } else {
+                $endDate = min($fromDate, date('Y-m-d'));
+                $startDate = date('Y-m-d', strtotime($endDate . ' -30 days'));
+            }
 
             // Get user info
             $user = DB::table('t_sys_user as u')

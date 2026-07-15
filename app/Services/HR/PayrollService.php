@@ -75,8 +75,16 @@ class PayrollService
         $leaveDays   = (int) ($att['leave_days'] ?? 0);
         $lateMinutes = (int) ($att['late_minutes'] ?? 0);
 
-        $perDay  = $workingDays > 0 ? $base / $workingDays : 0.0;
-        $perHour = $workingDays > 0 ? $base / ($workingDays * max(0.1, $this->targetHours())) : 0.0;
+        // The per-day / per-hour RATE divides by the FULL month's working days (a fixed monthly
+        // daily rate), NOT the days elapsed so far. Using elapsed days inflates every deduction
+        // mid-month — e.g. 1 absence = base/12 (Rs 2,917) instead of base/27 (Rs 1,296). At month
+        // end elapsed == full, so this leaves a month-end payment unchanged; it only corrects the
+        // mid-month preview / any mid-month payout. ($workingDays stays elapsed for the attendance
+        // context; only the rate divisor changes.)
+        $fullMonthWorkingDays = $this->shift->calculateWorkingDays($userId, $startDate, $endDate);
+        $rateDivisor = $fullMonthWorkingDays > 0 ? $fullMonthWorkingDays : $workingDays;
+        $perDay  = $rateDivisor > 0 ? $base / $rateDivisor : 0.0;
+        $perHour = $rateDivisor > 0 ? $base / ($rateDivisor * max(0.1, $this->targetHours())) : 0.0;
 
         // ── Absent deduction (unapproved absences only; leave + not-needed already excluded).
         $absentDeduction = round($absentDays * $perDay, 2);
@@ -264,6 +272,10 @@ class PayrollService
                 'funding' => $funding,
                 'bank_id' => $bankId,
                 'late_deduction' => $item['late_deduction'] ?? null,
+                // Manager bypass toggles (default = apply the recommendation). When on, the
+                // matching leave-ledger row is NOT written and the receipt records 0 for it.
+                'skip_overtime'  => !empty($item['skip_overtime']),
+                'skip_late_leave' => !empty($item['skip_late_leave']),
                 'actor_id' => $actorId,
             ]);
             if (!empty($res['success'])) {
@@ -334,8 +346,13 @@ class PayrollService
         }
         $actorId = (int) ($opts['actor_id'] ?? auth()->id() ?? 1);
 
+        // Manager bypass toggles: if on, don't grant/deduct that leave, and freeze 0 into the
+        // receipt so the paid-detail + leave history reflect what was actually applied.
+        $appliedLateLeave   = !empty($opts['skip_late_leave']) ? 0 : (int) $row['late_leave_deduct'];
+        $appliedBonusLeaves = !empty($opts['skip_overtime'])   ? 0 : (int) $row['bonus_leaves'];
+
         try {
-            return DB::transaction(function () use ($userId, $month, $row, $net, $funding, $bankId, $actorId) {
+            return DB::transaction(function () use ($userId, $month, $row, $net, $funding, $bankId, $actorId, $appliedLateLeave, $appliedBonusLeaves) {
                 // Funding (source) account — NF Cash, or the single ONLINE ledger account tagged per bank.
                 if ($funding === 'online') {
                     $source = \App\Models\FIN\ConfigModel::getOnlineBankAccount();
@@ -400,15 +417,27 @@ class PayrollService
                 }
 
                 // Leave-ledger side effects (idempotent per user+month+source via effective_date = 1st).
+                // Skipped (bypassed) items apply 0 → no row written.
                 $effDate = $month . '-01';
-                if ((int) $row['late_leave_deduct'] > 0) {
-                    $this->grantOnce($userId, -1 * (int) $row['late_leave_deduct'], 'late_penalty',
+                if ($appliedLateLeave > 0) {
+                    $this->grantOnce($userId, -1 * $appliedLateLeave, 'late_penalty',
                         'Late penalty ' . date('M Y', strtotime($effDate)), $effDate, $actorId);
                 }
-                if ((int) $row['bonus_leaves'] > 0) {
-                    $this->grantOnce($userId, (int) $row['bonus_leaves'], 'overtime',
+                if ($appliedBonusLeaves > 0) {
+                    $this->grantOnce($userId, $appliedBonusLeaves, 'overtime',
                         'Overtime bonus ' . date('M Y', strtotime($effDate)), $effDate, $actorId);
                 }
+
+                // Stamp any manager bypass onto the receipt so a paid month explains itself later
+                // (0 bonus_leaves could mean "no overtime" OR "overtime bypassed" — this disambiguates).
+                $noteBits = [];
+                if ((int) $row['bonus_leaves'] > 0 && $appliedBonusLeaves === 0) {
+                    $noteBits[] = 'OT bonus (+' . (int) $row['bonus_leaves'] . ' leave) bypassed';
+                }
+                if ((int) $row['late_leave_deduct'] > 0 && $appliedLateLeave === 0) {
+                    $noteBits[] = 'Late -1 leave waived';
+                }
+                $notes = $noteBits ? implode('; ', $noteBits) : null;
 
                 // Record the payment (blocks double-pay; drives the grid status).
                 DB::table('t_hr_payroll_payment')->insert([
@@ -422,14 +451,15 @@ class PayrollService
                     'absent_deduction' => $row['absent_deduction'],
                     'late_minutes'     => $row['late_minutes'],
                     'late_deduction'   => $row['late_deduction'],
-                    'late_leave_deduct' => $row['late_leave_deduct'],
-                    'bonus_leaves'     => $row['bonus_leaves'],
+                    'late_leave_deduct' => $appliedLateLeave,
+                    'bonus_leaves'     => $appliedBonusLeaves,
                     'advance_total'    => $row['advance_total'],
                     'net_salary'       => $net,
                     'funding'          => $funding,
                     'bank_id'          => $bankId,
                     'ledger_id'        => $ledgerId,
                     'status'           => 'paid',
+                    'notes'            => $notes,
                     'paid_at'          => now(),
                     'paid_by'          => $actorId,
                     'created_at'       => now(),
@@ -575,6 +605,7 @@ class PayrollService
                         'late_leave_deduct' => (int) $p->late_leave_deduct,
                         'bonus_leaves'      => (int) $p->bonus_leaves,
                         'advance_total'     => (float) $p->advance_total,
+                        'notes'             => $p->notes ?? null,
                         'funding'           => $p->funding,
                         'bank_label'        => $p->bank_id ? ($bankLabels[$p->bank_id] ?? ('Bank #' . $p->bank_id)) : null,
                         'ledger_id'         => $p->ledger_id,

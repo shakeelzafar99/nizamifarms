@@ -106,6 +106,8 @@ class PayrollController extends Controller
             'items'   => 'required|array|min:1',
             'items.*.user_id' => 'required|integer',
             'items.*.late_deduction' => 'nullable|numeric|min:0',
+            'items.*.skip_overtime' => 'nullable|boolean',
+            'items.*.skip_late_leave' => 'nullable|boolean',
         ]);
         if ($v->fails()) {
             return response()->json(['success' => false, 'message' => $v->errors()->first()], 422);

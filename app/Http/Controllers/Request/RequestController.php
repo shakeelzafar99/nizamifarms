@@ -185,7 +185,17 @@ class RequestController extends Controller
             'priority' => 'nullable|in:low,normal,high,urgent',
             'attachment_image' => 'nullable|image|max:5120', // 5MB max for receipt/bill images
         ]);
-        
+
+        // Salaries are now handled exclusively by the Payroll screen. Block the legacy
+        // "Staff Salaries" expense category so it can't create a duplicate salary expense
+        // — even from a stale open form or a cached mobile app that still lists it.
+        if (in_array(strtolower(trim((string) ($validated['expense_category'] ?? ''))), ['staff salaries', 'staff salary'], true)) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Staff salaries must be paid from the Payroll screen, not entered as an expense.'
+            ], 422);
+        }
+
         // ⭐ Validate expense_date is within allowed backdate range
         if ($request->filled('expense_date')) {
             $loggedInUser = auth()->user();

@@ -248,6 +248,7 @@ Route::middleware('auth:sanctum')->group(function () {
         // Payroll (Phase G — new engine; manager grid + rider self-view)
         Route::prefix('payroll')->group(function () {
             Route::get('/my', [\App\Http\Controllers\API\PayrollController::class, 'mySalary']);            // rider self
+            Route::get('/leave-history', [\App\Http\Controllers\API\PayrollController::class, 'leaveHistory']); // self or (manager) any user
             Route::get('/month', [\App\Http\Controllers\API\PayrollController::class, 'managerMonth']);     // manager grid
             Route::post('/set-salary', [\App\Http\Controllers\API\PayrollController::class, 'managerSetSalary']);
             Route::post('/give-advance', [\App\Http\Controllers\API\PayrollController::class, 'managerGiveAdvance']);

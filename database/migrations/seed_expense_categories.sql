@@ -24,7 +24,8 @@ INSERT INTO t_fin_config (config_key, config_value, description, created_at) VAL
 ('EXPENSE_CATEGORY_INSURANCE', 'Insurance', 'Expense category: Insurance. Account: EXP_INSURANCE', NOW()),
 ('EXPENSE_CATEGORY_PROFESSIONAL_FEES', 'Professional Fees', 'Expense category: Professional Fees. Account: EXP_PROFESSIONAL_FEES', NOW()),
 ('EXPENSE_CATEGORY_BANK_CHARGES', 'Bank Charges', 'Expense category: Bank Charges. Account: EXP_BANK_CHARGES', NOW()),
-('EXPENSE_CATEGORY_STAFF_SALARIES', 'Staff Salaries', 'Expense category: Staff Salaries. Account: EXP_STAFF_SALARIES', NOW()),
+-- REMOVED (Jul-2026): salaries are paid from the Payroll screen, not entered as an expense.
+-- ('EXPENSE_CATEGORY_STAFF_SALARIES', 'Staff Salaries', 'Expense category: Staff Salaries. Account: EXP_STAFF_SALARIES', NOW()),
 ('EXPENSE_CATEGORY_MISCELLANEOUS', 'Miscellaneous', 'Expense category: Miscellaneous. Account: EXP_MISCELLANEOUS', NOW())
 ON DUPLICATE KEY UPDATE 
     config_value = VALUES(config_value),
