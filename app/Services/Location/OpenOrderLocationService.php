@@ -506,6 +506,43 @@ class OpenOrderLocationService
         return $now->greaterThanOrEqualTo($start) || $now->lessThanOrEqualTo($end);
     }
 
+    /**
+     * ISO day numbers (1=Mon … 7=Sun) on which auto-sends are paused (days off).
+     * Stored in t_fin_config as CSV ("2" = Tuesday) or JSON ("[2]"); empty = never
+     * pause. Anything queued on a day off waits and flushes the next working day
+     * once the window opens (Option A — no message goes out on the day off).
+     *
+     * @return array<int>
+     */
+    public function offDays(): array
+    {
+        $raw = trim((string) ConfigModel::get('location_auto_offdays', ''));
+        if ($raw === '') {
+            return [];
+        }
+        $vals = ($raw[0] === '[') ? (json_decode($raw, true) ?: []) : explode(',', $raw);
+        $days = [];
+        foreach ((array) $vals as $v) {
+            $n = (int) trim((string) $v);
+            if ($n >= 1 && $n <= 7) {
+                $days[$n] = $n; // dedupe
+            }
+        }
+        return array_values($days);
+    }
+
+    /** Is "now" (Asia/Karachi) a configured day off? */
+    public function isOffDayToday(?Carbon $now = null): bool
+    {
+        $days = $this->offDays();
+        if (empty($days)) {
+            return false;
+        }
+        $tz = $this->windowTimezone();
+        $now = $now ? $now->copy()->setTimezone($tz) : Carbon::now($tz);
+        return in_array((int) $now->isoWeekday(), $days, true); // isoWeekday: 1=Mon..7=Sun
+    }
+
     /** Parse an "HH:MM" string into [hour, minute] with safe fallbacks. */
     protected function parseHm(string $hm, int $defH, int $defM): array
     {
@@ -587,7 +624,9 @@ class OpenOrderLocationService
     {
         $counters = ['sent' => 0, 'failed' => 0, 'skipped' => 0];
 
-        if (!$this->isAutoEnabled() || !$this->withinSendWindow()) {
+        // Day off (default Tuesday) or outside the daily window → nothing sends;
+        // queued rows simply wait and flush on the next working day / next window.
+        if (!$this->isAutoEnabled() || $this->isOffDayToday() || !$this->withinSendWindow()) {
             return $counters;
         }
 

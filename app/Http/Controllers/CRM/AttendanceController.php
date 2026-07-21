@@ -364,6 +364,82 @@ class AttendanceController extends Controller
                 }
             } catch (\Throwable $e) { /* column not added yet → no bike flags */ }
         }
+        // ── Company-bike GOING-HOME meter state per rider on this date (the manager valve:
+        //    unlock a late-locked rider / enter the meter for a dead phone). Guarded — no
+        //    home-journey columns yet ⇒ no valve, page unaffected.
+        $homeByUser = [];
+        try {
+            if (!empty($userIds) && \Illuminate\Support\Facades\Schema::hasColumn('t_ops_attendance', 'home_expected_by')) {
+                $hjSvc = new \App\Services\Riders\HomeJourneyService();
+                $hasBreach = \Illuminate\Support\Facades\Schema::hasColumn('t_ops_attendance', 'home_bypass_breach');
+                $hjCols = ['id', 'user_id', 'logout_time', 'home_expected_by', 'home_arrived_at', 'home_arrival_source',
+                           'home_distance_km', 'meter_home', 'home_meter_unlock_until', 'home_meter_unlock_by', 'home_late_reason'];
+                if ($hasBreach) { $hjCols[] = 'home_bypass_breach'; }
+                $hjRows = DB::table('t_ops_attendance')
+                    ->whereIn('user_id', $userIds)->whereDate('attendance_date', $selectedDate)
+                    ->whereNotNull('home_expected_by')
+                    ->get($hjCols);
+                foreach ($hjRows as $hr) {
+                    $homeByUser[$hr->user_id] = [
+                        'attendance_id' => (int) $hr->id,
+                        'state'         => $hjSvc->deriveState($hr),
+                        'expected_by'   => $hr->home_expected_by ? substr((string) $hr->home_expected_by, 11, 5) : null,
+                        'arrived_at'    => $hr->home_arrived_at ? substr((string) $hr->home_arrived_at, 11, 5) : null,
+                        'arrival_source'=> $hr->home_arrival_source,
+                        'distance_km'   => $hr->home_distance_km !== null ? (float) $hr->home_distance_km : null,
+                        'minutes_late'  => $hjSvc->minutesLate($hr),
+                        'has_meter'     => $hr->meter_home !== null && $hr->meter_home !== '',
+                        'meter_home'    => $hr->meter_home !== null ? (int) $hr->meter_home : null,
+                        'unlock_active' => $hr->home_meter_unlock_until && strtotime((string) $hr->home_meter_unlock_until) >= time(),
+                        'breach'        => $hasBreach ? ($hr->home_bypass_breach ?? null) : null,
+                        'reason'        => $hr->home_late_reason,
+                    ];
+                }
+            }
+        } catch (\Throwable $e) { /* no home valve on error — page must still load */ }
+
+        // ── Checkout-unlock state per rider (the non-bike "forgot to check out" bypass).
+        //    Guarded — no columns yet ⇒ no bypass info, page unaffected.
+        $unlockByUser = [];
+        try {
+            if (!empty($userIds) && \Illuminate\Support\Facades\Schema::hasColumn('t_ops_attendance', 'checkout_unlock_until')) {
+                $uRows = DB::table('t_ops_attendance')
+                    ->whereIn('user_id', $userIds)->whereDate('attendance_date', $selectedDate)
+                    ->whereNotNull('checkout_unlock_until')
+                    ->get(['user_id', 'logout_time', 'checkout_unlock_until', 'checkout_unlock_by', 'checkout_unlock_reason']);
+                if ($uRows->isNotEmpty()) {
+                    $unlockerNames = DB::table('t_sys_user')
+                        ->whereIn('id', array_filter($uRows->pluck('checkout_unlock_by')->all()))
+                        ->pluck('fullname', 'id');
+                    foreach ($uRows as $u2) {
+                        $unlockByUser[$u2->user_id] = [
+                            'active'  => strtotime((string) $u2->checkout_unlock_until) >= time(),
+                            'until'   => substr((string) $u2->checkout_unlock_until, 11, 5),
+                            'used'    => !empty($u2->logout_time),
+                            'reason'  => $u2->checkout_unlock_reason,
+                            'by_name' => $u2->checkout_unlock_by ? ($unlockerNames[$u2->checkout_unlock_by] ?? 'manager') : null,
+                        ];
+                    }
+                }
+            }
+        } catch (\Throwable $e) { /* page must still load */ }
+
+        // Which riders have a HALF-DAY on the selected date → their row shows "½ day", no late/OT.
+        $halfDayToday = [];
+        try {
+            if (!empty($userIds)) {
+                $halfDayToday = array_flip(DB::table('t_req_master as r')
+                    ->join('t_req_category as c', 'c.id', '=', 'r.category_id')
+                    ->where('c.category_code', 'leave')
+                    ->where('r.leave_type', 'half_day')
+                    ->whereIn('r.status', ['approved', 'pending'])
+                    ->whereIn('r.requester_user_id', $userIds)
+                    ->where('r.leave_start_date', '<=', $selectedDate)
+                    ->where('r.leave_end_date', '>=', $selectedDate)
+                    ->pluck('r.requester_user_id')->all());
+            }
+        } catch (\Throwable $e) { /* no half-days */ }
+
         $defaultGrace = (float) $this->attendanceConfig('ATTENDANCE_OVERNIGHT_GRACE_KM', 30);
         // Inline context for the Today view: this-month lateness (always) and
         // absent-this-year (only for a rider who is actually absent today, so the
@@ -371,6 +447,22 @@ class AttendanceController extends Controller
         $cycle = $this->attendanceCycle();
         $monthStart = date('Y-m-01', strtotime($selectedDate));
         $checkoutClassifier = new \App\Services\Riders\CheckoutClassifierService();
+        // Delivered-order counts per rider on the selected date — used to flag the office-checkout
+        // EXCEPTION (a non-bike rider who delivered but checked out at the office; R5). Guarded.
+        $deliveredByUser = [];
+        try {
+            if (!empty($userIds)) {
+                $delRows = DB::table('t_crm_order_status_history as h')
+                    ->join('t_crm_prod_order as o', 'o.id', '=', 'h.order_id')
+                    ->where('h.status_code', 'delivered')
+                    ->whereIn('o.assigned_rider_user_id', $userIds)
+                    ->whereDate('h.changed_at', $selectedDate)
+                    ->groupBy('o.assigned_rider_user_id')
+                    ->select('o.assigned_rider_user_id as uid', DB::raw('COUNT(*) as c'))
+                    ->pluck('c', 'uid');
+                foreach ($delRows as $uid => $c) { $deliveredByUser[$uid] = (int) $c; }
+            }
+        } catch (\Throwable $e) { /* no delivery data → no office-checkout exception flag */ }
         foreach ($rows as $row) {
             $pm = $prevMeter[$row->user_id] ?? null;
             $row->prev_meter_end = $pm['end'] ?? null;
@@ -378,6 +470,18 @@ class AttendanceController extends Controller
             $row->company_bike = isset($bikeSet[$row->user_id]) ? 1 : 0;
             // Effective overnight grace: per-rider override → global default.
             $row->overnight_grace_km = $graceByUser[$row->user_id] ?? $defaultGrace;
+            // Going-home meter state (drives the manager valve on the row); null = not on the flow.
+            $row->home_journey = $homeByUser[$row->user_id] ?? null;
+            // Checkout-unlock state (the "forgot to check out" bypass); null = never granted today.
+            $row->checkout_unlock = $unlockByUser[$row->user_id] ?? null;
+
+            // HALF-DAY: the day counts as present with no lateness/overtime (owner's rule). Suppress
+            // the per-row numbers so the pill shows "½ day", never "Late"; the frozen row is untouched.
+            $row->is_half_day = isset($halfDayToday[$row->user_id]);
+            if ($row->is_half_day) {
+                $row->late_minutes = 0;
+                $row->overtime_minutes = 0;
+            }
 
             // Month-to-date total late minutes (same source as the Month tab).
             try {
@@ -399,6 +503,12 @@ class AttendanceController extends Controller
             $row->checkout_info = ($row->logout_time && ($row->checkout_latitude ?? null) !== null)
                 ? $checkoutClassifier->classify((int) $row->user_id, $selectedDate, $row->checkout_latitude, $row->checkout_longitude)
                 : null;
+            // Office-checkout EXCEPTION: a non-bike rider who delivered ≥1 order today but checked
+            // out at the office (he came back). Marks the chip amber; bike / zero-delivery = normal.
+            if (is_array($row->checkout_info) && ($row->checkout_info['status'] ?? null) === 'office'
+                && (int) $row->company_bike === 0 && (int) ($deliveredByUser[$row->user_id] ?? 0) >= 1) {
+                $row->checkout_info['office_exception'] = true;
+            }
         }
 
         $config = [
@@ -457,7 +567,7 @@ class AttendanceController extends Controller
         $userId = (int) $request->input('user_id');
         $type = $request->input('type');
         $month = $request->input('month'); // Y-m (for month_* types)
-        if (!$userId || !in_array($type, ['month_absent', 'month_leave', 'year_absent', 'year_leave', 'month_overtime', 'month_late', 'leave_grants'], true)) {
+        if (!$userId || !in_array($type, ['month_absent', 'month_leave', 'year_absent', 'year_leave', 'month_overtime', 'month_late', 'leave_grants', 'month_office_checkout'], true)) {
             return response()->json(['success' => false, 'message' => 'Bad request'], 400);
         }
         $shiftService = new ShiftResolutionService();
@@ -504,6 +614,15 @@ class AttendanceController extends Controller
                 $m = (int) $d['minutes']; $h = intdiv($m, 60); $mm = $m % 60;
                 return ['date' => $d['date'], 'label' => ($h > 0 ? $h . 'h ' . $mm . 'm late' : $mm . 'm late')];
             }, $lateDays);
+        } elseif ($type === 'month_office_checkout') {
+            // Days a non-bike rider delivered but checked out at the office (R9.1).
+            $ocMap = (new \App\Services\Riders\CheckoutClassifierService())
+                ->officeCheckoutDays([$userId], $start, min($end, $today));
+            $items = [];
+            foreach (($ocMap[$userId] ?? []) as $oc) {
+                $after = ($oc['minutes_after'] !== null) ? ($oc['minutes_after'] . ' min after last delivery to ' . $oc['last_customer']) : ('after delivering to ' . $oc['last_customer']);
+                $items[] = ['date' => $oc['date'], 'label' => 'out ' . $oc['checkout_time'] . ' · ' . $after];
+            }
         } elseif (str_ends_with($type, '_absent')) {
             // Absent is only meaningful up to today (future working days aren't absences yet).
             $dates = $this->absentWorkingDates($userId, $shiftService, $start, min($end, $today));
@@ -579,6 +698,11 @@ class AttendanceController extends Controller
             }
             if ($request->filled('meter_gps_warn_km'))  { $put('ATTENDANCE_METER_GPS_WARN_KM', (string) (float) $request->meter_gps_warn_km); }
             if ($request->filled('overnight_grace_km')) { $put('ATTENDANCE_OVERNIGHT_GRACE_KM', (string) (float) $request->overnight_grace_km); }
+            if ($request->filled('petrol_window_days')) { $put('PETROL_WINDOW_DAYS', (string) max(1, (int) $request->petrol_window_days)); }
+            // Company-bike "going home" journey (U4)
+            if ($request->filled('home_eta_buffer_min'))  { $put('HOME_ETA_BUFFER_MIN', (string) max(0, (int) $request->home_eta_buffer_min)); }
+            if ($request->filled('home_late_unlock_mins')) { $put('HOME_LATE_UNLOCK_MINS', (string) max(1, (int) $request->home_late_unlock_mins)); }
+            if ($request->filled('home_radius_m'))         { $put('HOME_RADIUS_M', (string) max(30, (int) $request->home_radius_m)); }
             // Leave policy (single pool + same-day cap) + overtime target hours.
             if ($request->filled('leave_quota_total'))    { $put('LEAVE_QUOTA_TOTAL', (string) (float) $request->leave_quota_total); }
             if ($request->filled('leave_sameday_cap'))    { $put('LEAVE_SAMEDAY_CAP', (string) (int) $request->leave_sameday_cap); }
@@ -590,6 +714,7 @@ class AttendanceController extends Controller
             if ($request->filled('checkout_radius_m'))    { $put('CHECKOUT_DELIVERY_RADIUS_M', (string) (int) $request->checkout_radius_m); }
             // Check-in rule: rider may only check in at their shift location. enabled always written.
             if ($request->has('require_location'))        { $put('ATTENDANCE_REQUIRE_LOCATION', $request->require_location ? '1' : '0'); }
+            if ($request->filled('office_at_radius_m'))   { $put('OFFICE_AT_RADIUS_M', (string) max(30, (int) $request->office_at_radius_m)); }
             return response()->json(['success' => true, 'message' => 'Attendance settings saved.']);
         } catch (\Throwable $e) {
             \Log::error('saveAttendanceSettings failed', ['error' => $e->getMessage()]);
@@ -607,6 +732,10 @@ class AttendanceController extends Controller
             'cycle_end' => $cycle['end'],
             'meter_gps_warn_km' => (float) $this->attendanceConfig('ATTENDANCE_METER_GPS_WARN_KM', 10),
             'overnight_grace_km' => (float) $this->attendanceConfig('ATTENDANCE_OVERNIGHT_GRACE_KM', 30),
+            'petrol_window_days' => (int) $this->attendanceConfig('PETROL_WINDOW_DAYS', 5),
+            'home_eta_buffer_min' => (int) $this->attendanceConfig('HOME_ETA_BUFFER_MIN', 15),
+            'home_late_unlock_mins' => (int) $this->attendanceConfig('HOME_LATE_UNLOCK_MINS', 10),
+            'home_radius_m' => (int) $this->attendanceConfig('HOME_RADIUS_M', 150),
             'leave_quota_total' => (float) $this->attendanceConfig('LEAVE_QUOTA_TOTAL', 10),
             'leave_sameday_cap' => (int) $this->attendanceConfig('LEAVE_SAMEDAY_CAP', 4),
             'leave_sameday_cutoff' => (string) $this->attendanceConfig('LEAVE_SAMEDAY_CUTOFF', '10:00'),
@@ -615,6 +744,7 @@ class AttendanceController extends Controller
             'checkout_window_mins' => (int) $this->attendanceConfig('CHECKOUT_DELIVERY_WINDOW_MINS', 15),
             'checkout_radius_m' => (int) $this->attendanceConfig('CHECKOUT_DELIVERY_RADIUS_M', 150),
             'require_location' => (int) $this->attendanceConfig('ATTENDANCE_REQUIRE_LOCATION', 0),
+            'office_at_radius_m' => (int) $this->attendanceConfig('OFFICE_AT_RADIUS_M', 300),
         ]);
     }
 
@@ -634,7 +764,7 @@ class AttendanceController extends Controller
             'leave_end_date' => 'required|date|after_or_equal:leave_start_date',
             'note' => 'nullable|string|max:500',
             'override_quota' => 'nullable|boolean',
-            'leave_type' => 'nullable|in:planned,emergency',
+            'leave_type' => 'nullable|in:planned,emergency,half_day',
         ]);
         if ($validator->fails()) {
             return response()->json(['success' => false, 'message' => $validator->errors()->first()], 422);
@@ -649,6 +779,26 @@ class AttendanceController extends Controller
         // counts every emergency row), which is intended: the rider still took a
         // same-day leave, regardless of who typed it in.
         $leaveType = $request->input('leave_type') ?: 'planned';
+        $isHalfDay = $leaveType === 'half_day';
+
+        // Half-day rules (RW-1 manager-only path; RW-2 needs a check-in that day):
+        // single date, and the rider must have actually checked in on it (½ day = worked half).
+        if ($isHalfDay) {
+            if (substr((string) $start, 0, 10) !== substr((string) $end, 0, 10)) {
+                return response()->json(['success' => false, 'message' => 'A half day is for a single date only.'], 422);
+            }
+            $checkedIn = DB::table('t_ops_attendance')
+                ->where('user_id', $userId)
+                ->whereDate('attendance_date', substr((string) $start, 0, 10))
+                ->whereNotNull('login_time')->where('login_time', '!=', '')
+                ->exists();
+            if (!$checkedIn) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'A half day needs a check-in that day. Use a full leave (or mark absent) for a day he did not come in.',
+                ], 422);
+            }
+        }
 
         try {
             $catId = DB::table('t_req_category')->where('category_code', 'leave')->value('id');
@@ -658,7 +808,8 @@ class AttendanceController extends Controller
 
             // Manager is UNBOUND by the quota, but we warn once if this pushes the rider
             // over his yearly balance — the frontend re-submits with override_quota=1.
-            $days = \Carbon\Carbon::parse($start)->diffInDays(\Carbon\Carbon::parse($end)) + 1;
+            // A half day charges 0.5 against the yearly counter.
+            $days = $isHalfDay ? 0.5 : (\Carbon\Carbon::parse($start)->diffInDays(\Carbon\Carbon::parse($end)) + 1);
             $overQuota = false;
             if (!$request->boolean('override_quota')) {
                 $bal = (new \App\Services\HR\LeavePolicyService())->balance($userId);
@@ -710,7 +861,9 @@ class AttendanceController extends Controller
                 // Manager-chosen kind (default planned; emergency = same-day, counts
                 // toward the rider's same-day allowance). Never time-restricted here.
                 'leave_type' => $leaveType,
-                'leave_days' => $days,
+                // leave_days is an INT calendar-day count (1 for a half day — it occupies one
+                // date). The 0.5 quota weight lives in LeavePolicyService::takenDays(), not here.
+                'leave_days' => $isHalfDay ? 1 : $days,
                 'status' => 'approved',
                 'priority' => 'normal',
                 'requires_level_1' => 1,
@@ -729,7 +882,10 @@ class AttendanceController extends Controller
                 'leave_id' => $id, 'user_id' => $userId, 'by' => $managerId, 'from' => $start, 'to' => $end, 'days' => $days,
             ]);
 
-            return response()->json(['success' => true, 'message' => "Leave approved — {$days} day" . ($days > 1 ? 's' : '') . '.', 'id' => $id]);
+            $msg = $isHalfDay
+                ? 'Half day approved (0.5 leave).'
+                : "Leave approved — {$days} day" . ($days > 1 ? 's' : '') . '.';
+            return response()->json(['success' => true, 'message' => $msg, 'id' => $id]);
         } catch (\Throwable $e) {
             \Log::error('Apply-leave failed', ['error' => $e->getMessage(), 'user_id' => $userId]);
             return response()->json(['success' => false, 'message' => 'Could not apply the leave. Please try again.'], 500);
@@ -860,6 +1016,365 @@ class AttendanceController extends Controller
     }
 
     /**
+     * List a user's APPROVED leave requests in the current cycle (with ids) so the manager can
+     * pick one to UNDO. Read-only; feeds the Undo affordance in the leave-summary modal.
+     */
+    public function approvedLeaves(Request $request)
+    {
+        try {
+            $userId = (int) $request->input('user_id');
+            if (!$userId) {
+                return response()->json(['success' => false, 'message' => 'user_id required.'], 422);
+            }
+            $catId = DB::table('t_req_category')->where('category_code', 'leave')->value('id');
+            if (!$catId) {
+                return response()->json(['success' => true, 'leaves' => []]);
+            }
+            $cycle = $this->attendanceCycle();
+            $rows = DB::table('t_req_master')
+                ->where('category_id', $catId)
+                ->where('requester_user_id', $userId)
+                ->where('status', 'approved')
+                // any leave that overlaps the cycle window
+                ->where('leave_start_date', '<=', $cycle['end'])
+                ->where('leave_end_date', '>=', $cycle['start'])
+                ->orderByDesc('leave_start_date')
+                ->limit(100)
+                ->get(['id', 'leave_start_date', 'leave_end_date', 'leave_type', 'leave_days']);
+
+            $out = $rows->map(function ($r) {
+                $days = (int) ($r->leave_days ?: (\Carbon\Carbon::parse($r->leave_start_date)->diffInDays(\Carbon\Carbon::parse($r->leave_end_date)) + 1));
+                return [
+                    'id' => $r->id,
+                    'start' => substr((string) $r->leave_start_date, 0, 10),
+                    'end' => substr((string) $r->leave_end_date, 0, 10),
+                    'type' => $r->leave_type ?: 'leave',
+                    'days' => $days,
+                ];
+            })->values();
+
+            return response()->json(['success' => true, 'leaves' => $out]);
+        } catch (\Throwable $e) {
+            \Log::error('approvedLeaves failed', ['error' => $e->getMessage()]);
+            return response()->json(['success' => false, 'message' => 'Could not load approved leaves.'], 500);
+        }
+    }
+
+    /**
+     * UNDO a mistakenly-approved leave (manager authority, from the Attendance page).
+     * Sets the leave back to 'cancelled' (distinct from 'rejected' — it wasn't a refusal),
+     * which returns the day(s) to the rider's balance EVERYWHERE automatically: every balance/
+     * absent/on-leave surface derives live from status='approved', and nothing is persisted at
+     * approval (t_hr_leave_grant is untouched). Also deletes the vestigial marker rows in
+     * t_ops_attendance (leave_request_id set, no login) — only some approval paths create them, so
+     * a zero-row delete is fine. After undo the manager re-applies the correct day via apply-leave.
+     */
+    public function undoLeaveApproval(Request $request, $id)
+    {
+        try {
+            $catId = DB::table('t_req_category')->where('category_code', 'leave')->value('id');
+            $req = DB::table('t_req_master')->where('id', $id)->where('category_id', $catId)->first();
+            if (!$req) {
+                return response()->json(['success' => false, 'message' => 'Leave request not found.'], 404);
+            }
+            if ($req->status !== 'approved') {
+                return response()->json(['success' => false, 'message' => 'Only an APPROVED leave can be undone (this one is ' . $req->status . ').'], 400);
+            }
+
+            $managerId = auth()->id();
+            $managerName = DB::table('t_sys_user')->where('id', $managerId)->value('fullname') ?: 'Manager';
+            $reason = trim((string) $request->input('reason', ''));
+            $note = 'Approval UNDONE by ' . $managerName . ' on ' . now()->format('d M Y H:i') . ($reason !== '' ? ' (' . $reason . ')' : '');
+
+            DB::transaction(function () use ($id, $req, $managerId, $note) {
+                DB::table('t_req_master')->where('id', $id)->update([
+                    'status' => 'cancelled',
+                    'level_1_status' => 'cancelled',
+                    'remarks' => trim((string) $req->remarks . ' | ' . $note),
+                    'requester_sync_required' => 1,
+                    'completed_at' => now(),
+                    'updated_by' => $managerId,
+                    'updated_at' => now(),
+                ]);
+                // Clean up any leave-marker attendance rows (present only for the processApproval path).
+                DB::table('t_ops_attendance')
+                    ->where('leave_request_id', $id)
+                    ->whereNull('login_time')
+                    ->delete();
+            });
+
+            \Log::info('Leave approval undone via attendance', ['leave_id' => $id, 'user_id' => $req->requester_user_id, 'by' => $managerId]);
+            return response()->json([
+                'success' => true,
+                'message' => 'Leave approval undone — the day(s) return to the balance. Apply the correct leave if needed.',
+            ]);
+        } catch (\Throwable $e) {
+            \Log::error('undoLeaveApproval failed', ['id' => $id, 'error' => $e->getMessage()]);
+            return response()->json(['success' => false, 'message' => 'Could not undo the leave.'], 500);
+        }
+    }
+
+    /**
+     * Correct a rider's meter reading from the web Attendance page (manager action, audited).
+     * Mirror of the mobile RiderController::updateMeterValues. Used when a rider recorded a wrong
+     * meter (e.g. a rejected petrol request) — the manager fixes it here, then the rider re-raises
+     * the petrol request which recomputes from the corrected meter. Attendance-admin only
+     * (block.rider on the route); NEVER touches petrol request rows, only the attendance meter cols.
+     */
+    public function updateMeterValues(Request $request)
+    {
+        try {
+            $validated = $request->validate([
+                'attendance_id' => 'required|integer',
+                'meter_start' => 'nullable|integer|min:0',
+                'meter_end' => 'nullable|integer|min:0',
+            ]);
+
+            $att = DB::table('t_ops_attendance')->where('id', $validated['attendance_id'])->first();
+            if (!$att) {
+                return response()->json(['success' => false, 'message' => 'Attendance record not found.'], 404);
+            }
+
+            // Only write the fields that were actually sent (so a blank field doesn't wipe a value).
+            $update = ['updated_by' => auth()->id(), 'updated_at' => now()];
+            if ($request->has('meter_start')) { $update['meter_start'] = $validated['meter_start']; }
+            if ($request->has('meter_end'))   { $update['meter_end']   = $validated['meter_end']; }
+
+            DB::table('t_ops_attendance')->where('id', $att->id)->update($update);
+
+            \Log::info('Meter values corrected via web attendance', [
+                'attendance_id' => $att->id, 'user_id' => $att->user_id, 'by' => auth()->id(),
+                'meter_start' => $update['meter_start'] ?? $att->meter_start,
+                'meter_end' => $update['meter_end'] ?? $att->meter_end,
+            ]);
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Meter updated.',
+                'meter_start' => $update['meter_start'] ?? $att->meter_start,
+                'meter_end' => $update['meter_end'] ?? $att->meter_end,
+            ]);
+        } catch (\Illuminate\Validation\ValidationException $ve) {
+            return response()->json(['success' => false, 'message' => $ve->validator->errors()->first()], 422);
+        } catch (\Throwable $e) {
+            \Log::error('updateMeterValues (web) failed', ['error' => $e->getMessage()]);
+            return response()->json(['success' => false, 'message' => 'Could not update the meter.'], 500);
+        }
+    }
+
+    /**
+     * U4 — manager BYPASS for a late home journey: open a timed unlock so the rider can enter his
+     * home meter (he was locked out for being late). Reason required; audited. Attendance-admin only
+     * (block.rider on the route). Optional FCM nudge to the rider.
+     */
+    public function homeJourneyUnlock(Request $request)
+    {
+        try {
+            $validated = $request->validate([
+                'attendance_id' => 'required|integer',
+                'reason' => 'required|string|max:200',
+                'action' => 'nullable|in:unlock,clear',
+            ]);
+            if (!\Illuminate\Support\Facades\Schema::hasColumn('t_ops_attendance', 'home_meter_unlock_until')) {
+                return response()->json(['success' => false, 'message' => 'Run the home-journey SQL first.'], 422);
+            }
+            $att = DB::table('t_ops_attendance')->where('id', $validated['attendance_id'])->first();
+            if (!$att) {
+                return response()->json(['success' => false, 'message' => 'Attendance record not found.'], 404);
+            }
+            $managerId = auth()->id();
+
+            if (($validated['action'] ?? 'unlock') === 'clear') {
+                DB::table('t_ops_attendance')->where('id', $att->id)->update([
+                    'home_meter_unlock_until' => null, 'home_meter_unlock_by' => null, 'updated_at' => now(),
+                ]);
+                return response()->json(['success' => true, 'message' => 'Unlock cleared.']);
+            }
+
+            $hjSvc = new \App\Services\Riders\HomeJourneyService();
+            $mins = (int) $hjSvc->config('HOME_LATE_UNLOCK_MINS', 10);
+            if ($mins < 1) { $mins = 10; }
+            $until = now()->addMinutes($mins);
+            $upd = [
+                'home_meter_unlock_until' => $until,
+                'home_meter_unlock_by' => $managerId,
+                'home_late_reason' => trim($validated['reason']),
+                'updated_at' => now(),
+            ];
+            // Record WHAT was breached at bypass time (owner's rule: the audit must show
+            // whether the location, the time, or both were wrong when the manager overrode).
+            if (\Illuminate\Support\Facades\Schema::hasColumn('t_ops_attendance', 'home_bypass_breach')) {
+                $upd['home_bypass_breach'] = $hjSvc->bypassBreach($att);
+            }
+            DB::table('t_ops_attendance')->where('id', $att->id)->update($upd);
+
+            // Non-fatal nudge to the rider that entry is open.
+            try {
+                (new \App\Services\FirebaseService())->notifyUser(
+                    (int) $att->user_id,
+                    ['title' => 'Meter entry unlocked', 'body' => 'Your manager opened meter entry — record your home meter within ' . $mins . ' minutes.'],
+                    ['type' => 'home_meter_unlock'],
+                    'shift_notifications'
+                );
+            } catch (\Throwable $e) { /* push is best-effort */ }
+
+            return response()->json(['success' => true, 'message' => 'Unlocked for ' . $mins . ' minutes.', 'unlock_until' => $until->format('Y-m-d H:i:s')]);
+        } catch (\Illuminate\Validation\ValidationException $ve) {
+            return response()->json(['success' => false, 'message' => $ve->validator->errors()->first()], 422);
+        } catch (\Throwable $e) {
+            \Log::error('homeJourneyUnlock failed', ['error' => $e->getMessage()]);
+            return response()->json(['success' => false, 'message' => 'Could not unlock.'], 500);
+        }
+    }
+
+    /**
+     * Checkout BYPASS — a rider blocked by the checkout-location rule (forgot to check out at his
+     * last delivery / the office and went home) gets a timed unlock so he can press OUT from where
+     * he is. Granted from the attendance page's "Rider bypasses" modal; audited on the row.
+     */
+    public function checkoutUnlock(Request $request)
+    {
+        try {
+            $validated = $request->validate([
+                'attendance_id' => 'required|integer',
+                'reason' => 'required|string|max:200',
+                'action' => 'nullable|in:unlock,clear',
+            ]);
+            if (!\Illuminate\Support\Facades\Schema::hasColumn('t_ops_attendance', 'checkout_unlock_until')) {
+                return response()->json(['success' => false, 'message' => 'Run the wave-2 SQL first.'], 422);
+            }
+            $att = DB::table('t_ops_attendance')->where('id', $validated['attendance_id'])->first();
+            if (!$att) {
+                return response()->json(['success' => false, 'message' => 'Attendance record not found.'], 404);
+            }
+            if (($validated['action'] ?? 'unlock') === 'clear') {
+                DB::table('t_ops_attendance')->where('id', $att->id)->update([
+                    'checkout_unlock_until' => null, 'checkout_unlock_by' => null,
+                    'checkout_unlock_reason' => null, 'updated_at' => now(),
+                ]);
+                return response()->json(['success' => true, 'message' => 'Checkout unlock cleared.']);
+            }
+            if (!empty($att->logout_time)) {
+                return response()->json(['success' => false, 'message' => 'Already checked out — nothing to unlock.'], 422);
+            }
+            $mins = (int) $this->attendanceConfig('CHECKOUT_UNLOCK_MINS', 10);
+            if ($mins < 1) { $mins = 10; }
+            $until = now()->addMinutes($mins);
+            DB::table('t_ops_attendance')->where('id', $att->id)->update([
+                'checkout_unlock_until' => $until,
+                'checkout_unlock_by' => auth()->id(),
+                'checkout_unlock_reason' => trim($validated['reason']),
+                'updated_at' => now(),
+            ]);
+            // Tell the rider his OUT button will work now (best-effort).
+            try {
+                (new \App\Services\FirebaseService())->notifyUser(
+                    (int) $att->user_id,
+                    ['title' => 'Checkout unlocked', 'body' => 'Your manager unlocked checkout — press OUT within ' . $mins . ' minutes from wherever you are.'],
+                    ['type' => 'checkout_unlock'],
+                    'shift_notifications'
+                );
+            } catch (\Throwable $e) { /* push best-effort */ }
+            return response()->json(['success' => true, 'message' => 'Checkout unlocked for ' . $mins . ' minutes.', 'unlock_until' => $until->format('Y-m-d H:i:s')]);
+        } catch (\Illuminate\Validation\ValidationException $ve) {
+            return response()->json(['success' => false, 'message' => $ve->validator->errors()->first()], 422);
+        } catch (\Throwable $e) {
+            \Log::error('checkoutUnlock failed', ['error' => $e->getMessage()]);
+            return response()->json(['success' => false, 'message' => 'Could not unlock.'], 500);
+        }
+    }
+
+    /**
+     * U4 — manager enters the home meter FOR the rider (phone dead / can't submit). Closes the day:
+     * writes meter_home + meter_end + home_arrived_at (source=manager) + reason. Attendance-admin only.
+     */
+    public function homeMeterManagerEntry(Request $request)
+    {
+        try {
+            $validated = $request->validate([
+                'attendance_id' => 'required|integer',
+                'meter_home' => 'required|integer|min:0',
+                'reason' => 'nullable|string|max:200',
+            ]);
+            if (!\Illuminate\Support\Facades\Schema::hasColumn('t_ops_attendance', 'meter_home')) {
+                return response()->json(['success' => false, 'message' => 'Run the home-journey SQL first.'], 422);
+            }
+            $att = DB::table('t_ops_attendance')->where('id', $validated['attendance_id'])->first();
+            if (!$att) {
+                return response()->json(['success' => false, 'message' => 'Attendance record not found.'], 404);
+            }
+            $managerId = auth()->id();
+            $reason = trim((string) ($validated['reason'] ?? '')) ?: 'Entered by manager';
+            $upd = [
+                'meter_home' => (int) $validated['meter_home'],
+                'meter_end' => (int) $validated['meter_home'], // day-closing reading
+                'home_arrived_at' => now(),
+                'home_arrival_source' => 'manager',
+                'home_late_reason' => $reason,
+                'home_meter_unlock_by' => $managerId,
+                'updated_by' => $managerId,
+                'updated_at' => now(),
+            ];
+            // Audit what was wrong BEFORE the manager entered it (computed on the pre-update row).
+            if (\Illuminate\Support\Facades\Schema::hasColumn('t_ops_attendance', 'home_bypass_breach')) {
+                $upd['home_bypass_breach'] = (new \App\Services\Riders\HomeJourneyService())->bypassBreach($att);
+            }
+            DB::table('t_ops_attendance')->where('id', $att->id)->update($upd);
+            \Log::info('Home meter entered by manager', ['attendance_id' => $att->id, 'user_id' => $att->user_id, 'by' => $managerId]);
+            return response()->json(['success' => true, 'message' => 'Home meter recorded for the rider.']);
+        } catch (\Illuminate\Validation\ValidationException $ve) {
+            return response()->json(['success' => false, 'message' => $ve->validator->errors()->first()], 422);
+        } catch (\Throwable $e) {
+            \Log::error('homeMeterManagerEntry failed', ['error' => $e->getMessage()]);
+            return response()->json(['success' => false, 'message' => 'Could not record the home meter.'], 500);
+        }
+    }
+
+    /**
+     * U4 — dismissable in-app banners: company-bike riders who came home late / forgot their meter.
+     * Audience-gated by the 'receive_bike_meter_alerts' permission (the owner assigns the roles);
+     * anyone else gets an empty list so the banner never shows. Excludes the caller's dismissals.
+     */
+    public function homeAlerts(Request $request)
+    {
+        try {
+            $user = auth()->user();
+            if (!$user || !$user->hasMobilePermission('receive_bike_meter_alerts')) {
+                return response()->json(['success' => true, 'alerts' => []]);
+            }
+            $alerts = (new \App\Services\Riders\HomeJourneyService())->openEscalations();
+            if (!empty($alerts) && \Illuminate\Support\Facades\Schema::hasTable('t_ops_alert_dismissal')) {
+                $keys = array_map(fn ($a) => 'home_meter:' . $a['attendance_id'], $alerts);
+                $dismissed = array_flip(DB::table('t_ops_alert_dismissal')
+                    ->where('user_id', $user->id)->whereIn('alert_key', $keys)->pluck('alert_key')->all());
+                $alerts = array_values(array_filter($alerts, fn ($a) => !isset($dismissed['home_meter:' . $a['attendance_id']])));
+            }
+            return response()->json(['success' => true, 'alerts' => $alerts]);
+        } catch (\Throwable $e) {
+            return response()->json(['success' => true, 'alerts' => []]);
+        }
+    }
+
+    /** U4 — the current user dismisses a home-meter banner (per user, per attendance row). */
+    public function dismissHomeAlert(Request $request)
+    {
+        try {
+            $validated = $request->validate(['attendance_id' => 'required|integer']);
+            $user = auth()->user();
+            if (!$user) { return response()->json(['success' => false], 401); }
+            if (\Illuminate\Support\Facades\Schema::hasTable('t_ops_alert_dismissal')) {
+                DB::table('t_ops_alert_dismissal')->updateOrInsert(
+                    ['user_id' => $user->id, 'alert_key' => 'home_meter:' . $validated['attendance_id']],
+                    ['dismissed_at' => now()]
+                );
+            }
+            return response()->json(['success' => true]);
+        } catch (\Throwable $e) {
+            return response()->json(['success' => false, 'message' => 'Could not dismiss.'], 500);
+        }
+    }
+
+    /**
      * Grant a rider EXTRA leave days on top of the yearly quota (manager action, audited).
      * Writes a +days row to the leave ledger (t_hr_leave_grant). Requires the Phase-E SQL.
      */
@@ -960,6 +1475,75 @@ class AttendanceController extends Controller
         }
     }
 
+    /**
+     * Set / clear "not needed" for a DATE RANGE across one or more riders — the "🚫 Not required"
+     * option in the shift assign sheet (web planner + mobile). Idempotent add (won't duplicate) or
+     * remove. Off/holiday days inside the range are harmless (dayKind ignores the tag there); the
+     * cell/report only shows "not needed" on working days. Bounded to 92 days.
+     */
+    public function setDayTagRange(Request $request)
+    {
+        $validator = \Illuminate\Support\Facades\Validator::make($request->all(), [
+            'user_ids' => 'required|array|min:1',
+            'user_ids.*' => 'integer|exists:t_sys_user,id',
+            'from' => 'required|date_format:Y-m-d',
+            'to' => 'nullable|date_format:Y-m-d|after_or_equal:from',
+            'action' => 'nullable|in:add,remove',
+        ]);
+        if ($validator->fails()) {
+            return response()->json(['success' => false, 'message' => $validator->errors()->first()], 422);
+        }
+        if (!\Illuminate\Support\Facades\Schema::hasTable('t_ops_day_tag')) {
+            return response()->json(['success' => false, 'message' => '"Not needed" is not set up yet — run the Phase-E SQL.'], 422);
+        }
+        try {
+            $from = \Carbon\Carbon::parse($request->from)->startOfDay();
+            $to = $request->filled('to') ? \Carbon\Carbon::parse($request->to)->startOfDay() : $from->copy();
+            // NB: Carbon 3 diffInDays is SIGNED — use abs() so a past-ordered pair still bounds.
+            if (abs($from->diffInDays($to)) > 92) {
+                return response()->json(['success' => false, 'message' => 'Please pick a range of 92 days or less.'], 422);
+            }
+            $userIds = array_values(array_unique(array_map('intval', $request->user_ids)));
+            $remove = $request->input('action', 'add') === 'remove';
+            $dates = [];
+            for ($d = $from->copy(); $d->lte($to); $d->addDay()) {
+                $dates[] = $d->format('Y-m-d');
+            }
+            $svc = new ShiftResolutionService();
+            $affected = 0;
+            DB::transaction(function () use ($userIds, $dates, $remove, $svc, &$affected) {
+                foreach ($userIds as $uid) {
+                    if ($remove) {
+                        $affected += DB::table('t_ops_day_tag')->where('user_id', $uid)->whereIn('tag_date', $dates)->delete();
+                    } else {
+                        $existing = DB::table('t_ops_day_tag')->where('user_id', $uid)->whereIn('tag_date', $dates)->pluck('tag_date')
+                            ->map(fn ($t) => substr((string) $t, 0, 10))->all();
+                        $existingSet = array_flip($existing);
+                        $rows = [];
+                        foreach ($dates as $ds) {
+                            if (!isset($existingSet[$ds])) {
+                                $rows[] = ['user_id' => $uid, 'tag_date' => $ds, 'tag' => 'not_needed', 'note' => null, 'created_by' => auth()->id(), 'created_at' => now()];
+                            }
+                        }
+                        if (!empty($rows)) { DB::table('t_ops_day_tag')->insert($rows); $affected += count($rows); }
+                    }
+                    $svc->clearUserShiftCache($uid);
+                }
+            });
+            $dayCount = count($dates);
+            return response()->json([
+                'success' => true,
+                'affected' => $affected,
+                'message' => $remove
+                    ? 'Cleared "not needed" on ' . $dayCount . ' day(s).'
+                    : 'Marked not needed on ' . $dayCount . ' day(s) — paid, not counted absent.',
+            ]);
+        } catch (\Throwable $e) {
+            \Log::error('setDayTagRange failed', ['error' => $e->getMessage()]);
+            return response()->json(['success' => false, 'message' => 'Could not update the days.'], 500);
+        }
+    }
+
     // Store new attendance record
     public function store(Request $request)
     {
@@ -972,6 +1556,19 @@ class AttendanceController extends Controller
             ]);
 
             $loggedInUserId = auth()->id() ?? 1; // Track who made the change
+
+            // R8 — a web user may NOT manually edit their OWN attendance from the web.
+            // Own check-in/out must come from the mobile app (genuine GPS + location) so
+            // nobody can hand-enter their own time. Applies to current AND past dates
+            // (store() accepts any date). Another admin can still fix this person's row.
+            $authUserId = auth()->id();
+            if ($authUserId && (int) $validated['user_id'] === (int) $authUserId) {
+                return response()->json([
+                    'success' => false,
+                    'self_edit_blocked' => true,
+                    'message' => "You can't edit your own attendance from the web — check in or out from the app.",
+                ], 403);
+            }
 
             // Check if attendance already exists
             $existing = DB::table('t_ops_attendance')
@@ -1096,6 +1693,7 @@ class AttendanceController extends Controller
                     DB::raw('COALESCE(rp.shift_end, "17:00") as legacy_shift_end'),
                     'lr.id as leave_request_id',
                     'lr.status as leave_status',
+                    'lr.leave_type',
                     'lr.leave_start_date',
                     'lr.leave_end_date'
             )
@@ -1163,22 +1761,26 @@ class AttendanceController extends Controller
                     'total_late_minutes' => 0,
                     'total_overtime_minutes' => 0,
                     'leave_dates' => [],
+                    'half_dates' => [], // half-day leave dates (0.5 each; shown as "½ day", not on-leave)
                     'daily' => [],
                     'processed_attendance_ids' => [] // Track processed attendance records to prevent duplicates
                 ];
             }
 
-            // Track leave dates for this user
+            // Track leave dates for this user — half-days kept separate so they count 0.5 and
+            // display as "½ day" (present) rather than a full on-leave day.
             if ($record->leave_request_id && $record->leave_start_date && $record->leave_end_date) {
+                $isHalf = strtolower((string) ($record->leave_type ?? '')) === 'half_day';
                 $leaveStart = new \DateTime($record->leave_start_date);
                 $leaveEnd = new \DateTime($record->leave_end_date);
                 $current = clone $leaveStart;
-                
+
                 while ($current <= $leaveEnd) {
                     $dateStr = $current->format('Y-m-d');
                     // Only count if within the month range
                     if ($dateStr >= $startDate && $dateStr <= $endDate) {
-                        $byUser[$record->user_id]['leave_dates'][$dateStr] = true;
+                        if ($isHalf) { $byUser[$record->user_id]['half_dates'][$dateStr] = true; }
+                        else { $byUser[$record->user_id]['leave_dates'][$dateStr] = true; }
                     }
                     $current->modify('+1 day');
                 }
@@ -1218,6 +1820,9 @@ class AttendanceController extends Controller
                 // Check if this date is on leave
                 if (isset($byUser[$record->user_id]['leave_dates'][$record->attendance_date])) {
                     $status = 'on_leave';
+                } elseif (isset($byUser[$record->user_id]['half_dates'][$record->attendance_date])) {
+                    // Half-day: present (he checked in), just flagged ½ day — never a full leave.
+                    $status = $record->login_time ? 'half_day' : 'on_leave';
                 } elseif (!$record->login_time && !$record->logout_time) {
                     // No attendance and no leave = absent
                     $status = 'absent';
@@ -1225,8 +1830,12 @@ class AttendanceController extends Controller
                 
                 // Resolve the shift FOR THIS DATE so the per-day row shows the shift
                 // that was actually in effect (not today's), matching the totals.
+                // KEYED BY DATE (not appended): the leave-request JOIN yields one row per
+                // (attendance × leave) pair, so a user with any leave in the month used to get
+                // duplicate day rows. Last write wins — by then the leave/half maps for this
+                // date are complete, so its status is the most informed one.
                 $dayShift = $shiftService->getUserShift($record->user_id, $record->attendance_date);
-                $byUser[$record->user_id]['daily'][] = [
+                $byUser[$record->user_id]['daily'][$record->attendance_date] = [
                     'attendance_date' => $record->attendance_date,
                     'login_time' => $record->login_time,
                     'logout_time' => $record->logout_time,
@@ -1243,9 +1852,19 @@ class AttendanceController extends Controller
         
         // Calculate leave_days and absent_days for each user
         $cycle = $this->attendanceCycle(); // configured yearly window (once, for the loop)
+        // Office-checkout exceptions for the whole month, batched ONCE for all users (R9.1) —
+        // a non-bike rider who delivered but checked out at the office. Guarded / non-fatal.
+        $officeCheckoutMap = [];
+        try {
+            $officeCheckoutMap = (new \App\Services\Riders\CheckoutClassifierService())
+                ->officeCheckoutDays(array_keys($byUser), $startDate, $effectiveEndDate);
+        } catch (\Throwable $e) { $officeCheckoutMap = []; }
         // Also add absent day records to the daily array for easier tracking
         foreach ($byUser as $userId => &$userData) {
-            $userData['leave_days'] = count($userData['leave_dates']);
+            // Full leave dates count 1; half-days count 0.5 (matches the yearly counter).
+            $userData['leave_days'] = count($userData['leave_dates']) + 0.5 * count($userData['half_dates']);
+            $userData['half_days'] = count($userData['half_dates']);
+            $userData['office_checkout_days'] = count($officeCheckoutMap[$userId] ?? []);
             // Absent (MO) uses the SAME canonical definition as Absent (YR), the month_absent
             // drill, and the rider app: a working-kind day with no login and no approved leave.
             // This excludes manager "not needed" tags (and off/holiday), so tagging a no-show
@@ -1286,8 +1905,9 @@ class AttendanceController extends Controller
                     if ($shiftService->isWorkingDay($userId, $dateStr)) {
                         // Shift in effect on THIS date (memoized) for the row display.
                         $fillerShift = $shiftService->getUserShift($userId, $dateStr);
-                        // Check if on leave
-                        if (isset($userData['leave_dates'][$dateStr])) {
+                        // Check if on leave (a half-day date with no attendance shouldn't exist —
+                        // apply blocks it — but if data drifted, show leave rather than a false Absent)
+                        if (isset($userData['leave_dates'][$dateStr]) || isset($userData['half_dates'][$dateStr])) {
                             // This is a working day on leave = ON LEAVE
                             $userData['daily'][] = [
                                 'attendance_date' => $dateStr,
@@ -1321,6 +1941,7 @@ class AttendanceController extends Controller
             });
             
             unset($userData['leave_dates']);
+            unset($userData['half_dates']);
             unset($userData['processed_attendance_ids']);
 
             // Approved leaves for current year. Use OVERLAP with the year window (not
@@ -1421,7 +2042,24 @@ class AttendanceController extends Controller
         $byUser = [];
         $shiftService = new ShiftResolutionService();
 
+        // HALF-DAY dates in range (all users, one query): those days count on-time, never late.
+        $halfDayByUserDate = [];
+        try {
+            $hdRows = DB::table('t_req_master as r')
+                ->join('t_req_category as c', 'c.id', '=', 'r.category_id')
+                ->where('c.category_code', 'leave')
+                ->where('r.leave_type', 'half_day')
+                ->whereIn('r.status', ['approved', 'pending'])
+                ->where('r.leave_start_date', '<=', $end)
+                ->where('r.leave_end_date', '>=', $start)
+                ->get(['r.requester_user_id', 'r.leave_start_date']);
+            foreach ($hdRows as $h) {
+                $halfDayByUserDate[$h->requester_user_id . '|' . substr((string) $h->leave_start_date, 0, 10)] = true;
+            }
+        } catch (\Throwable $e) { /* none */ }
+
         foreach ($records as $r) {
+            $isHalf = isset($halfDayByUserDate[$r->user_id . '|' . substr((string) $r->attendance_date, 0, 10)]);
             // Effective shift start for THIS date: prefer the frozen check-in snapshot,
             // else resolve the shift that was in effect on that date (not today's, not
             // the legacy rider-profile column).
@@ -1430,10 +2068,10 @@ class AttendanceController extends Controller
 
             if (!$r->login_time) {
                 $absent++;
-            } elseif ($r->login_time > $shiftStart) {
+            } elseif (!$isHalf && $r->login_time > $shiftStart) {
                 $late++;
             } else {
-                $onTime++;
+                $onTime++; // on time, or a half-day (no lateness counted)
             }
 
             // Per user stats
@@ -1452,7 +2090,7 @@ class AttendanceController extends Controller
                 $byUser[$r->user_id]['absent']++;
             } else {
                 $byUser[$r->user_id]['present']++;
-                if ($r->login_time > $shiftStart) {
+                if (!$isHalf && $r->login_time > $shiftStart) {
                     $byUser[$r->user_id]['late']++;
                 }
             }
@@ -1510,6 +2148,9 @@ class AttendanceController extends Controller
                 $endDate = min($fromDate, date('Y-m-d'));
                 $startDate = date('Y-m-d', strtotime($endDate . ' -30 days'));
             }
+
+            // Half-day dates in range → present with no late/OT, shown as "½ day" (owner's rule).
+            $halfDaySet = (new \App\Services\HR\LeavePolicyService())->halfDayDates($userId, $startDate, $endDate);
 
             // Get user info
             $user = DB::table('t_sys_user as u')
@@ -1651,10 +2292,13 @@ class AttendanceController extends Controller
             $totalDays = $records->count();
             $presentDays = $records->where('login_time', '!=', null)->count();
             
-            // Count leave days
+            // Count leave days — a half-day is NOT a full on-leave day (he was present); it's
+            // reflected as 0.5 in the yearly leave balance, not in this present/absent day split.
             $onLeaveDays = 0;
             foreach ($records as $record) {
-                if ($record->leave_request_id && 
+                $rd = substr((string) $record->attendance_date, 0, 10);
+                if (isset($halfDaySet[$rd])) { continue; }
+                if ($record->leave_request_id &&
                     in_array(strtolower($record->leave_status), ['approved', 'pending'])) {
                     $onLeaveDays++;
                 }
@@ -1670,6 +2314,8 @@ class AttendanceController extends Controller
             $totalOrdersDelivered = 0;
 
             foreach ($records as $record) {
+                $recDate = substr((string) $record->attendance_date, 0, 10);
+                $record->is_half_day = isset($halfDaySet[$recDate]);
                 // Calculate hours worked
                 if ($record->login_time && $record->logout_time) {
                     $login = strtotime($record->login_time);
@@ -1679,6 +2325,23 @@ class AttendanceController extends Controller
                     $record->hours_worked = round($hours, 1);
                 } else {
                     $record->hours_worked = 0;
+                }
+
+                // Half-day: no lateness, no overtime (owner's rule). Skip the whole computation.
+                if ($record->is_half_day) {
+                    $record->late_minutes = 0;
+                    $record->overtime_minutes = 0;
+                    $totalOrdersDelivered += $record->total_orders_delivered;
+                    if ($record->meter_start && $record->meter_end) {
+                        $record->meter_distance = abs(intval($record->meter_end) - intval($record->meter_start));
+                    } else {
+                        $record->meter_distance = null;
+                    }
+                    $record->first_delivery_time = ($record->first_delivery_time && $record->first_delivery_time !== '-')
+                        ? @date('H:i', strtotime($record->first_delivery_time)) : '-';
+                    $record->last_delivery_time = ($record->last_delivery_time && $record->last_delivery_time !== '-')
+                        ? @date('H:i', strtotime($record->last_delivery_time)) : '-';
+                    continue;
                 }
 
                 // Per-day late/overtime — prefer the FROZEN snapshot; else resolve the
@@ -1758,8 +2421,11 @@ class AttendanceController extends Controller
             $byDate = [];
             foreach ($records as $r) {
                 $r->attendance_date = substr((string) $r->attendance_date, 0, 10);
+                $isHalf = isset($halfDaySet[$r->attendance_date]);
+                $r->is_half_day = $isHalf;
                 $onLeave = $r->leave_request_id && in_array(strtolower((string) $r->leave_status), ['approved', 'pending']);
-                if ($onLeave)                                 $r->status = 'on_leave';
+                if ($isHalf && $r->login_time)                 $r->status = 'half_day';
+                elseif ($onLeave)                              $r->status = 'on_leave';
                 elseif ($r->login_time && $r->late_minutes > 0) $r->status = 'late';
                 elseif ($r->login_time)                        $r->status = 'present';
                 else                                           $r->status = 'absent';

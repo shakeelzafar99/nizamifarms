@@ -92,17 +92,27 @@ class ExecutiveClosingService
             // aggregates so the recompute really re-reads the database.
             Cache::forget($key);
             Cache::forget('hq_qurbani_order_ids');
+            Cache::forget('hq_cust_delivery_spans');
+            Cache::forget('hq_qb_season_' . $year);
+            Cache::forget('hq_qb_season_' . ($year - 1));
             [$s, $e] = $this->period($unit, $year, $month);
             [$ps, $pe] = $this->previousPeriod($unit, $year, $month);
-            Cache::forget('hq_raw_' . $s->getTimestamp() . '_' . $e->getTimestamp());
-            Cache::forget('hq_raw_' . $ps->getTimestamp() . '_' . $pe->getTimestamp());
+            // Cache key of the raw window now carries the cost-side (ledger) end;
+            // current widens to the full month, previous stays exact.
+            $le  = $this->ledgerEndFor($unit, $e) ?? $e;
+            Cache::forget('hq_raw_' . $s->getTimestamp() . '_' . $e->getTimestamp() . '_' . $le->getTimestamp());
+            Cache::forget('hq_raw_' . $ps->getTimestamp() . '_' . $pe->getTimestamp() . '_' . $pe->getTimestamp());
         }
 
         return Cache::remember($key, $this->ttlFor($unit, $year, $month), function () use ($unit, $year, $month) {
             [$start, $end, $label, $isOpen] = $this->period($unit, $year, $month);
-            $cur  = $this->computeClosing($unit, $start, $end);
+            // Cost side spans the full calendar month (match Reports); revenue
+            // stays to-date. Qurbani → null (seasonal, unchanged).
+            $ledgerEnd = $this->ledgerEndFor($unit, $end);
+            $cur  = $this->computeClosing($unit, $start, $end, $ledgerEnd);
 
-            // Previous period (previous month, or previous year for Qurbani).
+            // Previous period (previous month, or previous year for Qurbani). Its
+            // cost side stays exact (not displayed; only revenue drives deltas).
             [$pStart, $pEnd] = $this->previousPeriod($unit, $year, $month);
             $prev = $this->computeClosing($unit, $pStart, $pEnd);
 
@@ -596,13 +606,31 @@ class ExecutiveClosingService
     }
 
     /**
-     * Active-customer counts + the recency ladder for the whole regular customer
-     * base, computed from one grouped "last delivered order per customer" query.
-     * Cached for the day (the windows are relative to today).
+     * Every regular customer's FIRST and LAST delivery. "Regular" = the growth base:
+     * non-Shopify, non-Qurbani, currently delivered/completed.
+     *
+     * FIRST drives the DELIVERY clock (owner ruling, Jul-2026): a customer is "new"
+     * in the month they first RECEIVED an order, not the month they placed it — the
+     * same clock as revenue and every other HQ number. The old `first_order_date`
+     * (placement) clock silently lost anyone who ordered late in one month and was
+     * delivered in the next: their placement month had no delivery, and their
+     * delivery month's placement fell in the prior month, so they were never counted
+     * as new in ANY month. It also treated a Qurbani-only buyer's first regular
+     * purchase as "returning"; since Qurbani is excluded from this base, their first
+     * regular delivery now correctly makes them new here (owner ruling).
+     *
+     * ONE pass over delivery history → every regular customer's FIRST and LAST
+     * delivery. Deliberately shared: the recency ladder / active counts need the
+     * LAST, the new-customer count and the cohort need the FIRST. That scan is the
+     * most expensive query on this page (the history table has no index on
+     * status_code, so it reads ~45k rows), so it runs ONCE per hour here instead of
+     * once per consumer.
+     *
+     * @return array<int,array{first:string,last:string}>
      */
-    private function regularGrowthEngine(): array
+    private function customerDeliverySpans(): array
     {
-        return Cache::remember('hq_growth_engine_' . Carbon::now()->format('Y-m-d'), 3600, function () {
+        return Cache::remember('hq_cust_delivery_spans', 3600, function () {
             $ids = $this->qurbaniOrderIds();
             $rows = DB::table('t_crm_prod_order as o')
                 ->joinSub($this->deliveredDatesSub(), 'd', 'd.order_id', '=', 'o.id')
@@ -613,16 +641,51 @@ class ExecutiveClosingService
                 ->whereNotNull('o.customer_id')
                 ->when(!empty($ids), fn ($q) => $q->whereNotIn('o.id', $ids))
                 ->groupBy('o.customer_id')
-                ->selectRaw('o.customer_id, MAX(d.delivered_at) last_del')
+                ->selectRaw('o.customer_id id, MIN(d.delivered_at) first_del, MAX(d.delivered_at) last_del')
                 ->get();
+            $out = [];
+            foreach ($rows as $r) {
+                if (!$r->first_del) continue;
+                $out[(int) $r->id] = ['first' => $r->first_del, 'last' => $r->last_del];
+            }
+            return $out;
+        });
+    }
 
-            $today = Carbon::now();
+    /** Ids of customers whose FIRST regular delivery falls inside the window. */
+    private function newCustomerIds(Carbon $start, Carbon $end): array
+    {
+        $s = $start->toDateTimeString();
+        $e = $end->toDateTimeString();
+        $out = [];
+        foreach ($this->customerDeliverySpans() as $cid => $sp) {
+            if ($sp['first'] >= $s && $sp['first'] <= $e) $out[] = $cid;
+        }
+        return $out;
+    }
+
+    /**
+     * Active-customer counts + the recency ladder for the whole regular customer
+     * base, computed from one grouped "last delivered order per customer" query.
+     * Cached for the day (the windows are relative to today).
+     */
+    private function regularGrowthEngine(): array
+    {
+        return Cache::remember('hq_growth_engine_' . Carbon::now()->format('Y-m-d'), 3600, function () {
+            // Reuses the shared delivery-span scan (see customerDeliverySpans) —
+            // the ladder only needs each customer's LAST delivery.
+            $rows = $this->customerDeliverySpans();
+
+            // Calendar-day recency (date minus date), matching the drill's SQL
+            // DATEDIFF exactly — fractional-day counting put ~19 customers in a
+            // different band on the tile than in its own drill list.
+            $today = Carbon::now()->startOfDay();
             $a30 = $a60 = $a90 = 0;
             // bands: 0-30, 31-60, 61-90, 91-180, 180+
             $bands = [0, 0, 0, 0, 0];
-            foreach ($rows as $r) {
-                if (!$r->last_del) continue;
-                $days = Carbon::parse($r->last_del)->diffInDays($today);
+            foreach ($rows as $sp) {
+                if (!$sp['last']) continue;
+                $days = (int) Carbon::parse(substr($sp['last'], 0, 10))->diffInDays($today);
                 if ($days <= 30) { $a30++; $bands[0]++; }
                 elseif ($days <= 60) { $bands[1]++; }
                 elseif ($days <= 90) { $bands[2]++; }
@@ -650,20 +713,21 @@ class ExecutiveClosingService
     /** Qurbani seasonal growth: season buyers + returning-from-last-season. */
     private function qurbaniGrowthEngine(int $year): array
     {
-        $prefix = 'QUR' . substr((string) $year, -2) . '%';
-        $prevPrefix = 'QUR' . substr((string) ($year - 1), -2) . '%';
+        // Season identity = QUR{yy} numbers OR (2025) product-backfilled orders.
+        $ids     = $this->qurbaniSeasonOrderIds($year) ?: [0];
+        $prevIds = $this->qurbaniSeasonOrderIds($year - 1) ?: [0];
 
         $buyers = (int) DB::table('t_crm_prod_order as o')
-            ->where('o.order_number', 'like', $prefix)
+            ->whereIn('o.id', $ids)
             ->where('o.order_status', '<>', 'cancelled')
             ->distinct()->count('o.customer_id');
         // returning = this season's buyers who also bought last season
         $returning = (int) DB::table('t_crm_prod_order as o')
-            ->where('o.order_number', 'like', $prefix)
+            ->whereIn('o.id', $ids)
             ->where('o.order_status', '<>', 'cancelled')
-            ->whereIn('o.customer_id', function ($q) use ($prevPrefix) {
+            ->whereIn('o.customer_id', function ($q) use ($prevIds) {
                 $q->select('customer_id')->from('t_crm_prod_order')
-                    ->where('order_number', 'like', $prevPrefix)
+                    ->whereIn('id', $prevIds)
                     ->where('order_status', '<>', 'cancelled');
             })
             ->distinct()->count('o.customer_id');
@@ -674,7 +738,97 @@ class ExecutiveClosingService
             'returning'     => $returning,
             'new_to_season' => max($buyers - $returning, 0),
             'retention_pct' => $buyers > 0 ? round($returning / $buyers * 100, 1) : 0,
+            'mix'           => $this->qurbaniCustomerMix($year),
         ];
+    }
+
+    /**
+     * "Did the Qurbani season build the regular business?" (owner ask, Jul-2026).
+     * Takes everyone who bought Qurbani this season and answers two questions:
+     *
+     *   1. NEW to Nizami Farms, or EXISTING? New = that Qurbani order was their
+     *      first-ever order with us (nothing placed before it). Existing = they had
+     *      already ordered something (regular, or a previous Qurbani season).
+     *   2. Do they ALSO buy regular meat = do they have any delivered non-Qurbani
+     *      order, ever?
+     *
+     * For the NEW group, "also buys regular" literally means CONVERTED: the Qurbani
+     * order was their first contact with us, so any regular order came afterwards.
+     * new_only is therefore the win-back pool — people Qurbani brought in who have
+     * never bought meat from us since.
+     *
+     * Season identity = qurbaniSeasonOrderIds (QUR{yy} numbers, or product-
+     * backfilled orders for 2025). "Regular" excludes Qurbani via the canonical
+     * filter, so an order that is Qurbani-flagged but not QUR-numbered still
+     * won't count as regular.
+     * Three set-wise queries (no correlated subqueries) keyed on ~600 buyer ids.
+     */
+    private function qurbaniCustomerMix(int $year): array
+    {
+        $empty = [
+            'buyers'   => 0,
+            'new'      => ['total' => 0, 'regular' => 0, 'only' => 0, 'pct' => 0],
+            'existing' => ['total' => 0, 'regular' => 0, 'only' => 0, 'pct' => 0],
+        ];
+        try {
+            $seasonIds = $this->qurbaniSeasonOrderIds($year);
+            if (empty($seasonIds)) return $empty;
+
+            // 1. Season buyers + the date of their FIRST Qurbani order this season.
+            $buyers = DB::table('t_crm_prod_order')
+                ->whereIn('id', $seasonIds)
+                ->where('order_status', '<>', 'cancelled')
+                ->whereNotNull('customer_id')
+                ->groupBy('customer_id')
+                ->selectRaw('customer_id cid, MIN(order_date) first_qur')
+                ->get();
+            if ($buyers->isEmpty()) return $empty;
+            $cids = $buyers->pluck('cid')->map(fn ($v) => (int) $v)->all();
+
+            // 2. Their earliest order of ANY kind (Shopify-source excluded, matching
+            //    how first_order_date is defined). Earlier than their first Qurbani
+            //    order → they already knew us.
+            $earliest = DB::table('t_crm_prod_order')
+                ->whereIn('customer_id', $cids)
+                ->where(function ($w) {
+                    $w->whereNull('external_source')->orWhere('external_source', '<>', 'shopify');
+                })
+                ->groupBy('customer_id')
+                ->selectRaw('customer_id cid, MIN(order_date) first_any')
+                ->pluck('first_any', 'cid');
+
+            // 3. Which of them have ever RECEIVED a regular (non-Qurbani) order.
+            $qids = $this->qurbaniOrderIds();
+            $regular = DB::table('t_crm_prod_order')
+                ->whereIn('customer_id', $cids)
+                ->whereIn('order_status', self::DELIVERED_STATUSES)
+                ->where(function ($w) {
+                    $w->whereNull('external_source')->orWhere('external_source', '<>', 'shopify');
+                })
+                ->when(!empty($qids), fn ($q) => $q->whereNotIn('id', $qids))
+                ->distinct()->pluck('customer_id')
+                ->map(fn ($v) => (int) $v)->flip();
+
+            $out = $empty;
+            foreach ($buyers as $b) {
+                $cid    = (int) $b->cid;
+                $first  = $earliest[$b->cid] ?? null;
+                // No earlier order than their first Qurbani one → new to us.
+                $isNew  = $first === null || $first >= $b->first_qur;
+                $hasReg = $regular->has($cid);
+                $g = $isNew ? 'new' : 'existing';
+                $out[$g]['total']++;
+                $hasReg ? $out[$g]['regular']++ : $out[$g]['only']++;
+            }
+            $out['buyers'] = $buyers->count();
+            foreach (['new', 'existing'] as $g) {
+                $out[$g]['pct'] = $out[$g]['total'] > 0
+                    ? round($out[$g]['regular'] / $out[$g]['total'] * 100, 1) : 0;
+            }
+            return $out;
+        } catch (\Throwable $e) {
+            return $empty;
+        }
     }
 
     /**
@@ -687,13 +841,17 @@ class ExecutiveClosingService
         return Cache::remember('hq_cohort_' . Carbon::now()->format('Y-m'), 3600, function () {
             $ids = $this->qurbaniOrderIds();
             $start = Carbon::now()->subMonths(5)->startOfMonth();
-            $custs = DB::table('t_crm_prod_customer')
-                ->whereNotNull('first_order_date')
-                ->where('first_order_date', '>=', $start)
-                ->get(['id', 'first_order_date']);
-            if ($custs->isEmpty()) return ['months' => []];
+            // Cohort membership uses the SAME delivery clock as "new customers"
+            // (owner ruling) — a cohort IS that month's new customers, so the row
+            // size must equal the New-customers card for that month.
+            $startStr = $start->toDateTimeString();
+            $custs = [];
+            foreach ($this->customerDeliverySpans() as $cid => $sp) {
+                if ($sp['first'] >= $startStr) $custs[$cid] = $sp['first'];
+            }
+            if (empty($custs)) return ['months' => []];
 
-            $custIds = $custs->pluck('id')->all();
+            $custIds = array_keys($custs);
             $orderMonths = DB::table('t_crm_prod_order as o')
                 ->joinSub($this->deliveredDatesSub(), 'd', 'd.order_id', '=', 'o.id')
                 ->whereIn('o.customer_id', $custIds)
@@ -706,13 +864,13 @@ class ExecutiveClosingService
 
             $nowMonth = Carbon::now()->format('Y-m'); // current month is incomplete
             $coh = [];
-            foreach ($custs as $c) {
-                $fm = Carbon::parse($c->first_order_date)->startOfMonth();
+            foreach ($custs as $cid => $firstDel) {
+                $fm = Carbon::parse($firstDel)->startOfMonth();
                 $key = $fm->format('Y-m');
                 $coh[$key]['size'] = ($coh[$key]['size'] ?? 0) + 1;
                 for ($k = 1; $k <= 3; $k++) {
                     $mk = $fm->copy()->addMonths($k)->format('Y-m');
-                    if (!empty($byCust[$c->id][$mk])) {
+                    if (!empty($byCust[$cid][$mk])) {
                         $coh[$key]['m' . $k] = ($coh[$key]['m' . $k] ?? 0) + 1;
                     }
                 }
@@ -779,7 +937,10 @@ class ExecutiveClosingService
                 'phone'     => $r->phone ?: '—',
                 'type'      => $r->type ?: 'regular',
                 'last'      => $r->last_del ? Carbon::parse($r->last_del)->format('M d, y') : '—',
-                'days'      => $r->last_del ? (int) Carbon::parse($r->last_del)->diffInDays(Carbon::now()) : 0,
+                // Calendar days (date minus date) — same arithmetic as the SQL
+                // DATEDIFF that filtered this list, so the shown age always
+                // matches the band the customer was selected into.
+                'days'      => $r->last_del ? (int) Carbon::parse(substr($r->last_del, 0, 10))->diffInDays(Carbon::now()->startOfDay()) : 0,
                 'orders'    => (int) $r->orders,
                 'spent'     => round((float) $r->spent),
             ])->all();
@@ -1299,7 +1460,7 @@ class ExecutiveClosingService
         return $this->computeClosing($unit, $start, $end);
     }
 
-    private function computeClosing(string $unit, Carbon $start, Carbon $end): array
+    private function computeClosing(string $unit, Carbon $start, Carbon $end, ?Carbon $ledgerEnd = null): array
     {
         if ($unit === self::UNIT_QB) {
             return $this->qurbaniClosing($start, $end);
@@ -1307,7 +1468,12 @@ class ExecutiveClosingService
 
         // All the delivered-order metrics for the window in ONE cached bundle
         // (2 aggregate queries), shared by every non-Qurbani unit + the trend.
-        $r = $this->rawWindow($start, $end);
+        // $ledgerEnd (when given) widens ONLY the cost side (vendor / expense /
+        // asset ledger rows) to the full calendar month, so the HQ monthly view
+        // counts the whole month like the Reports tab even mid-month; delivered
+        // revenue still stops at the window end. Null = exact window (the Hub's
+        // unitPnl passes explicit ranges and must stay bounded to them).
+        $r = $this->rawWindow($start, $end, $ledgerEnd);
 
         switch ($unit) {
             case self::UNIT_KH:
@@ -1336,6 +1502,7 @@ class ExecutiveClosingService
 
         $grossProfit = $revenue - $vendor;
         $netProfit   = $grossProfit - $expense;
+        $assets      = $this->monthAssetPurchases($unit, $start, $ledgerEnd ?? $end);
 
         return [
             'revenue'          => round($revenue, 0),
@@ -1348,7 +1515,428 @@ class ExecutiveClosingService
             'gross_profit'     => round($grossProfit, 0),
             'expenses'         => round($expense, 0),
             'net_profit'       => round($netProfit, 0),
+            // Capital spending in the month — NOT part of the P&L (equipment
+            // becomes property, not an expense). Surfaced as its own box beside
+            // net profit so "assets bought this month" reconciles with Reports.
+            'asset_purchases'       => round($assets['amount'], 0),
+            'asset_purchases_count' => $assets['count'],
         ];
+    }
+
+    /**
+     * Asset purchases (capital spending) in the window. Deliberately NOT part of
+     * revenue − vendor − expenses; shown as its own box on the HQ P&L so it
+     * reconciles with the Reports tab's "Assets" figure. Uses the same ledger end
+     * as vendor/expense (full calendar month for the monthly view). Approved /
+     * pending_l2 (HQ posting convention); scoped to the selected unit by
+     * business_unit_id. Qurbani is not filtered out — asset purchases are never
+     * Qurbani, and Reports counts them the same way.
+     *
+     * @return array{amount:float,count:int}
+     */
+    private function monthAssetPurchases(string $unit, Carbon $start, Carbon $end): array
+    {
+        $row = $this->assetPurchaseBase($unit, $start, $end)
+            ->selectRaw('COALESCE(SUM(l.amount),0) amt, COUNT(*) n')->first();
+        return ['amount' => (float) $row->amt, 'count' => (int) $row->n];
+    }
+
+    /** Shared base for the asset-purchase total + its drill list. */
+    private function assetPurchaseBase(string $unit, Carbon $start, Carbon $end)
+    {
+        $kh = (int) ($this->khaasBusinessUnitId() ?: -1);
+        $q = DB::table('t_fin_ledger as l')
+            ->where('l.transaction_type', 'asset_purchase')
+            ->whereIn('l.approval_status', self::POSTED_STATUSES)
+            ->whereBetween('l.transaction_date', [$start, $end]);
+        if ($unit === self::UNIT_NF) {
+            $q->where(function ($w) use ($kh) {
+                $w->where('l.business_unit_id', '<>', $kh)->orWhereNull('l.business_unit_id');
+            });
+        } elseif ($unit === self::UNIT_KH) {
+            $q->where('l.business_unit_id', $kh);
+        }
+        return $q;
+    }
+
+    /**
+     * Assets-bought box → drill: what was actually bought this month. Joins the
+     * assets register (when the purchase created an asset record) so the owner
+     * sees the asset name, not just the ledger description.
+     */
+    public function assetPurchasesList(string $unit, int $year, int $month): array
+    {
+        $unit = $this->normalizeUnit($unit);
+        try {
+            [$start, $end] = $this->period($unit, $year, $month);
+            $lEnd = $this->ledgerEndFor($unit, $end) ?? $end;
+            return $this->assetPurchaseBase($unit, $start, $lEnd)
+                ->leftJoin('t_fin_assets as a', 'a.ledger_transaction_id', '=', 'l.id')
+                ->leftJoin('t_fin_business_units as bu', 'bu.id', '=', 'l.business_unit_id')
+                ->leftJoin('t_sys_user as u', 'u.id', '=', 'l.created_by')
+                ->orderByDesc('l.transaction_date')
+                ->limit(300)
+                ->get([
+                    'l.transaction_date', 'l.amount', 'l.description',
+                    'a.asset_name', 'a.location',
+                    DB::raw('COALESCE(bu.name, "Nizami Farms") as unit'),
+                    'u.fullname as who',
+                ])
+                ->map(fn ($r) => [
+                    'asset'  => $r->asset_name ?: ($r->description ?: 'Asset purchase'),
+                    'unit'   => $r->unit,
+                    'bought' => $r->transaction_date ? Carbon::parse($r->transaction_date)->format('M d') : '—',
+                    'who'    => $r->who ?: '—',
+                    'amount' => round((float) $r->amount),
+                ])->all();
+        } catch (\Throwable $e) {
+            return [];
+        }
+    }
+
+    // =====================================================================
+    //  PRODUCTS  (Phase 3, Jul-2026) — what sells, in what quantity, by category
+    // =====================================================================
+
+    /**
+     * product_type → display category. The catalog's product_type mixes real
+     * categories (Beef, Chicken) with cut-level types (Back Chops, Raan &
+     * Dasti…), so the tab groups through this map WITHOUT touching the catalog.
+     * Unmapped types pass through under their own name — a new type stays
+     * visible instead of hiding in Others — and every drill shows the raw type,
+     * so a wrong bucket is easy to spot and a one-line fix here (owner review
+     * pending — ruling P-R1). Keys are entity-DECODED ("&", not "&amp;").
+     */
+    private const CATEGORY_ROLLUP = [
+        'Beef' => 'Beef', 'Boneless LEAN Beef' => 'Beef',
+        'Bihari & Pasanday' => 'Beef', 'Steaks' => 'Beef',
+        'Mutton' => 'Mutton', 'Lean Whole/Half Bakra' => 'Mutton',
+        'Whole/Half Bakra' => 'Mutton', 'Raan & Dasti Lean' => 'Mutton',
+        'Raan & Dasti' => 'Mutton', 'Raan Choice Lean' => 'Mutton',
+        'Raan Choice' => 'Mutton', 'Back Chops (Puth)' => 'Mutton',
+        'Front Chops' => 'Mutton', 'Boneless' => 'Mutton', 'Lean Meat' => 'Mutton',
+        'Whole LEAN Meat Cut' => 'Mutton', 'Whole Meat Cut' => 'Mutton',
+        'Mix' => 'Mutton', 'Mix Lean' => 'Mutton', 'Lamb' => 'Mutton',
+        'Chicken' => 'Chicken', 'Boneless LEAN Chicken' => 'Chicken',
+        'Boneless Chicken' => 'Chicken', 'Thigh LEAN' => 'Chicken',
+        'Thigh' => 'Chicken', 'LEAN Drumsticks' => 'Chicken',
+        'Drumsticks' => 'Chicken', 'Wings' => 'Chicken',
+        'Minced (Qeema)' => 'Minced (Qeema)',
+        'Paaye' => 'Paaye',
+        'Khaas' => 'Khaas · Frozen', 'Table Talk' => 'Khaas · Frozen',
+        'Sadqa' => 'Sadqa & Aqeeqa',
+        'Dog Food' => 'Dog Food',
+        'Others' => 'Others',
+        'Qurbani 2026' => 'Qurbani',
+        // "Qurbani 2023" is a STALE type shared by two very different things:
+        // the Aqeeqa listings — which are what actually sells on regular orders
+        // (verified Jul-2026) — and three dead 2023 Qurbani listings whose only
+        // orders since are cancelled, so they never reach this tab (delivered
+        // basis). Hence Aqeeqa. Never classify Qurbani by this type.
+        'Qurbani 2023' => 'Sadqa & Aqeeqa',
+        'Goat Qurbani Day 1' => 'Qurbani', 'Goat Qurbani Day 2' => 'Qurbani',
+        'Goat Qurbani Day 3' => 'Qurbani',
+    ];
+
+    private const CAT_UNLINKED = 'Old catalog · unlinked';
+
+    private function rollupCategory(?string $type): string
+    {
+        $t = html_entity_decode(trim((string) $type), ENT_QUOTES);
+        if ($t === '') return 'Others';
+        return self::CATEGORY_ROLLUP[$t] ?? $t;
+    }
+
+    /** Line-level unit filter (same rule as the closing: NULL BU = NF). */
+    private function applyLineUnit($q, string $unit): void
+    {
+        $kh = (int) ($this->khaasBusinessUnitId() ?: -1);
+        if ($unit === self::UNIT_KH) {
+            $q->where('p.business_unit_id', $kh);
+        } elseif ($unit === self::UNIT_NF) {
+            $q->where(function ($w) use ($kh) {
+                $w->where('p.business_unit_id', '<>', $kh)->orWhereNull('p.business_unit_id');
+            });
+        }
+    }
+
+    /**
+     * Per-product aggregates for one window (delivered, non-Shopify, Qurbani
+     * excluded — same base as the closing). Products whose catalog link is
+     * broken (pre-Mar-2026 Shopify-era ids) land in the "Old catalog ·
+     * unlinked" bucket rather than being silently dropped.
+     */
+    private function productWindowAggregates(string $unit, Carbon $start, Carbon $end): array
+    {
+        $kh = (int) ($this->khaasBusinessUnitId() ?: -1);
+        $pieceCase = self::pieceCaseSql($kh);
+        $q = $this->deliveredLines($start, $end, QurbaniFinanceFilter::MODE_EXCLUDE);
+        $this->applyLineUnit($q, $unit);
+        $rows = $q->groupBy('li.product_id')
+            ->selectRaw("li.product_id pid,
+                MAX(COALESCE(p.title, li.name)) pname,
+                MAX(p.product_type) ptype,
+                MAX(p.id IS NOT NULL) linked,
+                COALESCE(SUM(li.line_total),0) rev,
+                COALESCE(SUM(CASE WHEN $pieceCase THEN 0 ELSE li.quantity END),0) kg,
+                COALESCE(SUM(CASE WHEN $pieceCase THEN li.quantity ELSE 0 END),0) pcs,
+                COUNT(DISTINCT o.id) ords")
+            ->get();
+        $out = [];
+        foreach ($rows as $r) {
+            $out[(int) $r->pid] = [
+                'pid'    => (int) $r->pid,
+                'name'   => html_entity_decode((string) $r->pname, ENT_QUOTES),
+                'type'   => $r->linked ? html_entity_decode((string) $r->ptype, ENT_QUOTES) : '—',
+                'cat'    => $r->linked ? $this->rollupCategory($r->ptype) : self::CAT_UNLINKED,
+                'linked' => (bool) $r->linked,
+                'rev'    => (float) $r->rev,
+                'kg'     => (float) $r->kg,
+                'pcs'    => (float) $r->pcs,
+                'ords'   => (int) $r->ords,
+            ];
+        }
+        return $out;
+    }
+
+    /**
+     * Distinct order ids per CATEGORY for a window (order × type pairs rolled
+     * up in PHP — an order spanning two types of one category counts once).
+     * ['cats' => [cat => orderCount], 'total' => distinct orders overall].
+     */
+    private function categoryOrderCounts(string $unit, Carbon $start, Carbon $end): array
+    {
+        $q = $this->deliveredLines($start, $end, QurbaniFinanceFilter::MODE_EXCLUDE);
+        $this->applyLineUnit($q, $unit);
+        $pairs = $q->selectRaw('DISTINCT o.id oid, p.product_type ptype, (p.id IS NOT NULL) linked')->get();
+        $cats = []; $all = [];
+        foreach ($pairs as $p) {
+            $cat = $p->linked ? $this->rollupCategory($p->ptype) : self::CAT_UNLINKED;
+            $cats[$cat][$p->oid] = true;
+            $all[$p->oid] = true;
+        }
+        return [
+            'cats'  => array_map('count', $cats),
+            'total' => count($all),
+        ];
+    }
+
+    /**
+     * The Products tab payload: categories (revenue / qty / share / MoM /
+     * penetration), top products, movers, first-time products, dead listings.
+     * Delivered basis, same canonical rules as the closing; Qurbani excluded
+     * (it has its own view). Qurbani unit → marker payload, tab shows a note.
+     */
+    public function products(string $unit, int $year, int $month, bool $fresh = false): array
+    {
+        $unit = $this->normalizeUnit($unit);
+        if ($unit === self::UNIT_QB) {
+            return ['season' => true];
+        }
+        $key = "hq_products_{$unit}_{$year}_{$month}";
+        if ($fresh) Cache::forget($key);
+
+        return Cache::remember($key, $this->ttlFor($unit, $year, $month), function () use ($unit, $year, $month) {
+            [$start, $end, $label, $isOpen] = $this->period($unit, $year, $month);
+            [$pStart, $pEnd] = $this->previousPeriod($unit, $year, $month);
+
+            $cur  = $this->productWindowAggregates($unit, $start, $end);
+            $prev = $this->productWindowAggregates($unit, $pStart, $pEnd);
+            $pen  = $this->categoryOrderCounts($unit, $start, $end);
+
+            // ---- categories ----
+            $cats = [];
+            foreach ($cur as $p) {
+                $c = $p['cat'];
+                if (!isset($cats[$c])) $cats[$c] = ['label' => $c, 'rev' => 0.0, 'kg' => 0.0, 'pcs' => 0.0, 'products' => 0, 'prev' => 0.0, 'types' => []];
+                $cats[$c]['rev'] += $p['rev'];
+                $cats[$c]['kg']  += $p['kg'];
+                $cats[$c]['pcs'] += $p['pcs'];
+                $cats[$c]['products']++;
+                if ($p['type'] !== '—') $cats[$c]['types'][$p['type']] = true;
+            }
+            foreach ($prev as $p) {
+                $c = $p['cat'];
+                if (!isset($cats[$c])) continue; // vanished categories aren't shown; movers catch the products
+                $cats[$c]['prev'] += $p['rev'];
+            }
+            $totalRev = array_sum(array_column($cats, 'rev'));
+            $catsOut = array_values(array_map(function ($c) use ($totalRev, $pen) {
+                return [
+                    'label'       => $c['label'],
+                    'revenue'     => round($c['rev']),
+                    'share'       => $totalRev > 0 ? round($c['rev'] / $totalRev * 100, 1) : 0,
+                    'kg'          => round($c['kg'], 1),
+                    'pcs'         => round($c['pcs']),
+                    'products'    => $c['products'],
+                    'prev'        => round($c['prev']),
+                    'orders'      => $pen['cats'][$c['label']] ?? 0,
+                    'penetration' => $pen['total'] > 0 ? round(($pen['cats'][$c['label']] ?? 0) / $pen['total'] * 100, 1) : 0,
+                    'types'       => array_keys($c['types']),
+                ];
+            }, $cats));
+            usort($catsOut, fn ($a, $b) => $b['revenue'] <=> $a['revenue']);
+
+            // ---- top products (current window) ----
+            $prods = array_values($cur);
+            usort($prods, fn ($a, $b) => $b['rev'] <=> $a['rev']);
+            $top = array_map(fn ($p) => $this->productRow($p, $prev[$p['pid']]['rev'] ?? null), array_slice($prods, 0, 10));
+
+            // ---- movers: biggest revenue swings vs previous period (linked only) ----
+            $deltas = [];
+            $pids = array_unique(array_merge(array_keys($cur), array_keys($prev)));
+            foreach ($pids as $pid) {
+                $c = $cur[$pid] ?? null; $pv = $prev[$pid] ?? null;
+                if (!($c['linked'] ?? $pv['linked'] ?? false)) continue;
+                $d = ($c['rev'] ?? 0) - ($pv['rev'] ?? 0);
+                if (abs($d) < 5000) continue; // noise floor
+                $deltas[] = ['name' => $c['name'] ?? $pv['name'], 'delta' => round($d),
+                             'now' => round($c['rev'] ?? 0), 'was' => round($pv['rev'] ?? 0)];
+            }
+            usort($deltas, fn ($a, $b) => $b['delta'] <=> $a['delta']);
+            $movers = [
+                'up'   => array_values(array_filter(array_slice($deltas, 0, 5), fn ($m) => $m['delta'] > 0)),
+                'down' => array_values(array_filter(array_slice(array_reverse($deltas), 0, 5), fn ($m) => $m['delta'] < 0)),
+            ];
+
+            // ---- first-time + dead listings (by order date; qurbani products excluded) ----
+            [$freshProducts, $dead] = $this->productLifecycles($start, $end);
+
+            // ---- data-quality chip for pre-Mar-2026 months ----
+            $unlinkedRev = $cats[self::CAT_UNLINKED]['rev'] ?? 0.0;
+
+            return [
+                'period_label' => $label,
+                'is_open'      => $isOpen,
+                'window'       => ['start' => $start->toDateString(), 'end' => $end->toDateString()],
+                'total'        => ['revenue' => round($totalRev), 'orders' => $pen['total']],
+                'categories'   => $catsOut,
+                'top'          => $top,
+                'movers'       => $movers,
+                'fresh_products' => $freshProducts,
+                'dead'         => $dead,
+                'quality'      => [
+                    'unlinked_rs'  => round($unlinkedRev),
+                    'unlinked_pct' => $totalRev > 0 ? round($unlinkedRev / $totalRev * 100, 1) : 0,
+                ],
+            ];
+        });
+    }
+
+    /** Shared row shape for product tables (top list + category drill). */
+    private function productRow(array $p, ?float $prevRev): array
+    {
+        $qty = $p['kg'] > 0
+            ? round($p['kg'], 1) . ' kg' . ($p['pcs'] > 0 ? ' + ' . round($p['pcs']) . ' pc' : '')
+            : round($p['pcs']) . ' pc';
+        $avg = $p['kg'] > 0 ? round($p['rev'] / $p['kg']) : ($p['pcs'] > 0 ? round($p['rev'] / $p['pcs']) : 0);
+        return [
+            'pid'      => $p['pid'],
+            'name'     => $p['name'],
+            'type'     => $p['type'],
+            'cat'      => $p['cat'],
+            'revenue'  => round($p['rev']),
+            'qty'      => $qty,
+            'orders'   => $p['ords'],
+            'avg'      => $avg,
+            'avg_unit' => $p['kg'] > 0 ? 'kg' : 'pc',
+            'prev'     => $prevRev === null ? null : round($prevRev),
+        ];
+    }
+
+    /**
+     * First-time products (first-ever delivered sale falls in the window) and
+     * dead listings (active products with no sale in 60+ days). By ORDER date —
+     * within days of the delivery date and far cheaper than a history scan.
+     * Qurbani-tagged products excluded (seasonal by nature, not "dead").
+     */
+    private function productLifecycles(Carbon $start, Carbon $end): array
+    {
+        $qids = $this->qurbaniOrderIds();
+        $base = fn () => DB::table('t_crm_prod_order_line_item as li')
+            ->join('t_crm_prod_order as o', 'o.id', '=', 'li.order_id')
+            ->join('t_crm_prod_product as p', 'p.id', '=', 'li.product_id')
+            ->whereIn('o.order_status', self::DELIVERED_STATUSES)
+            ->where(function ($w) {
+                $w->where('o.external_source', '!=', 'shopify')->orWhereNull('o.external_source');
+            })
+            ->when(!empty($qids), fn ($q) => $q->whereNotIn('o.id', $qids))
+            ->whereRaw("LOWER(COALESCE(p.attribute_1,'')) <> 'qurbani'");
+
+        $freshProducts = $base()
+            ->groupBy('li.product_id')
+            ->havingRaw('MIN(o.order_date) BETWEEN ? AND ?', [$start->toDateTimeString(), $end->toDateTimeString()])
+            ->selectRaw('MAX(p.title) pname, MIN(o.order_date) first_sold, COALESCE(SUM(li.line_total),0) rev')
+            ->orderByDesc('rev')->limit(8)->get()
+            ->map(fn ($r) => [
+                'name'  => html_entity_decode((string) $r->pname, ENT_QUOTES),
+                'first' => Carbon::parse($r->first_sold)->format('M d'),
+                'rev'   => round((float) $r->rev),
+            ])->all();
+
+        $deadRows = $base()
+            ->where('p.status', 'active')
+            ->groupBy('li.product_id')
+            ->havingRaw('MAX(o.order_date) < ?', [Carbon::now()->subDays(60)->toDateTimeString()])
+            ->selectRaw('MAX(p.title) pname, MAX(o.order_date) last_sold, COALESCE(SUM(li.line_total),0) life_rev')
+            ->orderByDesc('life_rev')->get();
+
+        $dead = [
+            'count' => $deadRows->count(),
+            'rows'  => $deadRows->take(15)->map(fn ($r) => [
+                'name' => html_entity_decode((string) $r->pname, ENT_QUOTES),
+                'last' => Carbon::parse($r->last_sold)->format('M d, y'),
+                'rev'  => round((float) $r->life_rev),
+            ])->values()->all(),
+        ];
+        return [$freshProducts, $dead];
+    }
+
+    /** Category → the products inside it, for the drill panel. */
+    public function productsCategoryList(string $unit, int $year, int $month, string $category): array
+    {
+        $unit = $this->normalizeUnit($unit);
+        if ($unit === self::UNIT_QB) return [];
+        try {
+            [$start, $end] = $this->period($unit, $year, $month);
+            [$pStart, $pEnd] = $this->previousPeriod($unit, $year, $month);
+            $cur  = $this->productWindowAggregates($unit, $start, $end);
+            $prev = $this->productWindowAggregates($unit, $pStart, $pEnd);
+            $rows = array_values(array_filter($cur, fn ($p) => $p['cat'] === $category));
+            usort($rows, fn ($a, $b) => $b['rev'] <=> $a['rev']);
+            return array_map(fn ($p) => $this->productRow($p, $prev[$p['pid']]['rev'] ?? null), $rows);
+        } catch (\Throwable $e) {
+            return [];
+        }
+    }
+
+    /** One product → its days within the window (drill level 2). */
+    public function productDaily(string $unit, int $year, int $month, int $productId): array
+    {
+        $unit = $this->normalizeUnit($unit);
+        if ($unit === self::UNIT_QB || $productId === 0) return [];
+        try {
+            [$start, $end] = $this->period($unit, $year, $month);
+            $kh = (int) ($this->khaasBusinessUnitId() ?: -1);
+            $pieceCase = self::pieceCaseSql($kh);
+            $q = $this->deliveredLines($start, $end, QurbaniFinanceFilter::MODE_EXCLUDE)
+                ->where('li.product_id', $productId);
+            return $q->groupBy(DB::raw('DATE(d.delivered_at)'))
+                ->selectRaw("DATE(d.delivered_at) day,
+                    COALESCE(SUM(li.line_total),0) rev,
+                    COALESCE(SUM(CASE WHEN $pieceCase THEN 0 ELSE li.quantity END),0) kg,
+                    COALESCE(SUM(CASE WHEN $pieceCase THEN li.quantity ELSE 0 END),0) pcs,
+                    COUNT(DISTINCT o.id) ords")
+                ->orderByDesc('day')->get()
+                ->map(fn ($r) => [
+                    'day'    => Carbon::parse($r->day)->format('D · M d'),
+                    'qty'    => ((float) $r->kg > 0 ? round((float) $r->kg, 1) . ' kg' : round((float) $r->pcs) . ' pc'),
+                    'orders' => (int) $r->ords,
+                    'rev'    => round((float) $r->rev),
+                ])->all();
+        } catch (\Throwable $e) {
+            return [];
+        }
     }
 
     /**
@@ -1371,31 +1959,37 @@ class ExecutiveClosingService
      * a small fixed number of queries and cached by window. Returns overall +
      * Khaas + NF slices so every unit derives from one computation.
      */
-    private function rawWindow(Carbon $start, Carbon $end): array
+    private function rawWindow(Carbon $start, Carbon $end, ?Carbon $ledgerEnd = null): array
     {
-        $key = 'hq_raw_' . $start->getTimestamp() . '_' . $end->getTimestamp();
+        // Revenue/order metrics use $end (to-date); the cost side uses $lEnd —
+        // the full calendar month when the caller widens it, else the same $end.
+        $lEnd = $ledgerEnd ?? $end;
+        $key = 'hq_raw_' . $start->getTimestamp() . '_' . $end->getTimestamp() . '_' . $lEnd->getTimestamp();
         // Closed windows (fully in the past) cache for 24h; the open one 5 min.
         $ttl = $end->lt(Carbon::now()->startOfDay()) ? 86400 : 300;
-        return Cache::remember($key, $ttl, function () use ($start, $end) {
+        return Cache::remember($key, $ttl, function () use ($start, $end, $lEnd) {
             $qmode = QurbaniFinanceFilter::MODE_EXCLUDE;
             $kh = (int) ($this->khaasBusinessUnitId() ?: -1);
-            $s = $start->toDateTimeString();
-            $e = $end->toDateTimeString();
+            // Customers whose FIRST regular delivery is in this window = the new
+            // customers (delivery clock — owner ruling). Resolved once here, then
+            // used as an id set so the line-level query can split them by unit.
+            $newIds = $this->newCustomerIds($start, $end);
+            // Ints only, and '0' matches nothing — safe to interpolate.
+            $newIn = empty($newIds) ? '0' : implode(',', $newIds);
 
             // Q1 — order-level totals.
             $o = $this->deliveredBase($start, $end, $qmode)
                 ->selectRaw('COALESCE(SUM(o.total_price),0) rev, COUNT(DISTINCT o.id) ord, COUNT(DISTINCT o.customer_id) cust')
                 ->first();
 
-            // Q2 — line-level split (Khaas vs NF) + new-customer flags. $kh is an
-            // int and $s/$e are self-formatted datetimes, so direct interpolation
-            // is injection-safe and avoids binding-order issues with the filter.
+            // Q2 — line-level split (Khaas vs NF) + new-customer flags. $kh and the
+            // new-customer ids are ints, so direct interpolation is injection-safe
+            // and avoids binding-order issues with the filter.
             // Weight vs pieces: a line counts as PIECES when its product is a
             // Khaas pack or its name says per piece / pcs / pieces / dozen;
             // otherwise quantity is genuine kg (verified against June data).
             $pieceCase = self::pieceCaseSql($kh);
             $l = $this->deliveredLines($start, $end, $qmode)
-                ->leftJoin('t_crm_prod_customer as c', 'c.id', '=', 'o.customer_id')
                 ->selectRaw(
                     "COALESCE(SUM(CASE WHEN $pieceCase THEN 0 ELSE li.quantity END),0) kg_all,
                      COALESCE(SUM(CASE WHEN $pieceCase THEN li.quantity ELSE 0 END),0) pcs_all,
@@ -1406,14 +2000,15 @@ class ExecutiveClosingService
                      COUNT(DISTINCT CASE WHEN (p.business_unit_id <> $kh OR p.business_unit_id IS NULL) THEN o.id END) ord_nf,
                      COUNT(DISTINCT CASE WHEN p.business_unit_id = $kh THEN o.customer_id END) cust_kh,
                      COUNT(DISTINCT CASE WHEN (p.business_unit_id <> $kh OR p.business_unit_id IS NULL) THEN o.customer_id END) cust_nf,
-                     COUNT(DISTINCT CASE WHEN c.first_order_date BETWEEN '$s' AND '$e' THEN o.customer_id END) new_all,
-                     COUNT(DISTINCT CASE WHEN p.business_unit_id = $kh AND c.first_order_date BETWEEN '$s' AND '$e' THEN o.customer_id END) new_kh,
-                     COUNT(DISTINCT CASE WHEN (p.business_unit_id <> $kh OR p.business_unit_id IS NULL) AND c.first_order_date BETWEEN '$s' AND '$e' THEN o.customer_id END) new_nf"
+                     COUNT(DISTINCT CASE WHEN p.business_unit_id = $kh AND o.customer_id IN ($newIn) THEN o.customer_id END) new_kh,
+                     COUNT(DISTINCT CASE WHEN (p.business_unit_id <> $kh OR p.business_unit_id IS NULL) AND o.customer_id IN ($newIn) THEN o.customer_id END) new_nf"
                 )->first();
 
             // Vendor purchases + expenses, grouped by BU, Qurbani excluded.
-            [$vendorAll, $vendorKh] = $this->ledgerByUnit(LedgerModel::TYPE_VENDOR_PURCHASE, $start, $end, $kh);
-            [$expenseAll, $expenseKh] = $this->ledgerByUnit(LedgerModel::TYPE_EXPENSE, $start, $end, $kh);
+            // $lEnd (not $end) so the cost side spans the full calendar month
+            // when the caller asked for it (HQ monthly view).
+            [$vendorAll, $vendorKh] = $this->ledgerByUnit(LedgerModel::TYPE_VENDOR_PURCHASE, $start, $lEnd, $kh);
+            [$expenseAll, $expenseKh] = $this->ledgerByUnit(LedgerModel::TYPE_EXPENSE, $start, $lEnd, $kh);
 
             return [
                 'rev_all'   => (float) $o->rev,
@@ -1428,7 +2023,9 @@ class ExecutiveClosingService
                 'ord_nf'    => (int) $l->ord_nf,
                 'cust_kh'   => (int) $l->cust_kh,
                 'cust_nf'   => (int) $l->cust_nf,
-                'new_all'   => (int) $l->new_all,
+                // new_all is the id count itself (the distinct truth); the unit
+                // slices below come from the line-level query.
+                'new_all'   => count($newIds),
                 'new_kh'    => (int) $l->new_kh,
                 'new_nf'    => (int) $l->new_nf,
                 'vendor_all' => $vendorAll,
@@ -1503,37 +2100,38 @@ class ExecutiveClosingService
      */
     private function qurbaniClosing(Carbon $start, Carbon $end): array
     {
-        $prefix = 'QUR' . $start->format('y') . '%';
+        // Season identity = QUR{yy} numbers OR (2025) product-backfilled orders.
+        $ids = $this->qurbaniSeasonOrderIds((int) $start->format('Y')) ?: [0];
         $s = $start->toDateTimeString();
         $e = $end->toDateTimeString();
 
         // BOOKED (non-cancelled) — the season's business.
         $booked = DB::table('t_crm_prod_order as o')
-            ->where('o.order_number', 'like', $prefix)
+            ->whereIn('o.id', $ids)
             ->where('o.order_status', '<>', 'cancelled')
             ->selectRaw('COALESCE(SUM(o.total_price),0) rev, COUNT(DISTINCT o.id) ord, COUNT(DISTINCT o.customer_id) cust')
             ->first();
         $bookedQty = (float) DB::table('t_crm_prod_order_line_item as li')
             ->join('t_crm_prod_order as o', 'o.id', '=', 'li.order_id')
-            ->where('o.order_number', 'like', $prefix)
+            ->whereIn('o.id', $ids)
             ->where('o.order_status', '<>', 'cancelled')
             ->sum('li.quantity');
         $newC = (int) DB::table('t_crm_prod_order as o')
             ->join('t_crm_prod_customer as c', 'c.id', '=', 'o.customer_id')
-            ->where('o.order_number', 'like', $prefix)
+            ->whereIn('o.id', $ids)
             ->where('o.order_status', '<>', 'cancelled')
             ->whereRaw("c.first_order_date BETWEEN ? AND ?", [$s, $e])
             ->distinct()->count('o.customer_id');
 
         // DELIVERED so far — fulfilment context.
         $deliv = DB::table('t_crm_prod_order as o')
-            ->where('o.order_number', 'like', $prefix)
+            ->whereIn('o.id', $ids)
             ->whereIn('o.order_status', self::DELIVERED_STATUSES)
             ->selectRaw('COALESCE(SUM(o.total_price),0) rev, COUNT(DISTINCT o.id) ord')
             ->first();
         $delivQty = (float) DB::table('t_crm_prod_order_line_item as li')
             ->join('t_crm_prod_order as o', 'o.id', '=', 'li.order_id')
-            ->where('o.order_number', 'like', $prefix)
+            ->whereIn('o.id', $ids)
             ->whereIn('o.order_status', self::DELIVERED_STATUSES)
             ->sum('li.quantity');
 
@@ -1550,6 +2148,9 @@ class ExecutiveClosingService
             'gross_profit'     => round($revenue, 0),
             'expenses'         => round($expense, 0),
             'net_profit'       => round($revenue - $expense, 0),
+            // Qurbani assets are tracked under NF / Frozen, not here.
+            'asset_purchases'       => 0,
+            'asset_purchases_count' => 0,
             // secondary — delivered so far this season
             'delivered_revenue' => round((float) $deliv->rev, 0),
             'delivered_orders'  => (int) $deliv->ord,
@@ -1605,6 +2206,35 @@ class ExecutiveClosingService
             $q = DB::table('t_crm_prod_order as o');
             QurbaniFinanceFilter::applyToOrderQuery($q, 'o', QurbaniFinanceFilter::MODE_INCLUDE);
             return $q->pluck('o.id')->map(fn ($v) => (int) $v)->all();
+        });
+    }
+
+    /**
+     * Order ids of ONE Qurbani season (owner ruling Jul-2026): the QUR{yy}-numbered
+     * orders of that year PLUS — for seasons that predate the QUR numbering — any
+     * canonical-filter Qurbani order placed in that calendar year without a QUR
+     * number. The 2025 season exists only via the product/name backfill (bare
+     * numeric order numbers), so the prefix alone would miss it entirely; with
+     * this fallback the year selector serves 2025 and QUR26's "returning from
+     * last season" compares against real 2025 buyers.
+     */
+    private function qurbaniSeasonOrderIds(int $year): array
+    {
+        return Cache::remember('hq_qb_season_' . $year, 3600, function () use ($year) {
+            $prefix = 'QUR' . substr((string) $year, -2) . '%';
+            $ids = DB::table('t_crm_prod_order')
+                ->where('order_number', 'like', $prefix)
+                ->pluck('id')->map(fn ($v) => (int) $v)->all();
+            $canon = $this->qurbaniOrderIds();
+            if (!empty($canon)) {
+                $extra = DB::table('t_crm_prod_order')
+                    ->whereIn('id', $canon)
+                    ->whereYear('order_date', $year)
+                    ->where('order_number', 'not like', 'QUR%')
+                    ->pluck('id')->map(fn ($v) => (int) $v)->all();
+                $ids = array_values(array_unique(array_merge($ids, $extra)));
+            }
+            return $ids;
         });
     }
 
@@ -1781,6 +2411,18 @@ class ExecutiveClosingService
             }
         }
         return [$prevStart, $prevEnd];
+    }
+
+    /**
+     * Cost-side window end for the monthly closing: the FULL calendar month, so
+     * the HQ P&L counts the whole month's vendor / expense / asset ledger rows
+     * exactly like the Reports tab (for the open month this reaches past "now",
+     * picking up post-dated entries; for a closed month it is a no-op since the
+     * window already ends at month-end). Qurbani is seasonal — left untouched.
+     */
+    private function ledgerEndFor(string $unit, Carbon $end): ?Carbon
+    {
+        return $unit === self::UNIT_QB ? null : $end->copy()->endOfMonth()->endOfDay();
     }
 
     /** Calendar days in the window minus active public holidays. */

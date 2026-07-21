@@ -19,6 +19,7 @@
   .chip-override { background:var(--brand-soft); color:#8E1414; border-color:#F3D6D6; font-weight:600; }
   .chip-off { background:repeating-linear-gradient(135deg,#F8FAFC,#F8FAFC 5px,#EEF2F7 5px,#EEF2F7 10px); color:#94a3b8; border-style:dashed; border-color:#e2e8f0; }
   .chip-holiday { background:#FEF3F2; color:#B42318; border-color:#FECDCA; }
+  .chip-notneeded { background:#E0E7FF; color:#3730A3; border-color:#C7D2FE; }
   .chip-nm { font-weight:600; }
   .chip-loc { display:inline-flex; align-items:center; gap:2px; font-size:9.5px; font-weight:700; background:#E6F1FB; color:#185FA5; border-radius:20px; padding:0 6px; margin-top:1px; align-self:flex-start; }
   .col-today { background:#FFFDF5; }
@@ -101,7 +102,14 @@
     <div class="text-xs text-gray-400 flex items-center gap-3 ml-auto">
       <span><span class="inline-block w-3 h-3 rounded-sm align-middle" style="background:#FBECEC;border:1px solid #F3D6D6"></span> temporary change</span>
       <span><span class="inline-block w-3 h-3 rounded-sm align-middle" style="background:#EEF2F7;border:1px dashed #cbd5e1"></span> off day</span>
+      <span><span class="inline-block w-3 h-3 rounded-sm align-middle" style="background:#E0E7FF;border:1px solid #C7D2FE"></span> not needed</span>
     </div>
+  </div>
+
+  <!-- how-to hint -->
+  <div class="mb-3 text-xs text-gray-500 flex items-center gap-2" style="background:#F8FAFC;border:1px solid #E2E8F0;border-radius:8px;padding:7px 11px;">
+    <span style="font-size:14px;">💡</span>
+    <span><b>Tap a day cell</b> to mark that rider <b>“not needed”</b> that day (paid, not counted absent) — tap again to undo. Use “Change shift for selected” to change shift times.</span>
   </div>
 
   <!-- bulk bar -->
@@ -129,7 +137,7 @@
     </div>
     <div class="pm-body">
       <label class="pm-label">Shift <button type="button" class="pm-addlink" onclick="openNewShift()">＋ new shift type</button></label>
-      <select id="mTemplate" class="pm-input" onchange="renderEffect()"></select>
+      <select id="mTemplate" class="pm-input" onchange="onTemplateChange()"></select>
 
       <label class="pm-label">How long?</label>
       <div class="mode-opt" data-mode="until_changed" onclick="setMode('until_changed')">
@@ -150,9 +158,11 @@
         <div id="toWrap"><label class="pm-label">To</label><input type="date" id="mTo" class="pm-input" onchange="renderEffect()"></div>
       </div>
 
-      <label class="pm-label">Location <span style="font-weight:400;color:#94a3b8;">— where they check in</span></label>
-      <div id="locBubbles" class="loc-bubbles"></div>
-      <label id="setDefaultWrap" class="loc-default"><input type="checkbox" id="mSetDefault"> <span id="setDefaultLbl">Make this their default location</span></label>
+      <div id="locSection">
+        <label class="pm-label">Location <span style="font-weight:400;color:#94a3b8;">— where they check in</span></label>
+        <div id="locBubbles" class="loc-bubbles"></div>
+        <label id="setDefaultWrap" class="loc-default"><input type="checkbox" id="mSetDefault"> <span id="setDefaultLbl">Make this their default location</span></label>
+      </div>
 
       <p id="effectLine" class="pm-effect"></p>
       <div class="pm-actions">
@@ -267,6 +277,17 @@ async function loadWeek(start) {
   document.getElementById('weekLabel').textContent = fmt(json.week_start)+' – '+fmt(json.week_end);
   renderGrid();
 }
+// Toggle a "not needed" day tag from the planner (reuses the attendance day-tag endpoint).
+async function toggleCellTag(uid, date, currentlyNotNeeded, name) {
+  const verb = currentlyNotNeeded ? 'remove the "not needed" tag for' : 'mark not needed (paid, not counted absent) for';
+  const when = fmt(date);
+  if (!confirm(`${currentlyNotNeeded?'Remove':'Mark'} — ${verb} ${name} on ${when}?`)) return;
+  try {
+    const j = await post('/attendance/toggle-day-tag', { user_id: uid, date: date });
+    if (j && j.success !== false) { loadWeek(WEEK); }
+    else { alert((j && j.message) || 'Could not update the day.'); }
+  } catch(e) { alert('Could not update the day.'); }
+}
 function stepWeek(dir){ loadWeek(dir<0 ? DATA.prev_week : DATA.next_week); }
 function goThisWeek(){ loadWeek(DATA.this_week); }
 function setFilter(f){ FILTER=f; document.getElementById('fltRiders').classList.toggle('on',f==='riders'); document.getElementById('fltAll').classList.toggle('on',f==='all'); clearSel(); loadWeek(WEEK); }
@@ -303,18 +324,25 @@ function renderGrid() {
 
     const cells = r.cells.map(c=>{
       const isToday = c.date===DATA.today;
-      let cls='chip-work', body='';
+      let cls='chip-work', body='', clickable=false;
       if (c.is_holiday) { cls='chip-holiday'; body=`<span>Holiday</span>`; }
       else if (c.is_off) { cls='chip-off'; body=`<span>Off</span>`; }
+      else if (c.not_needed) {
+        // Tagged "not needed" — paid, not counted absent. Click to undo.
+        cls='chip-notneeded'; clickable=true;
+        body=`<span class="chip-nm">🚫 Not needed</span><span class="text-[10px] opacity-70">paid</span>`;
+      }
       else {
         cls = c.is_override?'chip-override':'chip-work';
+        clickable=true;
         // 📍 pin ONLY when this day's location differs from the rider's usual one —
         // a normal week shows no pins, so a pin always means "different place that day".
         const locPin = (c.location_id && r.usual_location_id && c.location_id !== r.usual_location_id)
           ? `<span class="chip-loc" title="At ${escapeHtml(c.location_name||'')} this day">📍 ${escapeHtml(c.location_name||'')}</span>` : '';
         body=`<span class="chip-nm">${c.start}${c.end?'–'+c.end:'+'}</span><span class="text-[10px] opacity-70">${c.shift_name}</span>${locPin}`;
       }
-      return `<td class="${isToday?'col-today':''}"><span class="cell-chip ${cls}">${body}</span></td>`;
+      const click = clickable ? ` onclick="toggleCellTag(${r.user_id}, '${c.date}', ${c.not_needed?1:0}, '${escapeHtml(r.name).replace(/'/g,"\\'")}')" title="${c.not_needed?'Marked not needed — click to undo':'Click to mark not needed (paid, not counted absent)'}" style="cursor:pointer;"` : '';
+      return `<td class="${isToday?'col-today':''}"><span class="cell-chip ${cls}"${click}>${body}</span></td>`;
     }).join('');
 
     const checked = SEL.has(r.user_id)?'checked':'';
@@ -348,7 +376,22 @@ function clearSel(){ SEL.clear(); document.querySelectorAll('.rider-cb').forEach
 function updateBulkBar(){ const bar=document.getElementById('bulkBar'); if(SEL.size){ bar.classList.remove('hidden'); bar.classList.add('flex'); document.getElementById('bulkCount').textContent=SEL.size+' selected'; } else { bar.classList.add('hidden'); bar.classList.remove('flex'); } }
 
 /* modal */
-function fillTemplates(){ const s=document.getElementById('mTemplate'); s.innerHTML=DATA.templates.map(t=>`<option value="${t.id}">${t.name} · ${t.start}${t.end?'–'+t.end:'+'} · off ${t.off_days}</option>`).join(''); }
+function fillTemplates(){
+  const s=document.getElementById('mTemplate');
+  // 🚫 Not required — a special "shift" that just marks the day(s) not-needed (paid, not absent).
+  const nr = `<option value="not_required">🚫 Not required (day off, paid — not a shift)</option>`;
+  s.innerHTML = DATA.templates.map(t=>`<option value="${t.id}">${t.name} · ${t.start}${t.end?'–'+t.end:'+'} · off ${t.off_days}</option>`).join('') + nr;
+}
+function isNotRequiredSelected(){ return document.getElementById('mTemplate').value === 'not_required'; }
+function onTemplateChange(){
+  const nr = isNotRequiredSelected();
+  // Not-required is a per-day marker, not a recurring pattern: hide "until changed" + location.
+  const untilOpt = document.querySelector('.mode-opt[data-mode="until_changed"]');
+  if(untilOpt) untilOpt.style.display = nr ? 'none' : '';
+  const loc = document.getElementById('locSection'); if(loc) loc.style.display = nr ? 'none' : '';
+  if(nr && MODE==='until_changed') setMode('one_day');
+  renderEffect();
+}
 function openAssignOne(id){ const r=DATA.riders.find(x=>x.user_id===id); TARGET=[{id, name:r.name}]; openAssignModal(); }
 function openAssignBulk(){ TARGET=[...SEL].map(id=>{ const r=DATA.riders.find(x=>x.user_id===id); return {id, name:r?r.name:('#'+id)}; }); openAssignModal(); }
 let SELLOC = null;           // selected location id in the assign modal
@@ -378,14 +421,20 @@ function openAssignModal(){
   SELLOC = riderDefault || (primary?primary.id:null);
   document.getElementById('mSetDefault').checked=false;
   renderLocBubbles();
+  onTemplateChange(); // reset not-required UI state (restores "until changed" + location)
   document.getElementById('assignModal').style.display='flex';
 }
 function closeAssign(){ document.getElementById('assignModal').style.display='none'; }
 function setMode(m){ MODE=m; document.querySelectorAll('.mode-opt').forEach(el=>el.classList.toggle('on', el.dataset.mode===m)); document.getElementById('toWrap').style.display = (m==='date_range')?'block':'none'; document.getElementById('fromLabel').textContent = (m==='one_day')?'Day':'From'; renderEffect(); }
 function renderEffect(){
-  const t = DATA.templates.find(x=>x.id==document.getElementById('mTemplate').value);
   const from = document.getElementById('mFrom').value, to=document.getElementById('mTo').value;
   const who = TARGET.length===1?TARGET[0].name:(TARGET.length+' riders');
+  if(isNotRequiredSelected()){
+    const rangeTxt = (MODE==='date_range') ? `${fmt(from)}–${fmt(to)}` : fmt(from);
+    document.getElementById('effectLine').innerHTML = `→ ${who} marked <b>🚫 not needed</b> on <b>${rangeTxt}</b> — paid, not counted absent. Reversible from the day cell or here.`;
+    return;
+  }
+  const t = DATA.templates.find(x=>x.id==document.getElementById('mTemplate').value);
   const nm = t?t.name:'the shift';
   let msg='';
   if(MODE==='until_changed') msg=`→ ${who} will be on <b>${nm}</b> from <b>${fmt(from)}</b> until you change it. Past days are untouched.`;
@@ -400,10 +449,25 @@ function renderEffect(){
   document.getElementById('effectLine').innerHTML=msg;
 }
 async function saveAssign(){
-  const templateId=parseInt(document.getElementById('mTemplate').value);
+  const rawT = document.getElementById('mTemplate').value;
   const from=document.getElementById('mFrom').value, to=document.getElementById('mTo').value;
-  if(!templateId||!from){ alert('Pick a shift and a date.'); return; }
+  if(!from){ alert('Pick a date.'); return; }
   if(MODE==='date_range' && (!to || to<from)){ alert('Pick a valid end date.'); return; }
+
+  // 🚫 Not required — write not-needed day tags over the chosen date(s); no shift assignment.
+  if(rawT === 'not_required'){
+    const btn=document.getElementById('saveBtn'); btn.disabled=true; btn.textContent='Saving…';
+    const payload={ user_ids: TARGET.map(t=>t.id), from, action:'add' };
+    if(MODE==='date_range') payload.to = to;
+    const json = await post('/attendance/day-tag-range', payload);
+    btn.disabled=false; btn.textContent='Save';
+    if(json.success){ closeAssign(); clearSel(); loadWeek(WEEK); }
+    else alert(json.message||'Failed to save');
+    return;
+  }
+
+  const templateId=parseInt(rawT);
+  if(!templateId){ alert('Pick a shift and a date.'); return; }
   // Guard the classic mix-up: a "one day only" change dated TODAY (they revert tomorrow).
   // If they meant a lasting change they should pick "New regular shift".
   if(MODE==='one_day' && from===DATA.today){

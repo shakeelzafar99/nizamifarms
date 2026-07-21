@@ -234,6 +234,29 @@ class WhatsAppService
     }
 
     /**
+     * Send an image by uploaded media id (the upload→id→send flow the voice
+     * notes use). Preferred over the link-based sendImage() for chat sends:
+     * it works even when the stored file's public URL isn't reachable from
+     * Meta's side (e.g. local/dev), and matches sendAudio symmetrically.
+     */
+    public function sendImageById(string $to, string $mediaId, string $caption = ''): array
+    {
+        $payload = [
+            'messaging_product' => 'whatsapp',
+            'recipient_type'    => 'individual',
+            'to'                => $to,
+            'type'              => 'image',
+            'image'             => ['id' => $mediaId],
+        ];
+
+        if ($caption !== '') {
+            $payload['image']['caption'] = $caption;
+        }
+
+        return $this->sendRequest($payload);
+    }
+
+    /**
      * Mark a message as read (sends blue ticks to customer)
      */
     public function markAsRead(string $messageId): array
@@ -807,6 +830,27 @@ class WhatsAppService
         if (!$mediaUrl) {
             Log::debug('PaymentSignal: image skipped — media download failed (no image_path)', $logCtx);
             return;
+        }
+
+        // ── Phase 5c: a TRUSTED STAFF number forwarding a customer's proof ──
+        // The forward comes from Taimur, so WhatsApp has stripped the payer's
+        // identity — this is NOT a customer proof and must never be matched as
+        // one. Hand it to the assistant, which takes the customer from the
+        // caption and raises a confirmation CARD. Done AFTER the response so a
+        // Gemini read can never slow the webhook (Meta retries on timeout).
+        $forwarderUserId = \App\Services\Assistant\ForwardedProofService::forwarderUserId($conversation->wa_phone ?? null);
+        if ($forwarderUserId) {
+            $caption = $savedMessage->content ?? null;
+            $path = $mediaUrl;
+            Log::info('ForwardedProof: trusted forwarder image received', $logCtx + ['user_id' => $forwarderUserId]);
+            app()->terminating(function () use ($forwarderUserId, $path, $caption) {
+                try {
+                    app(\App\Services\Assistant\ForwardedProofService::class)->handle($forwarderUserId, $path, $caption);
+                } catch (\Throwable $e) {
+                    Log::error('ForwardedProof: handling failed', ['error' => $e->getMessage()]);
+                }
+            });
+            return; // never fall through to the customer-proof path
         }
 
         // Must be a mapped customer (the conversation has to resolve to a customer).

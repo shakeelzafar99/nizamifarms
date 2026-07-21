@@ -424,6 +424,145 @@ class ShopifyService
     }
 
     /**
+     * =========================================================================
+     * Delivery → Shopify fulfillment sync (Jul 2026)
+     *
+     * Uses the modern fulfillment-orders flow — the legacy
+     * POST /orders/{id}/fulfillments.json endpoint was REMOVED by Shopify in
+     * 2023-07, so fulfilling is now: list the order's fulfillment orders,
+     * then POST /fulfillments.json against each open one.
+     *
+     * These methods authenticate with the X-Shopify-Access-Token header
+     * (current style). The env SHOPIFY_PASSWORD (shpat_...) IS the Admin API
+     * access token, so it works directly as the header value.
+     * =========================================================================
+     */
+    protected function tokenHeaders(): array
+    {
+        return ['X-Shopify-Access-Token' => $this->password];
+    }
+
+    /**
+     * List the fulfillment orders belonging to a Shopify order.
+     * Returns [] on failure (logged) — callers treat that as "nothing to do".
+     */
+    public function getFulfillmentOrders(string $shopifyOrderId): array
+    {
+        $url = "https://{$this->storeName}.myshopify.com/admin/api/{$this->apiVersion}/orders/{$shopifyOrderId}/fulfillment_orders.json";
+
+        $response = Http::withHeaders($this->tokenHeaders())
+            ->withOptions(['verify' => $this->verifySsl])
+            ->timeout(15)
+            ->get($url);
+
+        if ($response->failed()) {
+            \Log::error('Shopify getFulfillmentOrders failed', [
+                'shopify_order_id' => $shopifyOrderId,
+                'status' => $response->status(),
+                'body' => $response->body(),
+            ]);
+            return [];
+        }
+
+        return $response->json()['fulfillment_orders'] ?? [];
+    }
+
+    /**
+     * Fulfill ALL remaining line items of one fulfillment order.
+     * notify_customer defaults to false — customer comms stay on WhatsApp.
+     */
+    public function createFulfillment(int $fulfillmentOrderId, bool $notifyCustomer = false): bool
+    {
+        $url = "https://{$this->storeName}.myshopify.com/admin/api/{$this->apiVersion}/fulfillments.json";
+
+        $response = Http::withHeaders($this->tokenHeaders())
+            ->withOptions(['verify' => $this->verifySsl])
+            ->timeout(15)
+            ->post($url, [
+                'fulfillment' => [
+                    'line_items_by_fulfillment_order' => [
+                        ['fulfillment_order_id' => $fulfillmentOrderId],
+                    ],
+                    'notify_customer' => $notifyCustomer,
+                ],
+            ]);
+
+        if ($response->failed()) {
+            \Log::error('Shopify createFulfillment failed', [
+                'fulfillment_order_id' => $fulfillmentOrderId,
+                'status' => $response->status(),
+                'body' => $response->body(),
+            ]);
+            return false;
+        }
+
+        \Log::info('Shopify fulfillment created', [
+            'fulfillment_order_id' => $fulfillmentOrderId,
+            'fulfillment_id' => $response->json()['fulfillment']['id'] ?? null,
+        ]);
+        return true;
+    }
+
+    /**
+     * Mark a Shopify order as PAID (COD orders otherwise stay
+     * "Payment pending" forever after delivery).
+     *
+     * There is no reliable REST path for this on manual/COD orders — this is
+     * the same GraphQL mutation the admin "Mark as paid" button uses.
+     * Requires the write_orders scope on the custom app.
+     *
+     * Returns ['success' => bool, 'already_paid' => bool, 'error' => ?string]
+     */
+    public function markOrderPaid(string $shopifyOrderId): array
+    {
+        $url = "https://{$this->storeName}.myshopify.com/admin/api/{$this->apiVersion}/graphql.json";
+
+        $response = Http::withHeaders($this->tokenHeaders())
+            ->withOptions(['verify' => $this->verifySsl])
+            ->timeout(15)
+            ->post($url, [
+                'query' => 'mutation orderMarkAsPaid($input: OrderMarkAsPaidInput!) {
+                    orderMarkAsPaid(input: $input) {
+                        order { id displayFinancialStatus }
+                        userErrors { field message }
+                    }
+                }',
+                'variables' => [
+                    'input' => ['id' => "gid://shopify/Order/{$shopifyOrderId}"],
+                ],
+            ]);
+
+        if ($response->failed()) {
+            \Log::error('Shopify markOrderPaid HTTP failed', [
+                'shopify_order_id' => $shopifyOrderId,
+                'status' => $response->status(),
+                'body' => $response->body(),
+            ]);
+            return ['success' => false, 'already_paid' => false, 'error' => 'HTTP ' . $response->status()];
+        }
+
+        $body = $response->json();
+        $userErrors = $body['data']['orderMarkAsPaid']['userErrors'] ?? [];
+
+        if (!empty($userErrors)) {
+            $message = implode('; ', array_column($userErrors, 'message'));
+            // "already paid" style errors are a benign no-op, not a failure
+            $alreadyPaid = stripos($message, 'paid') !== false;
+            \Log::log($alreadyPaid ? 'info' : 'error', 'Shopify markOrderPaid userErrors', [
+                'shopify_order_id' => $shopifyOrderId,
+                'errors' => $userErrors,
+            ]);
+            return ['success' => false, 'already_paid' => $alreadyPaid, 'error' => $message];
+        }
+
+        \Log::info('Shopify order marked as paid', [
+            'shopify_order_id' => $shopifyOrderId,
+            'financial_status' => $body['data']['orderMarkAsPaid']['order']['displayFinancialStatus'] ?? null,
+        ]);
+        return ['success' => true, 'already_paid' => false, 'error' => null];
+    }
+
+    /**
      * Extract page info from Shopify Link header
      */
     private function extractPageInfo(?string $linkHeader): ?string

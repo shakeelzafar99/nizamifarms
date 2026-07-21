@@ -35,6 +35,12 @@
         <div id="scmToWrap"><label class="scm-label">To</label><input type="date" id="scmTo" class="scm-input"></div>
       </div>
 
+      <div id="scmLocSection">
+        <label class="scm-label">Location <span style="font-weight:400;text-transform:none;letter-spacing:0;color:#94a3b8;">— where they check in</span></label>
+        <div id="scmLocBubbles" class="scm-locs"></div>
+        <label id="scmSetDefWrap" class="scm-setdef"><input type="checkbox" id="scmSetDef"> <span id="scmSetDefLbl">Make this their default location</span></label>
+      </div>
+
       <p id="scmEffect" class="scm-effect"></p>
       <div class="scm-actions">
         <button type="button" id="scmCancel" class="scm-cancel">Cancel</button>
@@ -84,6 +90,11 @@
   #shiftChangeModal .scm-loading{ font-size:12px; color:#94a3b8; }
   #shiftChangeModal .scm-sep{ display:flex; align-items:center; gap:10px; margin:16px 0 2px; color:#94a3b8; font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.05em; }
   #shiftChangeModal .scm-sep::before, #shiftChangeModal .scm-sep::after{ content:""; flex:1; height:1px; background:#e8edf3; }
+  #shiftChangeModal .scm-locs{ display:flex; flex-wrap:wrap; gap:7px; }
+  #shiftChangeModal .scm-loc{ font-size:12px; font-weight:600; border:1px solid #e3e8f0; background:#fff; color:#334155; border-radius:20px; padding:5px 11px; cursor:pointer; }
+  #shiftChangeModal .scm-loc.on{ border-color:#B91C1C; background:#FBECEC; color:#B91C1C; }
+  #shiftChangeModal .scm-loc .scm-loc-def{ font-size:9px; font-weight:800; text-transform:uppercase; color:#15803d; margin-left:5px; }
+  #shiftChangeModal .scm-setdef{ display:flex; align-items:center; gap:8px; margin-top:9px; font-size:12px; color:#475569; cursor:pointer; }
 </style>
 
 <script>
@@ -92,6 +103,7 @@
   const $ = (id) => document.getElementById(id);
   const CSRF = document.querySelector('meta[name="csrf-token"]').content;
   let templates = [], target = null, mode = 'until_changed', onSaved = null;
+  let locations = [], selLoc = null, defaultLocId = null; // location picker state
 
   const fmt = (d) => { try { return new Date(d+'T00:00:00').toLocaleDateString(undefined,{day:'numeric',month:'short'}); } catch(e){ return d; } };
   const todayStr = () => { const d=new Date(); const p=(n)=>String(n).padStart(2,'0'); return d.getFullYear()+'-'+p(d.getMonth()+1)+'-'+p(d.getDate()); };
@@ -101,6 +113,8 @@
     try { const j = await fetch('/shifts/list').then(r=>r.json()); if (j.success) templates = j.data.filter(t=>t.active); } catch(e){ console.error('shift templates load failed', e); }
   }
 
+  function isNotReq(){ return $('scmTemplate').value === 'not_required'; }
+
   function setMode(m){
     mode = m;
     document.querySelectorAll('#shiftChangeModal .scm-mode').forEach(el => el.classList.toggle('on', el.dataset.mode===m));
@@ -109,10 +123,38 @@
     renderEffect();
   }
 
+  // "Not required" is a per-day marker, not a recurring shift → hide "until changed" + location.
+  function onTemplateChange(){
+    const nr = isNotReq();
+    const untilOpt = document.querySelector('#shiftChangeModal .scm-mode[data-mode="until_changed"]');
+    if (untilOpt) untilOpt.style.display = nr ? 'none' : '';
+    if ($('scmLocSection')) $('scmLocSection').style.display = (nr || !locations.length) ? 'none' : '';
+    if (nr && mode==='until_changed') setMode('one_day');
+    renderEffect();
+  }
+
+  function renderLocBubbles(){
+    const wrap = $('scmLocBubbles');
+    if (!wrap) return;
+    if (!locations.length){ $('scmLocSection').style.display = 'none'; return; }
+    if (!isNotReq()) $('scmLocSection').style.display = '';
+    wrap.innerHTML = locations.map(l =>
+      `<span class="scm-loc ${l.id===selLoc?'on':''}" data-loc="${l.id}">${l.name}${l.id===defaultLocId?'<span class="scm-loc-def">default</span>':''}</span>`
+    ).join('');
+    wrap.querySelectorAll('[data-loc]').forEach(b => b.addEventListener('click', () => { selLoc = parseInt(b.dataset.loc); renderLocBubbles(); }));
+    const who = target && target.userName ? (target.userName.split(' ')[0] + "'s") : 'their';
+    $('scmSetDefLbl').textContent = 'Make this ' + who + ' default location';
+  }
+
   function renderEffect(){
-    const t = templates.find(x => String(x.id)===String($('scmTemplate').value));
     const from = $('scmFrom').value, to = $('scmTo').value;
     const who = target ? target.userName : 'this rider';
+    if (isNotReq()){
+      const range = (mode==='date_range') ? `${fmt(from)}–${fmt(to)}` : fmt(from);
+      $('scmEffect').innerHTML = `→ ${who} marked <b>🚫 not needed</b> on <b>${range}</b> — paid, not counted absent. Reversible from the day cell or here.`;
+      return;
+    }
+    const t = templates.find(x => String(x.id)===String($('scmTemplate').value));
     const nm = t ? t.shift_name : 'the shift';
     let msg;
     if (mode==='until_changed') msg = `→ ${who} will be on <b>${nm}</b> from <b>${fmt(from)}</b> until you change it. Past days are untouched.`;
@@ -131,6 +173,15 @@
     } catch(e){ $('scmSummary').innerHTML = ''; }
   }
   function renderSummary(d){
+    // Locations come with the summary (one fetch) → render the picker.
+    if (Array.isArray(d.locations)) {
+      locations = d.locations;
+      defaultLocId = d.default_location_id || null;
+      const primaryLoc = locations.find(l => l.is_primary);
+      if (selLoc === null) selLoc = d.default_location_id || d.usual_location_id || (primaryLoc ? primaryLoc.id : (locations[0] ? locations[0].id : null));
+      renderLocBubbles();
+      onTemplateChange();
+    }
     const p = d.primary || {};
     let html = `<div class="scm-now"><span class="scm-now-lbl">Now</span> <b>${p.shift_name||'—'}</b> · ${p.start||''}${p.end?'–'+p.end:' onwards'}</div>`;
     if (d.changes && d.changes.length){
@@ -157,18 +208,34 @@
   }
 
   async function save(){
-    const templateId = parseInt($('scmTemplate').value);
     const from = $('scmFrom').value, to = $('scmTo').value;
-    if (!templateId || !from){ alert('Pick a shift and a date.'); return; }
+    if (!from){ alert('Pick a date.'); return; }
     if (mode==='date_range' && (!to || to<from)){ alert('Pick a valid end date.'); return; }
+    const btn = $('scmSave'); btn.disabled=true; btn.textContent='Saving…';
+
+    // 🚫 Not required — writes not-needed day tags over the date(s); no shift assignment.
+    if (isNotReq()){
+      const payload = { user_ids: [target.userId], from, action: 'add' };
+      if (mode==='date_range') payload.to = to;
+      let j;
+      try { j = await fetch('/attendance/day-tag-range', { method:'POST', headers:{'Content-Type':'application/json','X-CSRF-TOKEN':CSRF}, body:JSON.stringify(payload) }).then(r=>r.json()); }
+      catch(e){ j = { success:false, message:'Network error' }; }
+      btn.disabled=false;
+      if (j.success){ if (typeof onSaved==='function') onSaved(); btn.textContent='Saved ✓'; setTimeout(()=>{btn.textContent='Save';},1300); }
+      else { btn.textContent='Save'; alert(j.message || 'Failed to save'); }
+      return;
+    }
+
+    const templateId = parseInt($('scmTemplate').value);
+    if (!templateId){ alert('Pick a shift and a date.'); btn.disabled=false; btn.textContent='Save'; return; }
     // Guard the "one day only, dated today" mix-up (they revert tomorrow).
     if (mode==='one_day' && from===todayStr()){
-      if(!confirm('This sets the shift for TODAY only. They go back to their normal shift tomorrow.\n\nIf you want a lasting change, cancel and choose "New regular shift" (REGULAR) instead.\n\nContinue with today only?')) return;
+      if(!confirm('This sets the shift for TODAY only. They go back to their normal shift tomorrow.\n\nIf you want a lasting change, cancel and choose "New regular shift" (REGULAR) instead.\n\nContinue with today only?')){ btn.disabled=false; btn.textContent='Save'; return; }
     }
-    const btn = $('scmSave'); btn.disabled=true; btn.textContent='Saving…';
     const payload = { user_id: target.userId, shift_template_id: templateId, mode, effective_from: from };
     if (mode==='date_range') payload.effective_to = to;
     if (mode==='one_day') payload.effective_to = from;
+    if (selLoc){ payload.location_id = selLoc; payload.set_default_location = $('scmSetDef') ? $('scmSetDef').checked : false; }
     let json;
     try { json = await fetch('/shifts/assign', { method:'POST', headers:{'Content-Type':'application/json','X-CSRF-TOKEN':CSRF}, body:JSON.stringify(payload) }).then(r=>r.json()); }
     catch(e){ json = { success:false, message:'Network error' }; }
@@ -190,10 +257,16 @@
     target = opts || {}; onSaved = (opts && opts.onSaved) || null;
     await loadTemplates();
     $('scmTitle').textContent = 'Change shift · ' + (target.userName || '');
-    $('scmTemplate').innerHTML = templates.map(t => `<option value="${t.id}">${t.shift_name} · ${t.shift_start}${t.shift_end?'–'+t.shift_end:'+'} · off ${t.off_days}</option>`).join('');
+    // Reset location state for the new rider; the summary fetch re-populates it.
+    locations = []; selLoc = null; defaultLocId = null;
+    if ($('scmSetDef')) $('scmSetDef').checked = false;
+    if ($('scmLocSection')) $('scmLocSection').style.display = 'none';
+    $('scmTemplate').innerHTML = templates.map(t => `<option value="${t.id}">${t.shift_name} · ${t.shift_start}${t.shift_end?'–'+t.shift_end:'+'} · off ${t.off_days}</option>`).join('')
+      + `<option value="not_required">🚫 Not required (day off, paid — not a shift)</option>`;
     const today = todayStr();
     $('scmFrom').value = today; $('scmTo').value = today;
     setMode('until_changed');
+    onTemplateChange();
     $('shiftChangeModal').style.display='flex';
     loadSummary(target.userId);
   };
@@ -202,7 +275,7 @@
   $('scmX').addEventListener('click', close);
   $('scmCancel').addEventListener('click', close);
   $('scmSave').addEventListener('click', save);
-  $('scmTemplate').addEventListener('change', renderEffect);
+  $('scmTemplate').addEventListener('change', onTemplateChange);
   $('scmFrom').addEventListener('change', renderEffect);
   $('scmTo').addEventListener('change', renderEffect);
   $('shiftChangeModal').addEventListener('click', function(e){ if (e.target === this) close(); });

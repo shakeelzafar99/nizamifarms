@@ -36,7 +36,11 @@ class FirebaseService
             'type' => 'whatsapp_message',
             'conversation_id' => (string)($conversationId ?? ''),
             'sender' => $senderName,
-        ], 'whatsapp_messages');
+        ], 'whatsapp_messages', null,
+            // Route to NF Messages for anyone who has it — otherwise a user with
+            // both APKs installed gets two notifications for the same message.
+            // Users without it keep getting pushed on the primary app.
+            'messages');
     }
 
     /**
@@ -46,7 +50,7 @@ class FirebaseService
      * whole permission group. Best-effort: silently no-ops if the user
      * has no active device tokens or Firebase isn't configured.
      */
-    public function notifyUser(int $userId, array $notification, array $data = [], string $channelId = 'whatsapp_messages'): void
+    public function notifyUser(int $userId, array $notification, array $data = [], string $channelId = 'whatsapp_messages', ?string $preferFlavor = null): void
     {
         if (!$this->projectId || !file_exists($this->credentialsPath)) {
             Log::debug('Firebase: Skipping user push (not configured)', ['user_id' => $userId]);
@@ -54,11 +58,22 @@ class FirebaseService
         }
 
         try {
-            $tokens = DB::table('t_wa_device_tokens')
+            $rows = DB::table('t_wa_device_tokens')
                 ->where('user_id', $userId)
                 ->where('is_active', 1)
-                ->pluck('fcm_token')
+                ->select('fcm_token', 'user_id', 'app_flavor')
+                ->get()
                 ->all();
+
+            // Only WhatsApp-flavoured pushes prefer the messaging app. Callers
+            // that pass no $preferFlavor (e.g. ShiftController's shift-assigned
+            // pings) keep hitting EVERY device — routing those to NF Messages,
+            // which has no shift screen at all, would simply lose them.
+            if ($preferFlavor !== null) {
+                $rows = $this->preferFlavorPerUser($rows, $preferFlavor);
+            }
+
+            $tokens = array_map(fn($r) => $r->fcm_token, $rows);
 
             if (empty($tokens)) return;
 
@@ -95,7 +110,10 @@ class FirebaseService
             'type'            => 'whatsapp_mention',
             'conversation_id' => (string) $conversationId,
             'mentioned_by'    => $mentionedByName,
-        ], 'whatsapp_messages');
+        ], 'whatsapp_messages',
+            // Same duplicate-suppression as a normal message push: a user with
+            // both APKs should be tagged once, in the messaging app.
+            'messages');
     }
 
     /**
@@ -215,6 +233,67 @@ class FirebaseService
     }
 
     /**
+     * U4 — escalate to management when a company-bike rider came home late or forgot to record his
+     * meter (single strong alert to the rider on arrival happens elsewhere; this is the 10-minute
+     * escalation). Targets whoever holds 'receive_bike_meter_alerts' (owner assigns the roles).
+     */
+    public function notifyHomeMeterMissed(int $attendanceId, string $riderName, string $state, ?int $minutesLate = null): void
+    {
+        $late = $minutesLate ? " ({$minutesLate} min late)" : '';
+        $body = $state === 'late_locked'
+            ? "{$riderName} reached home late{$late} and hasn't recorded his bike meter — it's locked. Unlock or enter it."
+            : "{$riderName} is home but hasn't recorded his bike meter{$late}. Please follow up.";
+
+        $this->sendToPermissionGroup('receive_bike_meter_alerts', [
+            'title' => '🏍 Bike meter not recorded',
+            'body'  => $body,
+        ], [
+            'type'          => 'home_meter_missed',
+            'attendance_id' => (string) $attendanceId,
+        ], 'shift_notifications');
+    }
+
+    /**
+     * Notify store users that a rider re-timed his OWN route while already
+     * part-way through his deliveries.
+     *
+     * Why this is worth a push: the delivery times a customer was given are a
+     * commitment, and a rider who is running late can press Re-dispatch and be
+     * handed fresh, later ones. The promise itself is protected in the reports
+     * (EtaPromiseService), so this is not about the numbers — it is so the store
+     * finds out WHILE it is happening, from the person's name, rather than in
+     * tomorrow's report.
+     *
+     * Fires only when he pressed it himself AND had already delivered stops —
+     * a re-time before leaving the office changes nobody's expectations.
+     * Targets the same 'receive_dispatch_alerts' group the store banners use.
+     */
+    public function notifyMidRunRouteChange(
+        int $riderId,
+        string $riderName,
+        int $deliveredBefore,
+        int $remaining,
+        ?int $avgShiftMinutes = null
+    ): void {
+        $shift = '';
+        if ($avgShiftMinutes !== null && $avgShiftMinutes !== 0) {
+            $dir = $avgShiftMinutes > 0 ? 'later' : 'earlier';
+            $shift = ' Times moved ~' . abs($avgShiftMinutes) . " min {$dir}.";
+        }
+        $body = "{$riderName} re-timed his route mid-run ({$deliveredBefore} delivered, {$remaining} left).{$shift}";
+
+        $this->sendToPermissionGroup('receive_dispatch_alerts', [
+            'title' => '⚠️ Route re-timed mid-run',
+            'body'  => $body,
+        ], [
+            'type'             => 'mid_run_route_change',
+            'rider_id'         => (string) $riderId,
+            'delivered_before' => (string) $deliveredBefore,
+            'remaining'        => (string) $remaining,
+        ], 'dispatch_alerts', $riderId); // never push it back to the rider himself
+    }
+
+    /**
      * Generic: send notifications to all users with a given permission
      */
     protected function sendToPermissionGroup(string $permissionCode, array $notification, array $data, string $channelId = 'whatsapp_messages', ?int $excludeUserId = null): void
@@ -227,7 +306,7 @@ class FirebaseService
      * mobile permissions. Used e.g. for WhatsApp messages where either a
      * full or limited viewer should receive the push.
      */
-    protected function sendToPermissionGroups(array $permissionCodes, array $notification, array $data, string $channelId = 'whatsapp_messages', ?int $excludeUserId = null): void
+    protected function sendToPermissionGroups(array $permissionCodes, array $notification, array $data, string $channelId = 'whatsapp_messages', ?int $excludeUserId = null, ?string $preferFlavor = null): void
     {
         if (!$this->projectId || !file_exists($this->credentialsPath)) {
             Log::debug('Firebase: Skipping push notification (not configured)');
@@ -236,6 +315,13 @@ class FirebaseService
 
         try {
             $tokens = $this->getActiveTokensForPermissions($permissionCodes);
+
+            // Jul-2026: when a dedicated app exists for this kind of push (NF
+            // Messages), send only to it for users who have it — otherwise
+            // someone with both APKs gets buzzed twice for one message.
+            if ($preferFlavor !== null) {
+                $tokens = $this->preferFlavorPerUser($tokens, $preferFlavor);
+            }
 
             if (empty($tokens)) {
                 return;
@@ -282,10 +368,54 @@ class FirebaseService
             ->join('t_sys_mobile_permission as mp', 'mp.id', '=', 'rmp.mobile_permission_id')
             ->whereIn('mp.permission_code', $permissionCodes)
             ->where('dt.is_active', 1)
-            ->select('dt.fcm_token', 'dt.user_id')
+            // app_flavor added Jul-2026 (see NF-MESSAGES-PHASE2-app-flavor-tokens.sql).
+            // Selected so preferFlavorPerUser() can route WhatsApp pushes to the
+            // dedicated messaging app when a user has it installed.
+            ->select('dt.fcm_token', 'dt.user_id', 'dt.app_flavor')
             ->distinct()
             ->get()
             ->all();
+    }
+
+    /**
+     * Per user: if they have at least one active token for $flavor, keep ONLY
+     * those and drop their other-flavor tokens. Users without a $flavor token
+     * are returned untouched.
+     *
+     * The case this exists for: a manager with BOTH the Rider app and NF
+     * Messages installed. Both register a token; both hold
+     * view_whatsapp_messages; so one inbound WhatsApp message pushed to both
+     * and the phone buzzed twice. This makes the dedicated app win.
+     *
+     * Deliberately per-USER, not global — a colleague who only has the Rider
+     * app must keep receiving pushes there. And deliberately only applied to
+     * push types that HAVE a dedicated app (see notifyNewWhatsAppMessage);
+     * khaas / app_update / location pings are untouched and still go
+     * everywhere.
+     *
+     * Defensive: rows from before the column existed (or from older APKs that
+     * don't send it) default to 'primary', so this is a no-op for them.
+     */
+    protected function preferFlavorPerUser(array $tokens, string $flavor): array
+    {
+        $usersWithFlavor = [];
+        foreach ($tokens as $t) {
+            if (($t->app_flavor ?? 'primary') === $flavor) {
+                $usersWithFlavor[(int) $t->user_id] = true;
+            }
+        }
+
+        if (empty($usersWithFlavor)) {
+            return $tokens; // nobody has the dedicated app — nothing to prefer
+        }
+
+        return array_values(array_filter($tokens, function ($t) use ($usersWithFlavor, $flavor) {
+            $userId = (int) $t->user_id;
+            if (!isset($usersWithFlavor[$userId])) {
+                return true; // this user doesn't have the dedicated app
+            }
+            return ($t->app_flavor ?? 'primary') === $flavor;
+        }));
     }
 
     /**

@@ -2515,6 +2515,30 @@ class WhatsAppWebController extends Controller
     }
 
     /**
+     * Locate the captured invoice image for an order on the public disk.
+     *
+     * Captures are stored as Invoice-{orderNum}.jpg (Jul-2026 onward — the
+     * web pages now capture as smaller JPEGs) or Invoice-{orderNum}.png
+     * (older captures + any page still uploading PNG). At most one of the
+     * two exists: uploadInvoiceImage deletes the sibling extension on every
+     * save, and the order-edit cache clear removes both — so a stale
+     * counterpart can never shadow a fresh capture.
+     *
+     * Returns [storagePath, mime] or [null, null] when nothing is captured.
+     */
+    private function findInvoiceImage(string $orderNum): array
+    {
+        $base = 'whatsapp-invoices/Invoice-' . $orderNum;
+        if (Storage::disk('public')->exists($base . '.jpg')) {
+            return [$base . '.jpg', 'image/jpeg'];
+        }
+        if (Storage::disk('public')->exists($base . '.png')) {
+            return [$base . '.png', 'image/png'];
+        }
+        return [null, null];
+    }
+
+    /**
      * Read an already-captured invoice image's URL, with an mtime cache
      * buster so both browsers and Meta see a unique URL whenever the file
      * is overwritten by a fresh capture. Returns ['success' => false]
@@ -2527,14 +2551,13 @@ class WhatsAppWebController extends Controller
     public function readInvoiceImageUrlForSend($orderId): array
     {
         try {
-            $dir = 'whatsapp-invoices';
             $disk = 'public';
 
             $order = app(\App\Http\Controllers\CRM\OrderController::class)->findOrderPublic($orderId);
             $orderNum = $order->order_number ?? ('NF-' . str_pad($order->id, 4, '0', STR_PAD_LEFT));
-            $storagePath = $dir . '/Invoice-' . $orderNum . '.png';
+            [$storagePath] = $this->findInvoiceImage($orderNum);
 
-            if (!Storage::disk($disk)->exists($storagePath)) {
+            if ($storagePath === null) {
                 return [
                     'success' => false,
                     'needs_capture' => true,
@@ -2590,14 +2613,13 @@ class WhatsAppWebController extends Controller
     public function uploadInvoiceImageToMetaForSend($orderId): array
     {
         try {
-            $dir = 'whatsapp-invoices';
             $disk = 'public';
 
             $order = app(\App\Http\Controllers\CRM\OrderController::class)->findOrderPublic($orderId);
             $orderNum = $order->order_number ?? ('NF-' . str_pad($order->id, 4, '0', STR_PAD_LEFT));
-            $storagePath = $dir . '/Invoice-' . $orderNum . '.png';
+            [$storagePath, $mime] = $this->findInvoiceImage($orderNum);
 
-            if (!Storage::disk($disk)->exists($storagePath)) {
+            if ($storagePath === null) {
                 return [
                     'success' => false,
                     'needs_capture' => true,
@@ -2607,9 +2629,10 @@ class WhatsAppWebController extends Controller
             }
 
             // Absolute on-disk path for the multipart upload. Meta's
-            // media endpoint wants the raw bytes, not a URL.
+            // media endpoint wants the raw bytes, not a URL. The mime must
+            // match the actual bytes (jpg vs png) or Meta rejects the upload.
             $localPath = Storage::disk($disk)->path($storagePath);
-            $mediaId = app(WhatsAppService::class)->uploadMediaToWhatsApp($localPath, 'image/png');
+            $mediaId = app(WhatsAppService::class)->uploadMediaToWhatsApp($localPath, $mime);
 
             if (!$mediaId) {
                 return [
@@ -2702,18 +2725,33 @@ class WhatsAppWebController extends Controller
             $order = app(\App\Http\Controllers\CRM\OrderController::class)->findOrderPublic($request->order_id);
             $orderNum = $order->order_number ?? ('NF-' . str_pad($order->id, 4, '0', STR_PAD_LEFT));
             $filename = 'Invoice-' . $orderNum;
-            $storagePath = $dir . '/' . $filename . '.png';
 
+            // The capture pages send either image/jpeg (orders + messages,
+            // Jul-2026 — smaller payloads) or image/png (older pages). Pick
+            // the extension from the data-URL prefix so the stored bytes and
+            // the extension/mime always agree (Meta rejects mismatches).
             $imageData = $request->image_data;
+            $ext = 'png';
             if (str_contains($imageData, ',')) {
-                $imageData = explode(',', $imageData, 2)[1];
+                [$prefix, $imageData] = explode(',', $imageData, 2);
+                if (str_contains($prefix, 'image/jpeg') || str_contains($prefix, 'image/jpg')) {
+                    $ext = 'jpg';
+                }
             }
             $decoded = base64_decode($imageData);
             if (!$decoded) {
                 return response()->json(['success' => false, 'message' => 'Invalid image data'], 422);
             }
 
+            $storagePath = $dir . '/' . $filename . '.' . $ext;
             Storage::disk($disk)->put($storagePath, $decoded);
+
+            // Delete the sibling extension so findInvoiceImage() can never
+            // resolve a stale counterpart from before this capture.
+            $sibling = $dir . '/' . $filename . '.' . ($ext === 'jpg' ? 'png' : 'jpg');
+            if (Storage::disk($disk)->exists($sibling)) {
+                Storage::disk($disk)->delete($sibling);
+            }
 
             // Append mtime cache buster so the browser preview shows the
             // freshly-uploaded image (rather than a stale http-cached one
@@ -2776,7 +2814,9 @@ class WhatsAppWebController extends Controller
                 $isNeedsCapture = $imgData['needs_capture'] ?? false;
                 $statusCode = $isNeedsCapture ? 422 : 500;
                 $message = $imgData['message'] ?? 'Failed to read invoice image';
-                return response()->json(['success' => false, 'message' => $message], $statusCode);
+                // needs_capture lets the orders page auto-capture once and
+                // retry instead of surfacing a dead-end failure banner.
+                return response()->json(['success' => false, 'needs_capture' => $isNeedsCapture, 'message' => $message], $statusCode);
             }
 
             $headerParams = $imgData['header_params'];

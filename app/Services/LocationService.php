@@ -227,9 +227,15 @@ class LocationService
                 $baseLocation->longitude
             );
 
+            // "At office" radius: cap the location's own radius by OFFICE_AT_RADIUS_M so check-in
+            // and the checkout classifier agree on how close counts as at the office. The main
+            // office's radius is 2000 m (too loose — a rider 1.5 km away would read as on-site);
+            // the cap tightens it. Never loosens a location whose radius is already smaller.
+            $effectiveRadius = self::effectiveOfficeRadius((float) $baseLocation->radius_meters);
+
             return [
                 'distance_meters' => (int) round($distance),
-                'is_remote' => $distance > $baseLocation->radius_meters,
+                'is_remote' => $distance > $effectiveRadius,
                 'base_location' => $baseLocation,
                 'error' => null
             ];
@@ -251,8 +257,58 @@ class LocationService
     }
 
     /**
+     * The effective "at office" radius = the location's own radius capped by the global
+     * OFFICE_AT_RADIUS_M config (default 300 m). Shared with CheckoutClassifierService so
+     * check-in and checkout agree. Only tightens; a smaller location radius is kept.
+     */
+    private static ?float $officeAtCapMemo = null;
+    public static function effectiveOfficeRadius(float $locationRadius): float
+    {
+        if (self::$officeAtCapMemo === null) {
+            try {
+                $v = DB::table('t_fin_config')->where('config_key', 'OFFICE_AT_RADIUS_M')->value('config_value');
+                self::$officeAtCapMemo = ($v !== null && $v !== '' && (float) $v > 0) ? (float) $v : 300.0;
+            } catch (\Throwable $e) { self::$officeAtCapMemo = 300.0; }
+        }
+        $base = $locationRadius > 0 ? $locationRadius : 300.0;
+        return min($base, self::$officeAtCapMemo);
+    }
+
+    /**
+     * R1 — the nearest ACTIVE company location the given point is inside (within that office's
+     * effective "at office" radius), or null if the point is at none. Used for the per-rider
+     * "check in at ANY office" allowance so a floating rider isn't tied to one resolved location.
+     *
+     * @return object|null {id, location_name, latitude, longitude, radius_meters, distance_meters}
+     */
+    public static function nearestOfficeWithin($latitude, $longitude): ?object
+    {
+        if (!self::isValidCoordinates($latitude, $longitude)) {
+            return null;
+        }
+        try {
+            $offices = DB::table('t_ops_company_locations')
+                ->where('is_active', 1)
+                ->whereNotNull('latitude')->whereNotNull('longitude')
+                ->get(['id', 'location_name', 'latitude', 'longitude', 'radius_meters']);
+        } catch (\Throwable $e) {
+            return null;
+        }
+        $best = null;
+        foreach ($offices as $o) {
+            $d = self::calculateDistance($latitude, $longitude, $o->latitude, $o->longitude);
+            $radius = self::effectiveOfficeRadius((float) ($o->radius_meters ?? 0));
+            if ($d <= $radius && ($best === null || $d < $best->distance_meters)) {
+                $o->distance_meters = (int) round($d);
+                $best = $o;
+            }
+        }
+        return $best;
+    }
+
+    /**
      * Format distance for display
-     * 
+     *
      * @param int $meters Distance in meters
      * @return string Formatted distance (e.g., "3.2 km", "450 m")
      */

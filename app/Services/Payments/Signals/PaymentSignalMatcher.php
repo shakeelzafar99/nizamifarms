@@ -28,10 +28,16 @@ use Carbon\Carbon;
  */
 class PaymentSignalMatcher
 {
-    public function match(PaymentSignal $signal): PaymentSignal
+    /**
+     * @param array|null $onlyOrderIds  When non-null, restrict candidate orders
+     *   to this set (the assistant scopes a forwarded proof to the customer's
+     *   Online-Approvals-queue orders). Null = every open order, the existing
+     *   behaviour for WhatsApp/email proofs — untouched.
+     */
+    public function match(PaymentSignal $signal, ?array $onlyOrderIds = null): PaymentSignal
     {
         try {
-            return $this->doMatch($signal);
+            return $this->doMatch($signal, $onlyOrderIds);
         } catch (\Throwable $e) {
             Log::error('PaymentSignalMatcher failed', [
                 'signal_id' => $signal->id,
@@ -98,7 +104,68 @@ class PaymentSignalMatcher
         }
     }
 
-    private function doMatch(PaymentSignal $signal): PaymentSignal
+    /**
+     * READ-ONLY dry-run of the match for a given customer + amount. Mirrors
+     * doMatch's decision (steps 2–6) using the SAME candidateOrders +
+     * findCombinedSet, but saves NOTHING. Drives the assistant's confirmation
+     * card so what the user confirms is exactly what commit will link.
+     *
+     * @return array{
+     *   status: 'matched'|'combined'|'ambiguous'|'amount_mismatch'|'no_orders',
+     *   orders: array<int, array{id:int, order_number:string, balance:float}>,
+     *   reason: string,
+     *   open_orders: array,   // every candidate, for the "which one?" ask
+     * }
+     */
+    public function preview(int $customerId, float $amount, ?Carbon $anchor = null, ?array $onlyOrderIds = null): array
+    {
+        // A throwaway signal purely to carry the anchor time into candidateOrders.
+        $probe = new PaymentSignal();
+        $probe->extracted_txn_datetime = $anchor ?? Carbon::now();
+
+        $candidates = $this->candidateOrders($customerId, $probe, $onlyOrderIds);
+        $openOrders = $candidates->map(fn ($o) => [
+            'id' => (int) $o->id,
+            'order_number' => $o->order_number,
+            'balance' => $this->balance($o),
+        ])->values()->all();
+
+        if ($candidates->isEmpty()) {
+            return ['status' => 'no_orders', 'orders' => [], 'reason' => 'no_open_orders', 'open_orders' => []];
+        }
+
+        $tolerance = PaymentProofStatusService::amountTolerance();
+        $one = fn ($o) => ['id' => (int) $o->id, 'order_number' => $o->order_number, 'balance' => $this->balance($o)];
+
+        // Step 2: newest order balance matches.
+        $latest = $candidates->first();
+        if ($latest && $this->within($this->balance($latest), $amount, $tolerance)) {
+            return ['status' => 'matched', 'orders' => [$one($latest)], 'reason' => 'last_order_balance', 'open_orders' => $openOrders];
+        }
+
+        // Step 3/4: other orders whose balance equals the amount.
+        $balanceMatches = $candidates->filter(fn ($o) => $this->within($this->balance($o), $amount, $tolerance))->values();
+        if ($balanceMatches->count() === 1) {
+            return ['status' => 'matched', 'orders' => [$one($balanceMatches->first())], 'reason' => 'single_unpaid_match', 'open_orders' => $openOrders];
+        }
+        if ($balanceMatches->count() > 1) {
+            return ['status' => 'ambiguous', 'orders' => $balanceMatches->map($one)->all(), 'reason' => 'multiple_candidates', 'open_orders' => $openOrders];
+        }
+
+        // Step 5: combined / bulk.
+        $combined = $this->findCombinedSet($candidates, $amount, $tolerance);
+        if (is_array($combined) && !empty($combined['orders'])) {
+            return ['status' => 'combined', 'orders' => array_map($one, $combined['orders']), 'reason' => $combined['reason'] ?? 'bulk_combined', 'open_orders' => $openOrders];
+        }
+        if (is_array($combined) && !empty($combined['ambiguous'])) {
+            return ['status' => 'ambiguous', 'orders' => $openOrders, 'reason' => 'bulk_ambiguous', 'open_orders' => $openOrders];
+        }
+
+        // Step 6: amount fits nothing — would attach to the newest as a mismatch.
+        return ['status' => 'amount_mismatch', 'orders' => [$one($latest)], 'reason' => 'amount_differs', 'open_orders' => $openOrders];
+    }
+
+    private function doMatch(PaymentSignal $signal, ?array $onlyOrderIds = null): PaymentSignal
     {
         // Duplicate guard: same reference already linked on another signal.
         if ($signal->extracted_ref && $this->isDuplicateRef($signal)) {
@@ -113,7 +180,7 @@ class PaymentSignalMatcher
             // credit alerts only show the amount, our beneficiary account and
             // the date). Rather than dead-end, corroborate an existing
             // WhatsApp screenshot by amount + date and inherit its order.
-            if ($signal->source === PaymentSignal::SOURCE_EMAIL) {
+            if (in_array($signal->source, PaymentSignal::BANK_SIDE_SOURCES, true)) {
                 return $this->matchEmailByCorroboration($signal);
             }
             $signal->status = PaymentSignal::STATUS_UNMATCHED;
@@ -132,7 +199,7 @@ class PaymentSignalMatcher
             return $signal;
         }
 
-        $candidates = $this->candidateOrders($customerId, $signal);
+        $candidates = $this->candidateOrders($customerId, $signal, $onlyOrderIds);
         $tolerance = PaymentProofStatusService::amountTolerance();
 
         // Step 2: most-recent order balance match.
@@ -206,6 +273,27 @@ class PaymentSignalMatcher
             return $cid ? (int) $cid : null;
         }
 
+        // Assistant-ingested screenshot: it's a WhatsApp-type image proof but it
+        // arrived through the assistant (Taimur named the customer), so there is
+        // NO wa_conversation_id — the customer is already resolved on the signal.
+        // Trust it. Real WhatsApp signals always carry a conversation, so they
+        // never reach this branch; nothing about the webhook path changes.
+        if ($signal->source === PaymentSignal::SOURCE_WHATSAPP
+            && !$signal->wa_conversation_id
+            && $signal->matched_customer_id) {
+            return (int) $signal->matched_customer_id;
+        }
+
+        // Bank SMS: the counterparty account in the SMS is mapped to a customer
+        // (t_ai_counterparty_map), so the auto-action service pre-set the
+        // customer before matching — same trust rule as the assistant branch.
+        // Unmapped SMS never carry matched_customer_id, so they can only match
+        // via corroboration with an existing screenshot, never blind by amount.
+        if ($signal->source === PaymentSignal::SOURCE_BANK_SMS
+            && $signal->matched_customer_id) {
+            return (int) $signal->matched_customer_id;
+        }
+
         // Email: identify the customer from the learned bank-name alias.
         if ($signal->source === PaymentSignal::SOURCE_EMAIL && $signal->extracted_sender_name) {
             $norm = CustomerBankAlias::normaliseName($signal->extracted_sender_name);
@@ -223,7 +311,7 @@ class PaymentSignalMatcher
     }
 
     /** Customer's open online orders, most-recent first, within the window. */
-    private function candidateOrders(int $customerId, PaymentSignal $signal)
+    private function candidateOrders(int $customerId, PaymentSignal $signal, ?array $onlyOrderIds = null)
     {
         $windowDays = (int) config('payment_signals.match_window_days', 30);
         $methods = config('payment_signals.online_payment_methods', ['online', 'bank_transfer']);
@@ -248,6 +336,12 @@ class PaymentSignalMatcher
             ->where('order_status', '!=', 'cancelled')
             ->where('order_date', '>=', $since)
             ->where('order_date', '<=', $until);
+
+        // Caller-supplied restriction (assistant: only Approvals-queue orders).
+        // Empty set → match nothing rather than everything.
+        if ($onlyOrderIds !== null) {
+            $query->whereIn('id', $onlyOrderIds ?: [0]);
+        }
 
         // The screenshot/email proves an online payment, so the order's recorded
         // payment_method is not a reliable gate (see config note). Only restrict
@@ -469,7 +563,7 @@ class PaymentSignalMatcher
             return $signal;
         }
 
-        $wa = $this->findOppositeByAmountDate($signal, PaymentSignal::SOURCE_WHATSAPP);
+        $wa = $this->findOppositeByAmountDate($signal, [PaymentSignal::SOURCE_WHATSAPP]);
         if ($wa && $wa->matched_order_id) {
             $this->propagateLink($wa, $signal);
             $this->bindPair($signal, $wa);
@@ -490,11 +584,14 @@ class PaymentSignalMatcher
         if ($signal->paired_signal_id) {
             return;
         }
-        $oppositeSource = $signal->source === PaymentSignal::SOURCE_WHATSAPP
-            ? PaymentSignal::SOURCE_EMAIL
-            : PaymentSignal::SOURCE_WHATSAPP;
+        // The whatsapp side pairs with EITHER bank confirmation (email or SMS);
+        // a bank-side signal only ever pairs with a screenshot — two bank
+        // confirmations of the same credit must never pair with each other.
+        $oppositeSources = $signal->source === PaymentSignal::SOURCE_WHATSAPP
+            ? PaymentSignal::BANK_SIDE_SOURCES
+            : [PaymentSignal::SOURCE_WHATSAPP];
 
-        $opposite = $this->findOppositeByAmountDate($signal, $oppositeSource);
+        $opposite = $this->findOppositeByAmountDate($signal, $oppositeSources);
         if (!$opposite) {
             return;
         }
@@ -513,7 +610,7 @@ class PaymentSignalMatcher
      * is what stops an unrelated credit of a nearby amount from being welded on
      * as false "corroboration" (the Jul-2026 "Rs 36 short" bug).
      */
-    private function findOppositeByAmountDate(PaymentSignal $signal, string $oppositeSource): ?PaymentSignal
+    private function findOppositeByAmountDate(PaymentSignal $signal, array $oppositeSources): ?PaymentSignal
     {
         if ($signal->extracted_amount === null) {
             return null;
@@ -529,7 +626,7 @@ class PaymentSignalMatcher
         $to   = $time->copy()->addDays($windowDays);
 
         $base = PaymentSignal::query()
-            ->where('source', $oppositeSource)
+            ->whereIn('source', $oppositeSources)
             ->whereNull('paired_signal_id')
             ->where('id', '!=', $signal->id);
 
@@ -637,9 +734,11 @@ class PaymentSignalMatcher
         if ($src->status === PaymentSignal::STATUS_MATCHED) {
             $dst->status = PaymentSignal::STATUS_MATCHED;
             $dst->match_confidence = max((float) $dst->match_confidence, 0.90);
-            $dst->match_reason = $dst->source === PaymentSignal::SOURCE_EMAIL
-                ? 'email_corroborates_whatsapp'
-                : 'whatsapp_corroborates_email';
+            $dst->match_reason = match ($dst->source) {
+                PaymentSignal::SOURCE_EMAIL    => 'email_corroborates_whatsapp',
+                PaymentSignal::SOURCE_BANK_SMS => 'bank_sms_corroborates_whatsapp',
+                default                        => 'whatsapp_corroborates_email',
+            };
         } elseif ($src->status === PaymentSignal::STATUS_AMOUNT_MISMATCH
             && $dst->status !== PaymentSignal::STATUS_MATCHED) {
             $dst->status = PaymentSignal::STATUS_AMOUNT_MISMATCH;

@@ -913,7 +913,11 @@ class WhatsAppController extends Controller
                 // depending on the device. We filter on the *content* below
                 // via getMimeType(), so we just need any file here.
                 'audio' => 'required|file|max:8192', // 8 MB cap (Laravel validates in KB)
-                'duration_ms' => 'nullable|integer|min:0|max:360000', // ≤ 6 min, informational only
+                // ≤ 6 min. PERSISTED (see the metadata write below) so the app
+                // can show a voice note's length WITHOUT downloading it first —
+                // this used to be accepted and thrown away, which is why an
+                // unplayed note had no duration to display.
+                'duration_ms' => 'nullable|integer|min:0|max:360000',
             ]);
 
             $conversation = ConversationModel::find($conversationId);
@@ -1007,6 +1011,18 @@ class WhatsAppController extends Controller
             // inbound audio row shape exactly so rendering code can stay
             // direction-agnostic.
             $waMessageId = $response['messages'][0]['id'] ?? null;
+
+            // Persist the recorded length so clients can render "0:37" on the
+            // bubble without downloading the audio. Only the SENDER knows this:
+            // Meta's inbound webhook gives us audio.id + audio.mime_type and no
+            // duration (see WhatsAppService::processIncoming 'audio' case), so
+            // inbound notes legitimately have none — clients fall back to
+            // showing the length once the note is played.
+            $durationMs = $request->input('duration_ms');
+            $audioMetadata = $durationMs !== null && $durationMs !== ''
+                ? json_encode(['duration_ms' => (int) $durationMs])
+                : null;
+
             $message = MessageModel::create([
                 'conversation_id' => $conversation->id,
                 'wa_message_id'   => $waMessageId,
@@ -1015,6 +1031,7 @@ class WhatsAppController extends Controller
                 'content'         => '[Voice Note]',
                 'media_url'       => $savedPath,
                 'media_mime_type' => $metaMime,
+                'metadata'        => $audioMetadata,
                 'status'          => 'sent',
                 'sent_by'         => $user->id,
                 'created_at'      => now(),
@@ -1042,6 +1059,188 @@ class WhatsAppController extends Controller
                 'conversation_id' => $conversationId,
                 'error' => $e->getMessage(),
             ]);
+            return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
+        }
+    }
+
+    /**
+     * Send an IMAGE in a conversation (NF Messages chat attach — Phase 3b of
+     * NF-MESSAGES-ENHANCEMENTS-PLAN-JUL2026). Deliberately a line-for-line
+     * sibling of sendVoiceNote: same permission, same 24h session gate, same
+     * content-sniffed mime check, same store → upload-to-Meta → send-by-id →
+     * persist flow, same orphan-file cleanup on every failure path.
+     */
+    public function sendImageMessage(Request $request, $conversationId)
+    {
+        $savedPath = null;
+        try {
+            $user = Auth::user();
+            if (!$user || !$user->hasMobilePermission('send_whatsapp_messages')) {
+                return response()->json(['success' => false, 'message' => 'No permission'], 403);
+            }
+
+            $request->validate([
+                // 5 MB — Meta's own cap for image messages; failing here beats
+                // uploading 8 MB and having Meta reject it.
+                'image'   => 'required|file|max:5120',
+                'caption' => 'nullable|string|max:1024', // Meta's caption cap
+            ]);
+
+            $conversation = ConversationModel::find($conversationId);
+            if (!$conversation) {
+                return response()->json(['success' => false, 'message' => 'Conversation not found'], 404);
+            }
+
+            if (!$this->whatsapp->isSessionActive($conversation)) {
+                return response()->json([
+                    'success' => false,
+                    'message' => '24-hour window expired. Use a template message to re-initiate.',
+                    'session_expired' => true,
+                ], 422);
+            }
+
+            $file = $request->file('image');
+            if (!$file || !$file->isValid()) {
+                return response()->json(['success' => false, 'message' => 'Invalid image upload'], 422);
+            }
+
+            // Content-sniffed mime, not the client label. Meta's image type
+            // accepts jpeg + png only (webp is a sticker, not an image).
+            $detected = strtolower((string) $file->getMimeType());
+            if (!in_array($detected, ['image/jpeg', 'image/png'], true)) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Only JPEG or PNG images can be sent (got ' . ($detected ?: 'unknown') . ').',
+                ], 422);
+            }
+
+            $extension = strtolower($file->getClientOriginalExtension() ?: ($detected === 'image/png' ? 'png' : 'jpg'));
+            $filename  = 'outbound-' . \Illuminate\Support\Str::uuid()->toString() . '.' . $extension;
+            $relative  = config('whatsapp.media_path') . '/' . date('Y/m') . '/' . $filename;
+            $savedPath = $file->storeAs(dirname($relative), basename($relative), config('whatsapp.media_disk'));
+            if (!$savedPath) {
+                return response()->json(['success' => false, 'message' => 'Failed to store image file'], 500);
+            }
+
+            $absolutePath = Storage::disk(config('whatsapp.media_disk'))->path($savedPath);
+
+            $mediaId = $this->whatsapp->uploadMediaToWhatsApp($absolutePath, $detected);
+            if (!$mediaId) {
+                Storage::disk(config('whatsapp.media_disk'))->delete($savedPath);
+                $savedPath = null;
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Failed to upload image to WhatsApp. Please try again.',
+                ], 502);
+            }
+
+            $caption = trim((string) $request->input('caption', ''));
+            $response = $this->whatsapp->sendImageById($conversation->wa_phone, $mediaId, $caption);
+            if (!($response['success'] ?? false)) {
+                Storage::disk(config('whatsapp.media_disk'))->delete($savedPath);
+                $savedPath = null;
+                return response()->json([
+                    'success' => false,
+                    'message' => $response['error'] ?? 'WhatsApp rejected the image message',
+                ], 500);
+            }
+
+            $waMessageId = $response['messages'][0]['id'] ?? null;
+
+            // Mirrors the INBOUND image row shape (type image + media_url +
+            // caption as content) so the bubble renderer stays direction-agnostic.
+            $message = MessageModel::create([
+                'conversation_id' => $conversation->id,
+                'wa_message_id'   => $waMessageId,
+                'direction'       => 'outbound',
+                'type'            => 'image',
+                'content'         => $caption !== '' ? $caption : '[Image]',
+                'media_url'       => $savedPath,
+                'media_mime_type' => $detected,
+                'status'          => 'sent',
+                'sent_by'         => $user->id,
+                'created_at'      => now(),
+            ]);
+
+            ConversationModel::where('id', $conversation->id)->update(['last_message_at' => now()]);
+
+            return response()->json([
+                'success' => true,
+                'message_id'    => $message->id,
+                'wa_message_id' => $waMessageId,
+                'media_url'     => $message->media_public_url,
+            ]);
+        } catch (\Illuminate\Validation\ValidationException $ve) {
+            throw $ve;
+        } catch (\Exception $e) {
+            if ($savedPath) {
+                try { Storage::disk(config('whatsapp.media_disk'))->delete($savedPath); } catch (\Exception $ignored) {}
+            }
+            Log::error('WhatsApp: sendImageMessage failed', [
+                'conversation_id' => $conversationId,
+                'error' => $e->getMessage(),
+            ]);
+            return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
+        }
+    }
+
+    /**
+     * Search within ONE conversation's messages (NF Messages in-chat search).
+     * Same access model as getMessages: resolveWhatsAppAccess + the limited
+     * users' cutoff applies to both conversation visibility and matches, so
+     * search can never show a limited user something the thread itself hides.
+     * Read-only. The mobile jumps to a hit via the existing `before` pagination.
+     */
+    public function searchMessages(Request $request, $conversationId)
+    {
+        try {
+            $user = Auth::user();
+            $access = $this->resolveWhatsAppAccess($user);
+            if (!$access['allowed']) {
+                return response()->json(['success' => false, 'message' => 'No permission'], 403);
+            }
+
+            $request->validate(['q' => 'required|string|min:2|max:200']);
+
+            $conversation = ConversationModel::find($conversationId);
+            if (!$conversation) {
+                return response()->json(['success' => false, 'message' => 'Conversation not found'], 404);
+            }
+            if ($access['limited'] && $conversation->last_message_at && $conversation->last_message_at->lt($access['cutoff'])) {
+                return response()->json(['success' => false, 'message' => 'Conversation not found'], 404);
+            }
+
+            // Escape LIKE wildcards so a literal "%" in the query can't scan.
+            $q = addcslashes(trim((string) $request->input('q')), '%_\\');
+
+            $query = MessageModel::where('conversation_id', $conversation->id)
+                ->where('content', 'like', '%' . $q . '%');
+            if ($access['limited']) {
+                $query->where('created_at', '>=', $access['cutoff']);
+            }
+
+            $matches = $query->orderByDesc('id')
+                ->limit(50)
+                ->get(['id', 'direction', 'type', 'content', 'created_at'])
+                ->map(fn($m) => [
+                    'id'         => $m->id,
+                    'direction'  => $m->direction,
+                    'type'       => $m->type,
+                    // Enough to recognise the message; the tap-through shows it in full.
+                    'snippet'    => mb_substr((string) $m->content, 0, 200),
+                    'created_at' => $m->created_at?->toIso8601String(),
+                ]);
+
+            return response()->json([
+                'success' => true,
+                'matches' => $matches,
+                'count'   => $matches->count(),
+                'capped'  => $matches->count() === 50,
+            ]);
+        } catch (\Illuminate\Validation\ValidationException $ve) {
+            throw $ve;
+        } catch (\Exception $e) {
+            Log::error('WhatsApp: searchMessages failed', ['conversation_id' => $conversationId, 'error' => $e->getMessage()]);
             return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
         }
     }
@@ -2100,11 +2299,24 @@ class WhatsAppController extends Controller
             $request->validate([
                 'phone' => 'required|string',
                 'message' => 'required|string|max:4096',
+                // Jul-2026: the manual-override seam, mirroring sendTemplate /
+                // sendInvoice. Transient (never stored) — see below.
+                'phone_exact' => 'nullable|boolean',
             ]);
 
             // Dial-resolve (known-number override; no-op for PK) — also
             // prevents creating a junk conversation for a mangled number.
-            $phone = $this->whatsapp->resolveDialPhone((string) $request->input('phone'));
+            //
+            // phone_exact=true = dial EXACTLY the digits given, skipping all
+            // normalization. Set only when the NF Messages operator has edited
+            // the resolved number by hand ("Will send to … ✎"), i.e. they know
+            // something the resolver doesn't (an international number the PK
+            // formatter would mangle). Ordinary sends never set it, so the
+            // resolver keeps healing typo'd PK formats as before.
+            // See WHATSAPP-PHONE-HANDLING.md at the workspace root.
+            $phone = $request->boolean('phone_exact')
+                ? preg_replace('/\D/', '', (string) $request->input('phone'))
+                : $this->whatsapp->resolveDialPhone((string) $request->input('phone'));
             $conversation = $this->whatsapp->findOrCreateConversation($phone);
 
             if (!$conversation->isSessionActive()) {
@@ -2242,10 +2454,17 @@ class WhatsAppController extends Controller
             $request->validate([
                 'fcm_token' => 'required|string|max:500',
                 'device_type' => 'nullable|string|in:android,ios',
+                // Which APK registered this token. OPTIONAL and defaulted on
+                // purpose: every already-installed APK predates this field and
+                // never sends it, and deploy is manual so those APKs will be in
+                // the field for a long time. Absent → 'primary' → their
+                // behaviour is exactly what it is today.
+                'app_flavor' => 'nullable|string|in:primary,qurbani,messages',
             ]);
 
             $token = $request->input('fcm_token');
             $deviceType = $request->input('device_type', 'android');
+            $appFlavor = $request->input('app_flavor', 'primary');
 
             // Deactivate any old entries with this token (could be from another user)
             DB::table('t_wa_device_tokens')
@@ -2258,6 +2477,7 @@ class WhatsAppController extends Controller
                 ['user_id' => $user->id, 'fcm_token' => $token],
                 [
                     'device_type' => $deviceType,
+                    'app_flavor' => $appFlavor,
                     'is_active' => 1,
                     'updated_at' => now(),
                 ]

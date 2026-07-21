@@ -71,10 +71,38 @@ class PaymentSignalsController extends Controller
                 ->keyBy('account_last4')->map(fn ($r) => $r->short_code);
         }
 
-        $payload = $signals->map(function (PaymentSignal $s) use ($expected, $tolerance, $combinedInfo, $last4ToShort) {
+        // Provenance for proofs recorded through the NF Assistant (they are
+        // whatsapp-source signals but were NOT sent by the customer). One cheap
+        // lookup of the confirming user via the draft that produced each signal.
+        $assistantIds = $signals->filter(fn ($s) => str_starts_with((string) $s->extractor_version, 'assistant'))->pluck('id');
+        $assistantBy = collect();
+        if ($assistantIds->isNotEmpty()) {
+            $assistantBy = \DB::table('t_ai_drafts as d')
+                ->leftJoin('t_sys_user as u', 'u.id', '=', 'd.user_id')
+                ->where('d.result_type', 'payment_signal')
+                ->whereIn('d.result_id', $assistantIds->all())
+                ->get(['d.result_id', 'u.fullname'])
+                ->keyBy('result_id');
+        }
+
+        $payload = $signals->map(function (PaymentSignal $s) use ($expected, $tolerance, $combinedInfo, $last4ToShort, $assistantBy) {
             $combo       = $combinedInfo->get($s->id);
             $isCombined  = $combo && (int) $combo->c > 1;
             $compareBase = $isCombined ? (float) $combo->total : $expected;
+
+            // Build the friendly provenance object (null for real customer proofs).
+            $assistant = null;
+            if (str_starts_with((string) $s->extractor_version, 'assistant')) {
+                $method = match (true) {
+                    str_contains($s->extractor_version, 'credit_sms') => 'a bank credit SMS',
+                    str_contains($s->extractor_version, 'screenshot')  => 'a forwarded screenshot',
+                    default                                            => 'a typed confirmation',
+                };
+                $assistant = [
+                    'method' => $method,
+                    'by'     => optional($assistantBy->get($s->id))->fullname ?: 'a manager',
+                ];
+            }
 
             $amountMatch = ($compareBase !== null && $s->extracted_amount !== null)
                 ? abs((float) $s->extracted_amount - $compareBase) <= $tolerance
@@ -103,10 +131,17 @@ class PaymentSignalsController extends Controller
                                     ? optional($s->email_received_at)->format('Y-m-d H:i')
                                     : optional($s->created_at)->format('Y-m-d H:i'),
                 'image_url'      => $s->source === PaymentSignal::SOURCE_WHATSAPP ? $s->image_public_url : null,
+                'assistant'      => $assistant,
                 'email_subject'  => $s->email_subject,
                 'email_from'     => $s->email_from,
-                'email_body'     => $s->source === PaymentSignal::SOURCE_EMAIL
+                // Raw text behind the confirmation: the bank email body, or the
+                // bank SMS text captured by NF Messages. Same display slot.
+                'email_body'     => in_array($s->source, PaymentSignal::BANK_SIDE_SOURCES, true)
                                     ? mb_substr((string) $s->extraction_raw_text, 0, 4000)
+                                    : null,
+                // Provenance for auto-captured bank SMS ("verified without a tap").
+                'bank_sms'       => $s->source === PaymentSignal::SOURCE_BANK_SMS
+                                    ? ['auto' => str_starts_with((string) $s->extractor_version, 'bank_sms_auto')]
                                     : null,
                 'paired'         => (bool) $s->paired_signal_id,
                 'is_combined'    => $isCombined,

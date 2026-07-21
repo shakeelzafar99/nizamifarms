@@ -158,6 +158,39 @@ class ExecutiveDashboardController extends Controller
         return $this->ok($this->svc->assetsList($unit));
     }
 
+    /** What was bought this month (the P&L "Assets bought" box) — not the register. */
+    public function assetPurchases(Request $request)
+    {
+        $this->guard();
+        [$unit, $year, $month] = $this->params($request);
+        return $this->ok($this->svc->assetPurchasesList($unit, $year, $month));
+    }
+
+    // ---- Products tab (Phase 3) -----------------------------------------
+
+    public function products(Request $request)
+    {
+        $this->guard();
+        [$unit, $year, $month] = $this->params($request);
+        return $this->ok($this->svc->products($unit, $year, $month, $request->boolean('fresh')));
+    }
+
+    public function productsCategory(Request $request)
+    {
+        $this->guard();
+        [$unit, $year, $month] = $this->params($request);
+        $category = (string) $request->get('category', '');
+        return $this->ok($this->svc->productsCategoryList($unit, $year, $month, $category));
+    }
+
+    public function productDaily(Request $request)
+    {
+        $this->guard();
+        [$unit, $year, $month] = $this->params($request);
+        $pid = (int) $request->get('product_id', 0);
+        return $this->ok($this->svc->productDaily($unit, $year, $month, $pid));
+    }
+
     public function missingInvoices(Request $request)
     {
         $this->guard();

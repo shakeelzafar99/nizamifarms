@@ -119,6 +119,25 @@ class ShiftPlannerController extends Controller
             ->mapWithKeys(fn($h) => [(string) \Carbon\Carbon::parse($h->holiday_date)->format('Y-m-d') => $h->holiday_name])
             ->all();
 
+        // "Not needed" day tags for the visible users across the week (batch — never per cell).
+        $dayTags = [];
+        try {
+            if (\Illuminate\Support\Facades\Schema::hasTable('t_ops_day_tag')) {
+                $uids = $users->pluck('user_id')->all();
+                if (!empty($uids)) {
+                    foreach (
+                        DB::table('t_ops_day_tag')
+                            ->whereIn('user_id', $uids)
+                            ->whereBetween('tag_date', [$dateList[0], $dateList[6]])
+                            ->get(['user_id', 'tag_date'])
+                        as $t
+                    ) {
+                        $dayTags[$t->user_id . '|' . \Carbon\Carbon::parse($t->tag_date)->format('Y-m-d')] = true;
+                    }
+                }
+            }
+        } catch (\Throwable $e) { /* table not deployed → no tags */ }
+
         $riders = [];
         foreach ($users as $u) {
             $uid = (int) $u->user_id;
@@ -140,6 +159,10 @@ class ShiftPlannerController extends Controller
                     return ($f === null || $f <= $d) && ($t >= $d);
                 }) !== null;
 
+                // "Not needed" only matters on a would-be WORKING day (off/holiday already win in
+                // dayKind) — matches the salary/absent treatment.
+                $notNeeded = isset($dayTags[$uid . '|' . $d]) && !$isOff && !$isHoliday;
+
                 $cells[] = [
                     'date' => $d,
                     'shift_name' => $shift['shift_name'],
@@ -152,6 +175,7 @@ class ShiftPlannerController extends Controller
                     'is_off' => $isOff,
                     'is_holiday' => $isHoliday,
                     'is_override' => $isOverride,
+                    'not_needed' => $notNeeded,
                 ];
             }
 

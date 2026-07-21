@@ -1307,8 +1307,8 @@ class EmployeeCashController extends Controller
             
             // Calculate outstanding balance (amount - settled_amount - pending_amount)
             $invoices = $openInvoices->map(function($invoice) use ($pendingSettlementAmounts) {
-                $pendingAmount = $pendingSettlementAmounts[$invoice->id] ?? 0;
-                $outstandingAmount = $invoice->amount - ($invoice->settled_amount ?? 0) - $pendingAmount;
+                $pendingAmount = round($pendingSettlementAmounts[$invoice->id] ?? 0, 2);
+                $outstandingAmount = round($invoice->amount - ($invoice->settled_amount ?? 0) - $pendingAmount, 2);
                 
                 // Get customer name from order (uses OrderModel's customer_name accessor)
                 $customerName = $invoice->order ? $invoice->order->customer_name : null;
@@ -1325,11 +1325,16 @@ class EmployeeCashController extends Controller
                     'outstanding_amount' => $outstandingAmount
                 ];
             });
-            
+
+            // Drop sub-paisa rows (float dust). The mobile app auto-selects every row it
+            // receives, so a phantom "Rs 0.00" row re-enters a settlement and double-settles
+            // the invoice (SH-21250, Jul-2026). values() keeps the JSON an array after filter.
+            $invoices = $invoices->filter(fn($inv) => $inv['outstanding_amount'] >= 0.01)->values();
+
             return response()->json([
                 'success' => true,
                 'invoices' => $invoices,
-                'total_outstanding' => $invoices->sum('outstanding_amount')
+                'total_outstanding' => round($invoices->sum('outstanding_amount'), 2)
             ]);
             
         } catch (\Exception $e) {
@@ -1391,11 +1396,13 @@ class EmployeeCashController extends Controller
                 $isShortCash = $settlementData['is_short_cash_settlement'] ?? false;
                 $shortCashAmount = $settlementData['short_cash_amount'] ?? 0;
 
-                // Calculate total settlement amount
+                // Calculate total settlement amount — 2dp. Raw float chains here left the
+                // LAST invoice of a multi-invoice deposit ~1e-12 "uncovered", dropping it
+                // from both the hide-list and the duplicate guard (SH-21250, Jul-2026).
                 if ($isShortCash) {
-                    $totalSettlementAmount = $depositAmount + $shortCashAmount;
+                    $totalSettlementAmount = round($depositAmount + $shortCashAmount, 2);
                 } else {
-                    $totalSettlementAmount = $depositAmount;
+                    $totalSettlementAmount = round($depositAmount, 2);
                 }
 
                 // Distribute pending amount across invoices (same logic as processInvoiceSettlement)
@@ -1406,22 +1413,22 @@ class EmployeeCashController extends Controller
 
                 $remainingAmount = $totalSettlementAmount;
                 foreach ($invoices as $invoice) {
-                    $outstandingForThisInvoice = $invoice->amount - ($invoice->settled_amount ?? 0);
-                    $amountToSettle = min($remainingAmount, $outstandingForThisInvoice);
+                    $outstandingForThisInvoice = round($invoice->amount - ($invoice->settled_amount ?? 0), 2);
+                    $amountToSettle = round(min($remainingAmount, $outstandingForThisInvoice), 2);
 
                     if ($amountToSettle > 0) {
                         if (!isset($pendingSettlementAmounts[$invoice->id])) {
                             $pendingSettlementAmounts[$invoice->id] = 0;
                         }
-                        $pendingSettlementAmounts[$invoice->id] += $amountToSettle;
-                        $remainingAmount -= $amountToSettle;
+                        $pendingSettlementAmounts[$invoice->id] = round($pendingSettlementAmounts[$invoice->id] + $amountToSettle, 2);
+                        $remainingAmount = round($remainingAmount - $amountToSettle, 2);
                     }
                 }
 
                 // Only flag invoices that will be FULLY settled by pending deposits
                 foreach ($invoices as $invoice) {
                     $pendingForInvoice = $pendingSettlementAmounts[$invoice->id] ?? 0;
-                    $outstandingAfterPending = ($invoice->amount - ($invoice->settled_amount ?? 0)) - $pendingForInvoice;
+                    $outstandingAfterPending = round(($invoice->amount - ($invoice->settled_amount ?? 0)) - $pendingForInvoice, 2);
 
                     if ($outstandingAfterPending <= 0) {
                         $pendingSettlementInvoiceIds[] = $invoice->id;
@@ -1528,10 +1535,10 @@ class EmployeeCashController extends Controller
                 throw new \Exception("Settlements deposit to a cash till. To deposit into a bank, use the Deposit form.");
             }
 
-            // Calculate expected amount (remaining balance for partial invoices)
-            $totalOutstanding = $selectedInvoices->sum(function($invoice) {
+            // Calculate expected amount (remaining balance for partial invoices) — 2dp
+            $totalOutstanding = round($selectedInvoices->sum(function($invoice) {
                 return $invoice->amount - ($invoice->settled_amount ?? 0);
-            });
+            }), 2);
 
             // Build description with invoice numbers
             $invoiceNumbers = $selectedInvoices->map(function($invoice) {
@@ -1563,7 +1570,7 @@ class EmployeeCashController extends Controller
                 'comments' => "Settlement deposit for {$selectedInvoices->count()} invoice(s). Total outstanding: Rs. " . number_format($totalOutstanding, 2),
                 'settlement_metadata' => [
                     'invoice_ids' => $request->invoice_ids,
-                    'deposit_amount' => $request->amount,
+                    'deposit_amount' => round((float) $request->amount, 2),
                     'total_outstanding' => $totalOutstanding
                 ]
             ]);
@@ -1651,13 +1658,13 @@ class EmployeeCashController extends Controller
                 throw new \Exception("These invoice(s) already have a pending settlement awaiting approval: {$conflictNumbers}. Please refresh the outstanding list and try again.");
             }
 
-            // Calculate expected amount and shortage (remaining balance for partial invoices)
-            $totalOutstanding = $selectedInvoices->sum(function($invoice) {
+            // Calculate expected amount and shortage (remaining balance for partial invoices) — 2dp
+            $totalOutstanding = round($selectedInvoices->sum(function($invoice) {
                 return $invoice->amount - ($invoice->settled_amount ?? 0);
-            });
+            }), 2);
 
-            $depositAmount = $request->amount;
-            $shortCashAmount = $totalOutstanding - $depositAmount;
+            $depositAmount = round((float) $request->amount, 2);
+            $shortCashAmount = round($totalOutstanding - $depositAmount, 2);
 
             // Use tolerance for floating-point comparison (0.01 Rs tolerance)
             // This handles edge cases from old transactions or rounding issues
@@ -2633,23 +2640,27 @@ class EmployeeCashController extends Controller
             // Pending petrol expense requests raised via meter reading
             // ============================================================
             $pendingPetrolRequests = $this->fetchPendingPetrolRequests();
-            
-            // Fetch payment source accounts for petrol approval dropdown
+            // 🔧 Maintenance requests — shown in their own collapsed panel next to petrol so the
+            // closing manager approves both from one screen (same approval path).
+            $pendingMaintenanceRequests = $this->fetchPendingExpenseRequests('Maintenance');
+
+            // Fetch payment source accounts for the petrol/maintenance approval dropdowns
             $petrolPaymentAccounts = [];
-            if ($pendingPetrolRequests) {
+            if ($pendingPetrolRequests || $pendingMaintenanceRequests) {
                 $petrolPaymentAccounts = AccountModel::whereIn('account_code', ['NF_CASH', 'EXP_FUND', 'ONLINE', 'PETTY_CASH'])
                     ->where('is_active', 1)
                     ->orderByRaw("CASE WHEN account_code = 'NF_CASH' THEN 1 WHEN account_code = 'EXP_FUND' THEN 2 WHEN account_code = 'ONLINE' THEN 3 ELSE 4 END")
                     ->select('id', 'account_code', 'account_name')
                     ->get();
             }
-            
+
             return view('fin.employee.outstanding-invoices', [
                 'invoicesByRider' => $invoicesByRider,
                 'invoicesByDate' => $invoicesByDate,
                 'onlineData' => $onlineData,
                 'onlineMessageTracking' => $onlineMessageTracking,
                 'pendingPetrolRequests' => $pendingPetrolRequests,
+                'pendingMaintenanceRequests' => $pendingMaintenanceRequests,
                 'petrolPaymentAccounts' => $petrolPaymentAccounts,
                 'stats' => $stats,
                 'pendingSettlements' => $pendingSettlements,
@@ -2790,13 +2801,24 @@ class EmployeeCashController extends Controller
 
     /**
      * Fetch pending petrol expense requests raised from rider attendance (meter readings).
-     * Groups by rider for display in daily closing.
+     * Groups by rider for display in daily closing. Thin wrapper (kept for call sites) over the
+     * generic expense fetch.
      */
     private function fetchPendingPetrolRequests()
     {
+        return $this->fetchPendingExpenseRequests('Petrol');
+    }
+
+    /**
+     * Fetch pending expense requests of a given expense_category, grouped by rider, in the shape the
+     * daily-closing panels expect. Used for both Petrol (meter + manual) and Maintenance — same
+     * approval path (POST /requests/{id}/approve|reject), so the manager clears both from one screen.
+     */
+    private function fetchPendingExpenseRequests(string $category)
+    {
         try {
             $petrolRequests = \App\Models\Request\RequestModel::where('status', 'pending')
-                ->where('expense_category', 'Petrol')
+                ->where('expense_category', $category)
                 ->whereHas('category', function($q) {
                     $q->where('category_code', 'expense');
                 })

@@ -171,6 +171,11 @@
               <input type="number" min="0" step="1" id="ruleOvernight" style="width:100%;border:2px solid #d1d5db;border-radius:8px;padding:9px 10px;font-size:14px;">
               <div style="font-size:11px;color:#9ca3af;margin-top:4px;">Default for company-bike riders. Can be overridden per rider on the Riders page.</div>
             </div>
+            <div style="flex:1;min-width:150px;">
+              <label style="display:block;font-size:12px;font-weight:600;color:#374151;margin-bottom:4px;">Petrol request window (days)</label>
+              <input type="number" min="1" step="1" id="rulePetrolWindow" style="width:100%;border:2px solid #d1d5db;border-radius:8px;padding:9px 10px;font-size:14px;">
+              <div style="font-size:11px;color:#9ca3af;margin-top:4px;">How many days back a rider may raise a meter petrol request from their attendance.</div>
+            </div>
           </div>
         </div>
       </div>
@@ -231,6 +236,11 @@
             <input type="checkbox" id="ruleCheckinRequireLocation" style="width:18px;height:18px;">
             <span style="font-size:13px;font-weight:600;color:#374151;">Require riders to be at their shift location to check in</span>
           </label>
+          <div style="margin-top:14px;max-width:260px;">
+            <label style="display:block;font-size:12px;font-weight:600;color:#374151;margin-bottom:4px;">"At office" radius (m)</label>
+            <input type="number" min="30" step="10" id="ruleOfficeAtRadius" style="width:100%;border:2px solid #d1d5db;border-radius:8px;padding:9px 10px;font-size:14px;">
+            <div style="font-size:11px;color:#9ca3af;margin-top:4px;">How close counts as "at the office" — used for the check-in remote flag AND checkout-at-office. Caps each office's own radius (main office is 2000 m, too loose). Default 300.</div>
+          </div>
         </div>
       </div>
 
@@ -542,12 +552,13 @@
             <th class="px-4 py-3 text-center text-xs font-semibold text-gray-500 uppercase">Leave (mo)</th>
             <th class="px-4 py-3 text-center text-xs font-semibold text-gray-500 uppercase">Late (mo)</th>
             <th class="px-4 py-3 text-center text-xs font-semibold text-emerald-600 uppercase">OT (mo)</th>
+            <th class="px-4 py-3 text-center text-xs font-semibold text-amber-600 uppercase" title="Days he delivered but checked out at the office (came back)">Office CO</th>
             <th class="px-4 py-3 text-center text-xs font-semibold text-purple-500 uppercase">Leave (bal)</th>
             <th class="px-4 py-3 text-center text-xs font-semibold text-red-500 uppercase">Absent (yr)</th>
           </tr>
         </thead>
         <tbody id="monthBody" class="bg-white divide-y divide-gray-100">
-          <tr><td colspan="8" class="px-4 py-8 text-center text-gray-400 text-sm">Loading…</td></tr>
+          <tr><td colspan="9" class="px-4 py-8 text-center text-gray-400 text-sm">Loading…</td></tr>
         </tbody>
       </table>
     </div>
@@ -572,6 +583,89 @@
         <div>Mon</div><div>Tue</div><div>Wed</div><div>Thu</div><div>Fri</div><div>Sat</div><div>Sun</div>
       </div>
       <div id="calGrid" style="display:grid;grid-template-columns:repeat(7,1fr);gap:6px;"></div>
+    </div>
+  </div>
+</div>
+
+<!-- Meter correction modal (R7c) -->
+<div id="meterEditModal" style="display:none;position:fixed;inset:0;z-index:10002;background:rgba(0,0,0,0.5);align-items:center;justify-content:center;padding:16px;" onclick="if(event.target===this)closeMeterEdit()">
+  <div style="background:#fff;border-radius:14px;max-width:400px;width:100%;padding:20px;" onclick="event.stopPropagation()">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+      <h3 style="font-size:16px;font-weight:700;color:#111827;">Correct meter reading</h3>
+      <button type="button" onclick="closeMeterEdit()" style="background:none;border:none;font-size:22px;color:#9ca3af;cursor:pointer;">&times;</button>
+    </div>
+    <div id="meterEditWho" style="font-size:12px;color:#6b7280;margin-bottom:14px;"></div>
+    <div style="display:flex;gap:12px;">
+      <div style="flex:1;">
+        <label style="display:block;font-size:12px;font-weight:600;color:#374151;margin-bottom:4px;">Start meter</label>
+        <input type="number" min="0" step="1" id="meterEditStart" style="width:100%;border:2px solid #d1d5db;border-radius:8px;padding:9px 10px;font-size:14px;">
+      </div>
+      <div style="flex:1;">
+        <label style="display:block;font-size:12px;font-weight:600;color:#374151;margin-bottom:4px;">End meter</label>
+        <input type="number" min="0" step="1" id="meterEditEnd" style="width:100%;border:2px solid #d1d5db;border-radius:8px;padding:9px 10px;font-size:14px;">
+      </div>
+    </div>
+    <div style="font-size:11px;color:#9ca3af;margin-top:8px;">Leave a field blank to keep it unchanged. This only fixes the attendance meter — the rider re-raises his petrol request to recompute the amount.</div>
+    <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:16px;">
+      <button type="button" onclick="closeMeterEdit()" style="padding:9px 14px;border-radius:8px;border:1px solid #e5e7eb;background:#fff;color:#374151;font-weight:600;cursor:pointer;">Cancel</button>
+      <button type="button" id="meterEditSaveBtn" onclick="saveMeterEdit()" style="padding:9px 16px;border-radius:8px;border:none;background:#2563EB;color:#fff;font-weight:700;cursor:pointer;">Save</button>
+    </div>
+  </div>
+</div>
+
+{{-- RIDER BYPASSES — the ONE place a manager unlocks a stuck rider: checkout-from-anywhere
+     (non-bike rider forgot to check out and went home), home-meter unlock for a late
+     company-bike rider, or entering the home meter for a dead phone. Opened from the 🔓/🏍
+     chips on any rider's attendance row. --}}
+<div id="homeValveModal" style="display:none;position:fixed;inset:0;z-index:10002;background:rgba(0,0,0,0.5);align-items:center;justify-content:center;padding:16px;" onclick="if(event.target===this)closeHomeValve()">
+  <div style="background:#fff;border-radius:14px;max-width:440px;width:100%;padding:20px;max-height:92vh;overflow-y:auto;" onclick="event.stopPropagation()">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+      <h3 style="font-size:16px;font-weight:700;color:#111827;">🔓 Rider bypasses</h3>
+      <button type="button" onclick="closeHomeValve()" style="background:none;border:none;font-size:22px;color:#9ca3af;cursor:pointer;">&times;</button>
+    </div>
+    <div id="homeValveWho" style="font-size:12px;color:#6b7280;margin-bottom:12px;"></div>
+    <div id="homeValveInfo" style="font-size:12.5px;color:#374151;background:#F9FAFB;border:1px solid #F3F4F6;border-radius:8px;padding:10px 12px;margin-bottom:14px;line-height:1.6;"></div>
+
+    {{-- Checkout-from-anywhere unlock (rider still checked in, blocked by the checkout rule) --}}
+    <div id="homeValveCheckoutSec" style="display:none;border:1px solid #F3F4F6;border-radius:8px;padding:12px;margin-bottom:12px;">
+      <div style="font-size:13px;font-weight:700;color:#111827;margin-bottom:2px;">Allow checkout from anywhere</div>
+      <div style="font-size:11px;color:#6b7280;margin-bottom:8px;">For a rider who forgot to check out at his last delivery / the office and left. Opens his OUT button for <span id="homeValveCoMins">10</span> minutes from wherever he is (his GPS still records where that was).</div>
+      <div id="homeValveCoActive" style="display:none;font-size:12px;font-weight:700;color:#92400E;background:#FEF3C7;border:1px solid #FDE68A;border-radius:6px;padding:6px 10px;margin-bottom:8px;"></div>
+      <textarea id="homeValveCoReason" rows="2" placeholder="Reason (required) — e.g. forgot to check out, already home…" style="width:100%;border:2px solid #d1d5db;border-radius:8px;padding:8px 10px;font-size:13px;resize:vertical;"></textarea>
+      <div style="display:flex;justify-content:flex-end;margin-top:8px;">
+        <button type="button" id="homeValveCoBtn" onclick="homeValveCheckoutUnlock()" style="padding:8px 14px;border-radius:8px;border:none;background:#B45309;color:#fff;font-weight:700;cursor:pointer;">🔓 Unlock checkout</button>
+      </div>
+    </div>
+
+    {{-- Completed --}}
+    <div id="homeValveDone" style="display:none;font-size:13px;color:#166534;background:#DCFCE7;border:1px solid #BBF7D0;border-radius:8px;padding:10px 12px;"></div>
+
+    {{-- Unlock the rider's phone (timed) --}}
+    <div id="homeValveUnlockSec" style="display:none;border:1px solid #F3F4F6;border-radius:8px;padding:12px;margin-bottom:12px;">
+      <div style="font-size:13px;font-weight:700;color:#111827;margin-bottom:2px;">Unlock the rider's phone</div>
+      <div style="font-size:11px;color:#6b7280;margin-bottom:8px;">Opens meter entry on his app for <span id="homeValveUnlockMins">10</span> minutes. He still records it himself (with his photo).</div>
+      <textarea id="homeValveReason" rows="2" placeholder="Reason (required) — e.g. traffic, went to buy fuel…" style="width:100%;border:2px solid #d1d5db;border-radius:8px;padding:8px 10px;font-size:13px;resize:vertical;"></textarea>
+      <div style="display:flex;justify-content:flex-end;margin-top:8px;">
+        <button type="button" id="homeValveUnlockBtn" onclick="homeValveUnlock()" style="padding:8px 14px;border-radius:8px;border:none;background:#B45309;color:#fff;font-weight:700;cursor:pointer;">🔓 Unlock for rider</button>
+      </div>
+    </div>
+
+    {{-- Or enter the meter for him (dead phone) --}}
+    <div id="homeValveEnterSec" style="display:none;border:1px solid #F3F4F6;border-radius:8px;padding:12px;">
+      <div style="font-size:13px;font-weight:700;color:#111827;margin-bottom:2px;">Or enter the meter for him</div>
+      <div style="font-size:11px;color:#6b7280;margin-bottom:8px;">Use only if his phone can't record it. Closes the day for him.</div>
+      <div style="display:flex;gap:8px;align-items:flex-end;">
+        <div style="flex:1;">
+          <label style="display:block;font-size:12px;font-weight:600;color:#374151;margin-bottom:4px;">Home meter (km)</label>
+          <input type="number" min="0" step="1" id="homeValveMeter" style="width:100%;border:2px solid #d1d5db;border-radius:8px;padding:9px 10px;font-size:14px;">
+        </div>
+        <button type="button" id="homeValveEnterBtn" onclick="homeValveEnter()" style="padding:9px 14px;border-radius:8px;border:none;background:#2563EB;color:#fff;font-weight:700;cursor:pointer;white-space:nowrap;">Save meter</button>
+      </div>
+      <input type="text" id="homeValveEnterReason" placeholder="Reason (optional)" style="width:100%;border:2px solid #d1d5db;border-radius:8px;padding:8px 10px;font-size:13px;margin-top:8px;">
+    </div>
+
+    <div style="display:flex;justify-content:flex-end;margin-top:14px;">
+      <button type="button" onclick="closeHomeValve()" style="padding:9px 14px;border-radius:8px;border:1px solid #e5e7eb;background:#fff;color:#374151;font-weight:600;cursor:pointer;">Close</button>
     </div>
   </div>
 </div>
@@ -727,11 +821,12 @@
       </div>
       <div>
         <label class="block text-sm font-medium text-gray-700 mb-1">Leave type</label>
-        <select id="leaveType" class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500">
+        <select id="leaveType" onchange="onLeaveTypeChange()" class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500">
           <option value="planned" selected>📅 Planned (applied in advance)</option>
           <option value="emergency">⚡ Emergency (same-day)</option>
+          <option value="half_day">🌗 Half day (0.5 leave)</option>
         </select>
-        <p class="text-xs text-gray-500" style="margin-top:4px;">No time cutoff applies to you. Emergency counts toward the rider's same-day allowance.</p>
+        <p class="text-xs text-gray-500" id="leaveTypeHint" style="margin-top:4px;">No time cutoff applies to you. Emergency counts toward the rider's same-day allowance.</p>
       </div>
       <div>
         <label class="block text-sm font-medium text-gray-700 mb-1">Note <span class="text-gray-400 font-normal">(optional)</span></label>
@@ -783,26 +878,27 @@
       </div>
     </div>
 
-    <!-- Stats Bar -->
+    <!-- Stats Bar — Present/Late/Overtime/Absent FILTER the table below (click again to clear);
+         On Leave opens the yearly leaves popup (with undo). -->
     <div style="padding: 12px 24px; background: #f9fafb; border-bottom: 1px solid #e5e7eb; flex-shrink: 0;">
       <div style="display: grid; grid-template-columns: repeat(7, 1fr); gap: 10px;">
-        <div style="text-align: center;">
+        <div id="empTilePresent" onclick="setEmpDetailFilter('present')" title="Show only days he was in" style="text-align: center; cursor: pointer; border-radius: 8px; padding: 2px;">
           <p style="font-size: 10px; color: #6b7280; text-transform: uppercase; letter-spacing: 0.05em; margin: 0 0 4px 0;">Present</p>
           <p style="font-size: 16px; font-weight: bold; color: #111827; margin: 0;" id="detailsStatPresent">0</p>
         </div>
-        <div style="text-align: center;">
+        <div id="empTileLate" onclick="setEmpDetailFilter('late')" title="Show only late days" style="text-align: center; cursor: pointer; border-radius: 8px; padding: 2px;">
           <p style="font-size: 10px; color: #6b7280; text-transform: uppercase; letter-spacing: 0.05em; margin: 0 0 4px 0;">Late</p>
           <p style="font-size: 16px; font-weight: bold; color: #dc2626; margin: 0;" id="detailsStatLate">0</p>
         </div>
-        <div style="text-align: center;">
+        <div id="empTileOvertime" onclick="setEmpDetailFilter('overtime')" title="Show only overtime days" style="text-align: center; cursor: pointer; border-radius: 8px; padding: 2px;">
           <p style="font-size: 10px; color: #6b7280; text-transform: uppercase; letter-spacing: 0.05em; margin: 0 0 4px 0;">Overtime</p>
           <p style="font-size: 16px; font-weight: bold; color: #16a34a; margin: 0;" id="detailsStatOT">0</p>
         </div>
-        <div style="text-align: center;">
+        <div id="empTileLeave" onclick="openEmpDetailLeaves()" title="Yearly leaves — view / undo" style="text-align: center; cursor: pointer; border-radius: 8px; padding: 2px;">
           <p style="font-size: 10px; color: #6b7280; text-transform: uppercase; letter-spacing: 0.05em; margin: 0 0 4px 0;">On Leave</p>
           <p style="font-size: 16px; font-weight: bold; color: #ea580c; margin: 0;" id="detailsStatOnLeave">0</p>
         </div>
-        <div style="text-align: center;">
+        <div id="empTileAbsent" onclick="setEmpDetailFilter('absent')" title="Show only absent days" style="text-align: center; cursor: pointer; border-radius: 8px; padding: 2px;">
           <p style="font-size: 10px; color: #6b7280; text-transform: uppercase; letter-spacing: 0.05em; margin: 0 0 4px 0;">Absent</p>
           <p style="font-size: 16px; font-weight: bold; color: #6b7280; margin: 0;" id="detailsStatAbsent">0</p>
         </div>
@@ -815,6 +911,7 @@
           <p style="font-size: 16px; font-weight: bold; color: #2563eb; margin: 0;" id="detailsStatOrders">0</p>
         </div>
       </div>
+      <div id="empDetailFilterHint" style="display:none; margin-top:8px; font-size:12px; color:#374151;"></div>
     </div>
 
     <!-- Scrollable Table Container -->
@@ -1133,10 +1230,24 @@ function onActiveFilterChange() {
   });
 }
 
+// R8 — a user may not edit their OWN attendance from the web (must use the app for a
+// genuine GPS check-in/out). The server is authoritative (403); this is the UX mirror.
+function isOwnAttendanceRow(userId) {
+  return window.currentUser && String(window.currentUser.id) === String(userId);
+}
+function blockSelfAttendanceEdit(userId) {
+  if (isOwnAttendanceRow(userId)) {
+    alert("You can't edit your own attendance from the web — check in or out from the app.");
+    return true;
+  }
+  return false;
+}
+
 function populateUserDropdowns() {
   const select = document.getElementById('userSelect');
-  select.innerHTML = '<option value="">-- Select Employee --</option>' + 
-    allUsers.map(u => `<option value="${u.id}" data-shift-start="${u.shift_start}" data-shift-end="${u.shift_end}" data-fullname="${u.fullname}" data-role="${u.role_name || 'Staff'}">${u.fullname || 'User #' + u.id} (${u.role_name || 'Staff'})</option>`).join('');
+  // Exclude the logged-in user — they can't mark their own attendance here (R8).
+  select.innerHTML = '<option value="">-- Select Employee --</option>' +
+    allUsers.filter(u => !isOwnAttendanceRow(u.id)).map(u => `<option value="${u.id}" data-shift-start="${u.shift_start}" data-shift-end="${u.shift_end}" data-fullname="${u.fullname}" data-role="${u.role_name || 'Staff'}">${u.fullname || 'User #' + u.id} (${u.role_name || 'Staff'})</option>`).join('');
 }
 
 function selectUserFromDropdown() {
@@ -1391,9 +1502,9 @@ function renderAttendanceTable(data) {
       <tr class="hover:bg-gray-50" style="border-left:3px solid ${attStatusColor(r, lateBy)}" data-status="${getRowStatus(r, lateBy, overtime)}" data-location="${locationBadge.type}">
         <td class="px-4 py-3 text-sm font-medium">
           <button
-            onclick="showEmployeeDetails(${r.user_id}, \`${(r.fullname || '').replace(/`/g, '')}\`, '${r.attendance_date}')"
+            onclick="openTodayDetail(${r.user_id}, \`${(r.fullname || '').replace(/`/g, '')}\`)"
             class="text-blue-600 hover:text-blue-800 hover:underline font-medium cursor-pointer text-left"
-            title="View last 30 days attendance with order details"
+            title="This month's summary + day-by-day detail (click the counts inside to filter)"
           >
             ${r.fullname || '#' + r.user_id}
           </button>
@@ -1422,15 +1533,17 @@ function renderAttendanceTable(data) {
 
         <!-- Meter Column: "127 km 📷📷 details" + integrity flags -->
         <td class="px-4 py-3 text-sm" style="white-space:nowrap;">
-          <div>${getDistanceBadge(r)}</div>
+          <div>${getDistanceBadge(r)}
+            ${r.attendance_id ? `<button type="button" onclick="openMeterEdit(${r.attendance_id}, ${r.meter_start != null && r.meter_start !== '' ? Number(r.meter_start) : 'null'}, ${r.meter_end != null && r.meter_end !== '' ? Number(r.meter_end) : 'null'}, '${(r.fullname || '').replace(/'/g, "\\'").replace(/"/g, '&quot;')}')" title="Correct meter reading" style="margin-left:6px;font-size:11px;color:#2563EB;background:#EFF6FF;border:1px solid #BFDBFE;border-radius:5px;padding:1px 6px;cursor:pointer;">✎ meter</button>` : ''}
+          </div>
           ${getMeterFlags(r)}
         </td>
 
         <td class="px-4 py-3 text-sm ${hours === '-' ? 'text-gray-300' : 'text-gray-600'}">${hours}</td>
         <td class="px-4 py-3 text-sm">
           <div class="flex gap-2" style="position: relative; z-index: 5;">
-            ${!r.logout_time ? `
-              <button 
+            ${(!r.logout_time && !isOwnAttendanceRow(r.user_id)) ? `
+              <button
                 type="button"
                 class="quick-add-btn px-2 py-1 bg-green-100 text-green-700 rounded hover:bg-green-200 transition text-xs font-medium"
                 data-user-id="${r.user_id}"
@@ -1451,6 +1564,7 @@ function renderAttendanceTable(data) {
             >
               📅
             </button>
+            ${!isOwnAttendanceRow(r.user_id) ? `
             <button
               type="button"
               class="quick-edit-btn px-2 py-1 bg-blue-100 text-blue-700 rounded hover:bg-blue-200 transition text-xs font-medium"
@@ -1463,6 +1577,16 @@ function renderAttendanceTable(data) {
               style="cursor: pointer;"
             >
               ✏️
+            </button>
+            ` : `<span class="px-2 py-1 text-xs text-gray-400" title="Edit your own attendance from the app">📱 app only</span>`}
+            <button
+              type="button"
+              onclick="openHomeValve(${r.user_id}, '${(r.fullname || '').replace(/'/g, "\\'").replace(/"/g, '&quot;')}')"
+              class="px-2 py-1 bg-amber-100 text-amber-700 rounded hover:bg-amber-200 transition text-xs font-medium"
+              title="Rider bypasses — unlock checkout from anywhere (forgot to check out), unlock/enter the home meter"
+              style="cursor: pointer;"
+            >
+              🔓
             </button>
             ${(!r.login_time || r.day_kind === 'not_needed') ? `
             <button type="button"
@@ -1507,6 +1631,8 @@ async function toggleNotNeeded(uid, date, isTagged) {
 }
 
 function getRowStatus(r, lateBy, overtime) {
+  // Half day: he IS present (0.5 leave, late/OT suppressed server-side) — never 'leave'.
+  if (r.is_half_day && r.login_time) return 'present';
   const onLeave = r.leave_request_id && ['approved','pending'].includes(String(r.leave_status || '').toLowerCase());
   if (onLeave) return 'leave';
   // No login: only a genuine working day is "absent"; off/holiday/not-joined are
@@ -1523,7 +1649,9 @@ function attStatusPill(r, lateBy, overtime) {
   const onLeave = r.leave_request_id && ['approved','pending'].includes(String(r.leave_status || '').toLowerCase());
   const kind = r.day_kind || 'working';
   let label, bg, fg;
-  if (onLeave)            { label = 'On leave';                bg = '#E6ECFD'; fg = '#1D4ED8'; }
+  // Half day beats the leave pill: he checked in — present with a ½-day mark, never "On leave".
+  if (r.is_half_day && r.login_time) { label = '🌗 ½ day';     bg = '#EDE9FE'; fg = '#6D28D9'; }
+  else if (onLeave)       { label = 'On leave';                bg = '#E6ECFD'; fg = '#1D4ED8'; }
   // A no-login day only counts as Absent on a genuine working day. Holiday / weekly
   // off / before-hire-date show a neutral gray chip, never red.
   else if (!r.login_time && kind === 'holiday')     { label = 'Holiday';    bg = '#EEF1F5'; fg = '#5B6B84'; }
@@ -1552,10 +1680,13 @@ function attInlineContext(r) {
   // Leave detail (the old Leave column, folded in): type + approval state.
   if (r.leave_request_id) {
     const st = String(r.leave_status || '').toLowerCase();
-    const [bg, fg, bd] = st === 'approved' ? ['#DCFCE7', '#15803D', '#86EFAC']
+    const isHalf = String(r.leave_type_from_req || '').toLowerCase() === 'half_day';
+    const [bg, fg, bd] = isHalf             ? ['#EDE9FE', '#6D28D9', '#DDD6FE']
+                       : st === 'approved' ? ['#DCFCE7', '#15803D', '#86EFAC']
                        : st === 'pending'  ? ['#FEF9C3', '#854D0E', '#FDE047']
                        :                     ['#FEE2E2', '#B42318', '#FCA5A5'];
-    bits.push(`<span title="Leave request ${st}" style="display:inline-flex;align-items:center;gap:3px;font-size:11px;font-weight:600;color:${fg};background:${bg};border:1px solid ${bd};border-radius:5px;padding:1px 6px;">🏖 ${r.leave_type_from_req || 'Leave'} · ${st}</span>`);
+    const typeLabel = isHalf ? '🌗 ½ day (0.5)' : `🏖 ${r.leave_type_from_req || 'Leave'}`;
+    bits.push(`<span data-leave-chip="1" title="Leave request ${st} — click to view / undo" onclick="event.stopPropagation(); openLeaveActions(${r.user_id}, '${(r.fullname || '').replace(/'/g, "\\'")}')" style="cursor:pointer;display:inline-flex;align-items:center;gap:3px;font-size:11px;font-weight:600;color:${fg};background:${bg};border:1px solid ${bd};border-radius:5px;padding:1px 6px;">${typeLabel} · ${st}</span>`);
   }
   const mlate = Number(r.month_late_minutes) || 0;
   if (mlate > 0) {
@@ -1705,14 +1836,14 @@ async function loadMonthTab() {
   const monthEl = document.getElementById('monthPicker');
   if (monthEl && !monthEl.value) monthEl.value = currentMonthValue();
   const body = document.getElementById('monthBody');
-  body.innerHTML = '<tr><td colspan="8" class="px-4 py-8 text-center text-gray-400 text-sm">Loading…</td></tr>';
+  body.innerHTML = '<tr><td colspan="9" class="px-4 py-8 text-center text-gray-400 text-sm">Loading…</td></tr>';
   try {
     const res = await fetch('/attendance/monthly-report?month=' + currentMonthValue());
     const json = await res.json();
     monthData = json.success ? (json.data || []) : [];
     renderMonthBody(monthData);
   } catch (e) {
-    body.innerHTML = '<tr><td colspan="8" class="px-4 py-8 text-center text-red-500 text-sm">Failed to load</td></tr>';
+    body.innerHTML = '<tr><td colspan="9" class="px-4 py-8 text-center text-red-500 text-sm">Failed to load</td></tr>';
   }
 }
 function fmtMinsShort(n) { n = Number(n) || 0; const h = Math.floor(n / 60), m = n % 60; return h > 0 ? `${h}h ${m}m` : `${m}m`; }
@@ -1729,7 +1860,7 @@ function renderMonthBody(data) {
     const c0 = data[0] || {};
     lbl.textContent = (c0.cycle_start && c0.cycle_end) ? '(' + fmtCycleShort(c0.cycle_start) + ' → ' + fmtCycleShort(c0.cycle_end) + ')' : '';
   }
-  if (!data.length) { body.innerHTML = '<tr><td colspan="8" class="px-4 py-8 text-center text-gray-400 text-sm">No data for this month</td></tr>'; return; }
+  if (!data.length) { body.innerHTML = '<tr><td colspan="9" class="px-4 py-8 text-center text-gray-400 text-sm">No data for this month</td></tr>'; return; }
   const sorted = [...data].sort((a, b) => String(a.fullname || '').localeCompare(String(b.fullname || '')));
   // A clickable count → opens the exact-dates drill-down. Zero shows a muted dash so the
   // eye skips it. stopPropagation keeps the row's own "open 30-day detail" from also firing.
@@ -1742,6 +1873,17 @@ function renderMonthBody(data) {
         style="background:none;border:none;cursor:pointer;font-weight:700;color:${color};text-decoration:underline;text-decoration-style:dotted;text-underline-offset:2px;font-size:13px;">${n}</button>
     </td>`;
   };
+  // W3 — a count that opens the FULL month detail popup pre-filtered to that category
+  // (all context: orders, meters, times) instead of a bare date list.
+  const filterCell = (val, color, uid, nm, filter) => {
+    const n = Number(val) || 0;
+    if (n <= 0) return `<td class="px-4 py-3 text-sm" style="text-align:center;color:#D1D5DB;">–</td>`;
+    return `<td class="px-4 py-3 text-sm" style="text-align:center;">
+      <button type="button" onclick="event.stopPropagation(); openMonthDetail(${uid}, '${nm}', '${filter}')"
+        title="Open this month's detail, filtered to these days"
+        style="background:none;border:none;cursor:pointer;font-weight:700;color:${color};text-decoration:underline;text-decoration-style:dotted;text-underline-offset:2px;font-size:13px;">${n}</button>
+    </td>`;
+  };
   body.innerHTML = sorted.map(u => {
     const late = Number(u.total_late_minutes) || 0;
     const lateStyle = late > 300 ? 'background:#FEE2E2;color:#B91C1C;' : (late > 0 ? 'background:#FEF3C7;color:#92400E;' : 'background:#F3F4F6;color:#9CA3AF;');
@@ -1751,13 +1893,20 @@ function renderMonthBody(data) {
     const otCell = ot > 0
       ? `<td class="px-4 py-3 text-center"><button type="button" onclick="event.stopPropagation(); showDateBreakdown(${uid}, '${nm}', 'month_overtime')" title="Click to see the days" style="background:none;border:none;cursor:pointer;font-weight:700;color:#047857;text-decoration:underline;text-decoration-style:dotted;text-underline-offset:2px;font-size:13px;">${fmtMinsShort(ot)}</button></td>`
       : `<td class="px-4 py-3 text-sm" style="text-align:center;color:#D1D5DB;">–</td>`;
+    const oco = Number(u.office_checkout_days) || 0;
+    const ocoCell = oco > 0
+      ? `<td class="px-4 py-3 text-center"><button type="button" onclick="event.stopPropagation(); showDateBreakdown(${uid}, '${nm}', 'month_office_checkout')" title="Days he delivered but checked out at the office — click to see them" style="display:inline-block;padding:2px 8px;border-radius:5px;font-size:12px;font-weight:700;background:#FEF3C7;color:#92400E;border:none;cursor:pointer;">${oco}</button></td>`
+      : `<td class="px-4 py-3 text-sm" style="text-align:center;color:#D1D5DB;">–</td>`;
     return `<tr class="hover:bg-gray-50 cursor-pointer" onclick="openMonthDetail(${uid}, '${nm}')">
       <td class="px-4 py-3 text-sm" style="font-weight:600;color:#1F2937;">${u.fullname || ''}</td>
-      <td class="px-4 py-3 text-sm text-center" style="color:#374151;">${u.present_days || 0}</td>
-      ${numCell(u.absent_days, '#DC2626', uid, nm, 'month_absent')}
-      ${numCell(u.leave_days, '#2563EB', uid, nm, 'month_leave')}
-      <td class="px-4 py-3 text-center"><span style="display:inline-block;padding:2px 8px;border-radius:5px;font-size:12px;font-weight:600;${lateStyle}">${fmtMinsShort(late)}</span></td>
+      ${filterCell(u.present_days, '#374151', uid, nm, 'present')}
+      ${filterCell(u.absent_days, '#DC2626', uid, nm, 'absent')}
+      ${filterCell(u.leave_days, '#2563EB', uid, nm, 'on_leave')}
+      <td class="px-4 py-3 text-center">${late > 0
+        ? `<button type="button" onclick="event.stopPropagation(); openMonthDetail(${uid}, '${nm}', 'late')" title="Open this month's detail, filtered to late days" style="display:inline-block;padding:2px 8px;border-radius:5px;font-size:12px;font-weight:600;border:none;cursor:pointer;${lateStyle}">${fmtMinsShort(late)}</button>`
+        : `<span style="display:inline-block;padding:2px 8px;border-radius:5px;font-size:12px;font-weight:600;${lateStyle}">${fmtMinsShort(late)}</span>`}</td>
       ${otCell}
+      ${ocoCell}
       ${leaveBalCell(u, uid, nm)}
       ${numCell(u.absent_days_year, '#B91C1C', uid, nm, 'year_absent')}
     </tr>`;
@@ -1839,21 +1988,119 @@ async function showLeaveSummary(uid, name) {
     takenHtml += takens.length
       ? takens.map(t => `<div style="display:flex;justify-content:space-between;gap:10px;padding:6px 4px;border-bottom:1px solid #F3F4F6;"><span style="font-size:12.5px;color:#111827;">${fmtD(t.date)}</span>${t.label ? `<span style="font-size:11px;color:#7C3AED;background:#7C3AED14;border-radius:5px;padding:1px 7px;font-weight:600;">${esc(t.label)}</span>` : ''}</div>`).join('')
       : `<div style="font-size:12px;color:#9CA3AF;padding:4px;">None this cycle.</div>`;
-    bodyEl.innerHTML = summary + adjHtml + takenHtml;
+    bodyEl.innerHTML = summary + adjHtml + takenHtml + '<div id="undoLeaveWrap"></div>';
+    // Approved leaves this cycle — each can be UNDONE if approved by mistake (returns the day to the balance).
+    loadApprovedLeavesForUndo(uid, name);
   } catch (e) {
     bodyEl.innerHTML = summary + '<div style="color:#DC2626;font-size:12px;padding:8px;">Could not load history.</div>';
   }
 }
 
-function openMonthDetail(userId, name) {
+// R3 — list approved leaves with an Undo button (manager fixes a mistaken approval).
+async function loadApprovedLeavesForUndo(uid, name) {
+  const wrap = document.getElementById('undoLeaveWrap');
+  if (!wrap) return;
+  try {
+    const res = await fetch('/attendance/approved-leaves?user_id=' + uid).then(r => r.json());
+    const leaves = (res && res.success) ? (res.leaves || []) : [];
+    if (!leaves.length) { wrap.innerHTML = ''; return; }
+    const fmt = (s) => { try { return new Date(s + 'T00:00:00').toLocaleDateString('en-GB', { day: 'numeric', month: 'short' }); } catch(e){ return s; } }
+    let h = `<div style="font-size:12px;font-weight:700;color:#374151;margin:14px 0 6px;">Approved leaves — undo a mistaken approval</div>`;
+    h += leaves.map(l => {
+      const range = l.start === l.end ? fmt(l.start) : (fmt(l.start) + ' – ' + fmt(l.end));
+      return `<div style="display:flex;justify-content:space-between;align-items:center;gap:10px;padding:7px 4px;border-bottom:1px solid #F3F4F6;">
+        <span style="font-size:12.5px;color:#111827;">${range} · <span style="color:#6B7280;">${String(l.type||'').toLowerCase()==='half_day' ? leaveTypeLabel(l.type) : l.days + 'd ' + escLeave(l.type)}</span></span>
+        <button type="button" onclick="undoApprovedLeave(${l.id}, '${escLeave(name).replace(/'/g,"\\'")}')" style="font-size:11px;font-weight:700;color:#B45309;background:#FEF3C7;border:1px solid #FDE68A;border-radius:6px;padding:4px 10px;cursor:pointer;">↩ Undo</button>
+      </div>`;
+    }).join('');
+    wrap.innerHTML = h;
+  } catch (e) { wrap.innerHTML = ''; }
+}
+
+async function undoApprovedLeave(id, name) {
+  if (!confirm(`Undo this approved leave for ${name}?\n\nThe day(s) return to their balance. Those dates become ABSENT unless you apply the correct leave.`)) return;
+  const reason = prompt('Reason (optional) — e.g. "approved on the wrong day":', '') || '';
+  try {
+    const res = await fetch('/attendance/leave-request/' + id + '/undo', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').content },
+      body: JSON.stringify({ reason })
+    });
+    const j = await res.json();
+    if (j.success) {
+      alert(j.message || 'Leave approval undone.');
+      // Refresh the summary + the day table so the returned day shows correctly.
+      if (typeof loadAttendanceForDate === 'function') loadAttendanceForDate();
+      if (typeof loadMonthTab === 'function') loadMonthTab();
+      closeDateBreakdown();
+    } else {
+      alert(j.message || 'Could not undo the leave.');
+    }
+  } catch (e) { alert('Could not undo the leave.'); }
+}
+
+function openMonthDetail(userId, name, filter) {
   if (typeof showEmployeeDetails !== 'function') return;
   // Scope the detail to the SELECTED month (1st → last day), not a rolling 30-day window.
+  // W3: an optional filter pre-selects a stat tile (Late/Absent/Present count clicks).
   const m = currentMonthValue();                       // 'YYYY-MM'
   const y = parseInt(m.slice(0, 4), 10), mo = parseInt(m.slice(5, 7), 10);
   const start = m + '-01';
   const end = m + '-' + String(new Date(y, mo, 0).getDate()).padStart(2, '0'); // last day of month
   const label = new Date(m + '-01T00:00:00').toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
-  showEmployeeDetails(userId, name, end, start, end, label);
+  showEmployeeDetails(userId, name, end, start, end, label, filter || null);
+}
+
+// W1 — from the TODAY tab: month-of-the-selected-date summary + day detail (the same
+// popup the Month tab opens, so the numbers always agree). Newest day first.
+function openTodayDetail(userId, name) {
+  if (typeof showEmployeeDetails !== 'function') return;
+  const sel = (document.getElementById('tableDate') || {}).value || new Date().toISOString().split('T')[0];
+  const m = sel.slice(0, 7);                            // month of the selected Today date
+  const y = parseInt(m.slice(0, 4), 10), mo = parseInt(m.slice(5, 7), 10);
+  const start = m + '-01';
+  const end = m + '-' + String(new Date(y, mo, 0).getDate()).padStart(2, '0');
+  const label = new Date(m + '-01T00:00:00').toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
+  showEmployeeDetails(userId, name, sel, start, end, label);
+}
+
+// Pretty leave-type label shared by every undo list ('half_day' → ½ day etc.).
+function leaveTypeLabel(t, days) {
+  const s = String(t || 'leave').toLowerCase();
+  if (s === 'half_day') return '🌗 ½ day (0.5)';
+  return `${days != null ? days + 'd ' : ''}${s}`;
+}
+
+// W2 — the On-Leave / half-day chip on a TODAY row opens this: the person's approved
+// leaves with an Undo on each (same endpoint + undo as the Month tab's balance sheet),
+// so a wrong approval can be fixed without leaving the Today view.
+async function openLeaveActions(userId, name) {
+  const modal = document.getElementById('dateBreakdownModal');
+  if (!modal) return;
+  document.getElementById('bdTitle').textContent = `🏖 Leaves — ${name}`;
+  document.getElementById('bdSub').textContent = 'this year cycle · undo a mistaken approval';
+  const bodyEl = document.getElementById('bdBody');
+  bodyEl.innerHTML = '<div style="padding:24px;text-align:center;color:#9CA3AF;font-size:13px;">Loading…</div>';
+  modal.style.display = 'flex';
+  try {
+    const res = await fetch('/attendance/approved-leaves?user_id=' + userId).then(r => r.json());
+    const leaves = (res && res.success) ? (res.leaves || []) : [];
+    if (!leaves.length) {
+      bodyEl.innerHTML = '<div style="padding:24px;text-align:center;color:#9CA3AF;font-size:13px;">No approved leaves this cycle.</div>';
+      return;
+    }
+    const fmt = (s) => { try { return new Date(s + 'T00:00:00').toLocaleDateString('en-GB', { day: 'numeric', month: 'short' }); } catch(e){ return s; } };
+    bodyEl.innerHTML = leaves.map(l => {
+      const range = l.start === l.end ? fmt(l.start) : (fmt(l.start) + ' – ' + fmt(l.end));
+      const isHalf = String(l.type || '').toLowerCase() === 'half_day';
+      return `<div style="display:flex;justify-content:space-between;align-items:center;gap:10px;padding:8px 4px;border-bottom:1px solid #F3F4F6;">
+        <span style="font-size:13px;color:#111827;">${range} · <span style="color:#6B7280;">${isHalf ? leaveTypeLabel(l.type) : escLeave(String(l.days)) + 'd ' + escLeave(l.type)}</span></span>
+        <button type="button" onclick="undoApprovedLeave(${l.id}, '${escLeave(name).replace(/'/g, "\\'")}')" style="font-size:11px;font-weight:700;color:#B45309;background:#FEF3C7;border:1px solid #FDE68A;border-radius:6px;padding:4px 10px;cursor:pointer;">↩ Undo</button>
+      </div>`;
+    }).join('');
+  } catch (e) {
+    bodyEl.innerHTML = '<div style="padding:24px;text-align:center;color:#DC2626;font-size:13px;">Could not load the leaves.</div>';
+  }
 }
 
 // ---- Month-tab date drill-down (exact dates behind a clicked count) ----
@@ -1863,6 +2110,7 @@ const BREAKDOWN_META = {
   year_leave:   { title: 'Leave days',        sub: 'this year cycle', color: '#7C3AED', icon: '🏖' },
   year_absent:  { title: 'Absent days',       sub: 'this year cycle', color: '#B91C1C', icon: '❌' },
   month_overtime: { title: 'Overtime days',   sub: 'this month',      color: '#047857', icon: '⏱' },
+  month_office_checkout: { title: 'Office checkouts', sub: 'delivered but came back to the office', color: '#92400E', icon: '🏢' },
 };
 async function showDateBreakdown(userId, name, type) {
   const meta = BREAKDOWN_META[type] || { title: 'Dates', sub: '', color: '#374151', icon: '📅' };
@@ -1898,9 +2146,9 @@ async function showDateBreakdown(userId, name, type) {
 function closeDateBreakdown() { document.getElementById('dateBreakdownModal').style.display = 'none'; }
 function exportMonthCsv() {
   if (!monthData.length) { alert('Nothing to export.'); return; }
-  let csv = 'Employee,Present,Absent (month),Leave (month),Late minutes,Leave (year),Absent (year)\n';
+  let csv = 'Employee,Present,Absent (month),Leave (month),Late minutes,Office checkouts,Leave (year),Absent (year)\n';
   [...monthData].sort((a, b) => String(a.fullname || '').localeCompare(String(b.fullname || ''))).forEach(u => {
-    csv += `"${(u.fullname || '').replace(/"/g, '""')}",${u.present_days || 0},${u.absent_days || 0},${u.leave_days || 0},${u.total_late_minutes || 0},${u.leaves_taken_year || 0},${u.absent_days_year || 0}\n`;
+    csv += `"${(u.fullname || '').replace(/"/g, '""')}",${u.present_days || 0},${u.absent_days || 0},${u.leave_days || 0},${u.total_late_minutes || 0},${u.office_checkout_days || 0},${u.leaves_taken_year || 0},${u.absent_days_year || 0}\n`;
   });
   const blob = new Blob([csv], { type: 'text/csv' });
   const a = document.createElement('a'); a.href = URL.createObjectURL(blob);
@@ -2103,15 +2351,36 @@ function syncLeaveToMin() {
   const to = document.getElementById('leaveTo');
   to.min = f || '';
   if (to.value && f && to.value < f) to.value = f;
+  // Half day = single date: keep To glued to From.
+  if ((document.getElementById('leaveType') || {}).value === 'half_day' && f) to.value = f;
+}
+
+// Half day is a SINGLE date (0.5 leave, no late/OT counted that day) — lock the To
+// field to From and explain; other types restore the normal range behaviour.
+function onLeaveTypeChange() {
+  const type = (document.getElementById('leaveType') || {}).value;
+  const to = document.getElementById('leaveTo');
+  const hint = document.getElementById('leaveTypeHint');
+  if (type === 'half_day') {
+    const f = document.getElementById('leaveFrom').value;
+    if (f) to.value = f;
+    to.disabled = true;
+    if (hint) hint.textContent = 'Half day: one date, 0.5 leave. The day stays Present — no lateness or overtime is counted. Needs a check-in that day.';
+  } else {
+    to.disabled = false;
+    if (hint) hint.textContent = 'No time cutoff applies to you. Emergency counts toward the rider\'s same-day allowance.';
+  }
 }
 async function submitApplyLeave(overrideQuota) {
   const btn = document.getElementById('leaveSubmitBtn');
+  const type = (document.getElementById('leaveType') || {}).value || 'planned';
   const payload = {
     user_id: document.getElementById('leaveUser').value,
     leave_start_date: document.getElementById('leaveFrom').value,
-    leave_end_date: document.getElementById('leaveTo').value,
+    // Half day = single date; the To field is disabled then, so send From.
+    leave_end_date: type === 'half_day' ? document.getElementById('leaveFrom').value : document.getElementById('leaveTo').value,
     note: document.getElementById('leaveNote').value,
-    leave_type: (document.getElementById('leaveType') || {}).value || 'planned',
+    leave_type: type,
     override_quota: overrideQuota ? 1 : 0
   };
   if (!payload.user_id || !payload.leave_start_date || !payload.leave_end_date) { alert('Pick a person and both dates.'); return; }
@@ -2219,7 +2488,13 @@ function checkoutChip(info) {
   if (!info || !info.status) return '';
   let bg, fg, bd, text, title = '';
   if (info.status === 'office') {
-    bg = '#F3F4F6'; fg = '#4B5563'; bd = '#E5E7EB'; text = '⇢ ' + info.label;
+    if (info.office_exception) {
+      // Non-bike rider who delivered but came back to the office — an exception, flag amber.
+      bg = '#FEF3C7'; fg = '#92400E'; bd = '#FDE68A'; text = '⚠ ⇢ At office';
+      title = 'Checked out at the office after delivering — he came back (exception)';
+    } else {
+      bg = '#F3F4F6'; fg = '#4B5563'; bd = '#E5E7EB'; text = '⇢ ' + info.label;
+    }
   } else if (info.status === 'delivery') {
     if (info.pin_away) {
       bg = '#FEF3C7'; fg = '#92400E'; bd = '#FDE68A';
@@ -2236,6 +2511,9 @@ function checkoutChip(info) {
 }
 
 function getMeterFlags(record) {
+  // Store EVERY row (keyed by user_id — absent rows have no attendance_id) so the
+  // always-visible 🔓 action button can open the Rider-bypasses modal for any row.
+  (window.__attRows = window.__attRows || {})[record.user_id] = record;
   if (!record.login_time) return '';
   const cfg = window.attConfig || {meter_gps_warn_km: 10, overnight_grace_km: 30};
   const chips = [];
@@ -2266,8 +2544,73 @@ function getMeterFlags(record) {
     }
   }
 
+  // Company-bike going-home meter (the manager valve chip; clickable).
+  const hjChip = getHomeJourneyChip(record);
+  if (hjChip) chips.push(hjChip);
+
+  // Generic "Rider bypasses" chip — the ONE discoverable entry for unlocking a stuck
+  // rider (checkout-from-anywhere; home-meter valve rides along in the same modal).
+  const bpChip = getBypassChip(record, isRider);
+  if (bpChip) chips.push(bpChip);
+
   if (!chips.length) return '';
   return `<div class="flex flex-wrap gap-1 mt-1">${chips.join('')}</div>`;
+}
+
+// Bypass chip: while a rider is still checked in → a subtle 🔓 opener (amber while a
+// checkout unlock is active); after a bypassed checkout → an audit chip.
+function getBypassChip(record, isRider) {
+  if (!record.attendance_id) return '';
+  const nm = String(record.fullname || '').replace(/"/g, '&quot;').replace(/'/g, "\\'");
+  const open = `onclick="openHomeValve(${record.user_id}, '${nm}')"`;
+  const cu = record.checkout_unlock;
+  const base = 'cursor:pointer;display:inline-flex;align-items:center;gap:3px;padding:1px 6px;border-radius:5px;font-size:11px;font-weight:600;';
+  if (record.login_time && !record.logout_time && isRider) {
+    if (cu && cu.active) {
+      return `<span ${open} style="${base}background:#FEF3C7;color:#92400E;border:1px solid #FDE68A;" title="Checkout unlocked until ${cu.until} by ${cu.by_name || 'manager'} — click to manage">🔓 checkout unlocked</span>`;
+    }
+    return `<span ${open} style="${base}background:#F3F4F6;color:#6B7280;border:1px solid #E5E7EB;" title="Rider bypasses — allow checkout from anywhere (forgot to check out), unlock the home meter, etc.">🔓 bypass</span>`;
+  }
+  if (cu && cu.used) {
+    return `<span ${open} style="${base}background:#FEF3C7;color:#92400E;border:1px solid #FDE68A;" title="Checked out via manager bypass (${cu.by_name || 'manager'}${cu.reason ? ': ' + String(cu.reason).replace(/"/g, '&quot;') : ''})">🔓 bypassed checkout</span>`;
+  }
+  return '';
+}
+
+function homeBreachLabel(b) {
+  return {time: 'reached home late', location: 'location not confirmed', both: 'late + location not confirmed'}[b] || '';
+}
+
+// A clickable chip summarising a company-bike rider's going-home meter state; opens the valve.
+function getHomeJourneyChip(record) {
+  const hj = record.home_journey;
+  if (!hj) return '';
+  const late = hj.minutes_late ? ` +${hj.minutes_late}m` : '';
+  let bg, fg, bd, txt, title;
+  if (hj.has_meter) {
+    if (hj.breach || hj.state === 'completed_late') {
+      bg = '#FEF3C7'; fg = '#92400E'; bd = '#FDE68A';
+      txt = '🏍 home meter (late)';
+      title = `Home meter ${hj.meter_home} km${hj.breach ? ' · bypass: ' + homeBreachLabel(hj.breach) : ''}${hj.reason ? ' · ' + hj.reason : ''}`;
+    } else {
+      bg = '#DCFCE7'; fg = '#166534'; bd = '#BBF7D0';
+      txt = '🏍 home meter ✓'; title = `Home meter ${hj.meter_home} km — on time`;
+    }
+  } else if (hj.state === 'late_locked') {
+    bg = '#FEE2E2'; fg = '#B91C1C'; bd = '#FCA5A5';
+    txt = `🔒 home late — locked${late}`; title = 'Reached home late — meter entry is locked. Click to unlock or enter it.';
+  } else if (hj.state === 'unlocked') {
+    bg = '#FEF3C7'; fg = '#92400E'; bd = '#FDE68A';
+    txt = '🔓 unlocked'; title = 'You opened meter entry for the rider. Click to manage.';
+  } else if (hj.state === 'arrived_pending_meter') {
+    bg = '#DBEAFE'; fg = '#1E40AF'; bd = '#BFDBFE';
+    txt = '🏠 home · meter pending'; title = 'Arrived home on time; meter not typed yet. Click to enter it for him.';
+  } else {
+    bg = '#F3F4F6'; fg = '#374151'; bd = '#E5E7EB';
+    txt = '🏍 riding home'; title = `Expected home by ${hj.expected_by || '-'}. Click to manage.`;
+  }
+  const nm = String(record.fullname || '').replace(/"/g, '&quot;').replace(/'/g, "\\'");
+  return `<span onclick="openHomeValve(${record.user_id}, '${nm}')" style="cursor:pointer;display:inline-flex;align-items:center;gap:3px;padding:1px 6px;border-radius:5px;font-size:11px;font-weight:600;background:${bg};color:${fg};border:1px solid ${bd};" title="${title}">${txt}</span>`;
 }
 
 /**
@@ -2353,8 +2696,14 @@ function updateSummaryCards(data) {
   let present = 0, onTime = 0, late = 0, overtime = 0, onLeave = 0, absent = 0;
   
   data.forEach(r => {
+    // HALF-DAY with a check-in: Present + On time, never Late/Overtime/On-leave
+    // (0.5 already sits in the yearly leave counter; owner's rule).
+    if (r.is_half_day && r.login_time) {
+      present++;
+      onTime++;
+    }
     // Check if on leave (approved or pending)
-    if (r.leave_request_id && (r.leave_status === 'approved' || r.leave_status === 'pending')) {
+    else if (r.leave_request_id && (r.leave_status === 'approved' || r.leave_status === 'pending')) {
       onLeave++;
     }
     // If has attendance
@@ -2366,7 +2715,7 @@ function updateSummaryCards(data) {
       } else {
         late++;
       }
-      
+
       // Start-only shifts (no end) never count as overtime — don't invent 17:00.
       if (r.logout_time && r.shift_end && r.logout_time > r.shift_end) {
         overtime++;
@@ -2390,6 +2739,7 @@ function updateSummaryCards(data) {
 // Smart quick add - handles both login and logout
 function quickAddLogout(userId, userName) {
   try {
+  if (blockSelfAttendanceEdit(userId)) return; // R8 self-edit block
   const user = allAttendanceData.find(u => u.user_id == userId);
   currentEditUserId = userId;
   currentEditDate = document.getElementById('tableDate').value;
@@ -2509,6 +2859,189 @@ function closeQuickTime() {
   currentTimeModalMode = null;
 }
 
+// ---- Meter correction (R7c) ----
+let meterEditAttId = null;
+function openMeterEdit(attendanceId, meterStart, meterEnd, name) {
+  meterEditAttId = attendanceId;
+  document.getElementById('meterEditWho').textContent = (name || '') + ' · ' + (document.getElementById('tableDate') ? document.getElementById('tableDate').value : '');
+  document.getElementById('meterEditStart').value = (meterStart != null) ? meterStart : '';
+  document.getElementById('meterEditEnd').value = (meterEnd != null) ? meterEnd : '';
+  document.getElementById('meterEditModal').style.display = 'flex';
+}
+function closeMeterEdit() {
+  document.getElementById('meterEditModal').style.display = 'none';
+  meterEditAttId = null;
+}
+async function saveMeterEdit() {
+  if (!meterEditAttId) return;
+  const startRaw = document.getElementById('meterEditStart').value;
+  const endRaw = document.getElementById('meterEditEnd').value;
+  const payload = { attendance_id: meterEditAttId };
+  if (startRaw !== '') payload.meter_start = parseInt(startRaw, 10);
+  if (endRaw !== '') payload.meter_end = parseInt(endRaw, 10);
+  if (payload.meter_start == null && payload.meter_end == null) { alert('Enter a start or end meter value.'); return; }
+  if (payload.meter_start != null && payload.meter_end != null && payload.meter_end < payload.meter_start) {
+    if (!confirm('End meter is less than start meter. Save anyway?')) return;
+  }
+  const btn = document.getElementById('meterEditSaveBtn');
+  btn.disabled = true; btn.textContent = 'Saving…';
+  try {
+    const res = await fetch('/attendance/update-meter', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').content },
+      body: JSON.stringify(payload)
+    });
+    const j = await res.json();
+    if (j.success) {
+      closeMeterEdit();
+      if (typeof loadAttendanceForDate === 'function') loadAttendanceForDate();
+    } else {
+      alert(j.message || 'Could not update the meter.');
+    }
+  } catch (e) {
+    alert('Could not update the meter.');
+  } finally {
+    btn.disabled = false; btn.textContent = 'Save';
+  }
+}
+
+// ── RIDER BYPASSES — one modal for every unlock a manager can grant ───────────
+// Sections show only when they apply: checkout-from-anywhere (still checked in),
+// home-meter unlock / manager entry (company-bike journey). Opened from the 🔓/🏍 chips.
+function openHomeValve(userId, name) {
+  const rec = (window.__attRows || {})[userId];
+  if (!rec) return;
+  const hj = rec.home_journey || null;
+  const cu = rec.checkout_unlock || null;
+  window.__homeValveAttId = rec.attendance_id || null;
+  const dateVal = document.getElementById('tableDate') ? document.getElementById('tableDate').value : '';
+  document.getElementById('homeValveWho').textContent = (name || '') + (dateVal ? ' · ' + dateVal : '');
+
+  const bits = [];
+  if (!rec.login_time) {
+    bits.push('Not checked in on this day — <b>nothing to bypass</b>.');
+    bits.push('Bypasses apply while someone is ON DUTY (unlock checkout from anywhere when they forgot to check out) or on a company-bike ride home (unlock / enter the home meter).');
+    bits.push('To fix a missed day, use ➕ / ✏️ (mark or edit times) instead.');
+  }
+  if (rec.login_time && !rec.logout_time) bits.push(`Checked in <b>${String(rec.login_time).slice(0, 5)}</b> — still on duty`);
+  if (rec.logout_time) bits.push(`Checked out <b>${String(rec.logout_time).slice(0, 5)}</b>`);
+  if (cu && cu.used) bits.push(`<span style="color:#92400E;font-weight:700;">Checked out via bypass</span> (${cu.by_name || 'manager'}${cu.reason ? ': “' + cu.reason + '”' : ''})`);
+  if (hj) {
+    if (hj.expected_by) bits.push(`Due home by <b>${hj.expected_by}</b>${hj.distance_km != null ? ' · ' + hj.distance_km + ' km' : ''}`);
+    if (hj.arrived_at) bits.push(`Arrived <b>${hj.arrived_at}</b>${hj.arrival_source ? ' (' + hj.arrival_source + ')' : ''}`);
+    else bits.push('Home arrival <b>not GPS-confirmed</b>');
+    if (hj.minutes_late) bits.push(`<span style="color:#B91C1C;font-weight:700;">${hj.minutes_late} min late</span>`);
+    if (hj.reason) bits.push(`Reason: “${hj.reason}”`);
+    if (hj.breach) bits.push(`Bypass breach: <b>${homeBreachLabel(hj.breach)}</b>`);
+  }
+  document.getElementById('homeValveInfo').innerHTML = bits.join('<br>') || 'No activity today.';
+
+  // Checkout-from-anywhere section — while he's checked in and not out.
+  const coSec = document.getElementById('homeValveCheckoutSec');
+  const coActive = document.getElementById('homeValveCoActive');
+  if (rec.login_time && !rec.logout_time) {
+    coSec.style.display = 'block';
+    document.getElementById('homeValveCoReason').value = '';
+    if (cu && cu.active) {
+      coActive.style.display = 'block';
+      coActive.textContent = `✓ Unlock active until ${cu.until} (${cu.by_name || 'manager'}). Unlocking again extends it.`;
+    } else {
+      coActive.style.display = 'none';
+    }
+  } else {
+    coSec.style.display = 'none';
+  }
+
+  // Home-meter sections — only for a company-bike journey.
+  const done = document.getElementById('homeValveDone');
+  const unlockSec = document.getElementById('homeValveUnlockSec');
+  const enterSec = document.getElementById('homeValveEnterSec');
+  if (hj && hj.has_meter) {
+    done.style.display = 'block';
+    done.textContent = `✓ Home meter recorded: ${hj.meter_home} km. Use the meter cell's edit to correct a value.`;
+    unlockSec.style.display = 'none';
+    enterSec.style.display = 'none';
+  } else if (hj) {
+    done.style.display = 'none';
+    // Unlock is only meaningful when the phone is locked out (late). When unlocked/armed/arrived,
+    // hide it — the rider can already record; the manager only needs the "enter for him" fallback.
+    unlockSec.style.display = (hj.state === 'late_locked') ? 'block' : 'none';
+    enterSec.style.display = 'block';
+    document.getElementById('homeValveReason').value = '';
+    document.getElementById('homeValveMeter').value = '';
+    document.getElementById('homeValveEnterReason').value = '';
+  } else {
+    done.style.display = 'none';
+    unlockSec.style.display = 'none';
+    enterSec.style.display = 'none';
+  }
+  document.getElementById('homeValveModal').style.display = 'flex';
+}
+
+async function homeValveCheckoutUnlock() {
+  const attId = window.__homeValveAttId;
+  const reason = document.getElementById('homeValveCoReason').value.trim();
+  if (!attId) return;
+  if (!reason) { alert('Please enter a reason for unlocking checkout.'); return; }
+  const btn = document.getElementById('homeValveCoBtn');
+  btn.disabled = true; btn.textContent = 'Unlocking…';
+  try {
+    const res = await fetch('/attendance/checkout-unlock', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').content },
+      body: JSON.stringify({ attendance_id: attId, reason: reason })
+    });
+    const j = await res.json();
+    if (j.success) { closeHomeValve(); if (typeof loadAttendanceForDate === 'function') loadAttendanceForDate(); }
+    else alert(j.message || 'Could not unlock.');
+  } catch (e) { alert('Could not unlock.'); }
+  finally { btn.disabled = false; btn.textContent = '🔓 Unlock checkout'; }
+}
+function closeHomeValve() {
+  document.getElementById('homeValveModal').style.display = 'none';
+  window.__homeValveAttId = null;
+}
+async function homeValveUnlock() {
+  const attId = window.__homeValveAttId;
+  const reason = document.getElementById('homeValveReason').value.trim();
+  if (!attId) return;
+  if (!reason) { alert('Please enter a reason for unlocking.'); return; }
+  const btn = document.getElementById('homeValveUnlockBtn');
+  btn.disabled = true; btn.textContent = 'Unlocking…';
+  try {
+    const res = await fetch('/attendance/home-journey/unlock', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').content },
+      body: JSON.stringify({ attendance_id: attId, reason: reason })
+    });
+    const j = await res.json();
+    if (j.success) { closeHomeValve(); if (typeof loadAttendanceForDate === 'function') loadAttendanceForDate(); }
+    else alert(j.message || 'Could not unlock.');
+  } catch (e) { alert('Could not unlock.'); }
+  finally { btn.disabled = false; btn.textContent = '🔓 Unlock for rider'; }
+}
+async function homeValveEnter() {
+  const attId = window.__homeValveAttId;
+  const meterRaw = document.getElementById('homeValveMeter').value;
+  const reason = document.getElementById('homeValveEnterReason').value.trim();
+  if (!attId) return;
+  if (meterRaw === '' || isNaN(parseInt(meterRaw, 10))) { alert('Enter the meter reading.'); return; }
+  if (!confirm('Enter this meter for the rider and close his day?')) return;
+  const btn = document.getElementById('homeValveEnterBtn');
+  btn.disabled = true; btn.textContent = 'Saving…';
+  try {
+    const res = await fetch('/attendance/home-journey/enter-meter', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').content },
+      body: JSON.stringify({ attendance_id: attId, meter_home: parseInt(meterRaw, 10), reason: reason })
+    });
+    const j = await res.json();
+    if (j.success) { closeHomeValve(); if (typeof loadAttendanceForDate === 'function') loadAttendanceForDate(); }
+    else alert(j.message || 'Could not record the meter.');
+  } catch (e) { alert('Could not record the meter.'); }
+  finally { btn.disabled = false; btn.textContent = 'Save meter'; }
+}
+
 async function saveQuickTime() {
   // Validate required data
   if (!currentEditUserId) {
@@ -2623,6 +3156,7 @@ async function loadMonthSummary() {
 
 // Quick edit modal
 function openQuickEdit(userId, userName, loginTime, logoutTime, attendanceDate) {
+  if (blockSelfAttendanceEdit(userId)) return; // R8 self-edit block
   currentEditUserId = userId;
   currentEditDate = attendanceDate || document.getElementById('tableDate').value;
   
@@ -2931,9 +3465,14 @@ async function saveShift(userId) {
 }
 
 // Employee Details Modal Functions
-async function showEmployeeDetails(userId, fullname, fromDate, startDate, endDate, rangeLabel) {
-  console.log('showEmployeeDetails called:', { userId, fullname, fromDate, startDate, endDate });
-  
+async function showEmployeeDetails(userId, fullname, fromDate, startDate, endDate, rangeLabel, initialFilter) {
+  console.log('showEmployeeDetails called:', { userId, fullname, fromDate, startDate, endDate, initialFilter });
+
+  // W1 — remember who the popup is for (leave tile → yearly leaves popup) and reset/seed
+  // the chip filter (W3 passes one so a Month-tab count opens pre-filtered).
+  window.__empDetailCtx = { userId: userId, name: fullname || '' };
+  window.__empDetailFilter = initialFilter || null;
+
   // If fromDate is null/undefined, use current selected date from date picker or today
   if (!fromDate || fromDate === 'null' || fromDate === 'undefined') {
     const dateInput = document.getElementById('attendanceDate');
@@ -3025,18 +3564,77 @@ async function showEmployeeDetails(userId, fullname, fromDate, startDate, endDat
     document.getElementById('detailsStatHours').textContent = (emp.total_hours || 0) + 'h';
     document.getElementById('detailsStatOrders').textContent = emp.total_orders_delivered || 0;
     
-    // Render table
-    if (!records || records.length === 0) {
-      body.innerHTML = '<tr><td colspan="12" style="padding: 20px; text-align: center; color: #6b7280;">No records found for this period</td></tr>';
-      return;
-    }
-    
-    body.innerHTML = records.map((day, index) => {
+    // Render table (via the filterable renderer — W1: the stat tiles filter these rows)
+    renderEmployeeDetailRows();
+    console.log('Employee details loaded successfully');
+
+  } catch(e) {
+    console.error('Error loading employee details:', e);
+    body.innerHTML = `<tr><td colspan="12" style="padding: 20px; text-align: center; color: #dc2626;">Error loading data: ${e.message}</td></tr>`;
+  }
+}
+
+// W1 — chip filter state for the employee-details popup. Click a stat tile to filter the
+// rows; click it again to clear. Pure client-side (rows are cached in employeeDetailsData).
+function setEmpDetailFilter(f) {
+  window.__empDetailFilter = (window.__empDetailFilter === f) ? null : f;
+  renderEmployeeDetailRows();
+}
+function openEmpDetailLeaves() {
+  const ctx = window.__empDetailCtx || {};
+  if (ctx.userId && typeof openLeaveActions === 'function') openLeaveActions(ctx.userId, ctx.name || '');
+}
+function empDetailRowMatches(day, f) {
+  if (!f) return true;
+  const hasLogin = day.login_time && day.login_time !== '-';
+  if (f === 'present') return !!hasLogin; // includes late + ½ day — every day he was in
+  if (f === 'late') return day.status === 'late' || (hasLogin && day.late_minutes > 0 && day.status !== 'half_day');
+  if (f === 'overtime') return hasLogin && day.overtime_minutes > 0;
+  if (f === 'absent') return day.status === 'absent' || (!hasLogin && !day.leave_request_id && day.status !== 'on_leave' && day.status !== 'not_needed');
+  if (f === 'on_leave') return day.status === 'on_leave' || day.status === 'half_day'; // month Leave-count click
+  return true;
+}
+function renderEmployeeDetailRows() {
+  const body = document.getElementById('employeeDetailsBody');
+  if (!body || !employeeDetailsData) return;
+  const all = employeeDetailsData.daily_records || [];
+  const filter = window.__empDetailFilter || null;
+
+  // Tile highlight + hint
+  const tiles = { present: 'empTilePresent', late: 'empTileLate', overtime: 'empTileOvertime', absent: 'empTileAbsent' };
+  Object.keys(tiles).forEach(k => {
+    const el = document.getElementById(tiles[k]);
+    if (el) el.style.boxShadow = (filter === k) ? '0 0 0 2px #2563EB' : 'none';
+  });
+  const hint = document.getElementById('empDetailFilterHint');
+  if (hint) {
+    if (filter) {
+      hint.style.display = 'block';
+      hint.innerHTML = `Showing only <b>${filter}</b> days — <a href="#" onclick="setEmpDetailFilter('${filter}'); return false;" style="color:#2563EB;text-decoration:underline;">show all</a>`;
+    } else { hint.style.display = 'none'; }
+  }
+
+  if (!all.length) {
+    body.innerHTML = '<tr><td colspan="12" style="padding: 20px; text-align: center; color: #6b7280;">No records found for this period</td></tr>';
+    return;
+  }
+  // Meter gaps must compare against the FULL day sequence (records are date-DESC), so
+  // precompute each row's previous-day meter end BEFORE filtering.
+  all.forEach((day, i) => {
+    day.__prevMeterEnd = (i < all.length - 1 && all[i + 1] && all[i + 1].meter_end) ? all[i + 1].meter_end : null;
+  });
+  const records = all.filter(d => empDetailRowMatches(d, filter));
+  if (!records.length) {
+    body.innerHTML = `<tr><td colspan="12" style="padding: 20px; text-align: center; color: #6b7280;">No ${filter} days in this period.</td></tr>`;
+    return;
+  }
+
+  body.innerHTML = records.map((day, index) => {
       const date = new Date(day.attendance_date + 'T00:00:00');
       const dayName = date.toLocaleDateString('en-US', { weekday: 'short' });
       const formattedDate = date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
       const rowBg = index % 2 === 0 ? '#f9fafb' : 'white';
-      
+
       // Prefer the backend-provided status (covers the filled-in absent/leave rows);
       // fall back to the login/leave heuristic for older responses.
       const isOnLeave = day.leave_request_id && (day.leave_status === 'approved' || day.leave_status === 'pending');
@@ -3048,41 +3646,35 @@ async function showEmployeeDetails(userId, fullname, fromDate, startDate, endDat
         late:     ['Late',     '#fee2e2', '#991b1b'],
         absent:   ['Absent',   '#fef2f2', '#991b1b'],
         on_leave: ['On Leave', '#dbeafe', '#1e40af'],
+        half_day: ['🌗 ½ day', '#ede9fe', '#6d28d9'],
         off:      ['Off',      '#f3f4f6', '#6b7280'],
         holiday:  ['Holiday',  '#f3f4f6', '#6b7280'],
         not_needed: ['Not needed', '#e0e7ff', '#3730a3'],
       };
       const [status, statusBg, statusColor] = statusMap[st] || statusMap.absent;
-      
+
       const loginTime = day.login_time || '-';
       const logoutTime = day.logout_time || '-';
       const hours = day.hours_worked ? day.hours_worked.toFixed(1) + 'h' : '-';
       const lateBy = day.late_minutes > 0 ? day.late_minutes + ' min' : '-';
       const overtime = day.overtime_minutes > 0 ? day.overtime_minutes + ' min' : '-';
-      
+
       const ordersDelivered = day.total_orders_delivered || 0;
       const firstDelivery = day.first_delivery_time || '-';
       const lastDelivery = day.last_delivery_time || '-';
-      
+
       // Meter values
       const meterStart = day.meter_start || null;
       const meterEnd = day.meter_end || null;
       const meterDistance = (meterStart && meterEnd) ? Math.abs(parseInt(meterEnd) - parseInt(meterStart)) : null;
-      
-      // Find previous day's meter_end to calculate gap
-      // Records are sorted by date DESC, so "previous day" is the NEXT item in array
-      let prevMeterEnd = null;
+
+      // Previous day's meter_end (precomputed on the FULL list, filter-safe)
+      let prevMeterEnd = day.__prevMeterEnd;
       let meterGap = null;
-      if (index < records.length - 1) {
-        const nextRecord = records[index + 1];
-        if (nextRecord && nextRecord.meter_end) {
-          prevMeterEnd = nextRecord.meter_end;
-          if (meterStart) {
-            meterGap = parseInt(meterStart) - parseInt(prevMeterEnd);
-          }
-        }
+      if (prevMeterEnd && meterStart) {
+        meterGap = parseInt(meterStart) - parseInt(prevMeterEnd);
       }
-      
+
       // Build meter display with values and gap indicator
       let meterValuesHtml = '-';
       if (meterStart || meterEnd) {
@@ -3156,13 +3748,6 @@ async function showEmployeeDetails(userId, fullname, fromDate, startDate, endDat
         </tr>
       `;
     }).join('');
-    
-    console.log('Employee details loaded successfully');
-    
-  } catch(e) {
-    console.error('Error loading employee details:', e);
-    body.innerHTML = `<tr><td colspan="12" style="padding: 20px; text-align: center; color: #dc2626;">Error loading data: ${e.message}</td></tr>`;
-  }
 }
 
 function viewMeterPicture(imageUrl) {
@@ -3692,6 +4277,7 @@ async function openAttendanceRules() {
       document.getElementById('ruleCycleEnd').value = data.cycle_end || '';
       document.getElementById('ruleGpsWarn').value = data.meter_gps_warn_km != null ? data.meter_gps_warn_km : 10;
       document.getElementById('ruleOvernight').value = data.overnight_grace_km != null ? data.overnight_grace_km : 30;
+      document.getElementById('rulePetrolWindow').value = data.petrol_window_days != null ? data.petrol_window_days : 5;
       document.getElementById('ruleLeaveTotal').value = data.leave_quota_total != null ? data.leave_quota_total : 10;
       document.getElementById('ruleSamedayCap').value = data.leave_sameday_cap != null ? data.leave_sameday_cap : 4;
       document.getElementById('ruleSamedayCutoff').value = data.leave_sameday_cutoff || '10:00';
@@ -3700,6 +4286,7 @@ async function openAttendanceRules() {
       document.getElementById('ruleCheckoutWindow').value = data.checkout_window_mins != null ? data.checkout_window_mins : 15;
       document.getElementById('ruleCheckoutRadius').value = data.checkout_radius_m != null ? data.checkout_radius_m : 150;
       document.getElementById('ruleCheckinRequireLocation').checked = (Number(data.require_location) === 1);
+      document.getElementById('ruleOfficeAtRadius').value = data.office_at_radius_m != null ? data.office_at_radius_m : 300;
       updateRuleCycleHint();
     }
   } catch(e) {
@@ -3760,6 +4347,7 @@ async function saveAttendanceRules() {
         cycle_end: e,
         meter_gps_warn_km: document.getElementById('ruleGpsWarn').value,
         overnight_grace_km: document.getElementById('ruleOvernight').value,
+        petrol_window_days: document.getElementById('rulePetrolWindow').value,
         leave_quota_total: document.getElementById('ruleLeaveTotal').value,
         leave_sameday_cap: document.getElementById('ruleSamedayCap').value,
         leave_sameday_cutoff: document.getElementById('ruleSamedayCutoff').value,
@@ -3767,7 +4355,8 @@ async function saveAttendanceRules() {
         checkout_rule_enabled: document.getElementById('ruleCheckoutEnabled').checked ? 1 : 0,
         checkout_window_mins: document.getElementById('ruleCheckoutWindow').value,
         checkout_radius_m: document.getElementById('ruleCheckoutRadius').value,
-        require_location: document.getElementById('ruleCheckinRequireLocation').checked ? 1 : 0
+        require_location: document.getElementById('ruleCheckinRequireLocation').checked ? 1 : 0,
+        office_at_radius_m: document.getElementById('ruleOfficeAtRadius').value
       })
     });
     var data = await resp.json();
@@ -4034,5 +4623,7 @@ async function saveFuelRateGroups() {
     </div>
   </div>
 </div>
+
+@include('partials.home-meter-alerts')
 
 @endsection

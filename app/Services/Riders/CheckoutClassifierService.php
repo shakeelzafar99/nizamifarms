@@ -19,6 +19,7 @@ class CheckoutClassifierService
     private ?array $officeMemo = null;
     private ?float $radiusMemo = null;
     private ?float $atVerifiedMemo = null;
+    private ?float $officeAtMemo = null;
 
     private function office(): ?object
     {
@@ -32,6 +33,24 @@ class CheckoutClassifierService
             }
         }
         return $this->officeMemo[0];
+    }
+
+    /**
+     * The "physically AT the office" radius. Shared with check-in (LocationService) via the
+     * OFFICE_AT_RADIUS_M config so both surfaces agree on what "at office" means. It CAPS the
+     * office's own radius_meters (default 300) — the main office's radius is 2000 m, far too loose
+     * to treat as "at office" for the checkout exception. Never loosens a tighter office.
+     */
+    private function officeAtRadiusM(?float $locationRadius): float
+    {
+        if ($this->officeAtMemo === null) {
+            try {
+                $v = DB::table('t_fin_config')->where('config_key', 'OFFICE_AT_RADIUS_M')->value('config_value');
+                $this->officeAtMemo = ($v !== null && $v !== '' && (float) $v > 0) ? (float) $v : 300.0;
+            } catch (\Throwable $e) { $this->officeAtMemo = 300.0; }
+        }
+        $base = ($locationRadius && $locationRadius > 0) ? $locationRadius : 300.0;
+        return min($base, $this->officeAtMemo);
     }
 
     private function checkoutRadiusM(): float
@@ -75,17 +94,9 @@ class CheckoutClassifierService
         }
         $lat = (float) $lat; $lng = (float) $lng;
 
-        // 1) office
-        $office = $this->office();
-        if ($office && $office->latitude !== null && $office->longitude !== null) {
-            $dOffice = $this->haversine($lat, $lng, (float) $office->latitude, (float) $office->longitude);
-            if ($dOffice <= (float) ($office->radius_meters ?: 300)) {
-                return ['status' => 'office', 'label' => 'At office', 'customer' => null,
-                        'order_number' => null, 'pin_away' => null, 'pin_distance_m' => null];
-            }
-        }
-
-        // 2) most recent delivered order that day, if the checkout is near its drop point
+        // 1) most recent delivered order that day, if the checkout is near its drop point.
+        // Checked FIRST — a delivery drop can sit within the office's loose radius, so checking
+        // the office first would mis-label a genuine at-door checkout near the office as "office".
         try {
             $last = DB::table('t_crm_order_status_history as h')
                 ->join('t_crm_prod_order as o', 'o.id', '=', 'h.order_id')
@@ -118,7 +129,114 @@ class CheckoutClassifierService
             }
         }
 
+        // 2) office — using the tight "at office" radius (OFFICE_AT_RADIUS_M cap), not the loose
+        // check-in radius, so "At office" means he actually returned to the office.
+        $office = $this->office();
+        if ($office && $office->latitude !== null && $office->longitude !== null) {
+            $dOffice = $this->haversine($lat, $lng, (float) $office->latitude, (float) $office->longitude);
+            if ($dOffice <= $this->officeAtRadiusM($office->radius_meters !== null ? (float) $office->radius_meters : null)) {
+                return ['status' => 'office', 'label' => 'At office', 'customer' => null,
+                        'order_number' => null, 'pin_away' => null, 'pin_distance_m' => null];
+            }
+        }
+
         return ['status' => 'elsewhere', 'label' => 'Away from office / delivery',
                 'customer' => null, 'order_number' => null, 'pin_away' => null, 'pin_distance_m' => null];
+    }
+
+    /**
+     * BATCHED office-checkout exceptions over a date range, for the Month tab (R9.1). Same rule as
+     * classify() — delivery-first, then the tight OFFICE_AT_RADIUS_M office — applied to a whole
+     * month with only 3 queries (attendance + deliveries + bike set) and pure-PHP haversine, so it
+     * never fires per-day classify() calls. An exception = a NON-company-bike rider who delivered ≥1
+     * order that day but whose checkout GPS is at the office (not at his last drop).
+     *
+     * @return array [userId => [ ['date','checkout_time','minutes_after','last_customer','last_order'], … ]]
+     */
+    public function officeCheckoutDays(array $userIds, string $from, string $to): array
+    {
+        $out = [];
+        $userIds = array_values(array_filter(array_map('intval', $userIds)));
+        if (empty($userIds)) {
+            return $out;
+        }
+        try {
+            // Attendance rows with a checkout GPS in the window.
+            $atts = DB::table('t_ops_attendance')
+                ->whereIn('user_id', $userIds)
+                ->whereBetween('attendance_date', [$from, $to])
+                ->whereNotNull('logout_time')->where('logout_time', '!=', '')
+                ->whereNotNull('checkout_latitude')->whereNotNull('checkout_longitude')
+                ->get(['user_id', 'attendance_date', 'logout_time', 'checkout_latitude', 'checkout_longitude']);
+            if ($atts->isEmpty()) {
+                return $out;
+            }
+
+            // Company-bike riders are excluded (their office checkout is normal).
+            $bikeIds = [];
+            if (\Illuminate\Support\Facades\Schema::hasColumn('t_ops_rider_profile', 'company_bike')) {
+                $bikeIds = array_flip(DB::table('t_ops_rider_profile')->where('company_bike', 1)
+                    ->whereIn('user_id', $userIds)->pluck('user_id')->all());
+            }
+
+            // Deliveries in the window → per (uid|date): count + the LAST drop (coords/customer/order/time).
+            $delRows = DB::table('t_crm_order_status_history as h')
+                ->join('t_crm_prod_order as o', 'o.id', '=', 'h.order_id')
+                ->where('h.status_code', 'delivered')
+                ->whereIn('o.assigned_rider_user_id', $userIds)
+                ->whereNotNull('h.delivery_latitude')->whereNotNull('h.delivery_longitude')
+                ->whereBetween('h.changed_at', [$from . ' 00:00:00', $to . ' 23:59:59'])
+                ->orderBy('h.changed_at')
+                ->get(['o.assigned_rider_user_id as uid', 'h.changed_at', 'h.delivery_latitude as plat',
+                       'h.delivery_longitude as plng', 'o.order_number', 'o.name as customer']);
+            $delByKey = [];
+            foreach ($delRows as $d) {
+                $key = $d->uid . '|' . substr((string) $d->changed_at, 0, 10);
+                $delByKey[$key]['count'] = ($delByKey[$key]['count'] ?? 0) + 1;
+                $delByKey[$key]['last'] = $d; // asc order → last wins
+            }
+
+            $office = $this->office();
+            $officeRadius = ($office && $office->radius_meters !== null)
+                ? $this->officeAtRadiusM((float) $office->radius_meters)
+                : $this->officeAtRadiusM(null);
+            $deliveryRadius = $this->checkoutRadiusM();
+
+            foreach ($atts as $att) {
+                $uid = (int) $att->user_id;
+                if (isset($bikeIds[$uid])) { continue; }
+                $date = substr((string) $att->attendance_date, 0, 10);
+                $key = $uid . '|' . $date;
+                if (empty($delByKey[$key]['count'])) { continue; } // no delivery that day → office normal
+                if (!$office || $office->latitude === null || $office->longitude === null) { continue; }
+
+                $lat = (float) $att->checkout_latitude; $lng = (float) $att->checkout_longitude;
+                $last = $delByKey[$key]['last'];
+
+                // Delivery-first: if the checkout is at the last drop, it's a delivery checkout, not office.
+                $dDrop = $this->haversine($lat, $lng, (float) $last->plat, (float) $last->plng);
+                if ($dDrop <= $deliveryRadius) { continue; }
+
+                // Else: at the office (tight radius) → the exception.
+                $dOffice = $this->haversine($lat, $lng, (float) $office->latitude, (float) $office->longitude);
+                if ($dOffice > $officeRadius) { continue; } // elsewhere → not an office checkout
+
+                $coTime = strtotime($date . ' ' . $att->logout_time);
+                $lastTime = strtotime((string) $last->changed_at);
+                $minsAfter = ($coTime && $lastTime && $coTime >= $lastTime) ? (int) round(($coTime - $lastTime) / 60) : null;
+
+                $out[$uid][] = [
+                    'date'          => $date,
+                    'checkout_time' => substr((string) $att->logout_time, 0, 5),
+                    'minutes_after' => $minsAfter,
+                    'last_customer' => trim((string) $last->customer) ?: 'a customer',
+                    'last_order'    => $last->order_number,
+                ];
+            }
+        } catch (\Throwable $e) {
+            \Illuminate\Support\Facades\Log::warning('officeCheckoutDays failed (non-fatal)', ['error' => $e->getMessage()]);
+            return [];
+        }
+        return $out;
     }
 }

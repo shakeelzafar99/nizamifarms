@@ -2872,6 +2872,48 @@ function ordersInvoiceUrl(orderId, query) {
 }
 
 // View Order Details
+// ===== Verified-pin lock (Jul-2026): grant / cancel a rider unlock window =====
+// Same web endpoints as the customers page; refreshes the open order modal so
+// the 🔒/🔓 chip reflects the new state immediately.
+function unlockOrderCustomerPin(customerId) {
+    if (!confirm('Unlock this customer\'s location so the RIDER can change the pin?\n\nIt locks again automatically after one save (or 6 hours).')) return;
+    fetch(`/customers/${customerId}/unlock-verified-pin`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').content
+        }
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (data.success) {
+            if (currentOrderId) viewOrderDetails(currentOrderId);
+        } else {
+            alert('Error: ' + (data.message || 'Failed to unlock location'));
+        }
+    })
+    .catch(() => alert('Failed to unlock location. Please try again.'));
+}
+
+function relockOrderCustomerPin(customerId) {
+    fetch(`/customers/${customerId}/relock-verified-pin`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').content
+        }
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (data.success) {
+            if (currentOrderId) viewOrderDetails(currentOrderId);
+        } else {
+            alert('Error: ' + (data.message || 'Failed to re-lock location'));
+        }
+    })
+    .catch(() => alert('Failed to re-lock location. Please try again.'));
+}
+
 function viewOrderDetails(orderId) {
     console.log('View order details clicked for order:', orderId);
     currentOrderId = orderId; // Store the order ID for invoice viewing
@@ -2973,9 +3015,23 @@ function viewOrderDetails(orderId) {
             // Add verified location if available
             if (order.verified_location) {
                 html += '<div style="margin-top: 12px; padding: 10px; background-color: #f0fdf4; border-radius: 6px; border: 1px solid #10b981;">';
-                html += '<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">';
+                html += '<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; gap: 6px; flex-wrap: wrap;">';
                 html += '<strong style="color: #059669; font-size: 13px;">✅ Verified Location</strong>';
+                // Verified-pin lock chip + unlock/re-lock action (Jul-2026):
+                // riders can't change an existing pin unless staff unlocks it here.
+                if (order.verified_location.unlock_active) {
+                    var vlUntil = order.verified_location.unlocked_until ? new Date(order.verified_location.unlocked_until).toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'}) : '';
+                    html += '<span style="font-size: 10px; font-weight: 700; color: #b45309; background: #fef3c7; border: 1px solid #fcd34d; padding: 2px 8px; border-radius: 999px;" title="A rider can change this pin until ' + vlUntil + '">🔓 Rider unlock until ' + vlUntil + '</span>';
+                } else {
+                    html += '<span style="font-size: 10px; font-weight: 600; color: #6b7280; background: #f3f4f6; border: 1px solid #e5e7eb; padding: 2px 8px; border-radius: 999px;" title="Riders cannot change this pin unless you unlock it">🔒 Rider-locked</span>';
+                }
+                html += '<span style="flex: 1;"></span>';
                 if (order.customer_id) {
+                    if (order.verified_location.unlock_active) {
+                        html += '<button onclick="relockOrderCustomerPin(' + order.customer_id + ')" style="padding: 4px 8px; background: #fff; color: #b45309; border: 1px solid #fcd34d; border-radius: 4px; font-size: 11px; cursor: pointer; font-weight: 600;" title="Cancel the unlock">🔒 Re-lock</button>';
+                    } else {
+                        html += '<button onclick="unlockOrderCustomerPin(' + order.customer_id + ')" style="padding: 4px 8px; background: #fff; color: #d97706; border: 1px solid #fbbf24; border-radius: 4px; font-size: 11px; cursor: pointer; font-weight: 600;" title="Let the rider change this pin (auto-locks after one save or 6 hours)">🔓 Unlock for rider</button>';
+                    }
                     html += '<button onclick="updateVerifiedLocation(' + order.customer_id + ')" style="padding: 4px 8px; background-color: #3b82f6; color: white; border: none; border-radius: 4px; font-size: 11px; cursor: pointer; font-weight: 500;">Update</button>';
                 }
                 html += '</div>';
@@ -3657,6 +3713,18 @@ let _regWaOrderNum = '';
 let _regWaEta = '';
 let _regWaOrderId = '';
 let _regWaOrderSource = '';
+// Jul-2026 — capture lifecycle for the CURRENT dialog. previewInvoiceWhatsApp()
+// flips pending → ready/failed and sendInvoiceWhatsApp() gates on it: while the
+// image is still being prepared, Send keeps the dialog open with a "please
+// wait" note (the running capture is never restarted or cancelled); when the
+// capture failed, Send offers Refresh-Preview-to-retry or an explicit second
+// press to send anyway (server may still hold the last saved image). The token
+// invalidates callbacks from a previous dialog (quick-succession reopen) so a
+// stale capture can't mutate the new dialog's state.
+let _regWaCaptureState = 'idle';   // idle | pending | ready | failed
+let _regWaCaptureToken = 0;
+let _regWaCaptureReadyAt = 0;
+let _regWaSendAnywayArmed = false;
 
 function openSendInvoiceWhatsApp() {
     if (!currentOrderId) { alert('No order selected'); return; }
@@ -4061,8 +4129,11 @@ function captureInvoiceImageOrders(invoiceUrl, orderId) {
                 await addScript(iDoc, 'https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js');
                 const node = iDoc.querySelector('.invoice-container');
                 if (!node) { iframe.remove(); reject(new Error('Invoice container not found')); return; }
-                const canvas = await iframe.contentWindow.html2canvas(node, {scale: 2, useCORS: true, allowTaint: true});
-                const dataUrl = canvas.toDataURL('image/png');
+                // Jul-2026: 1200px JPEG (was 1600px PNG) — ~3x smaller payload,
+                // visually identical on phones. White background is explicit
+                // because JPEG has no alpha (transparent would render black).
+                const canvas = await iframe.contentWindow.html2canvas(node, {scale: 1.5, useCORS: true, allowTaint: true, backgroundColor: '#ffffff'});
+                const dataUrl = canvas.toDataURL('image/jpeg', 0.85);
                 iframe.remove();
 
                 const csrf = document.querySelector('meta[name="csrf-token"]')?.content || '';
@@ -4079,32 +4150,82 @@ function captureInvoiceImageOrders(invoiceUrl, orderId) {
     });
 }
 
+// Inline status line inside the invoice tab (reuses the existing waInvStatus
+// div). Pass no message to clear it. dataset.waiting marks that the user
+// pressed Send while the capture was still preparing, so the capture's
+// completion callback can tell them it's now safe to press Send again.
+function regWaSetCaptureStatus(msg, color) {
+    const el = document.getElementById('waInvStatus');
+    if (!el) return;
+    if (!msg) { el.style.display = 'none'; el.textContent = ''; delete el.dataset.waiting; return; }
+    el.style.display = 'block';
+    el.style.color = color || '#6b7280';
+    el.textContent = msg;
+}
+
 function previewInvoiceWhatsApp() {
     const btn = document.getElementById('waInvPreviewBtn');
     if (!btn) return;
     btn.textContent = 'Loading...';
     btn.disabled = true;
 
-    fetch('/messages/invoice-image/' + currentOrderId, {
+    // Snapshot the order id — currentOrderId is mutated by other dialogs.
+    const orderIdSnap = _regWaOrderId || currentOrderId;
+    const token = ++_regWaCaptureToken;
+    _regWaCaptureState = 'pending';
+    _regWaSendAnywayArmed = false;
+    const sendBtn = document.getElementById('waInvSendBtn');
+    if (sendBtn) sendBtn.textContent = 'Send Invoice';
+    regWaSetCaptureStatus('');
+
+    // settled guards double-settling: the 45s watchdog below can declare the
+    // capture failed while the real capture is still limping along; whichever
+    // fires first wins the UI (a late success after the watchdog still
+    // upgrades state to 'ready' — the upload happened, sending is safe).
+    let settled = false;
+    const finishOk = (imgUrl) => {
+        if (token !== _regWaCaptureToken) return; // a newer dialog/preview owns the state now
+        settled = true;
+        _regWaCaptureState = 'ready';
+        _regWaCaptureReadyAt = Date.now();
+        const img = document.getElementById('waInvPreviewImg');
+        const area = document.getElementById('waInvPreviewArea');
+        if (img) img.src = imgUrl;
+        if (area) area.style.display = 'block';
+        btn.textContent = 'Refresh Preview'; btn.disabled = false;
+        const statusEl = document.getElementById('waInvStatus');
+        if (statusEl && statusEl.dataset.waiting === '1') {
+            regWaSetCaptureStatus('✅ Invoice image ready — press Send Invoice again.', '#16a34a');
+        }
+    };
+    const finishFail = (reason) => {
+        if (token !== _regWaCaptureToken || settled) return;
+        settled = true;
+        _regWaCaptureState = 'failed';
+        btn.textContent = 'Refresh Preview'; btn.disabled = false;
+        regWaSetCaptureStatus('⚠ Invoice image failed to generate (' + reason + '). Press "Refresh Preview" to retry.', '#dc2626');
+    };
+    // Watchdog: a capture that never settles (hung iframe / dead connection)
+    // must not brick the dialog in 'pending' — degrade to 'failed' so the
+    // operator gets Refresh-Preview and Send-Anyway back.
+    setTimeout(function() { finishFail('timed out — slow connection?'); }, 45000);
+
+    fetch('/messages/invoice-image/' + orderIdSnap, {
         headers: {'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]')?.content || '', 'Accept': 'application/json'}
     })
     .then(r => r.json())
     .then(d => {
-        if (!d.success) { alert(d.message || 'Failed'); btn.textContent = 'Refresh Preview'; btn.disabled = false; return; }
+        if (!d.success) { finishFail(d.message || 'server error'); return; }
 
         if (d.needs_capture) {
-            captureInvoiceImageOrders(d.invoice_url, currentOrderId).then(uploadRes => {
-                document.getElementById('waInvPreviewImg').src = uploadRes.image_url;
-                document.getElementById('waInvPreviewArea').style.display = 'block';
-                btn.textContent = 'Refresh Preview'; btn.disabled = false;
-            }).catch(err => { alert('Failed to capture invoice: ' + err.message); btn.textContent = 'Refresh Preview'; btn.disabled = false; });
+            captureInvoiceImageOrders(d.invoice_url, orderIdSnap).then(uploadRes => {
+                finishOk(uploadRes.image_url);
+            }).catch(err => { finishFail(err.message || 'capture error'); });
         } else {
-            document.getElementById('waInvPreviewImg').src = d.image_url;
-            document.getElementById('waInvPreviewArea').style.display = 'block';
-            btn.textContent = 'Refresh Preview'; btn.disabled = false;
+            finishOk(d.image_url);
         }
     })
-    .catch(e => { alert('Error: ' + e.message); btn.textContent = 'Refresh Preview'; btn.disabled = false; });
+    .catch(e => { finishFail(e.message || 'network error'); });
 }
 
 // Non-blocking invoice send (Apr-2026). The original implementation
@@ -4135,6 +4256,28 @@ function sendInvoiceWhatsApp() {
     if (!phone) { alert('Please enter a phone number'); return; }
     if (!templateName) { alert('Please select an invoice template'); return; }
 
+    // ── Capture-state gate (Jul-2026) ─────────────────────────────────
+    // The dialog auto-captures the invoice image on open. If that capture
+    // is still running, sending now would race it — so keep the dialog
+    // open with a wait note (the running capture is NOT restarted; its
+    // completion callback invites a second Send press). If the capture
+    // failed, the first Send press explains and arms "Send Anyway"; a
+    // deliberate second press falls through to the legacy best-effort
+    // path (the server may still hold the last saved image).
+    if (_regWaCaptureState === 'pending') {
+        regWaSetCaptureStatus('⏳ Preparing the invoice image — one moment, then press Send Invoice again.', '#b45309');
+        const statusEl = document.getElementById('waInvStatus');
+        if (statusEl) statusEl.dataset.waiting = '1';
+        return;
+    }
+    if (_regWaCaptureState === 'failed' && !_regWaSendAnywayArmed) {
+        _regWaSendAnywayArmed = true;
+        const sendBtnEl = document.getElementById('waInvSendBtn');
+        if (sendBtnEl) sendBtnEl.textContent = 'Send Anyway';
+        regWaSetCaptureStatus('⚠ The invoice image could not be generated. Press "Refresh Preview" to retry, or "Send Anyway" to use the last saved image (if any).', '#dc2626');
+        return;
+    }
+
     // Prefer the structured params array stashed by onRegularInvoiceTemplateChange:
     // the ETA window ("Today, 4:10-4:40 PM") contains a comma, so a naive split of
     // the visible text would shatter it into two params. Only when the operator has
@@ -4161,16 +4304,23 @@ function sendInvoiceWhatsApp() {
 
     // Snapshot the order id — currentOrderId is mutated by other
     // dialogs (view, edit, etc.) so we can't trust it inside the
-    // resolved promise body.
-    const orderIdSnap = currentOrderId;
+    // resolved promise body. _regWaOrderId is what this dialog (and its
+    // capture) was opened for, so prefer it.
+    const orderIdSnap = _regWaOrderId || currentOrderId;
     const csrf = document.querySelector('meta[name="csrf-token"]')?.content || '';
+
+    // A capture that finished in THIS dialog moments ago is definitely the
+    // current invoice — skip the redundant background re-capture (faster,
+    // and quick-succession sends can't trip over their own capture). Older
+    // dialogs and the deliberate "Send Anyway" path fall back to the legacy
+    // best-effort chain below.
+    const captureFresh = _regWaCaptureState === 'ready' && (Date.now() - _regWaCaptureReadyAt) < 180000;
 
     // Close dialog right away and acknowledge.
     document.getElementById('waInvoiceDialog')?.remove();
     showToast(`Sending invoice ${labelOrder} to ${labelCustomer}...`, 'success');
 
-    const previewReady = document.getElementById('waInvPreviewArea')?.style.display === 'block';
-    const ensureReady = previewReady ? Promise.resolve() : new Promise(function(resolve) {
+    const ensureReady = captureFresh ? Promise.resolve() : new Promise(function(resolve) {
         fetch('/messages/invoice-image/' + orderIdSnap, {headers: {'X-CSRF-TOKEN': csrf, 'Accept': 'application/json'}})
             .then(function(r) { return r.json(); })
             .then(function(d) {
@@ -4182,17 +4332,38 @@ function sendInvoiceWhatsApp() {
             .catch(function() { resolve(); });
     });
 
-    ensureReady.then(function() {
+    const postSend = function() {
         return fetch('/messages/send-invoice', {
             method: 'POST',
             headers: {'Content-Type': 'application/json', 'X-CSRF-TOKEN': csrf, 'Accept': 'application/json'},
             body: JSON.stringify({order_id: orderIdSnap, phone: phone, template_name: templateName, body_params: bodyParams})
-        });
+        }).then(function(r) { return r.json(); });
+    };
+
+    ensureReady
+    .then(postSend)
+    .then(d => {
+        // One-shot recovery: the server reports no image on disk (e.g. the
+        // order was edited after our capture, which clears the cached
+        // image). Capture fresh and retry the send once before surfacing
+        // a failure banner.
+        if (d && !d.success && d.needs_capture) {
+            return fetch('/messages/invoice-image/' + orderIdSnap, {headers: {'X-CSRF-TOKEN': csrf, 'Accept': 'application/json'}})
+                .then(function(r) { return r.json(); })
+                .then(function(pd) {
+                    if (pd && pd.success && pd.needs_capture) {
+                        return captureInvoiceImageOrders(pd.invoice_url, orderIdSnap).then(postSend);
+                    }
+                    return d;
+                });
+        }
+        return d;
     })
-    .then(r => r.json())
     .then(d => {
         if (d.success) {
             showToast(`Invoice ${labelOrder} sent to ${labelCustomer}`, 'success');
+            // Flip this order's tick green in place — no full-page refresh.
+            markInvoiceSentLocally(orderIdSnap);
         } else {
             showInvoiceSendFailure(labelOrder, labelCustomer, d.message || 'Failed to send', orderIdSnap);
         }
@@ -11216,14 +11387,18 @@ function renderTableBody() {
 // Build the "Send Invoice via WhatsApp" action button. When an invoice template
 // has already been successfully sent via the API for this order, show a small
 // green ✓ corner badge (the button stays clickable → resend) plus a tooltip with
-// when it was sent. Driven by order.invoice_sent / invoice_sent_at from
-// OrderController::filter. Used in every action-button row (identical markup).
+// when it was sent. When the LATEST send attempt failed per the delivery
+// webhook (order.invoice_send_failed), a red ! badge takes precedence so the
+// operator sees the failure and can click to resend. Driven by
+// order.invoice_sent / invoice_sent_at / invoice_send_failed / invoice_send_error
+// from OrderController::filter. Used in every action-button row (identical markup).
 function sendInvoiceButtonHtml(order) {
     const onum  = (order.order_number||'').replace(/'/g,"\\'");
     const cname = (order.name || (order.customer ? ((order.customer.first_name||'')+' '+(order.customer.last_name||'')).trim() : '') || ((order.address_first_name||'')+' '+(order.address_last_name||'')).trim() || '').replace(/'/g,"\\'");
     const phone = (order.customer_phone||order.address_phone||'').replace(/'/g,"\\'");
     const total = parseFloat(order.total_price||0);
     const sent  = !!order.invoice_sent;
+    const failed = !!order.invoice_send_failed;
     let when = '';
     if (sent && order.invoice_sent_at) {
         try {
@@ -11231,12 +11406,67 @@ function sendInvoiceButtonHtml(order) {
             if (!isNaN(d.getTime())) when = ' · ' + d.toLocaleDateString('en-GB',{day:'2-digit',month:'short'}) + ' ' + d.toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'});
         } catch (e) {}
     }
-    const title = sent ? ('Invoice sent'+when+' · click to resend') : 'Send Invoice via WhatsApp';
-    const ring  = sent ? ' ring-1 ring-green-400' : '';
-    const badge = sent
-        ? '<span style="position:absolute;top:-4px;right:-4px;width:14px;height:14px;background:#16a34a;border:2px solid #fff;border-radius:9999px;display:flex;align-items:center;justify-content:center;"><svg width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"><path d="M5 13l4 4L19 7"/></svg></span>'
-        : '';
+    // Tooltip text lands inside a double-quoted title attribute — strip
+    // characters that could break out of it.
+    const failReason = String(order.invoice_send_error || 'delivery failed').replace(/["<>]/g, '');
+    const title = failed
+        ? ('⚠ Last invoice send FAILED: ' + failReason + ' · click to resend')
+        : (sent ? ('Invoice sent'+when+' · click to resend') : 'Send Invoice via WhatsApp');
+    const ring  = failed ? ' ring-1 ring-red-400' : (sent ? ' ring-1 ring-green-400' : '');
+    const badge = failed
+        ? '<span style="position:absolute;top:-4px;right:-4px;width:14px;height:14px;background:#dc2626;border:2px solid #fff;border-radius:9999px;display:flex;align-items:center;justify-content:center;color:#fff;font-size:10px;font-weight:800;line-height:1;">!</span>'
+        : (sent
+            ? '<span style="position:absolute;top:-4px;right:-4px;width:14px;height:14px;background:#16a34a;border:2px solid #fff;border-radius:9999px;display:flex;align-items:center;justify-content:center;"><svg width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"><path d="M5 13l4 4L19 7"/></svg></span>'
+            : '');
     return `<button onclick="event.stopPropagation(); quickSendInvoiceWhatsApp(${order.id}, '${onum}', ${total}, '${cname}', '${phone}' )" class="relative inline-flex items-center justify-center w-7 h-7 text-green-600 bg-green-50 border border-green-200 rounded hover:bg-green-100 hover:border-green-300 transition-all duration-200${ring}" title="${title}"><svg class="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347z"/><path d="M12 2C6.477 2 2 6.477 2 12c0 1.89.525 3.66 1.438 5.168L2 22l4.832-1.438A9.955 9.955 0 0012 22c5.523 0 10-4.477 10-10S17.523 2 12 2z"/></svg>${badge}</button>`;
+}
+
+// Optimistic badge update (Jul-2026): after a successful invoice send, turn this
+// order's send-button tick green immediately — no page reload, no server refetch.
+// The outbound message row is written synchronously by the send, so "sent" is
+// already true on the server; this just reflects it instantly. The authoritative
+// status from the delivery webhook still lands on the next natural list refetch
+// (an async delivery failure would show red there). We MUTATE the shared order
+// object rather than replace an array slot: window.ordersData / allOrders /
+// filteredOrders are shallow-copy arrays over the SAME instances, so a later
+// in-memory re-render (search / filter / tab) keeps the tick too. Fully guarded —
+// a cosmetic hiccup must never disturb the already-successful send.
+function markInvoiceSentLocally(orderId) {
+    try {
+        const idStr = String(orderId);
+        const n = new Date();
+        const pad = x => ('0' + x).slice(-2);
+        const stamp = n.getFullYear() + '-' + pad(n.getMonth() + 1) + '-' + pad(n.getDate())
+            + ' ' + pad(n.getHours()) + ':' + pad(n.getMinutes()) + ':' + pad(n.getSeconds());
+
+        let updatedOrder = null;
+        [window.ordersData, window.allOrders, window.filteredOrders].forEach(function(arr) {
+            if (!Array.isArray(arr)) return;
+            arr.forEach(function(o) {
+                if (o && String(o.id) === idStr) {
+                    o.invoice_sent = true;
+                    o.invoice_sent_at = stamp;
+                    o.invoice_send_failed = false;
+                    o.invoice_send_error = null;
+                    updatedOrder = o;
+                }
+            });
+        });
+        if (!updatedOrder) return; // order not in the current in-memory set
+
+        // Re-render just this row's send button (no table rebuild → no scroll
+        // jump, nothing else touched). The row may be absent (filtered out / tab
+        // switched away) — the object mutation above still keeps it green when
+        // the row next renders.
+        const row = document.querySelector('#table-body tr[data-order-id="' + idStr + '"]');
+        if (!row) return;
+        const btn = row.querySelector('button[onclick*="quickSendInvoiceWhatsApp"]');
+        if (!btn) return;
+        const holder = document.createElement('span');
+        holder.innerHTML = sendInvoiceButtonHtml(updatedOrder);
+        const fresh = holder.firstElementChild;
+        if (fresh) btn.replaceWith(fresh);
+    } catch (e) { /* cosmetic only — never disturb the completed send */ }
 }
 
 function getCellContent(order, columnId) {
@@ -15744,7 +15974,15 @@ function saveVerifiedLocation() {
     .then(response => response.json())
     .then(data => {
         if (data.success) {
-            alert('Verified location saved successfully!');
+            // Warn when the saved pin is approximate (geocoded) or has no exact
+            // coords — so nobody trusts a location the reports/riders can't use.
+            if (data.coords_missing) {
+                alert('⚠️ ' + (data.message || "Saved the link, but no exact location could be read from it. Please drop the pin on the map."));
+            } else if (data.approximate) {
+                alert('⚠️ ' + (data.message || 'Saved from the address (approximate). Drop the pin on the map for precise delivery.'));
+            } else {
+                alert('✅ Verified location saved successfully!');
+            }
             closeVerifiedLocationModal();
             // Refresh order view if currently viewing
             if (currentOrderId && document.getElementById('viewOrderModal').style.display !== 'none') {

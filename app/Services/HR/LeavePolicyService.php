@@ -68,10 +68,14 @@ class LeavePolicyService
     /**
      * Approved leave DAYS taken in [start,end], counted per distinct date so overlapping
      * requests can't double-count — the exact definition the Month tab / drill-down use.
+     *
+     * WEIGHTED: a date covered by a full-day leave counts 1.0; a date covered ONLY by a
+     * half-day leave (leave_type='half_day') counts 0.5. A full-day row on the same date
+     * always wins (so a full leave over a half never under-counts).
      */
     public function takenDays(int $userId, string $start, string $end): float
     {
-        $dates = [];
+        $full = []; $half = [];
         try {
             $rows = DB::table('t_req_master as r')
                 ->join('t_req_category as c', 'c.id', '=', 'r.category_id')
@@ -80,17 +84,55 @@ class LeavePolicyService
                 ->where('r.status', 'approved')
                 ->where('r.leave_start_date', '<=', $end)
                 ->where('r.leave_end_date', '>=', $start)
-                ->select('r.leave_start_date', 'r.leave_end_date')
+                ->select('r.leave_start_date', 'r.leave_end_date', 'r.leave_type')
                 ->get();
             foreach ($rows as $lv) {
                 $ls = max($start, substr((string) $lv->leave_start_date, 0, 10));
                 $le = min($end, substr((string) $lv->leave_end_date, 0, 10));
+                $isHalf = strtolower((string) $lv->leave_type) === 'half_day';
                 for ($c = new \DateTime($ls); $c <= new \DateTime($le); $c->modify('+1 day')) {
-                    $dates[$c->format('Y-m-d')] = true;
+                    $d = $c->format('Y-m-d');
+                    if ($isHalf) { $half[$d] = true; } else { $full[$d] = true; }
                 }
             }
         } catch (\Throwable $e) { /* no leaves */ }
-        return (float) count($dates);
+        $total = (float) count($full);
+        foreach (array_keys($half) as $d) {
+            if (!isset($full[$d])) { $total += 0.5; } // full-day on the same date wins
+        }
+        return $total;
+    }
+
+    /**
+     * Dates in [from,to] the rider has an approved/pending HALF-DAY leave on (['Y-m-d'=>true]).
+     * The single source every surface consults to SUPPRESS late/overtime for a half-day (owner's
+     * rule: a half-day counts no lateness and no overtime, and never shows in daily issues).
+     * Read-only + non-mutating — undoing the half-day instantly restores the real lateness, because
+     * nothing was written onto the attendance row.
+     */
+    public function halfDayDates(int $userId, string $from, string $to): array
+    {
+        $out = [];
+        try {
+            $rows = DB::table('t_req_master as r')
+                ->join('t_req_category as c', 'c.id', '=', 'r.category_id')
+                ->where('c.category_code', 'leave')
+                ->where('r.requester_user_id', $userId)
+                ->whereIn('r.status', ['approved', 'pending'])
+                ->where('r.leave_type', 'half_day')
+                ->where('r.leave_start_date', '<=', $to)
+                ->where('r.leave_end_date', '>=', $from)
+                ->select('r.leave_start_date', 'r.leave_end_date')
+                ->get();
+            foreach ($rows as $lv) {
+                $ls = max($from, substr((string) $lv->leave_start_date, 0, 10));
+                $le = min($to, substr((string) $lv->leave_end_date, 0, 10));
+                for ($c = new \DateTime($ls); $c <= new \DateTime($le); $c->modify('+1 day')) {
+                    $out[$c->format('Y-m-d')] = true;
+                }
+            }
+        } catch (\Throwable $e) { /* none */ }
+        return $out;
     }
 
     /**
@@ -116,7 +158,9 @@ class LeavePolicyService
             foreach ($rows as $lv) {
                 $ls = max($cycle['start'], substr((string) $lv->leave_start_date, 0, 10));
                 $le = min($cycle['end'], substr((string) $lv->leave_end_date, 0, 10));
-                $isEmerg = strtolower((string) $lv->leave_type) === 'emergency';
+                $type = strtolower((string) $lv->leave_type);
+                if ($type === 'half_day') { continue; } // partial — shown in taken_total, not the planned/emergency split
+                $isEmerg = $type === 'emergency';
                 for ($c = new \DateTime($ls); $c <= new \DateTime($le); $c->modify('+1 day')) {
                     $d = $c->format('Y-m-d');
                     if ($isEmerg) { $emergency[$d] = true; } else { $planned[$d] = true; }

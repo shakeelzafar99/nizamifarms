@@ -687,10 +687,27 @@ class ShiftController extends Controller
             }
         }
 
+        // Active office locations + this rider's default/usual, so the reusable modal can render the
+        // location picker in ONE fetch (parity with the planner's assign sheet).
+        $locations = [];
+        $defaultLocationId = null;
+        try {
+            $locations = DB::table('t_ops_company_locations')->where('is_active', 1)
+                ->orderByDesc('is_primary')->orderBy('location_name')
+                ->get(['id', 'location_name as name', 'is_primary'])
+                ->map(fn ($l) => ['id' => (int) $l->id, 'name' => $l->name, 'is_primary' => (int) $l->is_primary === 1])
+                ->all();
+            $defaultLocationId = DB::table('t_ops_user_location_assignment')
+                ->where('user_id', $userId)->where('is_active', 1)->value('location_id');
+        } catch (\Throwable $e) { /* locations optional */ }
+
         return response()->json([
             'success' => true,
             'primary' => ['shift_name' => $primary['shift_name'], 'start' => $primary['shift_start'], 'end' => $primary['shift_end']],
             'changes' => $changes,
+            'locations' => $locations,
+            'default_location_id' => $defaultLocationId ? (int) $defaultLocationId : null,
+            'usual_location_id' => $primary['location_id'] ?? null,
         ]);
     }
 

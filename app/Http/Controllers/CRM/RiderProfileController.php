@@ -46,6 +46,16 @@ class RiderProfileController extends Controller
         if ($this->overnightGraceColumnExists()) {
             $cols[] = 'p.overnight_grace_km';
         }
+        // Home pin + any-office flag (guarded — added by later SQL) for the table indicators.
+        if (Schema::hasColumn('t_ops_rider_profile', 'home_latitude')) {
+            $cols[] = 'p.home_latitude';
+        }
+        if (Schema::hasColumn('t_ops_rider_profile', 'checkin_any_office')) {
+            $cols[] = 'p.checkin_any_office';
+        }
+        if (Schema::hasColumn('t_ops_rider_profile', 'meter_required')) {
+            $cols[] = 'p.meter_required';
+        }
         $riders = DB::table('t_sys_user as u')
             ->join('t_sys_user_role as ur', 'ur.user_id', '=', 'u.id')
             ->join('t_sys_role as r', 'r.id', '=', 'ur.role_id')
@@ -89,6 +99,12 @@ class RiderProfileController extends Controller
             'hire_date' => 'nullable|date',
             'company_bike' => 'nullable|boolean',
             'overnight_grace_km' => 'nullable|numeric|min:0|max:1000',
+            'home_maps_url' => 'nullable|string|max:500',
+            'home_latitude' => 'nullable|numeric|between:-90,90',
+            'home_longitude' => 'nullable|numeric|between:-180,180',
+            'home_radius_m' => 'nullable|integer|min:30|max:2000',
+            'checkin_any_office' => 'nullable|boolean',
+            'meter_required' => 'nullable|boolean',
             'active' => 'boolean'
         ]);
 
@@ -98,7 +114,9 @@ class RiderProfileController extends Controller
                 'emergency_contact' => $request->emergency_contact,
                 'vehicle_type' => $request->vehicle_type,
                 'vehicle_plate' => $request->vehicle_plate,
-                'hire_date' => $request->hire_date,
+                // A blank hire_date must become NULL — an empty string '' is rejected by a
+                // strict-mode MySQL DATE column (this blocked saving any no-hire-date rider).
+                'hire_date' => $request->filled('hire_date') ? $request->hire_date : null,
                 'active' => $request->active ?? 1,
                 'notes' => $request->notes,
                 'updated_at' => now()
@@ -115,6 +133,47 @@ class RiderProfileController extends Controller
                 $data['overnight_grace_km'] = ($isBike && $grace !== null && $grace !== '')
                     ? (int) round((float) $grace)
                     : null;
+            }
+            // HOME pin (U4 going-home journey; home-journey SQL). Paste a Google Maps link
+            // (short share links are resolved) OR type coordinates. Only meaningful for a
+            // company-bike rider; clearing both fields (or unticking the bike) clears the pin.
+            if (Schema::hasColumn('t_ops_rider_profile', 'home_latitude')) {
+                $homeLat = $request->input('home_latitude');
+                $homeLng = $request->input('home_longitude');
+                $mapsUrl = trim((string) $request->input('home_maps_url', ''));
+                if ($mapsUrl !== '') {
+                    // Reuse the app-wide verified-pin parser (5 URL patterns + short links).
+                    try {
+                        $api = app(\App\Http\Controllers\API\RiderController::class);
+                        $resolved = $api->resolveGoogleMapsUrl($mapsUrl);
+                        $coords = $api->parseCoordinatesFromGoogleMapsUrl($resolved);
+                        if ($coords) {
+                            $homeLat = $coords['latitude'];
+                            $homeLng = $coords['longitude'];
+                        } else {
+                            return redirect()->back()->with('error', 'Could not read coordinates from that Maps link — paste the full share link or type the coordinates.');
+                        }
+                    } catch (\Throwable $e) {
+                        return redirect()->back()->with('error', 'Could not read that Maps link — paste the full share link or type the coordinates.');
+                    }
+                }
+                $hasPin = $isBike && $homeLat !== null && $homeLat !== '' && $homeLng !== null && $homeLng !== '';
+                $data['home_latitude'] = $hasPin ? (float) $homeLat : null;
+                $data['home_longitude'] = $hasPin ? (float) $homeLng : null;
+                $radius = $request->input('home_radius_m');
+                $data['home_radius_m'] = ($hasPin && $radius !== null && $radius !== '') ? (int) $radius : null;
+                if ($hasPin) {
+                    $data['home_set_by'] = auth()->id();
+                    $data['home_set_at'] = now();
+                }
+            }
+            // R1 — per-rider "may check in at any office" allowance (guarded).
+            if (Schema::hasColumn('t_ops_rider_profile', 'checkin_any_office')) {
+                $data['checkin_any_office'] = $request->boolean('checkin_any_office') ? 1 : 0;
+            }
+            // Meter reading compulsory? Default required; unticked = exempt (management users).
+            if (Schema::hasColumn('t_ops_rider_profile', 'meter_required')) {
+                $data['meter_required'] = $request->boolean('meter_required') ? 1 : 0;
             }
             DB::table('t_ops_rider_profile')->updateOrInsert(
                 ['user_id' => $request->user_id],

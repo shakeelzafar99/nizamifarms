@@ -95,6 +95,46 @@ class GeocodingService
     }
     
     /**
+     * Geocode-on-save fallback (Jul-2026). When a Google Maps URL carries NO
+     * extractable coordinates — e.g. a share link that resolves to
+     * `maps?q=<ADDRESS TEXT>&ftid=0x..:0x..` (an address + opaque place-ID, no
+     * lat/lng anywhere) — the verified pin used to save URL-only with NULL
+     * coords, invisible to every distance report and to the pin lock
+     * (Ahmed Mujtaba / SH-21269, Jul-19). This pulls the address out of the URL
+     * and geocodes it so lat/lng is never silently left empty. Result is
+     * APPROXIMATE (address-level), so callers should tell the user to drop an
+     * exact pin. Returns ['latitude','longitude'] or null.
+     */
+    public static function geocodeFromMapsUrl(?string $url): ?array
+    {
+        if (empty($url)) {
+            return null;
+        }
+        // Pull an address-like query out of the URL (q= / query= / destination= / daddr=).
+        // parse_str decodes %XX and '+' → space for us.
+        $addr = null;
+        $parts = parse_url($url);
+        if (!empty($parts['query'])) {
+            parse_str($parts['query'], $q);
+            foreach (['q', 'query', 'destination', 'daddr', 'saddr'] as $k) {
+                if (!empty($q[$k]) && is_string($q[$k])) {
+                    $addr = trim($q[$k]);
+                    break;
+                }
+            }
+        }
+        if ($addr === null || $addr === '') {
+            return null;
+        }
+        // If the query value is itself a coordinate pair, this isn't our job —
+        // the URL coordinate parser already handles that. Never geocode "33.7,73.0".
+        if (preg_match('/^-?\d+\.\d+\s*,\s*-?\d+\.\d+$/', $addr)) {
+            return null;
+        }
+        return self::geocodeAddress($addr);
+    }
+
+    /**
      * Build multiple address variations to try for geocoding
      * Nominatim works better with simpler, well-known location names
      */

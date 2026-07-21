@@ -275,4 +275,6 @@
   load();
 })();
 </script>
+
+@include('partials.home-meter-alerts')
 @endsection

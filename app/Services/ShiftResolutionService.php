@@ -349,10 +349,15 @@ class ShiftResolutionService
                    'expected_shift_start', 'expected_shift_end',
                    'late_minutes', 'overtime_minutes']);
 
+        // Half-day dates carry NO lateness and NO overtime (owner's rule). Suppress at read only —
+        // the frozen row is never mutated, so undoing the half-day restores the real numbers.
+        $halfDays = (new \App\Services\HR\LeavePolicyService())->halfDayDates($userId, $startDate, $endDate);
+
         $totLate = 0; $totOt = 0; $lateDays = 0; $otDays = 0;
 
         foreach ($rows as $r) {
             $date = substr((string) $r->attendance_date, 0, 10);
+            if (isset($halfDays[$date])) { continue; } // half-day → no late, no OT
 
             // --- Late ---
             if (!is_null($r->late_minutes)) {
@@ -415,9 +420,13 @@ class ShiftResolutionService
             ->orderBy('attendance_date')
             ->get(['attendance_date', 'login_time', 'expected_shift_start', 'late_minutes']);
 
+        // A half-day date shows no lateness (matches sumLateOvertimeMinutes' suppression).
+        $halfDays = (new \App\Services\HR\LeavePolicyService())->halfDayDates($userId, $startDate, $endDate);
+
         $out = [];
         foreach ($rows as $r) {
             $date = substr((string) $r->attendance_date, 0, 10);
+            if (isset($halfDays[$date])) { continue; }
             if (!is_null($r->late_minutes)) {
                 $late = (int) $r->late_minutes;
             } else {

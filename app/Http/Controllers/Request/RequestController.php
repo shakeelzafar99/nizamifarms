@@ -730,12 +730,23 @@ class RequestController extends Controller
         ]);
 
         try {
-            // Calculate leave days if it's a leave request
+            // Calculate leave days if it's a leave request.
+            // NB: Carbon 3 diffInDays is SIGNED — end->diff(start) goes BACKWARDS (negative for a
+            // normal range), which used to store e.g. -1 for a 3-day leave. Use abs().
             $leaveDays = null;
             if ($request->filled('leave_start_date') && $request->filled('leave_end_date')) {
                 $start = \Carbon\Carbon::parse($validated['leave_start_date']);
                 $end = \Carbon\Carbon::parse($validated['leave_end_date']);
-                $leaveDays = $end->diffInDays($start) + 1;
+                $leaveDays = abs($start->diffInDays($end)) + 1;
+            }
+
+            // Whitelist leave_type on SELF-update, same rule as create: only emergency/planned.
+            // 'half_day' is a MANAGER-ONLY grant (attendance page) — a rider must not be able to
+            // edit his pending request into one (0.5 charge + late suppression on approval).
+            $leaveType = null;
+            if ($request->filled('leave_type')) {
+                $posted = strtolower(trim((string) $validated['leave_type']));
+                $leaveType = $posted === 'emergency' ? 'emergency' : 'planned';
             }
 
             $requestModel->update([
@@ -744,7 +755,7 @@ class RequestController extends Controller
                 'amount' => $validated['amount'] ?? null,
                 'leave_start_date' => $validated['leave_start_date'] ?? null,
                 'leave_end_date' => $validated['leave_end_date'] ?? null,
-                'leave_type' => $validated['leave_type'] ?? null,
+                'leave_type' => $leaveType,
                 'leave_days' => $leaveDays,
                 'priority' => $validated['priority'] ?? $requestModel->priority,
                 'updated_by' => $user->id

@@ -63,11 +63,17 @@ class OvertimeService
                 ->whereNotNull('login_time')->where('login_time', '!=', '')
                 ->whereNotNull('logout_time')->where('logout_time', '!=', '')
                 ->get(['attendance_date', 'login_time', 'logout_time']);
+            // A HALF-DAY counts no overtime (owner's rule) — mirror the late/OT suppression in
+            // sumLateOvertimeMinutes so target-OT (and its bonus-leave accrual) can't reward
+            // a day the rider only half-worked.
+            $halfDays = (new \App\Services\HR\LeavePolicyService())->halfDayDates($userId, $start, $end);
             foreach ($rows as $r) {
+                $date = substr((string) $r->attendance_date, 0, 10);
+                if (isset($halfDays[$date])) { continue; }
                 $ot = $this->dailyOvertimeMinutes($r->login_time, $r->logout_time);
                 if ($ot > 0) {
                     $total += $ot;
-                    $dates[substr((string) $r->attendance_date, 0, 10)] = $ot;
+                    $dates[$date] = $ot;
                 }
             }
             ksort($dates);

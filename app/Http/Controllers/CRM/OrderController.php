@@ -234,27 +234,22 @@ class OrderController extends Controller
         }
 
         // Jul-2026 — Invoice-sent tick for the INITIAL server-rendered page. filter()
-        // computes the same flag for AJAX refetches; without this, a full page load /
+        // computes the same flags for AJAX refetches; without this, a full page load /
         // hard refresh painted plain WhatsApp buttons until the first in-page refetch.
-        // Same single bulk lookup (indexed: idx_wa_msg_related_order), same non-fatal
-        // guard — on any error the ticks simply don't show, the page never breaks.
+        // Same non-fatal guard — on any error the ticks simply don't show, the page
+        // never breaks.
         try {
             $pageOrders = collect($orders->items());
             $invNums = $pageOrders->pluck('order_number')->filter()->unique()->values()->all();
             if (!empty($invNums)) {
-                $sentMap = \App\Models\WhatsApp\MessageModel::query()
-                    ->whereIn('related_order_number', $invNums)
-                    ->where('direction', 'outbound')
-                    ->where('content', 'LIKE', 'Invoice #%')
-                    ->where('status', '!=', 'failed')
-                    ->selectRaw('related_order_number, MAX(created_at) as sent_at')
-                    ->groupBy('related_order_number')
-                    ->pluck('sent_at', 'related_order_number')
-                    ->all();
+                $sentMap = self::invoiceSendStatusMap($invNums);
                 foreach ($pageOrders as $o) {
                     $n = $o->order_number ?? '';
-                    $o->invoice_sent = ($n !== '' && isset($sentMap[$n]));
-                    $o->invoice_sent_at = ($n !== '') ? ($sentMap[$n] ?? null) : null;
+                    $st = ($n !== '') ? ($sentMap[$n] ?? null) : null;
+                    $o->invoice_sent = (bool) ($st['sent_at'] ?? null);
+                    $o->invoice_sent_at = $st['sent_at'] ?? null;
+                    $o->invoice_send_failed = (bool) ($st['failed'] ?? false);
+                    $o->invoice_send_error = $st['error'] ?? null;
                 }
             }
         } catch (\Throwable $e) {
@@ -262,6 +257,74 @@ class OrderController extends Controller
         }
 
         return view('pages.orders.index', compact('orders', 'source', 'tab', 'shopifyCount', 'approvalsCount', 'otherCount', 'openCount', 'canViewShopify', 'canViewAllOrders', 'user', 'paymentProofMap'));
+    }
+
+    /**
+     * Bulk invoice-send status for a set of order numbers (orders-page ticks).
+     *
+     * Returns order_number => [
+     *   'sent_at' => latest successful (non-failed) invoice-template send time, or null
+     *   'failed'  => true when the LATEST invoice-send attempt has webhook status
+     *                'failed' — a resend that failed flips the order back to red
+     *                even if an older send once succeeded (latest attempt wins)
+     *   'error'   => error text of that latest failed attempt (tooltip), or null
+     * ]
+     *
+     * One indexed bulk query (idx_wa_msg_related_order) plus one small follow-up
+     * only for orders whose latest attempt failed. Orders with no invoice sends
+     * have no entry. Callers wrap in try/catch — on error, ticks just don't show.
+     */
+    private static function invoiceSendStatusMap(array $orderNumbers): array
+    {
+        if (empty($orderNumbers)) {
+            return [];
+        }
+
+        $rows = \App\Models\WhatsApp\MessageModel::query()
+            ->whereIn('related_order_number', $orderNumbers)
+            ->where('direction', 'outbound')
+            ->where('content', 'LIKE', 'Invoice #%')
+            ->selectRaw("related_order_number,
+                MAX(CASE WHEN status != 'failed' THEN created_at END) as sent_at,
+                MAX(created_at) as last_at")
+            ->groupBy('related_order_number')
+            ->get();
+
+        $map = [];
+        $failedNums = [];
+        foreach ($rows as $r) {
+            // Datetime strings compare correctly lexicographically. Latest
+            // attempt failed ⇔ no success exists at all, or something newer
+            // than the newest success exists (and it can only be a failure).
+            $failed = ($r->sent_at === null)
+                || ($r->last_at !== null && $r->last_at > $r->sent_at);
+            $map[$r->related_order_number] = [
+                'sent_at' => $r->sent_at,
+                'failed' => $failed,
+                'error' => null,
+            ];
+            if ($failed) {
+                $failedNums[] = $r->related_order_number;
+            }
+        }
+
+        if (!empty($failedNums)) {
+            // Ascending order → later rows overwrite, leaving each order with
+            // its LATEST failed attempt's error text.
+            \App\Models\WhatsApp\MessageModel::query()
+                ->whereIn('related_order_number', $failedNums)
+                ->where('direction', 'outbound')
+                ->where('content', 'LIKE', 'Invoice #%')
+                ->where('status', 'failed')
+                ->orderBy('created_at')
+                ->get(['related_order_number', 'error_code', 'error_message'])
+                ->each(function ($m) use (&$map) {
+                    $err = trim(($m->error_message ?: '') . ($m->error_code ? " (code {$m->error_code})" : ''));
+                    $map[$m->related_order_number]['error'] = $err !== '' ? $err : 'delivery failed';
+                });
+        }
+
+        return $map;
     }
 
     /**
@@ -334,10 +397,15 @@ class OrderController extends Controller
                                 "https://www.google.com/maps?q={$order->customer->latitude},{$order->customer->longitude}" : null),
                         'saved_by' => \App\Models\CRM\CustomerModel::verifierLabel($order->customer->verified_location_saved_by),
                         'saved_at' => $order->customer->verified_location_saved_at,
+                        // Verified-pin lock state for the 🔒/🔓 chip + unlock button
+                        'pin_locked' => $order->customer->isVerifiedPinLocked(),
+                        'unlock_active' => $order->customer->verifiedPinUnlockActive(),
+                        'unlocked_until' => $order->customer->verifiedPinUnlockActive()
+                            ? $order->customer->verified_pin_unlocked_until->toIso8601String() : null,
                     ];
                 }
             }
-            
+
             // ⭐ Get pending approval status if order has a ledger entry
             $pendingApproval = null;
             if ($order->ledger_transaction_id) {
@@ -2320,11 +2388,15 @@ class OrderController extends Controller
                 }
             }
             
-            // Clear cached WhatsApp invoice image so next send uses fresh data
+            // Clear cached WhatsApp invoice image so next send uses fresh data.
+            // Captures may be .jpg (Jul-2026 JPEG captures) or .png (legacy) —
+            // clear both so no stale variant survives the edit.
             $orderNum = $order->order_number ?? ('NF-' . str_pad($order->id, 4, '0', STR_PAD_LEFT));
-            $cachedPath = 'whatsapp-invoices/Invoice-' . $orderNum . '.png';
-            if (\Storage::disk('public')->exists($cachedPath)) {
-                \Storage::disk('public')->delete($cachedPath);
+            foreach (['png', 'jpg'] as $cachedExt) {
+                $cachedPath = 'whatsapp-invoices/Invoice-' . $orderNum . '.' . $cachedExt;
+                if (\Storage::disk('public')->exists($cachedPath)) {
+                    \Storage::disk('public')->delete($cachedPath);
+                }
             }
 
             // Prepare response based on whether a ledger adjustment was created or payment method changed
@@ -3712,22 +3784,15 @@ class OrderController extends Controller
                 }
             }
 
-            // Invoice-sent map: order_number → latest successful invoice-send time,
-            // so the orders page can show an "invoice sent" tick. One indexed bulk
-            // query (related_order_number); failed sends excluded. Non-fatal.
+            // Invoice-send status map: order_number → sent_at / failed / error,
+            // so the orders page can show a truthful tick (green = a successful
+            // send exists, red = the LATEST attempt failed per the delivery
+            // webhook). Bulk + indexed; non-fatal.
             $invoiceSentMap = [];
             try {
                 $invOrderNumbers = $orders->pluck('order_number')->filter()->unique()->values()->all();
                 if (!empty($invOrderNumbers)) {
-                    $invoiceSentMap = \App\Models\WhatsApp\MessageModel::query()
-                        ->whereIn('related_order_number', $invOrderNumbers)
-                        ->where('direction', 'outbound')
-                        ->where('content', 'LIKE', 'Invoice #%')
-                        ->where('status', '!=', 'failed')
-                        ->selectRaw('related_order_number, MAX(created_at) as sent_at')
-                        ->groupBy('related_order_number')
-                        ->pluck('sent_at', 'related_order_number')
-                        ->all();
+                    $invoiceSentMap = self::invoiceSendStatusMap($invOrderNumbers);
                 }
             } catch (\Throwable $e) {
                 $invoiceSentMap = [];
@@ -3752,11 +3817,14 @@ class OrderController extends Controller
                     ? $orderReplyMap[$order->order_number] : null;
                 $order->customer_reply = $perOrderReply ?? ($customerReplyMap[$order->customer_id] ?? null);
 
-                // Invoice-sent tick (orders page): has a successful invoice template
-                // gone out via the API for this order, and when.
+                // Invoice-send tick (orders page): green when a successful invoice
+                // template went out via the API; red when the latest attempt failed.
                 $invNum = $order->order_number ?? '';
-                $order->invoice_sent = ($invNum !== '' && isset($invoiceSentMap[$invNum]));
-                $order->invoice_sent_at = ($invNum !== '') ? ($invoiceSentMap[$invNum] ?? null) : null;
+                $invSt = ($invNum !== '') ? ($invoiceSentMap[$invNum] ?? null) : null;
+                $order->invoice_sent = (bool) ($invSt['sent_at'] ?? null);
+                $order->invoice_sent_at = $invSt['sent_at'] ?? null;
+                $order->invoice_send_failed = (bool) ($invSt['failed'] ?? false);
+                $order->invoice_send_error = $invSt['error'] ?? null;
 
                 return $order;
             });

@@ -304,7 +304,9 @@ class PaymentProofStatusService
     private function summarise(Collection $signals): array
     {
         $hasWa    = $signals->where('source', PaymentSignal::SOURCE_WHATSAPP)->isNotEmpty();
-        $hasEmail = $signals->where('source', PaymentSignal::SOURCE_EMAIL)->isNotEmpty();
+        // "Email" here means ANY bank-side confirmation — a bank email or a bank
+        // credit SMS captured by NF Messages. Both are the bank's own word.
+        $hasEmail = $signals->whereIn('source', PaymentSignal::BANK_SIDE_SOURCES)->isNotEmpty();
         $hasMismatch = $signals->where('status', PaymentSignal::STATUS_AMOUNT_MISMATCH)->isNotEmpty();
         $hasMatched  = $signals->where('status', PaymentSignal::STATUS_MATCHED)->isNotEmpty();
 
@@ -324,7 +326,7 @@ class PaymentProofStatusService
             }
             $mate = $byId->get($s->paired_signal_id);
             return $mate
-                && $mate->source === PaymentSignal::SOURCE_EMAIL
+                && in_array($mate->source, PaymentSignal::BANK_SIDE_SOURCES, true)
                 && (int) $mate->paired_signal_id === (int) $s->id
                 && ($s->status === PaymentSignal::STATUS_MATCHED
                     || $mate->status === PaymentSignal::STATUS_MATCHED);

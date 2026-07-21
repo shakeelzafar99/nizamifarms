@@ -233,11 +233,19 @@ class CustomerController extends Controller
                     'latitude' => $customer->latitude,
                     'longitude' => $customer->longitude,
                     'url' => $customer->verified_location_url,
-                    'google_maps_url' => $customer->verified_location_url ?: 
-                        ($customer->latitude && $customer->longitude ? 
+                    'google_maps_url' => $customer->verified_location_url ?:
+                        ($customer->latitude && $customer->longitude ?
                             "https://www.google.com/maps?q={$customer->latitude},{$customer->longitude}" : null),
                     'saved_by' => \App\Models\CRM\CustomerModel::verifierLabel($customer->verified_location_saved_by),
                     'saved_at' => $customer->verified_location_saved_at,
+                    // Verified-pin lock (Jul-2026): locked-for-riders state + any
+                    // live unlock grant, so the UI can show 🔒/🔓 and the buttons.
+                    'pin_locked' => $customer->isVerifiedPinLocked(),
+                    'unlock_active' => $customer->verifiedPinUnlockActive(),
+                    'unlocked_until' => $customer->verifiedPinUnlockActive()
+                        ? $customer->verified_pin_unlocked_until->toIso8601String() : null,
+                    'unlocked_by' => $customer->verifiedPinUnlockActive()
+                        ? \App\Models\CRM\CustomerModel::verifierLabel($customer->verified_pin_unlocked_by) : null,
                 ];
             }
 
@@ -1624,13 +1632,40 @@ class CustomerController extends Controller
 
             $customer = CustomerModel::findOrFail($id);
 
-            // Prepare update data
+            // Verified-pin lock: this endpoint is reachable BOTH from the web
+            // (session) and from the mobile app's store-mode Customers screen
+            // (Sanctum bearer token) — and a rider's token could call it directly
+            // too. Bind exactly the rider case: a bearer-token caller WITHOUT
+            // access_store_mode may not overwrite an existing pin unless a
+            // store/web unlock grant is live. Web session callers (no bearer
+            // token) are never bound.
+            $authUser = auth()->user();
+            $isBoundRider = $request->bearerToken()
+                && $authUser
+                && method_exists($authUser, 'hasMobilePermission')
+                && !$authUser->hasMobilePermission('access_store_mode');
+            if ($isBoundRider && $customer->isVerifiedPinLocked()) {
+                return response()->json([
+                    'success' => false,
+                    'message' => "This customer's location is locked. Ask the store to unlock it before changing the pin.",
+                    'pin_locked' => true,
+                ], 423);
+            }
+
+            // Prepare update data. Every successful save consumes any unlock
+            // grant so the pin re-locks immediately for next time.
             $updateData = [
                 'updated_by' => auth()->id(),
                 'verified_location_saved_by' => auth()->id(),
                 'verified_location_saved_at' => now(),
+                'verified_pin_unlocked_until' => null,
+                'verified_pin_unlocked_by' => null,
             ];
-            
+
+            // Track where the coords came from so the response can warn when they
+            // are approximate (geocoded) or missing (link had none, geocode failed).
+            $coordsSource = null; // 'url' | 'geocoded' | 'none'
+
             if (!empty($validated['url'])) {
                 // URL provided — store the user-supplied URL verbatim
                 // AND best-effort resolve/parse it to lat/lng so the
@@ -1650,6 +1685,7 @@ class CustomerController extends Controller
                 if ($parsedCoords) {
                     $updateData['latitude'] = $parsedCoords['latitude'];
                     $updateData['longitude'] = $parsedCoords['longitude'];
+                    $coordsSource = 'url';
                     \Log::info('Setting verified location from URL with extracted coords (webapp)', [
                         'customer_id' => $id,
                         'url'         => $originalUrl,
@@ -1659,12 +1695,32 @@ class CustomerController extends Controller
                         'saved_by'    => auth()->user()->fullname,
                     ]);
                 } else {
-                    \Log::info('Setting verified location URL only (no coords extractable) (webapp)', [
-                        'customer_id' => $id,
-                        'url'         => $originalUrl,
-                        'resolved'    => $resolvedUrl,
-                        'saved_by'    => auth()->user()->fullname,
-                    ]);
+                    // Geocode-on-save fallback: the link had no coordinates (an
+                    // address / ftid share link). Geocode the address so the pin
+                    // isn't saved coord-less — invisible to reports + the lock
+                    // (Ahmed Mujtaba / SH-21269, Jul-19).
+                    $geo = \App\Services\GeocodingService::geocodeFromMapsUrl($resolvedUrl)
+                        ?: \App\Services\GeocodingService::geocodeFromMapsUrl($originalUrl);
+                    if ($geo) {
+                        $updateData['latitude'] = $geo['latitude'];
+                        $updateData['longitude'] = $geo['longitude'];
+                        $coordsSource = 'geocoded';
+                        \Log::info('Verified location URL had no coords — geocoded the address (approximate) (webapp)', [
+                            'customer_id' => $id,
+                            'resolved'    => $resolvedUrl,
+                            'lat'         => $geo['latitude'],
+                            'lng'         => $geo['longitude'],
+                            'saved_by'    => auth()->user()->fullname,
+                        ]);
+                    } else {
+                        $coordsSource = 'none';
+                        \Log::warning('Setting verified location URL but NO coords extractable and geocode failed (webapp)', [
+                            'customer_id' => $id,
+                            'url'         => $originalUrl,
+                            'resolved'    => $resolvedUrl,
+                            'saved_by'    => auth()->user()->fullname,
+                        ]);
+                    }
                 }
             }
 
@@ -1673,6 +1729,7 @@ class CustomerController extends Controller
                 // ones — they're the most accurate signal staff has.
                 $updateData['latitude'] = $validated['latitude'];
                 $updateData['longitude'] = $validated['longitude'];
+                $coordsSource = 'url'; // an explicit dropped pin is precise
                 \Log::info('Setting verified location coordinates for customer (webapp)', [
                     'customer_id' => $id,
                     'latitude' => $validated['latitude'],
@@ -1698,9 +1755,20 @@ class CustomerController extends Controller
                 'Verified pin (web)'
             );
 
+            $approximate   = $coordsSource === 'geocoded';
+            $coordsMissing = $coordsSource === 'none';
+            $message = $coordsMissing
+                ? "Saved the link, but we couldn't read an exact location from it. Please drop the pin on the map so riders and reports have precise coordinates."
+                : ($approximate
+                    ? 'Saved — but from the address (approximate), because the link had no exact pin. For precise delivery, drop the pin on the map.'
+                    : 'Verified location saved successfully');
+
             return response()->json([
-                'success' => true,
-                'message' => 'Verified location saved successfully',
+                'success'        => true,
+                'message'        => $message,
+                'coords_source'  => $coordsSource,
+                'approximate'    => $approximate,
+                'coords_missing' => $coordsMissing,
             ]);
         } catch (\Illuminate\Validation\ValidationException $e) {
             return response()->json([
@@ -1721,7 +1789,61 @@ class CustomerController extends Controller
             ], 500);
         }
     }
-    
+
+    /**
+     * Verified-pin lock (Jul-2026): grant a time-boxed unlock so a RIDER can
+     * change this customer's locked pin. Web-session surface of the same grant
+     * the store-mode API endpoint issues (RiderController::unlockCustomerVerifiedPin).
+     * Store-level trust: any authenticated web user may grant (owner ruling).
+     */
+    public function unlockVerifiedPin(Request $request, $id)
+    {
+        try {
+            $customer = CustomerModel::findOrFail($id);
+            $until = now()->addMinutes(CustomerModel::VERIFIED_PIN_UNLOCK_MINUTES);
+            $customer->update([
+                'verified_pin_unlocked_until' => $until,
+                'verified_pin_unlocked_by'    => auth()->id(),
+            ]);
+            \Log::info('Verified pin unlocked for rider edit (webapp)', [
+                'customer_id' => $customer->id,
+                'unlocked_by' => auth()->user()->fullname ?? auth()->id(),
+                'until'       => $until->toDateTimeString(),
+            ]);
+            return response()->json([
+                'success'        => true,
+                'message'        => 'Location unlocked — the rider can update the pin now.',
+                'unlocked_until' => $until->toIso8601String(),
+            ]);
+        } catch (\Exception $e) {
+            \Log::error('Failed to unlock verified pin (webapp)', ['customer_id' => $id, 'error' => $e->getMessage()]);
+            return response()->json(['success' => false, 'message' => 'Failed to unlock location'], 500);
+        }
+    }
+
+    /**
+     * Cancel a live unlock grant (mis-click / no longer needed). The pin simply
+     * returns to its default locked-for-riders state.
+     */
+    public function relockVerifiedPin(Request $request, $id)
+    {
+        try {
+            $customer = CustomerModel::findOrFail($id);
+            $customer->update([
+                'verified_pin_unlocked_until' => null,
+                'verified_pin_unlocked_by'    => null,
+            ]);
+            \Log::info('Verified pin unlock cancelled (webapp)', [
+                'customer_id' => $customer->id,
+                'by'          => auth()->user()->fullname ?? auth()->id(),
+            ]);
+            return response()->json(['success' => true, 'message' => 'Location locked again.']);
+        } catch (\Exception $e) {
+            \Log::error('Failed to re-lock verified pin (webapp)', ['customer_id' => $id, 'error' => $e->getMessage()]);
+            return response()->json(['success' => false, 'message' => 'Failed to re-lock location'], 500);
+        }
+    }
+
     /**
      * Follow a shortened Google Maps URL to its final destination so
      * we can extract coordinates. Returns the original URL unchanged

@@ -879,9 +879,31 @@ class OrderModel extends BaseModel
                 // the NEW rider's list at the bottom (COALESCE(...,999) sorts
                 // nulls last), instead of injecting the old rider's stale stop
                 // number into the middle of the new rider's sequence.
+                //
+                // The dispatch ETA goes with it, for the same reason: it was
+                // computed from the OLD rider's position, his stop order and his
+                // legs, so it describes a run this order is no longer on. Left
+                // behind it followed the order onto the new rider and:
+                //   - showed him (and the customer) a time nobody calculated
+                //     for him;
+                //   - made him look mid-run to riderIsMidRun(), so his next
+                //     dispatch skipped the office-anchored origin and the 5-min
+                //     grace;
+                //   - hid the order from "Dispatch Next", which only times stops
+                //     with no ETA — so the wrong time could never be corrected
+                //     except by a full re-dispatch;
+                //   - suppressed the left-without-dispatch alert (he looked like
+                //     he was already carrying a dispatched wave);
+                //   - got quoted to the customer by the WhatsApp invoice, which
+                //     reads whatever ETA an out_for_delivery order carries.
+                // Clearing it puts the order in the new rider's next dispatch,
+                // which is the only thing that can time it correctly.
                 $orderUpdateData = [
                     'assigned_rider_user_id' => $riderUserId,
                     'delivery_priority' => null,
+                    'estimated_delivery_at' => null,
+                    'eta_calculated_at' => null,
+                    'eta_calculated_by' => null,
                     'updated_at' => Carbon::now()->format('Y-m-d H:i:s'),
                 ];
                 
@@ -1379,6 +1401,31 @@ class OrderModel extends BaseModel
                 if (in_array($statusCode, ['on_hold', 'cancelled', 'refunded'], true)) {
                     $this->delivery_priority = null;
                 }
+                // Same hygiene for the dispatch ETA, which is a SNAPSHOT of one
+                // run: it was computed from a rider position and a stop order
+                // that stop no longer has. Leaving it on an order pulled off the
+                // van meant that when the order went back out it still carried
+                // the old time — invisible while it sat in processing (the ETA
+                // is only ever read for out_for_delivery), then quoted again the
+                // moment it returned: hidden from "Dispatch Next" (which only
+                // times stops with NO ETA, so it never got re-timed), and
+                // embedded in the WhatsApp invoice by EtaWindowService::forOrder.
+                //
+                // Deliberately an explicit list, not "anything except OFD":
+                // this method takes any code present in t_crm_order_status_master
+                // (which still holds a legacy hyphenated 'on-hold', and the Hub
+                // can add more), so an inverse test would clear ETAs for statuses
+                // nobody has thought about yet. Unknown status ⇒ keep, as today.
+                //
+                // NOT cleared for 'delivered'/'completed': the dispatch tracker
+                // rebuilds each batch's planned sequence from estimated_delivery_at
+                // (planned_sequence), so wiping it there would blind the report.
+                // NOT cleared for 'out_for_delivery' — that's the live run itself.
+                if (in_array($statusCode, ['on_hold', 'cancelled', 'refunded', 'processing', 'new', 'pending'], true)) {
+                    $this->estimated_delivery_at = null;
+                    $this->eta_calculated_at = null;
+                    $this->eta_calculated_by = null;
+                }
                 if (method_exists($this, 'setAttribute')) {
                     $this->setAttribute('updated_by', $changedBy ?? (auth()->check() ? auth()->id() : 1));
                 }
@@ -1643,6 +1690,32 @@ class OrderModel extends BaseModel
                         'error'      => $emitException->getMessage(),
                     ]);
                 }
+            }
+
+            // Jul-2026 — Shopify fulfillment sync. When an SH- (Shopify-origin)
+            // order is DELIVERED, mark the origin order Fulfilled + Paid on
+            // Shopify. Runs in app()->terminating() so the caller's response
+            // (rider app tap, web edit, bulk CSV) is never held up by Shopify
+            // HTTP; the sync itself is fully non-fatal (logs only). SH- number
+            // → Shopify order id resolution lives in ShopifyFulfillmentSync
+            // (external_id is nulled on conversion by design, so it goes via
+            // the t_crm_shopify_order staging row).
+            if ($result === true && $statusCode === 'delivered'
+                && str_starts_with((string) $this->order_number, 'SH-')) {
+                $syncOrderId = $this->id;
+                $syncOrderNumber = (string) $this->order_number;
+                app()->terminating(function () use ($syncOrderId, $syncOrderNumber) {
+                    try {
+                        app(\App\Services\ShopifyFulfillmentSync::class)
+                            ->syncDelivered($syncOrderId, $syncOrderNumber);
+                    } catch (\Throwable $syncException) {
+                        \Log::error('ShopifySync hook failed (non-fatal)', [
+                            'order_id' => $syncOrderId,
+                            'order_number' => $syncOrderNumber,
+                            'error' => $syncException->getMessage(),
+                        ]);
+                    }
+                });
             }
 
             return $result;

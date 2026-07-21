@@ -23,6 +23,13 @@ class PaymentSignal extends Model
 
     public const SOURCE_WHATSAPP = 'whatsapp';
     public const SOURCE_EMAIL    = 'email';
+    // A credit alert SMS read from a manager's phone by the NF Messages app.
+    // Counts as a BANK-side confirmation, exactly like a bank email: it can
+    // pair with a WhatsApp screenshot to make a proof "verified".
+    public const SOURCE_BANK_SMS = 'bank_sms';
+
+    /** The sources that are the bank's own word (vs the customer's claim). */
+    public const BANK_SIDE_SOURCES = [self::SOURCE_EMAIL, self::SOURCE_BANK_SMS];
 
     public const STATUS_NEW             = 'new';
     public const STATUS_MATCHED         = 'matched';

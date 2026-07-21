@@ -2089,6 +2089,11 @@ function dtRenderSingleOrder(o, showDispatchInfo) {
     if (showDispatchInfo && o.eta_comparison) {
         etaHtml = `<span class="dt-time">ETA: ${o.eta_comparison.eta_display}</span>
                    <span class="${o.eta_comparison.on_time ? 'dt-eta-ok' : 'dt-eta-late'}" style="font-size:10px;">${o.eta_comparison.label}</span>`;
+        // The ETA above is the one that was PROMISED. If a re-dispatch moved it
+        // afterwards, say so — otherwise it reads as a time the rider never saw.
+        if (o.eta_comparison.retimed) {
+            etaHtml += `<span style="font-size:9px;color:#b45309;font-weight:600;" title="The delivery time was recalculated after it had been promised">↻ re-timed to ${o.eta_comparison.live_at_display}${o.eta_comparison.retimed_by_rider ? ' by rider' : ''}</span>`;
+        }
     } else if (showDispatchInfo && !o.eta_comparison) {
         etaHtml = '<span class="dt-time" style="color:#d1d5db;">No ETA</span>';
     }
@@ -2183,6 +2188,27 @@ let rrCfg = { at_verified_m: 500, late_manager_minutes: 15, late_card_minutes: 1
 let rrMapObj = null;
 
 function rrEsc(s){ return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+// U4 — home-journey manager actions from Daily Issues.
+function rrHomeRider(userId){ return (window.rrRiderIndex || {})[userId]; }
+async function rrHomePost(url, body){
+    const res = await fetch(url, { method:'POST', headers:{'Content-Type':'application/json','Accept':'application/json','X-CSRF-TOKEN':document.querySelector('meta[name="csrf-token"]').getAttribute('content')}, body:JSON.stringify(body) });
+    return res.json();
+}
+async function rrHomeUnlock(userId){
+    const r = rrHomeRider(userId); const hj = r && r.home_journey; if(!hj){ return; }
+    const reason = prompt('Rider was late reaching home. Reason to unlock meter entry (required):', '');
+    if(!reason) return;
+    try { const j = await rrHomePost('/attendance/home-journey/unlock', { attendance_id: hj.attendance_id, reason }); alert(j.message || (j.success?'Unlocked.':'Failed.')); }
+    catch(e){ alert('Could not unlock.'); }
+}
+async function rrHomeEnter(userId){
+    const r = rrHomeRider(userId); const hj = r && r.home_journey; if(!hj){ return; }
+    const meter = prompt('Enter the home meter reading for ' + (hj.rider_name||'this rider') + ' (phone-dead fallback):', '');
+    if(meter===null || meter.trim()==='' || isNaN(parseInt(meter,10))) { if(meter!==null) alert('Enter a number.'); return; }
+    const reason = prompt('Reason / note (optional):', '') || '';
+    try { const j = await rrHomePost('/attendance/home-journey/enter-meter', { attendance_id: hj.attendance_id, meter_home: parseInt(meter,10), reason }); alert(j.message || (j.success?'Recorded.':'Failed.')); }
+    catch(e){ alert('Could not record.'); }
+}
 function rrChip(text, sev){ // sev: crit|warn|good|info|dim
     const c = { crit:['#F6E3E1','#B3362B'], warn:['#F7EDDA','#7C5710'], good:['#E5F1E9','#2E7D4F'],
                 info:['#E3ECF5','#2E64A6'], dim:['#ECEAE3','#4A5568'] }[sev] || ['#ECEAE3','#4A5568'];
@@ -2191,6 +2217,22 @@ function rrChip(text, sev){ // sev: crit|warn|good|info|dim
 function rrNum(v){ return v==null || v==='' ? null : Number(v); }
 function rrDist(m){ m = rrNum(m); if(m==null) return ''; return m >= 1000 ? (m/1000).toFixed(2)+' km' : Math.round(m)+' m'; }
 function rrLate(o){ const l = rrNum(o.late_minutes); return l==null ? '' : (l>0 ? l+' min late' : (l===0?'on time':(-l)+' min early')); }
+// "2026-07-13 17:10:00" -> "5:10 PM" (server sends plain DATETIME strings here)
+function rrHhmm(v){
+    if(!v) return '';
+    const d = new Date(String(v).replace(' ','T'));
+    return isNaN(d.getTime()) ? '' : d.toLocaleTimeString([], {hour:'numeric', minute:'2-digit', hour12:true});
+}
+function rrSigned(n){ return n > 0 ? '+'+n : String(n); }
+// A re-dispatch the rider made HIMSELF after already dropping stops — the press
+// that moves times customers had already been promised. The server only lists
+// these (store-sanctioned re-times and the day's first wave are excluded).
+function rrMidRunText(c){
+    const parts = ['re-timed own route · '+c.order_count+' order'+(c.order_count===1?'':'s')];
+    parts.push(c.delivered_before+' already delivered');
+    if(c.avg_shift_min != null && c.avg_shift_min !== 0) parts.push('~'+rrSigned(c.avg_shift_min)+' min');
+    return parts.join(' · ');
+}
 
 function rrInit(){
     if(!rrCurrentDate) rrCurrentDate = new Date().toISOString().split('T')[0];
@@ -2229,6 +2271,16 @@ function rrOrderIssues(o){
     if(rrNum(o.was_dispatched) === 0) out.push({sev:'warn', text:'dispatch not pressed'});
     if(rrNum(o.dispatched_by_other) === 1) out.push({sev:'warn', text:'dispatch by '+(o.dispatched_by_name || 'someone else')});
     if(late != null && late > rrCfg.late_manager_minutes) out.push({sev:'warn', text: late+' min late'});
+    // The delivery time moved AFTER it was promised. "X min late" above is measured
+    // against the PROMISE, so without this a manager sees "42 min late" on an order
+    // whose app screen said 5:40 and can't reconcile the two. Info-only on purpose:
+    // it must not make a rider "an issue" by itself — re-timing while still at the
+    // office moves nobody's expectations, and the case that DOES matter is the
+    // rider-level "route change" row.
+    if(rrNum(o.eta_retimed) === 1){
+        out.push({sev:'info', text:'promised '+rrHhmm(o.eta_at)+', re-timed to '+rrHhmm(o.eta_live)
+            + (rrNum(o.eta_retimed_by_rider) === 1 ? ' by rider' : '')});
+    }
     // route order changed vs the planned dispatch priority (P{planned}→#{actual})
     var ps = rrNum(o.planned_seq), as = rrNum(o.actual_seq);
     if(ps != null && as != null && ps !== as) out.push({sev:'info', text:'order changed (P'+ps+'→#'+as+')'});
@@ -2248,11 +2300,12 @@ function rrRiderIssueItems(r){
     // on-route stops (orders waiting) always show; idle stops only when long (≥15 min)
     const stopItems = (r.stops||[]).filter(s =>
         rrNum(s.on_board) > 0 || s.context==='on_route' || rrNum(s.min) >= 15);
-    return {items, stopItems, oddRoutes:(r.odd_routes||[]), missed:(r.missed_dispatch||null)};
+    return {items, stopItems, oddRoutes:(r.odd_routes||[]), missed:(r.missed_dispatch||null),
+            midRuns:(r.mid_run_changes||[])};
 }
 function rrHasIssues(r){
-    const {items, stopItems, oddRoutes, missed} = rrRiderIssueItems(r);
-    return items.length>0 || stopItems.length>0 || oddRoutes.length>0 || !!missed || !!r.lateness || !!(r.checkout && r.checkout.flagged) || !!r.bike_meter;
+    const {items, stopItems, oddRoutes, missed, midRuns} = rrRiderIssueItems(r);
+    return items.length>0 || stopItems.length>0 || oddRoutes.length>0 || !!missed || midRuns.length>0 || !!r.lateness || !!(r.checkout && r.checkout.flagged) || !!r.bike_meter || !!r.office_checkout || !!r.home_journey;
 }
 // short manager-friendly line for a missed-dispatch event
 function rrMissedChips(m){
@@ -2297,10 +2350,15 @@ function rrRenderIssues(){
     flagged.sort((a,b)=> rrSeverityRank(b) - rrSeverityRank(a));
 
     box.innerHTML = flagged.map(r => {
-        const {items, stopItems, oddRoutes, missed} = rrRiderIssueItems(r);
+        const {items, stopItems, oddRoutes, missed, midRuns} = rrRiderIssueItems(r);
         const missedHtml = missed ? `<div style="display:flex;gap:8px;align-items:baseline;flex-wrap:wrap;font-size:13px;padding:2px 0;">
                     <span style="min-width:130px;color:#6b7280;">dispatch</span>${rrMissedChips(missed)}
                 </div>` : '';
+        const midRunHtml = midRuns.map(c => `<div style="display:flex;gap:8px;align-items:baseline;flex-wrap:wrap;font-size:13px;padding:2px 0;">
+                    <span style="min-width:130px;color:#6b7280;">route change</span>
+                    ${rrChip(rrMidRunText(c),'warn')}
+                    <span style="font-family:monospace;font-size:12px;color:#6b7280;">${rrHhmm(c.at)}</span>
+                </div>`).join('');
         const rowsHtml = items.map(it => {
             const o = it.order;
             const chips = it.issues.map(x => rrChip(x.text, x.sev) + (x.map ? ` <a href="#" onclick="rrOpenMap(${o.order_id});return false;" style="font-size:12px;color:#2E64A6;text-decoration:none;">🗺️ verified vs pressed</a>` : '')).join(' ');
@@ -2348,6 +2406,37 @@ function rrRenderIssues(){
                     <span style="color:#6b7280;font-size:12px;">bike km can't be tracked</span>
                 </div>`;
         }
+        // Office-checkout exception (R5): non-bike rider who delivered but came back to the office.
+        const oc = r.office_checkout;
+        let officeCheckoutHtml = '';
+        if (oc) {
+            const after = (oc.minutes_after != null) ? (oc.minutes_after + ' min after his last delivery') : 'after delivering';
+            officeCheckoutHtml = `<div style="display:flex;gap:8px;align-items:baseline;flex-wrap:wrap;font-size:13px;padding:2px 0;">
+                    <span style="min-width:130px;color:#6b7280;">checkout</span>
+                    ${rrChip('🏢 checked out at the office ('+after+')','warn')}
+                    <span style="color:#6b7280;font-size:12px;">out ${oc.checkout_time||''} · last delivery ${oc.last_delivery_time||''} to ${rrEsc(oc.last_customer||'')}</span>
+                </div>`;
+        }
+        // Company-bike going-home issue (U4): late / locked / unlocked / completed-late.
+        const hj = r.home_journey;
+        let homeHtml = '';
+        if (hj) {
+            const lateTxt = (hj.minutes_late != null && hj.minutes_late > 0) ? ('+' + hj.minutes_late + ' min') : 'late';
+            let chipTxt, chipSev = 'warn';
+            if (hj.state === 'late_locked') { chipTxt = '🏠 late ' + lateTxt + ' — meter locked'; chipSev = 'crit'; }
+            else if (hj.state === 'unlocked') { chipTxt = '🏠 unlocked — awaiting meter'; }
+            else { chipTxt = '🏠 home late ' + lateTxt + (hj.reason ? ' · excused: ' + rrEsc(hj.reason) : ''); }
+            const ctx = 'out ' + (hj.checkout_time || '?') + ' · home ' + (hj.distance_km != null ? hj.distance_km + ' km' : '?') + ' · due ' + (hj.expected_by || '?') + (hj.arrived_at ? ' · home ' + hj.arrived_at : '') + (hj.unlocked_by ? ' · unlocked by ' + rrEsc(hj.unlocked_by) : '');
+            const actions = (hj.state === 'late_locked' || hj.state === 'unlocked')
+                ? `<a href="#" onclick="rrHomeUnlock(${r.user_id});return false;" style="font-size:11px;color:#B45309;border:1px solid #FDE68A;background:#FEF3C7;border-radius:5px;padding:1px 8px;text-decoration:none;">🔓 Unlock (rider enters)</a>
+                   <a href="#" onclick="rrHomeEnter(${r.user_id});return false;" style="font-size:11px;color:#0f766e;border:1px solid #99f6e4;background:#f0fdfa;border-radius:5px;padding:1px 8px;text-decoration:none;margin-left:6px;">✍ Enter meter</a>` : '';
+            homeHtml = `<div style="display:flex;gap:8px;align-items:baseline;flex-wrap:wrap;font-size:13px;padding:2px 0;">
+                    <span style="min-width:130px;color:#6b7280;">going home</span>
+                    ${rrChip(chipTxt, chipSev)}
+                    <span style="color:#6b7280;font-size:12px;">${ctx}</span>
+                    ${actions ? `<span style="margin-left:auto;">${actions}</span>` : ''}
+                </div>`;
+        }
         const sev = rrSeverityRank(r) >= 2 ? 'r' : 'a';
         return `<div style="padding:10px 14px;border-bottom:1px solid #eef;">
                     <div style="font-weight:650;font-size:14px;display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
@@ -2359,7 +2448,7 @@ function rrRenderIssues(){
                             <a href="#" onclick="openDispatchDetail(${r.user_id});return false;" style="font-size:12px;color:#2E64A6;text-decoration:none;border:1px solid #C4D3E2;border-radius:4px;padding:1px 8px;background:#EEF4FA;">🚀 dispatch detail</a>
                         </span>
                     </div>
-                    <div style="margin-top:5px;">${missedHtml}${rowsHtml}${stopsHtml}${oddHtml}${checkoutHtml}${bikeGraceHtml}</div>
+                    <div style="margin-top:5px;">${missedHtml}${midRunHtml}${rowsHtml}${stopsHtml}${oddHtml}${checkoutHtml}${bikeGraceHtml}${officeCheckoutHtml}${homeHtml}</div>
                 </div>`;
     }).join('');
 
@@ -2375,8 +2464,11 @@ function rrSeverityRank(r){
     (r.orders||[]).forEach(o => { rrOrderIssues(o).forEach(x => { if(x.sev==='crit') rank=Math.max(rank,2); else if(x.sev!=='info') rank=Math.max(rank,1); }); });
     (r.stops||[]).forEach(s => { if(rrNum(s.on_board) > 0) rank=Math.max(rank,2); });
     if((r.odd_routes||[]).length) rank=Math.max(rank,1);
+    if((r.mid_run_changes||[]).length) rank=Math.max(rank,1);
     if(r.checkout && r.checkout.flagged) rank=Math.max(rank,1);
     if(r.bike_meter) rank=Math.max(rank,1);
+    if(r.office_checkout) rank=Math.max(rank,1);
+    if(r.home_journey) rank=Math.max(rank, r.home_journey.state==='late_locked'?2:1);
     return rank;
 }
 

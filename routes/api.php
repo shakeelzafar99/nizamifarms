@@ -154,6 +154,11 @@ Route::get('/app/version', [\App\Http\Controllers\API\AppController::class, 'get
 // Qurbani companion APK uses its own endpoint so a new main release doesn't
 // accidentally "upgrade" (= force-sideload) the Qurbani app with the main APK.
 Route::get('/app/version/qurbani', [\App\Http\Controllers\API\AppController::class, 'getLatestQurbaniVersion']);
+// NF Messages APK (com.nizamifarmsmobile.messages) — same reasoning as Qurbani:
+// its own tracker so the three sibling APKs never cross-nag each other.
+// Also public: api.js's PUBLIC_ENDPOINTS matches on `.includes('/app/version')`,
+// so this path is skipped by 401 handling without any mobile change.
+Route::get('/app/version/messages', [\App\Http\Controllers\API\AppController::class, 'getLatestMessagesVersion']);
 
 // Authenticated mobile routes
 Route::middleware('auth:sanctum')->group(function () {
@@ -185,7 +190,12 @@ Route::middleware('auth:sanctum')->group(function () {
         
         // Customer verified location
         Route::post('/customers/{customerId}/set-verified-location', [\App\Http\Controllers\API\RiderController::class, 'setCustomerVerifiedLocation']);
-        
+        // Verified-pin lock: store/web grants a rider a time-boxed unlock window.
+        Route::post('/customers/{customerId}/unlock-verified-pin', [\App\Http\Controllers\API\RiderController::class, 'unlockCustomerVerifiedPin']);
+        // Generic per-order live flags the rider app polls while an order is open
+        // (verified-pin lock now; scan/dispatch-lock later — shared mechanism).
+        Route::get('/orders/{orderId}/live-flags', [\App\Http\Controllers\API\RiderController::class, 'getOrderLiveFlags']);
+
         // Quick verify location from address (Store Mode)
         Route::post('/store/orders/{orderId}/set-verified-location', [\App\Http\Controllers\API\RiderController::class, 'setVerifiedLocationFromAddress']);
         
@@ -203,6 +213,9 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('/daily-closing', [\App\Http\Controllers\API\RiderController::class, 'getDailyClosing']);
         Route::post('/daily-closing/approve/{id}', [\App\Http\Controllers\API\RiderController::class, 'approveDailyClosingSettlement']);
         Route::post('/daily-closing/reject/{id}', [\App\Http\Controllers\API\RiderController::class, 'rejectDailyClosingSettlement']);
+        // [1B] Delivered-but-unposted reconciliation: surface + repost silent invoice-post failures.
+        Route::get('/daily-closing/unposted-invoices', [\App\Http\Controllers\API\RiderController::class, 'getUnpostedInvoices']);
+        Route::post('/daily-closing/repost-invoice/{orderId}', [\App\Http\Controllers\API\RiderController::class, 'repostOrderInvoice']);
         
         // Shift management (Store → Shifts; assign/cancel/templates/riders gated by manage_shifts)
         Route::get('/shifts/templates', [\App\Http\Controllers\API\RiderController::class, 'getShiftTemplatesMobile']);
@@ -214,6 +227,8 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::post('/locations/create', [\App\Http\Controllers\API\RiderController::class, 'createLocationMobile']);
         Route::post('/shifts/assign', [\App\Http\Controllers\API\RiderController::class, 'assignShiftMobile']);
         Route::post('/shifts/cancel', [\App\Http\Controllers\API\RiderController::class, 'cancelShiftMobile']);
+        Route::post('/shifts/toggle-day-tag', [\App\Http\Controllers\API\RiderController::class, 'toggleDayTagMobile']);
+        Route::post('/shifts/day-tag-range', [\App\Http\Controllers\API\RiderController::class, 'setDayTagRangeMobile']); // 🚫 Not required range
         Route::post('/shifts/update-phone', [\App\Http\Controllers\API\RiderController::class, 'updateShiftRiderPhone']);
         Route::post('/shift/acknowledge', [\App\Http\Controllers\API\RiderController::class, 'acknowledgeShift']);
         // Rider-facing (self-only, no manage_shifts): floating banner + My Shift view
@@ -226,6 +241,8 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::post('/attendance/check-out', [\App\Http\Controllers\API\RiderController::class, 'checkOut']);
         Route::post('/attendance/confirm-cash', [\App\Http\Controllers\API\RiderController::class, 'confirmCash']);
         Route::post('/attendance/upload-meter-picture', [\App\Http\Controllers\API\RiderController::class, 'uploadMeterPicture']);
+        Route::post('/attendance/home-meter', [\App\Http\Controllers\API\RiderController::class, 'submitHomeMeter']); // U4 going-home meter
+        Route::get('/attendance/home-journey', [\App\Http\Controllers\API\RiderController::class, 'getHomeJourneyStatus']); // U4 banner poll
         Route::get('/attendance/monthly', [\App\Http\Controllers\API\RiderController::class, 'getMonthlyAttendance']);
         Route::get('/attendance/petrol-rate', [\App\Http\Controllers\API\RiderController::class, 'getPetrolRate']);
         Route::post('/attendance/petrol-rate', [\App\Http\Controllers\API\RiderController::class, 'setPetrolRate']);
@@ -507,6 +524,10 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('/store-attendance/monthly', [\App\Http\Controllers\API\RiderController::class, 'getStoreAttendanceMonthly']);
         Route::get('/store-attendance/employee-details', [\App\Http\Controllers\API\RiderController::class, 'getStoreAttendanceEmployeeDetails']);
         Route::post('/store-attendance/update-meter-values', [\App\Http\Controllers\API\RiderController::class, 'updateMeterValues']);
+        // Rider bypasses (mobile manager; view_store_attendance-gated wrappers of the web endpoints)
+        Route::post('/store-attendance/checkout-unlock', [\App\Http\Controllers\API\RiderController::class, 'storeAttendanceCheckoutUnlock']);
+        Route::post('/store-attendance/home-unlock', [\App\Http\Controllers\API\RiderController::class, 'storeAttendanceHomeUnlock']);
+        Route::post('/store-attendance/home-enter-meter', [\App\Http\Controllers\API\RiderController::class, 'storeAttendanceHomeEnterMeter']);
         
         // ⭐ Road Distance Calculation (on-demand) - uses OpenRouteService API
         Route::get('/store-attendance/calculate-road-distance', [\App\Http\Controllers\API\RiderController::class, 'calculateRoadDistance']);
@@ -546,6 +567,7 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::post('/{riderId}/calculate-delivery-etas', [\App\Http\Controllers\API\RiderController::class, 'calculateDeliveryEtas']);
         Route::post('/{riderId}/cancel-dispatch', [\App\Http\Controllers\API\RiderController::class, 'cancelDispatch']); // ⭐ Clear ETAs to merge dispatch waves
         Route::post('/{riderId}/optimize-route', [\App\Http\Controllers\API\RiderController::class, 'optimizeRoute']);
+        Route::get('/{riderId}/route-lock', [\App\Http\Controllers\API\RiderController::class, 'getRouteLock']); // ⭐ Read-only: who set this route (rider info prompt)
         Route::post('/{riderId}/route-lock', [\App\Http\Controllers\API\RiderController::class, 'lockRoute']);
         Route::delete('/{riderId}/route-lock', [\App\Http\Controllers\API\RiderController::class, 'unlockRoute']);
         
@@ -762,6 +784,9 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('/conversations/{id}', [WhatsAppController::class, 'getMessages']);
         Route::post('/conversations/{id}/send', [WhatsAppController::class, 'sendMessage']);
         Route::post('/conversations/{id}/send-voice', [WhatsAppController::class, 'sendVoiceNote']);
+        // NF Messages chat enhancements (additive; primary app never calls these)
+        Route::post('/conversations/{id}/send-image', [WhatsAppController::class, 'sendImageMessage']);
+        Route::get('/conversations/{id}/search', [WhatsAppController::class, 'searchMessages']);
         Route::post('/conversations/{id}/mark-read', [WhatsAppController::class, 'markRead']);
         Route::post('/conversations/{id}/mark-unread', [WhatsAppController::class, 'markUnread']);
         // Apr-2026: Bulk Mark-All-Read — super-reader only (Taimur role).
@@ -803,6 +828,55 @@ Route::middleware('auth:sanctum')->group(function () {
     // WhatsApp per-customer (nested under customers)
     Route::get('/customers/{id}/whatsapp-messages', [WhatsAppController::class, 'getCustomerMessages']);
     Route::post('/customers/{id}/whatsapp-send', [WhatsAppController::class, 'sendToCustomer']);
+
+    // ============================
+    // NF Assistant (AI chat inside NF Messages)
+    // ============================
+    // Sanctum-authed by the enclosing group; each method ALSO requires the
+    // `use_ai_assistant` mobile permission (launch = the CEO only).
+    //
+    // /message is the agent turn — the LLM can only PREPARE a draft.
+    // /confirm is the only path that writes money, and it replays the draft
+    // through the existing endpoints (RequestController@store,
+    // VendorController@recordPayment) so every approval/guard still applies.
+    // See NF-ASSISTANT-AGENT-PLAN-JUL2026.md.
+    Route::prefix('assistant')->group(function () {
+        Route::post('/message', [\App\Http\Controllers\API\AssistantController::class, 'message']);
+        Route::post('/confirm/{draft}', [\App\Http\Controllers\API\AssistantController::class, 'confirm']);
+        Route::post('/cancel/{draft}', [\App\Http\Controllers\API\AssistantController::class, 'cancel']);
+        // One-tap bank picker on the card (no model call, pure DB write).
+        Route::post('/draft/{draft}/choose', [\App\Http\Controllers\API\AssistantController::class, 'choose']);
+        // Drop working context (visible thread stays). No model call.
+        Route::post('/new-topic', [\App\Http\Controllers\API\AssistantController::class, 'newTopic']);
+        Route::get('/history', [\App\Http\Controllers\API\AssistantController::class, 'history_endpoint']);
+
+        // Settings sheet (defaults, SMS sender→bank map, trusted forwarders).
+        // No model call — pure config the user edits. See
+        // NF-MESSAGES-ENHANCEMENTS-PLAN-JUL2026.md Phase 1.
+        Route::get('/settings', [\App\Http\Controllers\API\AssistantSettingsController::class, 'index']);
+        Route::put('/settings/default', [\App\Http\Controllers\API\AssistantSettingsController::class, 'setDefault']);
+        Route::post('/settings/sender', [\App\Http\Controllers\API\AssistantSettingsController::class, 'saveSender']);
+        Route::delete('/settings/sender/{id}', [\App\Http\Controllers\API\AssistantSettingsController::class, 'deleteSender']);
+        Route::post('/settings/forwarder', [\App\Http\Controllers\API\AssistantSettingsController::class, 'saveForwarder']);
+        Route::delete('/settings/forwarder/{id}', [\App\Http\Controllers\API\AssistantSettingsController::class, 'deleteForwarder']);
+
+        // Money workspace: status-strip counts + the money inbox. Pure DB, no
+        // LLM. See NF-MESSAGES-ENHANCEMENTS-PLAN-JUL2026.md Phase 2.
+        Route::get('/workspace/summary', [\App\Http\Controllers\API\AssistantWorkspaceController::class, 'summary']);
+        Route::get('/workspace/inbox', [\App\Http\Controllers\API\AssistantWorkspaceController::class, 'inbox']);
+        Route::get('/workspace/vendor-search', [\App\Http\Controllers\API\AssistantWorkspaceController::class, 'vendorSearch']);
+        Route::get('/workspace/customer-search', [\App\Http\Controllers\API\AssistantWorkspaceController::class, 'customerSearch']);
+
+        // Bank-SMS capture (Phase 4). /ingest is POSTed by the native SMS
+        // receiver; the rest are the inbox one-tap actions. Regex parse, no LLM.
+        Route::post('/sms/ingest', [\App\Http\Controllers\API\AssistantSmsController::class, 'ingest']);
+        Route::post('/sms/{id}/draft', [\App\Http\Controllers\API\AssistantSmsController::class, 'draft']);
+        Route::post('/sms/{id}/match-credit', [\App\Http\Controllers\API\AssistantSmsController::class, 'matchCredit']);
+        Route::post('/sms/{id}/ignore', [\App\Http\Controllers\API\AssistantSmsController::class, 'ignore']);
+        Route::post('/sms/{id}/teach-sender', [\App\Http\Controllers\API\AssistantSmsController::class, 'teachSender']);
+        Route::post('/sms/{id}/save-map', [\App\Http\Controllers\API\AssistantSmsController::class, 'saveMap']);
+        Route::post('/sms/{id}/restore', [\App\Http\Controllers\API\AssistantSmsController::class, 'restore']);
+    });
 
     // ============================
     // Orders (Mobile Store Mode)

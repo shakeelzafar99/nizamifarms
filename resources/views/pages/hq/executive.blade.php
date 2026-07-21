@@ -85,7 +85,10 @@
     font-size:9.5px;font-weight:700;line-height:1;cursor:pointer;flex:0 0 auto;padding:0}
   #hq-root .i-btn:hover{color:var(--blue);border-color:var(--blue)}
 
-  #hq-root .pl-flow{display:grid;grid-template-columns:1fr auto 1fr auto 1fr auto 1fr auto 1fr;align-items:stretch}
+  /* 6 boxes: revenue − vendor = GP − expenses = net profit ┊ assets bought.
+     The last one is an ASIDE (capital spending), not part of the equation —
+     hence a divider rather than an operator before it. */
+  #hq-root .pl-flow{display:grid;grid-template-columns:1fr auto 1fr auto 1fr auto 1fr auto 1fr auto 1fr;align-items:stretch}
   #hq-root .pl-cell{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:13px 15px;min-width:0}
   #hq-root .pl-op{display:flex;align-items:center;justify-content:center;color:var(--faint);font-size:16px;font-weight:600;padding:0 7px}
   #hq-root .pl-cell .k-val{font-size:18px}
@@ -95,6 +98,11 @@
   #hq-root .pl-bar .seg-v{height:100%}
   #hq-root .pl-legend{display:flex;gap:18px;flex-wrap:wrap;margin-top:8px;font-size:11.5px;color:var(--mut)}
   #hq-root .pl-legend .sw{display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:5px;vertical-align:-.5px}
+  /* Divider before the aside box — deliberately NOT an operator glyph. */
+  #hq-root .pl-sep{display:flex;align-items:center;justify-content:center;padding:0 9px}
+  #hq-root .pl-sep::before{content:'';width:0;height:64%;border-left:1px dashed var(--line2)}
+  #hq-root .pl-cell.aside{background:#faf9f8;border-style:dashed}
+  #hq-root .pl-cell.aside .k-val{color:var(--mut)}
 
   #hq-root .wc{grid-template-columns:repeat(3,1fr)}
   #hq-root .wc .k-val{font-size:19px}
@@ -202,6 +210,8 @@
     #hq-root .wc .netpos{grid-column:span 2}
     #hq-root .pl-flow{grid-template-columns:1fr auto 1fr;row-gap:8px}
     #hq-root .pl-op.brk{display:none}
+    #hq-root #hqPCats{grid-template-columns:repeat(2,1fr)!important}
+    #hq-root #hqPTwoCol{grid-template-columns:1fr!important}
   }
   @media (max-width:600px){
     #hq-root .kpis{grid-template-columns:repeat(2,1fr)}
@@ -214,6 +224,7 @@
   <nav class="modtabs" aria-label="Modules">
     <button class="modtab on" id="tabClosing" type="button" onclick="hqSetTab('closing')">Monthly Closing</button>
     <button class="modtab" id="tabGrowth" type="button" onclick="hqSetTab('growth')">Growth</button>
+    <button class="modtab" id="tabProducts" type="button" onclick="hqSetTab('products')">Products</button>
     <button class="modtab soon" type="button" title="Planned">Fulfilment <small>SOON</small></button>
   </nav>
   <button class="refresh" type="button" onclick="hqReload(true)">↻ Refresh</button>
@@ -263,7 +274,7 @@
   <div class="grid" id="hqGSales" style="grid-template-columns:repeat(3,1fr)"></div>
 
   <div id="hqGRegular">
-    <h2 class="sec">Customer engine — whole regular base <span class="rule"></span><span class="hint">active &amp; retention are one customer base (fresh + frozen)</span></h2>
+    <h2 class="sec">Customer engine — whole regular base <span class="rule"></span><span class="hint">one customer base (fresh + frozen) — not affected by the unit selector</span></h2>
     <div class="grid" id="hqGActives" style="grid-template-columns:repeat(3,1fr)"></div>
 
     <div class="two-col" style="display:grid;grid-template-columns:1.15fr 1fr;gap:12px;align-items:start;margin-top:12px">
@@ -286,6 +297,34 @@
   <div id="hqGSeason" style="display:none">
     <h2 class="sec">Qurbani season — customers <span class="rule"></span><span class="hint">seasonal, not rolling</span></h2>
     <div class="grid" id="hqSeasonCards" style="grid-template-columns:repeat(4,1fr)"></div>
+
+    <h2 class="sec" style="margin-top:24px">Qurbani → regular meat <span class="rule"></span>
+      <span class="hint">who they were, and did they stay</span></h2>
+    <div class="gnote" id="hqQbMixLede" style="margin-top:0;margin-bottom:10px"></div>
+    <div class="grid" id="hqQbMix" style="grid-template-columns:repeat(2,1fr)"></div>
+  </div>
+</div>
+
+{{-- ===================== PRODUCTS ===================== --}}
+<div id="hqProducts" style="display:none">
+  <h2 class="sec">What sold — by category <span class="rule"></span><span class="hint" id="hqPCatsHint">click a category for its products</span></h2>
+  <div class="gnote" id="hqPQuality" style="display:none;margin:0 0 10px"></div>
+  <div class="grid" id="hqPCats" style="grid-template-columns:repeat(4,1fr)"></div>
+
+  <h2 class="sec">Top products <span class="rule"></span><span class="hint">click a row for its days</span></h2>
+  <div class="card" style="padding:6px 10px"><div id="hqPTop" style="overflow-x:auto"></div></div>
+
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;align-items:start;margin-top:18px" id="hqPTwoCol">
+    <div class="card">
+      <div class="k-label">Movers — vs last month
+        <button class="i-btn" type="button" onclick="hqDef('p_movers')" aria-label="How are movers calculated?">i</button></div>
+      <div id="hqPMovers" style="margin-top:8px"></div>
+    </div>
+    <div class="card">
+      <div class="k-label">Product lifecycle
+        <button class="i-btn" type="button" onclick="hqDef('p_life')" aria-label="How is lifecycle calculated?">i</button></div>
+      <div id="hqPLife" style="margin-top:8px"></div>
+    </div>
   </div>
 </div>
 
@@ -354,7 +393,11 @@
     var isQb=state.unit==='qb';
     var rail=$('hqMonthRail');
     if(isQb){
-      rail.innerHTML='<span class="mpill on" style="cursor:default">Qurbani '+state.year+' season</span>';
+      // Two pills: last season + this season (2025 exists via the product
+      // backfill; older years have no data in the system).
+      rail.innerHTML=[CUR_YEAR-1,CUR_YEAR].map(function(y){
+        return '<button class="mpill'+(state.year===y?' on':'')+'" type="button" onclick="hqPick('+y+','+state.month+')">Qurbani '+y+' season</button>';
+      }).join('');
     }else{
       rail.innerHTML=MONTHS.map(function(mo){var on=(mo.y===state.year&&mo.m===state.month);
         return '<button class="mpill'+(on?' on':'')+'" type="button" onclick="hqPick('+mo.y+','+mo.m+')">'+mo.label+'</button>';}).join('');
@@ -429,19 +472,26 @@
             {l:'Qurbani expenses (incl. animals)',v:cur.expenses,d:'expense',def:'qbcost'},{op:'='},
             {l:'Season net profit',v:cur.net_profit,r:dv.np_margin+'% NP margin',res:1,d:'expense',def:'np'}];
     }else{
-      plHint='Revenue − Vendor purchases = Gross profit · − Expenses = Net profit';
+      plHint='Revenue − Vendor purchases = Gross profit · − Expenses = Net profit · assets shown separately';
+      var an=cur.asset_purchases_count||0;
       flow=[{l:'Delivered revenue',v:cur.revenue,d:'revenue',def:'rev'},{op:'−'},
             {l:'Vendor purchases',v:cur.vendor_purchases,d:'vendor',def:'vendor'},{op:'='},
             {l:'Gross profit',v:cur.gross_profit,r:dv.gp_margin+'% GP margin',res:1,d:'vendor',def:'gp'},{op:'−'},
             {l:'Expenses',v:cur.expenses,d:'expense',def:'expense'},{op:'='},
-            {l:'Net profit',v:cur.net_profit,r:dv.np_margin+'% NP margin · '+rs(dv.net_per_work_day)+'/work day',res:1,d:'expense',def:'np'}];
+            {l:'Net profit',v:cur.net_profit,r:dv.np_margin+'% NP margin · '+rs(dv.net_per_work_day)+'/work day',res:1,d:'expense',def:'np'},
+            // Aside — capital spending sits OUTSIDE the equation (a bought asset
+            // is property, not a cost), so it gets a divider, not an operator.
+            {sep:1},
+            {l:'Assets bought',v:cur.asset_purchases||0,aside:1,d:'monthassets',def:'monthasset',
+             r:(an>0?an+' purchase'+(an===1?'':'s'):'nothing bought')+' · not in profit'}];
     }
     $('hqPlHead').querySelector('.hint').textContent=plHint;
     $('hqPlFlow').style.gridTemplateColumns=isQb?'1fr auto 1fr auto 1fr':'';
     $('hqPlFlow').innerHTML=flow.map(function(f,i){
       if(f.op)return '<div class="pl-op'+((i===3||i===7)?' brk':'')+'">'+f.op+'</div>';
+      if(f.sep)return '<div class="pl-sep" aria-hidden="true"></div>';
       var iBtn=f.def?'<button class="i-btn" type="button" onclick="event.stopPropagation();hqDef(\''+f.def+'\')" aria-label="How is '+esc(f.l)+' calculated?">i</button>':'';
-      return '<div class="pl-cell'+(f.res?' result':'')+' card click" tabindex="0" role="button" onclick="hqDrill(\''+f.d+'\')">'+
+      return '<div class="pl-cell'+(f.res?' result':'')+(f.aside?' aside':'')+' card click" tabindex="0" role="button" onclick="hqDrill(\''+f.d+'\')">'+
         '<div class="k-label">'+esc(f.l)+iBtn+'</div><div class="k-val">'+rs(f.v)+'</div>'+
         (f.r?'<div class="ratio">'+f.r+'</div>':'')+'</div>';
     }).join('');
@@ -451,6 +501,7 @@
     var tot=segs.reduce(function(a,s){return a+s[1];},0)||1;
     $('hqPlBar').innerHTML=segs.map(function(s){return '<div class="seg-v" style="width:'+(s[1]/tot*100)+'%;background:'+s[2]+'" title="'+s[0]+' '+rs(s[1])+'"></div>';}).join('');
     $('hqPlLegend').innerHTML=segs.map(function(s){return '<span><span class="sw" style="background:'+s[2]+'"></span>'+s[0]+' · '+rs(s[1])+' ('+(s[1]/tot*100).toFixed(1)+'%)</span>';}).join('');
+
   }
 
   function renderWc(){
@@ -561,7 +612,7 @@
         ['Unit rule',unitRule]])},
       cus:{t:'Customers ordered',v:rsS(cur.customers),r:[
         ['Formula','Distinct customers (by <code>phone</code>) with a delivery in the window'],
-        ['New','<span class="var">'+rsS(cur.new_customers)+'</span> placed their <span class="var">first-ever order</span> in this window (by <code>first_order_date</code>)'],
+        ['New','<span class="var">'+rsS(cur.new_customers)+'</span> received their <span class="var">first-ever delivery</span> in this window — counted on the day the order was <span class="var">delivered</span>, not the day it was placed'],
         ['Unit rule',unitRule]]},
       vendor:{t:'Vendor purchases',v:rs(cur.vendor_purchases),r:[
         ['Formula','Sum of <span class="var">approved / L2</span> vendor purchase bills dated in the window'],
@@ -585,7 +636,29 @@
         ['Formula',isQb?'Revenue − Qurbani expenses':'Gross profit − Expenses'],
         ['Values',(isQb?'<span class="var">'+rs(cur.revenue)+'</span> − <span class="var">'+rs(cur.expenses)+'</span>'
                        :'<span class="var">'+rs(cur.gross_profit)+'</span> − <span class="var">'+rs(cur.expenses)+'</span>')+' = <span class="var">'+rs(cur.net_profit)+'</span> ('+dv.np_margin+'%)'],
-        ['Per work day',rs(cur.net_profit)+' ÷ <span class="var">'+c.working_days+' working days</span> (calendar − holidays) = <span class="var">'+rs(dv.net_per_work_day)+'</span>']]}
+        ['Per work day',rs(cur.net_profit)+' ÷ <span class="var">'+c.working_days+' working days</span> (calendar − holidays) = <span class="var">'+rs(dv.net_per_work_day)+'</span>']]},
+      monthasset:{t:'Assets bought',v:rs(cur.asset_purchases||0),r:[
+        ['Formula','Sum of <span class="var">approved / L2</span> asset-purchase ledger entries dated in the <span class="var">full calendar month</span> — <span class="var">'+rsS(cur.asset_purchases_count||0)+'</span> this period. Click the box for the list'],
+        ['Why it sits apart','Capital spending is <span class="var">not</span> part of Revenue − Vendor − Expenses: the money became equipment you still own, so it never reduces profit. That is why it has a divider, not a − sign'],
+        ['Where the money went','It <span class="var">did</span> leave your cash / bank — so profit can look healthy while the account is lower. This box is the usual explanation'],
+        ['Not the same as','<span class="var">Fixed assets</span> in Working capital = book value of everything you own; this box = only what was bought in this month'],
+        ['Reconciles with','The <span class="var">Reports</span> tab’s “Assets” figure for the same month'],
+        ['Unit rule',unitRule]]},
+      p_cat:{t:'Product categories',v:'',r:[
+        ['Formula','Line items of <span class="var">delivered</span> orders in the window, summed by product category — the same rules as the closing (non-Shopify, must still be delivered, <span class="var">Qurbani excluded</span> — it has its own view)'],
+        ['Why it reads below revenue','Categories sum the <span class="var">product lines</span>; delivery charges and tips sit on the order, not on any product — so the category total is slightly below Delivered revenue by design'],
+        ['Grouping','Categories group the catalog’s product types (cuts like “Back Chops” roll into <span class="var">Mutton</span>, etc.). The drill shows each product’s raw type — if something sits in the wrong bucket, say so and it’s a one-line fix'],
+        ['Quantity','kg for weight-sold lines; frozen packs / per-piece items count as <span class="var">pieces</span> (same rule as Quantity sold)'],
+        ['Penetration','“In N orders · X% of all” = share of the month’s orders containing this category'],
+        ['Old months','Before <span class="var">March 2026</span> many items no longer link to the catalog — they appear as “Old catalog · unlinked” rather than being hidden'],
+        ['Unit rule','Follows the unit selector at line level (NULL unit = NF)']]},
+      p_movers:{t:'Movers',v:'',r:[
+        ['Formula','Each product’s revenue this window vs the previous one (same-days for an open month); the biggest gains and drops'],
+        ['Noise floor','Moves under <span class="var">Rs 5,000</span> are ignored'],
+        ['Watch for','A top seller sliding two months in a row — price, stock, or quality usually explains it']]},
+      p_life:{t:'Product lifecycle',v:'',r:[
+        ['First sale','Products whose <span class="var">first-ever delivered sale</span> happened this month (by order date)'],
+        ['Quiet listings','ACTIVE catalog products with no delivered sale in <span class="var">60+ days</span> — candidates to push, reprice or delist. Qurbani products are excluded (seasonal, not “dead”)']]}
     };
     if(w){
       var R=w.receivables;
@@ -649,7 +722,9 @@
         ['Formula',(gqb?'Booked revenue':'Delivered revenue')+' ÷ orders (from the Closing view, for '+esc(UNITS[state.unit].name)+')'],
         ['vs last '+(gqb?'season':'month'),'was <span class="var">'+rs(gs.aov_prev)+'</span>']]};
       D.g_new={t:'New customers',v:rsS(gs.new_customers),r:[
-        ['Formula','Customers whose <span class="var">first-ever order</span> falls in the period (by <code>first_order_date</code>)'],
+        ['Formula','Customers who received their <span class="var">first-ever delivery</span> in this period'],
+        ['Clock','Counted on the day the order was <span class="var">delivered</span> — the same clock as revenue and every other number here. Someone who orders on the 30th and receives on the 2nd is new in the month they <span class="var">received</span> it'],
+        ['Qurbani','A customer whose only earlier purchase was <span class="var">Qurbani</span> counts as new here on their first regular-meat delivery — Qurbani is a separate business and is excluded from this view (owner rule). The Qurbani tab shows the full new/existing + conversion split'],
         ['Unit','For '+esc(UNITS[state.unit].name)+' · was '+rsS(gs.new_prev)+' last '+(gqb?'season':'month')]]};
       D.g_repeat={t:'Repeat rate',v:gs.repeat+'%',r:[
         ['Formula','(customers − new) ÷ customers this '+(gqb?'season':'month')],
@@ -666,7 +741,8 @@
           ['Bands','0–30 · 31–60 · <strong>61–90 (win-back)</strong> · 91–180 · 180+ (lapsed)'],
           ['Why 61–90','Still warm, one nudge from lapsing — click the band for the exact WhatsApp list (name, phone, lifetime value)']]};
         D.cohort_def={t:'Cohort retention',v:'',r:[
-          ['Formula','Take everyone whose <span class="var">first order</span> was in month M. M+1 = % of them with ≥1 delivered order in the <span class="var">next month</span>, and so on'],
+          ['Formula','Take everyone whose <span class="var">first-ever delivery</span> was in month M. M+1 = % of them with ≥1 delivered order in the <span class="var">next month</span>, and so on'],
+          ['Clock','Same delivery clock as New customers, so a month’s cohort <span class="var">size</span> equals its New-customers card'],
           ['Reading','Down a column: M+1 rising cohort-over-cohort = onboarding / first delivery improving'],
           ['—','Blank cells are months that haven’t finished yet']]};
       }
@@ -674,7 +750,19 @@
         D.g_season={t:'Season buyers',v:rsS(ge.buyers),r:[['Formula','Unique customers with a non-cancelled Qurbani order this season']]};
         D.g_seasonnew={t:'New to Qurbani',v:rsS(ge.new_to_season),r:[['Formula','Season buyers who did NOT buy Qurbani with us last season']]};
         D.g_returning={t:'Returning',v:rsS(ge.returning),r:[['Formula','Season buyers who also bought Qurbani last season']]};
-        D.g_retention={t:'Season retention',v:ge.retention_pct+'%',r:[['Formula','Returning ÷ Season buyers = '+rsS(ge.returning)+' ÷ '+rsS(ge.buyers)+' = <span class="var">'+ge.retention_pct+'%</span>']]};
+        D.g_retention={t:'Season retention',v:ge.retention_pct+'%',r:[['Formula','Returning ÷ Season buyers = '+rsS(ge.returning)+' ÷ '+rsS(ge.buyers)+' = <span class="var">'+ge.retention_pct+'%</span>'],
+          ['Last season','That year’s <span class="var">QUR-numbered</span> orders — or, for 2025, the Qurbani orders identified by <span class="var">product</span> (backfilled Jul 2026)']]};
+        var gm=ge.mix||{buyers:0,new:{total:0,regular:0,only:0,pct:0},existing:{total:0,regular:0,only:0,pct:0}};
+        D.g_qbnew={t:'New to Nizami Farms',v:rsS(gm.new.total),r:[
+          ['Formula','Season buyers whose Qurbani order was their <span class="var">first-ever order</span> with us — nothing placed before it'],
+          ['Converted','<span class="var">'+rsS(gm.new.regular)+'</span> of them ('+gm.new.pct+'%) have since received a <span class="var">regular (non-Qurbani) order</span>. Because Qurbani was their first contact, any regular order came after it — so this is literally conversion'],
+          ['Qurbani only','<span class="var">'+rsS(gm.new.only)+'</span> have never bought regular meat. This is the win-back list — Qurbani paid to acquire them'],
+          ['Counts as new','On the regular Growth tab these people count as <span class="var">new</span> on their first regular delivery (owner rule) — Qurbani is a separate business']]};
+        D.g_qbold={t:'Already our customers',v:rsS(gm.existing.total),r:[
+          ['Formula','Season buyers who had <span class="var">already ordered</span> something before their first Qurbani order this season'],
+          ['Also regular','<span class="var">'+rsS(gm.existing.regular)+'</span> ('+gm.existing.pct+'%) also receive regular meat — Qurbani was a cross-sell to the existing base'],
+          ['Qurbani only','<span class="var">'+rsS(gm.existing.only)+'</span> have ordered before but never actually received regular meat'],
+          ['Regular means','Any <span class="var">delivered</span> non-Qurbani order, ever']]};
       }
     }
     return D[key];
@@ -737,9 +825,33 @@
     assets:{crumb:['Working capital','Fixed assets'],url:function(){return '/hq/drill/assets?unit='+state.unit;},
       cols:['Asset','Unit','Location','Bought','Book value'],
       map:function(r){return [esc(r.asset),esc(r.unit),esc(r.location),esc(r.bought),rsS(r.value)];}},
+    monthassets:{crumb:['Profit & loss','Assets bought'],url:function(){return '/hq/drill/asset-purchases'+qs();},
+      cols:['Asset','Unit','Bought','Entered by','Amount'],
+      map:function(r){return [esc(r.asset),esc(r.unit),esc(r.bought),esc(r.who),rsS(r.amount)];},
+      total:function(rows){var t=0;rows.forEach(function(r){t+=r.amount||0;});return ['Total','','','',rsS(t)];},
+      note:'What was bought this month, from the asset-purchase ledger entries. This is capital spending — it is NOT in the profit figure, because the money became equipment you still own. The Fixed assets card in Working capital shows the book value of everything you own.'},
     missing_invoices:{crumb:['Working capital','Missing invoices'],url:function(){return '/hq/drill/missing-invoices';},
       cols:['Order #','Customer','Delivered','Amount','Paid'],
       map:function(r){return [esc(r.order_number),esc(r.customer),esc(r.delivered),rsS(r.amount),pill(r.paid)];}},
+    prodcat:{crumb:['Products'],
+      titleOverride:function(){return (drill.prodCat||'')+' — products';},
+      url:function(){return '/hq/drill/products-category'+qs()+'&category='+encodeURIComponent(drill.prodCat);},
+      cols:['Product','Type','Qty','Orders','Avg Rs','Revenue','vs prev'],
+      map:function(r){return [esc(r.name),esc(r.type),esc(r.qty),rsS(r.orders),rsS(r.avg)+'/'+r.avg_unit,rsS(r.revenue),
+        (r.prev==null?'<span class="delta flat">new</span>':deltaChip(r.revenue,r.prev))];},
+      total:function(rows){var rev=0,o=0;rows.forEach(function(r){rev+=r.revenue;o+=r.orders;});
+        return [rows.length+' products','','',rsS(o),'',rsS(rev),''];},
+      l2:{crumb:function(r){return r.name;},
+        url:function(r){return '/hq/drill/product-daily'+qs()+'&product_id='+r.pid;},
+        cols:['Day','Qty','Orders','Revenue'],
+        map:function(r){return [esc(r.day),esc(r.qty),rsS(r.orders),rsS(r.rev)];}}},
+    proddaily:{crumb:['Products','Daily'],
+      titleOverride:function(){return (drill.prodName||'Product')+' — days';},
+      url:function(){return '/hq/drill/product-daily'+qs()+'&product_id='+drill.pid;},
+      cols:['Day','Qty','Orders','Revenue'],
+      map:function(r){return [esc(r.day),esc(r.qty),rsS(r.orders),rsS(r.rev)];},
+      total:function(rows){var rev=0,o=0;rows.forEach(function(r){rev+=r.rev;o+=r.orders;});
+        return ['Total','',rsS(o),rsS(rev)];}},
     recency:{crumb:['Recency'],crumbPrefix:function(){return 'Growth · whole regular base';},
       titleOverride:function(){return (drill.bandLabel||'')+' — customers';},
       url:function(){return '/hq/drill/recency?band='+encodeURIComponent(drill.band);},
@@ -817,13 +929,21 @@
     }).catch(function(e){ setLoading(false); showErr(e.message); });
   }
   window.hqReload=hqReload;
-  function afterLoad(){ if(state.tab==='growth') loadGrowth(true); }
-  window.hqSetUnit=function(u){ state.unit=u; if(u==='qb'){state.year=CUR_YEAR;} renderControls(); hqReload(); afterLoad(); };
+  function afterLoad(){ if(state.tab==='growth') loadGrowth(true); if(state.tab==='products') loadProducts(true); }
+  window.hqSetUnit=function(u){ state.unit=u;
+    if(u==='qb'){state.year=CUR_YEAR;}
+    // Leaving the Qurbani unit with a past season selected: snap back to the
+    // current month (the month rail has no pill for e.g. Jul-2025).
+    else if(!MONTHS.some(function(mo){return mo.y===state.year&&mo.m===state.month;})){state.year=CUR_YEAR;state.month=CUR_MONTH;}
+    renderControls(); hqReload(); afterLoad(); };
   window.hqPick=function(y,m){ state.year=y; state.month=m; renderControls(); hqReload(); afterLoad(); };
   window.hqSetTab=function(t){ state.tab=t;
     $('tabClosing').classList.toggle('on',t==='closing'); $('tabGrowth').classList.toggle('on',t==='growth');
+    $('tabProducts').classList.toggle('on',t==='products');
     $('hqClosing').style.display=t==='closing'?'':'none'; $('hqGrowth').style.display=t==='growth'?'':'none';
-    if(t==='growth') loadGrowth(false); };
+    $('hqProducts').style.display=t==='products'?'':'none';
+    if(t==='growth') loadGrowth(false);
+    if(t==='products') loadProducts(false); };
 
   // ---------- growth ----------
   function loadGrowth(force){
@@ -839,6 +959,18 @@
       : ((data.growth&&data.growth.is_open) ? 'vs same days last month' : 'vs last month');
     return deltaChip(cur,prev,goodUp)+' '+lbl;
   }
+  // For metrics that ARE percentages (repeat rate): show the move in POINTS
+  // (95.8% → 86.3% = "▼ 9.5 pts"), not the relative % of a % that deltaChip
+  // would render (▼ 9.9%) — owner ruling Jul-2026.
+  function deltaPtsVs(cur,prev){
+    var lbl = state.unit==='qb' ? 'vs last season'
+      : ((data.growth&&data.growth.is_open) ? 'vs same days last month' : 'vs last month');
+    if(prev==null||prev===0)return '<span class="delta flat">new</span> '+lbl;
+    var d=cur-prev;
+    if(Math.abs(d)<0.05)return '<span class="delta flat">±0 pts</span> '+lbl;
+    var up=d>0;
+    return '<span class="delta '+(up?'up':'dn')+'">'+(up?'▲':'▼')+' '+Math.abs(d).toFixed(1)+' pts</span> '+lbl;
+  }
 
   function renderGrowth(){
     var g=data.growth; if(!g)return;
@@ -851,7 +983,7 @@
     $('hqGSales').innerHTML=
       card('g_aov','Average order value',rs(s.aov),deltaVs(s.aov,s.aov_prev,true))+
       card('g_new','New customers',rsS(s.new_customers),deltaVs(s.new_customers,s.new_prev,true)+' · first-time')+
-      card('g_repeat','Repeat rate',s.repeat+'%',deltaVs(s.repeat,s.repeat_prev,true)+' · '+rsS(s.returning)+' of '+rsS(s.customers)+' had bought before');
+      card('g_repeat','Repeat rate',s.repeat+'%',deltaPtsVs(s.repeat,s.repeat_prev)+' · '+rsS(s.returning)+' of '+rsS(s.customers)+' had bought before');
 
     if(isQb){
       $('hqGRegular').style.display='none'; $('hqGSeason').style.display='';
@@ -861,6 +993,38 @@
         card('g_seasonnew','New to Qurbani',rsS(e.new_to_season),'first Qurbani with us')+
         card('g_returning','Returning',rsS(e.returning),'also bought last season')+
         card('g_retention','Season retention',e.retention_pct+'%',rsS(e.returning)+' of '+rsS(e.buyers)+' came back');
+
+      // Qurbani → regular meat. Two questions per season buyer: were they new to
+      // Nizami Farms or already ours, and do they also buy regular meat?
+      var m=e.mix;
+      if(m && m.buyers>0){
+        var row=function(lbl,n,pct,good){
+          return '<div class="row"><span>'+lbl+'</span><span>'+rsS(n)+
+            (pct!=null?' <strong style="color:'+(good?'var(--good)':'var(--mut)')+'">'+pct+'%</strong>':'')+'</span></div>';
+        };
+        var mixCard=function(def,label,total,sub,rows){
+          return '<div class="card"><div class="k-label">'+esc(label)+
+            '<button class="i-btn" type="button" onclick="hqDef(\''+def+'\')" aria-label="How is '+esc(label)+' calculated?">i</button></div>'+
+            '<div class="k-val">'+rsS(total)+'</div><div class="k-sub">'+sub+'</div>'+
+            '<div class="banklist">'+rows+'</div></div>';
+        };
+        $('hqQbMixLede').innerHTML='Of <strong>'+rsS(m.buyers)+'</strong> Qurbani buyers this season, <strong>'+
+          rsS(m.new.total)+'</strong> had never bought from us before and <strong>'+rsS(m.existing.total)+
+          '</strong> were already our customers. '+
+          (m.new.total>0
+            ? 'Only <strong>'+rsS(m.new.regular)+'</strong> of the new ones ('+m.new.pct+'%) have bought regular meat since — the other <strong>'+
+              rsS(m.new.only)+'</strong> are a win-back list.'
+            : '');
+        $('hqQbMix').innerHTML=
+          mixCard('g_qbnew','New to Nizami Farms',m.new.total,'Qurbani was their first-ever order',
+            row('Converted — also buy regular meat',m.new.regular,m.new.pct,true)+
+            row('Qurbani only — never bought meat',m.new.only,null,false))+
+          mixCard('g_qbold','Already our customers',m.existing.total,'had ordered before this Qurbani',
+            row('Also buy regular meat',m.existing.regular,m.existing.pct,true)+
+            row('Qurbani only',m.existing.only,null,false));
+      }else{
+        $('hqQbMixLede').innerHTML=''; $('hqQbMix').innerHTML='';
+      }
       return;
     }
     $('hqGRegular').style.display=''; $('hqGSeason').style.display='none';
@@ -868,9 +1032,9 @@
     // active tiles (nested — point in time, no delta)
     var e=g.engine, hex=UNITS[state.unit].hex;
     $('hqGActives').innerHTML=
-      card('g_a30','Active · 30 days',rsS(e.active_30),'ordered in the last 30 days')+
-      card('g_a60','Active · 60 days',rsS(e.active_60),'ordered in the last 60 days')+
-      card('g_a90','Active · 90 days',rsS(e.active_90),'ordered in the last 90 days');
+      card('g_a30','Active · 30 days',rsS(e.active_30),'received an order in the last 30 days')+
+      card('g_a60','Active · 60 days',rsS(e.active_60),'received an order in the last 60 days')+
+      card('g_a90','Active · 90 days',rsS(e.active_90),'received an order in the last 90 days');
 
     // recency ladder
     var bands=e.bands||[], bmax=Math.max.apply(null,bands.map(function(b){return b.count;}).concat([1]));
@@ -905,6 +1069,79 @@
     $('hqDrillScrim').classList.add('on'); $('hqPanel').classList.add('on');
     renderDrill();
   };
+
+  // ---------- products ----------
+  function loadProducts(force){
+    if(!force && data.products && data.productsKey===growthKey()){ renderProducts(); return; }
+    $('hqPCats').classList.add('loading');
+    fetchJSON('/hq/products'+qs()).then(function(p){
+      data.products=p; data.productsKey=growthKey(); renderProducts(); $('hqPCats').classList.remove('loading');
+    }).catch(function(e){ $('hqPCats').classList.remove('loading'); showErr(e.message); });
+  }
+  window.hqProdCat=function(cat){
+    drill={key:'prodcat',level:1,l1:null,row:null,prodCat:cat};
+    $('hqDrillScrim').classList.add('on'); $('hqPanel').classList.add('on');
+    renderDrill();
+  };
+  window.hqProdDaily=function(pid,name){
+    drill={key:'proddaily',level:1,l1:null,row:null,pid:pid,prodName:name};
+    $('hqDrillScrim').classList.add('on'); $('hqPanel').classList.add('on');
+    renderDrill();
+  };
+  function moverRow(m,up){
+    return '<div class="row"><span style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+esc(m.name)+'</span>'+
+      '<span style="white-space:nowrap"><span class="delta '+(up?'up':'dn')+'">'+(up?'▲':'▼')+' '+rsS(Math.abs(m.delta))+'</span></span></div>';
+  }
+  function renderProducts(){
+    var p=data.products; if(!p)return;
+    if(p.season){
+      $('hqPQuality').style.display='none';
+      $('hqPCats').innerHTML='<div class="card" style="grid-column:1/-1"><div class="k-sub">Products covers the regular business (Qurbani is excluded here — it has its own view under the Qurbani unit). Pick Nizami Farms, Khaas or NF + Frozen above.</div></div>';
+      $('hqPTop').innerHTML=''; $('hqPMovers').innerHTML=''; $('hqPLife').innerHTML='';
+      return;
+    }
+    // data-quality chip for months before the Mar-2026 catalog rebuild
+    var q=p.quality||{};
+    if((q.unlinked_pct||0)>2){
+      $('hqPQuality').style.display='';
+      $('hqPQuality').innerHTML='⚠ <strong>'+q.unlinked_pct+'%</strong> of this month’s revenue (Rs '+rsS(q.unlinked_rs)+') is on <strong>old-catalog items</strong> that no longer link to a product — shown as “Old catalog · unlinked”. Category data is complete from <strong>March 2026</strong> onward.';
+    }else{ $('hqPQuality').style.display='none'; }
+
+    $('hqPCats').innerHTML=(p.categories||[]).map(function(c){
+      return '<div class="card click" tabindex="0" role="button" onclick="hqProdCat(\''+esc(c.label).replace(/'/g,"\\'")+'\')" '+
+        'onkeydown="if(event.key===\'Enter\')hqProdCat(\''+esc(c.label).replace(/'/g,"\\'")+'\')">'+
+        '<div class="k-label">'+esc(c.label)+'<button class="i-btn" type="button" onclick="event.stopPropagation();hqDef(\'p_cat\')" aria-label="How are categories calculated?">i</button><span class="drill">›</span></div>'+
+        '<div class="k-val">'+rs(c.revenue)+'</div>'+
+        '<div class="k-sub">'+deltaChip(c.revenue,c.prev)+' · '+c.share+'% of month</div>'+
+        '<div class="banklist">'+
+          '<div class="row"><span>Quantity</span><span>'+(c.kg>0?rsS(Math.round(c.kg))+' kg'+(c.pcs>0?' + '+rsS(c.pcs)+' pc':''):rsS(c.pcs)+' pc')+'</span></div>'+
+          '<div class="row"><span>In '+rsS(c.orders)+' orders</span><span>'+c.penetration+'% of all</span></div>'+
+        '</div></div>';
+    }).join('');
+
+    var t=p.top||[];
+    $('hqPTop').innerHTML=!t.length?'<div class="p-empty">Nothing sold in this window.</div>':
+      '<table class="dt"><thead><tr><th>Product</th><th>Category</th><th>Qty</th><th>Orders</th><th>Avg Rs</th><th>Revenue</th><th>vs prev</th></tr></thead><tbody>'+
+      t.map(function(r){
+        return '<tr class="rowclick" onclick="hqProdDaily('+r.pid+',\''+esc(r.name).replace(/'/g,"\\'")+'\')">'+
+          '<td>'+esc(r.name)+'</td><td>'+esc(r.cat)+'</td><td>'+esc(r.qty)+'</td><td>'+rsS(r.orders)+'</td>'+
+          '<td>'+rsS(r.avg)+'/'+r.avg_unit+'</td><td>'+rsS(r.revenue)+'</td>'+
+          '<td>'+(r.prev==null?'<span class="delta flat">new</span>':deltaChip(r.revenue,r.prev))+'</td></tr>';
+      }).join('')+'</tbody></table>';
+
+    var mv=p.movers||{up:[],down:[]};
+    $('hqPMovers').innerHTML=
+      ((mv.up||[]).length?'<div class="banklist">'+mv.up.map(function(m){return moverRow(m,true);}).join('')+'</div>':'')+
+      ((mv.down||[]).length?'<div class="banklist" style="margin-top:8px">'+mv.down.map(function(m){return moverRow(m,false);}).join('')+'</div>':'')+
+      (!(mv.up||[]).length&&!(mv.down||[]).length?'<div class="k-sub">No product moved more than Rs 5,000 vs last month.</div>':'');
+
+    var fp=p.fresh_products||[], dd=p.dead||{count:0,rows:[]};
+    $('hqPLife').innerHTML=
+      '<div class="k-sub" style="margin-bottom:4px"><strong>First sale this month</strong>'+(fp.length?'':' — none')+'</div>'+
+      (fp.length?'<div class="banklist">'+fp.map(function(f){return '<div class="row"><span style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+esc(f.name)+'</span><span>'+esc(f.first)+' · '+rsS(f.rev)+'</span></div>';}).join('')+'</div>':'')+
+      '<div class="k-sub" style="margin:10px 0 4px"><strong>Quiet listings</strong> — '+rsS(dd.count)+' active products with no sale in 60+ days'+(dd.rows.length?' (top by lifetime sales):':'')+'</div>'+
+      (dd.rows.length?'<div class="banklist">'+dd.rows.map(function(d){return '<div class="row"><span style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+esc(d.name)+'</span><span>last '+esc(d.last)+'</span></div>';}).join('')+'</div>':'');
+  }
 
   document.addEventListener('keydown',function(e){ if(e.key==='Escape'){
     if($('hqDefBox').classList.contains('on'))hqCloseDef();

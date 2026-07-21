@@ -218,7 +218,13 @@ window.viewCustomer = function(id) {
                             <span style="font-weight:700; color:#059669;">✅ Verified</span>
                             ${mapsUrl ? `<a href="${mapsUrl}" target="_blank" style="color:#3b82f6; text-decoration:none; font-size:13px; font-weight:600;">Open in Maps ↗</a>` : ''}
                             ${vloc.saved_by ? `<span style="font-size:11px; color:#9ca3af;" title="${vloc.saved_at ? new Date(vloc.saved_at).toLocaleString() : ''}">by ${vloc.saved_by}</span>` : ''}
+                            ${vloc.unlock_active
+                                ? `<span style="font-size:11px; font-weight:700; color:#b45309; background:#fef3c7; border:1px solid #fcd34d; padding:2px 8px; border-radius:999px;" title="Unlocked${vloc.unlocked_by ? ' by ' + vloc.unlocked_by : ''} — a rider can change this pin until ${new Date(vloc.unlocked_until).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})}">🔓 Rider unlock until ${new Date(vloc.unlocked_until).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})}</span>`
+                                : `<span style="font-size:11px; font-weight:600; color:#6b7280; background:#f3f4f6; border:1px solid #e5e7eb; padding:2px 8px; border-radius:999px;" title="Riders cannot change this pin unless you unlock it">🔒 Rider-locked</span>`}
                             <div style="flex:1; min-width:6px;"></div>
+                            ${vloc.unlock_active
+                                ? `<button onclick="relockCustomerPin(${customer.id})" style="padding:4px 12px; background:#fff; color:#b45309; border:1px solid #fcd34d; border-radius:6px; font-size:12.5px; font-weight:600; cursor:pointer;" title="Cancel the unlock — the pin locks again for riders">🔒 Re-lock</button>`
+                                : `<button onclick="unlockCustomerPin(${customer.id})" style="padding:4px 12px; background:#fff; color:#d97706; border:1px solid #fbbf24; border-radius:6px; font-size:12.5px; font-weight:600; cursor:pointer;" title="Let the rider change this pin (auto-locks after one save or 6 hours)">🔓 Unlock for rider</button>`}
                             <button onclick="updateVerifiedLocation(${customer.id})" style="padding:4px 12px; background:#3b82f6; color:#fff; border:none; border-radius:6px; font-size:12.5px; font-weight:500; cursor:pointer;">Update</button>
                         ` : `
                             <span style="font-weight:700; color:#dc2626;">Not set</span>
@@ -4415,7 +4421,17 @@ function saveVerifiedLocation() {
     .then(response => response.json())
     .then(data => {
         if (data.success) {
-            alert('Verified location saved successfully!');
+            // The server tells us whether it got EXACT coords, only an
+            // APPROXIMATE (geocoded) point, or NONE (link had no location and
+            // geocoding failed). Warn on the last two so nobody trusts a pin
+            // that reports/riders can't actually use.
+            if (data.coords_missing) {
+                alert('⚠️ ' + (data.message || "Saved the link, but no exact location could be read from it. Please drop the pin on the map."));
+            } else if (data.approximate) {
+                alert('⚠️ ' + (data.message || 'Saved from the address (approximate). Drop the pin on the map for precise delivery.'));
+            } else {
+                alert('✅ Verified location saved successfully!');
+            }
             closeVerifiedLocationModal();
             // Refresh customer view if currently viewing
             if (document.getElementById('viewCustomerModal').style.display === 'block') {
@@ -4433,6 +4449,48 @@ function saveVerifiedLocation() {
         saveBtn.innerHTML = originalText;
         saveBtn.disabled = false;
     });
+}
+
+// ===== Verified-pin lock (Jul-2026): grant / cancel a rider unlock window =====
+// Riders cannot change an existing verified pin; these grant a time-boxed
+// exception (consumed by the rider's save, else expires on its own).
+function unlockCustomerPin(customerId) {
+    if (!confirm('Unlock this customer\'s location so the RIDER can change the pin?\n\nIt locks again automatically after one save (or 6 hours).')) return;
+    fetch(`/customers/${customerId}/unlock-verified-pin`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').content
+        }
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (data.success) {
+            viewCustomer(customerId); // refresh the modal so the 🔓 chip shows
+        } else {
+            alert('Error: ' + (data.message || 'Failed to unlock location'));
+        }
+    })
+    .catch(() => alert('Failed to unlock location. Please try again.'));
+}
+
+function relockCustomerPin(customerId) {
+    fetch(`/customers/${customerId}/relock-verified-pin`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').content
+        }
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (data.success) {
+            viewCustomer(customerId);
+        } else {
+            alert('Error: ' + (data.message || 'Failed to re-lock location'));
+        }
+    })
+    .catch(() => alert('Failed to re-lock location. Please try again.'));
 }
 </script>
 

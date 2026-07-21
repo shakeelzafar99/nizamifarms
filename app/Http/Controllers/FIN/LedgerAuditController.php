@@ -494,42 +494,46 @@ class LedgerAuditController extends Controller
         $isShortCash = $settlementData['is_short_cash_settlement'] ?? false;
         $shortCashAmount = $settlementData['short_cash_amount'] ?? 0;
         
+        // 2dp everywhere — old metadata may carry raw floats (pre-Jul-2026 deposits)
         if ($isShortCash) {
-            $totalSettlementAmount = $depositAmount + $shortCashAmount;
+            $totalSettlementAmount = round($depositAmount + $shortCashAmount, 2);
         } else {
-            $totalSettlementAmount = $depositAmount;
+            $totalSettlementAmount = round($depositAmount, 2);
         }
-        
+
         $invoices = LedgerModel::whereIn('id', $invoiceIds)
             ->whereIn('settlement_status', ['open', 'partial'])
             ->orderBy('transaction_date', 'asc')
             ->get();
-        
+
         $remainingAmount = $totalSettlementAmount;
-        
+
         foreach ($invoices as $invoice) {
-            $outstandingForThisInvoice = $invoice->amount - ($invoice->settled_amount ?? 0);
-            
-            if ($remainingAmount <= 0) {
+            $outstandingForThisInvoice = round($invoice->amount - ($invoice->settled_amount ?? 0), 2);
+
+            if ($remainingAmount < 0.01) {
                 break;
             }
-            
-            $amountToSettle = min($remainingAmount, $outstandingForThisInvoice);
-            
-            $invoice->settled_amount = ($invoice->settled_amount ?? 0) + $amountToSettle;
-            
+
+            $amountToSettle = round(min($remainingAmount, $outstandingForThisInvoice), 2);
+            if ($amountToSettle <= 0) {
+                continue; // nothing outstanding on this invoice — skip, no zero audit rows
+            }
+
+            $invoice->settled_amount = round(($invoice->settled_amount ?? 0) + $amountToSettle, 2);
+
             if ($invoice->settled_amount >= $invoice->amount) {
                 $invoice->settlement_status = 'settled';
                 $invoice->settled_at = now();
                 $invoice->settled_via_ledger_id = $depositLedger->id;
             }
             $invoice->save();
-            
+
             // Create audit record if it doesn't exist
             $existingAudit = \App\Models\FIN\InvoiceSettlementModel::where('settlement_deposit_id', $depositLedger->id)
                 ->where('invoice_ledger_id', $invoice->id)
                 ->first();
-            
+
             if (!$existingAudit) {
                 \App\Models\FIN\InvoiceSettlementModel::create([
                     'settlement_deposit_id' => $depositLedger->id,
@@ -537,8 +541,16 @@ class LedgerAuditController extends Controller
                     'settled_amount' => $amountToSettle
                 ]);
             }
-            
-            $remainingAmount -= $amountToSettle;
+
+            $remainingAmount = round($remainingAmount - $amountToSettle, 2);
+        }
+
+        // Audit tool can be re-run, so no comment-append here — warn in the log only.
+        if ($remainingAmount >= 0.01) {
+            Log::warning("Audit re-process left UNALLOCATED settlement remainder", [
+                'deposit_id' => $depositLedger->id,
+                'amount_remaining' => $remainingAmount,
+            ]);
         }
     }
     

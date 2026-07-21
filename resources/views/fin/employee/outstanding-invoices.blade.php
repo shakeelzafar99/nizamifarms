@@ -410,6 +410,110 @@
     </div>
     @endif
 
+    <!-- 🔧 Maintenance Requests -->
+    @if(isset($pendingMaintenanceRequests) && $pendingMaintenanceRequests)
+    <div class="mb-4">
+        <div style="background: linear-gradient(to right, #f0fdfa, #ccfbf1); border: 2px solid #5eead4;" class="rounded-lg shadow-sm overflow-hidden">
+            <!-- Header (collapsed by default — keeps the closing screen tidy) -->
+            <div style="background: linear-gradient(to right, #0d9488, #0f766e);" class="px-4 py-3 flex items-center justify-between cursor-pointer" onclick="document.getElementById('maint-requests-body').classList.toggle('hidden')">
+                <div class="flex items-center gap-3">
+                    <span class="text-lg">🔧</span>
+                    <h3 class="text-sm font-bold text-white">Maintenance Requests</h3>
+                </div>
+                <div class="flex items-center gap-3">
+                    <span class="text-xs bg-white text-teal-700 px-2 py-0.5 rounded-full font-bold">{{ $pendingMaintenanceRequests['total_count'] }} Pending</span>
+                    <span class="text-xs bg-teal-900 bg-opacity-30 text-white px-2 py-0.5 rounded-full font-bold">Rs. {{ number_format($pendingMaintenanceRequests['total_amount']) }}</span>
+                    <svg class="w-4 h-4 text-white transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path></svg>
+                </div>
+            </div>
+            <div id="maint-requests-body" class="hidden">
+                <!-- Summary Row -->
+                <div class="px-4 py-2 flex gap-4 border-b" style="border-color: #5eead4;">
+                    <div class="flex items-center gap-2">
+                        <span class="text-xs font-semibold text-gray-600">Total Requests:</span>
+                        <span class="text-xs font-bold text-gray-900">{{ $pendingMaintenanceRequests['total_count'] }}</span>
+                    </div>
+                    <div class="flex items-center gap-2">
+                        <span class="text-xs font-semibold text-gray-600">Total Amount:</span>
+                        <span class="text-xs font-bold text-teal-700">Rs. {{ number_format($pendingMaintenanceRequests['total_amount'], 2) }}</span>
+                    </div>
+                    <div class="flex items-center gap-2">
+                        <span class="text-xs font-semibold text-gray-600">People:</span>
+                        <span class="text-xs font-bold text-gray-900">{{ count($pendingMaintenanceRequests['by_rider']) }}</span>
+                    </div>
+                </div>
+
+                @foreach($pendingMaintenanceRequests['by_rider'] as $mIdx => $riderData)
+                <div class="border-b last:border-b-0" style="border-color: #5eead4;">
+                    <div class="px-4 py-2 flex items-center justify-between cursor-pointer hover:bg-teal-50 transition-colors"
+                         onclick="document.getElementById('maint-rider-{{ $mIdx }}').classList.toggle('hidden')">
+                        <div class="flex items-center gap-3">
+                            <span class="text-sm font-bold text-gray-800">{{ $riderData['rider_name'] }}</span>
+                            <span class="text-xs bg-teal-100 text-teal-700 px-2 py-0.5 rounded-full font-medium">{{ $riderData['count'] }} request(s)</span>
+                        </div>
+                        <div class="flex items-center gap-2">
+                            <span class="text-sm font-bold text-teal-700">Rs. {{ number_format($riderData['total_amount'], 2) }}</span>
+                            <svg class="w-3 h-3 text-gray-400 transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path></svg>
+                        </div>
+                    </div>
+
+                    <div id="maint-rider-{{ $mIdx }}">
+                        @foreach($riderData['requests'] as $mReq)
+                        <div id="petrol-req-{{ $mReq['id'] }}" class="mx-4 mb-2 rounded-lg overflow-hidden" style="background-color: #f0fdfa; border: 1px solid #99f6e4;">
+                            <div class="px-4 py-3">
+                                <div class="flex items-center justify-between mb-2">
+                                    <div class="flex items-center gap-3">
+                                        <span class="text-xs font-mono font-bold text-teal-800">{{ $mReq['request_number'] }}</span>
+                                        <span class="text-xs text-gray-500">{{ $mReq['expense_date'] }}</span>
+                                        <span class="text-xs bg-teal-100 text-teal-700 px-1.5 py-0.5 rounded font-semibold">🔧 Maintenance</span>
+                                    </div>
+                                    <span class="text-sm font-bold text-teal-800">Rs. {{ number_format($mReq['amount'], 2) }}</span>
+                                </div>
+                                @if($mReq['notes'])
+                                <div class="text-xs text-gray-500 mb-2 italic">{{ $mReq['notes'] }}</div>
+                                @endif
+                                @if(!empty($mReq['attachment_url']))
+                                <div class="mb-2">
+                                    <a href="{{ $mReq['attachment_url'] }}" target="_blank" class="inline-block">
+                                        <img src="{{ $mReq['attachment_url'] }}" alt="Receipt" class="h-20 w-auto rounded border border-teal-200 hover:opacity-80 transition-opacity cursor-pointer" />
+                                    </a>
+                                </div>
+                                @endif
+                                <div class="flex items-center gap-2 mt-2">
+                                    <div class="flex items-center gap-1.5">
+                                        <span class="text-xs text-gray-500">Pay from:</span>
+                                        <select id="petrol-pay-src-{{ $mReq['id'] }}"
+                                            style="color: #1f2937; background-color: white; border: 1px solid #d1d5db;"
+                                            class="text-xs px-2 py-1 rounded-md focus:outline-none focus:ring-1 focus:ring-teal-400">
+                                            @foreach($petrolPaymentAccounts as $acc)
+                                            <option value="{{ $acc->id }}" {{ $acc->account_code === 'NF_CASH' ? 'selected' : '' }}>{{ $acc->account_name }}</option>
+                                            @endforeach
+                                        </select>
+                                    </div>
+                                    <button type="button"
+                                        onclick="approvePetrolRequest({{ $mReq['id'] }}, {{ $mReq['requires_level_1'] ? '1' : '2' }})"
+                                        style="background-color: #16a34a;"
+                                        class="text-xs text-white px-4 py-1.5 rounded-md font-bold hover:opacity-90 transition-all cursor-pointer flex items-center gap-1">
+                                        ✅ Approve
+                                    </button>
+                                    <button type="button"
+                                        onclick="rejectPetrolRequest({{ $mReq['id'] }}, {{ $mReq['requires_level_1'] ? '1' : '2' }})"
+                                        style="background-color: #dc2626;"
+                                        class="text-xs text-white px-4 py-1.5 rounded-md font-bold hover:opacity-90 transition-all cursor-pointer flex items-center gap-1">
+                                        ❌ Reject
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                        @endforeach
+                    </div>
+                </div>
+                @endforeach
+            </div>
+        </div>
+    </div>
+    @endif
+
     <!-- Invoices Section -->
     @if($invoicesByRider->isEmpty())
     <!-- No Invoices State -->
@@ -1252,7 +1356,7 @@ function sendOnlineWhatsApp(orderId, customerName, customerPhone, orderNumber, r
 }
 
 function approvePetrolRequest(requestId, level) {
-    if (!confirm('Approve this petrol request?')) return;
+    if (!confirm('Approve this request?')) return;
     
     var btn = event.target;
     btn.disabled = true;
@@ -1301,7 +1405,7 @@ function approvePetrolRequest(requestId, level) {
 }
 
 function rejectPetrolRequest(requestId, level) {
-    var reason = prompt('Reason for rejecting this petrol request:');
+    var reason = prompt('Reason for rejecting this request:');
     if (!reason) return;
     
     var btn = event.target;

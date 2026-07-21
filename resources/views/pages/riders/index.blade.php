@@ -66,6 +66,9 @@
                     $initials = strtoupper(substr($parts[0] ?? '?', 0, 1) . (isset($parts[1]) ? substr($parts[1], 0, 1) : ''));
                     $bgKey = $avatarKeys[$i % count($avatarKeys)];
                     $isBike = ($rider->company_bike ?? 0) == 1;
+                    $hasHome = ($rider->home_latitude ?? null) !== null && ($rider->home_latitude ?? null) !== '';
+                    $anyOffice = ($rider->checkin_any_office ?? 0) == 1;
+                    $meterExempt = isset($rider->meter_required) && (int) $rider->meter_required === 0;
                     $active = $rider->profile_active ?? true;
                 @endphp
                 <tr class="hover:bg-gray-50 transition-colors">
@@ -75,6 +78,24 @@
                             <div>
                                 <div class="text-sm font-semibold text-gray-900">{{ $rider->fullname }}</div>
                                 <div class="text-xs text-gray-400">{{ $rider->email }}</div>
+                                @if($isBike || $anyOffice || $meterExempt)
+                                <div class="flex flex-wrap items-center gap-1 mt-1">
+                                    @if($isBike)
+                                        <span title="Company bike — goes home with the rider" class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold bg-indigo-50 text-indigo-700 border border-indigo-100">🏍 bike</span>
+                                        @if($hasHome)
+                                            <span title="Home location is set — going-home check active" class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold bg-emerald-50 text-emerald-700 border border-emerald-100">🏠 home set</span>
+                                        @else
+                                            <span title="No home location yet — the going-home check stays off. Edit to add it." class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold bg-amber-50 text-amber-700 border border-amber-100">🏠 no home</span>
+                                        @endif
+                                    @endif
+                                    @if($anyOffice)
+                                        <span title="May check in at any office location" class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold bg-sky-50 text-sky-700 border border-sky-100">🏢 any office</span>
+                                    @endif
+                                    @if($meterExempt)
+                                        <span title="Meter reading NOT required for this user (management exemption)" class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold bg-gray-100 text-gray-500 border border-gray-200">⛽ meter exempt</span>
+                                    @endif
+                                </div>
+                                @endif
                             </div>
                         </div>
                     </td>
@@ -140,7 +161,7 @@
 
 <!-- Rider Profile Modal -->
 <div id="riderProfileModal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background-color: rgba(0,0,0,0.5); z-index: 9999;">
-    <div style="position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); background: white; border-radius: 8px; width: 90%; max-width: 600px; box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.25);">
+    <div style="position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); background: white; border-radius: 8px; width: 90%; max-width: 600px; max-height: 92vh; overflow-y: auto; box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.25);">
         <div style="padding: 20px; border-bottom: 1px solid #e5e7eb;">
             <h3 id="riderModalTitle" style="font-size: 18px; font-weight: 600; margin: 0;">Add Rider Profile</h3>
         </div>
@@ -204,7 +225,37 @@
                         <span style="font-size: 12px; color: #9ca3af;">km/day allowed off company hours</span>
                     </div>
                     <p style="font-size: 12px; color: #6b7280; margin: 4px 0 0 0;">Flag when the morning start meter jumps more than this over yesterday's end. Leave blank to use the global default.</p>
+
+                    <!-- U4 — HOME pin for the going-home journey (ETA + home meter). -->
+                    <div style="margin-top: 14px; padding: 10px 12px; background: #ECFDF5; border: 1px solid #A7F3D0; border-radius: 8px;">
+                        <label style="display: block; font-size: 13px; font-weight: 600; color: #065F46; margin-bottom: 4px;">🏠 Home location (going-home check)</label>
+                        <p style="font-size: 12px; color: #047857; margin: 0 0 8px 0;">Paste a Google Maps share link of the rider's home — or type coordinates. After checkout the app times his ride home and asks for the meter at home.</p>
+                        <input type="text" name="home_maps_url" id="rider_home_maps_url" placeholder="Paste Google Maps link (https://maps.app.goo.gl/…)" style="width: 100%; padding: 8px 12px; border: 1px solid #6EE7B7; border-radius: 6px; margin-bottom: 8px;">
+                        <div style="display: flex; gap: 8px; flex-wrap: wrap; align-items: center;">
+                            <input type="number" step="any" name="home_latitude" id="rider_home_lat" placeholder="Latitude" style="width: 130px; padding: 8px 10px; border: 1px solid #d1d5db; border-radius: 6px;">
+                            <input type="number" step="any" name="home_longitude" id="rider_home_lng" placeholder="Longitude" style="width: 130px; padding: 8px 10px; border: 1px solid #d1d5db; border-radius: 6px;">
+                            <input type="number" name="home_radius_m" id="rider_home_radius" min="30" step="10" placeholder="radius 150 m" style="width: 110px; padding: 8px 10px; border: 1px solid #d1d5db; border-radius: 6px;">
+                        </div>
+                        <p id="rider_home_status" style="font-size: 12px; color: #047857; margin: 6px 0 0 0;"></p>
+                        <p style="font-size: 11px; color: #6b7280; margin: 4px 0 0 0;">A pasted link overrides the typed coordinates. Clear all fields to remove the home pin.</p>
+                    </div>
                 </div>
+            </div>
+
+            <div style="margin-bottom: 16px;">
+                <label style="display: flex; align-items: center; gap: 8px; font-size: 14px; font-weight: 500; color: #374151; cursor: pointer;">
+                    <input type="checkbox" name="checkin_any_office" id="rider_any_office" value="1" style="width: 16px; height: 16px;">
+                    May check in at any office location
+                </label>
+                <p style="font-size: 12px; color: #6b7280; margin: 4px 0 0 24px;">For floating staff — lets this rider check in at ANY office (not just their assigned one) when the "must be at your location" rule is on. He must still be AT an office.</p>
+            </div>
+
+            <div style="margin-bottom: 16px;">
+                <label style="display: flex; align-items: center; gap: 8px; font-size: 14px; font-weight: 500; color: #374151; cursor: pointer;">
+                    <input type="checkbox" name="meter_required" id="rider_meter_required" value="1" checked style="width: 16px; height: 16px;">
+                    Meter reading is compulsory
+                </label>
+                <p style="font-size: 12px; color: #6b7280; margin: 4px 0 0 24px;">On (default): the app requires the meter reading — company-bike riders record it at HOME, everyone else at checkout. Untick for management users who don't record meters.</p>
             </div>
 
             <div style="margin-bottom: 20px;">
@@ -260,6 +311,18 @@ async function editRiderProfile(userId) {
             document.getElementById('rider_hire_date').value = p.hire_date || '';
             document.getElementById('rider_company_bike').checked = (Number(p.company_bike) === 1);
             document.getElementById('rider_overnight_grace').value = (p.overnight_grace_km != null ? p.overnight_grace_km : '');
+            // Home pin (U4) — prefill saved coords; the link box stays empty (paste replaces).
+            document.getElementById('rider_home_maps_url').value = '';
+            document.getElementById('rider_home_lat').value = (p.home_latitude != null ? p.home_latitude : '');
+            document.getElementById('rider_home_lng').value = (p.home_longitude != null ? p.home_longitude : '');
+            document.getElementById('rider_home_radius').value = (p.home_radius_m != null ? p.home_radius_m : '');
+            document.getElementById('rider_home_status').textContent =
+                (p.home_latitude != null && p.home_longitude != null)
+                    ? ('✓ Home pin saved' + (p.home_set_at ? ' (' + String(p.home_set_at).slice(0, 10) + ')' : ''))
+                    : (Number(p.company_bike) === 1 ? '⚠ No home pin yet — the going-home check stays off for this rider.' : '');
+            document.getElementById('rider_any_office').checked = (Number(p.checkin_any_office) === 1);
+            // Meter compulsory — default ON when the profile predates the column (null).
+            document.getElementById('rider_meter_required').checked = (p.meter_required == null) ? true : (Number(p.meter_required) === 1);
             document.getElementById('rider_active').value = p.active ? '1' : '0';
             document.getElementById('rider_notes').value = p.notes || '';
             toggleGraceRow();

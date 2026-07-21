@@ -5,6 +5,7 @@ namespace App\Services\Riders;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Cache;
+use App\Services\Riders\EtaPromiseService;
 use Carbon\Carbon;
 
 /**
@@ -122,7 +123,12 @@ class RiderDayReportService
         $oddRoutes = $this->detectOddRoutes($pts, $orders, $stops);
         $this->fillLateReasons($orders, $stops);
 
-        $day = $this->aggregateDay($userId, $riderName, $date, $orders, $stops, $gaps, $oddRoutes);
+        // ⭐ Route changes he made himself AFTER he had already started dropping
+        //    stops — the re-dispatches that move the goalposts. Derived from the
+        //    dispatch log (no cron, no detection gap); empty before the log exists.
+        $midRunChanges = EtaPromiseService::midRunChanges($userId, $date);
+
+        $day = $this->aggregateDay($userId, $riderName, $date, $orders, $stops, $gaps, $oddRoutes, $midRunChanges);
 
         // Checkout audit: did he check out AT his last delivery point, when that point
         // wasn't the address's verified pin? (Reuses the same at_verified rule.)
@@ -131,7 +137,7 @@ class RiderDayReportService
         // shape order rows for storage
         $orderRows = array_map(fn ($o) => $this->orderRow($o), $orders);
 
-        return ['day' => $day, 'orders' => $orderRows, 'stops' => $stops, 'gaps' => $gaps, 'odd_routes' => $oddRoutes, 'checkout' => $checkout];
+        return ['day' => $day, 'orders' => $orderRows, 'stops' => $stops, 'gaps' => $gaps, 'odd_routes' => $oddRoutes, 'checkout' => $checkout, 'mid_run_changes' => $midRunChanges];
     }
 
     // ---- data loaders -------------------------------------------------
@@ -227,11 +233,22 @@ class RiderDayReportService
 
         $secs = $tz * 60;
         $dayFloor = strtotime(Carbon::parse($from)->format('Y-m-d 00:00:00'));
+
+        // ⭐ The PROMISE: the ETA the rider is actually held to. o.estimated_delivery_at
+        //    is overwritten by every dispatch, so measuring lateness against it let a
+        //    late rider press Re-dispatch and wash the lateness away. EtaPromiseService
+        //    replays the dispatch log: a store-initiated re-time moves the yardstick
+        //    (management re-planned him), a rider-initiated one does not.
+        //    Absent for orders dispatched before the log existed → we keep today's
+        //    behaviour for them (fall back to the order's current ETA).
+        $promises = EtaPromiseService::promisesFor(array_map(fn ($r) => (int) $r->id, $rows));
+
         $out = [];
         foreach ($rows as $r) {
             $delTs = strtotime($r->delivered_raw) - $secs;
             // keep only orders whose (corrected) delivery lands on the report day window
             if ($delTs < $dayFloor) continue;
+            $promise = $promises[(int) $r->id] ?? null;
             $out[] = [
                 'order_id'      => (int) $r->id,
                 'order_number'  => $r->order_number,
@@ -240,7 +257,14 @@ class RiderDayReportService
                 'amount'        => (float) $r->total_price,
                 'payment_type'  => $this->isCash($r->payment_method) ? 'cash' : 'online',
                 'planned_seq'   => $r->delivery_priority !== null ? (int) $r->delivery_priority : null,
-                'eta_at'        => $r->eta,                       // DATETIME, literal
+                // eta_at = what he is JUDGED against (the promise; the live ETA only
+                // when this order predates the log). eta_live = what the customer was
+                // last told, shown alongside when a re-time moved them apart.
+                'eta_at'        => $promise['promised_at'] ?? $r->eta,   // DATETIME, literal
+                'eta_live'      => $r->eta,
+                'eta_retimed'      => $promise['retimed'] ?? false,
+                'eta_retimed_by_rider' => $promise['retimed_by_rider'] ?? false,
+                'eta_promise_is_store' => $promise['promise_is_store'] ?? null,
                 '_wave'         => $r->wave,                      // dispatch wave key (eta_calculated_at)
                 // who pressed dispatch: self, or someone else did it for them
                 'dispatched_by_other' => ($r->wave !== null && (int) $r->dispatched_by_id !== $userId) ? 1 : 0,
@@ -522,7 +546,7 @@ class RiderDayReportService
 
     // ---- day aggregate ------------------------------------------------
 
-    private function aggregateDay(int $userId, string $riderName, string $date, array $orders, array $stops, array $gaps, array $oddRoutes = []): array
+    private function aggregateDay(int $userId, string $riderName, string $date, array $orders, array $stops, array $gaps, array $oddRoutes = [], array $midRunChanges = []): array
     {
         $att = DB::table('t_ops_attendance')->where('user_id', $userId)
             ->where('attendance_date', $date)->first();
@@ -569,9 +593,11 @@ class RiderDayReportService
             'onroute_stop_count'=> count($onRoute),
             'gap_count'         => count($gaps),
             'odd_route_count'   => count($oddRoutes),
+            // Re-dispatches he made himself once already part-way through the day.
+            'mid_run_change_count' => count($midRunChanges),
             'stops_json'        => json_encode(array_map(fn ($s) => $this->publicStop($s), $unknownStops)),
             'gaps_json'         => json_encode($gaps),
-            'flags_json'        => json_encode(['odd_routes' => $oddRoutes]),
+            'flags_json'        => json_encode(['odd_routes' => $oddRoutes, 'mid_run_changes' => $midRunChanges]),
         ];
     }
 
@@ -585,6 +611,12 @@ class RiderDayReportService
             'eta_at'        => $o['eta_at'],
             'late_minutes'  => $o['late_minutes'],
             'on_time'       => $o['on_time'],
+            // The live ETA drifted from the promise (a re-dispatch after it was
+            // committed). Lets a reader see "promised 5:10 → re-timed to 5:40 by
+            // the rider" instead of silently judging against either one alone.
+            'eta_live'              => $o['eta_live'] ?? null,
+            'eta_retimed'           => !empty($o['eta_retimed']) ? 1 : 0,
+            'eta_retimed_by_rider'  => !empty($o['eta_retimed_by_rider']) ? 1 : 0,
             'pin_lat'       => $o['pin_lat'],
             'pin_lng'       => $o['pin_lng'],
             'verified_lat'  => $o['verified_lat'],

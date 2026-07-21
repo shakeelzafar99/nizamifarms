@@ -73,7 +73,7 @@
                class="kt-btn kt-btn-sm kt-btn-light flex items-center justify-center gap-2 w-full"
                download>
                 <i class="ki-filled ki-android text-lg"></i>
-                <span>Download Android App (v12.2.0)</span>
+                <span>Download Android App (v12.3.0)</span>
             </a>
             <p class="text-xs text-muted-foreground mt-2">
                 For riders only
@@ -96,6 +96,29 @@
                     </a>
                     <p class="text-[10px] text-muted-foreground mt-2">
                         Installs side-by-side with the main app. Locked to Qurbani mode.
+                    </p>
+                </div>
+            @endif
+
+            {{-- NF Messages APK — the dedicated WhatsApp-style app. Same pattern as
+                 the Qurbani companion above: only rendered when the file has been
+                 uploaded to public/downloads, so the login page stays clean until a
+                 build exists. Access is still gated post-login by the
+                 view_whatsapp_messages permission — downloading it grants nothing.
+                 See routes/web.php → /apk/messages-latest. --}}
+            @if(file_exists(public_path('downloads/NizamiFarms-Messages.apk')))
+                <div class="mt-4 pt-4 border-t border-dashed border-gray-200">
+                    <p class="text-xs text-muted-foreground mb-2">
+                        NF Messages companion (optional)
+                    </p>
+                    <a href="{{ asset('downloads/NizamiFarms-Messages.apk') }}"
+                       class="kt-btn kt-btn-sm kt-btn-outline flex items-center justify-center gap-2 w-full"
+                       download>
+                        <i class="ki-filled ki-android text-lg"></i>
+                        <span>Download NF Messages APK</span>
+                    </a>
+                    <p class="text-[10px] text-muted-foreground mt-2">
+                        Installs side-by-side with the main app.
                     </p>
                 </div>
             @endif

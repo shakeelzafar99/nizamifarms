@@ -232,6 +232,11 @@ class RiderReportsController extends Controller
                 'gaps'        => $rep['gaps'],
                 'odd_routes'  => $rep['odd_routes'] ?? [],
                 'checkout'    => $rep['checkout'] ?? null,  // Phase H checkout-location audit
+                // Re-dispatches the rider made himself after he'd already started
+                // delivering — i.e. the delivery times moved under customers who
+                // had already been promised them. First-class (not just inside
+                // day.flags_json) so clients don't have to parse that blob.
+                'mid_run_changes' => $rep['mid_run_changes'] ?? [],
                 'missed_dispatch' => null,
             ];
         }
@@ -248,6 +253,7 @@ class RiderReportsController extends Controller
                     'day' => ['rider_name' => $ev['rider_name'], 'delivered_count' => 0, 'eta_total' => 0,
                               'ontime_count' => 0, 'has_verified_count' => 0, 'at_verified_count' => 0],
                     'orders' => [], 'stops' => [], 'gaps' => [], 'odd_routes' => [],
+                    'mid_run_changes' => [],
                     'missed_dispatch' => $ev,
                 ];
             }
@@ -274,6 +280,7 @@ class RiderReportsController extends Controller
                     'day' => ['rider_name' => $bm['rider_name'], 'delivered_count' => 0, 'eta_total' => 0,
                               'ontime_count' => 0, 'has_verified_count' => 0, 'at_verified_count' => 0],
                     'orders' => [], 'stops' => [], 'gaps' => [], 'odd_routes' => [],
+                    'mid_run_changes' => [],
                     'missed_dispatch' => null, 'lateness' => null, 'bike_meter' => $bm,
                 ];
             }
@@ -283,6 +290,121 @@ class RiderReportsController extends Controller
         }
         unset($r);
 
+        // Merge office-checkout exceptions (R5): a NON-company-bike rider who delivered ≥1 order
+        // today but checked out at the OFFICE (he came back) — an exception worth surfacing, since
+        // such riders normally check out at their last delivery.
+        foreach ($this->officeCheckouts($date) as $rid => $oc) {
+            if (isset($out[$rid])) {
+                $out[$rid]['office_checkout'] = $oc;
+            }
+            // (No synthetic row: an office checkout only matters for a rider who actually delivered,
+            // so he's always already in $out from computeForDate.)
+        }
+        foreach ($out as $rid => &$r) {
+            if (!array_key_exists('office_checkout', $r)) { $r['office_checkout'] = null; }
+        }
+        unset($r);
+
+        // Merge company-bike GOING-HOME issues (U4): late / locked / unlocked / completed-late.
+        try {
+            foreach ((new \App\Services\Riders\HomeJourneyService())->homeIssues($date) as $rid => $hi) {
+                if (isset($out[$rid])) {
+                    $out[$rid]['home_journey'] = $hi;
+                } else {
+                    $out[$rid] = [
+                        'user_id' => $rid, 'rider_name' => $hi['rider_name'] ?: 'Rider',
+                        'day' => ['rider_name' => $hi['rider_name'], 'delivered_count' => 0, 'eta_total' => 0,
+                                  'ontime_count' => 0, 'has_verified_count' => 0, 'at_verified_count' => 0],
+                        'orders' => [], 'stops' => [], 'gaps' => [], 'odd_routes' => [], 'mid_run_changes' => [],
+                        'missed_dispatch' => null, 'lateness' => null, 'bike_meter' => null, 'office_checkout' => null,
+                        'home_journey' => $hi,
+                    ];
+                }
+            }
+        } catch (\Throwable $e) { \Log::warning('home issues merge failed (non-fatal)', ['error' => $e->getMessage()]); }
+        foreach ($out as $rid => &$r) {
+            if (!array_key_exists('home_journey', $r)) { $r['home_journey'] = null; }
+        }
+        unset($r);
+
+        return $out;
+    }
+
+    /**
+     * Office-checkout exceptions on $date (R5). For NON-company-bike riders who delivered at least
+     * one order today: if their checkout GPS classifies as "at office" (via CheckoutClassifierService,
+     * which now checks delivery-first then a tight OFFICE_AT_RADIUS_M office), flag it with details —
+     * checkout time, the last delivery (time + customer), and minutes between the two ("came back to
+     * the office N min after his last delivery"). Fully guarded; company-bike riders and
+     * zero-delivery days never surface. Returns [userId => {rider_name, checkout_time,
+     * last_delivery_time, last_customer, last_order, minutes_after}].
+     */
+    private function officeCheckouts(string $date): array
+    {
+        $out = [];
+        try {
+            // Riders who checked out today WITH a checkout GPS fix.
+            $atts = DB::table('t_ops_attendance')
+                ->where('attendance_date', $date)
+                ->whereNotNull('logout_time')->where('logout_time', '!=', '')
+                ->whereNotNull('checkout_latitude')->whereNotNull('checkout_longitude')
+                ->get(['user_id', 'logout_time', 'checkout_latitude', 'checkout_longitude']);
+            if ($atts->isEmpty()) {
+                return $out;
+            }
+            $ids = $atts->pluck('user_id')->all();
+
+            // Company-bike riders are EXCLUDED (their office checkout is normal — they go home after).
+            $bikeIds = [];
+            if (\Illuminate\Support\Facades\Schema::hasColumn('t_ops_rider_profile', 'company_bike')) {
+                $bikeIds = DB::table('t_ops_rider_profile')->where('company_bike', 1)
+                    ->whereIn('user_id', $ids)->pluck('user_id')->all();
+            }
+            $bikeIds = array_flip($bikeIds);
+
+            // Each rider's deliveries today: count + the LAST one (time + customer + order).
+            $deliveries = DB::table('t_crm_order_status_history as h')
+                ->join('t_crm_prod_order as o', 'o.id', '=', 'h.order_id')
+                ->where('h.status_code', 'delivered')
+                ->whereIn('o.assigned_rider_user_id', $ids)
+                ->whereDate('h.changed_at', $date)
+                ->orderBy('h.changed_at')
+                ->get(['o.assigned_rider_user_id as uid', 'h.changed_at', 'o.order_number', 'o.name as customer']);
+            $delByUser = [];
+            foreach ($deliveries as $d) {
+                $delByUser[$d->uid]['count'] = ($delByUser[$d->uid]['count'] ?? 0) + 1;
+                $delByUser[$d->uid]['last'] = $d; // ordered asc → last assignment wins = latest
+            }
+
+            $names = DB::table('t_sys_user')->whereIn('id', $ids)->pluck('fullname', 'id');
+            $classifier = new \App\Services\Riders\CheckoutClassifierService();
+
+            foreach ($atts as $att) {
+                $uid = $att->user_id;
+                if (isset($bikeIds[$uid])) { continue; }             // company-bike → skip
+                if (empty($delByUser[$uid]['count'])) { continue; }  // no delivery today → office is normal
+
+                $info = $classifier->classify((int) $uid, $date, $att->checkout_latitude, $att->checkout_longitude);
+                if (!$info || ($info['status'] ?? null) !== 'office') { continue; }
+
+                $last = $delByUser[$uid]['last'];
+                $coTime = strtotime($date . ' ' . $att->logout_time);
+                $lastTime = strtotime((string) $last->changed_at);
+                $minsAfter = ($coTime && $lastTime && $coTime >= $lastTime) ? (int) round(($coTime - $lastTime) / 60) : null;
+
+                $out[$uid] = [
+                    'rider_name'         => $names[$uid] ?? 'Rider',
+                    'checkout_time'      => substr((string) $att->logout_time, 0, 5),
+                    'last_delivery_time' => date('H:i', $lastTime ?: time()),
+                    'last_customer'      => trim((string) $last->customer) ?: 'a customer',
+                    'last_order'         => $last->order_number,
+                    'minutes_after'      => $minsAfter,
+                ];
+            }
+        } catch (\Throwable $e) {
+            \Log::warning('officeCheckouts failed (non-fatal)', ['date' => $date, 'error' => $e->getMessage()]);
+            return [];
+        }
         return $out;
     }
 

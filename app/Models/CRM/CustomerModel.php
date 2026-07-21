@@ -43,6 +43,10 @@ class CustomerModel extends BaseModel
         'verified_location_url',
         'verified_location_saved_by',
         'verified_location_saved_at',
+        // Verified-pin lock (Jul-2026): once a pin exists it is locked against
+        // RIDER edits; a store/web user grants a time-boxed unlock window.
+        'verified_pin_unlocked_until',
+        'verified_pin_unlocked_by',
         // Geocoded address coordinates (auto-generated from address)
         'geocoded_latitude',
         'geocoded_longitude',
@@ -73,6 +77,7 @@ class CustomerModel extends BaseModel
         'geocoded_latitude' => 'decimal:7',
         'geocoded_longitude' => 'decimal:7',
         'geocoded_at' => 'datetime',
+        'verified_pin_unlocked_until' => 'datetime',
         'first_delivery_date' => 'datetime',
         'last_delivery_date' => 'datetime',
         'is_active' => 'boolean',
@@ -88,6 +93,32 @@ class CustomerModel extends BaseModel
     public function isShop(): bool
     {
         return $this->customer_type === self::TYPE_SHOP;
+    }
+
+    // Verified-pin lock (Jul-2026). Once a customer HAS a verified pin, riders
+    // may not overwrite it — a rider once moved a pin after delivery and every
+    // delivered-orders report silently re-judged past deliveries against the new
+    // spot (NF-18834). A store/web user grants a time-boxed unlock; the rider
+    // then gets ONE save inside the window. The window is the backstop for
+    // "unlocked but the rider never saved" — it just expires.
+    public const VERIFIED_PIN_UNLOCK_MINUTES = 360; // 6h grant window
+
+    /** True while an unlock grant is live (rider may save the pin right now). */
+    public function verifiedPinUnlockActive(): bool
+    {
+        return $this->verified_pin_unlocked_until !== null
+            && $this->verified_pin_unlocked_until->isFuture();
+    }
+
+    /**
+     * True when a RIDER write of the verified pin must be refused: a pin already
+     * exists AND no unlock grant is live. A customer with no pin yet (first-ever
+     * drop) is never locked — that is the rider's normal daily workflow.
+     */
+    public function isVerifiedPinLocked(): bool
+    {
+        $hasPin = $this->latitude !== null && $this->longitude !== null;
+        return $hasPin && !$this->verifiedPinUnlockActive();
     }
 
     // Relationships

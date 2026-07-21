@@ -1912,6 +1912,7 @@ function buildProofPanelHtml(data) {
 
     data.signals.forEach(s => {
         const isWa = s.source === 'whatsapp';
+        const asst = s.assistant; // recorded via NF Assistant, not sent by the customer
         const am = s.agreement || {};
         const amountColor = am.amount_match === true ? '#16A34A' : (am.amount_match === false ? '#DC2626' : '#9CA3AF');
         // Amount note: show the signed gap even when it matches within tolerance,
@@ -1925,9 +1926,27 @@ function buildProofPanelHtml(data) {
         } else if (am.amount_match === false) {
             amountNote = ' (differs from balance Rs. ' + numberFormat(am.expected) + ')';
         }
+        const isSms = s.source === 'bank_sms';
+        const proofTitle = asst ? '✨ Recorded in NF Assistant'
+            : (isWa ? '📷 Customer WhatsApp screenshot'
+                : (isSms ? '📱 Bank confirmation SMS' : '✉️ Bank confirmation email'));
         html += `<div style="border:1px solid #E5E7EB; border-radius:10px; padding:14px; margin-bottom:12px;">
-            <div style="font-weight:600; margin-bottom:8px;">${isWa ? '📷 Customer WhatsApp screenshot' : '✉️ Bank confirmation email'}
+            <div style="font-weight:600; margin-bottom:8px;">${proofTitle}
                 <span style="font-weight:400; color:#9CA3AF; font-size:12px; margin-left:6px;">${escapeHtml(s.received_at || '')}</span></div>`;
+
+        // Provenance: this proof was entered by a manager via the assistant, not
+        // received from the customer — flag it so it's weighed accordingly.
+        if (asst) {
+            html += `<div style="background:#F5F3FF; border:1px solid #DDD6FE; color:#5B21B6; border-radius:8px; padding:8px 10px; font-size:12px; margin-bottom:10px;">
+                Recorded from ${escapeHtml(asst.method)} by <b>${escapeHtml(asst.by || 'a manager')}</b> — not sent by the customer. Confirm against the bank before approving.</div>`;
+        }
+
+        // A credit alert SMS the NF Messages app captured from the bank's own
+        // sender number — this IS the bank's word that the money landed.
+        if (isSms && s.bank_sms && s.bank_sms.auto) {
+            html += `<div style="background:#ECFDF5; border:1px solid #A7F3D0; color:#065F46; border-radius:8px; padding:8px 10px; font-size:12px; margin-bottom:10px;">
+                Captured automatically from the bank's credit alert SMS — no manual entry.</div>`;
+        }
 
         if (isWa && s.image_url) {
             html += `<a href="${s.image_url}" target="_blank"><img src="${s.image_url}" style="max-width:100%; border-radius:8px; border:1px solid #E5E7EB; margin-bottom:10px;"/></a>`;
@@ -1944,7 +1963,7 @@ function buildProofPanelHtml(data) {
         </table>`;
 
         if (!isWa && s.email_body) {
-            html += `<details style="margin-top:8px;"><summary style="cursor:pointer; color:#2563EB; font-size:12px;">Show raw email</summary><pre style="white-space:pre-wrap; font-size:11px; color:#374151; background:#F9FAFB; padding:8px; border-radius:6px; margin-top:6px;">${escapeHtml(s.email_body)}</pre></details>`;
+            html += `<details style="margin-top:8px;"><summary style="cursor:pointer; color:#2563EB; font-size:12px;">${isSms ? 'Show the SMS' : 'Show raw email'}</summary><pre style="white-space:pre-wrap; font-size:11px; color:#374151; background:#F9FAFB; padding:8px; border-radius:6px; margin-top:6px;">${escapeHtml(s.email_body)}</pre></details>`;
         }
         html += `</div>`;
     });

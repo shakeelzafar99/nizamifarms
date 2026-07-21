@@ -49,6 +49,28 @@ class WhatsAppAutomationController extends Controller
     }
 
     /**
+     * Normalize a day-off selection (array of ints, or CSV/JSON string) into a
+     * clean, sorted CSV of ISO day numbers 1..7 (1=Mon … 7=Sun). Empty string
+     * means "no days off". Invalid/out-of-range entries are dropped.
+     */
+    protected function normalizeOffdays($raw): string
+    {
+        if (is_string($raw)) {
+            $raw = trim($raw);
+            $raw = ($raw !== '' && $raw[0] === '[') ? (json_decode($raw, true) ?: []) : explode(',', $raw);
+        }
+        $days = [];
+        foreach ((array) $raw as $v) {
+            $n = (int) trim((string) $v);
+            if ($n >= 1 && $n <= 7) {
+                $days[$n] = $n; // dedupe
+            }
+        }
+        ksort($days);
+        return implode(',', array_values($days));
+    }
+
+    /**
      * GET /messages/automations
      * Returns the master switch, the test phone, and the full rule catalog
      * (code registry) merged with each rule's saved state.
@@ -89,10 +111,15 @@ class WhatsAppAutomationController extends Controller
             // Window-proxy rules (location) surface their daily send window so it
             // can be edited from this one screen (HH:MM, Asia/Karachi).
             if (!empty($desc['window_proxy'])) {
-                $config = array_merge(is_array($config) ? $config : [], [
+                $merge = [
                     'window_start' => ConfigModel::get($desc['window_proxy']['start'], '09:00') ?: '09:00',
                     'window_end'   => ConfigModel::get($desc['window_proxy']['end'], '18:00') ?: '18:00',
-                ]);
+                ];
+                if (!empty($desc['window_proxy']['offdays'])) {
+                    // CSV of ISO day numbers (1=Mon..7=Sun), e.g. "2" = Tuesday off.
+                    $merge['window_offdays'] = (string) ConfigModel::get($desc['window_proxy']['offdays'], '');
+                }
+                $config = array_merge(is_array($config) ? $config : [], $merge);
             }
 
             // Invoice rule: the FOUR invoice template names live in t_fin_config
@@ -208,6 +235,15 @@ class WhatsAppAutomationController extends Controller
                                     'Auto location-request send window (set via WhatsApp automations).');
                             }
                         }
+                    }
+                    // Days off (ISO 1=Mon..7=Sun): on these days nothing is sent;
+                    // orders queue and go out the next working day.
+                    if (!empty($desc['window_proxy']['offdays']) && array_key_exists('window_offdays', $cfg)) {
+                        ConfigModel::set(
+                            $desc['window_proxy']['offdays'],
+                            $this->normalizeOffdays($cfg['window_offdays']),
+                            'Days off for auto location-request (no sends; queued for the next working day).'
+                        );
                     }
                 }
             }

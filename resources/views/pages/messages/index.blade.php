@@ -2693,6 +2693,13 @@ select.wa-mgr-input { background: #fff; cursor: pointer; }
                 const cfg = r.config || {};
                 const ws = waEsc(cfg.window_start || '09:00');
                 const we = waEsc(cfg.window_end || '18:00');
+                // Days off: CSV of ISO day numbers (1=Mon..7=Sun); default none.
+                const offSet = new Set(String(cfg.window_offdays || '')
+                    .split(',').map(s => parseInt(s.trim(), 10)).filter(n => n >= 1 && n <= 7));
+                const dayBoxes = [['1','Mon'],['2','Tue'],['3','Wed'],['4','Thu'],['5','Fri'],['6','Sat'],['7','Sun']]
+                    .map(([d, lbl]) => `<label style="display:inline-flex;align-items:center;gap:4px;font-size:12px;cursor:pointer;">
+                        <input type="checkbox" class="waLocOff-${tk}" data-day="${d}" ${offSet.has(parseInt(d,10))?'checked':''}/> ${lbl}
+                    </label>`).join('');
                 tplBody += `<div style="margin-top:10px;">
                     <label style="font-size:12px;font-weight:600;color:#374151;">Send only during these hours (Asia/Karachi)</label>
                     <div style="display:flex;gap:8px;align-items:center;margin-top:4px;">
@@ -2701,6 +2708,11 @@ select.wa-mgr-input { background: #fff; cursor: pointer; }
                         <input type="time" id="waLocWinEnd-${tk}" value="${we}" style="padding:6px 8px;border:1px solid #e5e7eb;border-radius:6px;font-size:13px;">
                     </div>
                     <div style="font-size:11px;color:#9ca3af;margin-top:4px;">Orders accepted outside these hours are queued and sent automatically when the window next opens.</div>
+                </div>
+                <div style="margin-top:10px;">
+                    <label style="font-size:12px;font-weight:600;color:#374151;">Day off — don't send on these days</label>
+                    <div style="display:flex;gap:12px;flex-wrap:wrap;margin-top:5px;">${dayBoxes}</div>
+                    <div style="font-size:11px;color:#9ca3af;margin-top:4px;">On these days nothing is sent. Orders queue and go out automatically on the next working day.</div>
                 </div>`;
             }
             body = tplBody;
@@ -2762,6 +2774,8 @@ select.wa-mgr-input { background: #fff; cursor: pointer; }
                 payload.config = {
                     window_start: (document.getElementById('waLocWinStart-'+key) || {}).value || '',
                     window_end:   (document.getElementById('waLocWinEnd-'+key) || {}).value || '',
+                    window_offdays: Array.from(document.querySelectorAll('.waLocOff-'+key))
+                        .filter(c => c.checked).map(c => parseInt(c.dataset.day, 10)),
                 };
             }
         }
@@ -4886,8 +4900,11 @@ select.wa-mgr-input { background: #fff; cursor: pointer; }
                     await addScript(iDoc, 'https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js');
                     const node = iDoc.querySelector('.invoice-container');
                     if (!node) { iframe.remove(); reject(new Error('Invoice container not found')); return; }
-                    const canvas = await iframe.contentWindow.html2canvas(node, {scale: 2, useCORS: true, allowTaint: true});
-                    const dataUrl = canvas.toDataURL('image/png');
+                    // Jul-2026: 1200px JPEG (was 1600px PNG) — ~3x smaller payload,
+                    // visually identical on phones. White background is explicit
+                    // because JPEG has no alpha (transparent would render black).
+                    const canvas = await iframe.contentWindow.html2canvas(node, {scale: 1.5, useCORS: true, allowTaint: true, backgroundColor: '#ffffff'});
+                    const dataUrl = canvas.toDataURL('image/jpeg', 0.85);
                     iframe.remove();
 
                     const uploadRes = await apiFetch('/messages/upload-invoice-image', {

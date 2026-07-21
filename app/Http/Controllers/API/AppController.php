@@ -20,8 +20,8 @@ class AppController extends Controller
         return response()->json([
             'success' => true,
             'version' => [
-                'code' => 1220,                  // Current versionCode (increment this when releasing new version)
-                'name' => '12.2.0',              // Current versionName (user-facing version)
+                'code' => 1230,                  // Current versionCode (increment this when releasing new version)
+                'name' => '12.3.0',              // Current versionName (user-facing version)
                 'download_url' => url('/apk/latest'),  // Serves APK directly with proper headers
                 'release_notes' => 'Bug fixes and improvements.',
                 'force_update' => true,        // Set to true to force users to update
@@ -52,6 +52,42 @@ class AppController extends Controller
                 'name' => '10.6.0-qurbani',                        // Qurbani versionName (suffixed by gradle)
                 'download_url' => url('/apk/qurbani-latest'),     // Serves com.nizamifarmsmobile.qurbani APK
                 'release_notes' => 'Qurbani companion app updates.',
+                'force_update' => false,                          // Soft prompt - user can postpone
+                'min_supported_version' => 800
+            ]
+        ]);
+    }
+
+    /**
+     * Latest NF MESSAGES app version.
+     *
+     * Served at GET /api/app/version/messages and consumed ONLY by the
+     * com.nizamifarmsmobile.messages APK (the dedicated WhatsApp-style
+     * messaging app for management). Its download_url points at
+     * /apk/messages-latest which serves the .messages APK.
+     *
+     * Same separation rationale as the Qurbani tracker above: the three APKs
+     * have different applicationIds, so a "new version" of one would install
+     * as a SIBLING of the others rather than an upgrade. Pointing this flavor
+     * at the primary tracker would nag messaging users to install the Rider
+     * app on top of themselves.
+     *
+     * The values here are maintained by build-production-apk-auto.bat when the
+     * operator picks "MESSAGES only" or "ALL".
+     *
+     * NOTE: this file must stay BOM-free. A UTF-8 BOM makes the version
+     * endpoint 500 (documented trap — the .bat writes it with
+     * UTF8Encoding($false) for exactly this reason).
+     */
+    public function getLatestMessagesVersion()
+    {
+        return response()->json([
+            'success' => true,
+            'version' => [
+                'code' => 1230,                                   // Messages versionCode - bumped by build script
+                'name' => '12.3.0-messages',                      // Messages versionName (suffixed by gradle)
+                'download_url' => url('/apk/messages-latest'),    // Serves com.nizamifarmsmobile.messages APK
+                'release_notes' => 'NF Messages updates.',
                 'force_update' => false,                          // Soft prompt - user can postpone
                 'min_supported_version' => 800
             ]

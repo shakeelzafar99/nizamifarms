@@ -160,6 +160,7 @@ class ReportsController extends Controller
                     ) h ON o.id = h.order_id
                     WHERE h.delivered_at >= ? AND h.delivered_at <= ?
                       AND (o.external_source IS NULL OR o.external_source != 'shopify')
+                      AND o.order_status IN ('delivered', 'completed')
                       AND NOT $qurbaniOrder
                 ", [$startDate . ' 00:00:00', $endDate . ' 23:59:59']);
 
@@ -369,10 +370,11 @@ class ReportsController extends Controller
                 LEFT JOIN t_crm_prod_customer c ON o.customer_id = c.id
                 WHERE h.delivered_at >= ? AND h.delivered_at <= ?
                   AND (o.external_source IS NULL OR o.external_source != 'shopify')
+                  AND o.order_status IN ('delivered', 'completed')
                   AND NOT $qurbaniOrder
                 ORDER BY h.delivered_at DESC
             ", [$startDate->format('Y-m-d 00:00:00'), $endDate->format('Y-m-d 23:59:59')]);
-            
+
             // Group invoices by date
             $invoicesByDate = [];
             $invoiceTotal = 0;
@@ -412,6 +414,7 @@ class ReportsController extends Controller
                 LEFT JOIN t_sys_user r ON o.assigned_rider_user_id = r.id
                 WHERE h.delivered_at >= ? AND h.delivered_at <= ?
                   AND (o.external_source IS NULL OR o.external_source != 'shopify')
+                  AND o.order_status IN ('delivered', 'completed')
                   AND o.tip_amount > 0
                   AND NOT $qurbaniOrder
                 ORDER BY h.delivered_at DESC

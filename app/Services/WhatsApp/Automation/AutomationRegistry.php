@@ -96,9 +96,12 @@ class AutomationRegistry
                 // the whole location automation is configured from ONE screen
                 // (was split with the Get Locations modal). Same t_fin_config
                 // keys the drain + that modal already read.
+                // `offdays` = ISO day numbers (1=Mon..7=Sun) on which nothing is
+                // sent; those orders queue and go out the next working day.
                 'window_proxy' => [
-                    'start' => 'location_auto_window_start',
-                    'end'   => 'location_auto_window_end',
+                    'start'   => 'location_auto_window_start',
+                    'end'     => 'location_auto_window_end',
+                    'offdays' => 'location_auto_offdays',
                 ],
             ],
             [

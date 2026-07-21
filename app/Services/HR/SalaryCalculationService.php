@@ -184,15 +184,20 @@ class SalaryCalculationService
 
         foreach ($leaveRequests as $request) {
             if ($request->leave_start_date && $request->leave_end_date) {
+                // A half-day counts 0.5 (display consistency with the leave balance).
+                // No money impact either way: pay deducts by ABSENT days (a half-day has a
+                // login, so it is never absent) and late minutes (suppressed for half-days
+                // inside sumLateOvertimeMinutes).
+                $weight = strtolower((string) ($request->leave_type ?? '')) === 'half_day' ? 0.5 : 1;
                 $leaveStart = new \DateTime($request->leave_start_date);
                 $leaveEnd = new \DateTime($request->leave_end_date);
                 $current = clone $leaveStart;
-                
+
                 while ($current <= $leaveEnd) {
                     $dateStr = $current->format('Y-m-d');
                     // Only count if within the effective date range (up to today or end of month)
                     if ($dateStr >= $startDate && $dateStr <= $effectiveEndDate) {
-                        $leaveDays++;
+                        $leaveDays += $weight;
                     }
                     $current->modify('+1 day');
                 }

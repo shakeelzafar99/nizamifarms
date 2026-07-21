@@ -38,6 +38,19 @@ Route::get('/apk/qurbani-latest', function () {
     return abort(404, 'Qurbani APK not found');
 })->name('apk.qurbani.latest');
 
+// NF Messages APK — the dedicated WhatsApp-style messaging app for management.
+// Package id: com.nizamifarmsmobile.messages (installs side-by-side with the
+// primary NF app and the Qurbani build). Placed by build-production-apk-auto.bat.
+Route::get('/apk/messages-latest', function () {
+    $path = public_path('downloads/NizamiFarms-Messages.apk');
+    if (file_exists($path)) {
+        return response()->download($path, 'NizamiFarms-Messages.apk', [
+            'Content-Type' => 'application/vnd.android.package-archive',
+        ]);
+    }
+    return abort(404, 'Messages APK not found');
+})->name('apk.messages.latest');
+
 // Serve files from storage/app/public without symlink (no auth required)
 Route::get('/public-storage/{path}', [\App\Http\Controllers\FileController::class, 'publicStorage'])->where('path', '.*');
 
@@ -134,6 +147,10 @@ Route::middleware(['auth'])->group(function () {
         Route::get('/drill/receivables', [\App\Http\Controllers\HQ\ExecutiveDashboardController::class, 'receivables']);
         Route::get('/drill/payables', [\App\Http\Controllers\HQ\ExecutiveDashboardController::class, 'payables']);
         Route::get('/drill/assets', [\App\Http\Controllers\HQ\ExecutiveDashboardController::class, 'assets']);
+        Route::get('/drill/asset-purchases', [\App\Http\Controllers\HQ\ExecutiveDashboardController::class, 'assetPurchases']);
+        Route::get('/products', [\App\Http\Controllers\HQ\ExecutiveDashboardController::class, 'products']);
+        Route::get('/drill/products-category', [\App\Http\Controllers\HQ\ExecutiveDashboardController::class, 'productsCategory']);
+        Route::get('/drill/product-daily', [\App\Http\Controllers\HQ\ExecutiveDashboardController::class, 'productDaily']);
         Route::get('/drill/missing-invoices', [\App\Http\Controllers\HQ\ExecutiveDashboardController::class, 'missingInvoices']);
     });
 
@@ -276,13 +293,22 @@ Route::middleware(['auth'])->group(function () {
     Route::get('/attendance/reports', function() { return view('pages.attendance.reports'); })->name('attendance.reports');
     Route::get('/attendance/data', [\App\Http\Controllers\CRM\AttendanceController::class, 'data'])->name('attendance.data');
     Route::post('/attendance', [\App\Http\Controllers\CRM\AttendanceController::class, 'store'])->name('attendance.store');
-    Route::post('/attendance/apply-leave', [\App\Http\Controllers\CRM\AttendanceController::class, 'applyLeave'])->name('attendance.apply-leave');
+    Route::post('/attendance/apply-leave', [\App\Http\Controllers\CRM\AttendanceController::class, 'applyLeave'])->middleware('block.rider')->name('attendance.apply-leave');
     Route::get('/attendance/pending-leaves', [\App\Http\Controllers\CRM\AttendanceController::class, 'pendingLeaves'])->name('attendance.pending-leaves');
-    Route::post('/attendance/leave-request/{id}/approve', [\App\Http\Controllers\CRM\AttendanceController::class, 'approveLeaveRequest'])->name('attendance.leave-approve');
-    Route::post('/attendance/leave-request/{id}/reject', [\App\Http\Controllers\CRM\AttendanceController::class, 'rejectLeaveRequest'])->name('attendance.leave-reject');
-    Route::post('/attendance/grant-leave', [\App\Http\Controllers\CRM\AttendanceController::class, 'grantLeave'])->name('attendance.grant-leave');
+    Route::post('/attendance/leave-request/{id}/approve', [\App\Http\Controllers\CRM\AttendanceController::class, 'approveLeaveRequest'])->middleware('block.rider')->name('attendance.leave-approve');
+    Route::post('/attendance/leave-request/{id}/reject', [\App\Http\Controllers\CRM\AttendanceController::class, 'rejectLeaveRequest'])->middleware('block.rider')->name('attendance.leave-reject');
+    Route::post('/attendance/leave-request/{id}/undo', [\App\Http\Controllers\CRM\AttendanceController::class, 'undoLeaveApproval'])->middleware('block.rider')->name('attendance.leave-undo');
+    Route::post('/attendance/grant-leave', [\App\Http\Controllers\CRM\AttendanceController::class, 'grantLeave'])->middleware('block.rider')->name('attendance.grant-leave');
     Route::get('/attendance/leave-balance', [\App\Http\Controllers\CRM\AttendanceController::class, 'leaveBalance'])->name('attendance.leave-balance');
-    Route::post('/attendance/toggle-day-tag', [\App\Http\Controllers\CRM\AttendanceController::class, 'toggleDayTag'])->name('attendance.toggle-day-tag');
+    Route::get('/attendance/approved-leaves', [\App\Http\Controllers\CRM\AttendanceController::class, 'approvedLeaves'])->middleware('block.rider')->name('attendance.approved-leaves');
+    Route::post('/attendance/toggle-day-tag', [\App\Http\Controllers\CRM\AttendanceController::class, 'toggleDayTag'])->middleware('block.rider')->name('attendance.toggle-day-tag');
+    Route::post('/attendance/day-tag-range', [\App\Http\Controllers\CRM\AttendanceController::class, 'setDayTagRange'])->middleware('block.rider')->name('attendance.day-tag-range');
+    Route::post('/attendance/update-meter', [\App\Http\Controllers\CRM\AttendanceController::class, 'updateMeterValues'])->middleware('block.rider')->name('attendance.update-meter');
+    Route::post('/attendance/home-journey/unlock', [\App\Http\Controllers\CRM\AttendanceController::class, 'homeJourneyUnlock'])->middleware('block.rider')->name('attendance.home-unlock');
+    Route::post('/attendance/home-journey/enter-meter', [\App\Http\Controllers\CRM\AttendanceController::class, 'homeMeterManagerEntry'])->middleware('block.rider')->name('attendance.home-enter-meter');
+    Route::post('/attendance/checkout-unlock', [\App\Http\Controllers\CRM\AttendanceController::class, 'checkoutUnlock'])->middleware('block.rider')->name('attendance.checkout-unlock');
+    Route::get('/attendance/home-alerts', [\App\Http\Controllers\CRM\AttendanceController::class, 'homeAlerts'])->middleware('block.rider')->name('attendance.home-alerts');
+    Route::post('/attendance/home-alerts/dismiss', [\App\Http\Controllers\CRM\AttendanceController::class, 'dismissHomeAlert'])->middleware('block.rider')->name('attendance.home-alert-dismiss');
     Route::get('/attendance/summary', [\App\Http\Controllers\CRM\AttendanceController::class, 'summary'])->name('attendance.summary');
     Route::get('/attendance/monthly-report', [\App\Http\Controllers\CRM\AttendanceController::class, 'monthlyReport'])->name('attendance.monthly-report');
     Route::get('/attendance/employee-details', [\App\Http\Controllers\CRM\AttendanceController::class, 'employeeDetails'])->name('attendance.employee-details');
@@ -681,6 +707,9 @@ Route::middleware(['auth'])->group(function () {
         Route::put('/{id}', [\App\Http\Controllers\CRM\CustomerController::class, 'update'])->name('customers.update');
         Route::post('/{id}/notes', [\App\Http\Controllers\CRM\CustomerController::class, 'addNote'])->name('customers.addNote');
         Route::post('/{id}/set-verified-location', [\App\Http\Controllers\CRM\CustomerController::class, 'setVerifiedLocation'])->name('customers.setVerifiedLocation');
+        // Verified-pin lock: grant / cancel a rider unlock window (Jul-2026)
+        Route::post('/{id}/unlock-verified-pin', [\App\Http\Controllers\CRM\CustomerController::class, 'unlockVerifiedPin'])->name('customers.unlockVerifiedPin');
+        Route::post('/{id}/relock-verified-pin', [\App\Http\Controllers\CRM\CustomerController::class, 'relockVerifiedPin'])->name('customers.relockVerifiedPin');
         Route::post('/{id}/geocode', [\App\Http\Controllers\CRM\CustomerController::class, 'geocode'])->name('customers.geocode');
         Route::post('/{id}/geocode-single', [\App\Http\Controllers\CRM\CustomerController::class, 'geocodeSingle'])->name('customers.geocode-single');
         Route::delete('/{id}', [\App\Http\Controllers\CRM\CustomerController::class, 'destroy'])->name('customers.destroy');

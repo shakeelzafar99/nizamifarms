@@ -684,6 +684,43 @@ class LedgerController extends Controller
         }
     }
 
+    /**
+     * [Ledger approval gate — C1 fix, Jul-2026] Enforce approval rights on the SERVER.
+     *
+     * approve()/approveAtL1Only()/reject() previously ran under plain auth:sanctum with NO
+     * rights check, so any authenticated token (every rider carries one) could approve/reject
+     * and post balances — only the mobile/web UI hid the buttons. Rule (verified against live
+     * approver data before rollout):
+     *   • Need at least Level 1 to approve/reject at all.
+     *   • Acting on an item already at L2 (pending_l2) needs Level 2, because that step confirms
+     *     or reverses an already-posted balance (owner ruling R1).
+     * Single-level items (e.g. order_payment — no approval category, so requiresL2=false) finalize
+     * at L1, so a Level-1 approver is unaffected; an L1+L2 approver can do everything.
+     *
+     * Returns a JsonResponse/redirect to abort with, or null to proceed. Callers are inside an
+     * open DB transaction, so they MUST DB::rollBack() before returning the response.
+     */
+    private function guardApprovalRights(Request $request, int $currentLevel)
+    {
+        $hasL2 = RoleApprovalLevelModel::userHasApprovalLevel(auth()->id(), 2);
+        $authorized = $currentLevel >= 2
+            ? $hasL2
+            : ($hasL2 || RoleApprovalLevelModel::userHasApprovalLevel(auth()->id(), 1));
+
+        if ($authorized) {
+            return null;
+        }
+
+        $msg = $currentLevel >= 2
+            ? 'This transaction is pending Level 2 verification, which you are not authorized to finalize.'
+            : 'You do not have approval rights for this action.';
+
+        if ($request->ajax() || $request->wantsJson()) {
+            return response()->json(['success' => false, 'message' => $msg], 403);
+        }
+        return back()->with('error', $msg);
+    }
+
     public function approve(Request $request, $id)
     {
         $request->validate([
@@ -702,6 +739,14 @@ class LedgerController extends Controller
             DB::beginTransaction();
 
             $ledger = LedgerModel::with(['fromAccount', 'toAccount'])->findOrFail($id);
+
+            // [Ledger approval gate — C1 fix] Enforce approval rights before any side effects
+            // (image upload / balance posting). See guardApprovalRights() docblock.
+            $gateLevel = $ledger->approval_status === LedgerModel::STATUS_PENDING_L2 ? 2 : 1;
+            if ($gateResp = $this->guardApprovalRights($request, $gateLevel)) {
+                DB::rollBack();
+                return $gateResp;
+            }
 
             // ⭐ Handle optional proof of payment image upload
             $proofImagePath = $this->handleApprovalImageUpload($request, $ledger);
@@ -1028,6 +1073,12 @@ class LedgerController extends Controller
 
             $ledger = LedgerModel::with(['fromAccount', 'toAccount'])->findOrFail($id);
 
+            // [Ledger approval gate — C1 fix] L1-only approval requires at least Level 1.
+            if ($gateResp = $this->guardApprovalRights($request, 1)) {
+                DB::rollBack();
+                return $gateResp;
+            }
+
             // ⭐ Handle optional proof of payment image upload
             $proofImagePath = $this->handleApprovalImageUpload($request, $ledger);
 
@@ -1166,6 +1217,14 @@ class LedgerController extends Controller
             DB::beginTransaction();
 
             $ledger = LedgerModel::with(['fromAccount', 'toAccount'])->findOrFail($id);
+
+            // [Ledger approval gate — C1 fix] Rejecting requires L1; rejecting an L2-pending item
+            // (which reverses an already-posted balance) requires L2 — owner ruling R1.
+            $gateLevel = $ledger->approval_status === LedgerModel::STATUS_PENDING_L2 ? 2 : 1;
+            if ($gateResp = $this->guardApprovalRights($request, $gateLevel)) {
+                DB::rollBack();
+                return $gateResp;
+            }
 
             if (!$ledger->isPending()) {
                 throw new \Exception("Transaction is not pending approval");
@@ -1390,10 +1449,11 @@ class LedgerController extends Controller
             
             // For short cash, the total amount settling invoices = deposit + expense
             // For partial payment, only the deposit amount is used (remaining stays open)
+            // 2dp — old metadata may carry raw floats (pre-Jul-2026 deposits)
             if ($isShortCash) {
-                $totalSettlementAmount = $depositAmount + $shortCashAmount;
+                $totalSettlementAmount = round($depositAmount + $shortCashAmount, 2);
             } else {
-                $totalSettlementAmount = $depositAmount;
+                $totalSettlementAmount = round($depositAmount, 2);
             }
             
             \Log::info("Processing invoice settlement", [
@@ -1412,20 +1472,23 @@ class LedgerController extends Controller
                 ->get();
             
             $remainingAmount = $totalSettlementAmount;
-            
+
             foreach ($invoices as $invoice) {
-                $outstandingForThisInvoice = $invoice->amount - ($invoice->settled_amount ?? 0);
-                
-                if ($remainingAmount <= 0) {
+                $outstandingForThisInvoice = round($invoice->amount - ($invoice->settled_amount ?? 0), 2);
+
+                if ($remainingAmount < 0.01) {
                     break; // No more money to allocate
                 }
-                
-                // Calculate how much to settle on this invoice
-                $amountToSettle = min($remainingAmount, $outstandingForThisInvoice);
-                
+
+                // Calculate how much to settle on this invoice (2dp)
+                $amountToSettle = round(min($remainingAmount, $outstandingForThisInvoice), 2);
+                if ($amountToSettle <= 0) {
+                    continue; // nothing outstanding on this invoice — skip, no zero audit rows
+                }
+
                 // Update invoice
-                $invoice->settled_amount = ($invoice->settled_amount ?? 0) + $amountToSettle;
-                
+                $invoice->settled_amount = round(($invoice->settled_amount ?? 0) + $amountToSettle, 2);
+
                 if ($invoice->settled_amount >= $invoice->amount) {
                     // Fully settled
                     $invoice->settlement_status = 'settled';
@@ -1436,17 +1499,30 @@ class LedgerController extends Controller
                     // Do not write a non-existent enum value like 'partial' to the database.
                 }
                 $invoice->save();
-                
+
                 // Create audit record
                 \App\Models\FIN\InvoiceSettlementModel::create([
                     'settlement_deposit_id' => $depositLedger->id,
                     'invoice_ledger_id' => $invoice->id,
                     'settled_amount' => $amountToSettle
                 ]);
-                
-                $remainingAmount -= $amountToSettle;
+
+                $remainingAmount = round($remainingAmount - $amountToSettle, 2);
             }
-            
+
+            // An un-allocatable remainder means an invoice in this deposit was settled by
+            // ANOTHER deposit between create and approval. Never drop it silently (Jul-2026:
+            // Rs 4,956.10 of deposit 17018 vanished this way) — flag it on the deposit.
+            if ($remainingAmount >= 0.01) {
+                \Log::warning("Settlement deposit approved with UNALLOCATED remainder", [
+                    'deposit_id' => $depositLedger->id,
+                    'amount_remaining' => $remainingAmount,
+                ]);
+                $note = "⚠ Rs. " . number_format($remainingAmount, 2) . " of this deposit could not be applied to any invoice (already settled elsewhere at approval time). Needs manual review.";
+                $depositLedger->comments = trim(($depositLedger->comments ? $depositLedger->comments . " | " : "") . $note);
+                $depositLedger->save();
+            }
+
             \Log::info("Invoice settlement completed", [
                 'deposit_id' => $depositLedger->id,
                 'invoices_count' => $invoices->count(),
