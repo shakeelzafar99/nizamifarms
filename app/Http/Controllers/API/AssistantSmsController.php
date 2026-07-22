@@ -55,13 +55,22 @@ class AssistantSmsController extends Controller
         // MySQL clock differs from the app clock; see the audit note).
         $smsAt = $this->parseReceivedAt($request->input('received_at'));
 
-        // Resolve the sender to one of our banks. Unknown sender → needs_sender,
-        // so the inbox can teach it in one tap (the amount/direction are still
-        // parsed and useful).
+        // Resolve the sender to one of our banks.
         $bank = $sender !== ''
             ? DB::table('t_ai_sms_senders')->where('sender_id', $sender)->where('is_active', 1)->first()
             : null;
         $receivingId = $bank->receiving_account_id ?? null;
+
+        // REGISTERED BANKS ONLY (owner ruling 2026-07, live-prod feedback): the
+        // device-side filter is content-based, so it also catches bank-looking
+        // texts from numbers we don't bank with (promos, other banks, wallets).
+        // Those are noise — if the sender isn't one of OUR seeded, active bank
+        // numbers, drop the SMS entirely (store nothing, no inbox clutter, no
+        // credit/debit parsing surfaced). A genuinely new bank is added under
+        // Settings → Bank SMS senders, after which its SMS start flowing.
+        if (!$receivingId) {
+            return response()->json(['success' => true, 'skipped' => 'unregistered_sender']);
+        }
 
         // Dedup across sender + amount + ref + day, so a re-delivered SMS (the
         // receiver can fire twice) doesn't create a second to-do.
@@ -78,7 +87,8 @@ class AssistantSmsController extends Controller
             return response()->json(['success' => true, 'duplicate' => true, 'sms' => $this->row($existing->id)]);
         }
 
-        $status = ($sender !== '' && !$receivingId) ? 'needs_sender' : 'new';
+        // Past the registered-sender gate above, the bank is always known.
+        $status = 'new';
 
         $id = DB::table('t_ai_bank_sms')->insertGetId([
             'user_id'              => $user->id,

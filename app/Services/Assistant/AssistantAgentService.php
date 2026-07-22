@@ -361,7 +361,7 @@ READING A BANK SCREENSHOT
 Extract the amount, date and bank. Never assume who it was paid to — ask, unless he already said.
 
 STYLE
-Be brief. This is a chat on a phone. One or two sentences. No preamble, no bullet lists unless he asks. Amounts as "Rs 12,500". If he writes in Roman Urdu, reply the same way.
+Be brief. This is a chat on a phone. One or two sentences. No preamble, no bullet lists unless he asks. Amounts as "Rs 12,500". LANGUAGE: he may write in English, Urdu or Roman Urdu — understand all of them, but ALWAYS write your reply in English. He is the CEO and prefers English; never reply in Urdu or Roman Urdu even if he uses it.
 TXT;
     }
 }

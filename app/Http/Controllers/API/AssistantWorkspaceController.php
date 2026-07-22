@@ -220,12 +220,15 @@ class AssistantWorkspaceController extends Controller
     {
         // EVERY unhandled SMS needs the human — a debit/unknown to record or
         // dismiss, and (since 5b) a credit to match or dismiss. So the strip's
-        // "to sort" = all statuses new/needs_sender across BOTH inbox sections
-        // (OUTGOING debits + INCOMING unhandled credits). Counting only debits
-        // left waiting credits at a lying 0.
+        // "to sort" = unhandled SMS across BOTH inbox sections (OUTGOING debits
+        // + INCOMING unhandled credits). Counting only debits left waiting
+        // credits at a lying 0.
+        // ('needs_sender' is legacy: since the registered-only gate, unknown
+        //  senders are never stored, so only 'new' remains — but we still
+        //  exclude any pre-gate needs_sender rows so old clutter doesn't count.)
         return (int) DB::table('t_ai_bank_sms')
             ->where('user_id', $userId)
-            ->whereIn('status', ['new', 'needs_sender'])
+            ->where('status', 'new')
             ->count();
     }
 
@@ -235,7 +238,7 @@ class AssistantWorkspaceController extends Controller
             ->leftJoin('t_fin_online_receiving_accounts as b', 'b.id', '=', 's.receiving_account_id')
             ->where('s.user_id', $userId)
             ->whereIn('s.direction', ['debit', 'unknown'])
-            ->whereIn('s.status', ['new', 'needs_sender'])
+            ->where('s.status', 'new')
             ->orderByDesc('s.sms_at')
             ->get(['s.id', 's.sender_id', 's.amount', 's.counterparty', 's.counterparty_account', 's.status', 's.sms_at', 'b.name as bank_name'])
             ->map(function ($s) {
@@ -278,14 +281,16 @@ class AssistantWorkspaceController extends Controller
 
     private function matchedList(int $userId): array
     {
-        // Unhandled credits ('new' AND 'needs_sender' — an unknown-sender
-        // credit must not vanish) show regardless of age; already-matched ones
-        // only for TODAY, so the section doesn't accumulate stale history.
+        // Unhandled credits ('new') show regardless of age; already-matched
+        // ones only for TODAY, so the section doesn't accumulate stale history.
+        // (Pre-gate 'needs_sender' rows are intentionally excluded now that
+        //  unregistered senders are never stored — see the registered-only gate
+        //  in AssistantSmsController::ingest.)
         return DB::table('t_ai_bank_sms')
             ->where('user_id', $userId)
             ->where('direction', 'credit')
             ->where(function ($w) {
-                $w->whereIn('status', ['new', 'needs_sender'])
+                $w->where('status', 'new')
                   ->orWhere(function ($w2) {
                       $w2->where('status', 'matched')
                          ->whereDate('updated_at', now()->toDateString());
