@@ -549,25 +549,27 @@ class WhatsAppWebController extends Controller
                         continue;
                     }
                     $c = $r->matched_customer_id;
-                    $proofByCustomer[$c] ??= ['wa' => false, 'email' => false, 'matched' => false, 'mismatch' => false, 'verified_pair' => false];
+                    $proofByCustomer[$c] ??= ['wa' => false, 'email' => false, 'sms' => false, 'matched' => false, 'mismatch' => false, 'verified_pair' => false];
                     if ($r->source === 'whatsapp') $proofByCustomer[$c]['wa'] = true;
                     if ($r->source === 'email')    $proofByCustomer[$c]['email'] = true;
+                    if ($r->source === 'bank_sms') $proofByCustomer[$c]['sms'] = true;
                     if ($r->status === 'matched')  $proofByCustomer[$c]['matched'] = true;
                     if ($r->status === 'amount_mismatch') $proofByCustomer[$c]['mismatch'] = true;
                     $proofRowsByCustomer[$c][(int) $r->id] = $r;
                 }
                 // "Verified" needs a GENUINE cross-source pair (mirrors
-                // PaymentProofStatusService::summarise): a WhatsApp row bound to an
-                // email row both ways, at least one matched. Pairing already enforces
-                // same amount + same receiving bank, so a stray bank email in the
-                // customer's history no longer greens the inbox.
+                // PaymentProofStatusService::summarise): a WhatsApp row bound to a
+                // BANK-side row (email OR a bank credit SMS from NF Messages — both
+                // are the bank's word) both ways, at least one matched. Pairing
+                // already enforces same amount + same receiving bank, so a stray
+                // bank credit in the customer's history can't green the inbox.
                 foreach ($proofRowsByCustomer as $c => $custRows) {
                     foreach ($custRows as $r) {
                         if ($r->source !== 'whatsapp' || empty($r->paired_signal_id)) {
                             continue;
                         }
                         $mate = $custRows[(int) $r->paired_signal_id] ?? null;
-                        if ($mate && $mate->source === 'email'
+                        if ($mate && in_array($mate->source, ['email', 'bank_sms'], true)
                             && (int) $mate->paired_signal_id === (int) $r->id
                             && ($r->status === 'matched' || $mate->status === 'matched')) {
                             $proofByCustomer[$c]['verified_pair'] = true;
@@ -593,7 +595,7 @@ class WhatsAppWebController extends Controller
                     $pStatus = \App\Services\Payments\Signals\PaymentProofStatusService::AMOUNT_MISMATCH;
                 } elseif ($pf['wa']) {
                     $pStatus = \App\Services\Payments\Signals\PaymentProofStatusService::PROOF_RECEIVED;
-                } elseif ($pf['email']) {
+                } elseif ($pf['email'] || $pf['sms']) {
                     $pStatus = \App\Services\Payments\Signals\PaymentProofStatusService::BANK_CONFIRMED;
                 } else {
                     $pStatus = \App\Services\Payments\Signals\PaymentProofStatusService::NONE;
@@ -605,6 +607,7 @@ class WhatsAppWebController extends Controller
                         'color'        => \App\Services\Payments\Signals\PaymentProofStatusService::color($pStatus),
                         'has_whatsapp' => $pf['wa'],
                         'has_email'    => $pf['email'],
+                        'has_sms'      => $pf['sms'],
                     ];
                 }
             }

@@ -754,15 +754,19 @@
     // there's actually a Khaas number to show. Falls back to a
     // single-line display otherwise.
     function renderBuSplitRows(item) {
-        if (!canViewKhaas || ((item.expenses_khaas || 0) === 0 && (item.vendor_purchases_khaas || 0) === 0)) {
+        if (!canViewKhaas || ((item.expenses_khaas || 0) === 0 && (item.vendor_purchases_khaas || 0) === 0 && (item.salaries_khaas || 0) === 0)) {
             return '';
         }
+        const salRows = (item.salaries_nf || 0) > 0 || (item.salaries_khaas || 0) > 0 ? `
+                <div><span style="color:#6b7280">NF Sal:</span> <strong style="color:#6d28d9">${formatCurrency(item.salaries_nf || 0)}</strong></div>
+                <div><span style="color:#6b7280">Khaas Sal:</span> <strong style="color:#5b21b6">${formatCurrency(item.salaries_khaas || 0)}</strong></div>` : '';
         return `
             <div style="margin-top:8px;padding-top:8px;border-top:1px dashed #e5e7eb;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px;font-size:11px">
                 <div><span style="color:#6b7280">NF Exp:</span> <strong style="color:#dc2626">${formatCurrency(item.expenses_nf || 0)}</strong></div>
                 <div><span style="color:#6b7280">Khaas Exp:</span> <strong style="color:#7c2d12">${formatCurrency(item.expenses_khaas || 0)}</strong></div>
                 <div><span style="color:#6b7280">NF Vendor:</span> <strong style="color:#ea580c">${formatCurrency(item.vendor_purchases_nf || 0)}</strong></div>
                 <div><span style="color:#6b7280">Khaas Vendor:</span> <strong style="color:#9a3412">${formatCurrency(item.vendor_purchases_khaas || 0)}</strong></div>
+                ${salRows}
             </div>`;
     }
 
@@ -801,6 +805,11 @@
                                 <div class="month-summary-label">Expenses</div>
                                 <div class="month-summary-value val-red">${formatCurrency(item.expenses)}</div>
                             </div>
+                            ${item.salaries > 0 ? `
+                            <div class="month-summary-item">
+                                <div class="month-summary-label">Salaries</div>
+                                <div class="month-summary-value" style="color:#7c3aed">${formatCurrency(item.salaries)}</div>
+                            </div>` : ''}
                             <div class="month-summary-item">
                                 <div class="month-summary-label">Purchases</div>
                                 <div class="month-summary-value val-orange">${formatCurrency(item.vendor_purchases)}</div>
@@ -1092,6 +1101,15 @@
         
         // Expenses Section — drill into expense sub-categories (Salaries, Food, Maintenance …).
         html += renderExpensesByCategory('expenses', '💰 Expenses', d.expenses, '#FEE2E2', '#FEF2F2');
+
+        // Salaries Section — payroll payments (+ legacy slips), per employee. Separate from
+        // Expenses (matches the summary card + HQ); reduces profit.
+        if (d.salaries && (d.salaries.count > 0 || d.salaries.total > 0)) {
+            html += renderSection('salaries', '👤 Salaries', d.salaries, '#EDE9FE', '#F5F3FF', (item) => `
+                <div class="detail-item-title">${escapeHtml(item.employee)}</div>
+                <div class="detail-item-sub">${escapeHtml(item.bu_code)} • ${escapeHtml(item.source)}</div>
+            `);
+        }
 
         // Vendor Purchases Section — group by vendor name, then daily within each vendor.
         html += renderVendorsByVendor('purchases', '🏭 Vendor Purchases', d.vendor_purchases, '#FEF3C7', '#FFFBEB');

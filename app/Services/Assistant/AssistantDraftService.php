@@ -4,6 +4,7 @@ namespace App\Services\Assistant;
 
 use App\Models\FIN\AccountModel;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -122,6 +123,12 @@ class AssistantDraftService
             ['label' => 'Date', 'value' => $date ?: now()->toDateString()],
         ]));
 
+        // Never for SMS-originated cards: the "latest chat image" belongs to
+        // some other conversation turn, not to this bank SMS.
+        if (empty($args['_from_sms'])) {
+            [$payload, $display] = $this->attachChatImage($payload, $display, $user);
+        }
+
         return $this->store($user, 'expense',
             'Record expense: Rs ' . number_format($amount, 0) . ' — ' . $category,
             $payload, $display, $this->replacesId($args));
@@ -164,6 +171,18 @@ class AssistantDraftService
         $amount = (float) ($args['amount'] ?? 0);
         if ($amount <= 0) {
             return ['error' => 'I need the amount received (greater than zero).'];
+        }
+
+        // AMOUNT PROVENANCE GUARD (same rule as proofs — Fahim Rs-100): unless
+        // this draft's amount came from a server-side source (a bank SMS via
+        // matchCredit/raiseShopCard, or a forwarded screenshot — those callers
+        // pass _amount_verified), it must appear in the user's own recent words.
+        // Shop payments post REAL ledger money on confirm, so a hallucinated
+        // amount here is worse than anywhere else.
+        if (empty($args['_amount_verified'])
+            && !$this->amountAppearsInTurn((int) $user->id, $amount)) {
+            return ['error' => 'I could not find Rs ' . number_format($amount, 0)
+                . ' anywhere in what the user actually said — NEVER guess an amount. Ask him how much the shop paid, then call again with what he answers.'];
         }
 
         $invoices = $this->openShopInvoices($customerId);
@@ -289,6 +308,95 @@ class AssistantDraftService
         return array_map(fn($r) => ['id' => $r['id'], 'order_number' => $r['order_number'], 'cents' => $r['cents']], $rows);
     }
 
+    /**
+     * Move money between OUR OWN accounts (e.g. Online bank → Cash, HBL → Meezan)
+     * — recorded through the SAME web flow (LedgerController@storeTransfer,
+     * TYPE_TRANSFER). Mirrors its rules exactly: the two accounts must differ,
+     * a transfer touching a bank must name which bank it goes through, and — the
+     * key rule — an ONLINE transfer goes to the approval queue (STATUS_PENDING)
+     * while a cash transfer posts immediately (STATUS_APPROVED). The assistant
+     * NEVER bypasses that: Taimur's Confirm is the equivalent of submitting the
+     * web form; approval still happens where it always did.
+     *
+     * NOT a bank-tag correction of an already-recorded payment — that is editing
+     * a posted entry, which the assistant does not do. This only creates a NEW
+     * transfer between accounts.
+     */
+    public function draftAccountTransfer(array $args, $user): array
+    {
+        $fromId = (int) ($args['from_account_id'] ?? 0);
+        $toId   = (int) ($args['to_account_id'] ?? 0);
+        if (!$fromId || !$toId) {
+            return ['error' => 'I need both a FROM account and a TO account. Call get_context for the ids.'];
+        }
+        if ($fromId === $toId) {
+            return ['error' => 'The from and to accounts must be different.'];
+        }
+        $from = AccountModel::find($fromId);
+        $to   = AccountModel::find($toId);
+        if (!$from || !$from->is_active) {
+            return ['error' => 'That FROM account does not exist. Use get_context for valid ids.'];
+        }
+        if (!$to || !$to->is_active) {
+            return ['error' => 'That TO account does not exist. Use get_context for valid ids.'];
+        }
+
+        $amount = (float) ($args['amount'] ?? 0);
+        if ($amount <= 0) {
+            return ['error' => 'I need an amount greater than zero.'];
+        }
+
+        // A transfer touching a BANK account must name which of OUR banks it
+        // goes through (storeTransfer enforces this) — resolve it, or offer the
+        // one-tap picker so the card is never a dead-end.
+        $touchesBank = $from->account_category === 'bank' || $to->account_category === 'bank';
+        $receivingId = $touchesBank ? (int) ($args['receiving_account_id'] ?? 0) : 0;
+        $needsBankChoice = $touchesBank && !$receivingId;
+        $choice = $needsBankChoice ? $this->bankChoice('Which bank does this transfer go through?') : null;
+        if ($needsBankChoice && !$choice) {
+            return ['error' => 'No banks are configured, so I cannot record a bank transfer.'];
+        }
+
+        // Mode drives the approval flow, exactly as the web: a transfer touching
+        // a bank is ONLINE (→ approval queue); a pure cash-to-cash move is CASH
+        // (→ posts immediately). The user may override with an explicit mode.
+        $mode = strtolower(trim((string) ($args['mode'] ?? '')));
+        if (!in_array($mode, ['cash', 'online'], true)) {
+            $mode = $touchesBank ? 'online' : 'cash';
+        }
+
+        $date = $this->cleanDate($args['transaction_date'] ?? null) ?: now()->toDateString();
+        $desc = trim((string) ($args['description'] ?? ''))
+            ?: ('Transfer ' . $from->account_name . ' -> ' . $to->account_name);
+
+        $payload = array_filter([
+            'from_account_id' => $fromId,
+            'to_account_id' => $toId,
+            'amount' => round($amount, 2),
+            'mode' => $mode,
+            'receiving_account_id' => $receivingId ?: null,
+            'transaction_date' => $date,
+            'description' => $desc,
+            '_pending_choice' => $choice,
+        ], fn($v) => $v !== null);
+
+        $display = array_values(array_filter([
+            ['label' => 'From', 'value' => $from->account_name],
+            ['label' => 'To', 'value' => $to->account_name],
+            ['label' => 'Amount', 'value' => 'Rs ' . number_format($amount, 0)],
+            $receivingId ? ['label' => 'Bank', 'value' => $this->bankName($receivingId)] : null,
+            $needsBankChoice ? ['label' => 'Bank', 'value' => 'Choose below'] : null,
+            ['label' => 'Date', 'value' => $date],
+            ['label' => 'On confirm', 'value' => $mode === 'online'
+                ? 'Goes to approval (online transfer)'
+                : 'Posts immediately (cash transfer)'],
+        ]));
+
+        return $this->store($user, 'account_transfer',
+            'Transfer Rs ' . number_format($amount, 0) . ': ' . $from->account_name . ' -> ' . $to->account_name,
+            $payload, $display, $this->replacesId($args));
+    }
+
     public function draftVendorPayment(array $args, $user): array
     {
         $vendorId = (int) ($args['vendor_id'] ?? 0);
@@ -363,6 +471,10 @@ class AssistantDraftService
             ['label' => 'Outstanding after', 'value' => 'Rs ' . number_format($balance - $amount, 0)],
         ]));
 
+        if (empty($args['_from_sms'])) {
+            [$payload, $display] = $this->attachChatImage($payload, $display, $user);
+        }
+
         return $this->store($user, 'vendor_payment',
             'Pay ' . $vendor->vendor_name . ': Rs ' . number_format($amount, 0),
             $payload, $display, $this->replacesId($args));
@@ -412,6 +524,8 @@ class AssistantDraftService
             ['label' => 'Date', 'value' => $date],
             ['label' => 'We will owe them', 'value' => 'Rs ' . number_format($balance + $amount, 0)],
         ];
+
+        [$payload, $display] = $this->attachChatImage($payload, $display, $user);
 
         return $this->store($user, 'vendor_purchase',
             'Purchase from ' . $vendor->vendor_name . ': Rs ' . number_format($amount, 0),
@@ -487,6 +601,16 @@ class AssistantDraftService
         $imagePath = ($args['image_path'] ?? null)
             ?: ($fromSms ? null : $this->latestProofImage((int) $user->id));
         $reference = trim((string) ($args['reference'] ?? '')) ?: null;
+
+        // AMOUNT PROVENANCE GUARD (Fahim Rs-100): a model-passed amount with no
+        // screenshot and no bank SMS must exist in the user's own recent words,
+        // or we refuse and make the model ASK instead of guessing. The assumed
+        // single-open-order amount above is server-computed and exempt.
+        if ((float) ($args['amount'] ?? 0) > 0 && !$fromSms && !$imagePath
+            && !$this->amountAppearsInTurn((int) $user->id, (float) $args['amount'])) {
+            return ['error' => 'I could not find Rs ' . number_format((float) $args['amount'], 0)
+                . ' anywhere in what the user actually said — NEVER guess an amount. Ask him how much the payment was, then call again with what he answers.'];
+        }
         $proofLabel = $fromSms
             ? 'Bank credit SMS'
             : ($imagePath
@@ -693,6 +817,7 @@ class AssistantDraftService
                 'vendor_purchase' => $this->replayVendorPurchase($payload, $user),
                 'payment_proof'   => $this->replayPaymentProof($payload, $user),
                 'shop_payment'    => $this->replayShopPayment($payload, $user),
+                'account_transfer' => $this->replayAccountTransfer($payload, $user),
                 default           => ['ok' => false, 'message' => 'Unsupported draft type.'],
             };
         } catch (\Throwable $e) {
@@ -884,9 +1009,31 @@ class AssistantDraftService
      * it means an assistant expense is indistinguishable from a hand-typed one
      * — including sitting in the approval queue when the category demands it.
      */
+    /**
+     * PROVENANCE STANDARD (owner ruling Jul-2026): every transaction the
+     * assistant records must carry a human-visible "via NF Assistant" marker in
+     * its description/notes, so ANY screen that lists it (ledger, expenses,
+     * requests, vendor history, reports) shows where it came from — with zero
+     * per-screen work. The structured trace (t_ai_drafts.result_type/result_id)
+     * exists alongside for the Assistant View. Apply this to every future
+     * replay too.
+     */
+    private function stampAssistant(array $payload, string $key = 'description'): array
+    {
+        $existing = trim((string) ($payload[$key] ?? ''));
+        $payload[$key] = $existing === '' ? 'via NF Assistant'
+            : (str_contains($existing, 'NF Assistant') ? $existing : $existing . ' · via NF Assistant');
+        return $payload;
+    }
+
     private function replayExpense(array $payload, $user): array
     {
-        $request = Request::create('/requests', 'POST', array_filter($payload, fn($v) => $v !== null));
+        $payload = $this->stampAssistant($payload);
+        // Forward the attached screenshot exactly like the web bill-photo upload
+        // (RequestController@store reads 'attachment_image'). No image → posts as
+        // before. Must run BEFORE array_filter so attachment_path is stripped.
+        $files = $this->attachmentFiles($payload, 'attachment_image');
+        $request = Request::create('/requests', 'POST', array_filter($payload, fn($v) => $v !== null), [], $files);
         $request->setUserResolver(fn() => $user); // acts AS Taimur, not as "the system"
 
         // ⚠️ RequestController@store resolves the actor via the GLOBAL auth()
@@ -919,8 +1066,13 @@ class AssistantDraftService
 
     private function replayVendorPayment(array $payload, $user): array
     {
+        $payload = $this->stampAssistant($payload);
         $vendorId = $payload['vendor_id'];
         unset($payload['vendor_id']); // it's a route param, not a body field
+
+        // Forward the attached screenshot the same way the web form does —
+        // recordPayment reads 'receipt_image'. Strips attachment_path first.
+        $files = $this->attachmentFiles($payload, 'receipt_image');
 
         // ⚠️ recordPayment() returns JSON only when
         //      $request->expectsJson() || $request->is('api/*')
@@ -933,7 +1085,7 @@ class AssistantDraftService
             "/api/vendors/{$vendorId}/payment",
             'POST',
             array_filter($payload, fn($v) => $v !== null),
-            [], [], ['HTTP_ACCEPT' => 'application/json']
+            [], $files, ['HTTP_ACCEPT' => 'application/json']
         );
         $request->setUserResolver(fn() => $user);
         $this->actAs($user); // same reason as replayExpense — the controllers use auth()
@@ -960,8 +1112,12 @@ class AssistantDraftService
 
     private function replayVendorPurchase(array $payload, $user): array
     {
+        $payload = $this->stampAssistant($payload);
         $vendorId = $payload['vendor_id'];
         unset($payload['vendor_id']); // route param, not a body field
+
+        // recordPurchase reads 'bill_image'. Strips attachment_path first.
+        $files = $this->attachmentFiles($payload, 'bill_image');
 
         // Same api/*-path + Accept:json contract as replayVendorPayment —
         // recordPurchase branches to a redirect otherwise.
@@ -969,7 +1125,7 @@ class AssistantDraftService
             "/api/vendors/{$vendorId}/purchase",
             'POST',
             array_filter($payload, fn($v) => $v !== null),
-            [], [], ['HTTP_ACCEPT' => 'application/json']
+            [], $files, ['HTTP_ACCEPT' => 'application/json']
         );
         $request->setUserResolver(fn() => $user);
         $this->actAs($user);
@@ -1039,6 +1195,63 @@ class AssistantDraftService
             'result_type' => 'shop_bulk_payment',
             'result_id'   => null,
             'result_json' => $result,
+        ];
+    }
+
+    /**
+     * Execute a confirmed account transfer through the web LedgerController@
+     * storeTransfer — the SAME code the web transfer form posts to, so the
+     * approval flow (online → pending, cash → posted), the bank tag, and the
+     * balance maths are all inherited, never re-implemented.
+     *
+     * ⚠️ storeTransfer is a WEB action: it REDIRECTS (no JSON) and throws
+     * ValidationException on a bad request. So success is detected by the NEW
+     * transfer ledger row it commits, not by a response body.
+     */
+    private function replayAccountTransfer(array $payload, $user): array
+    {
+        $payload = $this->stampAssistant($payload); // description gets "· via NF Assistant"
+
+        $request = Request::create('/finance/ledger/transfer', 'POST',
+            array_filter($payload, fn($v) => $v !== null));
+        $request->setUserResolver(fn() => $user);
+        $this->actAs($user); // storeTransfer uses auth()->id() for created_by
+
+        $before = (int) (\App\Models\FIN\LedgerModel::max('id') ?? 0);
+        $controller = app(\App\Http\Controllers\FIN\LedgerController::class);
+        try {
+            $controller->storeTransfer($request);
+        } catch (\Illuminate\Validation\ValidationException $e) {
+            return ['ok' => false, 'message' => collect($e->errors())->flatten()->first() ?: 'The transfer was rejected.'];
+        } catch (\Throwable $e) {
+            return ['ok' => false, 'message' => 'The transfer could not be recorded: ' . $e->getMessage()];
+        }
+
+        // storeTransfer redirects; success = the transfer row it committed.
+        $ledger = \App\Models\FIN\LedgerModel::where('id', '>', $before)
+            ->where('transaction_type', \App\Models\FIN\LedgerModel::TYPE_TRANSFER)
+            ->where('created_by', $user->id)
+            ->where('from_account_id', $payload['from_account_id'])
+            ->where('to_account_id', $payload['to_account_id'])
+            ->orderByDesc('id')
+            ->first();
+
+        if (!$ledger) {
+            // The only non-validation failure in storeTransfer is a missing bank
+            // tag — which the draft's picker prevents. Anything else is a rare
+            // rollback; report it plainly rather than a false "done".
+            return ['ok' => false, 'message' => 'The transfer was not recorded — please check the bank selection and try again.'];
+        }
+
+        $pending = $ledger->approval_status === \App\Models\FIN\LedgerModel::STATUS_PENDING;
+        return [
+            'ok' => true,
+            'message' => $pending
+                ? 'Transfer created — it is now pending approval (online transfers go through approval, same as the web).'
+                : 'Transfer completed and posted to the ledger.',
+            'result_type' => 'ledger',
+            'result_id' => $ledger->id,
+            'result_json' => ['approval_status' => $ledger->approval_status],
         ];
     }
 
@@ -1158,6 +1371,139 @@ class AssistantDraftService
             return null;
         }
         return $row->media_path;
+    }
+
+    /**
+     * The image sent WITH THIS TURN's message, for attaching to an expense /
+     * vendor payment / purchase (owner ask: "attach the screenshot wherever you
+     * post"). Deliberately stricter than latestProofImage: it takes the LATEST
+     * user message and only returns its image — so recording an expense with NO
+     * image in its message never grabs a stale screenshot from earlier in the
+     * chat. Also skips a file over the controllers' 5 MB limit (so the card's
+     * "📎 attached" hint and the real attach can never disagree).
+     * The chat controller logs this turn's user message (with media_path)
+     * BEFORE the agent runs the tools, so the "latest" row IS this turn's.
+     */
+    private function currentTurnImage(int $userId): ?string
+    {
+        $convId = DB::table('t_ai_conversations')->where('user_id', $userId)->value('id');
+        if (!$convId) return null;
+
+        $row = DB::table('t_ai_messages')
+            ->where('conversation_id', $convId)
+            ->where('role', 'user')
+            ->orderByDesc('id')
+            ->first(['media_path', 'input_type', 'created_at']);
+
+        if (!$row || !$row->media_path) return null;
+        // Must be an IMAGE (not a voice note's audio path).
+        if (($row->input_type ?? '') !== 'image' && !str_contains($row->media_path, 'img-')) {
+            return null;
+        }
+        if ($row->created_at && \Carbon\Carbon::parse($row->created_at)->lt(now()->subMinutes(10))) {
+            return null;
+        }
+        try {
+            $disk = Storage::disk(config('whatsapp.media_disk', 'public'));
+            if (!$disk->exists($row->media_path) || $disk->size($row->media_path) > 5 * 1024 * 1024) {
+                return null;
+            }
+        } catch (\Throwable $e) {
+            return null;
+        }
+        return $row->media_path;
+    }
+
+    /**
+     * Append the current-turn screenshot (if any) to a draft's payload+display,
+     * so at confirm the replay can forward it to the underlying controller as a
+     * real uploaded file. Used by expense / vendor-payment / vendor-purchase
+     * drafts. Returns [payload, display].
+     */
+    private function attachChatImage(array $payload, array $display, $user): array
+    {
+        $img = $this->currentTurnImage((int) $user->id);
+        if ($img) {
+            $payload['attachment_path'] = $img;           // non-underscore: survives to replay
+            $display[] = ['label' => 'Attachment', 'value' => '📎 Screenshot'];
+        }
+        return [$payload, $display];
+    }
+
+    /**
+     * Turn a stored image path into the $files array Request::create() needs, so
+     * a replayed controller sees it exactly like a browser upload. Removes
+     * attachment_path from $payload (it is NOT a form field). Returns [] when
+     * there is no usable image, so the record still posts (just without the
+     * attachment). $field = the controller's file input name.
+     */
+    private function attachmentFiles(array &$payload, string $field): array
+    {
+        $path = $payload['attachment_path'] ?? null;
+        unset($payload['attachment_path']);
+        if (!$path) {
+            return [];
+        }
+        try {
+            $disk = Storage::disk(config('whatsapp.media_disk', 'public'));
+            if (!$disk->exists($path)) {
+                return [];
+            }
+            $abs = $disk->path($path);
+            $uploaded = new \Illuminate\Http\UploadedFile(
+                $abs,
+                basename($abs),
+                mime_content_type($abs) ?: 'image/jpeg',
+                null,
+                true, // $test = synthetic (not a real HTTP upload) → isValid()/store() work
+            );
+            return [$field => $uploaded];
+        } catch (\Throwable $e) {
+            \Log::warning('[assistant attachment] ' . $e->getMessage(), ['path' => $path]);
+            return [];
+        }
+    }
+
+    /**
+     * PROVENANCE GUARD FOR AMOUNTS (Fahim Rs-100 incident, 2026-07-21): the
+     * model invented `amount: 100` when the user typed "payment received" with
+     * NO amount — a prompt rule alone cannot stop a silent hallucination, so
+     * the server verifies it. An amount the model passes must appear in the
+     * user's own recent words (typed text or voice transcript, last 3 user
+     * messages, digit-normalized so "15,050" == 15050). Callers exempt the
+     * cases with a REAL non-chat source: a screenshot (the model read it off
+     * the image), a bank SMS (server-side amount), or a server-computed value.
+     */
+    private function amountAppearsInTurn(int $userId, float $amount): bool
+    {
+        $convId = DB::table('t_ai_conversations')->where('user_id', $userId)->value('id');
+        if (!$convId) {
+            return false;
+        }
+        $rows = DB::table('t_ai_messages')
+            ->where('conversation_id', $convId)
+            ->where('role', 'user')
+            ->orderByDesc('id')
+            ->limit(3)
+            ->get(['content', 'transcript']);
+
+        // Digit-normalize both sides: strip everything but digits and dots,
+        // then look for the amount as an integer ("15050") and as typed with
+        // separators removed. 15050.00 → also try "15050".
+        $needles = array_unique(array_filter([
+            (string) (int) round($amount),
+            rtrim(rtrim(number_format($amount, 2, '.', ''), '0'), '.'),
+        ]));
+
+        foreach ($rows as $r) {
+            $hay = preg_replace('/[,\s]+/', '', (string) $r->content . ' ' . (string) $r->transcript);
+            foreach ($needles as $n) {
+                if ($n !== '' && str_contains($hay, $n)) {
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 
     // ── helpers ──────────────────────────────────────────────────────────────

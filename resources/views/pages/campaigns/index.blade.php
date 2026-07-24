@@ -1611,6 +1611,15 @@ function renderFilterGroups(scope = 'create') {
                 </select>
                 <div style="font-size:10px;color:#94a3b8;margin-top:4px;">Shopify = at least one SH-prefixed order in the last 300 days, or a Shopify customer-id on file.</div>
             </div>
+            <div class="camp-form-group">
+                <label>Mobile app</label>
+                <select onchange="updateFilterGroup('${scope}', ${i}, 'mobile_app', this.value || null)">
+                    <option value=""            ${!g.mobile_app                    ? 'selected' : ''}>Any</option>
+                    <option value="not_on_app"  ${g.mobile_app === 'not_on_app'    ? 'selected' : ''}>Not on app (exclude app users)</option>
+                    <option value="on_app"      ${g.mobile_app === 'on_app'        ? 'selected' : ''}>📱 On app only</option>
+                </select>
+                <div style="font-size:10px;color:#94a3b8;margin-top:4px;">On app = has placed an order via the mobile app. Use “Not on app” so people already on the app don’t get the message.</div>
+            </div>
         </div>`;
     });
     el.innerHTML = html;

@@ -19,6 +19,16 @@ class AttendanceController extends Controller
     // Get all users with their attendance visibility status
     public function getUsersVisibility(Request $request)
     {
+        // "Show in Salary" is a separate flag (added later). NULL follows attendance
+        // visibility, so the effective payroll value = COALESCE(show_in_payroll, is_visible, 1).
+        $hasSalaryCol = false;
+        try {
+            $hasSalaryCol = \Illuminate\Support\Facades\Schema::hasColumn('t_ops_attendance_visibility', 'show_in_payroll');
+        } catch (\Throwable $e) { $hasSalaryCol = false; }
+        $salaryExpr = $hasSalaryCol
+            ? 'COALESCE(av.show_in_payroll, av.is_visible, 1)'
+            : 'COALESCE(av.is_visible, 1)';
+
         $users = DB::table('t_sys_user as u')
             ->leftJoin('t_ops_attendance_visibility as av', 'av.user_id', '=', 'u.id')
             ->leftJoin('t_ops_rider_profile as p', 'p.user_id', '=', 'u.id')
@@ -30,15 +40,54 @@ class AttendanceController extends Controller
                 'u.fullname',
                 'r.urole_name as role_name',
                 DB::raw('COALESCE(av.is_visible, 1) as is_visible'),
+                DB::raw($salaryExpr . ' as show_in_payroll'),
                 // Delivery rider = active rider profile (separate from attendance visibility).
                 DB::raw('CASE WHEN p.active = 1 THEN 1 ELSE 0 END as is_delivery_rider'),
                 'av.notes as hide_reason'
             )
-            ->groupBy('u.id', 'u.fullname', 'r.urole_name', 'av.is_visible', 'p.active', 'av.notes')
+            ->groupBy('u.id', 'u.fullname', 'r.urole_name', 'av.is_visible', DB::raw($salaryExpr), 'p.active', 'av.notes')
             ->orderBy('u.fullname')
             ->get();
 
-        return response()->json(['success' => true, 'data' => $users]);
+        return response()->json(['success' => true, 'data' => $users, 'salary_toggle_available' => $hasSalaryCol]);
+    }
+
+    // Toggle whether a user appears on the Payroll screen (salary tracking), independent
+    // of attendance visibility. Backed by t_ops_attendance_visibility.show_in_payroll.
+    public function updateSalaryVisibility(Request $request)
+    {
+        $validated = $request->validate([
+            'user_id' => 'required|integer|exists:t_sys_user,id',
+            'show_in_payroll' => 'required|boolean',
+        ]);
+        try {
+            if (!\Illuminate\Support\Facades\Schema::hasColumn('t_ops_attendance_visibility', 'show_in_payroll')) {
+                return response()->json(['success' => false, 'message' => 'Apply the salary-visibility schema update first.'], 422);
+            }
+        } catch (\Throwable $e) {
+            return response()->json(['success' => false, 'message' => 'Could not check the schema.'], 500);
+        }
+
+        $userId = (int) $validated['user_id'];
+        $show = $validated['show_in_payroll'] ? 1 : 0;
+
+        $existing = DB::table('t_ops_attendance_visibility')->where('user_id', $userId)->first();
+        if ($existing) {
+            DB::table('t_ops_attendance_visibility')->where('user_id', $userId)
+                ->update(['show_in_payroll' => $show, 'updated_at' => now()]);
+        } else {
+            // No visibility row yet: create one that keeps attendance DEFAULT (visible)
+            // but sets the explicit payroll choice.
+            DB::table('t_ops_attendance_visibility')->insert([
+                'user_id' => $userId,
+                'is_visible' => 1,
+                'show_in_payroll' => $show,
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+        }
+
+        return response()->json(['success' => true, 'message' => 'Salary visibility updated']);
     }
 
     // Toggle whether a user is a delivery rider (appears in the rider-assign lists on
@@ -167,6 +216,10 @@ class AttendanceController extends Controller
                 'a.meter_end',
                 'a.picture_start',
                 'a.picture_end',
+                // U5 timeline anchors — feed the shared GPS phase analyzer (ride-in / ride-home)
+                'a.meter_start_recorded_at',
+                'a.home_meter_recorded_at',
+                'a.meter_start_source',
                 // Location tracking fields
                 'a.checkin_latitude',
                 'a.checkin_longitude',
@@ -174,6 +227,18 @@ class AttendanceController extends Controller
                 'a.is_remote_checkin',
                 'a.checkout_latitude',
                 'a.checkout_longitude',
+                // Blocked-checkout capture (latest attempt) — feeds the bypass-modal context + alert
+                'a.checkout_attempt_at',
+                'a.checkout_attempt_lat',
+                'a.checkout_attempt_lng',
+                'a.checkout_attempt_reason',
+                'a.checkout_attempt_distance_m',
+                'a.checkout_attempt_limit_m',
+                'a.checkout_attempt_age_min',
+                'a.checkout_attempt_drop_lat',
+                'a.checkout_attempt_drop_lng',
+                'a.checkout_attempt_drop_label',
+                'a.checkout_attempt_count',
                 // Road distance (stored on checkout)
                 'a.road_distance_km',
                 'a.road_distance_source',
@@ -372,9 +437,11 @@ class AttendanceController extends Controller
             if (!empty($userIds) && \Illuminate\Support\Facades\Schema::hasColumn('t_ops_attendance', 'home_expected_by')) {
                 $hjSvc = new \App\Services\Riders\HomeJourneyService();
                 $hasBreach = \Illuminate\Support\Facades\Schema::hasColumn('t_ops_attendance', 'home_bypass_breach');
-                $hjCols = ['id', 'user_id', 'logout_time', 'home_expected_by', 'home_arrived_at', 'home_arrival_source',
+                $hasRecAt  = \Illuminate\Support\Facades\Schema::hasColumn('t_ops_attendance', 'home_meter_recorded_at');
+                $hjCols = ['id', 'user_id', 'logout_time', 'home_expected_by', 'home_eta_min', 'home_arrived_at', 'home_arrival_source',
                            'home_distance_km', 'meter_home', 'home_meter_unlock_until', 'home_meter_unlock_by', 'home_late_reason'];
                 if ($hasBreach) { $hjCols[] = 'home_bypass_breach'; }
+                if ($hasRecAt)  { $hjCols[] = 'home_meter_recorded_at'; }
                 $hjRows = DB::table('t_ops_attendance')
                     ->whereIn('user_id', $userIds)->whereDate('attendance_date', $selectedDate)
                     ->whereNotNull('home_expected_by')
@@ -384,9 +451,11 @@ class AttendanceController extends Controller
                         'attendance_id' => (int) $hr->id,
                         'state'         => $hjSvc->deriveState($hr),
                         'expected_by'   => $hr->home_expected_by ? substr((string) $hr->home_expected_by, 11, 5) : null,
+                        'eta_min'       => $hr->home_eta_min !== null ? (int) $hr->home_eta_min : null,
                         'arrived_at'    => $hr->home_arrived_at ? substr((string) $hr->home_arrived_at, 11, 5) : null,
                         'arrival_source'=> $hr->home_arrival_source,
                         'distance_km'   => $hr->home_distance_km !== null ? (float) $hr->home_distance_km : null,
+                        'recorded_at'   => ($hasRecAt && $hr->home_meter_recorded_at) ? substr((string) $hr->home_meter_recorded_at, 11, 5) : null,
                         'minutes_late'  => $hjSvc->minutesLate($hr),
                         'has_meter'     => $hr->meter_home !== null && $hr->meter_home !== '',
                         'meter_home'    => $hr->meter_home !== null ? (int) $hr->meter_home : null,
@@ -397,6 +466,56 @@ class AttendanceController extends Controller
                 }
             }
         } catch (\Throwable $e) { /* no home valve on error — page must still load */ }
+
+        // ── U5 morning-start journey per rider (guarded — no wave-4 columns ⇒ nothing shown).
+        //    Judged ONLY for company-bike riders with a home pin; carries the START-line data
+        //    (due / eta / when the meter was typed / source) + the home-continuity verdict +
+        //    the Phase-2 check-in-unlock state for the valve modal.
+        $workByUser = [];
+        try {
+            if (!empty($userIds) && \Illuminate\Support\Facades\Schema::hasColumn('t_ops_attendance', 'work_expected_by')) {
+                $wjSvc = new \App\Services\Riders\WorkJourneyService();
+                $bikeUsers = DB::table('t_ops_rider_profile')
+                    ->whereIn('user_id', $userIds)
+                    ->where('company_bike', 1)->whereNotNull('home_latitude')
+                    ->pluck('user_id')->all();
+                if (!empty($bikeUsers)) {
+                    $wRows = DB::table('t_ops_attendance')
+                        ->whereIn('user_id', $bikeUsers)->whereDate('attendance_date', $selectedDate)
+                        ->get(['id', 'user_id', 'attendance_date', 'login_time', 'meter_start', 'meter_start_source',
+                               'meter_start_recorded_at', 'work_expected_by', 'work_eta_min', 'work_distance_km',
+                               'checkin_unlock_until', 'checkin_unlock_by', 'checkin_unlock_reason']);
+                    $unlockerIds = array_filter($wRows->pluck('checkin_unlock_by')->all());
+                    $unlockerNames = empty($unlockerIds) ? collect()
+                        : DB::table('t_sys_user')->whereIn('id', $unlockerIds)->pluck('fullname', 'id');
+                    foreach ($wRows as $wr) {
+                        $state = $wjSvc->deriveState($wr);
+                        if ($state === 'none' && empty($wr->meter_start_recorded_at) && empty($wr->checkin_unlock_until)) {
+                            continue; // nothing morning-related on this row
+                        }
+                        $cont = $wjSvc->continuity($wr); // home-source 1-km rule; office gaps stay with the page's grace logic
+                        $workByUser[$wr->user_id] = [
+                            'attendance_id' => (int) $wr->id,
+                            'state'         => $state, // riding|overdue|arrived_on_time|arrived_late|no_home_start|none
+                            'expected_by'   => $wr->work_expected_by ? substr((string) $wr->work_expected_by, 11, 5) : null,
+                            'eta_min'       => $wr->work_eta_min !== null ? (int) $wr->work_eta_min : null,
+                            'buffer_min'    => (int) $wjSvc->config('WORK_ETA_BUFFER_MIN', 10), // so the START line shows ETA + grace
+                            'distance_km'   => $wr->work_distance_km !== null ? (float) $wr->work_distance_km : null,
+                            'recorded_at'   => $wr->meter_start_recorded_at ? substr((string) $wr->meter_start_recorded_at, 11, 5) : null,
+                            'source'        => $wr->meter_start_source,
+                            'minutes_late'  => $wjSvc->minutesLate($wr),
+                            'continuity'    => $cont, // {gap, breach, prev, prev_date} | null
+                            'checkin_unlock'=> [
+                                'active'  => $wjSvc->checkinUnlockActive($wr),
+                                'until'   => $wr->checkin_unlock_until ? substr((string) $wr->checkin_unlock_until, 11, 5) : null,
+                                'by_name' => $wr->checkin_unlock_by ? ($unlockerNames[$wr->checkin_unlock_by] ?? 'manager') : null,
+                                'reason'  => $wr->checkin_unlock_reason,
+                            ],
+                        ];
+                    }
+                }
+            }
+        } catch (\Throwable $e) { /* morning info is optional — page must still load */ }
 
         // ── Checkout-unlock state per rider (the non-bike "forgot to check out" bypass).
         //    Guarded — no columns yet ⇒ no bypass info, page unaffected.
@@ -447,6 +566,10 @@ class AttendanceController extends Controller
         $cycle = $this->attendanceCycle();
         $monthStart = date('Y-m-01', strtotime($selectedDate));
         $checkoutClassifier = new \App\Services\Riders\CheckoutClassifierService();
+        $dcSvc = new \App\Services\Riders\DayChecksService(); // shared web+mobile day-checks brain
+        // Config reads hoisted ONCE — the loop below runs per rider, per refresh poll.
+        $meterGpsWarnKm = (float) $this->attendanceConfig('ATTENDANCE_METER_GPS_WARN_KM', 10);
+        $stuckMins = (int) $this->attendanceConfig('CHECKOUT_STUCK_ALERT_MINS', 25);
         // Delivered-order counts per rider on the selected date — used to flag the office-checkout
         // EXCEPTION (a non-bike rider who delivered but checked out at the office; R5). Guarded.
         $deliveredByUser = [];
@@ -472,6 +595,8 @@ class AttendanceController extends Controller
             $row->overnight_grace_km = $graceByUser[$row->user_id] ?? $defaultGrace;
             // Going-home meter state (drives the manager valve on the row); null = not on the flow.
             $row->home_journey = $homeByUser[$row->user_id] ?? null;
+            // U5 morning-start state (START line + check-in-unlock valve); null = not on the flow.
+            $row->work_journey = $workByUser[$row->user_id] ?? null;
             // Checkout-unlock state (the "forgot to check out" bypass); null = never granted today.
             $row->checkout_unlock = $unlockByUser[$row->user_id] ?? null;
 
@@ -509,10 +634,30 @@ class AttendanceController extends Controller
                 && (int) $row->company_bike === 0 && (int) ($deliveredByUser[$row->user_id] ?? 0) >= 1) {
                 $row->checkout_info['office_exception'] = true;
             }
+
+            // ── DAY CHECKS — the ⛽/📡 verdicts + issue chips + clean flag. Built by the SHARED
+            //    DayChecksService so the web page, the mobile store screen, and the modals all
+            //    read the SAME result (the one-brain rule). Only for rows that worked today.
+            $row->day_checks = $row->login_time ? $dcSvc->build([
+                'login_time' => $row->login_time, 'logout_time' => $row->logout_time,
+                'role_name' => $row->role_name ?? null, 'company_bike' => ((int) $row->company_bike === 1),
+                'meter_start' => $row->meter_start, 'meter_end' => $row->meter_end, 'meter_distance' => $row->meter_distance,
+                'road_distance_km' => $row->road_distance_km, 'gps_distance' => $row->gps_distance,
+                'checkout_info' => $row->checkout_info, 'home_journey' => $row->home_journey,
+                'work_journey' => $row->work_journey, 'checkout_unlock' => $row->checkout_unlock,
+                'meter_start_recorded_at' => $row->meter_start_recorded_at ?? null,
+                'home_meter_recorded_at' => $row->home_meter_recorded_at ?? null,
+                'meter_start_source' => $row->meter_start_source ?? null,
+            ], isset($allGpsReadings[$row->user_id]) ? $allGpsReadings[$row->user_id]->values()->all() : [],
+               $selectedDate, $meterGpsWarnKm) : null;
+
+            // Blocked-checkout context for the bypass modal — same shared formatter the mobile
+            // sheet uses, so the two never disagree. null when no attempt was recorded.
+            $row->checkout_attempt = \App\Services\Riders\DayChecksService::checkoutAttempt($row, $stuckMins);
         }
 
         $config = [
-            'meter_gps_warn_km' => (float) $this->attendanceConfig('ATTENDANCE_METER_GPS_WARN_KM', 10),
+            'meter_gps_warn_km' => $meterGpsWarnKm,
             'overnight_grace_km' => $defaultGrace,
         ];
 
@@ -735,7 +880,7 @@ class AttendanceController extends Controller
             'petrol_window_days' => (int) $this->attendanceConfig('PETROL_WINDOW_DAYS', 5),
             'home_eta_buffer_min' => (int) $this->attendanceConfig('HOME_ETA_BUFFER_MIN', 15),
             'home_late_unlock_mins' => (int) $this->attendanceConfig('HOME_LATE_UNLOCK_MINS', 10),
-            'home_radius_m' => (int) $this->attendanceConfig('HOME_RADIUS_M', 150),
+            'home_radius_m' => (int) $this->attendanceConfig('HOME_RADIUS_M', 300),
             'leave_quota_total' => (float) $this->attendanceConfig('LEAVE_QUOTA_TOTAL', 10),
             'leave_sameday_cap' => (int) $this->attendanceConfig('LEAVE_SAMEDAY_CAP', 4),
             'leave_sameday_cutoff' => (string) $this->attendanceConfig('LEAVE_SAMEDAY_CUTOFF', '10:00'),
@@ -1140,6 +1285,36 @@ class AttendanceController extends Controller
             if ($request->has('meter_start')) { $update['meter_start'] = $validated['meter_start']; }
             if ($request->has('meter_end'))   { $update['meter_end']   = $validated['meter_end']; }
 
+            // ⭐ U5 — audit where the START reading came from: a manager filling a MISSING /
+            // office-typed start stamps source='manager' (+moment). A correction of a genuine
+            // home recording keeps its 'home' stamp — the manager only fixed digits.
+            if ($request->has('meter_start') && $validated['meter_start'] !== null
+                && \Illuminate\Support\Facades\Schema::hasColumn('t_ops_attendance', 'meter_start_source')
+                && (string) ($att->meter_start_source ?? '') !== 'home') {
+                $update['meter_start_source'] = 'manager';
+                $update['meter_start_recorded_at'] = now();
+            }
+
+            // ⭐ U4: for a company-bike rider on the going-home flow, meter_home IS the day-closing
+            // reading (a mirror of meter_end). Keep them in sync so a manager correcting meter_end
+            // never leaves the home journey stuck "locked" with a stale/empty meter_home. Only
+            // touches bike-journey rows (home_expected_by set); non-bike rows are unaffected.
+            if ($request->has('meter_end') && $validated['meter_end'] !== null
+                && !empty($att->home_expected_by)
+                && \Illuminate\Support\Facades\Schema::hasColumn('t_ops_attendance', 'meter_home')) {
+                $update['meter_home'] = $validated['meter_end'];
+                if (empty($att->meter_home)) {
+                    // Journey was still open → close it now (honest arrival = the correction moment).
+                    if (empty($att->home_arrived_at)) {
+                        $update['home_arrived_at'] = now();
+                        $update['home_arrival_source'] = 'manager';
+                    }
+                    if (\Illuminate\Support\Facades\Schema::hasColumn('t_ops_attendance', 'home_meter_recorded_at')) {
+                        $update['home_meter_recorded_at'] = now();
+                    }
+                }
+            }
+
             DB::table('t_ops_attendance')->where('id', $att->id)->update($update);
 
             \Log::info('Meter values corrected via web attendance', [
@@ -1285,6 +1460,77 @@ class AttendanceController extends Controller
     }
 
     /**
+     * U5 — check-IN unlock (the Phase-2 morning-lock valve). When CHECKIN_ETA_LOCK is on, a
+     * company-bike rider past his ride-to-work deadline — or with no home start at all — is
+     * blocked from checking in; this opens a timed window so his IN button works. Accepts
+     * user_id (+date today) because the locked rider may have NO attendance row yet (he never
+     * recorded a home start) — in that case a bare row is created to carry the unlock, and
+     * checkIn() later fills login_time into that same row. Audited; harmless while the lock
+     * config is off.
+     */
+    public function checkinUnlock(Request $request)
+    {
+        try {
+            $validated = $request->validate([
+                'user_id' => 'required|integer',
+                'reason' => 'required|string|max:200',
+                'action' => 'nullable|in:unlock,clear',
+            ]);
+            if (!\Illuminate\Support\Facades\Schema::hasColumn('t_ops_attendance', 'checkin_unlock_until')) {
+                return response()->json(['success' => false, 'message' => 'Run the wave-4 SQL first.'], 422);
+            }
+            $today = now()->format('Y-m-d');
+            $att = DB::table('t_ops_attendance')
+                ->where('user_id', $validated['user_id'])->whereDate('attendance_date', $today)->first();
+
+            if (($validated['action'] ?? 'unlock') === 'clear') {
+                if ($att) {
+                    DB::table('t_ops_attendance')->where('id', $att->id)->update([
+                        'checkin_unlock_until' => null, 'checkin_unlock_by' => null,
+                        'checkin_unlock_reason' => null, 'updated_at' => now(),
+                    ]);
+                }
+                return response()->json(['success' => true, 'message' => 'Check-in unlock cleared.']);
+            }
+            if ($att && !empty($att->login_time)) {
+                return response()->json(['success' => false, 'message' => 'Already checked in — nothing to unlock.'], 422);
+            }
+            $mins = (int) $this->attendanceConfig('CHECKIN_UNLOCK_MINS', 10);
+            if ($mins < 1) { $mins = 10; }
+            $until = now()->addMinutes($mins);
+            $fields = [
+                'checkin_unlock_until' => $until,
+                'checkin_unlock_by' => auth()->id(),
+                'checkin_unlock_reason' => trim($validated['reason']),
+                'updated_at' => now(),
+            ];
+            if ($att) {
+                DB::table('t_ops_attendance')->where('id', $att->id)->update($fields);
+            } else {
+                DB::table('t_ops_attendance')->insert(array_merge($fields, [
+                    'user_id' => (int) $validated['user_id'],
+                    'attendance_date' => $today,
+                    'created_at' => now(),
+                ]));
+            }
+            try {
+                (new \App\Services\FirebaseService())->notifyUser(
+                    (int) $validated['user_id'],
+                    ['title' => 'Check-in unlocked', 'body' => 'Your manager unlocked check-in — press IN within ' . $mins . ' minutes.'],
+                    ['type' => 'checkin_unlock'],
+                    'shift_notifications'
+                );
+            } catch (\Throwable $e) { /* push best-effort */ }
+            return response()->json(['success' => true, 'message' => 'Check-in unlocked for ' . $mins . ' minutes.', 'unlock_until' => $until->format('Y-m-d H:i:s')]);
+        } catch (\Illuminate\Validation\ValidationException $ve) {
+            return response()->json(['success' => false, 'message' => $ve->validator->errors()->first()], 422);
+        } catch (\Throwable $e) {
+            \Log::error('checkinUnlock failed', ['error' => $e->getMessage()]);
+            return response()->json(['success' => false, 'message' => 'Could not unlock.'], 500);
+        }
+    }
+
+    /**
      * U4 — manager enters the home meter FOR the rider (phone dead / can't submit). Closes the day:
      * writes meter_home + meter_end + home_arrived_at (source=manager) + reason. Attendance-admin only.
      */
@@ -1318,6 +1564,10 @@ class AttendanceController extends Controller
             // Audit what was wrong BEFORE the manager entered it (computed on the pre-update row).
             if (\Illuminate\Support\Facades\Schema::hasColumn('t_ops_attendance', 'home_bypass_breach')) {
                 $upd['home_bypass_breach'] = (new \App\Services\Riders\HomeJourneyService())->bypassBreach($att);
+            }
+            // Exact meter-entry moment for the attendance-page timeline (guarded — column is wave-3).
+            if (\Illuminate\Support\Facades\Schema::hasColumn('t_ops_attendance', 'home_meter_recorded_at')) {
+                $upd['home_meter_recorded_at'] = now();
             }
             DB::table('t_ops_attendance')->where('id', $att->id)->update($upd);
             \Log::info('Home meter entered by manager', ['attendance_id' => $att->id, 'user_id' => $att->user_id, 'by' => $managerId]);
@@ -1365,6 +1615,93 @@ class AttendanceController extends Controller
             if (\Illuminate\Support\Facades\Schema::hasTable('t_ops_alert_dismissal')) {
                 DB::table('t_ops_alert_dismissal')->updateOrInsert(
                     ['user_id' => $user->id, 'alert_key' => 'home_meter:' . $validated['attendance_id']],
+                    ['dismissed_at' => now()]
+                );
+            }
+            return response()->json(['success' => true]);
+        } catch (\Throwable $e) {
+            return response()->json(['success' => false, 'message' => 'Could not dismiss.'], 500);
+        }
+    }
+
+    /**
+     * Live "rider stuck at checkout" alerts (dismissable). A rider pressed OUT and the mandatory
+     * location/time rule refused it — recorded as a checkout_attempt on his row (Phase 1). Returns
+     * riders whose LATEST blocked attempt is still OPEN (not checked out) and RECENT (within
+     * CHECKOUT_STUCK_ALERT_MINS), minus the caller's dismissals. The definition of "stuck" comes
+     * straight from DayChecksService::checkoutAttempt (one brain — same block the bypass modal shows).
+     * Audience-gated by 'view_store_attendance' (the people who manage the store attendance screen).
+     * A dismissal is re-raised only if the rider tries AGAIN after it (attempt time > dismissed_at).
+     */
+    public function checkoutStuckAlerts(Request $request)
+    {
+        try {
+            $user = auth()->user();
+            if (!$user || !$user->hasMobilePermission('view_store_attendance')) {
+                return response()->json(['success' => true, 'alerts' => [], 'count' => 0, 'latest_id' => 0]);
+            }
+            if (!\Illuminate\Support\Facades\Schema::hasColumn('t_ops_attendance', 'checkout_attempt_at')) {
+                return response()->json(['success' => true, 'alerts' => [], 'count' => 0, 'latest_id' => 0]);
+            }
+            $freshMins = (int) $this->attendanceConfig('CHECKOUT_STUCK_ALERT_MINS', 25);
+            $today = now()->format('Y-m-d');
+            $since = now()->subMinutes(max(1, $freshMins))->format('Y-m-d H:i:s');
+            $rows = DB::table('t_ops_attendance as a')
+                ->join('t_sys_user as u', 'u.id', '=', 'a.user_id')
+                ->whereDate('a.attendance_date', $today)
+                ->whereNull('a.logout_time')                 // still on duty — not yet checked out
+                ->whereNotNull('a.checkout_attempt_at')
+                ->where('a.checkout_attempt_at', '>=', $since)
+                ->select('a.*', 'u.fullname')
+                ->get();
+
+            $alerts = [];
+            foreach ($rows as $r) {
+                $ca = \App\Services\Riders\DayChecksService::checkoutAttempt($r, $freshMins);
+                if (!$ca || empty($ca['still_open']) || empty($ca['is_recent'])) { continue; }
+                $alerts[] = [
+                    'attendance_id' => (int) $r->id,
+                    'user_id'       => (int) $r->user_id,
+                    'rider_name'    => $r->fullname,
+                    'headline'      => $ca['headline'],
+                    'reason'        => $ca['reason'],
+                    'at'            => $ca['at'],
+                    'count'         => $ca['count'],
+                    'maps_url'      => $ca['maps_url'],
+                    'date'          => $today,
+                ];
+            }
+
+            // Exclude the caller's dismissals — but a NEWER attempt after a dismissal re-raises it.
+            if (!empty($alerts) && \Illuminate\Support\Facades\Schema::hasTable('t_ops_alert_dismissal')) {
+                $keys = array_map(fn ($a) => 'checkout_stuck:' . $a['attendance_id'], $alerts);
+                $dism = DB::table('t_ops_alert_dismissal')->where('user_id', $user->id)
+                    ->whereIn('alert_key', $keys)->pluck('dismissed_at', 'alert_key');
+                $alerts = array_values(array_filter($alerts, function ($a) use ($dism) {
+                    $k = 'checkout_stuck:' . $a['attendance_id'];
+                    if (!isset($dism[$k])) { return true; }                       // never dismissed
+                    return strtotime((string) $a['at']) > strtotime((string) $dism[$k]); // tried again since
+                }));
+            }
+
+            $latestId = 0;
+            foreach ($alerts as $a) { if ($a['attendance_id'] > $latestId) { $latestId = $a['attendance_id']; } }
+            return response()->json(['success' => true, 'alerts' => $alerts, 'count' => count($alerts), 'latest_id' => $latestId]);
+        } catch (\Throwable $e) {
+            return response()->json(['success' => true, 'alerts' => [], 'count' => 0, 'latest_id' => 0]);
+        }
+    }
+
+    /** A manager dismisses a "stuck at checkout" alert for a rider (per user, per attendance row). */
+    public function dismissCheckoutStuckAlert(Request $request)
+    {
+        try {
+            $validated = $request->validate(['attendance_id' => 'required|integer']);
+            $user = auth()->user();
+            if (!$user) { return response()->json(['success' => false], 401); }
+            if (\Illuminate\Support\Facades\Schema::hasTable('t_ops_alert_dismissal')) {
+                DB::table('t_ops_alert_dismissal')->updateOrInsert(
+                    ['user_id' => $user->id, 'alert_key' => 'checkout_stuck:' . $validated['attendance_id']],
                     ['dismissed_at' => now()]
                 );
             }
@@ -1859,12 +2196,31 @@ class AttendanceController extends Controller
             $officeCheckoutMap = (new \App\Services\Riders\CheckoutClassifierService())
                 ->officeCheckoutDays(array_keys($byUser), $startDate, $effectiveEndDate);
         } catch (\Throwable $e) { $officeCheckoutMap = []; }
+        // U5/U4 — check-IN and check-OUT violation days for the month, batched once (guarded).
+        // In = missed ride-in ETA / no home start / morning meter gap; Out = home-journey
+        // issue days (reached home late / locked / manager-unlocked). Bike riders only.
+        $inViolMap = [];
+        $outViolMap = [];
+        try {
+            $inViolMap = (new \App\Services\Riders\WorkJourneyService())
+                ->workIssueDays(array_keys($byUser), $startDate, $effectiveEndDate);
+        } catch (\Throwable $e) { $inViolMap = []; }
+        try {
+            $outViolMap = (new \App\Services\Riders\HomeJourneyService())
+                ->homeIssueDays(array_keys($byUser), $startDate, $effectiveEndDate);
+        } catch (\Throwable $e) { $outViolMap = []; }
         // Also add absent day records to the daily array for easier tracking
         foreach ($byUser as $userId => &$userData) {
             // Full leave dates count 1; half-days count 0.5 (matches the yearly counter).
             $userData['leave_days'] = count($userData['leave_dates']) + 0.5 * count($userData['half_dates']);
             $userData['half_days'] = count($userData['half_dates']);
             $userData['office_checkout_days'] = count($officeCheckoutMap[$userId] ?? []);
+            // U5/U4 — company-bike violation columns (0 for everyone else). detail = date → issues,
+            // rendered client-side in the month popup.
+            $userData['checkin_violation_days'] = $inViolMap[$userId]['days'] ?? 0;
+            $userData['checkin_violation_detail'] = $inViolMap[$userId]['detail'] ?? new \stdClass();
+            $userData['checkout_violation_days'] = $outViolMap[$userId]['days'] ?? 0;
+            $userData['checkout_violation_detail'] = $outViolMap[$userId]['detail'] ?? new \stdClass();
             // Absent (MO) uses the SAME canonical definition as Absent (YR), the month_absent
             // drill, and the rider app: a working-kind day with no login and no approved leave.
             // This excludes manager "not needed" tags (and off/holiday), so tagging a no-show
@@ -2771,6 +3127,36 @@ class AttendanceController extends Controller
                 }
             }
             
+            // ── GPS v2: PHASE coverage — the SHARED analyzer (same DayChecksService the row 📡
+            //    tick uses, so modal and tick can never disagree).
+            $phases = (new \App\Services\Riders\DayChecksService())->computeGpsPhases($readings->values()->all(), $attendance, $date)['phases'];
+
+            // ── Meter story (feeds the separate Meter-details modal). Raw picture paths — the
+            //    page's viewMeterPicturePath() opens them (no server-side URL building needed).
+            //    is_company_bike drives the modal's shape: bike riders get the full home story
+            //    (last-night / overnight / at-home); everyone else gets just start + end.
+            $isCompanyBike = (int) (DB::table('t_ops_rider_profile')->where('user_id', $userId)->value('company_bike') ?? 0) === 1;
+            $meterStory = [
+                'prev'  => ['value' => $prevMeterEnd !== null ? (int) $prevMeterEnd : null, 'date' => $prevMeterDate ? substr((string) $prevMeterDate, 0, 10) : null],
+                'start' => [
+                    'value'  => $meterStart !== null ? (int) $meterStart : null,
+                    'time'   => !empty($attendance->meter_start_recorded_at) ? substr((string) $attendance->meter_start_recorded_at, 11, 5) : null,
+                    'source' => $attendance->meter_start_source ?? null, // home | checkin | manager
+                    'photo'  => $attendance->picture_start ?? null,
+                ],
+                'end'   => [
+                    'value'  => $meterEnd !== null ? (int) $meterEnd : null,
+                    'time'   => !empty($attendance->home_meter_recorded_at) ? substr((string) $attendance->home_meter_recorded_at, 11, 5) : ($attendance->logout_time ? substr((string) $attendance->logout_time, 0, 5) : null),
+                    'source' => ($attendance->meter_home ?? null) !== null ? 'home' : null,
+                    'photo'  => $attendance->picture_home ?? $attendance->picture_end ?? null,
+                ],
+                'gap_km'       => $meterGap,
+                'day_meter_km' => $meterDistance,
+                'day_road_km'  => $roadDistance !== null ? round($roadDistance, 1) : ($gpsDistance !== null ? round($gpsDistance, 1) : null),
+                'day_road_is_gps' => $roadDistance === null && $gpsDistance !== null,
+                'is_company_bike' => $isCompanyBike,
+            ];
+
             return response()->json([
                 'success' => true,
                 'user' => [
@@ -2779,6 +3165,8 @@ class AttendanceController extends Controller
                 ],
                 'date' => $date,
                 'has_attendance' => true,
+                'phases' => $phases,          // GPS v2 (ride-focused)
+                'meter_story' => $meterStory, // Meter-details modal
                 'attendance' => [
                     'login_time' => $attendance->login_time,
                     'logout_time' => $attendance->logout_time,

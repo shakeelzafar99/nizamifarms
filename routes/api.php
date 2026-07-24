@@ -243,6 +243,7 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::post('/attendance/upload-meter-picture', [\App\Http\Controllers\API\RiderController::class, 'uploadMeterPicture']);
         Route::post('/attendance/home-meter', [\App\Http\Controllers\API\RiderController::class, 'submitHomeMeter']); // U4 going-home meter
         Route::get('/attendance/home-journey', [\App\Http\Controllers\API\RiderController::class, 'getHomeJourneyStatus']); // U4 banner poll
+        Route::post('/attendance/home-start-meter', [\App\Http\Controllers\API\RiderController::class, 'submitHomeStartMeter']); // U5 morning start-at-home meter
         Route::get('/attendance/monthly', [\App\Http\Controllers\API\RiderController::class, 'getMonthlyAttendance']);
         Route::get('/attendance/petrol-rate', [\App\Http\Controllers\API\RiderController::class, 'getPetrolRate']);
         Route::post('/attendance/petrol-rate', [\App\Http\Controllers\API\RiderController::class, 'setPetrolRate']);
@@ -528,9 +529,14 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::post('/store-attendance/checkout-unlock', [\App\Http\Controllers\API\RiderController::class, 'storeAttendanceCheckoutUnlock']);
         Route::post('/store-attendance/home-unlock', [\App\Http\Controllers\API\RiderController::class, 'storeAttendanceHomeUnlock']);
         Route::post('/store-attendance/home-enter-meter', [\App\Http\Controllers\API\RiderController::class, 'storeAttendanceHomeEnterMeter']);
-        
+        Route::post('/store-attendance/checkin-unlock', [\App\Http\Controllers\API\RiderController::class, 'storeAttendanceCheckinUnlock']); // U5 morning-lock valve
+        // Live "rider stuck at checkout" alerts (mobile manager banner) + dismiss
+        Route::get('/store-attendance/checkout-stuck-alerts', [\App\Http\Controllers\API\RiderController::class, 'storeAttendanceCheckoutStuckAlerts']);
+        Route::post('/store-attendance/checkout-stuck-dismiss', [\App\Http\Controllers\API\RiderController::class, 'storeAttendanceDismissCheckoutStuck']);
+
         // ⭐ Road Distance Calculation (on-demand) - uses OpenRouteService API
         Route::get('/store-attendance/calculate-road-distance', [\App\Http\Controllers\API\RiderController::class, 'calculateRoadDistance']);
+        Route::get('/store-attendance/gps-audit', [\App\Http\Controllers\API\RiderController::class, 'storeAttendanceGpsAudit']); // ⛽/📡 tick detail sheets
         
         // ⭐ Employee Profiles (Store Mode - for salary management)
         Route::get('/store-salary/employees', [\App\Http\Controllers\HR\EmployeeProfileController::class, 'getData']);

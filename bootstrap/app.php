@@ -12,10 +12,7 @@ return Application::configure(basePath: dirname(__DIR__))
         health: '/up',
     )
     ->withMiddleware(function (Middleware $middleware) {
-        // Exclude AppSheet webhook routes from CSRF verification
-        $middleware->validateCsrfTokens(except: [
-            'webhook/appsheet/*'
-        ]);
+        // (AppSheet webhook CSRF exclusion removed Jul 2026 — AppSheet retired, routes deleted.)
 
         // Server-to-server auth for the customer-app pull endpoints (Phase 2).
         // block.rider — server-side gate for the Operations / bulk-import area

@@ -187,6 +187,55 @@ class ExecutiveClosingService
     }
 
     /**
+     * Order-source split for the period: delivered regular orders broken into
+     * App / Web / Manual (NF). Reuses deliveredBase() so the total reconciles
+     * exactly with the "Overall" order count for the same month; Qurbani is
+     * excluded (its own unit). Company-wide by design — origin is a property of
+     * the whole order, not a line item, so this does NOT change with the
+     * NF/Khaas toggle.
+     *
+     * Classification (owner ruling Jul-2026 — historical Shopify orders that
+     * predate source tracking fold into Web):
+     *   app    = order_source_channel in (ios_app, android_app)
+     *   web    = NOT app AND (order_number LIKE 'SH-%' OR source_channel = 'web')
+     *   manual = everything else (staff-created NF orders; no SH-/QUR number)
+     */
+    public function orderSourceSplit(int $year, int $month, bool $fresh = false): array
+    {
+        $key = "hq_order_split_{$year}_{$month}";
+        if ($fresh) Cache::forget($key);
+
+        return Cache::remember($key, $this->ttlFor(self::UNIT_ALL, $year, $month), function () use ($year, $month) {
+            [$start, $end, $label] = $this->period(self::UNIT_ALL, $year, $month);
+
+            $appExpr = "o.order_source_channel IN ('ios_app','android_app')";
+            $webExpr = "(o.order_source_channel IS NULL OR o.order_source_channel NOT IN ('ios_app','android_app')) "
+                     . "AND (o.order_number LIKE 'SH-%' OR o.order_source_channel = 'web')";
+
+            $row = $this->deliveredBase($start, $end, QurbaniFinanceFilter::MODE_EXCLUDE)
+                ->selectRaw(
+                    "COUNT(DISTINCT o.id) total,
+                     COUNT(DISTINCT CASE WHEN {$appExpr} THEN o.id END) app,
+                     COUNT(DISTINCT CASE WHEN {$webExpr} THEN o.id END) web"
+                )->first();
+
+            $total  = (int) ($row->total ?? 0);
+            $app    = (int) ($row->app ?? 0);
+            $web    = (int) ($row->web ?? 0);
+            $manual = max($total - $app - $web, 0); // remainder — always reconciles to total
+            $pct = fn ($n) => $total > 0 ? round($n / $total * 100, 1) : 0.0;
+
+            return [
+                'period_label' => $label,
+                'total'  => $total,
+                'app'    => ['count' => $app,    'pct' => $pct($app)],
+                'web'    => ['count' => $web,    'pct' => $pct($web)],
+                'manual' => ['count' => $manual, 'pct' => $pct($manual)],
+            ];
+        });
+    }
+
+    /**
      * Company-wide working-capital snapshot (LIVE, as of now). Deliberately
      * NOT unit-split: cash, banks, rider cash and receivables are shared
      * across units, so this is a whole-company health strip. Cached 5 min.
@@ -1214,6 +1263,74 @@ class ExecutiveClosingService
             ])->all();
     }
 
+    /** Salaries → Level 1: per-employee salaries paid in the unit + month (P&L "Salaries" drill). */
+    public function salaryByEmployee(string $unit, int $year, int $month): array
+    {
+        $unit = $this->normalizeUnit($unit);
+        if ($unit === self::UNIT_QB) {
+            return []; // salaries are never a Qurbani cost
+        }
+        return Cache::remember("hq_d_salary_{$unit}_{$year}_{$month}", $this->ttlFor($unit, $year, $month),
+            fn () => $this->salaryByEmployeeCompute($unit, $year, $month));
+    }
+
+    private function salaryByEmployeeCompute(string $unit, int $year, int $month): array
+    {
+        [$start, $end] = $this->period($unit, $year, $month);
+        $khaasId = (int) ($this->khaasBusinessUnitId() ?: -1);
+        $nfName = 'Nizami Farms'; $khName = 'Khaas · Frozen';
+        $out = [];
+
+        // Payroll screen payments (net paid), split by the stamped BU.
+        try {
+            $hasBu = \Illuminate\Support\Facades\Schema::hasColumn('t_hr_payroll_payment', 'business_unit_id');
+            $q = DB::table('t_hr_payroll_payment as p')
+                ->leftJoin('t_sys_user as u', 'u.id', '=', 'p.user_id')
+                ->where('p.status', 'paid')
+                ->whereBetween('p.paid_at', [$start, $end]);
+            if ($hasBu) {
+                if ($unit === self::UNIT_KH) {
+                    $q->where('p.business_unit_id', $khaasId);
+                } elseif ($unit === self::UNIT_NF) {
+                    $q->where(fn ($x) => $x->where('p.business_unit_id', '!=', $khaasId)->orWhereNull('p.business_unit_id'));
+                }
+                foreach ($q->groupBy('p.user_id', 'u.fullname', 'p.business_unit_id')
+                    ->selectRaw('p.user_id, u.fullname, p.business_unit_id as bu, SUM(p.net_salary + p.advance_total) as amt')->get() as $r) {
+                    $out[] = [
+                        'employee' => $r->fullname ?: ('User ' . $r->user_id),
+                        'unit'     => ((int) $r->bu === $khaasId) ? $khName : $nfName,
+                        'amount'   => round((float) $r->amt),
+                    ];
+                }
+            } elseif ($unit !== self::UNIT_KH) { // pre-migration: everything is NF
+                foreach ($q->groupBy('p.user_id', 'u.fullname')
+                    ->selectRaw('p.user_id, u.fullname, SUM(p.net_salary + p.advance_total) as amt')->get() as $r) {
+                    $out[] = ['employee' => $r->fullname ?: ('User ' . $r->user_id), 'unit' => $nfName, 'amount' => round((float) $r->amt)];
+                }
+            }
+        } catch (\Throwable $e) { /* skip */ }
+
+        // Legacy salary slips → always NF.
+        if ($unit !== self::UNIT_KH) {
+            try {
+                $byUser = [];
+                foreach (\App\Models\HR\SalarySlipModel::with('employee')
+                    ->whereIn('slip_status', ['approved', 'paid'])
+                    ->whereNotNull('ledger_transaction_id')
+                    ->whereBetween('created_at', [$start, $end])->get() as $s) {
+                    $name = $s->employee ? $s->employee->fullname : ('User ' . $s->user_id);
+                    $byUser[$name] = ($byUser[$name] ?? 0) + (float) $s->net_salary;
+                }
+                foreach ($byUser as $name => $amt) {
+                    $out[] = ['employee' => $name, 'unit' => $nfName, 'amount' => round($amt)];
+                }
+            } catch (\Throwable $e) { /* skip */ }
+        }
+
+        usort($out, fn ($a, $b) => $b['amount'] <=> $a['amount']);
+        return $out;
+    }
+
     /** Customers → Level 1: customers who ordered in the unit + month. */
     public function customersList(string $unit, int $year, int $month): array
     {
@@ -1480,7 +1597,7 @@ class ExecutiveClosingService
                 $revenue = $r['rev_kh']; $orders = $r['ord_kh']; $kg = $r['kg_kh'];
                 $pcs = $r['pcs_kh'];
                 $customers = $r['cust_kh']; $new = $r['new_kh'];
-                $vendor = $r['vendor_kh']; $expense = $r['expense_kh'];
+                $vendor = $r['vendor_kh']; $expense = $r['expense_kh']; $salary = $r['salary_kh'];
                 break;
             case self::UNIT_NF:
                 // NF = regular business minus the Khaas slice. Delivery charges &
@@ -1490,18 +1607,20 @@ class ExecutiveClosingService
                 $kg = max($r['kg_all'] - $r['kg_kh'], 0);
                 $pcs = max($r['pcs_all'] - $r['pcs_kh'], 0);
                 $customers = $r['cust_nf']; $new = $r['new_nf'];
-                $vendor = $r['vendor_nf']; $expense = $r['expense_nf'];
+                $vendor = $r['vendor_nf']; $expense = $r['expense_nf']; $salary = $r['salary_nf'];
                 break;
             default: // UNIT_ALL
                 $revenue = $r['rev_all']; $orders = $r['ord_all']; $kg = $r['kg_all'];
                 $pcs = $r['pcs_all'];
                 $customers = $r['cust_all']; $new = $r['new_all'];
-                $vendor = $r['vendor_all']; $expense = $r['expense_all'];
+                $vendor = $r['vendor_all']; $expense = $r['expense_all']; $salary = $r['salary_all'];
                 break;
         }
 
         $grossProfit = $revenue - $vendor;
-        $netProfit   = $grossProfit - $expense;
+        // Salaries are a real operating cost, shown as their own P&L line (not folded
+        // into "Expenses", which stays the request-based expense ledger).
+        $netProfit   = $grossProfit - $expense - $salary;
         $assets      = $this->monthAssetPurchases($unit, $start, $ledgerEnd ?? $end);
 
         return [
@@ -1514,6 +1633,7 @@ class ExecutiveClosingService
             'vendor_purchases' => round($vendor, 0),
             'gross_profit'     => round($grossProfit, 0),
             'expenses'         => round($expense, 0),
+            'salaries'         => round($salary, 0),
             'net_profit'       => round($netProfit, 0),
             // Capital spending in the month — NOT part of the P&L (equipment
             // becomes property, not an expense). Surfaced as its own box beside
@@ -2009,6 +2129,10 @@ class ExecutiveClosingService
             // when the caller asked for it (HQ monthly view).
             [$vendorAll, $vendorKh] = $this->ledgerByUnit(LedgerModel::TYPE_VENDOR_PURCHASE, $start, $lEnd, $kh);
             [$expenseAll, $expenseKh] = $this->ledgerByUnit(LedgerModel::TYPE_EXPENSE, $start, $lEnd, $kh);
+            // Salaries actually paid in the window (payroll payments + legacy slips),
+            // split by the business unit tagged on each employee. A real cost line —
+            // NOT part of vendor/expense, shown separately on the P&L.
+            [$salaryAll, $salaryKh] = $this->salariesByUnit($start, $lEnd, $kh);
 
             return [
                 'rev_all'   => (float) $o->rev,
@@ -2034,6 +2158,9 @@ class ExecutiveClosingService
                 'expense_all' => $expenseAll,
                 'expense_kh'  => $expenseKh,
                 'expense_nf'  => $expenseAll - $expenseKh,
+                'salary_all'  => $salaryAll,
+                'salary_kh'   => $salaryKh,
+                'salary_nf'   => $salaryAll - $salaryKh,
             ];
         });
     }
@@ -2073,19 +2200,63 @@ class ExecutiveClosingService
         $revAll = (float) $this->deliveredBase($start, $end, QurbaniFinanceFilter::MODE_EXCLUDE)->sum('o.total_price');
         [$vendAll, $vendKh] = $this->ledgerByUnit(LedgerModel::TYPE_VENDOR_PURCHASE, $start, $end, $kh);
         [$expAll, $expKh]   = $this->ledgerByUnit(LedgerModel::TYPE_EXPENSE, $start, $end, $kh);
+        [$salAll, $salKh]   = $this->salariesByUnit($start, $end, $kh);
 
         if ($unit === self::UNIT_ALL) {
-            $rev = $revAll; $vend = $vendAll; $exp = $expAll;
+            $rev = $revAll; $vend = $vendAll; $exp = $expAll; $sal = $salAll;
         } else {
             $revKh = (float) $this->deliveredLines($start, $end, QurbaniFinanceFilter::MODE_EXCLUDE)
                 ->where('p.business_unit_id', $kh)->sum('li.line_total');
             if ($unit === self::UNIT_KH) {
-                $rev = $revKh; $vend = $vendKh; $exp = $expKh;
+                $rev = $revKh; $vend = $vendKh; $exp = $expKh; $sal = $salKh;
             } else { // NF
-                $rev = $revAll - $revKh; $vend = $vendAll - $vendKh; $exp = $expAll - $expKh;
+                $rev = $revAll - $revKh; $vend = $vendAll - $vendKh; $exp = $expAll - $expKh; $sal = $salAll - $salKh;
             }
         }
-        return ['revenue' => round($rev, 0), 'net_profit' => round($rev - $vend - $exp, 0)];
+        return ['revenue' => round($rev, 0), 'net_profit' => round($rev - $vend - $exp - $sal, 0)];
+    }
+
+    /**
+     * Salaries actually PAID in a window, split into [all, khaas], from the same
+     * cash-basis sources the Expenses page uses: the Payroll screen payments
+     * (t_hr_payroll_payment, BU-tagged) plus any legacy salary slips (NF-only).
+     * Never Qurbani (salaries are not a Qurbani cost). Guarded so a missing BU
+     * column / table degrades to NF rather than erroring.
+     */
+    private function salariesByUnit(Carbon $start, Carbon $end, int $khaasId): array
+    {
+        $all = 0.0; $kh = 0.0;
+
+        // Payroll screen payments — the GROSS salary cost, windowed by paid_at. Gross =
+        // net_salary + advance_total: the advance was paid early and DEDUCTED from net, so
+        // counting only net understates the salary by the advance. Adding advance_total back
+        // gives the true cost, and never double-counts here (HQ does not count the
+        // salary_advance ledger separately).
+        try {
+            $hasBu = \Illuminate\Support\Facades\Schema::hasColumn('t_hr_payroll_payment', 'business_unit_id');
+            $base = DB::table('t_hr_payroll_payment')
+                ->where('status', 'paid')
+                ->whereBetween('paid_at', [$start, $end]);
+            if ($hasBu) {
+                foreach ((clone $base)->groupBy('business_unit_id')
+                    ->selectRaw('business_unit_id as bu, SUM(net_salary + advance_total) as amt')->get() as $row) {
+                    $all += (float) $row->amt;
+                    if ((int) $row->bu === $khaasId) $kh += (float) $row->amt;
+                }
+            } else {
+                $all += (float) (clone $base)->selectRaw('COALESCE(SUM(net_salary + advance_total),0) as t')->value('t'); // pre-migration: all NF
+            }
+        } catch (\Throwable $e) { /* skip */ }
+
+        // Legacy salary slips (abandoned flow) — always NF.
+        try {
+            $all += (float) \App\Models\HR\SalarySlipModel::whereIn('slip_status', ['approved', 'paid'])
+                ->whereNotNull('ledger_transaction_id')
+                ->whereBetween('created_at', [$start, $end])
+                ->sum('net_salary');
+        } catch (\Throwable $e) { /* skip */ }
+
+        return [$all, $kh];
     }
 
     /**

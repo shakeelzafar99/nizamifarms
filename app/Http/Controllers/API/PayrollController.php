@@ -163,12 +163,16 @@ class PayrollController extends Controller
         try {
             $svc = new PayrollService();
             $row = $svc->computeRow((int) $user->id, $month);
-            $p = \Illuminate\Support\Facades\DB::table('t_hr_payroll_payment')
-                ->where('user_id', $user->id)->where('pay_month', $month)->first();
-            $row['paid'] = $p !== null;
-            $row['paid_net'] = $p ? (float) $p->net_salary : null;
-            $row['paid_at'] = $p ? (string) $p->paid_at : null;
-            $row['paid_funding'] = $p ? $p->funding : null;
+            // A custom-schedule employee can have SEVERAL payment rows in one pay_month
+            // (one per date range) — aggregate instead of showing an arbitrary row.
+            $pays = \Illuminate\Support\Facades\DB::table('t_hr_payroll_payment')
+                ->where('user_id', $user->id)->where('pay_month', $month)
+                ->where('status', 'paid')->orderBy('paid_at')->get();
+            $last = $pays->last();
+            $row['paid'] = $last !== null;
+            $row['paid_net'] = $last ? (float) $pays->sum('net_salary') : null;
+            $row['paid_at'] = $last ? (string) $last->paid_at : null;
+            $row['paid_funding'] = $last ? $last->funding : null;
             return response()->json([
                 'success' => true,
                 'month' => $month,

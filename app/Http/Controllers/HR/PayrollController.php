@@ -29,6 +29,20 @@ class PayrollController extends Controller
         return view('pages.payroll.index');
     }
 
+    /** Whether this manager may see/tag the Khaas business unit (gates the BU toggle). */
+    private function canViewKhaas(): bool
+    {
+        try {
+            $u = auth()->user();
+            if (!$u) { return false; }
+            $u->load(['roles.mobilePermissions']);
+            $perms = method_exists($u, 'getMobilePermissions') ? $u->getMobilePermissions() : [];
+            return in_array('access_khaas_mode', $perms, true);
+        } catch (\Throwable $e) {
+            return false;
+        }
+    }
+
     /** The month grid + the accounts the pay modal needs. */
     public function data(Request $request)
     {
@@ -51,7 +65,156 @@ class PayrollController extends Controller
             'month_label' => date('F Y', strtotime($month . '-01')),
             'rows' => $rows,
             'funding' => $svc->fundingOptions(),
+            'schedule_available' => $svc->scheduleTaggingAvailable(),
+            'khaas_available' => $svc->khaasTaggingAvailable() && $this->canViewKhaas(),
+            'khaas_bu_id' => $svc->khaasBuIdValue(),
         ]);
+    }
+
+    /** The Custom tab: date-range / weekly employees + their coverage for the month. */
+    public function customData(Request $request)
+    {
+        if ($deny = $this->denyIfNotAllowed()) { return $deny; }
+        $month = $request->input('month', now()->format('Y-m'));
+        if (!preg_match('/^\d{4}-\d{2}$/', $month)) {
+            $month = now()->format('Y-m');
+        }
+        try {
+            $svc = new PayrollService();
+            $rows = $svc->computeMonthCustom($month);
+        } catch (\Throwable $e) {
+            \Log::error('Payroll custom data failed', ['month' => $month, 'error' => $e->getMessage()]);
+            return response()->json(['success' => false, 'message' => 'Could not build the custom list for this month.'], 500);
+        }
+
+        return response()->json([
+            'success' => true,
+            'month' => $month,
+            'month_label' => date('F Y', strtotime($month . '-01')),
+            'rows' => $rows,
+            'funding' => $svc->fundingOptions(),
+            'schedule_available' => $svc->scheduleTaggingAvailable(),
+            'khaas_available' => $svc->khaasTaggingAvailable() && $this->canViewKhaas(),
+            'khaas_bu_id' => $svc->khaasBuIdValue(),
+        ]);
+    }
+
+    /** Live preview of a custom period's amount (days × rate, advances, attendance reference). */
+    public function customPreview(Request $request)
+    {
+        if ($deny = $this->denyIfNotAllowed()) { return $deny; }
+        $v = Validator::make($request->all(), [
+            'user_id' => 'required|integer|exists:t_sys_user,id',
+            'start'   => 'required|date',
+            'end'     => 'required|date',
+        ]);
+        if ($v->fails()) {
+            return response()->json(['success' => false, 'message' => $v->errors()->first()], 422);
+        }
+        try {
+            $row = (new PayrollService())->computeCustomPeriod(
+                (int) $request->user_id,
+                date('Y-m-d', strtotime($request->start)),
+                date('Y-m-d', strtotime($request->end))
+            );
+            return response()->json(['success' => true, 'row' => $row]);
+        } catch (\Throwable $e) {
+            \Log::error('Payroll custom preview failed', ['error' => $e->getMessage()]);
+            return response()->json(['success' => false, 'message' => 'Could not compute this period.'], 500);
+        }
+    }
+
+    /** Pay a custom employee for a date range. */
+    public function payCustom(Request $request)
+    {
+        if ($deny = $this->denyIfNotAllowed()) { return $deny; }
+        $v = Validator::make($request->all(), [
+            'user_id' => 'required|integer|exists:t_sys_user,id',
+            'start'   => 'required|date',
+            'end'     => 'required|date',
+            'funding' => 'required|in:cash,online',
+            'bank_id' => 'nullable|integer',
+            'amount'  => 'nullable|numeric|min:0',
+            'note'    => 'nullable|string|max:255',
+        ]);
+        if ($v->fails()) {
+            return response()->json(['success' => false, 'message' => $v->errors()->first()], 422);
+        }
+        if ($request->funding === 'online' && !$request->bank_id) {
+            return response()->json(['success' => false, 'message' => 'Choose the bank you are paying from.'], 422);
+        }
+        $res = (new PayrollService())->payCustomPeriod(
+            (int) $request->user_id,
+            date('Y-m-d', strtotime($request->start)),
+            date('Y-m-d', strtotime($request->end)),
+            [
+                'funding'  => $request->funding,
+                'bank_id'  => $request->bank_id ? (int) $request->bank_id : null,
+                'amount'   => $request->has('amount') ? $request->amount : null,
+                'note'     => $request->note,
+                'actor_id' => (int) auth()->id(),
+            ]
+        );
+        return response()->json($res, !empty($res['success']) ? 200 : 422);
+    }
+
+    /** The "Staff Salaries" expense records behind a row's double-pay warning. */
+    public function staffExpenseDetail(Request $request)
+    {
+        if ($deny = $this->denyIfNotAllowed()) { return $deny; }
+        $v = Validator::make($request->all(), [
+            'user_id' => 'required|integer',
+            'month'   => ['required', 'regex:/^\d{4}-\d{2}$/'],
+        ]);
+        if ($v->fails()) {
+            return response()->json(['success' => false, 'message' => $v->errors()->first()], 422);
+        }
+        return response()->json([
+            'success' => true,
+            'records' => (new PayrollService())->staffExpenseDetail((int) $request->user_id, $request->month),
+        ]);
+    }
+
+    /** Set an employee's pay schedule (monthly|custom) + rate type. */
+    public function setSchedule(Request $request)
+    {
+        if ($deny = $this->denyIfNotAllowed()) { return $deny; }
+        $v = Validator::make($request->all(), [
+            'user_id'      => 'required|integer|exists:t_sys_user,id',
+            'pay_schedule' => 'required|in:monthly,custom',
+            'rate_type'    => 'nullable|in:daily,monthly',
+        ]);
+        if ($v->fails()) {
+            return response()->json(['success' => false, 'message' => $v->errors()->first()], 422);
+        }
+        $res = (new PayrollService())->setSchedule(
+            (int) $request->user_id, $request->pay_schedule, $request->rate_type, (int) auth()->id()
+        );
+        return response()->json($res, !empty($res['success']) ? 200 : 422);
+    }
+
+    /** Tag an employee's business unit (NF or Khaas). */
+    public function setBusinessUnit(Request $request)
+    {
+        if ($deny = $this->denyIfNotAllowed()) { return $deny; }
+        // Only Khaas-visible managers may change BU tags at all — otherwise a
+        // manager without Khaas access could still CLEAR someone's Khaas tag.
+        if (!$this->canViewKhaas()) {
+            return response()->json(['success' => false, 'message' => "You don't have access to the Khaas business unit."], 403);
+        }
+        $v = Validator::make($request->all(), [
+            'user_id'          => 'required|integer|exists:t_sys_user,id',
+            'business_unit_id' => 'nullable|integer',
+        ]);
+        if ($v->fails()) {
+            return response()->json(['success' => false, 'message' => $v->errors()->first()], 422);
+        }
+        $res = (new PayrollService())->setBusinessUnit(
+            (int) $request->user_id,
+            $request->business_unit_id ? (int) $request->business_unit_id : null,
+            (int) auth()->id()
+        );
+        return response()->json($res, !empty($res['success']) ? 200 : 422);
     }
 
     /** Inline base-salary edit from the grid (audited). */
@@ -106,6 +269,7 @@ class PayrollController extends Controller
             'items'   => 'required|array|min:1',
             'items.*.user_id' => 'required|integer',
             'items.*.late_deduction' => 'nullable|numeric|min:0',
+            'items.*.net_override' => 'nullable|numeric|min:0',
             'items.*.skip_overtime' => 'nullable|boolean',
             'items.*.skip_late_leave' => 'nullable|boolean',
         ]);

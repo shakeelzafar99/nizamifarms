@@ -35,7 +35,7 @@ class HomeJourneyService
         return [
             'lat' => (float) $p->home_latitude,
             'lng' => (float) $p->home_longitude,
-            'radius_m' => ($p->home_radius_m && $p->home_radius_m > 0) ? (int) $p->home_radius_m : (int) $this->config('HOME_RADIUS_M', 150),
+            'radius_m' => ($p->home_radius_m && $p->home_radius_m > 0) ? (int) $p->home_radius_m : (int) $this->config('HOME_RADIUS_M', 300),
         ];
     }
 
@@ -333,10 +333,10 @@ class HomeJourneyService
     }
 
     /**
-     * Count of home-journey issue days per user over a range (for the Month "Home (mo)" column).
+     * Home-journey issue days per user over a range (the Month "Out-flags" column).
      * "Issue" = any non-on-time completed / late_locked / unlocked day.
      *
-     * @return array [userId => int]
+     * @return array [userId => ['days' => int, 'detail' => [date => [state]]]]
      */
     public function homeIssueDays(array $userIds, string $from, string $to): array
     {
@@ -350,12 +350,16 @@ class HomeJourneyService
                 ->whereIn('user_id', $userIds)
                 ->whereBetween('attendance_date', [$from, $to])
                 ->whereNotNull('home_expected_by')
-                ->get(['user_id', 'home_expected_by', 'home_arrived_at', 'meter_home',
+                ->orderBy('attendance_date')
+                ->get(['user_id', 'attendance_date', 'home_expected_by', 'home_arrived_at', 'meter_home',
                        'home_meter_unlock_until', 'home_late_reason']);
             foreach ($rows as $r) {
                 $state = $this->deriveState($r);
                 if (in_array($state, ['completed_late', 'late_locked', 'unlocked'], true)) {
-                    $out[$r->user_id] = ($out[$r->user_id] ?? 0) + 1;
+                    $uid = (int) $r->user_id;
+                    if (!isset($out[$uid])) { $out[$uid] = ['days' => 0, 'detail' => []]; }
+                    $out[$uid]['days']++;
+                    $out[$uid]['detail'][substr((string) $r->attendance_date, 0, 10)] = [$state];
                 }
             }
         } catch (\Throwable $e) {

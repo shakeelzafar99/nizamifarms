@@ -85,6 +85,9 @@ class ForwardedProofService
         if ($amount)    $args['amount'] = $amount;
         if ($reference) $args['reference'] = $reference;
         if (!$isShop)   $args['image_path'] = $imagePath;
+        // The amount was OCR'd off the forwarded screenshot — a real source,
+        // not a chat guess (the shop guard would otherwise refuse it).
+        if ($isShop)    $args['_amount_verified'] = true;
 
         $res = $isShop
             ? $this->drafts->draftShopPayment($args, $user)

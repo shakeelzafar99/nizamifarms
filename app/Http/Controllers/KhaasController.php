@@ -1393,6 +1393,11 @@ class KhaasController extends Controller
                 'type' => 'store_adjustment',
                 'label' => $typeLabel,
                 'change' => $adj->quantity_change,
+                // For a physical count, quantity_after IS the value the user entered
+                // (updateStoreStock sets inventory to it directly). Expose it so the
+                // UIs can show "Counted: N" — otherwise a count equal to the current
+                // balance shows change 0 and reads like a no-op.
+                'count_value' => $adj->change_type === 'store_count' ? (int) $adj->quantity_after : null,
                 'quantity' => abs($adj->quantity_change),
                 'detail' => 'By ' . ($adj->creator->fullname ?? 'User #' . $adj->created_by),
                 'sub_detail' => $adj->notes ? ('📝 ' . $adj->notes) : ($adj->quantity_before . ' → ' . $adj->quantity_after),

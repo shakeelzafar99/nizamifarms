@@ -303,6 +303,7 @@ class AssistantWorkspaceController extends Controller
                 // pre-filled with certainty. Falls back to the name-based
                 // suggestion (unique customer with something in approvals).
                 $suggested = null;
+                $suggestedOrder = null;
                 if ($s->status === 'new') {
                     $rule = app(\App\Services\Assistant\SmsCounterpartyMap::class)->byAccount($s->counterparty_account);
                     if ($rule && $rule->entity_type === 'customer' && $rule->entity_id) {
@@ -312,6 +313,17 @@ class AssistantWorkspaceController extends Controller
                         ];
                     }
                     $suggested = $suggested ?: $this->suggestCustomer($s->counterparty);
+
+                    // LAST resort for an identity-less SMS (e.g. an HBL credit
+                    // with no sender account, and a name that doesn't uniquely
+                    // resolve): if EXACTLY ONE order in the whole approvals queue
+                    // has a balance equal to this amount, offer it as a LOW-
+                    // confidence one-tap. Never auto — Taimur confirms. Nothing
+                    // is offered if zero or several orders share the amount (that
+                    // ambiguity is exactly where a wrong guess would hurt).
+                    if (!$suggested) {
+                        $suggestedOrder = $this->suggestOrderByAmount((float) $s->amount);
+                    }
                 }
                 return [
                     'id'           => $s->id,
@@ -325,6 +337,8 @@ class AssistantWorkspaceController extends Controller
                     'auto'         => $s->auto_reason,
                     'time'         => $s->sms_at ? substr((string) $s->sms_at, 11, 5) : null,
                     'suggested_customer' => $suggested,
+                    // A single amount-matching approvals order (low confidence).
+                    'suggested_order'    => $suggestedOrder,
                 ];
             })->all();
     }
@@ -374,6 +388,45 @@ class AssistantWorkspaceController extends Controller
         return [
             'id' => $c->id,
             'name' => trim(($c->first_name ?? '') . ' ' . ($c->last_name ?? '')),
+        ];
+    }
+
+    /**
+     * A single online-approvals-queue order whose OUTSTANDING balance equals a
+     * credit amount — the last-resort suggestion for an SMS the system can't
+     * identify by account or name (e.g. HBL credits carry no sender account).
+     *
+     * Returns {order_id, order_number, customer_id, customer_name} only when
+     * EXACTLY ONE such order exists (within the pairing amount tolerance).
+     * Zero or several → null, because a wrong guess on someone's money is worse
+     * than making Taimur search. This is a suggestion he confirms, never auto.
+     */
+    private function suggestOrderByAmount(float $amount): ?array
+    {
+        if ($amount <= 0) return null;
+        $tol = \App\Services\Payments\Signals\PaymentProofStatusService::amountTolerance();
+
+        // Orders in the approvals queue (invoice still pending) with a balance
+        // equal to this amount. Cap at 2 — we only care "exactly one vs not".
+        $hits = DB::table('t_fin_ledger as l')
+            ->join('t_crm_prod_order as o', 'o.id', '=', 'l.order_id')
+            ->join('t_crm_prod_customer as c', 'c.id', '=', 'o.customer_id')
+            ->where('l.transaction_type', 'invoice')
+            ->whereIn('l.approval_status', ['pending', 'pending_l1', 'pending_l2'])
+            ->whereRaw('ABS((o.total_price - COALESCE(o.total_paid,0)) - ?) <= ?', [$amount, $tol])
+            ->whereRaw('(o.total_price - COALESCE(o.total_paid,0)) > 0.01')
+            ->distinct()
+            ->limit(2)
+            ->get(['o.id as order_id', 'o.order_number', 'o.customer_id', 'c.first_name', 'c.last_name']);
+
+        if ($hits->count() !== 1) return null;
+
+        $h = $hits->first();
+        return [
+            'order_id'      => (int) $h->order_id,
+            'order_number'  => $h->order_number,
+            'customer_id'   => (int) $h->customer_id,
+            'customer_name' => trim(($h->first_name ?? '') . ' ' . ($h->last_name ?? '')),
         ];
     }
 
@@ -430,28 +483,137 @@ class AssistantWorkspaceController extends Controller
     }
 
     /**
-     * Close credit SMS whose HELD bank signal got paired by a screenshot that
-     * arrived AFTER the SMS (the common timeline). The pairing happens inside
-     * the WhatsApp matcher, which knows nothing about t_ai_bank_sms — this
-     * sweep is the bridge: held-signal paired + on an order → the SMS is done.
+     * Reconcile credit SMS whose payment is settled but whose inbox row is still
+     * open. The pairing/verification happens inside the WhatsApp matcher, which
+     * knows nothing about t_ai_bank_sms — this sweep is the bridge, run on every
+     * inbox + summary load (so it's near-immediate, not "when he opens it").
+     *
+     * (a) HELD-SIGNAL PAIRED — the common timeline: the SMS arrived first, its
+     *     held bank signal later got paired by the customer's screenshot. Close
+     *     as proof_pair (the SMS itself did the verifying).
+     * (b) ALREADY VERIFIED BY ANOTHER SOURCE — the bank EMAIL beat the SMS and
+     *     paired with the screenshot first, so the SMS's own held signal is an
+     *     orphan. Identify the SAME payment by a SHARED bank REFERENCE against a
+     *     matched proof that is already verified (paired), retract the orphan
+     *     signal so it can never mis-corroborate later, and close the SMS as
+     *     already_verified. Reference match = same bank txn = certain; if the
+     *     SMS has no ref or none matches, it simply stays in the inbox (no
+     *     false close — money is never auto-closed on a guess).
      */
     private function closeCorroboratedSms(int $userId): void
     {
-        $rows = DB::table('t_ai_bank_sms as s')
+        // (a) held signal got paired + landed on an order.
+        $paired = DB::table('t_ai_bank_sms as s')
             ->join('t_fin_payment_signal as p', 'p.id', '=', 's.linked_signal_id')
             ->where('s.user_id', $userId)
             ->where('s.status', 'new')
             ->where('s.direction', 'credit')
             ->whereNotNull('p.paired_signal_id')
             ->whereNotNull('p.matched_order_id')
-            ->pluck('s.id');
+            ->get(['s.id', 's.counterparty', 's.counterparty_account', 's.reference', 's.user_id', 'p.paired_signal_id']);
 
-        if ($rows->isNotEmpty()) {
-            DB::table('t_ai_bank_sms')->whereIn('id', $rows)->update([
+        foreach ($paired as $sms) {
+            DB::table('t_ai_bank_sms')->where('id', $sms->id)->update([
                 'status'      => 'matched',
                 'auto_reason' => 'proof_pair',
                 'updated_at'  => now(),
             ]);
+            // The mate is the customer's screenshot — learn the account if the
+            // pairing was reference-certain (see maybeLearnAccount).
+            $this->maybeLearnAccount($sms, \App\Models\FIN\PaymentSignal::find($sms->paired_signal_id));
+        }
+
+        // (b) redundant SMS whose payment a bank EMAIL already verified.
+        $orphans = DB::table('t_ai_bank_sms')
+            ->where('user_id', $userId)
+            ->where('status', 'new')
+            ->where('direction', 'credit')
+            ->whereNotNull('reference')
+            ->where('reference', '<>', '')
+            ->get(['id', 'counterparty', 'counterparty_account', 'reference', 'user_id', 'linked_signal_id']);
+
+        foreach ($orphans as $sms) {
+            // A verified proof (matched to an order AND paired) sharing this
+            // SMS's bank reference = the very same payment. Prefer the WhatsApp
+            // side (the customer's own screenshot) so we can also learn from it.
+            $proof = \App\Models\FIN\PaymentSignal::where('extracted_ref', $sms->reference)
+                ->whereNotNull('matched_order_id')
+                ->whereNotNull('paired_signal_id')
+                ->where('status', 'matched')
+                ->orderByRaw("CASE WHEN source = 'whatsapp' THEN 0 ELSE 1 END")
+                ->orderByDesc('id')
+                ->first();
+            if (!$proof) {
+                continue;
+            }
+
+            // Retract this SMS's own orphan held signal (unpaired, no order) so
+            // it can never later attach to an unrelated proof — mirrors ignore().
+            if ($sms->linked_signal_id) {
+                $held = \App\Models\FIN\PaymentSignal::find($sms->linked_signal_id);
+                if ($held && $held->source === \App\Models\FIN\PaymentSignal::SOURCE_BANK_SMS
+                    && !$held->paired_signal_id && !$held->matched_order_id) {
+                    DB::table('t_fin_payment_signal_order')->where('signal_id', $held->id)->delete();
+                    $held->delete();
+                }
+            }
+
+            DB::table('t_ai_bank_sms')->where('id', $sms->id)->update([
+                'status'           => 'matched',
+                'auto_reason'      => 'already_verified',
+                'linked_signal_id' => $proof->id, // trace to the verified payment
+                'updated_at'       => now(),
+            ]);
+
+            // Learn the account (ref-certain by construction — we matched on ref).
+            $this->maybeLearnAccount($sms, $proof);
+        }
+    }
+
+    /**
+     * Silently learn a counterparty account → customer mapping from a
+     * REFERENCE-CERTAIN pair (owner ruling Jul-2026). When a bank SMS and the
+     * customer's screenshot share the SAME bank reference, it is provably the
+     * same transaction, and the screenshot's customer comes from that
+     * customer's own WhatsApp conversation — so the account→customer link is
+     * certain. Learn it once, so this customer's FUTURE payments auto-attach
+     * with no screenshot at all (the Elina flow the owner asked for).
+     *
+     * Deliberately NOT learned on amount/time-only pairs: a same-amount
+     * coincidence could teach the wrong account, and a wrong mapping would
+     * silently misroute every future payment. Also never overwrites an existing
+     * mapping. All guards must hold or it no-ops.
+     */
+    private function maybeLearnAccount(object $sms, $proof): void
+    {
+        try {
+            if (empty($sms->counterparty_account) || empty($sms->reference)) {
+                return; // nothing to key on, or not reference-bearing
+            }
+            if (!$proof
+                || $proof->source !== \App\Models\FIN\PaymentSignal::SOURCE_WHATSAPP
+                || empty($proof->matched_customer_id)) {
+                return; // customer identity must come from the screenshot side
+            }
+            // The references must genuinely match (ref-certain), not just be present.
+            if ((string) $proof->extracted_ref !== (string) $sms->reference) {
+                return;
+            }
+            $map = app(\App\Services\Assistant\SmsCounterpartyMap::class);
+            if ($map->byAccount($sms->counterparty_account)) {
+                return; // already mapped — never silently overwrite
+            }
+            $map->save(
+                $sms->counterparty_account,
+                $sms->counterparty,
+                'customer',
+                (int) $proof->matched_customer_id,
+                null,
+                (int) $sms->user_id,
+            );
+        } catch (\Throwable $e) {
+            // Learning is a nicety — never break the inbox load over it.
+            \Log::warning('[maybeLearnAccount] ' . $e->getMessage(), ['sms_id' => $sms->id ?? null]);
         }
     }
 

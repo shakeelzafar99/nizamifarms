@@ -204,6 +204,11 @@ class CampaignFilterService
             if ($src === 'shopify')      $parts[] = 'Shopify only';
             elseif ($src === 'non_shopify') $parts[] = 'Non-Shopify only';
         }
+        if (!empty($group['mobile_app']) && is_string($group['mobile_app'])) {
+            $ma = strtolower($group['mobile_app']);
+            if ($ma === 'on_app')       $parts[] = 'On app';
+            elseif ($ma === 'not_on_app') $parts[] = 'Not on app';
+        }
         if (!empty($group['city'])) $parts[] = (string) $group['city'];
         if (isset($group['min_spend']) && $group['min_spend'] !== '' && $group['min_spend'] !== null) {
             $parts[] = '≥ ' . number_format((float) $group['min_spend']);
@@ -263,6 +268,22 @@ class CampaignFilterService
                 $query->whereRaw($this->shopifyExistsExpr('t_crm_prod_customer'));
             } elseif ($src === 'non_shopify') {
                 $query->whereRaw('NOT ' . $this->shopifyExistsExpr('t_crm_prod_customer'));
+            }
+            // 'any' or anything else → no filter applied (explicit no-op).
+        }
+
+        // Mobile-app filter. Three-state: 'on_app' | 'not_on_app' | 'any' (or
+        // absent → 'any'). Reads the stored, indexed is_on_mobile_app flag —
+        // set when a customer places an app-origin order — so a campaign can
+        // exclude people already on the app (no message to existing app users).
+        if (!empty($group['mobile_app']) && is_string($group['mobile_app'])) {
+            $ma = strtolower($group['mobile_app']);
+            if ($ma === 'on_app') {
+                $query->where('is_on_mobile_app', 1);
+            } elseif ($ma === 'not_on_app') {
+                $query->where(function ($q) {
+                    $q->where('is_on_mobile_app', 0)->orWhereNull('is_on_mobile_app');
+                });
             }
             // 'any' or anything else → no filter applied (explicit no-op).
         }

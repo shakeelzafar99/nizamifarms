@@ -304,9 +304,13 @@ class PaymentProofStatusService
     private function summarise(Collection $signals): array
     {
         $hasWa    = $signals->where('source', PaymentSignal::SOURCE_WHATSAPP)->isNotEmpty();
-        // "Email" here means ANY bank-side confirmation — a bank email or a bank
-        // credit SMS captured by NF Messages. Both are the bank's own word.
-        $hasEmail = $signals->whereIn('source', PaymentSignal::BANK_SIDE_SOURCES)->isNotEmpty();
+        // The STATUS treats any bank-side confirmation (email OR a bank credit
+        // SMS captured by NF Messages) identically — both are the bank's own
+        // word. The two flags below are split ONLY so the badges can show the
+        // SOURCE at a glance: 📱 SMS (primary since Jul-2026) vs ✉️ email.
+        $hasSms      = $signals->where('source', PaymentSignal::SOURCE_BANK_SMS)->isNotEmpty();
+        $hasEmailSrc = $signals->where('source', PaymentSignal::SOURCE_EMAIL)->isNotEmpty();
+        $hasEmail    = $hasSms || $hasEmailSrc; // any bank-side word (drives status)
         $hasMismatch = $signals->where('status', PaymentSignal::STATUS_AMOUNT_MISMATCH)->isNotEmpty();
         $hasMatched  = $signals->where('status', PaymentSignal::STATUS_MATCHED)->isNotEmpty();
 
@@ -349,7 +353,12 @@ class PaymentProofStatusService
             'label'        => self::label($status),
             'color'        => self::color($status),
             'has_whatsapp' => $hasWa,
-            'has_email'    => $hasEmail,
+            // has_email = a bank EMAIL specifically; has_sms = a bank credit
+            // SMS from NF Messages. (Older clients treated has_email as "any
+            // bank confirmation" — status derivation still does; only the
+            // badge icons split them.)
+            'has_email'    => $hasEmailSrc,
+            'has_sms'      => $hasSms,
             'signal_count' => $signals->count(),
         ];
     }

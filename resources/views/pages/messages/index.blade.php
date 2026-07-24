@@ -3129,7 +3129,7 @@ select.wa-mgr-input { background: #fff; cursor: pointer; }
             // Jun-2026: payment-proof badge (customer sent bank screenshot / email confirmed).
             const pp = c.payment_proof;
             const proofBadge = (pp && pp.status && pp.status !== 'none')
-                ? `<span title="${esc(pp.label)}" style="margin-left:4px; display:inline-flex; align-items:center; padding:0 5px; border-radius:7px; font-size:10px; font-weight:700; background:${pp.color}1A; color:${pp.color}; border:1px solid ${pp.color}55;">${pp.has_whatsapp?'📷':''}${pp.has_email?'✉️':''}</span>`
+                ? `<span title="${esc(pp.label)}" style="margin-left:4px; display:inline-flex; align-items:center; padding:0 5px; border-radius:7px; font-size:10px; font-weight:700; background:${pp.color}1A; color:${pp.color}; border:1px solid ${pp.color}55;">${pp.has_whatsapp?'📷':''}${pp.has_sms?'📱':''}${pp.has_email?'✉️':''}</span>`
                 : '';
             return `<div class="${cls}" onclick="openConv(${c.id})" data-id="${c.id}">
                 <div class="wa-avatar">${(c.customer_name||'?')[0].toUpperCase()}</div>
@@ -4319,7 +4319,7 @@ select.wa-mgr-input { background: #fff; cursor: pointer; }
                 let proofChip = '';
                 const pp = o.payment_proof;
                 if (pp && pp.status && pp.status !== 'none') {
-                    const ic = (pp.has_whatsapp ? '📷' : '') + (pp.has_email ? '✉️' : '');
+                    const ic = (pp.has_whatsapp ? '📷' : '') + (pp.has_sms ? '📱' : '') + (pp.has_email ? '✉️' : '');
                     proofChip = '<span style="font-size:10px;font-weight:700;color:#fff;background:' + (pp.color || '#9ca3af') + ';padding:1px 6px;border-radius:8px;">' + (ic ? ic + ' ' : '') + esc(pp.label || '') + '</span>';
                 }
                 html += `<div class="wa-op-item">

@@ -526,10 +526,10 @@
     </div>
 </div>
 <!-- Store Inventory Transaction Log Modal -->
-<div id="storeLogModal" class="hidden fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4" style="z-index: 999999;" onclick="if(event.target===this)closeStoreLogModal()">
-    <div class="w-full max-w-xl bg-white rounded-2xl shadow-2xl text-left overflow-hidden" onclick="event.stopPropagation()">
-        <!-- Header -->
-        <div class="px-6 py-4 border-b border-gray-100" style="background: linear-gradient(to right, #eff6ff, #e0f2fe);">
+<div id="storeLogModal" class="hidden fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4" style="z-index: 999999; top:0; right:0; bottom:0; left:0; background-color:rgba(0,0,0,0.5); padding:1rem;" onclick="if(event.target===this)closeStoreLogModal()">
+    <div class="w-full max-w-xl bg-white rounded-2xl shadow-2xl text-left overflow-hidden" style="width:100%; max-width:36rem; max-height:85vh; display:flex; flex-direction:column; background:#fff; border-radius:1rem; box-shadow:0 20px 25px -5px rgba(0,0,0,0.10), 0 10px 10px -5px rgba(0,0,0,0.04);" onclick="event.stopPropagation()">
+        <!-- Header (fixed) -->
+        <div class="px-6 py-4 border-b border-gray-100" style="background: linear-gradient(to right, #eff6ff, #e0f2fe); flex-shrink:0; padding:1rem 1.5rem;">
             <div class="flex items-center justify-between">
                 <div class="flex items-center gap-3">
                     <div class="w-10 h-10 rounded-xl bg-blue-100 flex items-center justify-center">
@@ -547,15 +547,15 @@
                 </button>
             </div>
         </div>
-        <!-- Body -->
-        <div class="max-h-[70vh] overflow-y-auto" id="store-log-body">
+        <!-- Body (scrolls; header & footer stay pinned) -->
+        <div id="store-log-body" style="flex:1 1 auto; min-height:0; overflow-y:auto; overscroll-behavior:contain;">
             <div class="flex items-center justify-center py-12 text-gray-400">
                 <svg class="animate-spin w-6 h-6 mr-2" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
                 Loading transactions...
             </div>
         </div>
-        <!-- Footer -->
-        <div class="px-6 py-3 border-t border-gray-100 bg-gray-50 flex items-center justify-between">
+        <!-- Footer (fixed) -->
+        <div class="px-6 py-3 border-t border-gray-100 bg-gray-50 flex items-center justify-between" style="flex-shrink:0; padding:0.75rem 1.5rem;">
             <p class="text-[10px] text-gray-400">Showing recent transactions that affected store inventory</p>
             <button onclick="closeStoreLogModal()" class="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors">Close</button>
         </div>
@@ -712,7 +712,7 @@ function closeStoreLogModal() {
 function renderStoreLog(days, currentQty) {
     var html = '';
 
-    html += '<div class="px-5 py-3 bg-blue-50 border-b border-blue-100 flex items-center justify-between">';
+    html += '<div class="px-5 py-3 bg-blue-50 border-b border-blue-100 flex items-center justify-between" style="position:sticky; top:0; z-index:2; background-color:#eff6ff; padding:0.75rem 1.25rem;">';
     html += '<span class="text-xs font-semibold text-blue-700">Current Store Balance</span>';
     html += '<span class="text-lg font-bold text-blue-800">' + currentQty + ' units</span>';
     html += '</div>';
@@ -765,7 +765,14 @@ function renderStoreLog(days, currentQty) {
             html += '<div class="flex-1 min-w-0">';
             html += '<div class="flex items-center justify-between">';
             html += '<span class="text-xs font-semibold text-gray-900">' + escStoreLog(ev.label) + '</span>';
-            html += '<span class="text-xs font-bold" style="' + changeColor + '">' + (isPositive ? '+' : '') + ev.change + '</span>';
+            if (ev.count_value !== null && ev.count_value !== undefined) {
+                // Physical count: show the value that was SET, delta as secondary info
+                var countDelta = ev.change === 0 ? 'no change' : ((ev.change > 0 ? '+' : '') + ev.change);
+                html += '<span class="text-xs font-bold" style="color:#7c3aed;">Counted: ' + ev.count_value
+                     + ' <span style="color:#9ca3af;font-weight:600;">(' + countDelta + ')</span></span>';
+            } else {
+                html += '<span class="text-xs font-bold" style="' + changeColor + '">' + (isPositive ? '+' : '') + ev.change + '</span>';
+            }
             html += '</div>';
             html += '<div class="text-[11px] text-gray-600 mt-0.5">' + escStoreLog(ev.detail) + '</div>';
             if (ev.sub_detail) {

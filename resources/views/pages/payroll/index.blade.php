@@ -104,6 +104,56 @@
   .pr-daterow { display: flex; justify-content: space-between; padding: 9px 14px; border-bottom: 1px solid #f6f7f8; font-size: 13px; }
   .pr-daterow .dt { font-weight: 600; color: #111827; }
   .pr-daterow .lb { color: #6b7280; font-size: 12px; }
+
+  /* tabs */
+  .pr-tabs { display: flex; gap: 4px; border-bottom: 1px solid #e5e7eb; margin-bottom: 14px; }
+  .pr-tab { padding: 9px 16px; font-size: 13.5px; font-weight: 600; color: #6b7280; cursor: pointer; border: none; background: none; border-bottom: 2px solid transparent; margin-bottom: -1px; }
+  .pr-tab:hover { color: #374151; }
+  .pr-tab.active { color: #16a34a; border-bottom-color: #16a34a; }
+  .pr-view { display: none; }
+  .pr-view.active { display: block; }
+
+  /* business-unit chip + settings gear on rows */
+  .pr-emp-tags { display: flex; align-items: center; gap: 6px; margin-top: 3px; }
+  .pr-bu { display: inline-block; padding: 1px 7px; border-radius: 999px; font-size: 10.5px; font-weight: 700; letter-spacing: .02em; }
+  .pr-bu.bu-NF { background: #eef2ff; color: #4338ca; }
+  .pr-bu.bu-KHAAS { background: #ecfeff; color: #0e7490; }
+  .pr-gear { cursor: pointer; color: #9ca3af; font-size: 13px; line-height: 1; }
+  .pr-gear:hover { color: #374151; }
+  .pr-ratepill { display: inline-block; padding: 1px 7px; border-radius: 999px; font-size: 10.5px; font-weight: 700; background: #f3f4f6; color: #6b7280; }
+
+  /* custom tab: employee cards */
+  .pr-cust-list { display: flex; flex-direction: column; gap: 12px; }
+  .pr-cust-card { border: 1px solid #e5e7eb; border-radius: 12px; background: #fff; padding: 14px 16px; }
+  .pr-cust-top { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; justify-content: space-between; }
+  .pr-cust-name { font-weight: 700; color: #111827; font-size: 14px; }
+  .pr-cust-meta { display: flex; align-items: center; gap: 8px; margin-top: 3px; }
+  .pr-rate { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; padding: 2px 7px; border-radius: 6px; }
+  .pr-rate:hover { background: #f3f4f6; }
+  .pr-rate .amt { font-weight: 700; color: #111827; }
+  .pr-rate .unit { font-size: 11px; color: #9ca3af; }
+  .pr-cover { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; align-items: center; }
+  .pr-cover-chip { display: inline-flex; align-items: center; gap: 5px; padding: 3px 9px; border-radius: 8px; font-size: 12px; font-weight: 600; cursor: pointer; }
+  .pr-cover-chip.paid { background: #ecfdf5; color: #047857; border: 1px solid #a7f3d0; }
+  .pr-cover-chip.none { background: #f9fafb; color: #9ca3af; border: 1px dashed #e5e7eb; cursor: default; }
+  .pr-cover-add { display: inline-flex; align-items: center; gap: 5px; padding: 4px 12px; border-radius: 8px; font-size: 12.5px; font-weight: 700; background: #16a34a; color: #fff; border: none; cursor: pointer; }
+  .pr-cover-add:hover { background: #15803d; }
+  .pr-cust-adv { margin-top: 8px; font-size: 11.5px; color: #b45309; }
+  .pr-cust-adv .give { color: #2563eb; cursor: pointer; margin-left: 8px; }
+  .pr-cust-adv .give:hover { text-decoration: underline; }
+
+  /* custom pay modal computed line */
+  .pr-calc { background: #f9fafb; border: 1px solid #eef0f2; border-radius: 10px; padding: 12px 14px; margin: 4px 0 12px; }
+  .pr-calc .row { display: flex; justify-content: space-between; font-size: 12.5px; padding: 3px 0; color: #374151; }
+  .pr-calc .row.tot { font-weight: 700; color: #111827; border-top: 1px solid #eef0f2; margin-top: 4px; padding-top: 7px; }
+  .pr-calc .ref { font-size: 11px; color: #9ca3af; margin-top: 6px; }
+  .pr-field { margin-bottom: 12px; }
+  .pr-field label { display: block; font-size: 12px; color: #6b7280; margin-bottom: 4px; }
+  .pr-input { width: 100%; height: 38px; border: 1px solid #d1d5db; border-radius: 8px; padding: 0 10px; font-size: 13px; }
+  .pr-input:focus { border-color: #16a34a; outline: none; }
+  .pr-radio-row { display: flex; gap: 8px; }
+  .pr-radio { flex: 1; border: 1px solid #e5e7eb; border-radius: 9px; padding: 9px 12px; cursor: pointer; text-align: center; font-size: 12.5px; font-weight: 600; color: #6b7280; }
+  .pr-radio.active { border-color: #16a34a; background: #f0fdf4; color: #047857; }
 </style>
 
 <div class="pr-wrap">
@@ -120,28 +170,47 @@
     </div>
   </div>
 
-  <div class="pr-strip" id="prStrip"></div>
+  <div class="pr-tabs">
+    <button class="pr-tab active" id="prTabMonthly" data-tab="monthly">Monthly</button>
+    <button class="pr-tab" id="prTabCustom" data-tab="custom">Custom schedule</button>
+  </div>
 
-  <div class="pr-tablewrap">
-    <table class="pr-table">
-      <thead>
-        <tr>
-          <th style="width:34px;"><input type="checkbox" id="prSelAll"></th>
-          <th>Employee</th>
-          <th class="num">Base salary</th>
-          <th>Attendance</th>
-          <th class="pr-late-cell">Late</th>
-          <th>Overtime</th>
-          <th class="num">Advances</th>
-          <th class="num">Deductions</th>
-          <th class="num">Net pay</th>
-          <th>Status</th>
-        </tr>
-      </thead>
-      <tbody id="prBody">
-        <tr><td colspan="10" class="pr-empty">Pick a month and press <b>Generate</b>.</td></tr>
-      </tbody>
-    </table>
+  {{-- Monthly view (the original grid) --}}
+  <div class="pr-view active" id="prMonthlyView">
+    <div class="pr-strip" id="prStrip"></div>
+
+    <div class="pr-tablewrap">
+      <table class="pr-table">
+        <thead>
+          <tr>
+            <th style="width:34px;"><input type="checkbox" id="prSelAll"></th>
+            <th>Employee</th>
+            <th class="num">Base salary</th>
+            <th>Attendance</th>
+            <th class="pr-late-cell">Late</th>
+            <th>Overtime</th>
+            <th class="num">Advances</th>
+            <th class="num">Deductions</th>
+            <th class="num">Net pay</th>
+            <th>Status</th>
+          </tr>
+        </thead>
+        <tbody id="prBody">
+          <tr><td colspan="10" class="pr-empty">Pick a month and press <b>Generate</b>.</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  {{-- Custom-schedule view (date-range / weekly employees) --}}
+  <div class="pr-view" id="prCustomView">
+    <div class="pr-sub" style="margin-bottom:12px;">
+      Employees paid by date range. Enter each period; overlapping days are blocked. A period that
+      ends next month is filed under that month.
+    </div>
+    <div class="pr-cust-list" id="prCustList">
+      <div class="pr-empty">Loading…</div>
+    </div>
   </div>
 </div>
 
@@ -203,6 +272,83 @@
   </div>
 </div>
 
+{{-- employee settings modal (pay schedule + business unit) --}}
+<div class="pr-modal-back" id="prSetModal">
+  <div class="pr-modal">
+    <div class="pr-modal-h" id="prSetTitle">Pay settings</div>
+    <div class="pr-modal-b">
+      <div class="pr-field">
+        <label>Pay schedule</label>
+        <div class="pr-radio-row" id="prSetSched">
+          <div class="pr-radio active" data-sched="monthly">Monthly</div>
+          <div class="pr-radio" data-sched="custom">Custom (by date range)</div>
+        </div>
+      </div>
+      <div class="pr-field" id="prSetRateWrap" style="display:none;">
+        <label>Rate is per</label>
+        <div class="pr-radio-row" id="prSetRate">
+          <div class="pr-radio active" data-rate="monthly">Month (base salary)</div>
+          <div class="pr-radio" data-rate="daily">Day</div>
+        </div>
+      </div>
+      <div class="pr-field" id="prSetBuWrap" style="display:none;">
+        <label>Business unit (salary expense)</label>
+        <div class="pr-radio-row" id="prSetBu">
+          <div class="pr-radio active" data-bu="NF">Nizami Farms</div>
+          <div class="pr-radio" data-bu="KHAAS">Khaas / Frozen</div>
+        </div>
+      </div>
+      <div style="font-size:11.5px;color:#9ca3af;">Changes apply to future payments; already-paid records are unchanged.
+        The base salary number keeps its value — if you switch between per-day and per-month, update the rate after saving.</div>
+    </div>
+    <div class="pr-modal-f">
+      <button class="pr-btn-ghost" id="prSetCancel">Cancel</button>
+      <button class="pr-btn-primary" id="prSetSave">Save</button>
+    </div>
+  </div>
+</div>
+
+{{-- custom period pay modal --}}
+<div class="pr-modal-back" id="prCustModal">
+  <div class="pr-modal">
+    <div class="pr-modal-h" id="prCustTitle">Add period</div>
+    <div class="pr-modal-b">
+      <div style="display:flex;gap:10px;">
+        <div class="pr-field" style="flex:1;">
+          <label>From</label>
+          <input type="date" class="pr-input" id="prCustStart">
+        </div>
+        <div class="pr-field" style="flex:1;">
+          <label>To</label>
+          <input type="date" class="pr-input" id="prCustEnd">
+        </div>
+      </div>
+      <div class="pr-calc" id="prCustCalc">
+        <div class="pr-calc-inner" id="prCustCalcInner"><div class="row"><span>Pick the dates above</span><span></span></div></div>
+      </div>
+      <div class="pr-field">
+        <label>Amount to pay (edit if needed)</label>
+        <input type="number" class="pr-input" id="prCustAmount" min="0" placeholder="0">
+      </div>
+      <div style="font-size:12px;color:#6b7280;margin-bottom:6px;">Pay from</div>
+      <label class="pr-fund active" data-custfund="cash">
+        <input type="radio" name="prCustFund" value="cash" checked style="margin-right:8px;">
+        <span class="lbl" id="prCustCashLabel">NF Cash</span>
+      </label>
+      <label class="pr-fund" data-custfund="online">
+        <input type="radio" name="prCustFund" value="online" style="margin-right:8px;">
+        <span class="lbl">Online / bank transfer</span>
+        <select class="pr-bank-sel" id="prCustBankSel" disabled></select>
+      </label>
+      <input type="text" id="prCustNote" class="pr-input" style="margin-top:10px;" placeholder="Note (optional)">
+    </div>
+    <div class="pr-modal-f">
+      <button class="pr-btn-ghost" id="prCustCancel">Cancel</button>
+      <button class="pr-btn-primary" id="prCustConfirm">Pay period</button>
+    </div>
+  </div>
+</div>
+
 {{-- date-list side sheet --}}
 <div class="pr-sheet-back" id="prSheet">
   <div class="pr-sheet">
@@ -216,9 +362,15 @@
   const csrf = document.querySelector('meta[name="csrf-token"]').content;
   const fmt = (n) => 'Rs ' + Math.round(Number(n) || 0).toLocaleString('en-PK');
   const el = (id) => document.getElementById(id);
-  let ROWS = [];        // computed rows from server
+  let ROWS = [];        // computed rows from server (monthly)
   let FUND = { cash: null, banks: [] };
   let CURMONTH = '';
+  let SCHEDULE_AVAILABLE = false; // schema applied → schedule gear + Custom tab usable
+  let KHAAS_AVAILABLE = false;    // manager may tag/see Khaas
+  let KHAAS_BU_ID = null;         // the Khaas business-unit id (to post)
+  let TAB = 'monthly';
+  let CUST_ROWS = [];             // custom-schedule rows
+  let CUST_LOADED_MONTH = '';     // month the custom list was last loaded for
 
   // ---- month init ----
   const now = new Date();
@@ -230,10 +382,10 @@
     const d = new Date(y, m - 1 + delta, 1);
     el('prMonth').value = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0');
   }
-  el('prPrev').onclick = () => { shiftMonth(-1); load(); };
-  el('prNext').onclick = () => { shiftMonth(1); load(); };
-  el('prGen').onclick = load;
-  el('prMonth').onchange = load;
+  el('prPrev').onclick = () => { shiftMonth(-1); reloadActive(); };
+  el('prNext').onclick = () => { shiftMonth(1); reloadActive(); };
+  el('prGen').onclick = reloadActive;
+  el('prMonth').onchange = reloadActive;
 
   // ---- load month ----
   async function load() {
@@ -246,10 +398,14 @@
       if (!j.success) throw new Error(j.message || 'Failed');
       CURMONTH = j.month;
       FUND = j.funding || { cash: null, banks: [] };
-      ROWS = (j.rows || []).map(r => ({ ...r, _selected: false, _lateOverride: null, _skipOvertime: false, _skipLateLeave: false }));
+      SCHEDULE_AVAILABLE = !!j.schedule_available;
+      KHAAS_AVAILABLE = !!j.khaas_available;
+      KHAAS_BU_ID = j.khaas_bu_id || null;
+      ROWS = (j.rows || []).map(r => ({ ...r, _selected: false, _lateOverride: null, _netOverride: null, _skipOvertime: false, _skipLateLeave: false }));
       renderStrip();
       renderRows();
       buildFundModal();
+      el('prTabCustom').style.display = SCHEDULE_AVAILABLE ? '' : 'none';
     } catch (e) {
       el('prBody').innerHTML = '<tr><td colspan="10" class="pr-empty">Could not load payroll: ' + (e.message || e) + '</td></tr>';
     } finally {
@@ -265,10 +421,13 @@
     const ded = Number(r.absent_deduction || 0) + lateDed(r) + Number(r.advance_total || 0);
     return Number(r.base_salary || 0) + Number(r.bonuses || 0) + Number(r.allowances || 0) + Number(r.other || 0) - ded;
   }
+  // Whether the manager typed a manual take-home amount, and the effective net to pay.
+  function hasNetOverride(r) { return r._netOverride !== null && r._netOverride !== undefined && r._netOverride !== ''; }
+  function effNet(r) { return hasNetOverride(r) ? Math.max(0, Number(r._netOverride)) : Math.max(0, net(r)); }
 
   function renderStrip() {
     const configured = ROWS.filter(r => r.configured);
-    const totalNet = ROWS.reduce((s, r) => s + Math.max(0, net(r)), 0);
+    const totalNet = ROWS.reduce((s, r) => s + effNet(r), 0);
     const missing = ROWS.filter(r => !r.configured).length;
     el('prStrip').innerHTML =
       card('Employees', ROWS.length) +
@@ -343,6 +502,13 @@
 
     const totalDed = Number(r.absent_deduction || 0) + lateDed(r) + Number(r.advance_total || 0);
     const n = net(r);
+    const ov = hasNetOverride(r);
+    const shownNet = effNet(r);
+    // Net pay cell: click to type a manual take-home amount (bypasses attendance deductions).
+    const netCell = '<span class="pr-net' + (!ov && n < 0 ? ' neg' : '') + '" data-net="' + i + '" data-netedit="' + i + '" style="cursor:pointer;" title="Click to set a manual amount to pay">' + fmt(shownNet) + ' <span class="pen" style="font-size:11px;color:#9ca3af;">✎</span></span>' +
+      (ov
+        ? '<div class="pr-formula" style="color:#7c3aed;">manual · <span data-netclear="' + i + '" style="cursor:pointer;text-decoration:underline dotted;">use calc ' + fmt(Math.max(0, n)) + '</span></div>'
+        : (n < 0 ? '<div class="pr-formula" style="color:#b91c1c;">deductions exceed salary</div>' : ''));
 
     const selectable = r.configured && !r.paid;
     const statusCell = r.paid
@@ -354,23 +520,38 @@
       '<td>' + (selectable ? '<input type="checkbox" class="pr-rowchk" data-chk="' + i + '"' + (r._selected ? ' checked' : '') + '>' : '') + '</td>' +
       '<td><div class="pr-emp-name">' + esc(r.fullname) + '</div>' +
         (r.designation || r.employee_code ? '<div class="pr-emp-sub">' + esc([r.designation, r.employee_code].filter(Boolean).join(' · ')) + '</div>' : '') +
-        (r.staff_expense_count > 0 ? '<div class="pr-dblpay" title="Already reimbursed via a Staff Salaries expense this month. Paying here would pay them twice.">⚠ ' + fmt(r.staff_expense_total) + ' via expense</div>' : '') + '</td>' +
+        empTags(r, i) +
+        (r.staff_expense_count > 0 ? '<div class="pr-dblpay" data-dblpay="' + i + '" style="cursor:pointer;" title="Click to see the Staff Salaries expense records. Paying here too would pay them twice.">⚠ ' + fmt(r.staff_expense_total) + ' via expense · view ›</div>' : '') + '</td>' +
       '<td class="num">' + baseCell + '</td>' +
       '<td>' + att + '</td>' +
       '<td class="pr-late-cell">' + lateCell + '</td>' +
       '<td>' + ot + '</td>' +
       '<td class="num">' + adv + '</td>' +
       '<td class="num"><span class="pr-ded-link" data-ded="' + i + '" data-dedrow="' + i + '">' + fmt(totalDed) + '</span></td>' +
-      '<td class="num"><span class="pr-net' + (n < 0 ? ' neg' : '') + '" data-net="' + i + '">' + fmt(Math.max(0, n)) + '</span>' +
-        (n < 0 ? '<div class="pr-formula" style="color:#b91c1c;">deductions exceed salary</div>' : '') + '</td>' +
+      '<td class="num">' + netCell + '</td>' +
       '<td>' + statusCell + '</td>' +
       '</tr>';
+  }
+
+  // Business-unit chip + settings gear shown under an employee's name.
+  function empTags(r, i) {
+    if (!SCHEDULE_AVAILABLE) return '';
+    let chip = '';
+    if (KHAAS_AVAILABLE) {
+      const code = r.bu_code === 'KHAAS' ? 'KHAAS' : 'NF';
+      chip = '<span class="pr-bu bu-' + code + '">' + (code === 'KHAAS' ? 'Khaas' : 'NF') + '</span>';
+    }
+    return '<div class="pr-emp-tags">' + chip +
+      '<span class="pr-gear" data-settings="' + i + '" title="Pay schedule & business unit">⚙ settings</span></div>';
   }
 
   function wireRow(r, i) {
     // base edit
     const baseSpan = document.querySelector('[data-base="' + i + '"]');
     if (baseSpan) baseSpan.onclick = () => editBase(r, i);
+    // settings gear (schedule + business unit)
+    const gear = document.querySelector('[data-settings="' + i + '"]');
+    if (gear) gear.onclick = () => openSettings(r);
     // checkbox
     const chk = document.querySelector('[data-chk="' + i + '"]');
     if (chk) chk.onchange = () => { r._selected = chk.checked; updatePaybar(); syncSelAll(); };
@@ -390,6 +571,14 @@
     // deductions breakdown
     const ded = document.querySelector('[data-dedrow="' + i + '"]');
     if (ded) ded.onclick = () => showDeductions(r);
+    // manual net override: click the net to type an amount, or clear back to computed
+    const ne = document.querySelector('[data-netedit="' + i + '"]');
+    if (ne) ne.onclick = () => editNet(r, i);
+    const nc = document.querySelector('[data-netclear="' + i + '"]');
+    if (nc) nc.onclick = (ev) => { ev.stopPropagation(); r._netOverride = null; renderRows(); };
+    // double-pay chip → the underlying Staff Salaries expense records
+    const dp = document.querySelector('[data-dblpay="' + i + '"]');
+    if (dp) dp.onclick = () => showStaffExpense(r);
     // paid detail (the frozen receipt)
     document.querySelectorAll('[data-paydetail="' + i + '"]').forEach(pd => {
       pd.onclick = () => showPaidDetail(r);
@@ -413,12 +602,51 @@
 
   function refreshMoney(r, i) {
     const totalDed = Number(r.absent_deduction || 0) + lateDed(r) + Number(r.advance_total || 0);
-    const n = net(r);
     const dedCell = document.querySelector('[data-ded="' + i + '"]');
     const netCell = document.querySelector('[data-net="' + i + '"]');
     if (dedCell) dedCell.textContent = fmt(totalDed);
-    if (netCell) { netCell.textContent = fmt(Math.max(0, n)); netCell.classList.toggle('neg', n < 0); }
+    if (netCell) {
+      netCell.innerHTML = fmt(effNet(r)) + ' <span class="pen" style="font-size:11px;color:#9ca3af;">✎</span>';
+      netCell.classList.toggle('neg', !hasNetOverride(r) && net(r) < 0);
+    }
     updatePaybar();
+  }
+
+  // Inline edit of the manual take-home amount (empty clears it back to the computed net).
+  function editNet(r, i) {
+    const span = document.querySelector('[data-netedit="' + i + '"]');
+    if (!span) return;
+    const td = span.closest('td');
+    const cur = hasNetOverride(r) ? Math.round(Number(r._netOverride)) : Math.round(Math.max(0, net(r)));
+    td.innerHTML = '<input type="number" class="pr-base-input" value="' + cur + '" min="0" style="width:112px;">';
+    const inp = td.querySelector('input'); inp.focus(); inp.select();
+    const commit = () => {
+      const v = inp.value.trim();
+      r._netOverride = (v === '') ? null : String(Math.max(0, Number(v)));
+      renderRows();
+    };
+    inp.onkeydown = (ev) => { if (ev.key === 'Enter') commit(); if (ev.key === 'Escape') renderRows(); };
+    inp.onblur = commit;
+  }
+
+  // The Staff Salaries expense records behind a row's double-pay warning.
+  async function showStaffExpense(r) {
+    openSheet('Staff-salary expenses — ' + r.fullname, 'Loading…');
+    try {
+      const res = await fetch('/hr/payroll/staff-expense-detail?user_id=' + r.user_id + '&month=' + CURMONTH, { headers: { 'Accept': 'application/json' } });
+      const j = await res.json();
+      if (!j.success) throw new Error(j.message || 'Failed');
+      const recs = j.records || [];
+      if (!recs.length) { el('prSheetBody').innerHTML = '<div class="pr-empty">No records found.</div>'; return; }
+      const total = recs.reduce((s, x) => s + Number(x.amount || 0), 0);
+      el('prSheetBody').innerHTML = recs.map(x =>
+        '<div class="pr-daterow"><div><div class="dt">' + fmt(x.amount) + '</div><div class="lb">' + esc(x.request_number || '') + (x.category ? ' · ' + esc(x.category) : '') + '</div></div><span class="lb">' + esc(x.date || '') + '</span></div>'
+      ).join('') +
+      '<div class="pr-daterow" style="font-weight:700;border-top:2px solid #eef0f2;"><span class="dt">Total</span><span class="dt">' + fmt(total) + '</span></div>' +
+      '<div style="padding:12px 14px;font-size:11.5px;color:#9ca3af;">Approved “Staff Salaries” expense entries for this person in ' + esc(monthLabel()) + '. Paying salary here as well would pay them twice — only pay if these were for something else.</div>';
+    } catch (e) {
+      el('prSheetBody').innerHTML = '<div class="pr-empty">Could not load: ' + (e.message || e) + '</div>';
+    }
   }
 
   // ---- inline base edit ----
@@ -465,7 +693,7 @@
   function selectedRows() { return ROWS.filter(r => r._selected && isPayable(r)); }
   function updatePaybar() {
     const sel = selectedRows();
-    const tot = sel.reduce((s, r) => s + Math.max(0, net(r)), 0);
+    const tot = sel.reduce((s, r) => s + effNet(r), 0);
     el('prPaybarSel').textContent = sel.length + ' selected';
     el('prPaybarTot').textContent = fmt(tot);
     el('prPaybar').classList.toggle('show', sel.length > 0);
@@ -578,6 +806,8 @@
     el('prBankSel').innerHTML = bankOpts;
     el('prAdvCashLabel').textContent = cashLbl;
     el('prAdvBankSel').innerHTML = bankOpts;
+    if (el('prCustCashLabel')) el('prCustCashLabel').textContent = cashLbl;
+    if (el('prCustBankSel')) el('prCustBankSel').innerHTML = bankOpts;
   }
 
   // ---- give advance ----
@@ -624,7 +854,7 @@
       const j = await res.json();
       if (!j.success) throw new Error(j.message || 'Failed');
       el('prAdvModal').classList.remove('show');
-      await load();
+      await reloadActive();
     } catch (e) {
       alert('Could not give advance: ' + (e.message || e));
     } finally {
@@ -647,9 +877,9 @@
     const sel = selectedRows();
     if (!sel.length) return;
     el('prPayList').innerHTML = sel.map(r =>
-      '<div class="r"><span>' + esc(r.fullname) + '</span><span>' + fmt(Math.max(0, net(r))) + '</span></div>'
+      '<div class="r"><span>' + esc(r.fullname) + (hasNetOverride(r) ? ' <span style="color:#7c3aed;font-size:11px;">manual</span>' : '') + '</span><span>' + fmt(effNet(r)) + '</span></div>'
     ).join('') + '<div class="r" style="font-weight:700;background:#fafbfc;"><span>Total</span><span>' +
-      fmt(sel.reduce((s, r) => s + Math.max(0, net(r)), 0)) + '</span></div>';
+      fmt(sel.reduce((s, r) => s + effNet(r), 0)) + '</span></div>';
     el('prPayModal').classList.add('show');
   };
   el('prPayCancel').onclick = () => el('prPayModal').classList.remove('show');
@@ -665,7 +895,7 @@
       month: CURMONTH,
       funding: fundType,
       bank_id: fundType === 'online' ? Number(bankId) : null,
-      items: sel.map(r => ({ user_id: r.user_id, net: Math.max(0, net(r)), late_deduction: lateDed(r), skip_overtime: !!r._skipOvertime, skip_late_leave: !!r._skipLateLeave }))
+      items: sel.map(r => ({ user_id: r.user_id, net: effNet(r), late_deduction: lateDed(r), net_override: hasNetOverride(r) ? Math.max(0, Number(r._netOverride)) : null, skip_overtime: !!r._skipOvertime, skip_late_leave: !!r._skipLateLeave }))
     };
     el('prPayConfirm').disabled = true; el('prPayConfirm').textContent = 'Paying…';
     try {
@@ -687,6 +917,280 @@
   };
 
   function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
+
+  // ============================================================
+  //  TABS + CUSTOM-SCHEDULE VIEW
+  // ============================================================
+  function reloadActive() { return TAB === 'custom' ? customLoad() : load(); }
+  function switchTab(tab) {
+    TAB = tab;
+    el('prTabMonthly').classList.toggle('active', tab === 'monthly');
+    el('prTabCustom').classList.toggle('active', tab === 'custom');
+    el('prMonthlyView').classList.toggle('active', tab === 'monthly');
+    el('prCustomView').classList.toggle('active', tab === 'custom');
+    if (tab === 'custom') { el('prPaybar').classList.remove('show'); customLoad(); }
+    else { load(); }
+  }
+  el('prTabMonthly').onclick = () => switchTab('monthly');
+  el('prTabCustom').onclick = () => switchTab('custom');
+
+  async function customLoad() {
+    const month = el('prMonth').value;
+    el('prCustList').innerHTML = '<div class="pr-empty">Loading…</div>';
+    try {
+      const res = await fetch('/hr/payroll/custom-data?month=' + encodeURIComponent(month), { headers: { 'Accept': 'application/json' } });
+      const j = await res.json();
+      if (!j.success) throw new Error(j.message || 'Failed');
+      CURMONTH = j.month;
+      FUND = j.funding || { cash: null, banks: [] };
+      SCHEDULE_AVAILABLE = !!j.schedule_available;
+      KHAAS_AVAILABLE = !!j.khaas_available;
+      KHAAS_BU_ID = j.khaas_bu_id || null;
+      CUST_ROWS = j.rows || [];
+      CUST_LOADED_MONTH = month;
+      buildFundModal();
+      renderCustom();
+    } catch (e) {
+      el('prCustList').innerHTML = '<div class="pr-empty">Could not load: ' + (e.message || e) + '</div>';
+    }
+  }
+
+  function renderCustom() {
+    if (!SCHEDULE_AVAILABLE) {
+      el('prCustList').innerHTML = '<div class="pr-empty">Custom schedules aren\'t enabled yet.</div>';
+      return;
+    }
+    if (!CUST_ROWS.length) {
+      el('prCustList').innerHTML = '<div class="pr-empty">No custom-schedule employees yet. Use ⚙ settings on the Monthly tab to move someone here.</div>';
+      return;
+    }
+    el('prCustList').innerHTML = CUST_ROWS.map((r, i) => custCard(r, i)).join('');
+    CUST_ROWS.forEach((r, i) => wireCust(r, i));
+  }
+
+  function custCard(r, i) {
+    const unit = r.rate_type === 'daily' ? '/ day' : '/ month';
+    const rate = r.configured
+      ? '<span class="pr-rate" data-crate="' + i + '"><span class="amt">' + fmt(r.base_rate) + '</span><span class="unit">' + unit + '</span><span style="color:#9ca3af;font-size:11px;">✎</span></span>'
+      : '<span class="pr-setsal" data-crate="' + i + '">＋ Set rate</span>';
+    const buChip = KHAAS_AVAILABLE
+      ? '<span class="pr-bu bu-' + (r.bu_code === 'KHAAS' ? 'KHAAS">Khaas' : 'NF">NF') + '</span>'
+      : '';
+
+    let cover = (r.paid_periods || []).map((p, pi) =>
+      '<span class="pr-cover-chip paid" data-period="' + i + '_' + pi + '" title="Paid ' + esc(String(p.paid_at).slice(0, 10)) + '">✓ ' + esc(p.label) + ' · ' + fmt(p.net) + '</span>'
+    ).join('');
+    if (!r.paid_periods || !r.paid_periods.length) {
+      cover += '<span class="pr-cover-chip none">Nothing paid in this month yet</span>';
+    }
+    cover += '<button class="pr-cover-add" data-addperiod="' + i + '">＋ Add period</button>';
+
+    const adv = r.advance_total > 0
+      ? '<div class="pr-cust-adv">Open advances: ' + fmt(r.advance_total) + ' (deducted next pay) <span class="give" data-cgive="' + i + '">＋ advance</span></div>'
+      : '<div class="pr-cust-adv" style="color:#9ca3af;">No open advances <span class="give" data-cgive="' + i + '">＋ advance</span></div>';
+
+    return '<div class="pr-cust-card">' +
+      '<div class="pr-cust-top">' +
+        '<div><div class="pr-cust-name">' + esc(r.fullname) +
+          (r.designation ? ' <span style="font-weight:400;color:#9ca3af;font-size:12px;">· ' + esc(r.designation) + '</span>' : '') + '</div>' +
+          '<div class="pr-cust-meta">' + rate + buChip +
+            '<span class="pr-gear" data-csettings="' + i + '" title="Pay schedule & business unit">⚙ settings</span></div></div>' +
+        '<div style="text-align:right;"><div style="font-size:11px;color:#9ca3af;">Paid in ' + esc(monthLabel()) + '</div>' +
+          '<div style="font-weight:700;">' + fmt(r.paid_total || 0) + '</div></div>' +
+      '</div>' +
+      '<div class="pr-cover">' + cover + '</div>' +
+      adv +
+    '</div>';
+  }
+  function monthLabel() {
+    const [y, m] = (CURMONTH || el('prMonth').value).split('-').map(Number);
+    return new Date(y, m - 1, 1).toLocaleDateString('en-GB', { month: 'short', year: 'numeric' });
+  }
+
+  function wireCust(r, i) {
+    const rate = document.querySelector('[data-crate="' + i + '"]');
+    if (rate) rate.onclick = () => editRate(r);
+    const gear = document.querySelector('[data-csettings="' + i + '"]');
+    if (gear) gear.onclick = () => openSettings(r);
+    const add = document.querySelector('[data-addperiod="' + i + '"]');
+    if (add) add.onclick = () => openCustomPay(r);
+    const give = document.querySelector('[data-cgive="' + i + '"]');
+    if (give) give.onclick = () => openAdvance(r);
+    (r.paid_periods || []).forEach((p, pi) => {
+      const chip = document.querySelector('[data-period="' + i + '_' + pi + '"]');
+      if (chip) chip.onclick = () => showCustomPeriod(r, p);
+    });
+  }
+
+  // Rate edit reuses the base-salary endpoint (base_salary IS the rate for custom).
+  function editRate(r) {
+    const cur = r.configured ? Math.round(r.base_rate) : '';
+    const val = prompt('Rate for ' + r.fullname + ' (' + (r.rate_type === 'daily' ? 'per DAY' : 'per MONTH') + '):', cur);
+    if (val === null) return;
+    const num = Number(val);
+    if (String(val).trim() === '' || isNaN(num) || num < 0) { alert('Enter a valid amount.'); return; }
+    fetch('/hr/payroll/set-salary', {
+      method: 'POST', headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': csrf },
+      body: JSON.stringify({ user_id: r.user_id, base_salary: num })
+    }).then(res => res.json()).then(j => {
+      if (!j.success) throw new Error(j.message || 'Failed');
+      customLoad();
+    }).catch(e => alert('Could not save rate: ' + (e.message || e)));
+  }
+
+  function showCustomPeriod(r, p) {
+    el('prSheetTitle').textContent = 'Period — ' + r.fullname;
+    el('prSheetBody').innerHTML =
+      '<div class="pr-daterow"><span class="dt">' + esc(p.label) + '</span><span class="lb">' + fmt(p.net) + '</span></div>' +
+      '<div class="pr-daterow"><span class="dt" style="font-weight:400;color:#6b7280;">Paid on</span><span class="lb">' + esc(String(p.paid_at).slice(0, 16)) + '</span></div>' +
+      '<div style="padding:12px 14px;font-size:11.5px;color:#9ca3af;">This range is settled. Overlapping days are blocked for new periods.</div>';
+    el('prSheet').classList.add('show');
+  }
+
+  // ---- settings modal (schedule + business unit) ----
+  let SET_ROW = null, SET_SCHED = 'monthly', SET_RATE = 'monthly', SET_BU = 'NF';
+  function setRadioGroup(containerId, attr, value) {
+    document.querySelectorAll('#' + containerId + ' [data-' + attr + ']').forEach(x => {
+      x.classList.toggle('active', x.getAttribute('data-' + attr) === value);
+    });
+  }
+  function openSettings(r) {
+    SET_ROW = r;
+    SET_SCHED = r.pay_schedule === 'custom' ? 'custom' : 'monthly';
+    SET_RATE = r.rate_type === 'daily' ? 'daily' : 'monthly';
+    SET_BU = r.bu_code === 'KHAAS' ? 'KHAAS' : 'NF';
+    el('prSetTitle').textContent = 'Pay settings — ' + r.fullname;
+    setRadioGroup('prSetSched', 'sched', SET_SCHED);
+    setRadioGroup('prSetRate', 'rate', SET_RATE);
+    setRadioGroup('prSetBu', 'bu', SET_BU);
+    el('prSetRateWrap').style.display = SET_SCHED === 'custom' ? 'block' : 'none';
+    el('prSetBuWrap').style.display = KHAAS_AVAILABLE ? 'block' : 'none';
+    el('prSetModal').classList.add('show');
+  }
+  document.querySelectorAll('#prSetSched [data-sched]').forEach(x => x.onclick = () => {
+    SET_SCHED = x.getAttribute('data-sched'); setRadioGroup('prSetSched', 'sched', SET_SCHED);
+    el('prSetRateWrap').style.display = SET_SCHED === 'custom' ? 'block' : 'none';
+  });
+  document.querySelectorAll('#prSetRate [data-rate]').forEach(x => x.onclick = () => {
+    SET_RATE = x.getAttribute('data-rate'); setRadioGroup('prSetRate', 'rate', SET_RATE);
+  });
+  document.querySelectorAll('#prSetBu [data-bu]').forEach(x => x.onclick = () => {
+    SET_BU = x.getAttribute('data-bu'); setRadioGroup('prSetBu', 'bu', SET_BU);
+  });
+  el('prSetCancel').onclick = () => el('prSetModal').classList.remove('show');
+  el('prSetModal').onclick = (ev) => { if (ev.target === el('prSetModal')) el('prSetModal').classList.remove('show'); };
+  el('prSetSave').onclick = async () => {
+    if (!SET_ROW) return;
+    el('prSetSave').disabled = true; el('prSetSave').textContent = 'Saving…';
+    try {
+      const r1 = await fetch('/hr/payroll/set-schedule', {
+        method: 'POST', headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': csrf },
+        body: JSON.stringify({ user_id: SET_ROW.user_id, pay_schedule: SET_SCHED, rate_type: SET_RATE })
+      }).then(x => x.json());
+      if (!r1.success) throw new Error(r1.message || 'Failed');
+      if (KHAAS_AVAILABLE) {
+        const r2 = await fetch('/hr/payroll/set-business-unit', {
+          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': csrf },
+          body: JSON.stringify({ user_id: SET_ROW.user_id, business_unit_id: SET_BU === 'KHAAS' ? KHAAS_BU_ID : null })
+        }).then(x => x.json());
+        if (!r2.success) throw new Error(r2.message || 'Failed');
+      }
+      el('prSetModal').classList.remove('show');
+      reloadActive();
+    } catch (e) {
+      alert('Could not save: ' + (e.message || e));
+    } finally {
+      el('prSetSave').disabled = false; el('prSetSave').textContent = 'Save';
+    }
+  };
+
+  // ---- custom period pay modal ----
+  let CUST_ROW = null;
+  function openCustomPay(r) {
+    if (!r.configured) { alert('Set this employee\'s rate first (click the rate).'); return; }
+    CUST_ROW = r;
+    el('prCustTitle').textContent = 'Add period — ' + r.fullname;
+    el('prCustStart').value = r.suggested_start || '';
+    el('prCustEnd').value = '';
+    el('prCustAmount').value = '';
+    el('prCustNote').value = '';
+    el('prCustCalcInner').innerHTML = '<div class="row"><span>Pick the end date to see the amount</span><span></span></div>';
+    document.querySelectorAll('[data-custfund]').forEach(x => x.classList.remove('active'));
+    document.querySelector('[data-custfund="cash"]').classList.add('active');
+    document.querySelector('input[name=prCustFund][value=cash]').checked = true;
+    el('prCustBankSel').disabled = true;
+    el('prCustModal').classList.add('show');
+  }
+  async function custPreview() {
+    if (!CUST_ROW) return;
+    const start = el('prCustStart').value, end = el('prCustEnd').value;
+    if (!start || !end) return;
+    el('prCustCalcInner').innerHTML = '<div class="row"><span>Calculating…</span><span></span></div>';
+    try {
+      const res = await fetch('/hr/payroll/custom-preview', {
+        method: 'POST', headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': csrf },
+        body: JSON.stringify({ user_id: CUST_ROW.user_id, start, end })
+      });
+      const j = await res.json();
+      if (!j.success) throw new Error(j.message || 'Failed');
+      const row = j.row;
+      const unit = row.rate_type === 'daily'
+        ? (fmt(row.base_rate) + '/day × ' + row.days + ' day' + (row.days === 1 ? '' : 's'))
+        : (fmt(row.base_rate) + '/mo ÷ 30 × ' + row.days + ' day' + (row.days === 1 ? '' : 's'));
+      let html = '<div class="row"><span>' + unit + '</span><span>' + fmt(row.computed_amount) + '</span></div>';
+      if (row.advance_total > 0) html += '<div class="row"><span>Advances recovered this pay</span><span>− ' + fmt(row.advance_total) + '</span></div>';
+      html += '<div class="row tot"><span>Net at computed amount</span><span>' + fmt(row.net_amount) + '</span></div>';
+      if (row.advance_open_after > 0) html += '<div class="ref" style="color:#b45309;">' + fmt(row.advance_open_after) + ' of advances is bigger than this pay — it stays open for a later payment.</div>';
+      html += '<div class="ref">In range: ' + row.present_days + ' present · ' + row.absent_days + ' absent (reference only — does not change pay)</div>';
+      el('prCustCalcInner').innerHTML = html;
+      if (el('prCustAmount').value.trim() === '') el('prCustAmount').value = Math.round(row.computed_amount);
+    } catch (e) {
+      el('prCustCalcInner').innerHTML = '<div class="row"><span style="color:#b91c1c;">' + esc(e.message || String(e)) + '</span><span></span></div>';
+    }
+  }
+  el('prCustStart').onchange = () => { el('prCustAmount').value = ''; custPreview(); };
+  el('prCustEnd').onchange = () => { el('prCustAmount').value = ''; custPreview(); };
+  document.querySelectorAll('[data-custfund]').forEach(f => {
+    f.onclick = (ev) => {
+      if (ev.target.closest('select')) return;
+      document.querySelectorAll('[data-custfund]').forEach(x => x.classList.remove('active'));
+      f.classList.add('active');
+      f.querySelector('input[type=radio]').checked = true;
+      const dis = (f.getAttribute('data-custfund') !== 'online');
+      if (el('prCustBankSel').disabled !== dis) el('prCustBankSel').disabled = dis;
+    };
+  });
+  el('prCustCancel').onclick = () => el('prCustModal').classList.remove('show');
+  el('prCustModal').onclick = (ev) => { if (ev.target === el('prCustModal')) el('prCustModal').classList.remove('show'); };
+  el('prCustConfirm').onclick = async () => {
+    if (!CUST_ROW) return;
+    const start = el('prCustStart').value, end = el('prCustEnd').value;
+    if (!start || !end) { alert('Pick the start and end dates.'); return; }
+    const fundType = document.querySelector('input[name=prCustFund]:checked').value;
+    const bankId = el('prCustBankSel').value;
+    if (fundType === 'online' && !bankId) { alert('Choose the bank.'); return; }
+    const amount = el('prCustAmount').value.trim();
+    el('prCustConfirm').disabled = true; el('prCustConfirm').textContent = 'Paying…';
+    try {
+      const res = await fetch('/hr/payroll/custom-pay', {
+        method: 'POST', headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': csrf },
+        body: JSON.stringify({
+          user_id: CUST_ROW.user_id, start, end,
+          funding: fundType, bank_id: fundType === 'online' ? Number(bankId) : null,
+          amount: amount === '' ? null : Number(amount), note: el('prCustNote').value || null
+        })
+      });
+      const j = await res.json();
+      if (!j.success) throw new Error(j.message || 'Failed');
+      el('prCustModal').classList.remove('show');
+      alert('Paid ' + fmt(j.net) + '.');
+      customLoad();
+    } catch (e) {
+      alert('Could not pay: ' + (e.message || e));
+    } finally {
+      el('prCustConfirm').disabled = false; el('prCustConfirm').textContent = 'Pay period';
+    }
+  };
 
   // auto-load current month
   load();

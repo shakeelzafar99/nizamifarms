@@ -168,6 +168,10 @@ class AssistantSmsController extends Controller
             'amount'                     => (float) $sms->amount,
             'payment_source_account_id'  => $online->id,
             'receiving_account_id'       => $sms->receiving_account_id,
+            // This card originates from a bank SMS, not a chat turn — the draft
+            // must NOT attach whatever image happens to be the latest chat
+            // message (same rule the proof path applies via bank_sms_id).
+            '_from_sms'                  => true,
         ];
 
         if ($request->input('type') === 'expense') {
@@ -260,6 +264,7 @@ class AssistantSmsController extends Controller
                 'amount'               => (float) $sms->amount,
                 'reference'            => $sms->reference,
                 'receiving_account_id' => $sms->receiving_account_id ? (int) $sms->receiving_account_id : null,
+                '_amount_verified'     => true, // amount comes from the bank SMS itself
             ], $user)
             : $this->drafts->draftPaymentProof([
                 'customer_id' => $customerId,
@@ -270,6 +275,26 @@ class AssistantSmsController extends Controller
 
         if (!empty($result['error'])) {
             return response()->json(['success' => false, 'message' => $result['error']], 422);
+        }
+
+        // If this SMS was amount-unique-attached to an order but Taimur picked a
+        // DIFFERENT customer, the guess was wrong — detach it (back to a plain
+        // held signal). The confirmed proof then pairs by reference and carries
+        // the CORRECT order onto it. Same-customer confirms leave it in place.
+        if ($sms->linked_signal_id) {
+            $guess = \App\Models\FIN\PaymentSignal::find($sms->linked_signal_id);
+            if ($guess && $guess->source === \App\Models\FIN\PaymentSignal::SOURCE_BANK_SMS
+                && $guess->match_reason === 'amount_unique_sms'
+                && !$guess->paired_signal_id
+                && (int) $guess->matched_customer_id !== $customerId) {
+                DB::table('t_fin_payment_signal_order')->where('signal_id', $guess->id)->delete();
+                $guess->matched_order_id = null;
+                $guess->matched_customer_id = null;
+                $guess->status = \App\Models\FIN\PaymentSignal::STATUS_UNMATCHED;
+                $guess->match_reason = 'bank_credit_unidentified';
+                $guess->match_confidence = null;
+                $guess->save();
+            }
         }
 
         // Out of the "needs action" pile while a card is live; a cancel/expiry
@@ -307,14 +332,18 @@ class AssistantSmsController extends Controller
             ->update(['status' => 'ignored', 'updated_at' => now()]);
 
         // Ignoring a CREDIT is Taimur saying "this is not a customer payment" —
-        // retract its HELD bank signal (if still unpaired and on no order), so
-        // it can't corroborate an unrelated same-amount proof later. A signal
-        // that already paired/matched stays: the verification it produced is
-        // real and the ignore then only tidies the inbox row.
+        // retract its bank signal so it can't corroborate anything later:
+        //   • a plain HELD signal (unpaired, no order), and ALSO
+        //   • an AMOUNT-UNIQUE GUESS (matched to an order by amount alone,
+        //     still unpaired) — the ignore overrules the guess, and the blue
+        //     "Bank confirmed" it put on that order must come off.
+        // A signal that already PAIRED stays: that verification is real and the
+        // ignore then only tidies the inbox row.
         if ($sms && $sms->direction === 'credit' && $sms->linked_signal_id) {
             $held = \App\Models\FIN\PaymentSignal::find($sms->linked_signal_id);
             if ($held && $held->source === \App\Models\FIN\PaymentSignal::SOURCE_BANK_SMS
-                && !$held->paired_signal_id && !$held->matched_order_id) {
+                && !$held->paired_signal_id
+                && (!$held->matched_order_id || $held->match_reason === 'amount_unique_sms')) {
                 DB::table('t_fin_payment_signal_order')->where('signal_id', $held->id)->delete();
                 $held->delete();
                 DB::table('t_ai_bank_sms')->where('id', $id)->update(['linked_signal_id' => null]);
@@ -373,9 +402,14 @@ class AssistantSmsController extends Controller
         }
 
         $forgot = false;
-        if ($request->boolean('forget') && $sms->counterparty_account) {
+        if ($request->boolean('forget') && ($sms->counterparty_account || $sms->counterparty)) {
+            // Look the rule up the SAME way the auto-ignore pipeline fires it
+            // (account first, then unambiguous name — forSms). The old
+            // byAccount-only lookup made NAME-keyed rules (banks that send no
+            // account, e.g. HBL debits) un-forgettable: remember worked, the
+            // rule kept auto-ignoring, but forget silently no-opped.
             $map = app(\App\Services\Assistant\SmsCounterpartyMap::class);
-            $rule = $map->byAccount($sms->counterparty_account);
+            $rule = $map->forSms($sms);
             if ($rule && $rule->entity_type === 'ignore') {
                 $map->deactivate((int) $rule->id);
                 $forgot = true;
@@ -506,7 +540,14 @@ class AssistantSmsController extends Controller
         // Epoch millis from Android's SmsMessage.getTimestampMillis().
         if (is_numeric($value)) {
             $secs = (int) ($value > 1e12 ? $value / 1000 : $value);
-            try { return \Illuminate\Support\Carbon::createFromTimestamp($secs); } catch (\Throwable $e) {}
+            // ⚠️ createFromTimestamp() defaults to UTC. The rest of the app —
+            // now(), created_at, email/screenshot times — runs in the app
+            // timezone (Asia/Karachi). Stored as a naive DATETIME, a UTC value
+            // reads 5h behind everything else, which (a) shows wrong times in
+            // the inbox and (b) makes the SMS lose every closest-time pairing
+            // tie-break against an email (prod bug, Jul-2026). Create it in the
+            // app timezone so sms_at is on the SAME wall clock as everyone else.
+            try { return \Illuminate\Support\Carbon::createFromTimestamp($secs, config('app.timezone')); } catch (\Throwable $e) {}
         }
         try { return \Illuminate\Support\Carbon::parse((string) $value); } catch (\Throwable $e) {}
         return now();

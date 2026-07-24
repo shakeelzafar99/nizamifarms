@@ -245,7 +245,7 @@
                                           style="background-color: {{ $proof['color'] }}; cursor: pointer;"
                                           onclick="event.stopPropagation(); openProofModal({{ $order['id'] }}, '{{ addslashes($order['order_number']) }}')"
                                           title="{{ $proof['label'] }} — click to view the screenshot / bank email">
-                                        {{ $proof['has_whatsapp'] ? '📷' : '' }}{{ $proof['has_email'] ? '✉️' : '' }} {{ $proof['label'] }} 🔍
+                                        {{ $proof['has_whatsapp'] ? '📷' : '' }}{{ !empty($proof['has_sms']) ? '📱' : '' }}{{ $proof['has_email'] ? '✉️' : '' }} {{ $proof['label'] }} 🔍
                                     </span>
                                     @endif
                                 </div>
@@ -701,7 +701,7 @@
                                                   style="background-color: {{ $invProof['color'] }};{{ !empty($invoice['order_id']) ? ' cursor: pointer;' : '' }}"
                                                   @if(!empty($invoice['order_id']))onclick="event.stopPropagation(); openProofModal({{ $invoice['order_id'] }}, '{{ addslashes($invoice['order_number']) }}')"@endif
                                                   title="{{ $invProof['label'] }} — click to view the screenshot / bank email">
-                                                {{ $invProof['has_whatsapp'] ? '📷' : '' }}{{ $invProof['has_email'] ? '✉️' : '' }} {{ $invProof['label'] }}@if(!empty($invoice['order_id'])) 🔍@endif
+                                                {{ $invProof['has_whatsapp'] ? '📷' : '' }}{{ !empty($invProof['has_sms']) ? '📱' : '' }}{{ $invProof['has_email'] ? '✉️' : '' }} {{ $invProof['label'] }}@if(!empty($invoice['order_id'])) 🔍@endif
                                             </span>
                                         @endif
                                     </div>

@@ -127,7 +127,94 @@ class BankSmsAutoActionService
             ];
         }
 
+        // AMOUNT-UNIQUE ATTACH (owner ruling Jul-2026): no proof to pair and no
+        // identity — but if EXACTLY ONE order in the whole approvals queue has
+        // this outstanding balance, that's ~certain in practice. Attach the
+        // bank credit to it so the approver SEES it (blue "Bank confirmed",
+        // never green Verified) with an explicit "matched by amount only —
+        // confirm the payer" caption; the SMS stays in the money inbox with
+        // its one-tap chip, and Taimur's confirm pairs proof↔SMS → Verified.
+        // Zero or several amount-matches → nothing (ambiguity = the Rs-36
+        // lesson); the SMS just holds as before.
+        if ($signal->status !== PaymentSignal::STATUS_DUPLICATE) {
+            $unique = $this->uniqueQueueOrderByAmount((float) $sms->amount);
+            if ($unique) {
+                $signal->matched_order_id    = $unique['order_id'];
+                $signal->matched_customer_id = $unique['customer_id'];
+                $signal->status              = PaymentSignal::STATUS_MATCHED;
+                $signal->match_reason        = 'amount_unique_sms';
+                $signal->match_confidence    = 0.50;
+                $signal->save();
+
+                // Keep the SMS OPEN in the inbox (status 'new') — the chip is
+                // Taimur's confirm; only remember which signal represents it.
+                DB::table('t_ai_bank_sms')->where('id', $sms->id)->update([
+                    'linked_signal_id' => $signal->id,
+                    'updated_at'       => now(),
+                ]);
+
+                return [
+                    'action'       => 'amount_unique_attach',
+                    'order_number' => $unique['order_number'],
+                    'customer'     => $unique['customer_name'],
+                    'verified'     => false,
+                ];
+            }
+        }
+
         return $this->holdOrDrop($sms, $signal);
+    }
+
+    /**
+     * EXACTLY ONE approvals-queue order whose outstanding balance equals this
+     * amount (within the invoice tolerance) — else null. Mirrors
+     * AssistantWorkspaceController::suggestOrderByAmount (the inbox chip), so
+     * what the approver sees attached and what Taimur is asked to confirm are
+     * always the same order.
+     */
+    private function uniqueQueueOrderByAmount(float $amount): ?array
+    {
+        if ($amount <= 0) {
+            return null;
+        }
+        $tol = \App\Services\Payments\Signals\PaymentProofStatusService::amountTolerance();
+
+        $hits = DB::table('t_fin_ledger as l')
+            ->join('t_crm_prod_order as o', 'o.id', '=', 'l.order_id')
+            ->join('t_crm_prod_customer as c', 'c.id', '=', 'o.customer_id')
+            ->where('l.transaction_type', 'invoice')
+            ->whereIn('l.approval_status', ['pending', 'pending_l1', 'pending_l2'])
+            ->whereRaw('ABS((o.total_price - COALESCE(o.total_paid,0)) - ?) <= ?', [$amount, $tol])
+            ->whereRaw('(o.total_price - COALESCE(o.total_paid,0)) > 0.01')
+            ->distinct()
+            ->limit(2)
+            ->get(['o.id as order_id', 'o.order_number', 'o.customer_id', 'c.first_name', 'c.last_name']);
+
+        if ($hits->count() !== 1) {
+            return null;
+        }
+        $h = $hits->first();
+
+        // If the order ALREADY has a screenshot proof, the proof flow is in
+        // progress and PAIRING (with its same-bank gate) is the correct joiner
+        // — an amount-only attach could weld a different bank's credit onto it
+        // (e.g. a Meezan SMS onto an HBL-proofed order). Attach is only for
+        // orders with NO proof yet (the no-screenshot case it was built for).
+        $hasProof = PaymentSignal::query()
+            ->where('matched_order_id', $h->order_id)
+            ->where('source', PaymentSignal::SOURCE_WHATSAPP)
+            ->whereIn('status', [PaymentSignal::STATUS_MATCHED, PaymentSignal::STATUS_AMOUNT_MISMATCH])
+            ->exists();
+        if ($hasProof) {
+            return null;
+        }
+
+        return [
+            'order_id'      => (int) $h->order_id,
+            'order_number'  => $h->order_number,
+            'customer_id'   => (int) $h->customer_id,
+            'customer_name' => trim(($h->first_name ?? '') . ' ' . ($h->last_name ?? '')),
+        ];
     }
 
     /**
@@ -176,6 +263,7 @@ class BankSmsAutoActionService
             'amount'               => (float) $sms->amount,
             'reference'            => $sms->reference,
             'receiving_account_id' => (int) $sms->receiving_account_id,
+            '_amount_verified'     => true, // amount comes from the bank SMS itself
         ], $user);
 
         if (!empty($result['error']) || empty($result['draft_id'])) {

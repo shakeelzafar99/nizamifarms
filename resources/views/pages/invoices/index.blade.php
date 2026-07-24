@@ -277,4 +277,5 @@
 </script>
 
 @include('partials.home-meter-alerts')
+@include('partials.checkout-stuck-alerts')
 @endsection

@@ -207,30 +207,35 @@ class ExpenseManagementController extends Controller
                              ->whereRaw('DATE(created_at) <= ?', [$dateTo]);
         }
         
-        // If category filter is "Salary", include salary slips; otherwise exclude them
-        $includeSalarySlips = !$category || strtolower($category) === 'salary';
-        // Qurbani Expenses tab never wants salary — qurbani staff
-        // are paid via the request-based qurbani sub-categories.
-        if ($qurbaniMode) {
-            $includeSalarySlips = false;
-        }
-        // Salary slips don't carry a business_unit_id — when the
-        // page is drilled into KHAAS, hide them so the Khaas total
-        // isn't inflated by all-staff salaries.
-        if ($buFilter === 'KHAAS') {
-            $includeSalarySlips = false;
-        }
+        // Salaries are in scope when no category filter (or the "Salary" filter) is set,
+        // and never on the Qurbani tab (qurbani staff are paid via request sub-categories).
+        $salaryInScope = (!$category || strtolower($category) === 'salary') && !$qurbaniMode;
+
+        // Salary SLIPS carry no business_unit_id → they are NF-only; hide them in a KHAAS
+        // drill so the Khaas total isn't inflated by all-staff salaries.
+        $includeSalarySlips = $salaryInScope && $buFilter !== 'KHAAS';
 
         $salarySlips = $includeSalarySlips ? $salarySlipsQuery->orderBy('created_at', 'desc')->get() : collect([]);
-        $totalSalaryExpenses = $salarySlips->sum('net_salary');
 
         // ── New Payroll screen payments (Phase G) ──────────────────
         // t_hr_payroll_payment (the Payroll screen) replaced salary slips. Surface each
-        // paid salary as a "Salary" expense row — same treatment as slips above — so
-        // payroll salaries show in Expenses exactly like the old "Staff Salaries" entries
-        // did. Cash-basis: the net actually paid. Follows the same gating as slips.
+        // paid salary as a "Salary" expense row — cash-basis (net actually paid, by paid_at).
+        // Unlike slips, payroll rows CAN carry a business_unit_id (Khaas employees are tagged
+        // on the Payroll screen), so they appear in the matching BU drill instead of always
+        // counting as NF.
+        $payrollHasBu = false;
+        try {
+            $payrollHasBu = \Illuminate\Support\Facades\Schema::hasColumn('t_hr_payroll_payment', 'business_unit_id');
+        } catch (\Throwable $e) { $payrollHasBu = false; }
+
+        // Before the BU column exists, every payroll row is effectively NF, so a KHAAS drill
+        // shows none (matches the pre-tagging behaviour exactly).
+        $includePayroll = $salaryInScope && ($payrollHasBu || $buFilter !== 'KHAAS');
+
         $payrollPayments = collect([]);
-        if ($includeSalarySlips) {
+        if ($includePayroll) {
+            $selectCols = ['p.id', 'p.user_id', 'p.net_salary', 'p.pay_month', 'p.paid_at', 'p.created_at', 'u.fullname'];
+            if ($payrollHasBu) { $selectCols[] = 'p.business_unit_id'; }
             $payrollQuery = DB::table('t_hr_payroll_payment as p')
                 ->leftJoin('t_sys_user as u', 'u.id', '=', 'p.user_id')
                 ->where('p.status', 'paid');
@@ -238,14 +243,28 @@ class ExpenseManagementController extends Controller
                 $payrollQuery->whereRaw('DATE(p.paid_at) >= ?', [$dateFrom])
                              ->whereRaw('DATE(p.paid_at) <= ?', [$dateTo]);
             }
-            $payrollPayments = $payrollQuery
-                ->orderBy('p.paid_at', 'desc')
-                ->get(['p.id', 'p.user_id', 'p.net_salary', 'p.pay_month', 'p.paid_at', 'p.created_at', 'u.fullname']);
+            // BU scope — mirror the regular-expense rules (NULL = NF).
+            if ($payrollHasBu) {
+                if ($buFilter === 'NF' && $nfBuId) {
+                    $payrollQuery->where(function ($q) use ($nfBuId) {
+                        $q->where('p.business_unit_id', $nfBuId)->orWhereNull('p.business_unit_id');
+                    });
+                } elseif ($buFilter === 'KHAAS' && $khaasBuId) {
+                    $payrollQuery->where('p.business_unit_id', $khaasBuId);
+                }
+                if (!$canViewKhaas && $khaasBuId) {
+                    $payrollQuery->where(function ($q) use ($khaasBuId) {
+                        $q->where('p.business_unit_id', '!=', $khaasBuId)->orWhereNull('p.business_unit_id');
+                    });
+                }
+            }
+            $payrollPayments = $payrollQuery->orderBy('p.paid_at', 'desc')->get($selectCols);
         }
+
+        // Salary total = slips (NF-only) + payroll (BU-scoped above). Every downstream
+        // "Salary" aggregation (totals, category card, BU split) reads these.
         $totalPayrollExpenses = $payrollPayments->sum('net_salary');
-        // Fold payroll into the salary bucket so every downstream "Salary" aggregation
-        // (totals, category card, BU split) picks it up automatically.
-        $totalSalaryExpenses += $totalPayrollExpenses;
+        $totalSalaryExpenses = $salarySlips->sum('net_salary') + $totalPayrollExpenses;
 
         // Transform salary slips to match expense format for unified display
         $salarySlipsForDisplay = $salarySlips->map(function($slip) {
@@ -517,24 +536,28 @@ class ExpenseManagementController extends Controller
             if (!isset($buUserMap[$bu][$catName][$userName])) $buUserMap[$bu][$catName][$userName] = 0.0;
             $buUserMap[$bu][$catName][$userName] += (float) $expense->amount;
         }
-        // Salary slips → always count under NF (no BU concept).
-        if ($totalSalaryExpenses > 0) {
-            $buBreakdown['NF']['total'] += (float) $totalSalaryExpenses;
-            if (!isset($buBreakdown['NF']['categories']['Salary'])) {
-                $buBreakdown['NF']['categories']['Salary'] = 0.0;
-            }
-            $buBreakdown['NF']['categories']['Salary'] += (float) $totalSalaryExpenses;
+        // Salary slips → always count under NF (they predate the BU concept).
+        if ($salarySlips->count() > 0) {
+            $slipTotal = (float) $salarySlips->sum('net_salary');
+            $buBreakdown['NF']['total'] += $slipTotal;
+            $buBreakdown['NF']['categories']['Salary'] = ($buBreakdown['NF']['categories']['Salary'] ?? 0.0) + $slipTotal;
             if (!isset($buUserMap['NF']['Salary'])) $buUserMap['NF']['Salary'] = [];
             foreach ($salarySlips as $slip) {
                 $empName = $slip->employee ? $slip->employee->fullname : 'Unknown';
-                if (!isset($buUserMap['NF']['Salary'][$empName])) $buUserMap['NF']['Salary'][$empName] = 0.0;
-                $buUserMap['NF']['Salary'][$empName] += (float) $slip->net_salary;
+                $buUserMap['NF']['Salary'][$empName] = ($buUserMap['NF']['Salary'][$empName] ?? 0.0) + (float) $slip->net_salary;
             }
-            foreach ($payrollPayments as $pp) {
-                $empName = $pp->fullname ?? 'Unknown';
-                if (!isset($buUserMap['NF']['Salary'][$empName])) $buUserMap['NF']['Salary'][$empName] = 0.0;
-                $buUserMap['NF']['Salary'][$empName] += (float) $pp->net_salary;
-            }
+        }
+        // Payroll payments → bucket each by its STAMPED business unit (Khaas employees'
+        // salaries land on the Khaas side; NULL / NF id count as NF).
+        foreach ($payrollPayments as $pp) {
+            $ppBuId = $payrollHasBu ? (int) ($pp->business_unit_id ?? 0) : 0;
+            $ppBu = ($khaasBuId && $ppBuId === $khaasBuId) ? 'KHAAS' : 'NF';
+            if ($ppBu === 'KHAAS' && !$canViewKhaas) continue; // safety (already filtered in the query)
+            $empName = $pp->fullname ?? 'Unknown';
+            $buBreakdown[$ppBu]['total'] += (float) $pp->net_salary;
+            $buBreakdown[$ppBu]['categories']['Salary'] = ($buBreakdown[$ppBu]['categories']['Salary'] ?? 0.0) + (float) $pp->net_salary;
+            if (!isset($buUserMap[$ppBu]['Salary'])) $buUserMap[$ppBu]['Salary'] = [];
+            $buUserMap[$ppBu]['Salary'][$empName] = ($buUserMap[$ppBu]['Salary'][$empName] ?? 0.0) + (float) $pp->net_salary;
         }
         // Sort each BU's categories desc + flatten to a [cat → ['total'=>x, 'users'=>...]]
         // structure that the Blade template can render with the

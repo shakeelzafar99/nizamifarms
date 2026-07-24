@@ -86,6 +86,20 @@ class AssistantToolRegistry
                 ],
             ],
             [
+                'name' => 'list_customer_invoices',
+                'description' => 'List a CUSTOMER\'s invoices/bills (read-only), optionally within a date range and by status. Use for "show <customer>\'s bills from 1 to 15 July", "which invoices are pending for <shop>", "how much does <customer> owe this month". Works for shops (e.g. Sunny Kitchen) and regular customers. Call find_customer first for a real customer_id. Returns each invoice (order number, date, total, paid, balance, status) plus totals. Dates filter by ORDER DATE — say that in your reply.',
+                'parameters' => [
+                    'type' => 'OBJECT',
+                    'properties' => [
+                        'customer_id' => ['type' => 'INTEGER', 'description' => 'From find_customer'],
+                        'from_date' => ['type' => 'STRING', 'description' => 'YYYY-MM-DD inclusive. Omit for no lower bound.'],
+                        'to_date' => ['type' => 'STRING', 'description' => 'YYYY-MM-DD inclusive. Omit for no upper bound.'],
+                        'status' => ['type' => 'STRING', 'description' => 'open (unpaid/partial), paid, or all. Default open.'],
+                    ],
+                    'required' => ['customer_id'],
+                ],
+            ],
+            [
                 'name' => 'set_default',
                 'description' => 'Remember a preference for this user so you never ask again (e.g. their usual payment source for expenses). Only use after the user has told you what they want. Pass the NAME the user said (e.g. "expense fund") or an exact id from get_context — NEVER an id you have not seen. The response tells you what was actually saved; repeat that name back to the user.',
                 'parameters' => [
@@ -174,6 +188,24 @@ class AssistantToolRegistry
                 ],
             ],
             [
+                'name' => 'draft_account_transfer',
+                'description' => 'Move money between OUR OWN accounts (e.g. "move 50,000 from Online bank to Cash", "HBL to Meezan"). Shows a confirmation card; on confirm it records a transfer through the SAME web flow — an ONLINE transfer (touching a bank) goes to the approval queue, a cash-to-cash move posts immediately. Call get_context first for the account ids (use is_bank to know which touch a bank). NOT for correcting the bank on an already-recorded payment — this only creates a NEW transfer.',
+                'parameters' => [
+                    'type' => 'OBJECT',
+                    'properties' => [
+                        'from_account_id' => ['type' => 'INTEGER', 'description' => 'Source account id from get_context'],
+                        'to_account_id' => ['type' => 'INTEGER', 'description' => 'Destination account id from get_context (must differ)'],
+                        'amount' => ['type' => 'NUMBER', 'description' => 'Amount in PKR'],
+                        'mode' => ['type' => 'STRING', 'description' => 'cash or online. Omit to auto-pick (bank-touching = online → approval; else cash).'],
+                        'receiving_account_id' => ['type' => 'INTEGER', 'description' => 'Which of OUR banks it goes through (from get_context banks) — needed when a bank is touched. Omit to let the card offer a picker.'],
+                        'transaction_date' => ['type' => 'STRING', 'description' => 'YYYY-MM-DD. Omit for today.'],
+                        'description' => ['type' => 'STRING', 'description' => 'Optional note.'],
+                        'replaces_draft_id' => ['type' => 'INTEGER', 'description' => 'When CORRECTING a card the user already has, pass that draft_id from get_pending_draft — the old card is cancelled.'],
+                    ],
+                    'required' => ['from_account_id', 'to_account_id', 'amount'],
+                ],
+            ],
+            [
                 'name' => 'draft_vendor_purchase',
                 'description' => 'Prepare a vendor PURCHASE (stock/goods bought from a vendor — increases what we owe them; no money moves). Shows a confirmation card. Call find_vendor first for the real vendor_id. Use this when the user says "purchased/bought/khareeda", NOT for paying a vendor.',
                 'parameters' => [
@@ -206,11 +238,13 @@ class AssistantToolRegistry
                 'find_customer'        => $this->findCustomer($args, $user),
                 'list_expenses'        => $this->listExpenses($args, $user),
                 'find_order'           => $this->findOrder($args, $user),
+                'list_customer_invoices' => $this->listCustomerInvoices($args, $user),
                 'set_default'          => $this->setDefault($args, $user),
                 'draft_expense'         => $this->drafts->draftExpense($args, $user),
                 'draft_vendor_payment'  => $this->drafts->draftVendorPayment($args, $user),
                 'draft_vendor_purchase' => $this->drafts->draftVendorPurchase($args, $user),
                 'draft_shop_payment'    => $this->drafts->draftShopPayment($args, $user),
+                'draft_account_transfer' => $this->drafts->draftAccountTransfer($args, $user),
                 'draft_payment_proof'   => $this->drafts->draftPaymentProof($args, $user),
                 default                => ['error' => "Unknown tool: {$name}"],
             };
@@ -504,6 +538,95 @@ class AssistantToolRegistry
             'customers' => $customers,
             'note' => 'open_orders is how many unpaid online orders each has. A proof needs at least one. If several customers match, ask which.',
         ];
+    }
+
+    /**
+     * Read-only invoice list for ONE customer, optional date range + status.
+     *
+     * ⚠️ Dates filter on order_date (a REAL column). delivery_date is an
+     * Eloquent ACCESSOR derived from status history — never usable in a WHERE.
+     * The reply must say the range is by order date so a shop owner isn't
+     * surprised. Balance = total_price − total_paid (the same figures the
+     * approvals/shop screens show). Live orders only (collision rule).
+     */
+    private function listCustomerInvoices(array $args, $user): array
+    {
+        $customerId = (int) ($args['customer_id'] ?? 0);
+        $customer = $customerId
+            ? DB::table('t_crm_prod_customer')->where('id', $customerId)
+                ->first(['id', 'first_name', 'last_name', 'company', 'customer_type'])
+            : null;
+        if (!$customer) {
+            return ['error' => 'That customer id does not exist. Use find_customer first — never guess a customer id.'];
+        }
+        $name = trim(($customer->first_name ?? '') . ' ' . ($customer->last_name ?? ''))
+            ?: ($customer->company ?: ('Customer #' . $customerId));
+
+        $status = strtolower(trim((string) ($args['status'] ?? 'open')));
+        if (!in_array($status, ['open', 'paid', 'all'], true)) {
+            $status = 'open';
+        }
+        $from = $this->cleanDateArg($args['from_date'] ?? null);
+        $to   = $this->cleanDateArg($args['to_date'] ?? null);
+
+        $q = DB::table('t_crm_prod_order')
+            ->where('customer_id', $customerId)
+            // A cancelled order is not a bill — its leftover balance must never
+            // show as "pending" (review catch, Jul-22).
+            ->where('order_status', '!=', 'cancelled')
+            ->when($from, fn ($w) => $w->whereDate('order_date', '>=', $from))
+            ->when($to, fn ($w) => $w->whereDate('order_date', '<=', $to));
+
+        // "open" = still owes money; "paid" = nothing outstanding. Uses the same
+        // total_price/total_paid the approvals + shop screens use, so the number
+        // agrees with what he sees there.
+        if ($status === 'open') {
+            $q->whereRaw('(total_price - COALESCE(total_paid,0)) > 0.01');
+        } elseif ($status === 'paid') {
+            $q->whereRaw('(total_price - COALESCE(total_paid,0)) <= 0.01');
+        }
+
+        $rows = $q->orderByDesc('order_date')->orderByDesc('id')->limit(200)
+            ->get(['order_number', 'order_date', 'order_status', 'payment_status', 'total_price', 'total_paid']);
+
+        $invoices = $rows->map(fn ($o) => [
+            'order_number' => $o->order_number,
+            'date'         => $o->order_date ? substr((string) $o->order_date, 0, 10) : null,
+            'total'        => round((float) $o->total_price, 0),
+            'paid'         => round((float) ($o->total_paid ?? 0), 0),
+            'balance'      => round((float) $o->total_price - (float) ($o->total_paid ?? 0), 0),
+            'status'       => $o->payment_status ?: 'unpaid',
+        ])->all();
+
+        return [
+            'customer'       => $name,
+            'customer_type'  => ($customer->customer_type ?? 'regular') === 'shop' ? 'shop' : 'regular',
+            'date_basis'     => 'order_date',
+            'from_date'      => $from,
+            'to_date'        => $to,
+            'status_filter'  => $status,
+            'count'          => count($invoices),
+            'total_billed'   => round($rows->sum(fn ($o) => (float) $o->total_price), 0),
+            'total_outstanding' => round($rows->sum(fn ($o) => (float) $o->total_price - (float) ($o->total_paid ?? 0)), 0),
+            'invoices'       => $invoices,
+            'note'           => count($invoices) >= 200
+                ? 'Showing the first 200 — narrow the date range for the rest.'
+                : 'Range is by ORDER DATE. Tell the user that basis.',
+        ];
+    }
+
+    /** A YYYY-MM-DD date arg, or null if empty/unparseable (never throws). */
+    private function cleanDateArg($value): ?string
+    {
+        $v = trim((string) ($value ?? ''));
+        if ($v === '') {
+            return null;
+        }
+        try {
+            return \Illuminate\Support\Carbon::parse($v)->toDateString();
+        } catch (\Throwable $e) {
+            return null;
+        }
     }
 
     /**

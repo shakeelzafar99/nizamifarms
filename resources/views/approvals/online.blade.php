@@ -1764,7 +1764,10 @@ function renderProofBadges(item) {
     const p = item && item.payment_proof;
     if (!p || p.status === 'none' || !item.order_id) return '';
     const waIcon = p.has_whatsapp ? '📷' : '';
+    // Bank-side source at a glance: 📱 = credit SMS captured by NF Messages
+    // (the PRIMARY confirmation since Jul-2026), ✉️ = bank email (backup).
     const mailIcon = p.has_email ? '✉️' : '';
+    const smsIcon = p.has_sms ? '📱' : '';
     const combinedPrefix = p.is_combined ? '🧩 ' : '';
     const combinedSuffix = (p.is_combined && p.combined_count) ? ` · combined of ${p.combined_count}` : '';
     const combinedTitle = (p.is_combined && p.combined_count)
@@ -1772,7 +1775,7 @@ function renderProofBadges(item) {
     let badges = `<span class="proof-badge" onclick="openProofPanel(${item.order_id})"
         title="${escapeHtml(p.label)}${combinedTitle} — click to view the proof"
         style="cursor:pointer; display:inline-block; padding:2px 8px; border-radius:10px; font-size:11px; font-weight:600; background:${p.color}1A; color:${p.color}; border:1px solid ${p.color}55; margin-left:6px; white-space:nowrap;">
-        ${combinedPrefix}${waIcon}${mailIcon} ${escapeHtml(p.label)}${combinedSuffix}</span>`;
+        ${combinedPrefix}${waIcon}${smsIcon}${mailIcon} ${escapeHtml(p.label)}${combinedSuffix}</span>`;
     // 💸 "Discount needed" marker — a matched proof still short by a small amount.
     if (p.needs_discount) {
         const shortTxt = p.short_amount ? ` · Rs ${numberFormat(p.short_amount)}` : '';
@@ -1946,6 +1949,15 @@ function buildProofPanelHtml(data) {
         if (isSms && s.bank_sms && s.bank_sms.auto) {
             html += `<div style="background:#ECFDF5; border:1px solid #A7F3D0; color:#065F46; border-radius:8px; padding:8px 10px; font-size:12px; margin-bottom:10px;">
                 Captured automatically from the bank's credit alert SMS — no manual entry.</div>`;
+        }
+
+        // Amount-unique attach: the bank credit matched this order ONLY because
+        // it was the single approvals invoice with this exact balance. Real
+        // money, likely this order — but the payer is unconfirmed until Taimur
+        // confirms (money inbox chip) or a screenshot pairs. Say so plainly.
+        if (isSms && s.match_reason === 'amount_unique_sms') {
+            html += `<div style="background:#FFFBEB; border:1px solid #FCD34D; color:#92400E; border-radius:8px; padding:8px 10px; font-size:12px; margin-bottom:10px;">
+                ⚠ Matched by AMOUNT only — this was the single open invoice with this balance. Confirm the payer once (NF Assistant money inbox) or wait for the customer's screenshot; approving is your call.</div>`;
         }
 
         if (isWa && s.image_url) {

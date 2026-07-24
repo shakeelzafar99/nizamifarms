@@ -486,18 +486,22 @@
             <option value="riders">Riders only</option>
             <option value="staff">Staff only</option>
           </select>
-          <select id="locationFilter" class="px-3 py-2 border border-gray-300 rounded-lg text-sm" onchange="filterByLocation()" title="Location">
+          <select id="locationFilter" class="px-3 py-2 border border-gray-300 rounded-lg text-sm" onchange="applyRowFilters()" title="Location">
             <option value="all" selected>All locations</option>
             <option value="onsite">On-site</option>
             <option value="remote">Remote</option>
             <option value="no_location">No location</option>
           </select>
-          <select id="statusFilter" class="px-3 py-2 border border-gray-300 rounded-lg text-sm" onchange="filterTableByStatus()" title="Status">
+          <select id="statusFilter" class="px-3 py-2 border border-gray-300 rounded-lg text-sm" onchange="applyRowFilters()" title="Status">
             <option value="all">All status</option>
             <option value="present">Present</option>
             <option value="late">Late</option>
             <option value="overtime">Overtime</option>
             <option value="absent">Absent</option>
+          </select>
+          <select id="bikeFilter" class="px-3 py-2 border border-gray-300 rounded-lg text-sm" onchange="applyRowFilters()" title="Vehicle">
+            <option value="all">All riders</option>
+            <option value="bike">Company bike</option>
           </select>
         </div>
       </div>
@@ -512,16 +516,14 @@
         <thead class="bg-gray-50">
           <tr>
             <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Employee</th>
-            <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">In → Out</th>
-            <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Location</th>
-            <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Meter</th>
-            <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Hours</th>
+            <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Day timeline</th>
+            <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Day</th>
             <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Actions</th>
           </tr>
         </thead>
         <tbody id="attBody" class="bg-white divide-y divide-gray-200">
           <tr>
-            <td colspan="6" class="px-4 py-8 text-center text-gray-500 text-sm">Loading attendance records...</td>
+            <td colspan="4" class="px-4 py-8 text-center text-gray-500 text-sm">Loading attendance records...</td>
           </tr>
         </tbody>
       </table>
@@ -553,12 +555,14 @@
             <th class="px-4 py-3 text-center text-xs font-semibold text-gray-500 uppercase">Late (mo)</th>
             <th class="px-4 py-3 text-center text-xs font-semibold text-emerald-600 uppercase">OT (mo)</th>
             <th class="px-4 py-3 text-center text-xs font-semibold text-amber-600 uppercase" title="Days he delivered but checked out at the office (came back)">Office CO</th>
+            <th class="px-4 py-3 text-center text-xs font-semibold text-cyan-700 uppercase" title="Company bike — check-IN violations: arrived after the ride-in deadline, no start meter from home, or a morning meter gap">In-flags</th>
+            <th class="px-4 py-3 text-center text-xs font-semibold text-amber-700 uppercase" title="Company bike — check-OUT violations: reached home late, meter locked, or manager had to unlock">Out-flags</th>
             <th class="px-4 py-3 text-center text-xs font-semibold text-purple-500 uppercase">Leave (bal)</th>
             <th class="px-4 py-3 text-center text-xs font-semibold text-red-500 uppercase">Absent (yr)</th>
           </tr>
         </thead>
         <tbody id="monthBody" class="bg-white divide-y divide-gray-100">
-          <tr><td colspan="9" class="px-4 py-8 text-center text-gray-400 text-sm">Loading…</td></tr>
+          <tr><td colspan="11" class="px-4 py-8 text-center text-gray-400 text-sm">Loading…</td></tr>
         </tbody>
       </table>
     </div>
@@ -625,6 +629,18 @@
     </div>
     <div id="homeValveWho" style="font-size:12px;color:#6b7280;margin-bottom:12px;"></div>
     <div id="homeValveInfo" style="font-size:12.5px;color:#374151;background:#F9FAFB;border:1px solid #F3F4F6;border-radius:8px;padding:10px 12px;margin-bottom:14px;line-height:1.6;"></div>
+
+    {{-- U5 — Unlock CHECK-IN (morning lock: past the ride-to-work deadline, or skipped the
+         home start once the lock is live). Harmless to grant while the lock config is off. --}}
+    <div id="homeValveCheckinSec" style="display:none;border:1px solid #F3F4F6;border-radius:8px;padding:12px;margin-bottom:12px;">
+      <div style="font-size:13px;font-weight:700;color:#111827;margin-bottom:2px;">Unlock check-in</div>
+      <div style="font-size:11px;color:#6b7280;margin-bottom:8px;">For a company-bike rider blocked at the door (arrived after his ride-in deadline, or no start meter from home). Opens his IN button for 10 minutes.</div>
+      <div id="homeValveCiActive" style="display:none;font-size:12px;font-weight:700;color:#92400E;background:#FEF3C7;border:1px solid #FDE68A;border-radius:6px;padding:6px 10px;margin-bottom:8px;"></div>
+      <textarea id="homeValveCiReason" rows="2" placeholder="Reason (required) — e.g. GPS broken, bike at mechanic…" style="width:100%;border:2px solid #d1d5db;border-radius:8px;padding:8px 10px;font-size:13px;resize:vertical;"></textarea>
+      <div style="display:flex;justify-content:flex-end;margin-top:8px;">
+        <button type="button" id="homeValveCiBtn" onclick="homeValveCheckinUnlock()" style="padding:8px 14px;border-radius:8px;border:none;background:#B45309;color:#fff;font-weight:700;cursor:pointer;">🔓 Unlock check-in</button>
+      </div>
+    </div>
 
     {{-- Checkout-from-anywhere unlock (rider still checked in, blocked by the checkout rule) --}}
     <div id="homeValveCheckoutSec" style="display:none;border:1px solid #F3F4F6;border-radius:8px;padding:12px;margin-bottom:12px;">
@@ -974,7 +990,7 @@
       <div style="display: flex; align-items: center; justify-content: space-between;">
         <div>
           <h2 style="font-size: 20px; font-weight: 600; color: #111827; margin: 0;">People &amp; Rider List</h2>
-          <p style="font-size: 14px; color: #6b7280; margin-top: 4px;"><b>Show in Attendance</b> = appears in attendance &amp; salary tracking. <b>Delivery Rider</b> = appears in the rider-assign lists on web &amp; mobile. These are independent — e.g. an office person can be shown in attendance but not be a delivery rider.</p>
+          <p style="font-size: 14px; color: #6b7280; margin-top: 4px;"><b>Show in Attendance</b> = appears in the attendance screens. <b>Show in Salary</b> = appears on the Payroll screen. <b>Delivery Rider</b> = appears in the rider-assign lists on web &amp; mobile. All independent — e.g. an office person can be on Payroll without appearing in attendance.</p>
         </div>
         <button onclick="closeCustomizeUserList()" style="color: #9ca3af; font-size: 28px; line-height: 1; border: none; background: none; cursor: pointer; padding: 0;" onmouseover="this.style.color='#4b5563'" onmouseout="this.style.color='#9ca3af'">
           ×
@@ -990,11 +1006,12 @@
             <th style="padding: 12px;">Employee</th>
             <th style="padding: 12px;">Role</th>
             <th style="padding: 12px; width: 150px; text-align:center;">Show in Attendance</th>
+            <th id="salaryVisHeader" style="padding: 12px; width: 130px; text-align:center; display:none;">Show in Salary</th>
             <th style="padding: 12px; width: 140px; text-align:center;">Delivery Rider</th>
           </tr>
         </thead>
         <tbody id="usersVisibilityTableBody">
-          <tr><td colspan="4" style="padding: 20px; text-align: center; color: #6b7280;">Loading...</td></tr>
+          <tr><td colspan="5" style="padding: 20px; text-align: center; color: #6b7280;">Loading...</td></tr>
         </tbody>
       </table>
     </div>
@@ -1128,6 +1145,8 @@ let currentTimeModalMode = null; // 'login' or 'logout'
 let allUsersVisibility = [];
 let visibilityChanges = {};
 let deliveryRiderChanges = {};
+let salaryVisChanges = {};
+let salaryToggleAvailable = false;
 
 // Initialize on page load
 document.addEventListener('DOMContentLoaded', async function() {
@@ -1398,7 +1417,7 @@ async function loadAttendanceForDate() {
     renderGraceBreachBanner(allAttendanceData);
   } catch(e) {
     console.error('Error loading attendance', e);
-    document.getElementById('attBody').innerHTML = '<tr><td colspan="6" class="px-4 py-8 text-center text-red-500 text-sm">Error loading data</td></tr>';
+    document.getElementById('attBody').innerHTML = '<tr><td colspan="4" class="px-4 py-8 text-center text-red-500 text-sm">Error loading data</td></tr>';
   }
 }
 
@@ -1479,11 +1498,12 @@ function renderAttendanceTable(data) {
   renderMeterAttention(data);
 
   if (!data || data.length === 0) {
-    body.innerHTML = '<tr><td colspan="6" class="px-4 py-8 text-center text-gray-500 text-sm">No attendance records found for this date</td></tr>';
+    body.innerHTML = '<tr><td colspan="4" class="px-4 py-8 text-center text-gray-500 text-sm">No attendance records found for this date</td></tr>';
     return;
   }
 
-  body.innerHTML = data.map(r => {
+  // ── Row renderer (unchanged content) — used for all three groups below.
+  const renderRow = (r) => {
     const hours = calculateHours(r.login_time, r.logout_time);
     // Prefer server-computed late/overtime (per-date + frozen-snapshot aware). Fall
     // back to local calc only if the server didn't send them (older cached responses).
@@ -1499,7 +1519,7 @@ function renderAttendanceTable(data) {
     const locationBadge = getLocationBadge(r);
     
     return `
-      <tr class="hover:bg-gray-50" style="border-left:3px solid ${attStatusColor(r, lateBy)}" data-status="${getRowStatus(r, lateBy, overtime)}" data-location="${locationBadge.type}">
+      <tr class="hover:bg-gray-50" style="border-left:3px solid ${attStatusColor(r, lateBy)}" data-status="${getRowStatus(r, lateBy, overtime)}" data-location="${locationBadge.type}" data-bike="${Number(r.company_bike) === 1 ? '1' : '0'}">
         <td class="px-4 py-3 text-sm font-medium">
           <button
             onclick="openTodayDetail(${r.user_id}, \`${(r.fullname || '').replace(/`/g, '')}\`)"
@@ -1519,27 +1539,18 @@ function renderAttendanceTable(data) {
           </div>
           ${attInlineContext(r)}
         </td>
-        <td class="px-4 py-3 text-sm whitespace-nowrap">
-          <span class="${r.login_time ? (lateBy.isLate ? 'text-red-600 font-medium' : 'text-gray-900') : 'text-gray-300'}">${r.login_time || '–'}</span>
-          <span class="text-gray-300 mx-1">→</span>
-          <span class="${r.logout_time ? 'text-gray-900' : 'text-gray-300'}">${r.logout_time || '–'}</span>
-          ${checkoutChip(r.checkout_info)}
+        <td class="px-4 py-3 text-sm" style="min-width:260px;">
+          ${dayTimelineCell(r, lateBy, locationBadge)}
         </td>
 
-        <!-- Location Badge Column -->
-        <td class="px-4 py-3 text-sm">
-          ${locationBadge.html}
-        </td>
-
-        <!-- Meter Column: "127 km 📷📷 details" + integrity flags -->
+        <!-- Day cell: meter (km + photos + gps audit) · hours, with ✎ meter + integrity flags -->
         <td class="px-4 py-3 text-sm" style="white-space:nowrap;">
-          <div>${getDistanceBadge(r)}
+          <div>${getDistanceBadge(r)}${hours !== '-' ? `<span style="color:#D1D5DB;margin:0 6px;">·</span><span style="color:#4B5563;">${hours}</span>` : ''}
             ${r.attendance_id ? `<button type="button" onclick="openMeterEdit(${r.attendance_id}, ${r.meter_start != null && r.meter_start !== '' ? Number(r.meter_start) : 'null'}, ${r.meter_end != null && r.meter_end !== '' ? Number(r.meter_end) : 'null'}, '${(r.fullname || '').replace(/'/g, "\\'").replace(/"/g, '&quot;')}')" title="Correct meter reading" style="margin-left:6px;font-size:11px;color:#2563EB;background:#EFF6FF;border:1px solid #BFDBFE;border-radius:5px;padding:1px 6px;cursor:pointer;">✎ meter</button>` : ''}
           </div>
           ${getMeterFlags(r)}
         </td>
 
-        <td class="px-4 py-3 text-sm ${hours === '-' ? 'text-gray-300' : 'text-gray-600'}">${hours}</td>
         <td class="px-4 py-3 text-sm">
           <div class="flex gap-2" style="position: relative; z-index: 5;">
             ${(!r.logout_time && !isOwnAttendanceRow(r.user_id)) ? `
@@ -1598,7 +1609,34 @@ function renderAttendanceTable(data) {
         </td>
       </tr>
     `;
-  }).join('');
+  };
+
+  // ── Group the day so the manager's eye lands on who actually worked. Order preserved
+  //    (controller sorts by name) within each group. A group header only appears when there
+  //    is more than one group, so an all-present day stays a clean flat list.
+  const onLeave = (r) => r.leave_request_id && ['approved', 'pending'].includes(String(r.leave_status || '').toLowerCase());
+  const working = [], absent = [], resting = [];
+  data.forEach(r => {
+    if (r.login_time || r.logout_time) working.push(r);
+    else if ((r.day_kind || 'working') === 'working' && !onLeave(r)) absent.push(r);
+    else resting.push(r);
+  });
+  // Issues float to the top of "Working today": riders whose day isn't clean sort first, name
+  // order preserved within each rank (Array.sort is stable). A fully green board = nothing on top.
+  const cleanRank = (r) => (r.day_checks && r.day_checks.is_clean) ? 1 : 0;
+  working.sort((a, b) => cleanRank(a) - cleanRank(b));
+  const groups = [
+    { label: 'Working today', rows: working },
+    { label: 'Absent', rows: absent },
+    { label: 'Not needed / off / leave', rows: resting },
+  ].filter(g => g.rows.length);
+  const showHeaders = groups.length > 1;
+  const groupHdr = (label, n) =>
+    `<tr class="att-group"><td colspan="4" style="background:#F3F4F6;font-size:11px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;color:#9CA3AF;padding:6px 16px;">${label} · ${n}</td></tr>`;
+
+  body.innerHTML = groups.map(g =>
+    (showHeaders ? groupHdr(g.label, g.rows.length) : '') + g.rows.map(renderRow).join('')
+  ).join('');
 }
 
 // Mark / unmark a rider as "not needed" for a day. Paid as present, never absent.
@@ -1692,7 +1730,9 @@ function attInlineContext(r) {
   if (mlate > 0) {
     const h = Math.floor(mlate / 60), m = mlate % 60;
     const txt = h > 0 ? `${h}h ${m}m` : `${m}m`;
-    bits.push(`<span title="Total late so far this month" style="display:inline-flex;align-items:center;gap:3px;font-size:11px;font-weight:600;color:#92400E;background:#FEF3C7;border:1px solid #FDE68A;border-radius:5px;padding:1px 6px;">⏰ ${txt} this mo</span>`);
+    // Month context is background info, not a today-alert — quiet gray text, no chip. Colour is
+    // reserved for things that need attention now (leave state, a year-absence threshold below).
+    bits.push(`<span title="Total late so far this month" style="font-size:11px;color:#9CA3AF;">⏰ ${txt} late this mo</span>`);
   }
   const ya = r.year_absent_days;
   if (ya != null && Number(ya) > 0) {
@@ -1836,14 +1876,14 @@ async function loadMonthTab() {
   const monthEl = document.getElementById('monthPicker');
   if (monthEl && !monthEl.value) monthEl.value = currentMonthValue();
   const body = document.getElementById('monthBody');
-  body.innerHTML = '<tr><td colspan="9" class="px-4 py-8 text-center text-gray-400 text-sm">Loading…</td></tr>';
+  body.innerHTML = '<tr><td colspan="11" class="px-4 py-8 text-center text-gray-400 text-sm">Loading…</td></tr>';
   try {
     const res = await fetch('/attendance/monthly-report?month=' + currentMonthValue());
     const json = await res.json();
     monthData = json.success ? (json.data || []) : [];
     renderMonthBody(monthData);
   } catch (e) {
-    body.innerHTML = '<tr><td colspan="9" class="px-4 py-8 text-center text-red-500 text-sm">Failed to load</td></tr>';
+    body.innerHTML = '<tr><td colspan="11" class="px-4 py-8 text-center text-red-500 text-sm">Failed to load</td></tr>';
   }
 }
 function fmtMinsShort(n) { n = Number(n) || 0; const h = Math.floor(n / 60), m = n % 60; return h > 0 ? `${h}h ${m}m` : `${m}m`; }
@@ -1860,7 +1900,7 @@ function renderMonthBody(data) {
     const c0 = data[0] || {};
     lbl.textContent = (c0.cycle_start && c0.cycle_end) ? '(' + fmtCycleShort(c0.cycle_start) + ' → ' + fmtCycleShort(c0.cycle_end) + ')' : '';
   }
-  if (!data.length) { body.innerHTML = '<tr><td colspan="9" class="px-4 py-8 text-center text-gray-400 text-sm">No data for this month</td></tr>'; return; }
+  if (!data.length) { body.innerHTML = '<tr><td colspan="11" class="px-4 py-8 text-center text-gray-400 text-sm">No data for this month</td></tr>'; return; }
   const sorted = [...data].sort((a, b) => String(a.fullname || '').localeCompare(String(b.fullname || '')));
   // A clickable count → opens the exact-dates drill-down. Zero shows a muted dash so the
   // eye skips it. stopPropagation keeps the row's own "open 30-day detail" from also firing.
@@ -1907,10 +1947,55 @@ function renderMonthBody(data) {
         : `<span style="display:inline-block;padding:2px 8px;border-radius:5px;font-size:12px;font-weight:600;${lateStyle}">${fmtMinsShort(late)}</span>`}</td>
       ${otCell}
       ${ocoCell}
+      ${violCell(u.checkin_violation_days, '#0E7490', uid, nm, 'in')}
+      ${violCell(u.checkout_violation_days, '#B45309', uid, nm, 'out')}
       ${leaveBalCell(u, uid, nm)}
       ${numCell(u.absent_days_year, '#B91C1C', uid, nm, 'year_absent')}
     </tr>`;
   }).join('');
+}
+
+// U5/U4 — company-bike violation count cell (In-flags / Out-flags). Click → the per-date
+// detail popup rendered from the payload (no extra fetch).
+function violCell(val, color, uid, nm, kind) {
+  const n = Number(val) || 0;
+  if (n <= 0) return `<td class="px-4 py-3 text-sm" style="text-align:center;color:#D1D5DB;">–</td>`;
+  return `<td class="px-4 py-3 text-sm" style="text-align:center;">
+    <button type="button" onclick="event.stopPropagation(); showViolationDetail(${uid}, '${nm}', '${kind}')"
+      title="Click to see each day and what was breached"
+      style="display:inline-block;padding:2px 8px;border-radius:5px;font-size:12px;font-weight:700;border:none;cursor:pointer;background:${kind === 'in' ? '#CFFAFE' : '#FEF3C7'};color:${color};">${n}</button>
+  </td>`;
+}
+
+// Human labels for the violation codes coming from the server detail maps.
+const VIOLATION_LABELS = {
+  late_vs_eta: '⏱ arrived after the ride-in deadline',
+  no_home_start: '🏠 no start meter from home',
+  meter_gap: '🛑 morning meter gap vs last night',
+  completed_late: '🌙 reached home late',
+  late_locked: '🔒 never confirmed home — meter locked',
+  unlocked: '🔓 manager had to unlock meter entry',
+};
+
+// The per-date violation popup (reuses the date-breakdown modal shell, client-side only).
+function showViolationDetail(uid, name, kind) {
+  const u = monthData.find(x => String(x.user_id) === String(uid)) || {};
+  const detail = (kind === 'in' ? u.checkin_violation_detail : u.checkout_violation_detail) || {};
+  const modal = document.getElementById('dateBreakdownModal');
+  document.getElementById('bdTitle').textContent = `${kind === 'in' ? '🏍 Check-in violations' : '🌙 Check-out violations'} — ${name}`;
+  document.getElementById('bdSub').textContent = kind === 'in'
+    ? 'company bike · morning: home meter + ride-in deadline'
+    : 'company bike · evening: ride home + closing meter';
+  const entries = Object.entries(detail).sort((a, b) => a[0].localeCompare(b[0]));
+  const bodyEl = document.getElementById('bdBody');
+  bodyEl.innerHTML = entries.length
+    ? entries.map(([date, issues]) =>
+        `<div style="display:flex;gap:10px;align-items:baseline;padding:8px 4px;border-bottom:1px solid #F1F5F9;">
+          <span style="font-size:13px;font-weight:700;color:#111827;min-width:92px;">${date}</span>
+          <span style="font-size:12.5px;color:#6B7280;">${(issues || []).map(i => VIOLATION_LABELS[i] || i).join(' · ')}</span>
+        </div>`).join('')
+    : '<div style="padding:24px;text-align:center;color:#9CA3AF;font-size:13px;">No detail available.</div>';
+  modal.style.display = 'flex';
 }
 // The "Leave (bal)" cell: remaining leaves up top (the number a manager decides on), with taken
 // context + where the extra/missing ones came from. Click → full balance + history summary.
@@ -2468,6 +2553,16 @@ function renderGraceBreachBanner(data) {
       const which = (missStart && missEnd) ? 'start & end' : (missStart ? 'start' : 'end');
       chips.push('<span style="font-size:12px;font-weight:700;color:#92400E;background:#FEF3C7;border:1px solid #FDE68A;border-radius:6px;padding:1px 7px;">⛽ no meter reading (' + which + ' missing)</span>');
     }
+    // U5 — morning breaches: start typed at the office (skipped home) / reading doesn't
+    // match last night within the tolerance. Same banner, same "manager sees it" purpose.
+    const wj = r.work_journey;
+    if (wj && checkedIn && wj.state === 'no_home_start') {
+      chips.push('<span style="font-size:12px;font-weight:700;color:#92400E;background:#FEF3C7;border:1px solid #FDE68A;border-radius:6px;padding:1px 7px;">🏠 no home start' + (wj.recorded_at ? ' (typed at office ' + wj.recorded_at + ')' : '') + '</span>');
+    }
+    if (wj && wj.continuity && wj.continuity.breach) {
+      chips.push('<span style="font-size:12px;font-weight:700;color:#B91C1C;background:#FEE2E2;border:1px solid #FCA5A5;border-radius:6px;padding:1px 7px;">🏠 meter gap ' + (wj.continuity.gap > 0 ? '+' : '') + wj.continuity.gap + ' km</span>' +
+        '<span style="font-size:11.5px;color:#6B7280;margin-left:6px;">morning ' + esc(r.meter_start) + ' vs last closing ' + esc(wj.continuity.prev) + ' (' + esc(wj.continuity.prev_date) + ')</span>');
+    }
     if (chips.length) rows.push({name: r.fullname || r.name || 'Rider', chips});
   });
 
@@ -2484,13 +2579,15 @@ function renderGraceBreachBanner(data) {
 
 // Where the rider checked out (manager view). Gray = office, green = at a customer,
 // amber ⚠ = that delivery point was away from the address's saved pin, amber = elsewhere.
-function checkoutChip(info) {
+// checkoutChipSpan returns just the coloured <span> (for inline use on the OUT line);
+// checkoutChip wraps it in a spaced block (kept for any legacy caller).
+function checkoutChipSpan(info) {
   if (!info || !info.status) return '';
   let bg, fg, bd, text, title = '';
   if (info.status === 'office') {
     if (info.office_exception) {
       // Non-bike rider who delivered but came back to the office — an exception, flag amber.
-      bg = '#FEF3C7'; fg = '#92400E'; bd = '#FDE68A'; text = '⚠ ⇢ At office';
+      bg = '#FEF3C7'; fg = '#92400E'; bd = '#FDE68A'; text = '⇢ At office';
       title = 'Checked out at the office after delivering — he came back (exception)';
     } else {
       bg = '#F3F4F6'; fg = '#4B5563'; bd = '#E5E7EB'; text = '⇢ ' + info.label;
@@ -2498,16 +2595,213 @@ function checkoutChip(info) {
   } else if (info.status === 'delivery') {
     if (info.pin_away) {
       bg = '#FEF3C7'; fg = '#92400E'; bd = '#FDE68A';
-      text = '⚠ ' + info.label + (info.pin_distance_m != null ? ' · ' + info.pin_distance_m + 'm off pin' : '');
+      text = '⇢ ' + info.label + (info.pin_distance_m != null ? ' · ' + info.pin_distance_m + 'm off pin' : '');
       title = 'Checked out at the delivery point, ' + (info.pin_distance_m || '?') + ' m from the saved address pin';
     } else {
-      bg = '#DCFCE7'; fg = '#15803D'; bd = '#86EFAC'; text = '⇢ ' + info.label;
+      // Checking out at a delivery point is NORMAL — gray/info, not green. One color language:
+      // color is spent on things that need attention (amber/red), never on the expected case.
+      bg = '#F3F4F6'; fg = '#4B5563'; bd = '#E5E7EB'; text = '⇢ ' + info.label;
+      title = 'Checked out at the delivery point';
     }
   } else {
     bg = '#FEF3C7'; fg = '#92400E'; bd = '#FDE68A'; text = '⇢ ' + info.label;
   }
   const esc = s => String(s).replace(/</g, '&lt;').replace(/"/g, '&quot;');
-  return `<div style="margin-top:3px;"><span title="${esc(title)}" style="display:inline-flex;align-items:center;font-size:11px;font-weight:600;color:${fg};background:${bg};border:1px solid ${bd};border-radius:5px;padding:1px 6px;white-space:normal;">${esc(text)}</span></div>`;
+  return `<span title="${esc(title)}" style="display:inline-flex;align-items:center;font-size:11px;font-weight:600;color:${fg};background:${bg};border:1px solid ${bd};border-radius:5px;padding:1px 6px;white-space:normal;">${esc(text)}</span>`;
+}
+function checkoutChip(info) {
+  const span = checkoutChipSpan(info);
+  return span ? `<div style="margin-top:3px;">${span}</div>` : '';
+}
+
+// ── The "Day timeline" cell: three labeled lines so IN / OUT / HOME are never
+//    confused. Each event carries its OWN time and place. The HOME line (company-bike
+//    going-home journey) surfaces the ETA, the actual arrival, and when the meter was
+//    entered — data that used to hide inside the bypass modal.
+function tlLabel(t, color) {
+  return `<span style="display:inline-block;width:38px;flex:none;font-size:9.5px;font-weight:800;letter-spacing:.05em;color:${color || '#9CA3AF'};">${t}</span>`;
+}
+// The Day-timeline cell now defaults to a COMPACT line (IN → OUT + "✓ day clear" or the day's
+// issue chips). A clean day stays one line; a day with issues opens to the full START/IN/OUT/HOME
+// automatically. Either way a "details ▸ / collapse ▴" toggle is always there — nothing is lost.
+function dayTimelineCell(r, lateBy, locationBadge) {
+  const full = buildFullTimeline(r, lateBy, locationBadge);
+  // Absent / not-needed rows never worked → just the minimal full line, no toggle.
+  if (!r.login_time && !r.logout_time) return full;
+
+  const dc = r.day_checks;
+  const clean = !!(dc && dc.is_clean);
+  const uid = r.user_id;
+  const compact = buildCompactTimeline(r, lateBy);
+  const toggle = (label) => `<button type="button" onclick="toggleTimeline(${uid})" style="background:none;border:none;padding:0;margin-left:8px;font-size:10.5px;color:#9CA3AF;cursor:pointer;">${label}</button>`;
+  return `<div id="tlc_${uid}" style="display:${clean ? 'block' : 'none'};">${compact}${toggle('details ▸')}</div>` +
+         `<div id="tlf_${uid}" style="display:${clean ? 'none' : 'block'};">${full}<div style="margin-top:2px;">${toggle('collapse ▴')}</div></div>`;
+}
+
+// Toggle a single row between the compact and the full timeline (no re-render).
+function toggleTimeline(uid) {
+  const c = document.getElementById('tlc_' + uid), f = document.getElementById('tlf_' + uid);
+  if (!c || !f) return;
+  const showFull = f.style.display === 'none';
+  f.style.display = showFull ? 'block' : 'none';
+  c.style.display = showFull ? 'none' : 'block';
+}
+
+// Compact one-liner: IN → OUT, then either "✓ day clear" or the day's issue chips.
+function buildCompactTimeline(r, lateBy) {
+  const dc = r.day_checks;
+  const inT = r.login_time
+    ? `<span style="font-size:13px;font-weight:600;color:${lateBy.isLate ? '#B91C1C' : '#111827'};">${r.login_time}</span>`
+    : '<span style="font-size:13px;color:#D1D5DB;">–</span>';
+  const outT = r.logout_time
+    ? `<span style="font-size:13px;font-weight:600;color:#111827;">${r.logout_time}</span>`
+    : '<span style="font-size:12px;color:#9CA3AF;">still in</span>';
+  const chips = (dc && dc.is_clean)
+    ? '<span style="font-size:11px;font-weight:700;color:#15803D;background:#E9F7EE;border:1px solid #BFE8CC;border-radius:5px;padding:0 6px;">✓ day clear</span>'
+    : (dc && dc.chips || []).map(c => {
+        const [bg, fg, bd] = c.tone === 'red' ? ['#FDECEC', '#B91C1C', '#F5C6C6'] : ['#FDF3E3', '#B45309', '#F3DFB9'];
+        return `<span style="font-size:11px;font-weight:700;color:${fg};background:${bg};border:1px solid ${bd};border-radius:5px;padding:0 6px;">${c.label}</span>`;
+      }).join(' ');
+  return `<div style="display:flex;align-items:baseline;gap:6px;flex-wrap:wrap;">${inT}<span style="color:#D1D5DB;">→</span>${outT}${chips ? ' ' + chips : ''}</div>`;
+}
+
+function buildFullTimeline(r, lateBy, locationBadge) {
+  const lines = [];
+
+  // START — U5 morning meter at home + the ride-to-work deadline. Live line while he is
+  // still on the way; after check-in it collapses into the IN line's verdict.
+  const start = startTimelineLine(r);
+  if (start) lines.push(start);
+
+  // IN — check-in time + WHERE he checked in (the old separate column, now labeled in
+  // place) + the shift-late tag + the ride-in ETA verdict for bike riders.
+  if (r.login_time) {
+    const lateTag = lateBy.isLate
+      ? `<span style="font-size:10.5px;font-weight:600;color:#B45309;">late ${lateBy.duration}</span>` : '';
+    const spot = locationBadge && locationBadge.html && locationBadge.type !== 'no_location'
+      ? locationBadge.html
+      : '<span style="font-size:10.5px;color:#9CA3AF;">no location</span>';
+    lines.push(
+      `<div style="display:flex;align-items:baseline;gap:6px;flex-wrap:wrap;">${tlLabel('IN')}` +
+      `<span style="font-size:13px;font-weight:600;color:${lateBy.isLate ? '#B91C1C' : '#111827'};">${r.login_time}</span>` +
+      `${spot}${lateTag}${inEtaVerdict(r)}</div>`);
+  } else {
+    lines.push(`<div style="display:flex;align-items:baseline;gap:3px;">${tlLabel('IN')}<span style="font-size:13px;color:#D1D5DB;">–</span></div>`);
+  }
+
+  // OUT — checkout time + WHERE he checked out (the chip that used to float unlabeled).
+  if (r.logout_time) {
+    const co = checkoutChipSpan(r.checkout_info);
+    lines.push(
+      `<div style="display:flex;align-items:baseline;gap:6px;flex-wrap:wrap;">${tlLabel('OUT')}` +
+      `<span style="font-size:13px;font-weight:600;color:#111827;">${r.logout_time}</span>${co}</div>`);
+  } else if (r.login_time) {
+    lines.push(`<div style="display:flex;align-items:baseline;gap:3px;">${tlLabel('OUT')}<span style="font-size:12px;color:#9CA3AF;">still in</span></div>`);
+  }
+
+  // HOME — company-bike going-home journey (only when one is armed).
+  const home = homeTimelineLine(r);
+  if (home) lines.push(home);
+
+  return lines.join('');
+}
+
+// U5 — the START line: ALWAYS visible for a company-bike rider who has a morning journey, so
+// "what ETA was he given vs what did he do" reads on the row itself, not only inside the bypass
+// modal. Live (riding/overdue), the office-typed "no home start", and the clean completed home
+// start all render; a meter-continuity breach appends its chip to whichever line shows.
+function startTimelineLine(r) {
+  const wj = r.work_journey;
+  if (!wj) return '';
+  const nm = String(r.fullname || '').replace(/"/g, '&quot;').replace(/'/g, "\\'");
+  const open = `onclick="openHomeValve(${r.user_id}, '${nm}')" title="Click to manage (Rider bypasses)"`;
+  const wrap = (inner) =>
+    `<div ${open} style="cursor:pointer;display:flex;align-items:baseline;gap:5px;flex-wrap:wrap;">${tlLabel('START', '#0E7490')}` +
+    `<span style="font-size:11px;display:inline-flex;gap:5px;flex-wrap:wrap;align-items:baseline;">${inner}</span></div>`;
+  const sep = '<span style="color:#D1D5DB;">·</span>';
+  const contChip = (wj.continuity && wj.continuity.breach)
+    ? `${sep}<span style="color:#B91C1C;font-weight:700;" title="Morning reading vs last closing meter (${wj.continuity.prev}) differs by ${wj.continuity.gap} km">meter gap ${wj.continuity.gap > 0 ? '+' : ''}${wj.continuity.gap} km</span>` : '';
+  // "due 11:25 (11.8 km · ETA 23m + 10m)" — the ETA plus the grace so the deadline math is visible.
+  const dueMeta = () => {
+    const meta = [];
+    if (wj.distance_km != null) meta.push(wj.distance_km + ' km');
+    if (wj.eta_min != null) meta.push('ETA ' + wj.eta_min + 'm' + (wj.buffer_min ? ' + ' + wj.buffer_min + 'm' : ''));
+    return 'due ' + (wj.expected_by || '—') + (meta.length ? ' (' + meta.join(' · ') + ')' : '');
+  };
+  const homeTime = wj.recorded_at ? '<b>' + wj.recorded_at + '</b>' : '✓';
+
+  if (wj.state === 'riding' || wj.state === 'overdue') {
+    const late = wj.state === 'overdue' ? `${sep}<span style="color:#B91C1C;font-weight:700;">${wj.minutes_late ? '+' + wj.minutes_late + 'm ' : ''}overdue</span>` : '';
+    return wrap(
+      `<span style="color:#065F46;font-weight:600;">${homeTime} 🏠 at home</span>${sep}` +
+      `<span style="color:#6B7280;">riding — ${dueMeta()}</span>${late}${contChip}`);
+  }
+  if (wj.state === 'no_home_start') {
+    const how = wj.recorded_at ? `typed at office ${wj.recorded_at}` : 'no start meter';
+    return wrap(`<span style="color:#B45309;font-weight:700;">no home start</span>${sep}<span style="color:#6B7280;">${how}</span>${contChip}`);
+  }
+  // Home start recorded (checked in on time / late, OR not yet checked in with no timer) —
+  // ALWAYS show it: time + place + the deadline he was given.
+  const noTimer = !wj.expected_by;
+  const dueTxt = noTimer ? '<span style="color:#9CA3AF;">riding (no timer)</span>' : `<span style="color:#6B7280;">${dueMeta()}</span>`;
+  return wrap(`<span style="color:#065F46;font-weight:600;">${homeTime} 🏠 at home</span>${sep}${dueTxt}${contChip}`);
+}
+
+// U5 — small verdict on the IN line for a bike rider who armed a morning deadline:
+// "✓ before 07:45" or "+12m past 07:45". Empty for everyone else.
+function inEtaVerdict(r) {
+  const wj = r.work_journey;
+  if (!wj || !r.login_time || !wj.expected_by) return '';
+  if (wj.state === 'arrived_late') {
+    return `<span style="font-size:10.5px;font-weight:700;color:#B91C1C;" title="Arrived after the ride-to-work deadline">+${wj.minutes_late || '?'}m past ${wj.expected_by}</span>`;
+  }
+  if (wj.state === 'arrived_on_time') {
+    return `<span style="font-size:10.5px;font-weight:600;color:#15803D;" title="Arrived within the ride-to-work deadline">✓ before ${wj.expected_by}</span>`;
+  }
+  return '';
+}
+
+// The HOME line: "due 19:03 (15.6 km · ETA 34m) · arrived 18:58 ✓ · meter 18:53".
+// Clickable → the same Rider-bypasses / valve modal as the meter chip. Returns '' for
+// non-bike riders and anyone without an armed journey.
+function homeTimelineLine(r) {
+  const hj = r.home_journey;
+  if (!hj) return '';
+
+  const meta = [];
+  if (hj.distance_km != null) meta.push(hj.distance_km + ' km');
+  if (hj.eta_min != null) meta.push('ETA ' + hj.eta_min + 'm');
+  const dueTxt = 'due ' + (hj.expected_by || '—') + (meta.length ? ' (' + meta.join(' · ') + ')' : '');
+
+  let arrTxt, arrColor;
+  if (hj.arrived_at) {
+    const late = hj.minutes_late ? ` +${hj.minutes_late}m` : '';
+    const confirmed = (hj.arrival_source && hj.arrival_source !== 'manual') ? ' ✓' : '';
+    arrTxt = 'arrived ' + hj.arrived_at + confirmed + late;
+    arrColor = hj.minutes_late ? '#B45309' : '#15803D';
+  } else if (hj.state === 'late_locked') {
+    arrTxt = 'not home · locked' + (hj.minutes_late ? ' +' + hj.minutes_late + 'm' : '');
+    arrColor = '#B91C1C';
+  } else if (hj.state === 'unlocked') {
+    arrTxt = 'unlocked by manager';
+    arrColor = '#B45309';
+  } else {
+    arrTxt = 'riding…';
+    arrColor = '#6B7280';
+  }
+
+  const parts = [
+    `<span style="color:#6B7280;">${dueTxt}</span>`,
+    `<span style="color:${arrColor};font-weight:600;">${arrTxt}</span>`,
+  ];
+  if (hj.has_meter) {
+    parts.push(`<span style="color:#166534;font-weight:600;">meter ${hj.recorded_at ? hj.recorded_at : '✓'}</span>`);
+  }
+  const sep = '<span style="color:#D1D5DB;">·</span>';
+  const nm = String(r.fullname || '').replace(/"/g, '&quot;').replace(/'/g, "\\'");
+  return `<div onclick="openHomeValve(${r.user_id}, '${nm}')" title="Click to manage the home meter / bypass"` +
+    ` style="cursor:pointer;display:flex;align-items:baseline;gap:5px;flex-wrap:wrap;margin-top:1px;">${tlLabel('HOME', '#6D28D9')}` +
+    `<span style="font-size:11px;display:inline-flex;gap:5px;flex-wrap:wrap;align-items:baseline;">${parts.join(sep)}</span></div>`;
 }
 
 function getMeterFlags(record) {
@@ -2613,6 +2907,35 @@ function getHomeJourneyChip(record) {
   return `<span onclick="openHomeValve(${record.user_id}, '${nm}')" style="cursor:pointer;display:inline-flex;align-items:center;gap:3px;padding:1px 6px;border-radius:5px;font-size:11px;font-weight:600;background:${bg};color:${fg};border:1px solid ${bd};" title="${title}">${txt}</span>`;
 }
 
+// ⛽ / 📡 verdict ticks for the Day cell. Reads day_checks (server) — the tick's colour IS the
+// verdict and the tick IS the link to its modal. Meter tick is hidden for riders who carry no
+// meter (management with no readings); GPS tick shows gray "–" when there's nothing to judge.
+function meterGpsTicks(record, nmEsc) {
+  const dc = record.day_checks;
+  if (!dc) return ''; // didn't work today
+  const esc = s => String(s == null ? '' : s).replace(/"/g, '&quot;');
+  const btn = (fn, title, bg, fg, bd, txt) =>
+    `<button type="button" onclick="${fn}" title="${esc(title)}" style="margin-left:7px;vertical-align:middle;cursor:pointer;font-size:11px;font-weight:700;border-radius:5px;padding:1px 6px;background:${bg};color:${fg};border:1px solid ${bd};">${txt}</button>`;
+  const out = [];
+
+  // ⛽ meter — hidden when the rider carries no meter at all (e.g. management).
+  const meterRelevant = record.meter_start != null || record.meter_end != null || /rider/i.test(record.role_name || '');
+  if (meterRelevant) {
+    const fn = `showMeterDetail(${record.user_id}, '${nmEsc}', '${record.attendance_date}')`;
+    out.push(dc.meter_ok
+      ? btn(fn, 'Meter clean — both readings, right place, no bypass. Click for the day’s meter story.', '#E9F7EE', '#15803D', '#BFE8CC', '⛽ ✓')
+      : btn(fn, (dc.meter_issues || []).join(' · ') || 'Meter needs review', '#FDF3E3', '#B45309', '#F3DFB9', '⛽ ⚠'));
+  }
+  // 📡 GPS
+  const gfn = `showGpsAudit(${record.user_id}, '${nmEsc}', '${record.attendance_date}')`;
+  out.push(dc.gps_ok === true
+    ? btn(gfn, 'GPS on while riding (' + dc.gps_worst + '%). Click for phases.', '#E9F7EE', '#15803D', '#BFE8CC', '📡 ✓')
+    : dc.gps_ok === false
+    ? btn(gfn, dc.gps_note || 'GPS gaps while moving', '#FDF3E3', '#B45309', '#F3DFB9', '📡 ⚠')
+    : btn(gfn, 'Not enough GPS to judge', '#F3F4F6', '#9CA3AF', '#E5E7EB', '📡 –'));
+  return out.join('');
+}
+
 /**
  * ⭐ Get distance badge HTML showing meter, road distance (primary), and GPS distance
  */
@@ -2629,10 +2952,11 @@ function getDistanceBadge(record) {
   const hasGps = record.gps_distance !== null && record.gps_distance !== undefined;
   const gpsReadings = record.gps_readings_count || 0;
 
-  const details = `<button type="button"
-    onclick="showGpsAudit(${record.user_id}, '${(record.fullname || '').replace(/'/g, "\\'")}', '${record.attendance_date}')"
-    style="background:none;border:none;padding:0;margin-left:6px;font-size:11px;font-weight:600;color:#2563EB;cursor:pointer;text-decoration:underline;vertical-align:middle;"
-    title="Road + GPS distance and the tracking audit">details</button>`;
+  const nmEsc = (record.fullname || '').replace(/'/g, "\\'");
+  // ⛽ / 📡 VERDICT TICKS — the tick IS the link. Green ✓ = nothing to open; amber ⚠ = worth a
+  // click; gray – = can't judge. Verdict comes from day_checks (server, one source of truth), so
+  // the tick can never disagree with the modal it opens.
+  const details = meterGpsTicks(record, nmEsc);
 
   if (hasMeter) {
     return `<span style="font-size:13px;font-weight:600;color:#111827;vertical-align:middle;">${record.meter_distance} km</span>${getMeterPhotoIcons(record)}${details}`;
@@ -2655,42 +2979,26 @@ function getDistanceBadge(record) {
   return '<span style="color:#D1D5DB;font-size:12px;">–</span>';
 }
 
-function filterTableByStatus() {
-  const filter = document.getElementById('statusFilter').value;
-  const rows = document.querySelectorAll('#attBody tr[data-status]');
-  
-  rows.forEach(row => {
-    if (filter === 'all') {
-      row.style.display = '';
-    } else {
-      const status = row.getAttribute('data-status');
-      row.style.display = status === filter ? '' : 'none';
-    }
-  });
-}
+// ⭐ ONE filter pass that COMPOSES status + location + vehicle — a row shows only if it passes
+// ALL active filters (the old separate functions overwrote each other; the last one won). Group
+// headers hide whenever any filter is active so no header floats above an empty group.
+function applyRowFilters() {
+  const status = (document.getElementById('statusFilter') || {}).value || 'all';
+  const location = (document.getElementById('locationFilter') || {}).value || 'all';
+  const bike = (document.getElementById('bikeFilter') || {}).value || 'all';
+  const anyActive = status !== 'all' || location !== 'all' || bike !== 'all';
 
-/**
- * Filter table by location type
- */
-function filterByLocation() {
-  const filter = document.getElementById('locationFilter').value;
-  const rows = document.querySelectorAll('#attBody tr[data-location]');
-  
-  let visibleCount = 0;
-  
-  rows.forEach(row => {
-    const location = row.getAttribute('data-location');
-    
-    if (filter === 'all' || filter === location) {
-      row.style.display = '';
-      visibleCount++;
-    } else {
-      row.style.display = 'none';
-    }
+  document.querySelectorAll('#attBody tr[data-status]').forEach(row => {
+    const okStatus = status === 'all' || row.getAttribute('data-status') === status;
+    const okLoc = location === 'all' || row.getAttribute('data-location') === location;
+    const okBike = bike === 'all' || (bike === 'bike' && row.getAttribute('data-bike') === '1');
+    row.style.display = (okStatus && okLoc && okBike) ? '' : 'none';
   });
-
-  console.log(`Showing ${visibleCount} records with filter: ${filter}`);
+  document.querySelectorAll('#attBody tr.att-group').forEach(h => { h.style.display = anyActive ? 'none' : ''; });
 }
+// Back-compat aliases (any other caller / older cached handler keeps working).
+function filterTableByStatus() { applyRowFilters(); }
+function filterByLocation() { applyRowFilters(); }
 
 function updateSummaryCards(data) {
   let present = 0, onTime = 0, late = 0, overtime = 0, onLeave = 0, absent = 0;
@@ -2709,17 +3017,23 @@ function updateSummaryCards(data) {
     // If has attendance
     else if (r.login_time) {
       present++;
-      const shift = r.shift_start || '09:00';
-      if (r.login_time <= shift) {
-        onTime++;
-      } else {
-        late++;
-      }
+      // ⭐ Late / Overtime follow the PAYROLL rule exactly: the frozen per-date snapshot
+      // (late_minutes / overtime_minutes) — the SAME source the row and the salary calc use
+      // (ShiftResolutionService::sumLateOvertimeMinutes). This makes the tile count agree with
+      // the rows and with payroll; the naive login<=shift compare could disagree (grace, a
+      // shift changed after the fact, or the frozen snapshot differing from today's shift).
+      // Half-day already handled above (never late / never OT). Fall back to the shift compare
+      // only when the snapshot is absent (older cached response).
+      const tLate = (r.late_minutes != null)
+        ? (Number(r.late_minutes) > 0)
+        : (r.login_time > ((r.expected_shift_start ? String(r.expected_shift_start).slice(0, 5) : null) || r.shift_start || '09:00'));
+      if (tLate) { late++; } else { onTime++; }
 
       // Start-only shifts (no end) never count as overtime — don't invent 17:00.
-      if (r.logout_time && r.shift_end && r.logout_time > r.shift_end) {
-        overtime++;
-      }
+      const tOt = (r.overtime_minutes != null)
+        ? (Number(r.overtime_minutes) > 0)
+        : (!!r.logout_time && !!r.shift_end && r.logout_time > r.shift_end);
+      if (tOt) { overtime++; }
     }
     // Absent ONLY on a genuine working day. A no-login day that's a weekly off, a
     // public holiday, or before the rider's hire date is not an absence.
@@ -2912,16 +3226,44 @@ function openHomeValve(userId, name) {
   const rec = (window.__attRows || {})[userId];
   if (!rec) return;
   const hj = rec.home_journey || null;
+  const wj = rec.work_journey || null;
   const cu = rec.checkout_unlock || null;
   window.__homeValveAttId = rec.attendance_id || null;
+  window.__homeValveUserId = userId;
   const dateVal = document.getElementById('tableDate') ? document.getElementById('tableDate').value : '';
   document.getElementById('homeValveWho').textContent = (name || '') + (dateVal ? ' · ' + dateVal : '');
 
   const bits = [];
   if (!rec.login_time) {
-    bits.push('Not checked in on this day — <b>nothing to bypass</b>.');
-    bits.push('Bypasses apply while someone is ON DUTY (unlock checkout from anywhere when they forgot to check out) or on a company-bike ride home (unlock / enter the home meter).');
-    bits.push('To fix a missed day, use ➕ / ✏️ (mark or edit times) instead.');
+    bits.push('Not checked in on this day.');
+    if (!wj) {
+      bits.push('Bypasses apply while someone is ON DUTY (unlock checkout from anywhere when they forgot to check out) or on a company-bike journey (morning check-in unlock, home-meter unlock).');
+      bits.push('To fix a missed day, use ➕ / ✏️ (mark or edit times) instead.');
+    }
+  }
+  // U5 — morning-start summary (bike riders): the meter-at-home, the ride-in deadline,
+  // and how the arrival compared to it.
+  if (wj) {
+    if (wj.recorded_at && wj.source === 'home') {
+      bits.push(`Start meter at home <b>${wj.recorded_at}</b>${wj.distance_km != null ? ' · ' + wj.distance_km + ' km to office' : ''}`);
+    } else if (wj.recorded_at) {
+      bits.push(`<span style="color:#B45309;font-weight:700;">No home start</span> — start meter typed at the office ${wj.recorded_at}`);
+    } else if (rec.login_time) {
+      bits.push('<span style="color:#B45309;font-weight:700;">No home start</span> — no start meter recorded');
+    }
+    if (wj.expected_by) {
+      bits.push(`Due at office by <b>${wj.expected_by}</b>` +
+        (wj.state === 'arrived_late' ? ` — <span style="color:#B91C1C;font-weight:700;">arrived +${wj.minutes_late || '?'}m late</span>`
+          : wj.state === 'arrived_on_time' ? ' — <span style="color:#15803D;font-weight:700;">arrived on time ✓</span>'
+          : wj.state === 'overdue' ? ` — <span style="color:#B91C1C;font-weight:700;">not arrived, +${wj.minutes_late || '?'}m over</span>`
+          : ' — riding'));
+    }
+    if (wj.continuity && wj.continuity.breach) {
+      bits.push(`<span style="color:#B91C1C;font-weight:700;">Meter gap ${wj.continuity.gap > 0 ? '+' : ''}${wj.continuity.gap} km</span> vs last closing ${wj.continuity.prev} (${wj.continuity.prev_date})`);
+    }
+    if (wj.checkin_unlock && wj.checkin_unlock.active) {
+      bits.push(`Check-in unlock active until <b>${wj.checkin_unlock.until}</b> (${wj.checkin_unlock.by_name || 'manager'})`);
+    }
   }
   if (rec.login_time && !rec.logout_time) bits.push(`Checked in <b>${String(rec.login_time).slice(0, 5)}</b> — still on duty`);
   if (rec.logout_time) bits.push(`Checked out <b>${String(rec.logout_time).slice(0, 5)}</b>`);
@@ -2934,7 +3276,49 @@ function openHomeValve(userId, name) {
     if (hj.reason) bits.push(`Reason: “${hj.reason}”`);
     if (hj.breach) bits.push(`Bypass breach: <b>${homeBreachLabel(hj.breach)}</b>`);
   }
+  // Blocked-checkout context — WHY he's stuck (the reason this modal usually gets opened):
+  // he pressed OUT and the location/time rule refused it. Shown prominently at the top with
+  // the reason, distance and a link that maps his spot vs the delivery. Same block the mobile
+  // bypass sheet renders (shared server formatter).
+  const ca = rec.checkout_attempt || null;
+  if (ca) {
+    const when = ca.at ? String(ca.at).slice(11, 16) : '';
+    const tries = (ca.count && ca.count > 1) ? ' · tried ' + ca.count + '×' : '';
+    const settled = !ca.still_open; // he has since checked out (via bypass or a valid spot)
+    const mapLink = ca.maps_url
+      ? ' · <a href="' + ca.maps_url + '" target="_blank" rel="noopener" style="color:#1D4ED8;font-weight:700;text-decoration:underline;">view on map ↗</a>'
+      : '';
+    bits.unshift(
+      '<div style="background:' + (settled ? '#F3F4F6' : '#FEF3C7') + ';border:1px solid ' + (settled ? '#D1D5DB' : '#F59E0B') +
+      ';border-radius:8px;padding:8px 10px;margin-bottom:8px;">' +
+        '<span style="font-weight:700;color:' + (settled ? '#6B7280' : '#92400E') + ';">⚠ ' +
+          (settled ? 'Was blocked at checkout' : 'Tried to check out but couldn’t') +
+          (when ? ' · ' + when : '') + tries + '</span><br>' +
+        '<span style="color:' + (settled ? '#6B7280' : '#92400E') + ';">' + (ca.headline || '') + '</span>' + mapLink +
+      '</div>'
+    );
+  }
   document.getElementById('homeValveInfo').innerHTML = bits.join('<br>') || 'No activity today.';
+
+  // U5 — Unlock check-in: only meaningful BEFORE check-in, for a bike rider. Harmless
+  // while the lock config is off (the unlock simply never gets consulted).
+  const ciSec = document.getElementById('homeValveCheckinSec');
+  const ciActive = document.getElementById('homeValveCiActive');
+  if (ciSec) {
+    const bikeRow = !!(wj || hj || rec.company_bike == 1);
+    if (!rec.login_time && bikeRow) {
+      ciSec.style.display = 'block';
+      document.getElementById('homeValveCiReason').value = '';
+      if (wj && wj.checkin_unlock && wj.checkin_unlock.active) {
+        ciActive.style.display = 'block';
+        ciActive.textContent = `✓ Unlock active until ${wj.checkin_unlock.until} (${wj.checkin_unlock.by_name || 'manager'}). Unlocking again extends it.`;
+      } else {
+        ciActive.style.display = 'none';
+      }
+    } else {
+      ciSec.style.display = 'none';
+    }
+  }
 
   // Checkout-from-anywhere section — while he's checked in and not out.
   const coSec = document.getElementById('homeValveCheckoutSec');
@@ -3000,6 +3384,30 @@ async function homeValveCheckoutUnlock() {
 function closeHomeValve() {
   document.getElementById('homeValveModal').style.display = 'none';
   window.__homeValveAttId = null;
+  window.__homeValveUserId = null;
+}
+
+// U5 — grant the morning check-in unlock. Keyed on USER (not attendance id): a rider
+// blocked before check-in may have no attendance row yet; the server creates one to
+// carry the unlock and checkIn() later fills it in.
+async function homeValveCheckinUnlock() {
+  const uid = window.__homeValveUserId;
+  const reason = document.getElementById('homeValveCiReason').value.trim();
+  if (!uid) return;
+  if (!reason) { alert('Please enter a reason for unlocking check-in.'); return; }
+  const btn = document.getElementById('homeValveCiBtn');
+  btn.disabled = true; btn.textContent = 'Unlocking…';
+  try {
+    const res = await fetch('/attendance/checkin-unlock', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').content },
+      body: JSON.stringify({ user_id: uid, reason: reason })
+    });
+    const j = await res.json();
+    if (j.success) { closeHomeValve(); if (typeof loadAttendanceForDate === 'function') loadAttendanceForDate(); }
+    else alert(j.message || 'Could not unlock.');
+  } catch (e) { alert('Could not unlock.'); }
+  finally { btn.disabled = false; btn.textContent = '🔓 Unlock check-in'; }
 }
 async function homeValveUnlock() {
   const attId = window.__homeValveAttId;
@@ -3810,8 +4218,10 @@ async function openCustomizeUserList() {
     
     if (json.success) {
       allUsersVisibility = json.data;
+      salaryToggleAvailable = !!json.salary_toggle_available;
       visibilityChanges = {}; // Reset changes
       deliveryRiderChanges = {};
+      salaryVisChanges = {};
       renderUsersVisibility();
       updateVisibleUsersCount();
     } else {
@@ -3828,6 +4238,7 @@ function closeCustomizeUserList() {
   modal.style.display = 'none';
   visibilityChanges = {}; // Reset unsaved changes
   deliveryRiderChanges = {};
+  salaryVisChanges = {};
 }
 
 // Settings dropdown toggle
@@ -3847,16 +4258,24 @@ document.addEventListener('click', function(event) {
 
 function renderUsersVisibility() {
   const tbody = document.getElementById('usersVisibilityTableBody');
-  
+  const salHdr = document.getElementById('salaryVisHeader');
+  if (salHdr) salHdr.style.display = salaryToggleAvailable ? '' : 'none';
+
   if (!allUsersVisibility || allUsersVisibility.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="4" style="padding: 20px; text-align: center; color: #6b7280;">No users found</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="5" style="padding: 20px; text-align: center; color: #6b7280;">No users found</td></tr>';
     return;
   }
-  
+
   tbody.innerHTML = allUsersVisibility.map((user, index) => {
     const rowBg = index % 2 === 0 ? '#ffffff' : '#f9fafb';
     const curVis = visibilityChanges.hasOwnProperty(user.id) ? visibilityChanges[user.id] : !!user.is_visible;
     const curRider = deliveryRiderChanges.hasOwnProperty(user.id) ? deliveryRiderChanges[user.id] : !!Number(user.is_delivery_rider);
+    const curSalary = salaryVisChanges.hasOwnProperty(user.id) ? salaryVisChanges[user.id] : !!Number(user.show_in_payroll);
+    const salaryCell = salaryToggleAvailable ? `
+        <td style="padding: 12px; text-align:center;">
+          <input type="checkbox" data-user-id="${user.id}"
+            ${curSalary ? 'checked' : ''} onchange="toggleSalaryVisibility(${user.id}, this.checked)">
+        </td>` : '';
 
     return `
       <tr style="background: ${rowBg};" onmouseover="this.style.background='#f3f4f6'" onmouseout="this.style.background='${rowBg}'">
@@ -3866,6 +4285,7 @@ function renderUsersVisibility() {
           <input type="checkbox" class="user-visibility-checkbox" data-user-id="${user.id}"
             ${curVis ? 'checked' : ''} onchange="toggleUserVisibility(${user.id}, this.checked)">
         </td>
+        ${salaryCell}
         <td style="padding: 12px; text-align:center;">
           <input type="checkbox" data-user-id="${user.id}"
             ${curRider ? 'checked' : ''} onchange="toggleDeliveryRider(${user.id}, this.checked)">
@@ -3877,6 +4297,10 @@ function renderUsersVisibility() {
 
 function toggleDeliveryRider(userId, isRider) {
   deliveryRiderChanges[userId] = isRider;
+}
+
+function toggleSalaryVisibility(userId, show) {
+  salaryVisChanges[userId] = show;
 }
 
 function toggleUserVisibility(userId, isVisible) {
@@ -3930,7 +4354,8 @@ function updateVisibleUsersCount() {
 async function saveUserVisibilityChanges() {
   const visIds = Object.keys(visibilityChanges);
   const riderIds = Object.keys(deliveryRiderChanges);
-  if (visIds.length === 0 && riderIds.length === 0) {
+  const salaryIds = Object.keys(salaryVisChanges);
+  if (visIds.length === 0 && riderIds.length === 0 && salaryIds.length === 0) {
     alert('No changes to save');
     closeCustomizeUserList();
     return;
@@ -3959,10 +4384,18 @@ async function saveUserVisibilityChanges() {
         body: JSON.stringify({ user_id: parseInt(userId), is_rider: deliveryRiderChanges[userId] ? 1 : 0 })
       }));
     });
+    // "Show in Salary" changes (Payroll screen membership, independent of attendance)
+    salaryIds.forEach(userId => {
+      promises.push(fetch('/attendance/update-salary-visibility', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': csrf },
+        body: JSON.stringify({ user_id: parseInt(userId), show_in_payroll: salaryVisChanges[userId] ? 1 : 0 })
+      }));
+    });
 
     await Promise.all(promises);
 
-    alert('✓ Saved. Attendance visibility and the delivery-rider list are updated.');
+    alert('✓ Saved. Attendance visibility, salary list and the delivery-rider list are updated.');
     closeCustomizeUserList();
     loadAttendanceForDate();
   } catch(e) {
@@ -4029,212 +4462,50 @@ async function showGpsAudit(userId, userName, date) {
       return;
     }
     
-    const gps = json.gps_analysis;
-    const dist = json.distance;
-    const audit = json.audit;
+    // ── GPS v2 — ride-focused. One question: was GPS on while he was actually MOVING?
+    //    Phases (ride-in / on-duty / ride-home) with moving-time coverage; parked gaps folded
+    //    away. The old readings/expected/straight-line/histogram view is gone.
+    const phases = json.phases || [];
+    const dist = json.distance || {};
     const att = json.attendance;
-    
-    // Determine status color
-    let statusColor = '#22c55e'; // green
-    let statusBg = '#dcfce7';
-    let statusText = '✓ Good';
-    
-    if (audit.status === 'warning') {
-      statusColor = '#f59e0b';
-      statusBg = '#fef3c7';
-      statusText = '⚠️ Warning';
-    } else if (audit.status === 'critical') {
-      statusColor = '#ef4444';
-      statusBg = '#fee2e2';
-      statusText = '❌ Critical';
-    }
-    
+    const worst = phases.length ? Math.min(...phases.map(p => p.coverage)) : 0;
+    const [vBg, vColor, vText] = worst >= 90
+      ? ['#E9F7EE', '#15803D', '✓ GPS stayed on while he was riding']
+      : worst >= 70
+      ? ['#FDF3E3', '#B45309', '⚠ Some GPS gaps while moving — check below']
+      : ['#FDECEC', '#B91C1C', '❌ Poor GPS while moving'];
+
+    const phaseHtml = phases.map(p => {
+      const gapMin = p.moving_gaps.reduce((a, g) => a + g.min, 0);
+      const gapPct = p.minutes > 0 ? Math.min(100, Math.round((gapMin / p.minutes) * 100)) : 0;
+      const okPct = Math.max(0, 100 - gapPct);
+      const col = p.coverage >= 90 ? '#15803D' : p.coverage >= 70 ? '#B45309' : '#B91C1C';
+      const movingTxt = p.moving_gaps.length ? p.moving_gaps.map(g => `${g.from}–${g.to} (${g.min}m)`).join(', ') : null;
+      const note = (movingTxt || p.stationary_min)
+        ? `<div style="font-size:11px;color:#9CA3AF;margin-top:4px;">${movingTxt ? `<span style="color:#B91C1C;">GPS off while moving: ${movingTxt}</span>` : ''}${movingTxt && p.stationary_min ? ' · ' : ''}${p.stationary_min ? `${p.stationary_min} min parked — ignored` : ''}</div>`
+        : '';
+      return `
+        <div style="margin-bottom:14px;">
+          <div style="display:flex;justify-content:space-between;align-items:baseline;font-size:13px;margin-bottom:5px;">
+            <div><strong style="font-size:13.5px;">${p.name}</strong> <span style="color:#9CA3AF;font-size:11.5px;">${p.from} → ${p.to} · ${p.minutes}m</span></div>
+            <strong style="color:${col};font-variant-numeric:tabular-nums;">${p.coverage}%</strong>
+          </div>
+          <div style="height:8px;border-radius:4px;background:#EFF0ED;overflow:hidden;display:flex;">
+            <div style="height:100%;background:#22C55E;width:${okPct}%;"></div>
+            <div style="height:100%;background:#EF4444;width:${gapPct}%;"></div>
+          </div>${note}
+        </div>`;
+    }).join('');
+
     content.innerHTML = `
-      <!-- Audit Status Banner -->
-      <div style="padding: 12px 16px; border-radius: 10px; background: ${statusBg}; color: ${statusColor}; font-weight: 600; margin-bottom: 16px; display: flex; align-items: center; justify-content: space-between;">
-        <span>${statusText}</span>
-        ${audit.notes.length > 0 ? `<span style="font-weight: 400; font-size: 13px;">${audit.notes.join(' • ')}</span>` : ''}
+      <div style="padding:12px 16px;border-radius:10px;background:${vBg};color:${vColor};font-weight:700;margin-bottom:18px;">${vText}</div>
+      ${phases.length ? phaseHtml : '<div style="padding:16px;background:#F9FAFB;border-radius:8px;color:#6B7280;text-align:center;">No ride phases to show for this day.</div>'}
+      <div style="display:flex;gap:18px;align-items:baseline;border-top:1px solid #EFF0ED;margin-top:6px;padding-top:12px;font-size:13px;color:#6B7280;">
+        <span>🕐 ${att.login_time}${att.logout_time ? ' → ' + att.logout_time : ' → ongoing'} · ${att.working_minutes} min</span>
+        ${dist.gps_road_km != null ? `<span>🛣 Road distance <strong style="color:#111827;">${dist.gps_road_km} km</strong></span>` : ''}
       </div>
-      
-      <!-- Stats Grid -->
-      <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 20px;">
-        <div class="gps-audit-stat">
-          <div class="value" style="color: ${gps.coverage_percent >= 80 ? '#22c55e' : gps.coverage_percent >= 50 ? '#f59e0b' : '#ef4444'}">
-            ${gps.coverage_percent}%
-          </div>
-          <div class="label">GPS Coverage</div>
-        </div>
-        <div class="gps-audit-stat">
-          <div class="value">${gps.actual_readings}</div>
-          <div class="label">Readings</div>
-        </div>
-        <div class="gps-audit-stat">
-          <div class="value">${gps.expected_readings}</div>
-          <div class="label">Expected</div>
-        </div>
-        <div class="gps-audit-stat">
-          <div class="value">${gps.gaps_count}</div>
-          <div class="label">Gaps Found</div>
-        </div>
-      </div>
-      
-      <!-- Distance Comparison - 3 columns -->
-      <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-bottom: 16px;">
-        <div style="padding: 12px 16px; background: #eff6ff; border-radius: 8px;">
-          <div style="font-size: 11px; color: #1e40af; text-transform: uppercase; font-weight: 600;">🛣️ Meter Reading</div>
-          <div style="font-size: 24px; font-weight: 700; color: #1e40af; margin-top: 4px;">
-            ${dist.meter_km !== null ? dist.meter_km + ' km' : 'No data'}
-          </div>
-          ${dist.meter_start && dist.meter_end ? `
-            <div style="font-size: 10px; color: #1e40af; margin-top: 4px; background: #dbeafe; padding: 4px 8px; border-radius: 4px;">
-              ${dist.meter_start} → ${dist.meter_end}
-            </div>
-          ` : ''}
-          ${dist.prev_meter_end ? `
-            <div style="font-size: 10px; color: #6b7280; margin-top: 6px; padding-top: 6px; border-top: 1px dashed #cbd5e1;">
-              ↩️ Prev End: <strong>${dist.prev_meter_end}</strong>
-              ${dist.meter_gap !== null && dist.meter_gap !== 0 ? `
-                <span style="margin-left: 6px; padding: 2px 6px; border-radius: 4px; font-weight: 600; ${Math.abs(dist.meter_gap) > 25 ? 'background: #fee2e2; color: #dc2626;' : 'background: #f3f4f6; color: #6b7280;'}">
-                  ${dist.meter_gap > 0 ? '+' : ''}${dist.meter_gap} km ${Math.abs(dist.meter_gap) > 25 ? '⚠️' : ''}
-                </span>
-              ` : dist.meter_gap === 0 ? '<span style="margin-left: 6px; color: #16a34a;">✓ matches</span>' : ''}
-            </div>
-          ` : ''}
-        </div>
-        <div style="padding: 12px 16px; background: #fef3c7; border-radius: 8px;">
-          <div style="font-size: 11px; color: #92400e; text-transform: uppercase; font-weight: 600;">📍 GPS Straight-line</div>
-          <div style="font-size: 24px; font-weight: 700; color: #92400e; margin-top: 4px;">
-            ${dist.gps_straight_km !== null ? dist.gps_straight_km + ' km' : (gps.actual_readings < 2 ? 'Not enough data' : '0 km')}
-          </div>
-          <div style="font-size: 10px; color: #b45309; margin-top: 2px;">Point-to-point (filtered)</div>
-        </div>
-        <div style="padding: 12px 16px; background: ${dist.gps_road_km ? '#dcfce7' : '#f3f4f6'}; border-radius: 8px; ${dist.gps_road_km ? 'border: 2px solid #22c55e;' : ''}">
-          <div style="font-size: 11px; color: ${dist.gps_road_km ? '#166534' : '#6b7280'}; text-transform: uppercase; font-weight: 600;">🚗 GPS Road Distance</div>
-          <div style="font-size: 24px; font-weight: 700; color: ${dist.gps_road_km ? '#166534' : '#6b7280'}; margin-top: 4px;">
-            ${dist.gps_road_km !== null ? dist.gps_road_km + ' km' : 'N/A'}
-          </div>
-          <div style="font-size: 10px; color: ${dist.gps_road_km ? '#16a34a' : '#9ca3af'}; margin-top: 2px;">
-            ${dist.road_source === 'openrouteservice' ? '✓ Via actual roads' : 
-              dist.road_source === 'skipped_stationary' ? '⚡ Skipped (rider stationary)' :
-              dist.road_source === 'unavailable' ? '⚠️ API unavailable' : 
-              'Insufficient GPS movement'}
-          </div>
-        </div>
-      </div>
-      
-      <!-- Distance Analysis Note -->
-      ${(() => {
-        // Check for suspicious patterns
-        const hasMeter = dist.meter_km !== null && dist.meter_km > 0;
-        const hasGps = dist.gps_straight_km !== null && dist.gps_straight_km > 0;
-        const hasRoad = dist.gps_road_km !== null && dist.gps_road_km > 0;
-        
-        // Case 1: Meter shows distance but GPS shows no movement (suspicious)
-        if (hasMeter && !hasGps) {
-          return '<div style="padding: 10px 14px; border-radius: 8px; margin-bottom: 16px; font-size: 13px; background: #fef2f2; color: #991b1b;">⚠️ <strong>Suspicious:</strong> Meter shows ' + dist.meter_km + ' km but GPS shows no movement. Possible causes: GPS not working properly, meter reading error, or discrepancy needs review.</div>';
-        }
-        
-        // Case 2: Both meter and road distance available - compare them
-        if (hasMeter && hasRoad) {
-          const diff = Math.abs(dist.meter_km - dist.gps_road_km);
-          const diffPercent = diff / Math.max(dist.meter_km, dist.gps_road_km) * 100;
-          
-          if (diffPercent <= 20) {
-            return '<div style="padding: 10px 14px; border-radius: 8px; margin-bottom: 16px; font-size: 13px; background: #dcfce7; color: #166534;">✓ Meter and GPS road distance match within 20%</div>';
-          } else {
-            return '<div style="padding: 10px 14px; border-radius: 8px; margin-bottom: 16px; font-size: 13px; background: #fef2f2; color: #991b1b;">⚠️ Difference: ' + Math.round(diff) + ' km (' + Math.round(diffPercent) + '%) - Please verify</div>';
-          }
-        }
-        
-        // Case 3: GPS shows movement but no meter reading
-        if (hasGps && !hasMeter) {
-          return '<div style="padding: 10px 14px; border-radius: 8px; margin-bottom: 16px; font-size: 13px; background: #fef3c7; color: #92400e;">ℹ️ No meter reading available. GPS shows approximately ' + (hasRoad ? dist.gps_road_km : dist.gps_straight_km) + ' km traveled.</div>';
-        }
-        
-        return '';
-      })()}
-      
-      <!-- Attendance Time -->
-      <div style="display: flex; gap: 8px; margin-bottom: 20px; font-size: 13px; color: #6b7280;">
-        <span>🕐 Login: <strong>${att.login_time}</strong></span>
-        <span>•</span>
-        <span>🕔 Logout: <strong>${att.logout_time || 'Ongoing'}</strong></span>
-        <span>•</span>
-        <span>⏱️ Working: <strong>${att.working_minutes} min</strong></span>
-      </div>
-      
-      <!-- Gaps List with Smart Analysis -->
-      <div style="margin-bottom: 12px;">
-        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
-          <h4 style="font-size: 14px; font-weight: 600; color: #111827; margin: 0;">
-            ${gps.gaps_count > 0 ? `⚠️ ${gps.gaps_count} Gap(s) Detected` : '✓ No Significant Gaps'}
-          </h4>
-          ${gps.stationary_gaps_count > 0 ? `
-            <span style="font-size: 11px; background: #dbeafe; color: #1e40af; padding: 4px 8px; border-radius: 6px;">
-              ✓ ${gps.stationary_gaps_count} harmless (rider stationary)
-            </span>
-          ` : ''}
-        </div>
-        
-        ${gps.effective_coverage_percent !== gps.coverage_percent ? `
-          <div style="padding: 8px 12px; background: #f0fdf4; border-radius: 6px; margin-bottom: 12px; font-size: 12px; color: #166534;">
-            📊 <strong>Effective Coverage: ${gps.effective_coverage_percent}%</strong> 
-            (${gps.coverage_percent}% raw + ${gps.stationary_gap_minutes} min of harmless stationary gaps)
-          </div>
-        ` : ''}
-        
-        ${gps.gaps.length > 0 ? gps.gaps.map(gap => {
-          // Stationary gaps are shown in green/blue (harmless)
-          let gapClass = gap.is_stationary ? 'gps-gap-stationary' : 'gps-gap-info';
-          if (!gap.is_stationary) {
-            if (gap.duration_minutes >= 30) gapClass = 'gps-gap-critical';
-            else if (gap.duration_minutes >= 15) gapClass = 'gps-gap-warning';
-          }
-          
-          const gapStyle = gap.is_stationary 
-            ? 'background: #dbeafe; border-left: 3px solid #3b82f6;'
-            : '';
-          
-          return `
-            <div class="gps-gap-item ${gapClass}" style="${gapStyle}">
-              <div style="flex: 1;">
-                <div style="font-weight: 600; font-size: 13px; color: #111827;">
-                  ${gap.from} → ${gap.to}
-                  ${gap.is_stationary ? '<span style="font-size: 10px; background: #22c55e; color: white; padding: 2px 6px; border-radius: 4px; margin-left: 8px;">✓ STATIONARY</span>' : ''}
-                </div>
-                <div style="font-size: 12px; color: ${gap.is_stationary ? '#3b82f6' : '#6b7280'};">
-                  ${gap.description}
-                </div>
-              </div>
-              <div style="font-weight: 700; font-size: 14px; color: ${gap.is_stationary ? '#3b82f6' : (gap.duration_minutes >= 30 ? '#ef4444' : gap.duration_minutes >= 15 ? '#f59e0b' : '#3b82f6')};">
-                ${gap.duration_minutes} min
-              </div>
-            </div>
-          `;
-        }).join('') : `
-          <div style="padding: 16px; background: #f0fdf4; border-radius: 8px; color: #166534; text-align: center;">
-            ✓ GPS tracking was consistent throughout the day
-          </div>
-        `}
-      </div>
-      
-      <!-- Reading Timeline Preview -->
-      ${json.readings_preview && json.readings_preview.length > 0 ? `
-        <div style="margin-top: 16px;">
-          <h4 style="font-size: 14px; font-weight: 600; color: #111827; margin: 0 0 8px 0;">
-            📊 Reading Times (first ${json.readings_preview.length})
-          </h4>
-          <div style="display: flex; flex-wrap: wrap; gap: 4px;">
-            ${json.readings_preview.map(r => `
-              <span style="font-size: 10px; background: #f3f4f6; color: #374151; padding: 2px 6px; border-radius: 4px;" title="Accuracy: ${r.accuracy}m, Battery: ${r.battery || 'N/A'}%">
-                ${r.time}
-              </span>
-            `).join('')}
-          </div>
-        </div>
-      ` : ''}
     `;
-    
+
   } catch(e) {
     console.error('Error loading GPS audit:', e);
     content.innerHTML = `
@@ -4250,6 +4521,69 @@ function closeGpsAudit() {
   const modal = document.getElementById('gpsAuditModal');
   if (modal) {
     modal.style.display = 'none';
+  }
+}
+
+// ── Meter details — the day's meter STORY (reuses the GPS modal shell + the same endpoint,
+//    which now returns meter_story). last-night close → morning start (time/place/photo) →
+//    tonight close → day km meter vs GPS. Answers "did he record at home, and does it add up".
+async function showMeterDetail(userId, userName, date) {
+  const modal = document.getElementById('gpsAuditModal');
+  const content = document.getElementById('gpsAuditContent');
+  const title = document.getElementById('gpsAuditTitle');
+  const subtitle = document.getElementById('gpsAuditSubtitle');
+  modal.style.display = 'flex';
+  title.textContent = `Meter: ${userName}`;
+  subtitle.textContent = `Loading ${date}…`;
+  content.innerHTML = `<div style="text-align:center;padding:40px;color:#6b7280;">⏳ Loading meter data…</div>`;
+  try {
+    const res = await fetch(`/attendance/gps-audit?user_id=${userId}&date=${date}`);
+    const json = await res.json();
+    if (!json.success) { content.innerHTML = `<div style="text-align:center;padding:40px;color:#dc2626;">${json.message || 'Failed to load'}</div>`; return; }
+    subtitle.textContent = `${date}`;
+    if (!json.has_attendance || !json.meter_story) {
+      content.innerHTML = `<div style="text-align:center;padding:40px;color:#6b7280;">No meter data for this date.</div>`;
+      return;
+    }
+    const m = json.meter_story;
+    const srcLabel = (s) => s === 'home' ? '🏠 at home' : s === 'checkin' ? '⌂ typed at office' : s === 'manager' ? '✎ by manager' : '';
+    const srcColor = (s) => s === 'home' ? '#15803D' : s === 'checkin' ? '#B45309' : '#6B7280';
+    const cam = (p) => p ? `<button type="button" onclick="viewMeterPicturePath('${String(p).replace(/'/g, "\\'")}')" title="View photo" style="background:none;border:none;cursor:pointer;font-size:13px;">📷</button>` : '<span title="no photo" style="filter:grayscale(1);opacity:.4;font-size:13px;">📷</span>';
+    const row = (label, valHtml) => `<div style="display:flex;gap:10px;padding:9px 0;border-bottom:1px solid #EFF0ED;align-items:baseline;"><span style="flex:none;width:104px;font-size:11px;font-weight:800;letter-spacing:.05em;color:#9CA3AF;text-transform:uppercase;">${label}</span><span style="font-size:13px;">${valHtml}</span></div>`;
+    const num = (n) => n != null ? `<strong style="font-variant-numeric:tabular-nums;">${Number(n).toLocaleString()}</strong>` : '<span style="color:#9CA3AF;">—</span>';
+    // overnight gap chip (start vs last night)
+    let gapChip = '';
+    if (m.gap_km != null) {
+      const big = Math.abs(m.gap_km) > 1;
+      gapChip = `<span style="margin-left:8px;font-size:11px;font-weight:700;border-radius:5px;padding:1px 7px;${big ? 'color:#B91C1C;background:#FDECEC;border:1px solid #F5C6C6;' : 'color:#15803D;background:#E9F7EE;border:1px solid #BFE8CC;'}">overnight ${m.gap_km > 0 ? '+' : ''}${m.gap_km} km ${big ? '⚠' : '✓'}</span>`;
+    }
+    // day km vs gps
+    let dayChip = '';
+    if (m.day_meter_km != null && m.day_road_km != null) {
+      const diff = Math.abs(m.day_meter_km - m.day_road_km);
+      const ok = diff <= Math.max(3, m.day_meter_km * 0.2);
+      dayChip = `<span style="margin-left:8px;font-size:11px;font-weight:700;border-radius:5px;padding:1px 7px;${ok ? 'color:#15803D;background:#E9F7EE;border:1px solid #BFE8CC;' : 'color:#B91C1C;background:#FDECEC;border:1px solid #F5C6C6;'}">Δ ${Math.round(diff)} km ${ok ? '✓' : '⚠'}</span>`;
+    }
+    const dayRow = row('Day ridden', `${m.day_meter_km != null ? `<strong>${m.day_meter_km} km</strong> <span style="color:#9CA3AF;font-size:12px;">meter</span>` : '<span style="color:#9CA3AF;">no meter</span>'} ${m.day_road_km != null ? `· <strong>${m.day_road_km} km</strong> <span style="color:#9CA3AF;font-size:12px;">${m.day_road_is_gps ? 'gps' : 'gps roads'}</span>` : ''} ${dayChip}`);
+
+    if (m.is_company_bike) {
+      // Company bike — the full home story: last night, morning start (place/photo/overnight gap), end.
+      content.innerHTML = `
+        ${row('Last night', `${num(m.prev.value)} <span style="color:#6B7280;font-size:12px;">${m.prev.date ? '· ' + m.prev.date : ''}</span>`)}
+        ${row('This morning', `${num(m.start.value)} <span style="color:#6B7280;font-size:12px;">${m.start.time ? '· ' + m.start.time : ''} ${m.start.source ? `· <span style="color:${srcColor(m.start.source)};font-weight:600;">${srcLabel(m.start.source)}</span>` : ''}</span> ${cam(m.start.photo)} ${gapChip}`)}
+        ${row('Day end', `${num(m.end.value)} <span style="color:#6B7280;font-size:12px;">${m.end.time ? '· ' + m.end.time : ''} ${m.end.source === 'home' ? '· <span style="color:#15803D;font-weight:600;">🏠 at home</span>' : ''}</span> ${cam(m.end.photo)}`)}
+        ${dayRow}
+      `;
+    } else {
+      // Non-bike — just start + end (no overnight / home framing; that's a bike-only concern).
+      content.innerHTML = `
+        ${row('Start', `${num(m.start.value)} ${m.start.time ? `<span style="color:#6B7280;font-size:12px;">· ${m.start.time}</span>` : ''} ${cam(m.start.photo)}`)}
+        ${row('End', `${num(m.end.value)} ${m.end.time ? `<span style="color:#6B7280;font-size:12px;">· ${m.end.time}</span>` : ''} ${cam(m.end.photo)}`)}
+        ${dayRow}
+      `;
+    }
+  } catch (e) {
+    content.innerHTML = `<div style="text-align:center;padding:40px;color:#dc2626;">Error: ${e.message}</div>`;
   }
 }
 
@@ -4625,5 +4959,6 @@ async function saveFuelRateGroups() {
 </div>
 
 @include('partials.home-meter-alerts')
+@include('partials.checkout-stuck-alerts')
 
 @endsection

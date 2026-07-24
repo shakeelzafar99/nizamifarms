@@ -5,7 +5,6 @@ use App\Http\Controllers\AuthController;
 use App\Http\Controllers\SysAdmin\MenuController;
 use App\Http\Controllers\DashboardController;
 use App\Http\Controllers\LogController;
-use App\Http\Controllers\Webhook\AppSheetController;
 use App\Http\Controllers\CRM\OrderController;
 
 // Redirect root to demo1
@@ -78,15 +77,10 @@ Route::group([
 Route::get('/logout', [AuthController::class, 'webLogout'])->name('web.logout');
 
 
-// AppSheet Webhook Routes (no auth required)
-Route::prefix('webhook/appsheet')->group(function () {
-    Route::post('/order-converted', [AppSheetController::class, 'handleOrderConversion']);
-    Route::post('/flag-update', [AppSheetController::class, 'handleFlagUpdate']);
-    Route::any('/test', [AppSheetController::class, 'test']); // For testing
-    Route::post('/status-update', [AppSheetController::class, 'statusUpdate']);
-    Route::post('/attendance-update', [AppSheetController::class, 'attendanceUpdate']);
-    Route::post('/rider-assignment', [AppSheetController::class, 'riderAssignment']);
-});
+// AppSheet webhook routes REMOVED (Jul 2026) — AppSheet is retired. These were the ONLY
+// unauthenticated write endpoints into attendance/orders; kept nothing behind. The controller
+// (app/Http/Controllers/Webhook/AppSheetController.php) and its CSRF exclusion in
+// bootstrap/app.php were removed at the same time. Do not re-add without auth.
 
 // Invoice PDF route - accessible by both web (session) and mobile (token) auth
 Route::middleware(['auth:sanctum,web'])->group(function () {
@@ -94,6 +88,37 @@ Route::middleware(['auth:sanctum,web'])->group(function () {
 });
 
 Route::middleware(['auth'])->group(function () {
+    // ── NF Assistant on the WEB (ASSISTANT-VIEW-PLAN-JUL2026.md §4) ──────────
+    // The page shell + the SAME assistant controllers the phone uses, re-routed
+    // under web session auth (they gate on hasMobilePermission('use_ai_assistant')
+    // via Auth::user(), which works for both). Additive — the /api/assistant/*
+    // sanctum routes the mobile app calls are untouched. Names prefixed
+    // 'assistant-view.' so they never collide.
+    Route::prefix('assistant-view')->name('assistant-view.')->group(function () {
+        Route::get('/', [\App\Http\Controllers\AssistantViewController::class, 'index'])->name('index');
+
+        // Read (money box + chat history) — pure DB / stored transcript.
+        Route::get('/workspace/summary', [\App\Http\Controllers\API\AssistantWorkspaceController::class, 'summary'])->name('summary');
+        Route::get('/workspace/inbox', [\App\Http\Controllers\API\AssistantWorkspaceController::class, 'inbox'])->name('inbox');
+        Route::get('/workspace/vendor-search', [\App\Http\Controllers\API\AssistantWorkspaceController::class, 'vendorSearch'])->name('vendor-search');
+        Route::get('/workspace/customer-search', [\App\Http\Controllers\API\AssistantWorkspaceController::class, 'customerSearch'])->name('customer-search');
+        Route::get('/history', [\App\Http\Controllers\API\AssistantController::class, 'history_endpoint'])->name('history');
+        Route::get('/settings', [\App\Http\Controllers\API\AssistantSettingsController::class, 'index'])->name('settings');
+
+        // Act — the same endpoints, so web actions == phone actions.
+        Route::post('/message', [\App\Http\Controllers\API\AssistantController::class, 'message'])->name('message');
+        Route::post('/confirm/{draft}', [\App\Http\Controllers\API\AssistantController::class, 'confirm'])->name('confirm');
+        Route::post('/cancel/{draft}', [\App\Http\Controllers\API\AssistantController::class, 'cancel'])->name('cancel');
+        Route::post('/draft/{draft}/choose', [\App\Http\Controllers\API\AssistantController::class, 'choose'])->name('choose');
+        Route::post('/new-topic', [\App\Http\Controllers\API\AssistantController::class, 'newTopic'])->name('new-topic');
+        Route::post('/sms/{id}/match-credit', [\App\Http\Controllers\API\AssistantSmsController::class, 'matchCredit'])->name('sms.match');
+        Route::post('/sms/{id}/ignore', [\App\Http\Controllers\API\AssistantSmsController::class, 'ignore'])->name('sms.ignore');
+        Route::post('/sms/{id}/restore', [\App\Http\Controllers\API\AssistantSmsController::class, 'restore'])->name('sms.restore');
+        Route::post('/sms/{id}/teach-sender', [\App\Http\Controllers\API\AssistantSmsController::class, 'teachSender'])->name('sms.teach');
+        Route::post('/sms/{id}/draft', [\App\Http\Controllers\API\AssistantSmsController::class, 'draft'])->name('sms.draft');
+        Route::post('/sms/{id}/save-map', [\App\Http\Controllers\API\AssistantSmsController::class, 'saveMap'])->name('sms.save-map');
+    });
+
     // Dashboard main routes
     Route::get('/dashboard', [DashboardController::class, 'index']);
     Route::get('/dashboard/enhanced', [DashboardController::class, 'enhanced']); // New enhanced dashboard
@@ -134,6 +159,7 @@ Route::middleware(['auth'])->group(function () {
         Route::get('/', [\App\Http\Controllers\HQ\ExecutiveDashboardController::class, 'index'])->name('hq.index');
         Route::get('/closing', [\App\Http\Controllers\HQ\ExecutiveDashboardController::class, 'closing']);
         Route::get('/trend', [\App\Http\Controllers\HQ\ExecutiveDashboardController::class, 'trend']);
+        Route::get('/order-split', [\App\Http\Controllers\HQ\ExecutiveDashboardController::class, 'orderSplit']);
         Route::get('/growth', [\App\Http\Controllers\HQ\ExecutiveDashboardController::class, 'growth']);
         Route::get('/working-capital', [\App\Http\Controllers\HQ\ExecutiveDashboardController::class, 'workingCapital']);
         Route::get('/drill/recency', [\App\Http\Controllers\HQ\ExecutiveDashboardController::class, 'recency']);
@@ -143,6 +169,7 @@ Route::middleware(['auth'])->group(function () {
         Route::get('/drill/vendor', [\App\Http\Controllers\HQ\ExecutiveDashboardController::class, 'vendorDetail']);
         Route::get('/drill/expenses', [\App\Http\Controllers\HQ\ExecutiveDashboardController::class, 'expenses']);
         Route::get('/drill/expense', [\App\Http\Controllers\HQ\ExecutiveDashboardController::class, 'expenseDetail']);
+        Route::get('/drill/salaries', [\App\Http\Controllers\HQ\ExecutiveDashboardController::class, 'salaries']);
         Route::get('/drill/customers', [\App\Http\Controllers\HQ\ExecutiveDashboardController::class, 'customers']);
         Route::get('/drill/receivables', [\App\Http\Controllers\HQ\ExecutiveDashboardController::class, 'receivables']);
         Route::get('/drill/payables', [\App\Http\Controllers\HQ\ExecutiveDashboardController::class, 'payables']);
@@ -307,8 +334,11 @@ Route::middleware(['auth'])->group(function () {
     Route::post('/attendance/home-journey/unlock', [\App\Http\Controllers\CRM\AttendanceController::class, 'homeJourneyUnlock'])->middleware('block.rider')->name('attendance.home-unlock');
     Route::post('/attendance/home-journey/enter-meter', [\App\Http\Controllers\CRM\AttendanceController::class, 'homeMeterManagerEntry'])->middleware('block.rider')->name('attendance.home-enter-meter');
     Route::post('/attendance/checkout-unlock', [\App\Http\Controllers\CRM\AttendanceController::class, 'checkoutUnlock'])->middleware('block.rider')->name('attendance.checkout-unlock');
+    Route::post('/attendance/checkin-unlock', [\App\Http\Controllers\CRM\AttendanceController::class, 'checkinUnlock'])->middleware('block.rider')->name('attendance.checkin-unlock'); // U5 morning-lock valve
     Route::get('/attendance/home-alerts', [\App\Http\Controllers\CRM\AttendanceController::class, 'homeAlerts'])->middleware('block.rider')->name('attendance.home-alerts');
     Route::post('/attendance/home-alerts/dismiss', [\App\Http\Controllers\CRM\AttendanceController::class, 'dismissHomeAlert'])->middleware('block.rider')->name('attendance.home-alert-dismiss');
+    Route::get('/attendance/checkout-stuck-alerts', [\App\Http\Controllers\CRM\AttendanceController::class, 'checkoutStuckAlerts'])->middleware('block.rider')->name('attendance.checkout-stuck-alerts');
+    Route::post('/attendance/checkout-stuck-alerts/dismiss', [\App\Http\Controllers\CRM\AttendanceController::class, 'dismissCheckoutStuckAlert'])->middleware('block.rider')->name('attendance.checkout-stuck-dismiss');
     Route::get('/attendance/summary', [\App\Http\Controllers\CRM\AttendanceController::class, 'summary'])->name('attendance.summary');
     Route::get('/attendance/monthly-report', [\App\Http\Controllers\CRM\AttendanceController::class, 'monthlyReport'])->name('attendance.monthly-report');
     Route::get('/attendance/employee-details', [\App\Http\Controllers\CRM\AttendanceController::class, 'employeeDetails'])->name('attendance.employee-details');
@@ -316,6 +346,7 @@ Route::middleware(['auth'])->group(function () {
     Route::get('/attendance/gps-audit', [\App\Http\Controllers\CRM\AttendanceController::class, 'gpsReadingsAudit'])->name('attendance.gps-audit');
     Route::get('/attendance/users-visibility', [\App\Http\Controllers\CRM\AttendanceController::class, 'getUsersVisibility'])->name('attendance.users-visibility');
     Route::post('/attendance/update-visibility', [\App\Http\Controllers\CRM\AttendanceController::class, 'updateUserVisibility'])->name('attendance.update-visibility');
+    Route::post('/attendance/update-salary-visibility', [\App\Http\Controllers\CRM\AttendanceController::class, 'updateSalaryVisibility'])->name('attendance.update-salary-visibility');
     Route::post('/attendance/update-delivery-rider', [\App\Http\Controllers\CRM\AttendanceController::class, 'updateDeliveryRider'])->name('attendance.update-delivery-rider');
     // Attendance policy settings (year cycle + meter thresholds)
     Route::get('/attendance/settings', [\App\Http\Controllers\CRM\AttendanceController::class, 'getAttendanceSettings'])->name('attendance.settings.get');
@@ -1195,6 +1226,13 @@ Route::middleware(['auth'])->group(function () {
             Route::post('/set-salary', [\App\Http\Controllers\HR\PayrollController::class, 'setSalary'])->name('set-salary');
             Route::post('/give-advance', [\App\Http\Controllers\HR\PayrollController::class, 'giveAdvance'])->name('give-advance');
             Route::post('/pay', [\App\Http\Controllers\HR\PayrollController::class, 'pay'])->name('pay');
+            // Custom-schedule employees (date-range / weekly salaries)
+            Route::get('/custom-data', [\App\Http\Controllers\HR\PayrollController::class, 'customData'])->name('custom-data');
+            Route::post('/custom-preview', [\App\Http\Controllers\HR\PayrollController::class, 'customPreview'])->name('custom-preview');
+            Route::post('/custom-pay', [\App\Http\Controllers\HR\PayrollController::class, 'payCustom'])->name('custom-pay');
+            Route::post('/set-schedule', [\App\Http\Controllers\HR\PayrollController::class, 'setSchedule'])->name('set-schedule');
+            Route::post('/set-business-unit', [\App\Http\Controllers\HR\PayrollController::class, 'setBusinessUnit'])->name('set-business-unit');
+            Route::get('/staff-expense-detail', [\App\Http\Controllers\HR\PayrollController::class, 'staffExpenseDetail'])->name('staff-expense-detail');
         });
 
         // Salary Slips

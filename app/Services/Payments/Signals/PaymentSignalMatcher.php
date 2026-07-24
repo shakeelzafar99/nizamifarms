@@ -540,9 +540,22 @@ class PaymentSignalMatcher
 
     private function isDuplicateRef(PaymentSignal $signal): bool
     {
+        // SAME-SIDE only (Jul-2026): a duplicate is the same EVIDENCE recorded
+        // twice — two screenshots of one payment, or two bank alerts of one
+        // credit. A WhatsApp screenshot and a BANK confirmation (email/SMS)
+        // sharing a reference are the OPPOSITE of a duplicate: they are the two
+        // sides pairing exists for. The old cross-source check would have
+        // marked a customer's screenshot DUPLICATE the moment a bank-SMS
+        // signal was already matched with the same reference — killing the
+        // proof and the Verified upgrade.
+        $sameSide = $signal->source === PaymentSignal::SOURCE_WHATSAPP
+            ? [PaymentSignal::SOURCE_WHATSAPP]
+            : PaymentSignal::BANK_SIDE_SOURCES;
+
         return PaymentSignal::query()
             ->where('id', '!=', $signal->id)
             ->where('extracted_ref', $signal->extracted_ref)
+            ->whereIn('source', $sameSide)
             ->whereIn('status', [PaymentSignal::STATUS_MATCHED, PaymentSignal::STATUS_DUPLICATE])
             ->exists();
     }
@@ -596,10 +609,49 @@ class PaymentSignalMatcher
             return;
         }
 
+        // A PAIR IDENTIFIES THE PAYER — an amount-only guess must yield to it
+        // (Jul-23 Hanna/Shaukat incident). A bank SMS that arrived while this
+        // screenshot's OCR was still queued can have amount-unique-attached
+        // itself to a DIFFERENT order with the same balance (the payer's own
+        // invoice wasn't in the approvals queue yet). Without this retract,
+        // propagateLink() would skip (it never overwrites an existing
+        // matched_order) and the pair would bind pointing at two different
+        // orders: the real payer stuck at "proof received", the guessed order
+        // wearing a false "Bank confirmed". Retract the guess first so the
+        // screenshot's ref-certain order flows onto the bank signal.
+        $this->retractAmountGuess($signal, $opposite);
+
         // The email side usually carries no customer/order — push this
         // screenshot's link onto it (or vice versa) before binding the pair.
         $this->propagateLink($signal, $opposite);
         $this->bindPair($signal, $opposite);
+    }
+
+    /**
+     * If either side of a pair-to-be is an amount-only GUESS
+     * (match_reason 'amount_unique_sms', 0.50 by design), clear it before
+     * propagation: the opposite signal is the customer's own screenshot of the
+     * SAME transfer, which outranks a queue-wide amount match. Even when the
+     * screenshot carries no order yet, the guess's premise ("no proof exists
+     * for this credit") is broken by the pair itself — it must come off the
+     * guessed order either way. The retracted reason is kept when nothing
+     * re-fills the link, so the trail stays auditable.
+     */
+    private function retractAmountGuess(PaymentSignal $a, PaymentSignal $b): void
+    {
+        $guess = $a->match_reason === 'amount_unique_sms' ? $a
+               : ($b->match_reason === 'amount_unique_sms' ? $b : null);
+        if (!$guess) {
+            return;
+        }
+
+        $this->clearLinks($guess->id);
+        $guess->matched_order_id    = null;
+        $guess->matched_customer_id = null;
+        $guess->status              = PaymentSignal::STATUS_UNMATCHED;
+        $guess->match_reason        = 'amount_guess_retracted';
+        $guess->match_confidence    = null;
+        $guess->save();
     }
 
     /**
@@ -621,9 +673,24 @@ class PaymentSignalMatcher
         // tolerance used in doMatch() (customer's transfer vs their bill(s)).
         $tol = PaymentProofStatusService::pairAmountTolerance();
         $windowDays = (int) config('payment_signals.pair_window_days', 3);
+        $slopHours  = (int) config('payment_signals.pair_slop_hours', 24);
         $time = $this->paymentTime($signal);
-        $from = $time->copy()->subDays($windowDays);
-        $to   = $time->copy()->addDays($windowDays);
+
+        // DIRECTIONAL window (see config/payment_signals.php). A screenshot
+        // (whatsapp) can be SENT well after the payment, so it looks BACK up to
+        // windowDays for its bank mate and only a slop margin forward. A bank
+        // confirmation (email/sms) fires AT the payment, so it looks FORWARD up
+        // to windowDays for a late screenshot and only a slop margin back.
+        // Removing the meaningless half of the old symmetric window also cuts
+        // cross-pairing risk (an unrelated same-amount credit days on the wrong
+        // side can no longer be welded on).
+        if ($signal->source === PaymentSignal::SOURCE_WHATSAPP) {
+            $from = $time->copy()->subDays($windowDays);
+            $to   = $time->copy()->addHours($slopHours);
+        } else {
+            $from = $time->copy()->subHours($slopHours);
+            $to   = $time->copy()->addDays($windowDays);
+        }
 
         $base = PaymentSignal::query()
             ->whereIn('source', $oppositeSources)

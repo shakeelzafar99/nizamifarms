@@ -2219,31 +2219,21 @@ document.addEventListener('DOMContentLoaded', function(){
     }, 220);
   }
 
-  // Approve = the EXACT existing convert endpoint (SKU match + price recalc).
-  // Same confirm + same error surfacing as the full view; smooth (no reload).
+  // Approve → open the accept modal (choose the delivery promise: Today / a future
+  // day / no message). Name + reply come from THIS card (the FAB has its own
+  // Shopify list — never resolved via window.ordersData, whose production ids
+  // collide with staging ids). onSuccess removes just the card, keeping the
+  // smooth no-reload triage flow.
   window.nfApprovalsApprove = function(id){
     var card = document.getElementById('nfad-card-'+id);
-    var name = card ? (card.querySelector('.nfad-cust')||{}).textContent : 'this order';
-    if(!confirm('Convert '+name+' to a webapp invoice?\n\nThis matches SKUs with your products and recalculates prices at your rates — the same as the full Approve.')) return;
-    var btn = card ? card.querySelector('.nfad-yes') : null;
-    if(btn){ btn.disabled = true; btn.textContent = 'Converting…'; }
-    fetch('/orders/'+id+'/convert', { method:'POST', headers:{ 'Content-Type':'application/json', 'X-CSRF-TOKEN': csrf() }, credentials:'same-origin' })
-      .then(function(r){ return r.json(); })
-      .then(function(data){
-        if(data.success){
-          var msg = 'Converted — new invoice #'+(data.converted_order ? data.converted_order.order_number : '')+'.';
-          if(data.price_changes && data.price_changes.length){ msg += '\n\nPrice changes:'; data.price_changes.forEach(function(c){ msg += '\n• '+c.name+' ('+c.sku+'): '+c.original_price+' → '+c.new_price; }); }
-          if(data.warnings && data.warnings.length){ msg += '\n\nWarnings:'; data.warnings.forEach(function(w){ msg += '\n• '+w; }); }
-          alert(msg);
-          removeCard(id);
-        } else {
-          var err = 'Could not convert:\n'+(data.message||'Unknown error');
-          if(data.errors && data.errors.length){ err += '\n\nDetails:'; data.errors.forEach(function(e){ err += '\n• '+e; }); err += '\n\nFix these in your products, or use Open for the full view.'; }
-          alert(err);
-          if(btn){ btn.disabled = false; btn.textContent = 'Approve'; }
-        }
-      })
-      .catch(function(){ alert('Convert failed — please try again, or use Open for the full view.'); if(btn){ btn.disabled = false; btn.textContent = 'Approve'; } });
+    var name = card ? (((card.querySelector('.nfad-cust')||{}).textContent)||'').trim() : '';
+    var replyEl = card ? card.querySelector('.nfad-mini.reply') : null;
+    var reply = replyEl ? replyEl.textContent.replace(/^\s*💬\s*/,'').trim() : '';
+    nfOpenAcceptModal(id, {
+      name: name,
+      reply: reply,
+      onSuccess: function(){ removeCard(id); }
+    });
   };
 
   window.nfApprovalsIgnore = function(id){
@@ -4689,86 +4679,130 @@ async function saveOrderCustRegion(customerId) {
 }
 
 // Edit Order Details
-function convertOrder(orderId) {
-    // Surface the customer's WhatsApp button choice (Confirm / Split / Cancel) in
-    // the approve prompt so the approver acts on what the customer actually chose.
-    var _coOrder = (window.ordersData || []).find(function(o){ return o.id === orderId; });
-    var _coReply = (_coOrder && _coOrder.customer_reply && _coOrder.customer_reply.text) ? _coOrder.customer_reply.text : '';
-    var _coMsg = (_coReply ? ('💬 Customer chose: "' + _coReply + '"\n\n') : '')
-        + 'Are you sure you want to convert this Shopify order to a webapp invoice? This will match SKUs with your products and recalculate prices based on your rates.';
-    if (!confirm(_coMsg)) {
-        return;
+// Current weekday in Asia/Karachi (ISO: 1=Mon .. 7=Sun), computed at CALL time —
+// orders pages stay open for days, so a page-load constant would go stale
+// overnight (Mon page showing Monday's buttons on Tuesday). PKT is UTC+5
+// year-round (no DST), so deriving from epoch time is timezone-safe.
+function nfPktIsoWeekday(){
+    var d = new Date(Date.now() + 5 * 3600000);
+    return ((d.getUTCDay() + 6) % 7) + 1; // getUTCDay 0=Sun..6=Sat -> ISO 1=Mon..7=Sun
+}
+
+function nfEscapeHtml(s){
+    return String(s == null ? '' : s)
+        .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+        .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
+
+// Which delivery-promise buttons to show TODAY (Asia/Karachi). "Tomorrow" is
+// relative, so it's hidden on Mon (tomorrow = closed Tue) and Tue (closed);
+// those days show the explicit next-open day(s) instead.
+function nfPromiseButtonsForToday(){
+    var iso = nfPktIsoWeekday();
+    if (iso === 1) return [['today','Deliver Today'],['wednesday','Deliver Wednesday'],['thursday','Deliver Thursday']]; // Monday
+    if (iso === 2) return [['wednesday','Deliver Wednesday'],['thursday','Deliver Thursday']];                            // Tuesday (day off)
+    return [['today','Deliver Today'],['tomorrow','Deliver Tomorrow']];                                                   // Wed–Sun
+}
+
+// Open the accept modal: pick the delivery promise (which decides the customer
+// message + whether the order is active today or parked for a future day).
+// opts: {name, reply, onSuccess} — callers with their own data (the Approvals FAB)
+// pass name/reply explicitly. The window.ordersData fallback is used ONLY when the
+// page is showing the SHOPIFY source: production and staging ids overlap (the
+// documented id-collision trap), so a raw-id lookup on the production tab could
+// display an unrelated customer's name. onSuccess (if given) replaces the default
+// full-page reload — the FAB uses it to remove just the approved card.
+window.nfOpenAcceptModal = function(orderId, opts){
+    opts = opts || {};
+    var src = '';
+    try { src = (typeof currentOrderSource === 'function') ? currentOrderSource() : (window.currentSource || ''); } catch(e){}
+    var o = (src === 'shopify')
+        ? (window.ordersData || []).find(function(x){ return x.id === orderId; })
+        : null;
+    var name = opts.name || (o ? (o.name || o.customer_name || o.order_number || ('#'+orderId)) : ('#'+orderId));
+    var reply = opts.reply || ((o && o.customer_reply && o.customer_reply.text) ? o.customer_reply.text : '');
+    window._nfAcceptCtx = { onSuccess: (typeof opts.onSuccess === 'function') ? opts.onSuccess : null };
+
+    var existing = document.getElementById('nfAcceptModal');
+    if (existing) existing.remove();
+
+    var btnHtml = nfPromiseButtonsForToday().map(function(b){
+        return '<button type="button" onclick="nfDoConvert('+orderId+', \''+b[0]+'\')" '
+            + 'style="display:block;width:100%;margin-bottom:8px;padding:12px 14px;background:#10b981;color:#fff;border:none;border-radius:8px;font-size:14px;font-weight:600;cursor:pointer;text-align:left;">'
+            + nfEscapeHtml(b[1]) + '</button>';
+    }).join('');
+
+    var replyHtml = reply
+        ? ('<div style="background:#f3f4f6;border-radius:8px;padding:8px 10px;margin-bottom:12px;font-size:12px;color:#374151;">💬 Customer chose: "'+nfEscapeHtml(reply)+'"</div>')
+        : '';
+
+    var html = ''
+      + '<div id="nfAcceptModal" style="position:fixed;top:0;left:0;right:0;bottom:0;width:100%;height:100%;background:rgba(0,0,0,0.5);z-index:100000;display:flex;align-items:center;justify-content:center;padding:16px;" onclick="if(event.target===this)this.remove();">'
+      + '  <div style="background:#fff;border-radius:14px;max-width:420px;width:100%;padding:20px;box-shadow:0 10px 40px rgba(0,0,0,0.25);">'
+      + '    <div style="font-size:16px;font-weight:700;color:#111827;margin-bottom:4px;">Accept order — choose delivery</div>'
+      + '    <div style="font-size:13px;color:#6b7280;margin-bottom:14px;">'+nfEscapeHtml(name)+'</div>'
+      +      replyHtml
+      +      btnHtml
+      + '    <button type="button" onclick="nfDoConvert('+orderId+', \'none\')" style="display:block;width:100%;margin:6px 0 8px;padding:11px 14px;background:#fff;color:#374151;border:1px solid #d1d5db;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;">Accept without messaging</button>'
+      + '    <button type="button" onclick="var m=document.getElementById(\'nfAcceptModal\'); if(m) m.remove();" style="display:block;width:100%;padding:9px;background:transparent;color:#9ca3af;border:none;font-size:13px;cursor:pointer;">Cancel</button>'
+      + '  </div>'
+      + '</div>';
+    document.body.insertAdjacentHTML('beforeend', html);
+};
+
+// Do the actual convert with the chosen delivery promise.
+window.nfDoConvert = function(orderId, promise){
+    var modal = document.getElementById('nfAcceptModal');
+    if (modal){
+        modal.querySelectorAll('button').forEach(function(b){ b.disabled = true; b.style.opacity = '0.6'; });
     }
-    
-    // Show loading state
-    const approveButtons = document.querySelectorAll(`button[onclick="convertOrder(${orderId})"]`);
-    approveButtons.forEach(btn => {
-        btn.disabled = true;
-        btn.innerHTML = '<svg class="w-4 h-4 animate-spin" fill="none" stroke="currentColor" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" class="opacity-25"></circle><path fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" class="opacity-75"></path></svg> Converting...';
-    });
-    
     fetch(`/orders/${orderId}/convert`, {
         method: 'POST',
         headers: {
             'Content-Type': 'application/json',
             'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').getAttribute('content')
-        }
+        },
+        body: JSON.stringify({ delivery_promise: promise })
     })
     .then(response => response.json())
     .then(data => {
         if (data.success) {
-            let message = `Order converted successfully! New invoice order #${data.converted_order.order_number} created.`;
-            
-            // Show price changes if any
-            if (data.price_changes && data.price_changes.length > 0) {
-                message += '\n\nPrice Changes:';
-                data.price_changes.forEach(change => {
-                    message += `\nâ€¢ ${change.name} (${change.sku}): PKR ${change.original_price} â†’ PKR ${change.new_price} (Qty: ${change.quantity})`;
-                });
+            if (modal) modal.remove();
+            var num = (data.converted_order && data.converted_order.order_number) ? data.converted_order.order_number : '';
+            var message = `Order converted! New invoice #${num}.`;
+            if (promise && promise !== 'none' && data.delivery_promise) {
+                message += (data.order_status === 'pending')
+                    ? `\n\nParked for later — confirmation sent (${data.delivery_promise}). Activate it on its delivery day.`
+                    : `\n\nConfirmation sent (${data.delivery_promise}).`;
             }
-            
-            // Show warnings if any
             if (data.warnings && data.warnings.length > 0) {
-                message += '\n\nWarnings:';
-                data.warnings.forEach(warning => {
-                    message += `\nâ€¢ ${warning}`;
-                });
+                message += '\n\nWarnings:\n' + data.warnings.join('\n');
             }
-            
             alert(message);
-            // Refresh the page to show updated data
-            window.location.reload();
-        } else {
-            // Show detailed error information
-            let errorMessage = 'Error converting order:\n' + (data.message || 'Unknown error');
-            
-            if (data.errors && data.errors.length > 0) {
-                errorMessage += '\n\nDetails:';
-                data.errors.forEach(error => {
-                    errorMessage += `\nâ€¢ ${error}`;
-                });
-                errorMessage += '\n\nPlease fix these issues in your products and try again.';
+            // FAB path: remove just the card (smooth triage of many approvals);
+            // table path: full reload as before.
+            var ctx = window._nfAcceptCtx || {};
+            window._nfAcceptCtx = null;
+            if (ctx.onSuccess) {
+                try { ctx.onSuccess(); } catch(e) { window.location.reload(); }
+            } else {
+                window.location.reload();
             }
-            
-            alert(errorMessage);
-            
-            // Restore button state
-            approveButtons.forEach(btn => {
-                btn.disabled = false;
-                btn.innerHTML = '<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>';
-            });
+        } else {
+            alert('Error converting order:\n' + (data.message || 'Unknown error'));
+            if (modal) modal.querySelectorAll('button').forEach(function(b){ b.disabled = false; b.style.opacity = '1'; });
         }
     })
     .catch(error => {
         console.error('Error converting order:', error);
         alert('Error converting order. Please try again.');
-        
-        // Restore button state
-        approveButtons.forEach(btn => {
-            btn.disabled = false;
-            btn.innerHTML = '<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>';
-        });
+        if (modal) modal.querySelectorAll('button').forEach(function(b){ b.disabled = false; b.style.opacity = '1'; });
     });
+};
+
+// Existing entry points (row button, icon button) now open the accept modal.
+function convertOrder(orderId) {
+    nfOpenAcceptModal(orderId);
 }
 
 function ignoreOrder(orderId) {
@@ -10820,8 +10854,9 @@ function renderOrderProofBadge(order) {
         const p = order && order.id ? (window.paymentProofMap || {})[order.id] : null;
         if (!p || !p.status || p.status === 'none') return '';
         const wa = p.has_whatsapp ? '📷' : '';
+        const sm = p.has_sms ? '📱' : '';   // bank credit SMS (NF Messages)
         const ml = p.has_email ? '✉️' : '';
-        return `<span title="${p.label}" style="margin-left:4px; display:inline-flex; align-items:center; padding:1px 6px; border-radius:8px; font-size:10px; font-weight:700; background:${p.color}1A; color:${p.color}; border:1px solid ${p.color}55; vertical-align:middle;">${wa}${ml}</span>`;
+        return `<span title="${p.label}" style="margin-left:4px; display:inline-flex; align-items:center; padding:1px 6px; border-radius:8px; font-size:10px; font-weight:700; background:${p.color}1A; color:${p.color}; border:1px solid ${p.color}55; vertical-align:middle;">${wa}${sm}${ml}</span>`;
     } catch (e) { return ''; }
 }
 
@@ -11469,6 +11504,28 @@ function markInvoiceSentLocally(orderId) {
     } catch (e) { /* cosmetic only — never disturb the completed send */ }
 }
 
+// Small "source channel" pill shown under the order number: distinguishes
+// orders placed via the customer app (iOS / Android) from the website. Driven by
+// order.order_source_channel = Shopify's source_name (ios_app / android_app / web),
+// captured on ingest by OrderModel::mapShopifyOrder(). Inline styles (not tailwind)
+// so it renders even on pages affected by the CSS purge. Empty string when the
+// channel is unknown — every pre-existing order, and any source without source_name.
+function orderChannelBadge(order){
+    var raw = (order && order.order_source_channel != null) ? String(order.order_source_channel) : '';
+    var ch = raw.toLowerCase().trim();
+    if(!ch) return '';
+    // Self-contained escaper — the page's esc() helpers live inside private
+    // IIFE scopes and are NOT visible here; do not call esc() from this scope.
+    var e = function(s){ return String(s).replace(/[&<>"']/g, function(c){ return ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c]; }); };
+    var label, bg, fg, icon;
+    if(ch.indexOf('ios')!==-1){ label='iOS'; bg='#eff6ff'; fg='#1d4ed8'; icon='📱'; }
+    else if(ch.indexOf('android')!==-1){ label='Android'; bg='#ecfdf5'; fg='#047857'; icon='📱'; }
+    else if(ch==='web'){ label='Web'; bg='#f3f4f6'; fg='#4b5563'; icon='🌐'; }
+    else if(ch.indexOf('app')!==-1){ label='App'; bg='#eff6ff'; fg='#1d4ed8'; icon='📱'; }
+    else { label=raw; bg='#f3f4f6'; fg='#4b5563'; icon=''; }
+    return '<span title="Order source: '+e(raw)+'" style="display:inline-flex;align-items:center;gap:3px;margin-top:3px;padding:1px 7px;border-radius:9999px;background:'+bg+';color:'+fg+';font-size:10px;font-weight:600;line-height:1.5;white-space:nowrap;">'+(icon?icon+' ':'')+e(label)+'</span>';
+}
+
 function getCellContent(order, columnId) {
     const formatDate = (dateStr) => {
         if (!dateStr) return '<span class="text-gray-400">-</span>';
@@ -11502,7 +11559,7 @@ function getCellContent(order, columnId) {
         case 'id':
             return `<div class="table-cell-id">${order.id}</div>`;
         case 'order_number':
-            return `<div class="table-cell-order-number">${order.order_number || ''}</div>`;
+            return `<div class="table-cell-order-number">${order.order_number || ''}</div>${orderChannelBadge(order)}`;
         case 'order_date':
             return `<div class="table-cell-date">${formatDate(order.order_date)}</div>`;
         case 'delivery_date':

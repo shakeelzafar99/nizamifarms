@@ -20,6 +20,7 @@ class ShopifyOrderModel extends BaseModel
     protected $fillable = [
         'customer_id',
         'external_source',
+        'order_source_channel',
         'external_id',
         'external_customer_id',
         'order_number',

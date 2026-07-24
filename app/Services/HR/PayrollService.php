@@ -5,6 +5,7 @@ namespace App\Services\HR;
 use App\Models\HR\EmployeeProfileModel;
 use App\Models\Request\RequestModel;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
 
 /**
  * Phase G payroll engine — computes one employee's month under the NEW policy:
@@ -45,6 +46,101 @@ class PayrollService
     private function lateBufferMin(): int { return (int) $this->cfg('LATE_MONTHLY_BUFFER_MINS', 150); }
     private function lateStepMin(): int   { return (int) $this->cfg('LATE_LEAVE_DEDUCT_STEP_MINS', 480); }
 
+    // ── Business-unit resolution (memoized) ──────────────────────────────────
+    private static ?int $nfBuIdMemo = null;
+    private static ?int $khaasBuIdMemo = null;
+    private static bool $buResolved = false;
+
+    private function resolveBuIds(): void
+    {
+        if (self::$buResolved) { return; }
+        self::$buResolved = true;
+        try {
+            self::$nfBuIdMemo    = ((int) (DB::table('t_fin_business_units')->where('code', 'NF')->value('id') ?? 0)) ?: null;
+            self::$khaasBuIdMemo = ((int) (DB::table('t_fin_business_units')->where('code', 'KHAAS')->value('id') ?? 0)) ?: null;
+        } catch (\Throwable $e) { /* leave null → treated as NF everywhere */ }
+    }
+    private function nfBuId(): ?int { $this->resolveBuIds(); return self::$nfBuIdMemo; }
+    private function khaasBuId(): ?int { $this->resolveBuIds(); return self::$khaasBuIdMemo; }
+
+    /** 'NF' | 'KHAAS' for a stored business_unit_id (null / NF id / unknown → 'NF'). */
+    private function buCodeFor(?int $buId): string
+    {
+        $kh = $this->khaasBuId();
+        return ($buId && $kh && $buId === $kh) ? 'KHAAS' : 'NF';
+    }
+
+    /**
+     * The BU id to STAMP on a payment/ledger row for an employee: their tag, or the
+     * real NF id (never null, so strict `= nfId` BU scopes match). Null only if the
+     * business-unit table/row is missing entirely.
+     */
+    private function stampBuId(?int $profileBuId): ?int
+    {
+        return $profileBuId ?: $this->nfBuId();
+    }
+
+    // ── Schema guards (safe before the custom-schedule SQL is applied) ────────
+    private static ?bool $payrollPeriodColsMemo = null;
+    private function payrollHasPeriodCols(): bool
+    {
+        if (self::$payrollPeriodColsMemo === null) {
+            try {
+                self::$payrollPeriodColsMemo = Schema::hasColumn('t_hr_payroll_payment', 'period_key')
+                    && Schema::hasColumn('t_hr_payroll_payment', 'business_unit_id');
+            } catch (\Throwable $e) {
+                self::$payrollPeriodColsMemo = false;
+            }
+        }
+        return self::$payrollPeriodColsMemo;
+    }
+
+    private static ?bool $profileScheduleColsMemo = null;
+    private function profileHasScheduleCols(): bool
+    {
+        if (self::$profileScheduleColsMemo === null) {
+            try {
+                self::$profileScheduleColsMemo = Schema::hasColumn('t_hr_employee_profile', 'pay_schedule')
+                    && Schema::hasColumn('t_hr_employee_profile', 'business_unit_id');
+            } catch (\Throwable $e) {
+                self::$profileScheduleColsMemo = false;
+            }
+        }
+        return self::$profileScheduleColsMemo;
+    }
+
+    // ── Small date helpers for custom periods ────────────────────────────────
+    /** Inclusive calendar-day span (0 when the dates are invalid or reversed). */
+    private function calendarDays(string $start, string $end): int
+    {
+        $a = strtotime($start); $b = strtotime($end);
+        if ($a === false || $b === false || $b < $a) { return 0; }
+        return (int) floor(($b - $a) / 86400) + 1;
+    }
+
+    /** Two inclusive Y-m-d ranges intersect (lexicographic compare is safe for Y-m-d). */
+    private function rangesOverlap(string $s1, string $e1, string $s2, string $e2): bool
+    {
+        return $s1 <= $e2 && $s2 <= $e1;
+    }
+
+    /** 'Y-m' → [firstDay, lastDay] as Y-m-d. */
+    private function monthBounds(string $month): array
+    {
+        $start = date('Y-m-01', strtotime($month . '-01'));
+        return [$start, date('Y-m-t', strtotime($start))];
+    }
+
+    /** Human range label: "3–9 Aug 2026" / "28 Jul – 3 Aug 2026" / cross-year full. */
+    private function fmtRange(string $start, string $end): string
+    {
+        $s = strtotime($start); $e = strtotime($end);
+        if ($s === false || $e === false) { return $start . ' – ' . $end; }
+        if (date('Y-m', $s) === date('Y-m', $e)) { return date('j', $s) . '–' . date('j M Y', $e); }
+        if (date('Y', $s) === date('Y', $e))     { return date('j M', $s) . ' – ' . date('j M Y', $e); }
+        return date('j M Y', $s) . ' – ' . date('j M Y', $e);
+    }
+
     /**
      * Compute the payroll row for one employee + month. Returns a flat array the page and the
      * pay/approve steps both consume. `overrides` lets the manager tweak numbers (free-form late
@@ -61,6 +157,11 @@ class PayrollService
         $base = $overrides['base_salary'] ?? ($profile->base_salary ?? 0);
         $base = (float) $base;
         $configured = $base > 0;
+
+        // Pay schedule + business-unit tag (guarded — null before the SQL is applied).
+        $paySchedule   = $profile?->pay_schedule ?? 'monthly';
+        $rateType      = $profile?->rate_type ?? 'monthly';
+        $profileBuId   = $profile?->business_unit_id ?? null;
 
         $startDate = date('Y-m-01', strtotime($month . '-01'));
         $endDate = date('Y-m-t', strtotime($startDate));
@@ -136,6 +237,10 @@ class PayrollService
             'designation'      => $profile->designation ?? null,
             'month'            => $month,
             'configured'       => $configured,
+            'pay_schedule'     => $paySchedule,
+            'rate_type'        => $rateType,
+            'business_unit_id' => $this->stampBuId($profileBuId ? (int) $profileBuId : null), // resolved (NF id, never null)
+            'bu_code'          => $this->buCodeFor($profileBuId ? (int) $profileBuId : null), // 'NF' | 'KHAAS'
             'base_salary'      => round($base, 2),
             'per_day'          => round($perDay, 2),
             'per_hour'         => round($perHour, 2),
@@ -231,6 +336,17 @@ class PayrollService
                 return ['success' => false, 'message' => 'Funding account not found.'];
             }
 
+            // Tag the advance with the employee's business unit so a Khaas employee's
+            // advance is bucketed under Khaas on the Expenses page (which reads the
+            // request's business_unit_id). NULL = NF, matching the codebase convention.
+            $empBuId = null;
+            try {
+                if ($this->profileHasScheduleCols()) {
+                    $empBuId = DB::table('t_hr_employee_profile')->where('user_id', $userId)->value('business_unit_id');
+                    $empBuId = $empBuId ? (int) $empBuId : null;
+                }
+            } catch (\Throwable $e) { /* no tag → NF */ }
+
             $req = \App\Models\Request\RequestModel::create([
                 'request_number'   => \App\Models\Request\RequestModel::generateRequestNumber(),
                 'category_id'      => $category->id,
@@ -239,6 +355,7 @@ class PayrollService
                 'amount'           => round($amount, 2),
                 'description'      => $note ?: 'Advance given from Payroll',
                 'expense_date'     => now()->toDateString(),
+                'business_unit_id' => $empBuId,
                 'payment_source_account_id' => $fundingAcct->id,
                 'receiving_account_id' => $funding === 'online' ? $bankId : null,
                 'status'           => \App\Models\Request\RequestModel::STATUS_APPROVED,
@@ -272,6 +389,8 @@ class PayrollService
                 'funding' => $funding,
                 'bank_id' => $bankId,
                 'late_deduction' => $item['late_deduction'] ?? null,
+                // Manual take-home override (bypasses attendance deductions + advance settling).
+                'net_override' => $item['net_override'] ?? null,
                 // Manager bypass toggles (default = apply the recommendation). When on, the
                 // matching leave-ledger row is NOT written and the receipt records 0 for it.
                 'skip_overtime'  => !empty($item['skip_overtime']),
@@ -330,6 +449,26 @@ class PayrollService
             return ['success' => false, 'skipped' => 'already_paid', 'message' => 'Already paid for this month.'];
         }
 
+        // Custom-schedule employees are paid by date range on the Custom tab, never
+        // as a whole month. Both grids already hide them here; this closes the
+        // direct-request hole (stale form, mobile, crafted call).
+        if ($this->profileHasScheduleCols()) {
+            try {
+                $sched = DB::table('t_hr_employee_profile')->where('user_id', $userId)->value('pay_schedule');
+                if ($sched === 'custom') {
+                    return ['success' => false, 'message' => 'This employee is on a custom schedule — pay them from the Custom tab.'];
+                }
+            } catch (\Throwable $e) { /* treat as monthly */ }
+        }
+
+        // Reverse guard: refuse to pay a whole month when custom periods already
+        // cover part of it (the employee was custom for part of the month). Keeps a
+        // mid-month monthly⇄custom switch safe in both directions.
+        $block = $this->monthlyBlockedByCustom($userId, $month);
+        if ($block) {
+            return ['success' => false, 'message' => $block];
+        }
+
         $override = [];
         if (array_key_exists('late_deduction', $opts) && $opts['late_deduction'] !== null && $opts['late_deduction'] !== '') {
             $override['late_deduction'] = (float) $opts['late_deduction'];
@@ -338,7 +477,14 @@ class PayrollService
         if (!$row['configured']) {
             return ['success' => false, 'skipped' => 'no_salary', 'message' => 'No base salary set.'];
         }
-        $net = max(0, (float) $row['net_salary']);
+        // Manual net override: the manager types the exact take-home to pay, bypassing the
+        // attendance-based deductions entirely (e.g. an employee with no attendance). When set,
+        // open advances are NOT auto-deducted/settled — the amount is exactly what's paid.
+        $manualNet = null;
+        if (array_key_exists('net_override', $opts) && $opts['net_override'] !== null && $opts['net_override'] !== '') {
+            $manualNet = max(0, round((float) $opts['net_override'], 2));
+        }
+        $net = $manualNet !== null ? $manualNet : max(0, (float) $row['net_salary']);
         $funding = ($opts['funding'] ?? 'cash') === 'online' ? 'online' : 'cash';
         $bankId = $funding === 'online' ? ($opts['bank_id'] ?? null) : null;
         if ($funding === 'online' && !$bankId) {
@@ -352,7 +498,7 @@ class PayrollService
         $appliedBonusLeaves = !empty($opts['skip_overtime'])   ? 0 : (int) $row['bonus_leaves'];
 
         try {
-            return DB::transaction(function () use ($userId, $month, $row, $net, $funding, $bankId, $actorId, $appliedLateLeave, $appliedBonusLeaves) {
+            return DB::transaction(function () use ($userId, $month, $row, $net, $funding, $bankId, $actorId, $appliedLateLeave, $appliedBonusLeaves, $manualNet) {
                 // Funding (source) account — NF Cash, or the single ONLINE ledger account tagged per bank.
                 if ($funding === 'online') {
                     $source = \App\Models\FIN\ConfigModel::getOnlineBankAccount();
@@ -388,6 +534,7 @@ class PayrollService
                         'amount'             => $net,
                         'mode'               => $mode,
                         'receiving_account_id' => $bankId,
+                        'business_unit_id'   => $row['business_unit_id'], // BU tag (inert for HQ; drives Expenses BU split)
                         'approval_status'    => 'approved',
                         'approval_date'      => now(),
                         'approved_by'        => $actorId,
@@ -400,19 +547,22 @@ class PayrollService
                 }
                 $ledgerId = $ledger ? $ledger->id : null;
 
-                // Settle the advances that were deducted from this net.
+                // Settle the advances that were deducted from this net. On a MANUAL override the
+                // amount is exactly what's paid (advances weren't deducted), so leave them open.
                 $settledIds = [];
-                foreach ($row['advances'] as $a) {
-                    if (!empty($a['request_id'])) {
-                        DB::table('t_req_master')->where('id', $a['request_id'])->update([
-                            'settlement_status' => 'settled',
-                            'settled_at'        => now(),
-                            'settled_by'        => $actorId,
-                            'settlement_notes'  => 'Recovered from ' . date('M Y', strtotime($month . '-01')) . ' salary',
-                            'settlement_transaction_id' => $ledgerId,
-                            'updated_at'        => now(),
-                        ]);
-                        $settledIds[] = $a['request_id'];
+                if ($manualNet === null) {
+                    foreach ($row['advances'] as $a) {
+                        if (!empty($a['request_id'])) {
+                            DB::table('t_req_master')->where('id', $a['request_id'])->update([
+                                'settlement_status' => 'settled',
+                                'settled_at'        => now(),
+                                'settled_by'        => $actorId,
+                                'settlement_notes'  => 'Recovered from ' . date('M Y', strtotime($month . '-01')) . ' salary',
+                                'settlement_transaction_id' => $ledgerId,
+                                'updated_at'        => now(),
+                            ]);
+                            $settledIds[] = $a['request_id'];
+                        }
                     }
                 }
 
@@ -437,10 +587,15 @@ class PayrollService
                 if ((int) $row['late_leave_deduct'] > 0 && $appliedLateLeave === 0) {
                     $noteBits[] = 'Late -1 leave waived';
                 }
+                // A manual override pays a flat amount; freeze the deduction/advance figures to 0
+                // on the receipt so it reflects what actually happened (not the bypassed calc).
+                if ($manualNet !== null) {
+                    $noteBits[] = 'Manual amount set by manager (attendance deductions bypassed)';
+                }
                 $notes = $noteBits ? implode('; ', $noteBits) : null;
 
                 // Record the payment (blocks double-pay; drives the grid status).
-                DB::table('t_hr_payroll_payment')->insert([
+                $insert = [
                     'user_id'          => $userId,
                     'pay_month'        => $month,
                     'base_salary'      => $row['base_salary'],
@@ -448,12 +603,12 @@ class PayrollService
                     'present_days'     => $row['present_days'],
                     'absent_days'      => $row['absent_days'],
                     'leave_days'       => $row['leave_days'],
-                    'absent_deduction' => $row['absent_deduction'],
+                    'absent_deduction' => $manualNet !== null ? 0 : $row['absent_deduction'],
                     'late_minutes'     => $row['late_minutes'],
-                    'late_deduction'   => $row['late_deduction'],
+                    'late_deduction'   => $manualNet !== null ? 0 : $row['late_deduction'],
                     'late_leave_deduct' => $appliedLateLeave,
                     'bonus_leaves'     => $appliedBonusLeaves,
-                    'advance_total'    => $row['advance_total'],
+                    'advance_total'    => $manualNet !== null ? 0 : $row['advance_total'],
                     'net_salary'       => $net,
                     'funding'          => $funding,
                     'bank_id'          => $bankId,
@@ -464,7 +619,16 @@ class PayrollService
                     'paid_by'          => $actorId,
                     'created_at'       => now(),
                     'updated_at'       => now(),
-                ]);
+                ];
+                // Monthly rows carry an empty period_key (so the widened UNIQUE key is
+                // byte-equivalent to the old user+month guard) + the stamped BU.
+                if ($this->payrollHasPeriodCols()) {
+                    $insert['period_start']     = null;
+                    $insert['period_end']       = null;
+                    $insert['period_key']       = '';
+                    $insert['business_unit_id'] = $row['business_unit_id'];
+                }
+                DB::table('t_hr_payroll_payment')->insert($insert);
 
                 return ['success' => true, 'net' => $net, 'ledger_id' => $ledgerId, 'settled_advances' => $settledIds];
             });
@@ -497,6 +661,41 @@ class PayrollService
                 ->groupBy('requester_user_id')
                 ->selectRaw('requester_user_id, SUM(amount) as total, COUNT(*) as cnt')
                 ->get()->keyBy('requester_user_id')->toArray();
+        } catch (\Throwable $e) {
+            return [];
+        }
+    }
+
+    /**
+     * The individual "Staff Salaries" expense records behind the double-pay warning for a
+     * user+month (the aggregate that staffSalaryExpenses sums). Drives the clickable chip.
+     */
+    public function staffExpenseDetail(int $userId, string $month): array
+    {
+        try {
+            $start = $month . '-01';
+            $end = date('Y-m-t', strtotime($start));
+            return DB::table('t_req_master')
+                ->where('title', 'like', '%Staff Salar%')
+                ->whereIn('status', ['approved', 'completed'])
+                ->where('requester_user_id', $userId)
+                ->where(function ($q) use ($start, $end) {
+                    $q->whereBetween('expense_date', [$start, $end])
+                      ->orWhere(function ($q2) use ($start, $end) {
+                          $q2->whereNull('expense_date')->whereBetween('created_at', [$start . ' 00:00:00', $end . ' 23:59:59']);
+                      });
+                })
+                ->orderBy('expense_date')
+                ->get(['id', 'request_number', 'title', 'amount', 'status', 'expense_category', 'expense_date', 'created_at'])
+                ->map(fn ($r) => [
+                    'id'             => $r->id,
+                    'request_number' => $r->request_number,
+                    'title'          => $r->title,
+                    'category'       => $r->expense_category,
+                    'amount'         => (float) $r->amount,
+                    'date'           => $r->expense_date ? substr((string) $r->expense_date, 0, 10) : substr((string) $r->created_at, 0, 10),
+                    'status'         => $r->status,
+                ])->toArray();
         } catch (\Throwable $e) {
             return [];
         }
@@ -549,18 +748,19 @@ class PayrollService
     /** Compute every eligible employee's row for a month (configured-salary employees + advances). */
     public function computeMonth(string $month): array
     {
-        // Visible, active users — same visibility rule as the attendance report.
+        // Active users in name order; payroll visibility resolved per the effective rule
+        // (explicit "Show in Salary" flag, else attendance visibility).
         $users = DB::table('t_sys_user as u')
-            ->leftJoin('t_ops_attendance_visibility as av', 'av.user_id', '=', 'u.id')
             ->where('u.is_active', 1)
-            ->where(function ($q) {
-                $q->whereNull('av.is_visible')->orWhere('av.is_visible', 1);
-            })
             ->orderBy('u.fullname')
             ->pluck('u.id');
+        $payVis = $this->payrollVisibilityMap();
 
         $paid = $this->paidMap($month);
         $staffExp = $this->staffSalaryExpenses($month);
+        // Custom-schedule employees are paid by date-range on the Custom tab — keep them
+        // off the monthly grid entirely. Empty before the SQL is applied → no exclusion.
+        $customIds = $this->customScheduleUserIds();
 
         // Lookups for the paid-detail view (bank names + who paid), one query each.
         $bankLabels = [];
@@ -581,10 +781,15 @@ class PayrollService
 
         $rows = [];
         foreach ($users as $uid) {
+            $uid = (int) $uid;
+            if (isset($customIds[$uid])) { continue; }
+            $vis = $payVis[$uid] ?? ['on' => true, 'explicit' => false];
+            if (!$vis['on']) { continue; }
             try {
-                $row = $this->computeRow((int) $uid, $month);
-                // Show a row only if they have a salary configured OR have open advances to settle.
-                if ($row['configured'] || $row['advance_total'] > 0) {
+                $row = $this->computeRow($uid, $month);
+                // Show the row when: the owner explicitly put them on Payroll (even with no
+                // salary yet, so "＋ Set salary" is reachable), OR they have a salary / open advance.
+                if ($vis['explicit'] || $row['configured'] || $row['advance_total'] > 0) {
                     $p = $paid[(int) $uid] ?? null;
                     $row['paid'] = $p !== null;
                     $row['paid_net'] = $p ? (float) $p->net_salary : null;
@@ -624,5 +829,542 @@ class PayrollService
             }
         }
         return $rows;
+    }
+
+    // =========================================================================
+    //  CUSTOM-SCHEDULE PAYROLL (date-range / weekly employees)
+    // =========================================================================
+
+    /**
+     * Effective payroll visibility for every active user: user_id => ['on'=>bool, 'explicit'=>bool].
+     *   - explicit = the owner set a dedicated "Show in Salary" flag in the attendance
+     *     Customize-User-List modal. It OVERRIDES attendance visibility AND forces the
+     *     row to appear even before a salary is set (so "＋ Set salary" is reachable).
+     *   - no flag (NULL) → follows attendance "Show in Attendance" (COALESCE default visible).
+     * Guarded: before the show_in_payroll column exists this is exactly the old
+     * attendance-visibility rule, so the grid is byte-identical.
+     */
+    private function payrollVisibilityMap(): array
+    {
+        $hasCol = false;
+        try { $hasCol = Schema::hasColumn('t_ops_attendance_visibility', 'show_in_payroll'); } catch (\Throwable $e) { $hasCol = false; }
+        $rows = DB::table('t_sys_user as u')
+            ->leftJoin('t_ops_attendance_visibility as av', 'av.user_id', '=', 'u.id')
+            ->where('u.is_active', 1)
+            ->get(['u.id', 'av.is_visible', $hasCol ? 'av.show_in_payroll' : DB::raw('NULL as show_in_payroll')]);
+        $map = [];
+        foreach ($rows as $r) {
+            $attVisible = ($r->is_visible === null) ? true : ((int) $r->is_visible === 1);
+            $explicit = $hasCol && $r->show_in_payroll !== null;
+            $map[(int) $r->id] = [
+                'on'       => $explicit ? ((int) $r->show_in_payroll === 1) : $attVisible,
+                'explicit' => $explicit,
+            ];
+        }
+        return $map;
+    }
+
+    /** Map user_id => true for employees tagged pay_schedule='custom' (empty pre-SQL). */
+    private function customScheduleUserIds(): array
+    {
+        if (!$this->profileHasScheduleCols()) { return []; }
+        try {
+            return DB::table('t_hr_employee_profile')->where('pay_schedule', 'custom')
+                ->pluck('user_id')->flip()->toArray();
+        } catch (\Throwable $e) {
+            return [];
+        }
+    }
+
+    /** Present days (with a login) inside a range — reference only, never affects pay. */
+    private function presentDaysInRange(int $userId, string $start, string $end): int
+    {
+        try {
+            return (int) DB::table('t_ops_attendance')
+                ->where('user_id', $userId)
+                ->whereBetween('attendance_date', [$start, $end])
+                ->whereNotNull('login_time')->where('login_time', '!=', '')
+                ->distinct()->count('attendance_date');
+        } catch (\Throwable $e) {
+            return 0;
+        }
+    }
+
+    /**
+     * Compute a custom employee's pay for a date range. PURE COMPUTATION — no writes.
+     * Gross = daily rate × calendar days, or monthly rate ÷ 30 × calendar days.
+     * Attendance (present/absent) is REFERENCE ONLY (owner policy: no automatic
+     * absent/late/OT effects for custom employees); open advances auto-deduct.
+     *
+     * @param array $overrides ['amount' => manager's final gross before advances]
+     */
+    public function computeCustomPeriod(int $userId, string $start, string $end, array $overrides = []): array
+    {
+        $start = substr($start, 0, 10);
+        $end   = substr($end, 0, 10);
+
+        $profile = EmployeeProfileModel::with('user')->where('user_id', $userId)->first();
+        $fullname = $profile && $profile->user ? $profile->user->fullname
+            : (DB::table('t_sys_user')->where('id', $userId)->value('fullname') ?: 'Employee');
+
+        $base       = (float) ($profile?->base_salary ?? 0);
+        $rateType   = ($profile?->rate_type ?? 'monthly') === 'daily' ? 'daily' : 'monthly';
+        $configured = $base > 0;
+        $profileBu  = $profile?->business_unit_id ? (int) $profile->business_unit_id : null;
+
+        $today = date('Y-m-d');
+        $days  = $this->calendarDays($start, $end);
+
+        // Reference attendance for the range (clamped to today; never penalises pay).
+        $workingDaysInRange = 0; $presentDays = 0; $absentDays = 0;
+        try {
+            $refEnd = ($end > $today) ? $today : $end;
+            if ($days > 0 && $refEnd >= $start) {
+                $workingDaysInRange = $this->shift->calculateWorkingDays($userId, $start, $refEnd);
+                $presentDays = $this->presentDaysInRange($userId, $start, $refEnd);
+                $absentDays  = count((new AttendanceYearService())
+                    ->absentWorkingDates($userId, $this->shift, $start, $refEnd));
+            }
+        } catch (\Throwable $e) { /* reference only */ }
+
+        // Gross: daily → rate × days; monthly → base ÷ 30 × days (flat ÷30 convention).
+        $computed = $rateType === 'daily'
+            ? round($base * $days, 2)
+            : round(($base / 30) * $days, 2);
+
+        $amount = (array_key_exists('amount', $overrides) && $overrides['amount'] !== null && $overrides['amount'] !== '')
+            ? round((float) $overrides['amount'], 2)
+            : $computed;
+
+        // Advances: recover only what THIS period's pay can absorb (oldest first).
+        // Settlement is all-or-nothing per advance, and a weekly period is often
+        // smaller than an open advance — settling everything like the monthly path
+        // would write off the uncovered excess invisibly. Anything that doesn't fit
+        // stays OPEN (still visible, recovered by a later/bigger period or manually).
+        $allAdvances = $this->openAdvances($userId);
+        $advances = [];            // the ones deducted from THIS pay (settled on pay)
+        $advanceTotal = 0.0;
+        $advanceOpenAfter = 0.0;   // left open for next time
+        foreach ($allAdvances as $a) {
+            if (round($advanceTotal + $a['amount'], 2) <= $amount) {
+                $advances[] = $a;
+                $advanceTotal = round($advanceTotal + $a['amount'], 2);
+            } else {
+                $advanceOpenAfter = round($advanceOpenAfter + $a['amount'], 2);
+            }
+        }
+        $net = round($amount - $advanceTotal, 2);
+
+        return [
+            'user_id'               => $userId,
+            'fullname'              => $fullname,
+            'employee_code'         => $profile?->employee_code,
+            'designation'           => $profile?->designation,
+            'rate_type'             => $rateType,
+            'base_rate'             => round($base, 2),
+            'configured'            => $configured,
+            'business_unit_id'      => $this->stampBuId($profileBu),
+            'bu_code'               => $this->buCodeFor($profileBu),
+            'start'                 => $start,
+            'end'                   => $end,
+            'days'                  => $days,
+            'working_days_in_range' => $workingDaysInRange,
+            'present_days'          => $presentDays,
+            'absent_days'           => $absentDays,
+            'computed_amount'       => $computed,
+            'amount'                => $amount,
+            'advances'              => $advances,          // deducted THIS pay (settled on pay)
+            'advance_total'         => $advanceTotal,
+            'advance_open_after'    => $advanceOpenAfter,  // still open after this pay
+            'net_amount'            => max(0, $net),
+            'net_raw'               => $net,
+        ];
+    }
+
+    /**
+     * Every paid payment row for a user, normalised for overlap checks.
+     * period_start/end are trimmed to Y-m-d; monthly rows carry period_key=''.
+     */
+    private function userPaidRows(int $userId, bool $forUpdate = false): array
+    {
+        try {
+            $cols = ['id', 'pay_month', 'net_salary', 'paid_at'];
+            $hasPeriods = $this->payrollHasPeriodCols();
+            if ($hasPeriods) {
+                $cols = array_merge($cols, ['period_start', 'period_end', 'period_key']);
+            }
+            $q = DB::table('t_hr_payroll_payment')->where('user_id', $userId)->where('status', 'paid');
+            if ($forUpdate) { $q->lockForUpdate(); }
+            $rows = $q->get($cols);
+            return $rows->map(function ($r) use ($hasPeriods) {
+                $r->period_key   = $hasPeriods ? ($r->period_key ?? '') : '';
+                $r->period_start = $hasPeriods && $r->period_start ? substr((string) $r->period_start, 0, 10) : null;
+                $r->period_end   = $hasPeriods && $r->period_end ? substr((string) $r->period_end, 0, 10) : null;
+                return $r;
+            })->all();
+        } catch (\Throwable $e) {
+            return [];
+        }
+    }
+
+    /**
+     * Reject a new custom range that overlaps anything already paid for the user:
+     *   - a paid CUSTOM period whose range intersects it, or
+     *   - a paid MONTHLY month (the whole month counts as covered).
+     * Returns a human message, or null when the range is free.
+     */
+    private function customPeriodConflict(string $start, string $end, array $paidRows): ?string
+    {
+        foreach ($paidRows as $r) {
+            $pk = $r->period_key ?? '';
+            if ($pk !== '' && $r->period_start && $r->period_end) {
+                if ($this->rangesOverlap($start, $end, $r->period_start, $r->period_end)) {
+                    return 'Overlaps an already-paid period (' . $this->fmtRange($r->period_start, $r->period_end) . ').';
+                }
+            } else {
+                [$ms, $me] = $this->monthBounds($r->pay_month);
+                if ($this->rangesOverlap($start, $end, $ms, $me)) {
+                    return date('F Y', strtotime($r->pay_month . '-01')) . ' was already paid as a monthly salary.';
+                }
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Reverse guard for the monthly path: a message if custom periods already cover
+     * part of the given month, else null.
+     */
+    private function monthlyBlockedByCustom(int $userId, string $month): ?string
+    {
+        if (!$this->payrollHasPeriodCols()) { return null; }
+        [$ms, $me] = $this->monthBounds($month);
+        foreach ($this->userPaidRows($userId) as $r) {
+            if (($r->period_key ?? '') !== '' && $r->period_start && $r->period_end
+                && $this->rangesOverlap($ms, $me, $r->period_start, $r->period_end)) {
+                return 'Custom periods already exist in ' . date('F Y', strtotime($month . '-01'))
+                    . '. Finish this month on the Custom tab, or switch this employee to Monthly from next month.';
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Pay a custom employee for a date range. Atomic; overlap-checked inside the
+     * transaction (row-locked); posts the same salary_payment ledger + settles
+     * advances as the monthly path. NO leave-grant side effects. pay_month = the
+     * month of the period END (so 28 Jul–3 Aug files under August everywhere).
+     *
+     * @param array $opts ['funding','bank_id','amount','note','actor_id']
+     */
+    public function payCustomPeriod(int $userId, string $start, string $end, array $opts): array
+    {
+        if (!$this->payrollHasPeriodCols()) {
+            return ['success' => false, 'message' => 'Custom payroll needs the schema update to be applied first.'];
+        }
+        $start = substr($start, 0, 10);
+        $end   = substr($end, 0, 10);
+        if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $start) || !preg_match('/^\d{4}-\d{2}-\d{2}$/', $end)) {
+            return ['success' => false, 'message' => 'Pick a valid start and end date.'];
+        }
+        if ($end < $start) {
+            return ['success' => false, 'message' => 'End date must be on or after the start date.'];
+        }
+        if ($end > date('Y-m-d')) {
+            return ['success' => false, 'message' => "You can't pay for days that haven't happened yet."];
+        }
+        if ($this->calendarDays($start, $end) > 62) {
+            return ['success' => false, 'message' => 'That period is longer than two months — split it into smaller ranges.'];
+        }
+
+        $funding = ($opts['funding'] ?? 'cash') === 'online' ? 'online' : 'cash';
+        $bankId  = $funding === 'online' ? ($opts['bank_id'] ?? null) : null;
+        if ($funding === 'online' && !$bankId) {
+            return ['success' => false, 'message' => 'Choose the bank you are paying from.'];
+        }
+        $actorId = (int) ($opts['actor_id'] ?? auth()->id() ?? 1);
+
+        $profile = EmployeeProfileModel::where('user_id', $userId)->first();
+        if (($profile?->pay_schedule ?? 'monthly') !== 'custom') {
+            return ['success' => false, 'message' => 'This employee is not on a custom schedule.'];
+        }
+        if ((float) ($profile?->base_salary ?? 0) <= 0) {
+            return ['success' => false, 'message' => "Set this employee's rate first."];
+        }
+
+        try {
+            return DB::transaction(function () use ($userId, $start, $end, $funding, $bankId, $actorId, $opts) {
+                // Serialize concurrent pays for this employee: lock their PROFILE row
+                // (always exists for a custom employee). Locking only the payment rows
+                // isn't enough — when none exist yet there is nothing to lock, and two
+                // managers paying overlapping ranges at once could both pass the check.
+                DB::table('t_hr_employee_profile')->where('user_id', $userId)->lockForUpdate()->first();
+
+                // Re-check overlap inside the tx (race-safe behind the lock above).
+                $paidRows = $this->userPaidRows($userId, true);
+                $conflict = $this->customPeriodConflict($start, $end, $paidRows);
+                if ($conflict) {
+                    return ['success' => false, 'message' => $conflict];
+                }
+
+                $row = $this->computeCustomPeriod($userId, $start, $end, ['amount' => $opts['amount'] ?? null]);
+                $net = max(0, (float) $row['net_amount']);
+                $buId = $row['business_unit_id'];
+                $label = $this->fmtRange($start, $end);
+
+                // Funding (source) account.
+                if ($funding === 'online') {
+                    $source = \App\Models\FIN\ConfigModel::getOnlineBankAccount();
+                    $mode = 'online';
+                } else {
+                    $source = \App\Models\FIN\ConfigModel::getNFCashAccount();
+                    $mode = 'cash';
+                }
+                if (!$source) {
+                    throw new \RuntimeException('Funding account not found.');
+                }
+
+                // Employee cash account (resolve by user+category first, else create).
+                $empCash = \App\Models\FIN\AccountModel::where('user_id', $userId)
+                    ->where('account_category', 'employee_cash')->first();
+                if (!$empCash) {
+                    $uname = DB::table('t_sys_user')->where('id', $userId)->value('fullname') ?: ('User ' . $userId);
+                    $empCash = \App\Models\FIN\AccountModel::createEmployeeCashAccount($userId, $uname);
+                }
+
+                // Post the salary payment (same excluded-type behaviour as the monthly path).
+                $ledger = null;
+                if ($net > 0) {
+                    $ledger = \App\Models\FIN\LedgerModel::create([
+                        'transaction_date'   => now(),
+                        'transaction_type'   => 'salary_payment',
+                        'description'        => 'Salary ' . $label . ' — ' . $row['fullname'],
+                        'from_account_id'    => $source->id,
+                        'to_account_id'      => $empCash->id,
+                        'amount'             => $net,
+                        'mode'               => $mode,
+                        'receiving_account_id' => $bankId,
+                        'business_unit_id'   => $buId,
+                        'approval_status'    => 'approved',
+                        'approval_date'      => now(),
+                        'approved_by'        => $actorId,
+                        'external_source'    => 'payroll',
+                        'external_ref_id'    => $start . '_' . $end . '/' . $userId,
+                        'comments'           => 'Paid from: ' . $source->account_name . ($funding === 'online' ? (' (bank #' . $bankId . ')') : ''),
+                        'created_by'         => $actorId,
+                    ]);
+                    (new \App\Services\FIN\BalancePostingService())->apply($ledger);
+                }
+                $ledgerId = $ledger ? $ledger->id : null;
+
+                // Settle the advances deducted from this net.
+                $settledIds = [];
+                foreach ($row['advances'] as $a) {
+                    if (!empty($a['request_id'])) {
+                        DB::table('t_req_master')->where('id', $a['request_id'])->update([
+                            'settlement_status' => 'settled',
+                            'settled_at'        => now(),
+                            'settled_by'        => $actorId,
+                            'settlement_notes'  => 'Recovered from ' . $label . ' salary',
+                            'settlement_transaction_id' => $ledgerId,
+                            'updated_at'        => now(),
+                        ]);
+                        $settledIds[] = $a['request_id'];
+                    }
+                }
+
+                // Record the payment. pay_month = the END month; period_key blocks an
+                // exact-duplicate range via the widened UNIQUE key.
+                $payMonth = date('Y-m', strtotime($end));
+                DB::table('t_hr_payroll_payment')->insert([
+                    'user_id'          => $userId,
+                    'pay_month'        => $payMonth,
+                    'base_salary'      => $row['base_rate'],
+                    'working_days'     => $row['days'],           // days paid (custom row)
+                    'present_days'     => $row['present_days'],
+                    'absent_days'      => $row['absent_days'],
+                    'leave_days'       => 0,
+                    'absent_deduction' => 0,
+                    'late_minutes'     => 0,
+                    'late_deduction'   => 0,
+                    'late_leave_deduct' => 0,
+                    'bonus_leaves'     => 0,
+                    'advance_total'    => $row['advance_total'],
+                    'net_salary'       => $net,
+                    'funding'          => $funding,
+                    'bank_id'          => $bankId,
+                    'ledger_id'        => $ledgerId,
+                    'status'           => 'paid',
+                    'notes'            => $opts['note'] ?? null,
+                    'paid_at'          => now(),
+                    'paid_by'          => $actorId,
+                    'period_start'     => $start,
+                    'period_end'       => $end,
+                    'period_key'       => $start . '_' . $end,
+                    'business_unit_id' => $buId,
+                    'created_at'       => now(),
+                    'updated_at'       => now(),
+                ]);
+
+                return ['success' => true, 'net' => $net, 'ledger_id' => $ledgerId, 'settled_advances' => $settledIds, 'pay_month' => $payMonth];
+            });
+        } catch (\Throwable $e) {
+            \Log::error('Payroll payCustomPeriod failed', ['user_id' => $userId, 'start' => $start, 'end' => $end, 'error' => $e->getMessage()]);
+            if (stripos($e->getMessage(), 'uniq_user_month_period') !== false || stripos($e->getMessage(), 'Duplicate entry') !== false) {
+                return ['success' => false, 'message' => 'This exact period was already paid.'];
+            }
+            return ['success' => false, 'message' => 'Could not pay: ' . $e->getMessage()];
+        }
+    }
+
+    /** Every custom-schedule employee + their coverage for a month (Custom tab grid). */
+    public function computeMonthCustom(string $month): array
+    {
+        $customIds = array_keys($this->customScheduleUserIds());
+        if (empty($customIds)) { return []; }
+
+        // Same effective payroll-visibility rule as the monthly grid.
+        $users = DB::table('t_sys_user as u')
+            ->where('u.is_active', 1)
+            ->whereIn('u.id', $customIds)
+            ->orderBy('u.fullname')
+            ->pluck('u.id');
+        $payVis = $this->payrollVisibilityMap();
+
+        $rows = [];
+        foreach ($users as $uid) {
+            $uid = (int) $uid;
+            $vis = $payVis[$uid] ?? ['on' => true, 'explicit' => false];
+            if (!$vis['on']) { continue; }
+            try {
+                $profile  = EmployeeProfileModel::where('user_id', (int) $uid)->first();
+                $fullname = DB::table('t_sys_user')->where('id', $uid)->value('fullname') ?: 'Employee';
+                $base     = (float) ($profile?->base_salary ?? 0);
+                $rateType = ($profile?->rate_type ?? 'monthly') === 'daily' ? 'daily' : 'monthly';
+                $profileBu = $profile?->business_unit_id ? (int) $profile->business_unit_id : null;
+
+                $advances = $this->openAdvances((int) $uid);
+                $advTotal = round(array_sum(array_column($advances, 'amount')), 2);
+
+                // Paid custom periods filed under this month (pay_month = end month) + last end overall.
+                $paid = []; $lastEnd = null;
+                foreach ($this->userPaidRows((int) $uid) as $r) {
+                    if (($r->period_key ?? '') === '' || !$r->period_start || !$r->period_end) { continue; }
+                    if ($lastEnd === null || $r->period_end > $lastEnd) { $lastEnd = $r->period_end; }
+                    if ($r->pay_month === $month) {
+                        $paid[] = [
+                            'id'      => $r->id,
+                            'start'   => $r->period_start,
+                            'end'     => $r->period_end,
+                            'net'     => (float) $r->net_salary,
+                            'paid_at' => (string) $r->paid_at,
+                            'label'   => $this->fmtRange($r->period_start, $r->period_end),
+                        ];
+                    }
+                }
+                usort($paid, fn ($a, $b) => strcmp($a['start'], $b['start']));
+
+                $rows[] = [
+                    'user_id'          => (int) $uid,
+                    'fullname'         => $fullname,
+                    'employee_code'    => $profile?->employee_code,
+                    'designation'      => $profile?->designation,
+                    'configured'       => $base > 0,
+                    'rate_type'        => $rateType,
+                    'base_rate'        => round($base, 2),
+                    'business_unit_id' => $this->stampBuId($profileBu),
+                    'bu_code'          => $this->buCodeFor($profileBu),
+                    'advances'         => $advances,
+                    'advance_total'    => $advTotal,
+                    'paid_periods'     => $paid,
+                    'paid_total'       => round(array_sum(array_column($paid, 'net')), 2),
+                    'last_period_end'  => $lastEnd,
+                    'suggested_start'  => $lastEnd
+                        ? date('Y-m-d', strtotime($lastEnd . ' +1 day'))
+                        : date('Y-m-01', strtotime($month . '-01')),
+                ];
+            } catch (\Throwable $e) {
+                \Log::warning('Payroll custom row failed', ['user_id' => $uid, 'month' => $month, 'error' => $e->getMessage()]);
+            }
+        }
+        return $rows;
+    }
+
+    /** Ensure an employee profile row exists (so tag updates have a row to write). */
+    private function ensureProfile(int $userId): void
+    {
+        $exists = DB::table('t_hr_employee_profile')->where('user_id', $userId)->exists();
+        if (!$exists) {
+            DB::table('t_hr_employee_profile')->insert([
+                'user_id'               => $userId,
+                'base_salary'           => 0,
+                'salary_effective_date' => now()->toDateString(),
+                'created_at'            => now(),
+                'updated_at'            => now(),
+            ]);
+        }
+    }
+
+    /** Set an employee's pay schedule (monthly|custom) + rate type (daily|monthly). Audited. */
+    public function setSchedule(int $userId, string $paySchedule, ?string $rateType, int $actorId): array
+    {
+        if (!$this->profileHasScheduleCols()) {
+            return ['success' => false, 'message' => 'Apply the schema update before changing schedules.'];
+        }
+        $paySchedule = $paySchedule === 'custom' ? 'custom' : 'monthly';
+        $rateType = in_array($rateType, ['daily', 'monthly'], true) ? $rateType : 'monthly';
+        try {
+            $this->ensureProfile($userId);
+            DB::table('t_hr_employee_profile')->where('user_id', $userId)->update([
+                'pay_schedule' => $paySchedule,
+                'rate_type'    => $paySchedule === 'custom' ? $rateType : 'monthly',
+                'updated_at'   => now(),
+            ]);
+            \Log::info('Payroll schedule set', ['user_id' => $userId, 'schedule' => $paySchedule, 'rate_type' => $rateType, 'by' => $actorId]);
+            return ['success' => true, 'message' => 'Saved.'];
+        } catch (\Throwable $e) {
+            \Log::error('setSchedule failed', ['user_id' => $userId, 'error' => $e->getMessage()]);
+            return ['success' => false, 'message' => 'Could not save the schedule.'];
+        }
+    }
+
+    /** Tag an employee's business unit. Only NF (null) or the real Khaas id is stored. Audited. */
+    public function setBusinessUnit(int $userId, ?int $buId, int $actorId): array
+    {
+        if (!$this->profileHasScheduleCols()) {
+            return ['success' => false, 'message' => 'Apply the schema update before tagging business units.'];
+        }
+        $khaas = $this->khaasBuId();
+        $store = ($buId && $khaas && $buId === $khaas) ? $khaas : null; // null = NF (codebase convention)
+        try {
+            $this->ensureProfile($userId);
+            DB::table('t_hr_employee_profile')->where('user_id', $userId)->update([
+                'business_unit_id' => $store,
+                'updated_at'       => now(),
+            ]);
+            \Log::info('Payroll BU set', ['user_id' => $userId, 'bu_id' => $store, 'by' => $actorId]);
+            return ['success' => true, 'message' => 'Saved.'];
+        } catch (\Throwable $e) {
+            \Log::error('setBusinessUnit failed', ['user_id' => $userId, 'error' => $e->getMessage()]);
+            return ['success' => false, 'message' => 'Could not save the business unit.'];
+        }
+    }
+
+    /** Whether the schedule/BU tag columns exist yet (gates the schedule gear + Custom tab). */
+    public function scheduleTaggingAvailable(): bool
+    {
+        return $this->profileHasScheduleCols();
+    }
+
+    /** Whether Khaas tagging is offered (schema applied + a Khaas BU exists). */
+    public function khaasTaggingAvailable(): bool
+    {
+        return $this->profileHasScheduleCols() && $this->khaasBuId() !== null;
+    }
+
+    /** The Khaas business-unit id (for the front-end BU toggle to post), or null. */
+    public function khaasBuIdValue(): ?int
+    {
+        return $this->khaasBuId();
     }
 }

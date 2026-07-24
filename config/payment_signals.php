@@ -39,10 +39,23 @@ return [
     // timezone / clock skew between the bank receipt and our order timestamps.
     'match_future_grace_days' => env('PAYMENT_SIGNALS_FUTURE_GRACE_DAYS', 1),
 
-    // When corroborating a WhatsApp screenshot with a bank email (or vice
-    // versa), the two must describe the SAME payment — same amount AND a
-    // transaction time within this many days of each other.
+    // When corroborating a WhatsApp screenshot with a bank confirmation (email
+    // or a bank credit SMS, or vice versa), the two must describe the SAME
+    // payment — same amount AND a transaction time within the DIRECTIONAL
+    // window below. (A shared bank REFERENCE still pairs outright, ignoring
+    // time — that path is unaffected.)
+    //
+    // The window is directional because a bank confirms AT the transaction,
+    // while a customer's screenshot can be SENT days later (and if its receipt
+    // time can't be OCR'd, the proof falls back to that later send time). So:
+    //   • a screenshot may look up to pair_window_days BACK for its bank mate;
+    //   • a bank confirmation may look up to pair_window_days FORWARD for its
+    //     screenshot mate;
+    //   • the opposite direction is limited to pair_slop_hours (clock slop),
+    //     because a bank alert arriving days AFTER the payment it confirms is
+    //     physically meaningless and only adds cross-pairing risk.
     'pair_window_days' => env('PAYMENT_SIGNALS_PAIR_WINDOW_DAYS', 3),
+    'pair_slop_hours'  => env('PAYMENT_SIGNALS_PAIR_SLOP_HOURS', 24),
 
     // Amount tolerance (in PKR) for treating a payment as matching an order's
     // balance. Widened to 10 PKR (Jun-2026): customers routinely round or

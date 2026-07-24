@@ -47,6 +47,27 @@
   #hq-root .seg button[data-u="qb"] .udot{background:var(--u-qb)}
   #hq-root .seg button.on{background:var(--ink);color:#fff}
   #hq-root .seg button.on .udot{outline:2px solid rgba(255,255,255,.45)}
+  /* Unit selector: NF+Frozen default button + a Business-units dropdown for the single units. */
+  #hq-root .unitsel{display:flex;align-items:center;gap:8px}
+  #hq-root .useg{display:flex;background:#fff;border:1px solid var(--line);border-radius:10px;padding:3px}
+  #hq-root .useg button{border:0;background:none;font:inherit;font-size:12.5px;font-weight:600;color:var(--mut);
+    padding:6px 13px;border-radius:7px;cursor:pointer;display:flex;align-items:center;gap:7px;white-space:nowrap}
+  #hq-root .useg button .udot{width:8px;height:8px;border-radius:50%;background:var(--u-all);flex:0 0 auto}
+  #hq-root .useg button.on{background:var(--ink);color:#fff}
+  #hq-root .useg button.on .udot{outline:2px solid rgba(255,255,255,.45)}
+  #hq-root .budrop{position:relative}
+  #hq-root .budrop-btn{display:flex;align-items:center;gap:6px;background:#fff;border:1px solid var(--line);border-radius:10px;
+    font:inherit;font-size:12.5px;font-weight:600;color:var(--mut);padding:9px 13px;cursor:pointer;white-space:nowrap}
+  #hq-root .budrop-btn.on{background:var(--ink);color:#fff;border-color:var(--ink)}
+  #hq-root .budrop-btn .cav{font-size:10px;opacity:.7}
+  #hq-root .budrop-menu{position:absolute;top:calc(100% + 6px);left:0;z-index:30;min-width:190px;background:#fff;
+    border:1px solid var(--line);border-radius:11px;box-shadow:0 12px 34px rgba(28,25,23,.16);padding:5px;display:none}
+  #hq-root .budrop-menu.on{display:block}
+  #hq-root .budrop-menu button{display:flex;align-items:center;gap:9px;width:100%;border:0;background:none;font:inherit;
+    font-size:12.5px;font-weight:600;color:var(--ink);padding:9px 11px;border-radius:8px;cursor:pointer;text-align:left}
+  #hq-root .budrop-menu button:hover{background:var(--card)}
+  #hq-root .budrop-menu button.on{background:var(--card)}
+  #hq-root .budrop-menu button .udot{width:9px;height:9px;border-radius:50%;flex:0 0 auto}
   #hq-root .months{display:flex;gap:6px;overflow-x:auto;padding:2px;scrollbar-width:none}
   #hq-root .months::-webkit-scrollbar{display:none}
   #hq-root .mpill{border:1px solid var(--line);background:#fff;font:inherit;font-size:12.5px;font-weight:600;
@@ -88,7 +109,7 @@
   /* 6 boxes: revenue − vendor = GP − expenses = net profit ┊ assets bought.
      The last one is an ASIDE (capital spending), not part of the equation —
      hence a divider rather than an operator before it. */
-  #hq-root .pl-flow{display:grid;grid-template-columns:1fr auto 1fr auto 1fr auto 1fr auto 1fr auto 1fr;align-items:stretch}
+  #hq-root .pl-flow{display:grid;grid-template-columns:1fr auto 1fr auto 1fr auto 1fr auto 1fr auto 1fr auto 1fr;align-items:stretch}
   #hq-root .pl-cell{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:13px 15px;min-width:0}
   #hq-root .pl-op{display:flex;align-items:center;justify-content:center;color:var(--faint);font-size:16px;font-weight:600;padding:0 7px}
   #hq-root .pl-cell .k-val{font-size:18px}
@@ -231,11 +252,18 @@
 </div>
 
 <div class="controls">
-  <div class="seg" role="tablist" aria-label="Business unit">
-    <button data-u="nf" class="on" type="button" onclick="hqSetUnit('nf')"><span class="udot"></span>Nizami Farms</button>
-    <button data-u="kh" type="button" onclick="hqSetUnit('kh')"><span class="udot"></span>Khaas · Frozen</button>
-    <button data-u="all" type="button" onclick="hqSetUnit('all')"><span class="udot"></span>NF + Frozen</button>
-    <button data-u="qb" type="button" onclick="hqSetUnit('qb')"><span class="udot"></span>Qurbani</button>
+  <div class="unitsel" aria-label="Business unit">
+    <div class="useg">
+      <button class="useg-main on" type="button" onclick="hqSetUnit('all')"><span class="udot"></span>NF + Frozen</button>
+    </div>
+    <div class="budrop">
+      <button class="budrop-btn" id="hqBuBtn" type="button" onclick="hqToggleBu(event)">Business units <span class="cav">▾</span></button>
+      <div class="budrop-menu" id="hqBuMenu" role="menu">
+        <button data-u="nf" type="button" role="menuitem" onclick="hqSetUnit('nf')"><span class="udot" style="background:var(--u-nf)"></span>Nizami Farms only</button>
+        <button data-u="kh" type="button" role="menuitem" onclick="hqSetUnit('kh')"><span class="udot" style="background:var(--u-kh)"></span>Khaas · Frozen only</button>
+        <button data-u="qb" type="button" role="menuitem" onclick="hqSetUnit('qb')"><span class="udot" style="background:var(--u-qb)"></span>Qurbani</button>
+      </div>
+    </div>
   </div>
   <div class="months" id="hqMonthRail"></div>
   <span class="mstate closed" id="hqMonthState">Closed</span>
@@ -362,7 +390,7 @@
   var UNITS={all:{name:'NF + Frozen',hex:'#334155'},nf:{name:'Nizami Farms',hex:'#059669'},
              kh:{name:'Khaas · Frozen',hex:'#d97706'},qb:{name:'Qurbani',hex:'#9f1239'}};
   var CUR_YEAR={{ $currentYear }}, CUR_MONTH={{ $currentMonth }};
-  var state={unit:'nf',year:CUR_YEAR,month:CUR_MONTH,tab:'closing'}; // default = Nizami Farms (owner rule)
+  var state={unit:'all',year:CUR_YEAR,month:CUR_MONTH,tab:'closing'}; // default = NF + Frozen combined (owner rule)
   var data={closing:null,trend:null,wc:null,growth:null,growthKey:null};
   var MONTHS=[];
 
@@ -402,10 +430,21 @@
       rail.innerHTML=MONTHS.map(function(mo){var on=(mo.y===state.year&&mo.m===state.month);
         return '<button class="mpill'+(on?' on':'')+'" type="button" onclick="hqPick('+mo.y+','+mo.m+')">'+mo.label+'</button>';}).join('');
     }
-    document.querySelectorAll('#hq-root .seg button').forEach(function(b){b.classList.toggle('on',b.getAttribute('data-u')===state.unit);});
+    // Unit selector: highlight either the NF+Frozen button (all) or the Business-units
+    // dropdown (a single unit is selected), and reflect the current choice on the button.
+    var isAll=state.unit==='all';
+    var mainBtn=document.querySelector('#hq-root .useg-main');
+    if(mainBtn)mainBtn.classList.toggle('on',isAll);
+    var buBtn=$('hqBuBtn');
+    if(buBtn){ buBtn.classList.toggle('on',!isAll);
+      buBtn.innerHTML=(isAll?'Business units':esc(UNITS[state.unit].name))+' <span class="cav">▾</span>'; }
+    document.querySelectorAll('#hqBuMenu button').forEach(function(b){b.classList.toggle('on',b.getAttribute('data-u')===state.unit);});
     document.documentElement.style.setProperty('--accent',UNITS[state.unit].hex);
     $('hq-root')&&($('hq-root').style.setProperty('--accent',UNITS[state.unit].hex));
   }
+  // Business-units dropdown open/close.
+  window.hqToggleBu=function(ev){ if(ev)ev.stopPropagation(); var m=$('hqBuMenu'); if(m)m.classList.toggle('on'); };
+  document.addEventListener('click',function(ev){ var m=$('hqBuMenu'); if(m&&m.classList.contains('on')&&!ev.target.closest('.budrop'))m.classList.remove('on'); });
   function renderState(){
     var c=data.closing; var st=$('hqMonthState');
     if(!c){st.textContent='';return;}
@@ -454,6 +493,21 @@
     var ordSub   = isQb
       ? deltaChip(cur.orders,prev.orders)+' · '+rsS(cur.delivered_orders)+' delivered · AOV '+rs(dv.aov)
       : deltaChip(cur.orders,prev.orders)+' · ≈'+dv.orders_per_work_day+' / day · AOV '+rs(dv.aov);
+    // Compact order-source split inside the Orders Delivered card. Shown only on
+    // the overall NF+Frozen unit (c.unit==='all'), where split.total == this
+    // card's order count so the two always reconcile; hidden on single business
+    // units and Qurbani (origin split is company-wide, non-Qurbani). data.split
+    // is fetched alongside closing in hqReload; guarded so a missing/failed split
+    // simply omits the line and never disturbs the card.
+    var sp = data.split;
+    if (!isQb && c.unit === 'all' && sp && sp.total) {
+      ordSub += '<div style="margin-top:5px;display:flex;gap:9px;flex-wrap:wrap;font-size:11px;font-weight:700" '
+        + 'title="Order sources — App '+sp.app.count+' ('+sp.app.pct+'%) · Web '+sp.web.count+' ('+sp.web.pct+'%) · Manual/NF '+sp.manual.count+' ('+sp.manual.pct+'%)">'
+        + '<span style="color:#2563eb">📱 '+Number(sp.app.count).toLocaleString()+'</span>'
+        + '<span style="color:#0891b2">🌐 '+Number(sp.web.count).toLocaleString()+'</span>'
+        + '<span style="color:#64748b">✍️ '+Number(sp.manual.count).toLocaleString()+'</span>'
+        + '</div>';
+    }
     // Gross & Net profit intentionally live ONLY in the P&L flow below (each
     // with its own ⓘ) — this row is the activity/scale snapshot, no duplication.
     var cards=[
@@ -472,13 +526,14 @@
             {l:'Qurbani expenses (incl. animals)',v:cur.expenses,d:'expense',def:'qbcost'},{op:'='},
             {l:'Season net profit',v:cur.net_profit,r:dv.np_margin+'% NP margin',res:1,d:'expense',def:'np'}];
     }else{
-      plHint='Revenue − Vendor purchases = Gross profit · − Expenses = Net profit · assets shown separately';
+      plHint='Revenue − Vendor purchases = Gross profit · − Expenses − Salaries = Net profit · assets shown separately';
       var an=cur.asset_purchases_count||0;
       flow=[{l:'Delivered revenue',v:cur.revenue,d:'revenue',def:'rev'},{op:'−'},
-            {l:'Vendor purchases',v:cur.vendor_purchases,d:'vendor',def:'vendor'},{op:'='},
+            {l:'Vendor purchases',v:cur.vendor_purchases,d:'vendor',def:'vendor'},{op:'=',brk:1},
             {l:'Gross profit',v:cur.gross_profit,r:dv.gp_margin+'% GP margin',res:1,d:'vendor',def:'gp'},{op:'−'},
-            {l:'Expenses',v:cur.expenses,d:'expense',def:'expense'},{op:'='},
-            {l:'Net profit',v:cur.net_profit,r:dv.np_margin+'% NP margin · '+rs(dv.net_per_work_day)+'/work day',res:1,d:'expense',def:'np'},
+            {l:'Expenses',v:cur.expenses,d:'expense',def:'expense'},{op:'−'},
+            {l:'Salaries',v:cur.salaries||0,d:'salaries',def:'salary'},{op:'=',brk:1},
+            {l:'Net profit',v:cur.net_profit,r:dv.np_margin+'% NP margin · '+rs(dv.net_per_work_day)+'/work day',res:1,d:'salaries',def:'np'},
             // Aside — capital spending sits OUTSIDE the equation (a bought asset
             // is property, not a cost), so it gets a divider, not an operator.
             {sep:1},
@@ -488,7 +543,7 @@
     $('hqPlHead').querySelector('.hint').textContent=plHint;
     $('hqPlFlow').style.gridTemplateColumns=isQb?'1fr auto 1fr auto 1fr':'';
     $('hqPlFlow').innerHTML=flow.map(function(f,i){
-      if(f.op)return '<div class="pl-op'+((i===3||i===7)?' brk':'')+'">'+f.op+'</div>';
+      if(f.op)return '<div class="pl-op'+(f.brk?' brk':'')+'">'+f.op+'</div>';
       if(f.sep)return '<div class="pl-sep" aria-hidden="true"></div>';
       var iBtn=f.def?'<button class="i-btn" type="button" onclick="event.stopPropagation();hqDef(\''+f.def+'\')" aria-label="How is '+esc(f.l)+' calculated?">i</button>':'';
       return '<div class="pl-cell'+(f.res?' result':'')+(f.aside?' aside':'')+' card click" tabindex="0" role="button" onclick="hqDrill(\''+f.d+'\')">'+
@@ -497,6 +552,7 @@
     }).join('');
 
     var segs=[['Vendor purchases',cur.vendor_purchases,'#d6d3d1'],['Expenses',cur.expenses,'#a8a29e'],
+              ['Salaries',cur.salaries||0,'#c9a227'],
               ['Net profit',Math.max(cur.net_profit,0),UNITS[c.unit].hex]].filter(function(s){return s[1]>0;});
     var tot=segs.reduce(function(a,s){return a+s[1];},0)||1;
     $('hqPlBar').innerHTML=segs.map(function(s){return '<div class="seg-v" style="width:'+(s[1]/tot*100)+'%;background:'+s[2]+'" title="'+s[0]+' '+rs(s[1])+'"></div>';}).join('');
@@ -632,10 +688,15 @@
         ['Formula','Sum of approved <span class="var">Qurbani-category</span> expenses in the season'],
         ['Includes','Animal purchases (booked as expenses — Qurbani has no vendor ledger), slaughter, transport, ops'],
         ['Season','Expense date within <span class="var">'+win+'</span>']]},
+      salary:{t:'Salaries',v:rs(cur.salaries||0),r:[
+        ['Formula','Salaries <span class="var">actually paid</span> this month — the Payroll screen payments plus any legacy salary slips'],
+        ['Window','Paid date within <span class="var">'+win+'</span> (cash basis, same as the Expenses page)'],
+        ['Unit rule','Tagged to the <span class="var">business unit set on each employee</span> in Payroll → ⚙ settings. NF + Frozen shows everyone; a single unit shows just its staff'],
+        ['Not in Expenses','Kept as its own line so the request-based Expenses figure stays clean — both reduce net profit']]},
       np:{t:'Net profit',v:rs(cur.net_profit),r:[
-        ['Formula',isQb?'Revenue − Qurbani expenses':'Gross profit − Expenses'],
+        ['Formula',isQb?'Revenue − Qurbani expenses':'Gross profit − Expenses − Salaries'],
         ['Values',(isQb?'<span class="var">'+rs(cur.revenue)+'</span> − <span class="var">'+rs(cur.expenses)+'</span>'
-                       :'<span class="var">'+rs(cur.gross_profit)+'</span> − <span class="var">'+rs(cur.expenses)+'</span>')+' = <span class="var">'+rs(cur.net_profit)+'</span> ('+dv.np_margin+'%)'],
+                       :'<span class="var">'+rs(cur.gross_profit)+'</span> − <span class="var">'+rs(cur.expenses)+'</span> − <span class="var">'+rs(cur.salaries||0)+'</span>')+' = <span class="var">'+rs(cur.net_profit)+'</span> ('+dv.np_margin+'%)'],
         ['Per work day',rs(cur.net_profit)+' ÷ <span class="var">'+c.working_days+' working days</span> (calendar − holidays) = <span class="var">'+rs(dv.net_per_work_day)+'</span>']]},
       monthasset:{t:'Assets bought',v:rs(cur.asset_purchases||0),r:[
         ['Formula','Sum of <span class="var">approved / L2</span> asset-purchase ledger entries dated in the <span class="var">full calendar month</span> — <span class="var">'+rsS(cur.asset_purchases_count||0)+'</span> this period. Click the box for the list'],
@@ -794,6 +855,10 @@
       raw:function(r){return r;},total:function(rows){var e=0,a=0;rows.forEach(function(r){e+=r.entries;a+=r.amount;});return ['Total',rsS(e),rsS(a),'100%'];},
       l2:{crumb:function(r){return r.category;},url:function(r){return '/hq/drill/expense?unit='+state.unit+'&year='+state.year+'&month='+state.month+'&category='+encodeURIComponent(r.category);},
         cols:['Date','By','Note','Amount'],map:function(r){return [esc(r.date),esc(r.who),esc(r.note),rsS(r.amount)];}}},
+    salaries:{crumb:['Net profit','Salaries'],url:function(){return '/hq/drill/salaries'+qs();},
+      cols:['Employee','Business unit','Amount'],map:function(r){return [esc(r.employee),esc(r.unit),rsS(r.amount)];},
+      total:function(rows){var a=0;rows.forEach(function(r){a+=r.amount;});return ['Total','',rsS(a)];},
+      note:'Salaries actually paid this month (Payroll screen payments + any legacy salary slips), tagged to the business unit set on each employee. The combined NF + Frozen view shows everyone; switch to a single unit to see just its salaries.'},
     customers:{crumb:['Customers ordered'],url:function(){return '/hq/drill/customers'+qs();},
       cols:['Customer','Type','Orders','Spent','First'],map:function(r){return [esc(r.customer),esc(r.type)+(r.is_new?' <span class="pillm new">new</span>':''),rsS(r.orders),rsS(r.spent),esc(r.first)];}},
     banks:{crumb:['Working capital','Per-bank split'],local:true,
@@ -922,15 +987,19 @@
     Promise.all([
       fetchJSON('/hq/closing'+qs()+suffix),
       fetchJSON('/hq/trend'+qs()+suffix),
-      fetchJSON('/hq/working-capital?unit='+state.unit+(force?'&fresh=1':''))
+      fetchJSON('/hq/working-capital?unit='+state.unit+(force?'&fresh=1':'')),
+      // Order-split is additive — its failure must never blank the whole
+      // Monthly Closing tab, so it degrades to null instead of rejecting.
+      fetchJSON('/hq/order-split'+qs()+suffix).catch(function(){return null;})
     ]).then(function(res){
-      data.closing=res[0]; data.trend=res[1]; data.wc=res[2];
+      data.closing=res[0]; data.trend=res[1]; data.wc=res[2]; data.split=res[3];
       renderState(); renderClosing(); renderWc(); renderTrend(); setLoading(false);
     }).catch(function(e){ setLoading(false); showErr(e.message); });
   }
   window.hqReload=hqReload;
   function afterLoad(){ if(state.tab==='growth') loadGrowth(true); if(state.tab==='products') loadProducts(true); }
   window.hqSetUnit=function(u){ state.unit=u;
+    var m=$('hqBuMenu'); if(m)m.classList.remove('on'); // close the dropdown on pick
     if(u==='qb'){state.year=CUR_YEAR;}
     // Leaving the Qurbani unit with a past season selected: snap back to the
     // current month (the month rail has no pill for e.g. Jul-2025).

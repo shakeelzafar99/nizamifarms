@@ -3093,7 +3093,7 @@ class OrderController extends Controller
     }
 
 
-    public function convertOrder($id)
+    public function convertOrder(Request $request, $id)
     {
         try {
             // Find the original Shopify order in the new Shopify table
@@ -3108,7 +3108,23 @@ class OrderController extends Controller
                     'message' => "Order has already been {$status}"
                 ], 400);
             }
-            
+
+            // Delivery-promise (Jul-2026): the accept button the staff pressed decides
+            // BOTH the customer confirmation message and whether the order is active
+            // today ('new') or parked for a future day ('pending'). Empty / unknown =
+            // plain accept with no message (the original convert behaviour). The day
+            // logic lives in the UI (which buttons show); the server just maps the
+            // chosen promise deterministically.
+            $promise = strtolower(trim((string) $request->input('delivery_promise', '')));
+            $promiseMap = [
+                'today'     => ['status' => 'new',     'template' => 'deliver_today'],
+                'tomorrow'  => ['status' => 'pending', 'template' => 'deliver_tomorrow'],
+                'wednesday' => ['status' => 'pending', 'template' => 'deliver_wednesday'],
+                'thursday'  => ['status' => 'pending', 'template' => 'deliver_thursday'],
+            ];
+            $promiseCfg    = $promiseMap[$promise] ?? null; // null = accept, no message
+            $parkedPending = false; // set true when the order is held for a future day
+
             // Validate SKUs and recalculate prices
             $validationResult = $this->validateAndRecalculateOrder($originalOrder);
             if (!$validationResult['success']) {
@@ -3197,7 +3213,32 @@ class OrderController extends Controller
                     'error' => $e->getMessage(),
                 ]);
             }
-            
+
+            // Apply the delivery-promise (regular orders only — qurbani + khaas
+            // storage have their own flows and never show these buttons).
+            $promiseApplies = $promiseCfg !== null
+                && !$isKhaasStorage
+                && !(isset($hasQurbani) && $hasQurbani);
+            if ($promiseApplies) {
+                // Future-day promise → park in 'pending' (held out of today's active
+                // pipeline; the team activates it to 'new' on its delivery day, which
+                // then fires the location request — Option B). 'today' stays 'new'.
+                if ($promiseCfg['status'] === 'pending') {
+                    try {
+                        $convertedOrder->changeStatus('pending', 'Accepted for future delivery (' . $promise . ')');
+                        $parkedPending = true;
+                    } catch (\Throwable $e) {
+                        \Log::warning('Failed to park converted order as pending', [
+                            'order_id' => $convertedOrder->id ?? null, 'error' => $e->getMessage(),
+                        ]);
+                    }
+                }
+                // Delivery confirmation FIRST (location request, if any, follows below).
+                if (!empty($promiseCfg['template'])) {
+                    $this->sendDeliveryPromiseMessage($convertedOrder, $promiseCfg['template']);
+                }
+            }
+
             // Mark original order as converted
             $originalOrder->update(['converted' => 1]);
 
@@ -3269,7 +3310,9 @@ class OrderController extends Controller
 
             // Auto location request: queue this customer if the automation is ON and
             // they qualify (no-op when the switch is off). Never blocks conversion.
-            if ($convertedOrder->customer_id) {
+            // Skipped for orders parked as 'pending' for a future day — those request
+            // the location on activation instead (Option B, in OrderModel::changeStatus).
+            if ($convertedOrder->customer_id && !$parkedPending) {
                 try {
                     $locSvc = app(\App\Services\Location\OpenOrderLocationService::class);
                     $locSvc->enqueue((int) $convertedOrder->customer_id, (int) $convertedOrder->id, 'shopify_convert');
@@ -3300,9 +3343,13 @@ class OrderController extends Controller
                 'converted_order_id' => $convertedOrder->id,
                 'converted_order' => $convertedOrder->load(['customer', 'lineItems']),
                 'price_changes' => $validationResult['price_changes'],
-                'warnings' => $allWarnings
+                'warnings' => $allWarnings,
+                // Delivery-promise outcome (for the UI toast): what was sent + where
+                // the order landed. null promise = plain accept, no message.
+                'delivery_promise' => $promiseApplies ? $promise : null,
+                'order_status' => $convertedOrder->order_status,
             ]);
-            
+
         } catch (\Exception $e) {
             return response()->json([
                 'success' => false,
@@ -3310,7 +3357,80 @@ class OrderController extends Controller
             ], 500);
         }
     }
-    
+
+    /**
+     * Send a delivery-confirmation WhatsApp template to a converted order's customer
+     * (the accept-button "delivery promise"). Template vars: {{1}} = customer name,
+     * {{2}} = order number. Fully NON-FATAL — a send failure never affects the
+     * conversion. Mirrors the direct-send pattern in OpenOrderLocationService::sendBulk.
+     */
+    private function sendDeliveryPromiseMessage($order, string $templateName): void
+    {
+        try {
+            $customerId = (int) ($order->customer_id ?? 0);
+            if ($customerId <= 0 || $templateName === '') {
+                return;
+            }
+
+            $cust = \DB::table('t_crm_prod_customer')
+                ->where('id', $customerId)
+                ->first(['first_name', 'last_name', 'phone', 'phone_normalized']);
+            if (!$cust) {
+                return;
+            }
+
+            $rawPhone = $cust->phone ?: $cust->phone_normalized;
+            if (empty($rawPhone)) {
+                \Log::info('Delivery-promise message skipped — customer has no phone', [
+                    'order_id' => $order->id ?? null, 'template' => $templateName,
+                ]);
+                return;
+            }
+
+            $wa = app(\App\Services\WhatsAppService::class);
+            // Dial-resolve (known-number override; no-op for PK numbers).
+            $phone = $wa->resolveDialPhone((string) $rawPhone);
+            $name = trim(((string) $cust->first_name) . ' ' . ((string) $cust->last_name));
+            $name = $name !== '' ? $name : 'Customer';
+            $orderNumber = (string) ($order->order_number ?? '');
+
+            // Templates carry 2 body vars: {{1}} name, {{2}} order number.
+            $resp = $wa->sendTemplateMessage($phone, $templateName, 'en', [$name, $orderNumber]);
+
+            if (!empty($resp['success'])) {
+                // Persist the outbound to the conversation timeline (messages inbox).
+                try {
+                    $conv = $wa->findOrCreateConversation($phone);
+                    if ($conv) {
+                        $wa->saveOutboundMessage(
+                            $conv->id,
+                            $resp,
+                            'template',
+                            'Order accepted: ' . $templateName,
+                            auth()->check() ? auth()->id() : null,
+                            $templateName,
+                            ['1' => $name, '2' => $orderNumber]
+                        );
+                    }
+                } catch (\Throwable $e) {
+                    \Log::debug('Delivery-promise saveOutboundMessage failed (non-fatal)', [
+                        'order_id' => $order->id ?? null, 'error' => $e->getMessage(),
+                    ]);
+                }
+            } else {
+                \Log::warning('Delivery-promise template send failed', [
+                    'order_id' => $order->id ?? null,
+                    'template' => $templateName,
+                    'error' => $resp['error'] ?? 'unknown',
+                ]);
+            }
+        } catch (\Throwable $e) {
+            \Log::warning('sendDeliveryPromiseMessage failed (non-fatal)', [
+                'order_id' => $order->id ?? null, 'template' => $templateName, 'error' => $e->getMessage(),
+            ]);
+        }
+    }
+
     /**
      * Validate SKUs and recalculate order totals based on local product prices
      */

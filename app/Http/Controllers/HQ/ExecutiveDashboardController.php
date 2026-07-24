@@ -56,6 +56,14 @@ class ExecutiveDashboardController extends Controller
         return $this->ok($this->svc->trend($unit, $year, $month, 6, $request->boolean('fresh')));
     }
 
+    /** Order-source split (App / Web / Manual) for the period. Unit-independent. */
+    public function orderSplit(Request $request)
+    {
+        $this->guard();
+        [$unit, $year, $month] = $this->params($request);
+        return $this->ok($this->svc->orderSourceSplit($year, $month, $request->boolean('fresh')));
+    }
+
     public function workingCapital(Request $request)
     {
         $this->guard();
@@ -124,6 +132,13 @@ class ExecutiveDashboardController extends Controller
         [$unit, $year, $month] = $this->params($request);
         $category = (string) $request->get('category', '');
         return $this->ok($this->svc->expenseDetail($unit, $year, $month, $category));
+    }
+
+    public function salaries(Request $request)
+    {
+        $this->guard();
+        [$unit, $year, $month] = $this->params($request);
+        return $this->ok($this->svc->salaryByEmployee($unit, $year, $month));
     }
 
     public function customers(Request $request)

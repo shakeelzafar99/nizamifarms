@@ -4089,6 +4089,11 @@ class RiderController extends Controller
             // HOME, so the end-meter prompt at checkout is skipped.
             [$homeJourneyToday, $homeFlow] = $this->buildHomeJourneyPayload($user->id, $attendance);
 
+            // U5 — MORNING start journey (offer / riding / overdue) for the "Start your day"
+            // card. Additive + guarded; null for non-bike riders, once checked in, on off-days,
+            // and on leave days (no card nagging someone who isn't riding in today).
+            $workJourneyToday = $this->buildWorkJourneyPayload($user->id, $attendance, $todayLeave);
+
             // R1 — may this rider check in at any office? (banner text; guarded)
             $anyOfficeAllowed = false;
             try {
@@ -4124,6 +4129,7 @@ class RiderController extends Controller
                     'is_remote_checkin' => $attendance->is_remote_checkin ?? 0,
                     'meter_start' => $attendance->meter_start ? (int) $attendance->meter_start : null,
                     'meter_end' => $attendance->meter_end ? (int) $attendance->meter_end : null,
+                    'meter_start_source' => $attendance->meter_start_source ?? null, // U5: home | checkin | manager
                     // Photo URLs so the app can show a "saved" tile with the thumbnail
                     // instead of the bare upload button (additive; old APKs ignore).
                     'picture_start' => !empty($attendance->picture_start) ? $this->getMeterPictureUrl($attendance->picture_start) : null,
@@ -4153,6 +4159,7 @@ class RiderController extends Controller
                 'today_leave' => $todayLeave,
                 'home_journey' => $homeJourneyToday, // U4: null unless a bike home journey is active
                 'home_flow' => $homeFlow, // U4: this rider records his meter at HOME (skip end-meter at checkout)
+                'work_journey' => $workJourneyToday, // U5: morning start card (offer/riding/overdue), null otherwise
                 'meter_required' => $meterRequired, // 1 = compulsory, 0 = exempt, null = legacy (optional)
             ]);
         } catch (\Exception $e) {
@@ -4213,25 +4220,36 @@ class RiderController extends Controller
         if (!$this->checkoutRuleEnabled()) {
             return ['ok' => true];
         }
-        // No usable GPS → block with a distinct message (H-Q2).
+        // No usable GPS → block with a distinct message (H-Q2). Nothing to measure — the
+        // detail just records that he tried with location off.
         if (is_null($lat) || is_null($lng) || !LocationService::isValidCoordinates($lat, $lng)) {
-            return ['ok' => false, 'reason' => 'no_gps', 'message' => 'Your location is off — turn it on to check out, or call your manager to unlock checkout.'];
+            return ['ok' => false, 'reason' => 'no_gps',
+                'message' => 'Your location is off — turn it on to check out, or call your manager to unlock checkout.',
+                'detail' => [
+                    'subreason' => 'no_gps',
+                    'attempt_lat' => null, 'attempt_lng' => null,
+                    'ref_type' => null, 'ref_lat' => null, 'ref_lng' => null, 'ref_label' => null,
+                    'distance_m' => null, 'limit_m' => null, 'age_min' => null,
+                ]];
         }
         $lat = (float) $lat; $lng = (float) $lng;
+
+        $windowMins = (int) $this->attnConfig('CHECKOUT_DELIVERY_WINDOW_MINS', 15);
+        $radiusM    = (float) $this->attnConfig('CHECKOUT_DELIVERY_RADIUS_M', 150);
 
         // 1) Office (primary company location) within its radius.
         $office = \DB::table('t_ops_company_locations')->where('is_primary', 1)->where('is_active', 1)
             ->select('latitude', 'longitude', 'radius_meters')->first();
+        $dOffice = null; $officeRadius = null;
         if ($office && $office->latitude !== null && $office->longitude !== null) {
+            $officeRadius = (float) ($office->radius_meters ?: 300);
             $dOffice = $this->haversineDistance($lat, $lng, (float) $office->latitude, (float) $office->longitude);
-            if ($dOffice <= (float) ($office->radius_meters ?: 300)) {
+            if ($dOffice <= $officeRadius) {
                 return ['ok' => true, 'basis' => 'office'];
             }
         }
 
         // 2) His MOST RECENT delivered order today, within window + radius (H-Q3).
-        $windowMins = (int) $this->attnConfig('CHECKOUT_DELIVERY_WINDOW_MINS', 15);
-        $radiusM    = (float) $this->attnConfig('CHECKOUT_DELIVERY_RADIUS_M', 150);
         $last = \DB::table('t_crm_order_status_history as h')
             ->join('t_crm_prod_order as o', 'o.id', '=', 'h.order_id')
             ->where('h.status_code', 'delivered')
@@ -4239,8 +4257,9 @@ class RiderController extends Controller
             ->whereNotNull('h.delivery_latitude')->whereNotNull('h.delivery_longitude')
             ->whereDate('h.changed_at', now()->toDateString())
             ->orderByDesc('h.changed_at')
-            ->select('h.delivery_latitude', 'h.delivery_longitude', 'h.changed_at')
+            ->select('h.delivery_latitude', 'h.delivery_longitude', 'h.changed_at', 'o.order_number')
             ->first();
+        $dDrop = null; $ageMin = null;
         if ($last) {
             $ageMin = \Carbon\Carbon::parse($last->changed_at)->diffInMinutes(now(), false);
             $dDrop = $this->haversineDistance($lat, $lng, (float) $last->delivery_latitude, (float) $last->delivery_longitude);
@@ -4249,8 +4268,71 @@ class RiderController extends Controller
             }
         }
 
+        // ---- Blocked. Build the diagnostic detail the manager sees (live alert + bypass modal).
+        // Reference against the delivery he was *supposed* to be near; fall back to the office
+        // when he had no delivery today. distance/limit + which limit broke (subreason).
+        if ($last) {
+            // Distance dominates the message ("he isn't there any more"); else it's the time window.
+            $sub = ($dDrop !== null && $dDrop > $radiusM) ? 'too_far'
+                 : (($ageMin !== null && $ageMin > $windowMins) ? 'too_late' : 'wrong_place');
+            $detail = [
+                'subreason'   => $sub,
+                'attempt_lat' => $lat, 'attempt_lng' => $lng,
+                'ref_type'    => 'delivery',
+                'ref_lat'     => (float) $last->delivery_latitude,
+                'ref_lng'     => (float) $last->delivery_longitude,
+                'ref_label'   => ($last->order_number !== null && $last->order_number !== '')
+                                    ? (string) $last->order_number : null,
+                'distance_m'  => $dDrop !== null ? (int) round($dDrop) : null,
+                'limit_m'     => (int) $radiusM,
+                'age_min'     => $ageMin !== null ? (int) $ageMin : null,
+            ];
+        } else {
+            $detail = [
+                'subreason'   => 'wrong_place',
+                'attempt_lat' => $lat, 'attempt_lng' => $lng,
+                'ref_type'    => 'office',
+                'ref_lat'     => ($office && $office->latitude !== null) ? (float) $office->latitude : null,
+                'ref_lng'     => ($office && $office->longitude !== null) ? (float) $office->longitude : null,
+                'ref_label'   => 'Office',
+                'distance_m'  => $dOffice !== null ? (int) round($dOffice) : null,
+                'limit_m'     => $officeRadius !== null ? (int) $officeRadius : null,
+                'age_min'     => null,
+            ];
+        }
+
         return ['ok' => false, 'reason' => 'wrong_place',
-            'message' => 'Check out at the office, or within ' . $windowMins . ' min at your last delivery — or call your manager to unlock checkout.'];
+            'message' => 'Check out at the office, or within ' . $windowMins . ' min at your last delivery — or call your manager to unlock checkout.',
+            'detail' => $detail];
+    }
+
+    /**
+     * Persist the LATEST blocked checkout attempt onto the day's attendance row (latest-wins,
+     * plus a counter of how many times he tried today). Read by the shared attendance payload
+     * → the live "stuck at checkout" alert + the bypass modal context. Silently no-ops if the
+     * capture columns aren't applied yet (SQL not run) so it can never fail a checkout.
+     * $detail is the 'detail' array from checkoutRuleResult() (may be null defensively).
+     */
+    private function recordCheckoutAttempt(int $attendanceId, ?array $detail): void
+    {
+        if (!\Illuminate\Support\Facades\Schema::hasColumn('t_ops_attendance', 'checkout_attempt_at')) {
+            return; // capture SQL not applied — skip quietly
+        }
+        $d = $detail ?: [];
+        \DB::table('t_ops_attendance')->where('id', $attendanceId)->update([
+            'checkout_attempt_at'         => now(),
+            'checkout_attempt_lat'        => $d['attempt_lat']  ?? null,
+            'checkout_attempt_lng'        => $d['attempt_lng']  ?? null,
+            'checkout_attempt_reason'     => $d['subreason']    ?? 'wrong_place',
+            'checkout_attempt_distance_m' => $d['distance_m']   ?? null,
+            'checkout_attempt_limit_m'    => $d['limit_m']      ?? null,
+            'checkout_attempt_age_min'    => $d['age_min']      ?? null,
+            'checkout_attempt_drop_lat'   => $d['ref_lat']      ?? null,
+            'checkout_attempt_drop_lng'   => $d['ref_lng']      ?? null,
+            'checkout_attempt_drop_label' => $d['ref_label']    ?? null,
+            'checkout_attempt_count'      => \DB::raw('COALESCE(checkout_attempt_count, 0) + 1'),
+            'updated_at'                  => now(),
+        ]);
     }
 
     public function checkIn(Request $request)
@@ -4306,6 +4388,33 @@ class RiderController extends Controller
                             . "You can only check in at $where.",
                     ], 422);
                 }
+            }
+
+            // ⭐ U5 Phase-2 check-in LOCK (config CHECKIN_ETA_LOCK, ships OFF): a company-bike
+            // rider past his ride-to-work deadline — or who skipped the home start entirely —
+            // must get a manager unlock (checkin_unlock_*) before he can check in. While the
+            // config is 0 this whole block is inert. FAIL-OPEN: any error here must never
+            // stop a check-in.
+            try {
+                if (\Illuminate\Support\Facades\Schema::hasColumn('t_ops_attendance', 'checkin_unlock_until')) {
+                    $wjLock = new \App\Services\Riders\WorkJourneyService();
+                    if ($wjLock->lockEnabled() && $wjLock->riderHomePin($user->id)) {
+                        $hasHomeStart = $existing && (string) ($existing->meter_start_source ?? '') === 'home';
+                        $verdict = $wjLock->checkinLockVerdict($existing ?: (object) [], $hasHomeStart);
+                        if ($verdict['locked']) {
+                            return response()->json([
+                                'success' => false,
+                                'checkin_locked' => true,
+                                'reason' => $verdict['why'], // late | no_home_start
+                                'message' => $verdict['why'] === 'late'
+                                    ? 'You arrived after your ride-to-work deadline — call your manager to unlock check-in.'
+                                    : 'No start meter from home today — call your manager to unlock check-in.',
+                            ], 423);
+                        }
+                    }
+                }
+            } catch (\Throwable $lockErr) {
+                \Log::warning('checkin lock gate failed open (non-fatal)', ['user_id' => $user->id, 'error' => $lockErr->getMessage()]);
             }
 
             // Store meter picture if provided
@@ -4378,12 +4487,29 @@ class RiderController extends Controller
             if ($locationData) {
                 $responseData['is_remote'] = $locationData['is_remote'];
                 $responseData['distance'] = $locationData['distance'];
-                
+
                 if ($locationData['is_remote']) {
                     $distanceFormatted = LocationService::formatDistance($locationData['distance']);
                     $responseData['message'] = $message . " ⚠️ Remote: {$distanceFormatted} from office";
                 }
             }
+
+            // ⭐ U5 — ride-to-work verdict for the app (additive; old APKs ignore). Judged
+            // against the deadline armed at the home start; informational in Phase 1.
+            try {
+                if ($existing && !empty($existing->work_expected_by)) {
+                    $expTs = strtotime((string) $existing->work_expected_by);
+                    $late = max(0, (int) round((time() - $expTs) / 60));
+                    $responseData['work_verdict'] = [
+                        'on_time' => $late === 0,
+                        'minutes_late' => $late,
+                        'expected_by' => substr((string) $existing->work_expected_by, 11, 5),
+                    ];
+                    if ($late > 0) {
+                        $responseData['message'] .= " ⏱ {$late} min after your ride-in deadline (" . substr((string) $existing->work_expected_by, 11, 5) . ')';
+                    }
+                }
+            } catch (\Throwable $e) { /* verdict is optional */ }
 
             return response()->json($responseData);
         } catch (\Illuminate\Database\QueryException $qe) {
@@ -5217,11 +5343,18 @@ class RiderController extends Controller
             $user = Auth::user();
             $today = now()->format('Y-m-d');
 
-            // Validate request - ⭐ meter_reading is optional (from OCR)
+            // Validate request. ⭐ Photo OR typed reading — at least one. The photo-less path
+            // exists for a BROKEN CAMERA inside the chained "Meter & Check In/Out" flows: the
+            // typed reading still goes in (meter is compulsory, undeniable), and the web shows
+            // the greyed "no photo" camera as the audit. Old APKs always send the photo.
             $request->validate([
-                'meter_picture' => 'required|image|max:5120', // 5MB max
+                'meter_picture' => 'required_without:meter_reading|nullable|image|max:5120', // 5MB max
                 'type' => 'required|in:start,end',
-                'meter_reading' => 'nullable|numeric|min:0|max:9999999', // ⭐ OCR-extracted reading
+                'meter_reading' => 'required_without:meter_picture|nullable|numeric|min:0|max:9999999',
+                'latitude' => 'nullable|numeric|between:-90,90',   // U5: proves an at-home start
+                'longitude' => 'nullable|numeric|between:-180,180',
+                'confirm_gap' => 'nullable|boolean', // U5: rider confirmed a continuity gap
+                'u5' => 'nullable|boolean',          // U5: new-APK marker (enables needs_confirm replies)
             ]);
 
             // Check if attendance record exists for today
@@ -5230,40 +5363,169 @@ class RiderController extends Controller
                 ->whereDate('attendance_date', $today)
                 ->first();
 
-            if (!$existing) {
-                return response()->json([
-                    'success' => false,
-                    'message' => 'No attendance record found for today. Please check in first.'
-                ], 400);
-            }
-
             $type = $request->input('type');
             $meterReading = $request->input('meter_reading'); // ⭐ Get OCR reading
-            
-            // Validate based on type - only check login for start picture
-            // End picture can be uploaded anytime after check-in (no need to check out first)
-            if ($type === 'start' && !$existing->login_time) {
-                return response()->json([
-                    'success' => false,
-                    'message' => 'Please check in first before uploading start meter picture.'
-                ], 400);
+
+            // ⭐ U5 "Meter & Check In": the START meter is recorded BEFORE check-in (the IN
+            // button chains meter → check-in). No row yet → create today's row without
+            // login_time; checkIn() updates such a row in place (verified behaviour). The old
+            // "check in first" gates only remain for the END side (no row = never worked today).
+            if (!$existing) {
+                if ($type !== 'start') {
+                    return response()->json([
+                        'success' => false,
+                        'message' => 'No attendance record found for today. Please check in first.'
+                    ], 400);
+                }
+                $newId = \DB::table('t_ops_attendance')->insertGetId([
+                    'user_id' => $user->id,
+                    'attendance_date' => $today,
+                    'created_at' => now(),
+                    'updated_at' => now(),
+                ]);
+                $existing = \DB::table('t_ops_attendance')->where('id', $newId)->first();
             }
 
-            // Store meter picture
-            $picturePath = $this->storeMeterPicture($request->file('meter_picture'), $user->id, $type === 'start' ? 'checkin' : 'checkout');
+            // ⭐ U4 UNIFIED METER-OUT: a company-bike rider on the home flow has exactly ONE
+            // day-closing meter — the going-home meter (time + location gated, manager valve).
+            // This legacy door used to write meter_end directly with NO gates and NO meter_home,
+            // leaving the home journey open forever ("entered the meter but still shows locked").
+            // Delegate to the same flow as /attendance/home-meter so both doors are the same door.
+            // Denials are returned as 200 {success:false} because old tile UIs only surface
+            // response.data.message on 2xx.
+            if ($type === 'end') {
+                $hjHome = (new \App\Services\Riders\HomeJourneyService())->riderHomePin($user->id);
+                if ($hjHome !== null) {
+                    if ($meterReading === null || $meterReading === '') {
+                        return response()->json([
+                            'success' => false,
+                            'message' => 'Type the meter reading — your day-closing meter is recorded at home.',
+                        ]);
+                    }
+                    $resp = $this->processHomeMeterSubmission(
+                        $user,
+                        (int) $meterReading,
+                        $request->file('meter_picture'),
+                        $request->input('latitude'),
+                        $request->input('longitude')
+                    );
+                    if ($resp->getStatusCode() !== 200) {
+                        $payload = $resp->getData(true);
+                        return response()->json([
+                            'success' => false,
+                            'message' => $payload['message'] ?? 'Home meter cannot be recorded now.',
+                        ]);
+                    }
+                    return $resp;
+                }
+            }
+
+            // Store meter picture (absent on the broken-camera typed-reading path — never
+            // overwrite an existing photo with null).
+            $picturePath = $request->hasFile('meter_picture')
+                ? $this->storeMeterPicture($request->file('meter_picture'), $user->id, $type === 'start' ? 'checkin' : 'checkout')
+                : null;
 
             // Update attendance record
             $updateData = [
                 'updated_at' => now(),
             ];
+            $homeStartMissed = false;
+            $armStartTimer = false;
+            $armOrigin = null;
+            $startGps = null;
             if ($type === 'start') {
-                $updateData['picture_start'] = $picturePath;
+                if ($picturePath) { $updateData['picture_start'] = $picturePath; }
                 // ⭐ Save OCR-extracted meter reading to meter_start column
                 if ($meterReading !== null && $meterReading !== '') {
+                    // ⭐ U5 — a GPS-proven HOME start is a closed record: the legacy Start tile
+                    // may retake the PHOTO but must not silently change the reading (that value
+                    // anchored the continuity check + the ride-in deadline). Corrections go
+                    // through the manager's ✎ meter (audited) — same one-door rule as the
+                    // end-meter fix.
+                    $isHomeStamped = (string) ($existing->meter_start_source ?? '') === 'home';
+                    if ($isHomeStamped && (int) $meterReading !== (int) $existing->meter_start) {
+                        return response()->json([
+                            'success' => false,
+                            'message' => 'Your start meter was recorded at home (' . $existing->meter_start
+                                . '). Ask your manager to correct it if it is wrong.',
+                        ]);
+                    }
+
+                    $startHomePin = null;
+                    try {
+                        $startHomePin = (new \App\Services\Riders\HomeJourneyService())->riderHomePin($user->id);
+                    } catch (\Throwable $e) { $startHomePin = null; }
+
+                    // ⭐ U5 — CONTINUITY gate for bike riders (typo / overnight-use catcher, same
+                    // rule as the home card): the reading must sit within METER_CONTINUITY_KM of
+                    // last night's closing meter, or the rider explicitly confirms the gap
+                    // (confirm_gap=1; breach then shows on the attendance page). ONLY for the new
+                    // APK (u5=1): old Start tiles can't answer a confirm question, and an old-APK
+                    // office reading legitimately differs by the commute — no regression window.
+                    $isNewReading = $existing->meter_start === null || $existing->meter_start === ''
+                        || (int) $meterReading !== (int) $existing->meter_start;
+                    if ($startHomePin !== null && !$isHomeStamped && $isNewReading
+                        && $request->boolean('u5') && !$request->boolean('confirm_gap')) {
+                        try {
+                            $wjU = new \App\Services\Riders\WorkJourneyService();
+                            $prevM = $wjU->lastClosingMeter($user->id, $today);
+                            if ($prevM !== null) {
+                                $gapKm = (int) $meterReading - $prevM['value'];
+                                if (abs($gapKm) > $wjU->continuityKm()) {
+                                    return response()->json([
+                                        'success' => false,
+                                        'needs_confirm' => true,
+                                        'gap_km' => $gapKm,
+                                        'prev_value' => $prevM['value'],
+                                        'prev_date' => $prevM['date'],
+                                        'message' => $gapKm >= 0
+                                            ? "Last night's meter was {$prevM['value']} — your reading is {$gapKm} km higher. Check the meter again, or confirm if it is correct."
+                                            : "Last night's meter was {$prevM['value']} — your reading is LOWER, which should be impossible. Check it again, or confirm to send it to your manager.",
+                                    ]);
+                                }
+                            }
+                        } catch (\Throwable $e) { /* continuity is best-effort */ }
+                    }
+
                     $updateData['meter_start'] = (int) $meterReading;
+                    // ⭐ U5 — SOURCE FOLLOWS LOCATION, not which button: GPS at the home pin =
+                    // real HOME start; anywhere else (or GPS off) = 'checkin' + nudge + flagged.
+                    // The ride-in TIMER is ALWAYS armed for a bike rider's first reading (owner
+                    // rule): origin = live GPS when present (at the office → ~0 ETA, checks in
+                    // right after), else the HOME PIN (GPS off — he still gets a real deadline,
+                    // so switching GPS off buys nothing). Never re-armed by retakes.
+                    try {
+                        if (\Illuminate\Support\Facades\Schema::hasColumn('t_ops_attendance', 'meter_start_source')
+                            && !$isHomeStamped && $startHomePin !== null) {
+                            $gpsValid = $request->filled('latitude') && $request->filled('longitude')
+                                && LocationService::isValidCoordinates($request->latitude, $request->longitude);
+                            $atHomeForStart = false;
+                            if ($gpsValid) {
+                                $dHome = $this->haversineDistance(
+                                    (float) $request->latitude, (float) $request->longitude,
+                                    $startHomePin['lat'], $startHomePin['lng']);
+                                $atHomeForStart = $dHome <= $startHomePin['radius_m'];
+                            }
+                            $updateData['meter_start_recorded_at'] = now();
+                            $startGps = $atHomeForStart ? 'home' : ($gpsValid ? 'away' : 'none');
+                            if ($atHomeForStart) {
+                                $updateData['meter_start_source'] = 'home';
+                            } else {
+                                $updateData['meter_start_source'] = 'checkin';
+                                $homeStartMissed = true;
+                            }
+                            if (empty($existing->work_expected_by)) {
+                                $armStartTimer = true;
+                                $armOrigin = $gpsValid
+                                    ? ['lat' => (float) $request->latitude, 'lng' => (float) $request->longitude]
+                                    : ['lat' => $startHomePin['lat'], 'lng' => $startHomePin['lng']];
+                            }
+                        }
+                    } catch (\Throwable $e) { /* stamping is optional */ }
                 }
             } else {
-                $updateData['picture_end'] = $picturePath;
+                if ($picturePath) { $updateData['picture_end'] = $picturePath; }
                 // ⭐ Save OCR-extracted meter reading to meter_end column
                 if ($meterReading !== null && $meterReading !== '') {
                     $updateData['meter_end'] = (int) $meterReading;
@@ -5274,17 +5536,35 @@ class RiderController extends Controller
                 ->where('id', $existing->id)
                 ->update($updateData);
 
+            // ⭐ U5 — arm the ride-in timer (origin = live GPS, else home pin — decided above).
+            // NON-FATAL (an ETA failure just leaves no timer).
+            $startJourney = null;
+            if ($armStartTimer && $armOrigin !== null) {
+                try {
+                    $startJourney = $this->armWorkJourney($user->id, (int) $existing->id, $armOrigin['lat'], $armOrigin['lng']);
+                } catch (\Throwable $e) {
+                    \Log::warning('armWorkJourney via uploadMeterPicture failed (non-fatal)', ['user_id' => $user->id, 'error' => $e->getMessage()]);
+                }
+            }
+
             // ⭐ Build success message with reading info
-            $message = 'Meter picture uploaded successfully';
+            $message = $picturePath ? 'Meter picture uploaded successfully' : 'Meter reading saved (no photo)';
             if ($meterReading !== null && $meterReading !== '') {
                 $message .= ' with reading: ' . number_format((int) $meterReading);
+            }
+            if ($homeStartMissed) {
+                $message .= "\n🏠 Agli dafa meter start ghar say karain.";
             }
 
             return response()->json([
                 'success' => true,
                 'message' => $message,
-                'picture_url' => $this->getMeterPictureUrl($picturePath),
+                'picture_url' => $picturePath ? $this->getMeterPictureUrl($picturePath) : null,
                 'meter_reading' => $meterReading !== null && $meterReading !== '' ? (int) $meterReading : null, // ⭐ Return saved reading
+                'home_start_missed' => $homeStartMissed, // ⭐ U5 — new APK shows the Urdu nudge as its own alert
+                'home_start_recorded' => $startGps === 'home', // ⭐ U5 — GPS-proven AT HOME (ride in, don't check in here)
+                'start_gps' => $startGps,                // ⭐ U5 — 'home' | 'away' | 'none' (GPS off)
+                'work_journey' => $startJourney,         // ⭐ U5 — the ride-in card payload when armed
             ]);
         } catch (\Exception $e) {
             \Log::error('Failed to upload meter picture', [
@@ -5342,6 +5622,16 @@ class RiderController extends Controller
             if (!$checkoutBypass) {
                 $ruleCheck = $this->checkoutRuleResult($user->id, $request->input('latitude'), $request->input('longitude'));
                 if (!$ruleCheck['ok']) {
+                    // Record the blocked attempt (where he was, where his last delivery was, how
+                    // far, why) so a manager sees it LIVE and in the bypass modal — the attempt
+                    // otherwise leaves no trace. NON-FATAL: capturing must never break checkout.
+                    try {
+                        $this->recordCheckoutAttempt((int) $existing->id, $ruleCheck['detail'] ?? null);
+                    } catch (\Throwable $capErr) {
+                        \Log::warning('recordCheckoutAttempt failed (non-fatal)', [
+                            'attendance_id' => $existing->id, 'error' => $capErr->getMessage(),
+                        ]);
+                    }
                     return response()->json([
                         'success' => false,
                         'checkout_rule' => true,
@@ -5583,6 +5873,30 @@ class RiderController extends Controller
                 'latitude' => 'nullable|numeric|between:-90,90',
                 'longitude' => 'nullable|numeric|between:-180,180',
             ]);
+            return $this->processHomeMeterSubmission(
+                $user,
+                (int) $request->meter_home,
+                $request->hasFile('meter_picture') ? $request->file('meter_picture') : null,
+                $request->input('latitude'),
+                $request->input('longitude')
+            );
+        } catch (\Illuminate\Validation\ValidationException $ve) {
+            return response()->json(['success' => false, 'message' => $ve->validator->errors()->first()], 422);
+        } catch (\Throwable $e) {
+            \Log::error('submitHomeMeter failed', ['error' => $e->getMessage()]);
+            return response()->json(['success' => false, 'message' => 'Could not record the home meter.'], 500);
+        }
+    }
+
+    /**
+     * U4 — THE single day-closing meter flow for a company-bike rider. Every rider-facing door
+     * (the Ride-home card via submitHomeMeter, AND the legacy End tile / old APKs via
+     * uploadMeterPicture) funnels here, so the time gate, the location gate and the manager
+     * valve can never be sidestepped by picking a different button. Writes meter_home and
+     * mirrors meter_end in the same update.
+     */
+    private function processHomeMeterSubmission($user, int $meterHome, $pictureFile, $lat, $lng)
+    {
             $today = now()->format('Y-m-d');
             $hj = new \App\Services\Riders\HomeJourneyService();
             // Resolve the OPEN journey row first (handles a checkout that crossed midnight — the
@@ -5606,8 +5920,8 @@ class RiderController extends Controller
             // Is he AT HOME right now? (GPS in the request vs the home pin.)
             $atHomeNow = false;
             $distM = null;
-            if ($request->filled('latitude') && $request->filled('longitude')) {
-                $distM = $this->haversineDistance((float) $request->latitude, (float) $request->longitude, $home['lat'], $home['lng']);
+            if ($lat !== null && $lat !== '' && $lng !== null && $lng !== '' && is_numeric($lat) && is_numeric($lng)) {
+                $distM = $this->haversineDistance((float) $lat, (float) $lng, $home['lat'], $home['lng']);
                 $atHomeNow = $distM <= $home['radius_m'];
             }
             // Arrival already proven by the live-GPS geofence (heartbeat stamped it)?
@@ -5643,20 +5957,24 @@ class RiderController extends Controller
             }
 
             $picPath = null;
-            if ($request->hasFile('meter_picture')) {
-                $picPath = $this->storeMeterPicture($request->file('meter_picture'), $user->id, 'home');
+            if ($pictureFile) {
+                $picPath = $this->storeMeterPicture($pictureFile, $user->id, 'home');
             }
 
             $source = $atHomeNow ? 'geofence' : ($arrivalStamped ? ($att->home_arrival_source ?: 'geofence') : 'manual');
             $upd = [
-                'meter_home'  => (int) $request->meter_home,
-                'meter_end'   => (int) $request->meter_home, // day-closing reading for bike riders
+                'meter_home'  => $meterHome,
+                'meter_end'   => $meterHome, // day-closing reading for bike riders
                 'updated_at'  => now(),
             ];
             // Keep the EARLIEST arrival stamp (heartbeat's true arrival time beats typing time).
             if (!$arrivalStamped) {
                 $upd['home_arrived_at'] = now();
                 $upd['home_arrival_source'] = $source;
+            }
+            // Exact meter-entry moment for the attendance-page timeline (guarded — column is wave-3).
+            if (\Illuminate\Support\Facades\Schema::hasColumn('t_ops_attendance', 'home_meter_recorded_at')) {
+                $upd['home_meter_recorded_at'] = now();
             }
             if ($picPath) { $upd['picture_home'] = $picPath; }
             \DB::table('t_ops_attendance')->where('id', $att->id)->update($upd);
@@ -5665,13 +5983,259 @@ class RiderController extends Controller
                 'success' => true,
                 'message' => 'Home meter recorded — thank you.',
                 'source' => $source,
-                'meter_home' => (int) $request->meter_home,
+                'meter_home' => $meterHome,
+            ]);
+    }
+
+    /**
+     * ⚠️ DEPRECATED (never shipped in an APK) — U5 morning start meter, strict at-home variant.
+     * The "Start your day" card now goes through the ONE unified door instead:
+     * uploadMeterPicture(type=start), which handles continuity, source-follows-GPS
+     * ('home'/'checkin'), and ALWAYS arms the ride-in timer (origin = live GPS, else the home
+     * pin). Kept only so the /attendance/home-start-meter route keeps answering; do NOT add
+     * behavior here — remove route + method once the U5 APK is fully rolled out.
+     */
+    public function submitHomeStartMeter(Request $request)
+    {
+        try {
+            $user = Auth::user();
+            $request->validate([
+                'meter_start' => 'required|integer|min:0',
+                'meter_picture' => 'nullable|image|max:5120',
+                'latitude' => 'nullable|numeric|between:-90,90',
+                'longitude' => 'nullable|numeric|between:-180,180',
+                'confirm_gap' => 'nullable|boolean',
+            ]);
+            if (!\Illuminate\Support\Facades\Schema::hasColumn('t_ops_attendance', 'work_expected_by')) {
+                return response()->json(['success' => false, 'message' => 'Morning-start is not enabled yet (run the wave-4 SQL).'], 422);
+            }
+            $today = now()->format('Y-m-d');
+            $wj = new \App\Services\Riders\WorkJourneyService();
+            $home = $wj->riderHomePin($user->id);
+            if (!$home) {
+                return response()->json(['success' => false, 'message' => 'No home location is set for you — ask your manager.'], 400);
+            }
+
+            $existing = \DB::table('t_ops_attendance')
+                ->where('user_id', $user->id)->whereDate('attendance_date', $today)->first();
+            if ($existing && $existing->login_time) {
+                return response()->json(['success' => false, 'message' => 'You are already checked in — record the start meter from the Attendance screen.'], 400);
+            }
+            if ($existing && $existing->meter_start !== null && $existing->meter_start !== '') {
+                return response()->json(['success' => false, 'message' => 'Start meter already recorded today.'], 400);
+            }
+
+            // LOCATION gate (owner's rule): the HOME start must be GPS-proven at the home pin.
+            if (!$request->filled('latitude') || !$request->filled('longitude')) {
+                return response()->json([
+                    'success' => false, 'home_not_at_home' => true,
+                    'message' => 'Turn on GPS at home to record the start meter — or record it at the office when you arrive.',
+                ], 423);
+            }
+            $distM = $this->haversineDistance((float) $request->latitude, (float) $request->longitude, $home['lat'], $home['lng']);
+            if ($distM > $home['radius_m']) {
+                return response()->json([
+                    'success' => false, 'home_not_at_home' => true,
+                    'message' => 'You are ' . ($distM >= 1000 ? round($distM / 1000, 1) . ' km' : (int) $distM . ' m')
+                        . ' from your saved home location — the start meter is recorded at home.',
+                ], 423);
+            }
+
+            // CONTINUITY gate: morning reading vs the last closing meter (bike slept at home).
+            $meterStart = (int) $request->meter_start;
+            $prev = $wj->lastClosingMeter($user->id, $today);
+            if ($prev !== null) {
+                $gap = $meterStart - $prev['value'];
+                if (abs($gap) > $wj->continuityKm() && !$request->boolean('confirm_gap')) {
+                    return response()->json([
+                        'success' => false,
+                        'needs_confirm' => true,
+                        'gap_km' => $gap,
+                        'prev_value' => $prev['value'],
+                        'prev_date' => $prev['date'],
+                        'message' => $gap >= 0
+                            ? "Last night's meter was {$prev['value']} — your reading is {$gap} km higher. Check the meter again, or confirm if it is correct."
+                            : "Last night's meter was {$prev['value']} — your reading is LOWER, which should be impossible. Check it again, or confirm to send it to your manager.",
+                    ]);
+                }
+            }
+
+            $picPath = null;
+            if ($request->hasFile('meter_picture')) {
+                $picPath = $this->storeMeterPicture($request->file('meter_picture'), $user->id, 'checkin');
+            }
+
+            // Write the reading on today's row (creating it WITHOUT login_time — checkIn()
+            // updates such a row in place, verified behaviour).
+            $fields = [
+                'meter_start' => $meterStart,
+                'meter_start_source' => 'home',
+                'meter_start_recorded_at' => now(),
+                'updated_at' => now(),
+            ];
+            if ($picPath) { $fields['picture_start'] = $picPath; }
+            if ($existing) {
+                \DB::table('t_ops_attendance')->where('id', $existing->id)->update($fields);
+                $attId = (int) $existing->id;
+            } else {
+                $attId = (int) \DB::table('t_ops_attendance')->insertGetId(array_merge($fields, [
+                    'user_id' => $user->id,
+                    'attendance_date' => $today,
+                    'created_at' => now(),
+                ]));
+            }
+
+            // Arm the ride-to-work timer (ETA home pin → today's shift office + buffer).
+            // NON-FATAL: an ETA failure records the meter without a deadline.
+            $journey = null;
+            try {
+                $journey = $this->armWorkJourney($user->id, $attId, $home['lat'], $home['lng']);
+            } catch (\Throwable $e) {
+                \Log::warning('armWorkJourney failed (non-fatal)', ['user_id' => $user->id, 'error' => $e->getMessage()]);
+            }
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Start meter recorded — ride safe.',
+                'meter_start' => $meterStart,
+                'work_journey' => $journey,
             ]);
         } catch (\Illuminate\Validation\ValidationException $ve) {
             return response()->json(['success' => false, 'message' => $ve->validator->errors()->first()], 422);
         } catch (\Throwable $e) {
-            \Log::error('submitHomeMeter failed', ['error' => $e->getMessage()]);
-            return response()->json(['success' => false, 'message' => 'Could not record the home meter.'], 500);
+            \Log::error('submitHomeStartMeter failed', ['error' => $e->getMessage()]);
+            return response()->json(['success' => false, 'message' => 'Could not record the start meter.'], 500);
+        }
+    }
+
+    /**
+     * U5 — arm the morning ride-to-work deadline: ETA (home → today's shift office) + buffer →
+     * work_expected_by. Mirrors armHomeJourney (Google → OpenRouteService → straight-line).
+     * Returns the app-card payload, or null when today's office has no usable coordinates
+     * (meter stays recorded, no timer — never punitive).
+     */
+    private function armWorkJourney(int $userId, int $attendanceId, float $homeLat, float $homeLng): ?array
+    {
+        $office = $this->todayShiftLocation($userId);
+        if (!$office) {
+            return null;
+        }
+        $eta = null;
+        try { $eta = $this->getEtaFromGoogleMaps($homeLat, $homeLng, $office['lat'], $office['lng']); } catch (\Throwable $e) { $eta = null; }
+        if (!$eta) {
+            try { $eta = $this->getEtaFromOpenRouteService($homeLat, $homeLng, $office['lat'], $office['lng']); } catch (\Throwable $e) { $eta = null; }
+        }
+        $distanceKm = $eta['distance_km'] ?? null;
+        $etaMin = isset($eta['duration_minutes']) ? (int) $eta['duration_minutes'] : null;
+        if ($etaMin === null) {
+            $meters = $this->haversineDistance($homeLat, $homeLng, $office['lat'], $office['lng']);
+            $distanceKm = round($meters / 1000, 1);
+            $etaMin = (int) max(5, round(($distanceKm / 25) * 60)); // ~25 km/h city fallback
+        }
+        $buffer = (int) (new \App\Services\Riders\WorkJourneyService())->config('WORK_ETA_BUFFER_MIN', 10);
+        $expectedBy = now()->addMinutes($etaMin + $buffer);
+
+        \DB::table('t_ops_attendance')->where('id', $attendanceId)->update([
+            'work_eta_min' => $etaMin,
+            'work_distance_km' => $distanceKm,
+            'work_expected_by' => $expectedBy,
+            'updated_at' => now(),
+        ]);
+
+        return [
+            'state' => 'riding',
+            'eta_min' => $etaMin,
+            'distance_km' => $distanceKm,
+            'expected_by' => $expectedBy->format('Y-m-d H:i:s'),
+            'buffer_min' => $buffer,
+            'office_name' => $office['name'],
+        ];
+    }
+
+    /**
+     * Where must this rider be TODAY? Shift location → assignment location → primary office
+     * (the same resolution getTodayAttendance shows the rider). Null when no coords anywhere.
+     */
+    private function todayShiftLocation(int $userId): ?array
+    {
+        $loc = null;
+        try {
+            $shift = (new \App\Services\ShiftResolutionService())->getUserShift($userId, now()->format('Y-m-d'));
+            if (!empty($shift['location_id'])) {
+                $loc = \DB::table('t_ops_company_locations')
+                    ->where('id', $shift['location_id'])->where('is_active', 1)
+                    ->select('location_name', 'latitude', 'longitude')->first();
+            }
+        } catch (\Throwable $e) { $loc = null; }
+        if (!$loc) {
+            $loc = \DB::table('t_ops_user_location_assignment as ula')
+                ->join('t_ops_company_locations as loc', 'loc.id', '=', 'ula.location_id')
+                ->where('ula.user_id', $userId)->where('ula.is_active', 1)->where('loc.is_active', 1)
+                ->select('loc.location_name', 'loc.latitude', 'loc.longitude')->first();
+        }
+        if (!$loc) {
+            $loc = \DB::table('t_ops_company_locations')->where('is_primary', 1)->where('is_active', 1)
+                ->select('location_name', 'latitude', 'longitude')->first();
+        }
+        if (!$loc || $loc->latitude === null || $loc->longitude === null) {
+            return null;
+        }
+        return ['lat' => (float) $loc->latitude, 'lng' => (float) $loc->longitude, 'name' => $loc->location_name];
+    }
+
+    /**
+     * U5 — the rider's morning-journey payload for the app card. States the card needs:
+     *   offer   — bike rider at the start of a day: no reading yet, not checked in
+     *   riding  — home reading in, deadline armed, still within time
+     *   overdue — deadline passed, not checked in yet (card turns urgent)
+     * Null once checked in (the day has moved on), for non-bike riders, on off-days /
+     * holidays, and on leave days (never nag someone who isn't riding in). Never throws.
+     */
+    private function buildWorkJourneyPayload(int $userId, $attendance, $todayLeave = null): ?array
+    {
+        try {
+            if (!\Illuminate\Support\Facades\Schema::hasColumn('t_ops_attendance', 'work_expected_by')) {
+                return null;
+            }
+            $wj = new \App\Services\Riders\WorkJourneyService();
+            if (!$wj->riderHomePin($userId)) {
+                return null;
+            }
+            if ($attendance && $attendance->login_time) {
+                return null; // checked in — morning phase over
+            }
+            $hasStart = $attendance && $attendance->meter_start !== null && $attendance->meter_start !== '';
+            if (!$hasStart) {
+                // Not started yet — only OFFER the card on a day he actually works.
+                if ($todayLeave !== null) {
+                    return null; // approved/pending leave today
+                }
+                try {
+                    if (!(new \App\Services\ShiftResolutionService())->isWorkingDay($userId, now()->format('Y-m-d'))) {
+                        return null; // off-day / holiday
+                    }
+                } catch (\Throwable $e) { /* can't resolve → keep offering (harmless) */ }
+                $prev = $wj->lastClosingMeter($userId, now()->format('Y-m-d'));
+                return [
+                    'state' => 'offer',
+                    'prev_meter' => $prev['value'] ?? null,
+                    'prev_meter_date' => $prev['date'] ?? null,
+                    'continuity_km' => $wj->continuityKm(),
+                ];
+            }
+            $state = $wj->deriveState($attendance); // riding | overdue | none (no timer armed)
+            return [
+                'state' => $state === 'overdue' ? 'overdue' : 'riding',
+                'meter_start' => (int) $attendance->meter_start,
+                'source' => $attendance->meter_start_source ?? null,
+                'expected_by' => $attendance->work_expected_by ?? null,
+                'eta_min' => ($attendance->work_eta_min ?? null) !== null ? (int) $attendance->work_eta_min : null,
+                'buffer_min' => (int) $wj->config('WORK_ETA_BUFFER_MIN', 10), // so the card shows ETA + grace = deadline
+                'distance_km' => ($attendance->work_distance_km ?? null) !== null ? (float) $attendance->work_distance_km : null,
+                'minutes_late' => $wj->minutesLate($attendance),
+            ];
+        } catch (\Throwable $e) {
+            return null;
         }
     }
 
@@ -15601,11 +16165,27 @@ class RiderController extends Controller
                     'a.is_remote_checkin',
                     'a.checkout_latitude',
                     'a.checkout_longitude',
+                    // Blocked-checkout capture (latest attempt) — feeds the bypass sheet context
+                    'a.checkout_attempt_at',
+                    'a.checkout_attempt_lat',
+                    'a.checkout_attempt_lng',
+                    'a.checkout_attempt_reason',
+                    'a.checkout_attempt_distance_m',
+                    'a.checkout_attempt_limit_m',
+                    'a.checkout_attempt_age_min',
+                    'a.checkout_attempt_drop_lat',
+                    'a.checkout_attempt_drop_lng',
+                    'a.checkout_attempt_drop_label',
+                    'a.checkout_attempt_count',
                     // ⭐ Road distance columns (auto-calculated on checkout)
                     'a.road_distance_km',
                     'a.road_distance_source',
                     'a.gps_straight_distance_km',
                     'a.gps_readings_used',
+                    // U5 timeline anchors — feed the shared DayChecksService GPS phase analyzer
+                    'a.meter_start_recorded_at',
+                    'a.home_meter_recorded_at',
+                    'a.meter_start_source',
                     DB::raw('COALESCE(rp.shift_start, "09:00") as legacy_shift_start'),
                     DB::raw('COALESCE(rp.shift_end, "17:00") as legacy_shift_end'),
                     'lr.id as leave_request_id',
@@ -15631,6 +16211,8 @@ class RiderController extends Controller
             $primaryLocationId = (int) (DB::table('t_ops_company_locations')
                 ->where('is_primary', 1)->where('is_active', 1)->value('id') ?? 0);
             $checkoutClassifier = new \App\Services\Riders\CheckoutClassifierService();
+            // Freshness window for the blocked-checkout attempt (read once, not per row).
+            $stuckMins = (int) (DB::table('t_fin_config')->where('config_key', 'CHECKOUT_STUCK_ALERT_MINS')->value('config_value') ?? 25);
 
             // Rider-bypass state per user (home-meter valve + checkout unlock) — the same maps the
             // web attendance page shows; drives the mobile 🔓 bypass sheet. Guarded + additive.
@@ -15640,16 +16222,24 @@ class RiderController extends Controller
                 if (!empty($uids) && \Illuminate\Support\Facades\Schema::hasColumn('t_ops_attendance', 'home_expected_by')) {
                     $hjSvc = new \App\Services\Riders\HomeJourneyService();
                     $hasBreach = \Illuminate\Support\Facades\Schema::hasColumn('t_ops_attendance', 'home_bypass_breach');
-                    $hjCols = ['id', 'user_id', 'logout_time', 'home_expected_by', 'home_arrived_at', 'home_arrival_source',
+                    $hasRecAt  = \Illuminate\Support\Facades\Schema::hasColumn('t_ops_attendance', 'home_meter_recorded_at');
+                    $hjCols = ['id', 'user_id', 'logout_time', 'home_expected_by', 'home_eta_min', 'home_arrived_at', 'home_arrival_source',
                                'home_distance_km', 'meter_home', 'home_meter_unlock_until', 'home_meter_unlock_by', 'home_late_reason'];
                     if ($hasBreach) { $hjCols[] = 'home_bypass_breach'; }
+                    if ($hasRecAt)  { $hjCols[] = 'home_meter_recorded_at'; }
                     foreach (DB::table('t_ops_attendance')->whereIn('user_id', $uids)
                         ->whereDate('attendance_date', $selectedDate)->whereNotNull('home_expected_by')->get($hjCols) as $hr) {
                         $hjByUser[$hr->user_id] = [
                             'attendance_id' => (int) $hr->id,
                             'state'         => $hjSvc->deriveState($hr),
+                            // Full expected_by kept alongside the HH:MM label so the page can show
+                            // the ETA line ("due 19:03") and still compute against it.
                             'expected_by'   => $hr->home_expected_by ? substr((string) $hr->home_expected_by, 11, 5) : null,
+                            'eta_min'       => $hr->home_eta_min !== null ? (int) $hr->home_eta_min : null,
+                            'distance_km'   => $hr->home_distance_km !== null ? (float) $hr->home_distance_km : null,
                             'arrived_at'    => $hr->home_arrived_at ? substr((string) $hr->home_arrived_at, 11, 5) : null,
+                            'arrival_source'=> $hr->home_arrival_source,
+                            'recorded_at'   => ($hasRecAt && $hr->home_meter_recorded_at) ? substr((string) $hr->home_meter_recorded_at, 11, 5) : null,
                             'minutes_late'  => $hjSvc->minutesLate($hr),
                             'has_meter'     => $hr->meter_home !== null && $hr->meter_home !== '',
                             'meter_home'    => $hr->meter_home !== null ? (int) $hr->meter_home : null,
@@ -15677,6 +16267,55 @@ class RiderController extends Controller
                     }
                 }
             } catch (\Throwable $e) { /* bypass info is additive — the screen must still load */ }
+
+            // ── U5 morning-start journey per rider (store-mode mirror of the web payload):
+            //    START-line data + check-in-unlock state for the mobile bypass sheet. Guarded.
+            //    $bikeUidSet ALSO feeds is_company_bike on every row — the bypass sheet must
+            //    offer "Unlock check-in" for a bike rider with NO attendance row at all (the
+            //    skipped-home-start lock case has nothing else to hang the section on).
+            $wjByUser = [];
+            $bikeUidSet = [];
+            try {
+                $uids = $uids ?? $query->pluck('user_id')->filter()->values()->all();
+                if (!empty($uids) && \Illuminate\Support\Facades\Schema::hasColumn('t_ops_attendance', 'work_expected_by')) {
+                    $wjSvc = new \App\Services\Riders\WorkJourneyService();
+                    $bikeUids = DB::table('t_ops_rider_profile')->whereIn('user_id', $uids)
+                        ->where('company_bike', 1)->whereNotNull('home_latitude')->pluck('user_id')->all();
+                    $bikeUidSet = array_flip($bikeUids);
+                    if (!empty($bikeUids)) {
+                        $wRows = DB::table('t_ops_attendance')->whereIn('user_id', $bikeUids)
+                            ->whereDate('attendance_date', $selectedDate)
+                            ->get(['id', 'user_id', 'attendance_date', 'login_time', 'meter_start', 'meter_start_source',
+                                   'meter_start_recorded_at', 'work_expected_by', 'work_eta_min', 'work_distance_km',
+                                   'checkin_unlock_until', 'checkin_unlock_by', 'checkin_unlock_reason']);
+                        $wNames = DB::table('t_sys_user')->whereIn('id', array_filter($wRows->pluck('checkin_unlock_by')->all()))
+                            ->pluck('fullname', 'id');
+                        foreach ($wRows as $wr) {
+                            $wState = $wjSvc->deriveState($wr);
+                            if ($wState === 'none' && empty($wr->meter_start_recorded_at) && empty($wr->checkin_unlock_until)) {
+                                continue;
+                            }
+                            $wjByUser[$wr->user_id] = [
+                                'attendance_id' => (int) $wr->id,
+                                'state'         => $wState,
+                                'expected_by'   => $wr->work_expected_by ? substr((string) $wr->work_expected_by, 11, 5) : null,
+                                'eta_min'       => $wr->work_eta_min !== null ? (int) $wr->work_eta_min : null,
+                                'distance_km'   => $wr->work_distance_km !== null ? (float) $wr->work_distance_km : null,
+                                'recorded_at'   => $wr->meter_start_recorded_at ? substr((string) $wr->meter_start_recorded_at, 11, 5) : null,
+                                'source'        => $wr->meter_start_source,
+                                'minutes_late'  => $wjSvc->minutesLate($wr),
+                                'continuity'    => $wjSvc->continuity($wr),
+                                'checkin_unlock'=> [
+                                    'active'  => $wjSvc->checkinUnlockActive($wr),
+                                    'until'   => $wr->checkin_unlock_until ? substr((string) $wr->checkin_unlock_until, 11, 5) : null,
+                                    'by_name' => $wr->checkin_unlock_by ? ($wNames[$wr->checkin_unlock_by] ?? 'manager') : null,
+                                    'reason'  => $wr->checkin_unlock_reason,
+                                ],
+                            ];
+                        }
+                    }
+                }
+            } catch (\Throwable $e) { /* morning info is additive — the screen must still load */ }
 
             foreach ($query as $row) {
                 // Resolve the shift FOR THE SELECTED DATE (not today) so past dates use
@@ -15803,7 +16442,18 @@ class RiderController extends Controller
                     'gps_straight_distance_km' => $row->gps_straight_distance_km ?? null,
                     // Rider bypasses (the mobile 🔓 sheet): home-meter valve + checkout unlock.
                     'home_journey' => $hjByUser[$row->user_id] ?? null,
+                    'work_journey' => $wjByUser[$row->user_id] ?? null, // U5 morning-start (store bypass sheet)
+                    'is_company_bike' => isset($bikeUidSet[$row->user_id]), // U5: bypass sheet valve visibility
                     'checkout_unlock' => $cuByUser[$row->user_id] ?? null,
+                    // U5 phase anchors + day_checks (filled after the GPS batch below) — SAME
+                    // DayChecksService the web uses, so the phone can never drift from the web.
+                    'meter_start_recorded_at' => $row->meter_start_recorded_at ?? null,
+                    'home_meter_recorded_at' => $row->home_meter_recorded_at ?? null,
+                    'meter_start_source' => $row->meter_start_source ?? null,
+                    'day_checks' => null,
+                    // Blocked-checkout context for the mobile bypass sheet — SAME shared formatter
+                    // the web bypass modal uses (one brain), so the phone can't drift. null if none.
+                    'checkout_attempt' => \App\Services\Riders\DayChecksService::checkoutAttempt($row, $stuckMins),
                 ];
             }
             
@@ -15836,7 +16486,32 @@ class RiderController extends Controller
                 }
                 unset($employee); // Clear reference
             }
-            
+
+            // ── DAY CHECKS — the ⛽/📡 verdicts + issue chips + clean flag, built by the SHARED
+            //    DayChecksService (the SAME brain the web page uses), so the phone can NEVER drift
+            //    from the web. Additive field → old APKs ignore it. Non-fatal.
+            try {
+                $dcSvc = new \App\Services\Riders\DayChecksService();
+                $warnKm = (float) (DB::table('t_fin_config')->where('config_key', 'ATTENDANCE_METER_GPS_WARN_KM')->value('config_value') ?? 10);
+                $gpsGrouped = $allGpsReadings ?? collect();
+                foreach ($formattedData as &$employee) {
+                    if (empty($employee['login_time'])) { continue; }
+                    $rd = isset($gpsGrouped[$employee['user_id']]) ? $gpsGrouped[$employee['user_id']]->values()->all() : [];
+                    $employee['day_checks'] = $dcSvc->build([
+                        'login_time' => $employee['login_time'], 'logout_time' => $employee['logout_time'],
+                        'role_name' => $employee['role_name'] ?? null, 'company_bike' => !empty($employee['is_company_bike']),
+                        'meter_start' => $employee['meter_start'], 'meter_end' => $employee['meter_end'], 'meter_distance' => $employee['meter_distance'],
+                        'road_distance_km' => $employee['road_distance_km'], 'gps_distance' => $employee['gps_distance'],
+                        'checkout_info' => $employee['checkout_info'], 'home_journey' => $employee['home_journey'],
+                        'work_journey' => $employee['work_journey'], 'checkout_unlock' => $employee['checkout_unlock'],
+                        'meter_start_recorded_at' => $employee['meter_start_recorded_at'],
+                        'home_meter_recorded_at' => $employee['home_meter_recorded_at'],
+                        'meter_start_source' => $employee['meter_start_source'],
+                    ], $rd, $selectedDate, $warnKm);
+                }
+                unset($employee);
+            } catch (\Throwable $e) { \Log::warning('day_checks (mobile) failed (non-fatal)', ['error' => $e->getMessage()]); }
+
             // ⭐ Batch fetch previous day's meter_end for all employees
             // This helps identify gaps between yesterday's end and today's start
             $allUserIds = array_column($formattedData, 'user_id');
@@ -16453,62 +17128,46 @@ class RiderController extends Controller
         return (new \App\Http\Controllers\CRM\AttendanceController())->homeMeterManagerEntry($request);
     }
 
+    /** U5 — mobile store-mode wrapper for the morning check-in unlock (same gate as its siblings). */
+    public function storeAttendanceCheckinUnlock(Request $request)
+    {
+        if ($deny = $this->storeAttendanceGate()) { return $deny; }
+        return (new \App\Http\Controllers\CRM\AttendanceController())->checkinUnlock($request);
+    }
+
+    /** Live "rider stuck at checkout" alerts for the mobile manager banner (same gate; delegates
+     *  to the shared CRM builder, so the phone banner and the web banner list the same riders). */
+    public function storeAttendanceCheckoutStuckAlerts(Request $request)
+    {
+        if ($deny = $this->storeAttendanceGate()) { return $deny; }
+        return (new \App\Http\Controllers\CRM\AttendanceController())->checkoutStuckAlerts($request);
+    }
+
+    /** Mobile: a manager dismisses a "stuck at checkout" alert (delegates to the shared CRM method). */
+    public function storeAttendanceDismissCheckoutStuck(Request $request)
+    {
+        if ($deny = $this->storeAttendanceGate()) { return $deny; }
+        return (new \App\Http\Controllers\CRM\AttendanceController())->dismissCheckoutStuckAlert($request);
+    }
+
+    /** Round-2 — mobile store-mode wrapper for the GPS-phases + meter-story detail (the ⛽/📡 tick
+     *  sheets). Same gate; delegates to the SAME endpoint the web GPS/meter modals use, so the
+     *  phone's sheet renders identical phases + meter_story. Read-only. */
+    public function storeAttendanceGpsAudit(Request $request)
+    {
+        if ($deny = $this->storeAttendanceGate()) { return $deny; }
+        return (new \App\Http\Controllers\CRM\AttendanceController())->gpsReadingsAudit($request);
+    }
+
+    /** Mobile store-mode meter correction — DELEGATES to the CRM updateMeterValues (the ONE
+     *  implementation), so the mobile edit gets the same has()-guards (a missing field never
+     *  wipes the other reading), the U5 meter_start_source='manager' stamp, and the U4
+     *  meter_home mirror for bike riders. The old separate copy here silently lacked all
+     *  three — the exact split-brain class this week's work eliminated. */
     public function updateMeterValues(Request $request)
     {
-        try {
-            $user = Auth::user();
-
-            // Check permission
-            if (!$user->hasMobilePermission('view_store_attendance')) {
-                return response()->json([
-                    'success' => false,
-                    'message' => 'You do not have permission to update attendance'
-                ], 403);
-            }
-            
-            $request->validate([
-                'attendance_id' => 'required|integer',
-                'meter_start' => 'nullable|integer',
-                'meter_end' => 'nullable|integer',
-            ]);
-            
-            $attendanceId = $request->input('attendance_id');
-            $meterStart = $request->input('meter_start');
-            $meterEnd = $request->input('meter_end');
-            
-            // Verify attendance record exists
-            $attendance = DB::table('t_ops_attendance')->where('id', $attendanceId)->first();
-            
-            if (!$attendance) {
-                return response()->json([
-                    'success' => false,
-                    'message' => 'Attendance record not found'
-                ], 404);
-            }
-            
-            // Update meter values
-            DB::table('t_ops_attendance')
-                ->where('id', $attendanceId)
-                ->update([
-                    'meter_start' => $meterStart,
-                    'meter_end' => $meterEnd,
-                    'updated_at' => now(),
-                ]);
-            
-            return response()->json([
-                'success' => true,
-                'message' => 'Meter values updated successfully',
-                'meter_start' => $meterStart,
-                'meter_end' => $meterEnd,
-            ]);
-            
-        } catch (\Exception $e) {
-            \Log::error('Mobile API - Failed to update meter values: ' . $e->getMessage());
-            return response()->json([
-                'success' => false,
-                'message' => 'Failed to update meter values: ' . $e->getMessage()
-            ], 500);
-        }
+        if ($deny = $this->storeAttendanceGate()) { return $deny; }
+        return (new \App\Http\Controllers\CRM\AttendanceController())->updateMeterValues($request);
     }
 
     /**

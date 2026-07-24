@@ -2817,6 +2817,11 @@ function removePromoImage() {
                                             @if($customer->company)
                                                 <span class="text-xs text-gray-500">{{ $customer->company }}</span>
                                             @endif
+                                            @if($customer->is_on_mobile_app)
+                                                {{-- Mobile-app customer tag. Inline-styled (CSS-purge safe); --}}
+                                                {{-- absent for everyone until they place an app order. --}}
+                                                <span style="display:inline-flex;align-items:center;gap:3px;margin-top:3px;width:fit-content;padding:1px 7px;border-radius:9999px;background:#eff6ff;color:#1d4ed8;font-size:10px;font-weight:600;line-height:1.5;white-space:nowrap;" title="{{ $customer->mobile_app_first_seen_at ? 'On the mobile app since '.$customer->mobile_app_first_seen_at->format('d M Y') : 'Uses the mobile app' }}">📱 App</span>
+                                            @endif
                                         </div>
                                     </td>
                                     <td class="px-6 py-4 whitespace-nowrap">

@@ -22,6 +22,7 @@ class OrderModel extends BaseModel
     protected $fillable = [
         'customer_id',
         'external_source',
+        'order_source_channel',
         'external_id',
         'external_customer_id',
         'order_number',
@@ -551,6 +552,25 @@ class OrderModel extends BaseModel
             }
             // Keep the original customer_id from $orderData if phone lookup didn't find/create one
             $orderAttributes['created_by'] = auth()->check() ? auth()->id() : null;
+
+            // Jul-2026: flag the customer as a mobile-app user the first time an
+            // app-origin order (Shopify source_name ios_app/android_app) is seen
+            // for them. One-way flag + first-seen stamp; only writes when it
+            // actually flips, so it's a no-op on every later order. Non-fatal —
+            // a flag hiccup must never break order ingest.
+            try {
+                $channel = $orderData['order_source_channel'] ?? null;
+                if ($customer && in_array($channel, ['ios_app', 'android_app'], true) && !$customer->is_on_mobile_app) {
+                    $customer->is_on_mobile_app = true;
+                    $customer->mobile_app_first_seen_at = $customer->mobile_app_first_seen_at ?? now();
+                    $customer->save();
+                }
+            } catch (\Throwable $e) {
+                \Log::warning('Failed to set customer mobile-app flag (non-fatal)', [
+                    'customer_id' => $customer->id ?? null,
+                    'error' => $e->getMessage(),
+                ]);
+            }
             
             // Extract line items
             $lineItems = $orderAttributes['line_items'] ?? [];
@@ -956,6 +976,11 @@ class OrderModel extends BaseModel
 
         $orderData = [
             'external_source' => 'shopify',
+            // Order origin channel — Shopify's source_name, set by the customer
+            // app / storefront (e.g. "ios_app", "android_app", "web"). Lets NF
+            // tell app orders from website orders. Captured raw; rendered as a
+            // badge on the orders page. NULL for sources that don't set it.
+            'order_source_channel' => $shopifyOrder['source_name'] ?? null,
             'external_id' => (string)$shopifyOrder['id'],
             'external_customer_id' => isset($shopifyOrder['customer']['id']) ? (string)$shopifyOrder['customer']['id'] : null,
             
@@ -1688,6 +1713,26 @@ class OrderModel extends BaseModel
                         'order_id'   => $this->id,
                         'status_code' => $statusCode,
                         'error'      => $emitException->getMessage(),
+                    ]);
+                }
+            }
+
+            // Jul-2026 — Auto location-request on ACTIVATION (Option B). A future-day
+            // order accepted via the delivery buttons is parked in 'pending'; when the
+            // team activates it (pending -> new) on its delivery day, ask the customer
+            // for their delivery location now. The location enqueue otherwise fires only
+            // on order create / Shopify convert, so this transition would never trigger
+            // it. enqueue() is internally a no-op when the automation is off and
+            // re-validates eligibility at drain time, so this is safe + non-fatal.
+            if ($result === true && $previousNfStatus === 'pending' && $statusCode === 'new' && $this->customer_id) {
+                try {
+                    $locSvc = app(\App\Services\Location\OpenOrderLocationService::class);
+                    $locSvc->enqueue((int) $this->customer_id, (int) $this->id, 'activate');
+                    $locSvc->fireFromRequest();
+                } catch (\Throwable $locException) {
+                    \Log::warning('Auto location-request enqueue on activation failed (non-fatal)', [
+                        'order_id' => $this->id,
+                        'error' => $locException->getMessage(),
                     ]);
                 }
             }

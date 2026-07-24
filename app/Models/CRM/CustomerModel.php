@@ -31,6 +31,11 @@ class CustomerModel extends BaseModel
         'last_name',
         'company',
         'customer_type',
+        // Mobile-app migration tag: set once the customer places an app-origin
+        // order (Shopify source_name ios_app/android_app). Drives campaign
+        // exclusion + the HQ order-source split. See [[shopify source channel]].
+        'is_on_mobile_app',
+        'mobile_app_first_seen_at',
         'email',
         'address1',
         'address2',
@@ -81,7 +86,9 @@ class CustomerModel extends BaseModel
         'first_delivery_date' => 'datetime',
         'last_delivery_date' => 'datetime',
         'is_active' => 'boolean',
-        'total_orders' => 'integer'
+        'total_orders' => 'integer',
+        'is_on_mobile_app' => 'boolean',
+        'mobile_app_first_seen_at' => 'datetime'
     ];
 
     // Customer type constants. Shop customers settle online invoices via
