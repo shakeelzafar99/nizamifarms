@@ -259,6 +259,11 @@ class UserController extends Controller
                 'role_id' => $request->role_id
             ]);
 
+            // A new rider-role account starts as an ACTIVE delivery rider, so he is assignable
+            // the moment he exists. Before this, a new rider had no rider_profile row at all and
+            // was invisible in every assign list until someone hand-ticked "Delivery Rider".
+            $this->ensureRiderProfile((int) $user->id, (int) $request->role_id);
+
             return redirect()->route('users.index')
                 ->with('success', 'User created successfully!')
                 ->withHeaders(['Cache-Control' => 'no-cache, no-store, must-revalidate']);
@@ -302,11 +307,37 @@ class UserController extends Controller
                     'user_id' => $id,
                     'role_id' => $request->role_id
                 ]);
+                // Promoted INTO a rider role → give him a profile too (same as create).
+                $this->ensureRiderProfile((int) $id, (int) $request->role_id);
             }
 
             return redirect()->route('users.index')->with('success', 'User updated successfully!');
         } catch (\Exception $e) {
             return redirect()->back()->with('error', 'Error updating user: ' . $e->getMessage());
+        }
+    }
+
+    /**
+     * Give a rider-role user an ACTIVE rider profile ("Delivery Rider" ticked) if he has none.
+     *
+     * NEVER touches an existing row: unticking someone in the People & Rider List is a deliberate
+     * act (a stood-down rider, an office person), and editing their name later must not silently
+     * put them back on the roster. Non-fatal — creating a user must never fail over this.
+     */
+    private function ensureRiderProfile(int $userId, int $roleId): void
+    {
+        try {
+            if (!$userId || !$roleId) { return; }
+            if (\DB::table('t_sys_role')->where('id', $roleId)->value('type') !== 'rider') { return; }
+            if (\DB::table('t_ops_rider_profile')->where('user_id', $userId)->exists()) { return; }
+            \DB::table('t_ops_rider_profile')->insert([
+                'user_id' => $userId,
+                'active' => 1,
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+        } catch (\Throwable $e) {
+            \Log::warning('ensureRiderProfile failed (non-fatal)', ['user_id' => $userId, 'error' => $e->getMessage()]);
         }
     }
 

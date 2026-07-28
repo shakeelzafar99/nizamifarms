@@ -56,12 +56,24 @@ class RiderProfileController extends Controller
         if (Schema::hasColumn('t_ops_rider_profile', 'meter_required')) {
             $cols[] = 'p.meter_required';
         }
+        // WHO IS ON THIS PAGE: a rider by ROLE, **or** anyone ticked "Delivery Rider" in the
+        // People & Rider List (`rider_profile.active = 1`) — the same switch that already drives
+        // the web/mobile assign lists, the shift planner and the Bikes roster. Without the second
+        // arm, ticking a non-rider-role account (e.g. a Management user who also delivers) put
+        // them in every assign list but left them unmanageable here, with no way to set their
+        // phone / vehicle / home pin / meter rule. Role-only riders are kept so nobody who is
+        // listed today can vanish — this widens the page, it never narrows it.
+        // LEFT joins + distinct: a multi-role account must appear once, and an account with no
+        // role row at all still shows if it is ticked.
         $riders = DB::table('t_sys_user as u')
-            ->join('t_sys_user_role as ur', 'ur.user_id', '=', 'u.id')
-            ->join('t_sys_role as r', 'r.id', '=', 'ur.role_id')
+            ->leftJoin('t_sys_user_role as ur', 'ur.user_id', '=', 'u.id')
+            ->leftJoin('t_sys_role as r', 'r.id', '=', 'ur.role_id')
             ->leftJoin('t_ops_rider_profile as p', 'p.user_id', '=', 'u.id')
-            ->where('r.type', 'rider')
+            ->where(function ($q) {
+                $q->where('r.type', 'rider')->orWhere('p.active', 1);
+            })
             ->where('u.is_active', 1)
+            ->distinct()
             ->select($cols)
             ->get();
 

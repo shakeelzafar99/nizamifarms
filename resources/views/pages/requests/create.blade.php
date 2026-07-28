@@ -165,6 +165,24 @@
                         <p class="text-xs text-gray-500 mt-1">Select the type of expense for proper accounting, or add a new category</p>
                     </div>
 
+                    <!-- 🔧 Bike service capture (Jul-2026): shown only for Maintenance.
+                         Mirrors the mobile picker. Selecting "Regular service" and giving the
+                         odometer is what lets approval reset the bike's service-due clock —
+                         without it a web-filed service leaves the bike showing overdue.
+                         Both optional: Maintenance is also used for non-bike repairs. -->
+                    <div id="bike-service-fields" style="display: none;" class="mb-6">
+                        <label class="kt-label">Bike Service (only if this is for a rider's bike)</label>
+                        <select name="service_type" id="service_type" class="kt-select mb-2">
+                            <option value="">Not a bike / other maintenance</option>
+                            <option value="oil_change">🛢️ Regular service (oil change / tuning)</option>
+                            <option value="repair">🔧 Repair (anything broken)</option>
+                        </select>
+                        <input type="number" name="meter_at_fill" id="meter_at_fill" class="kt-input" placeholder="Odometer at the service (km)" min="0" max="9999999" step="1" style="display: none;">
+                        <p class="text-xs text-gray-500 mt-1" id="bike-service-hint" style="display: none;">
+                            A <b>Regular service</b> with the odometer resets the bike's service-due clock on approval. A Repair never does.
+                        </p>
+                    </div>
+
                     <!-- Amount field (for advance/expense) -->
                     <div id="amount-field" style="display: none;" class="mb-6">
                         <label class="kt-label">Amount (Rs.)</label>
@@ -275,6 +293,7 @@ function handleCategoryChange() {
     } else {
         leaveFields.style.display = 'none';
         amountField.style.display = 'none';
+        expenseCategoryField.style.display = 'none';
         document.querySelector('[name="amount"]').required = false;
         document.querySelector('[name="leave_start_date"]').required = false;
         document.querySelector('[name="leave_end_date"]').required = false;
@@ -283,7 +302,11 @@ function handleCategoryChange() {
         descriptionLabel.classList.add('required');
         descriptionField.placeholder = 'Provide detailed information about your request';
     }
-    
+
+    // 🔧 Keep the bike-service fields in step with the expense group — switching
+    // away from Expense must hide AND clear them (stale service_type guard).
+    updateBikeServiceFields();
+
     // Show approval info
     const approvalInfo = document.getElementById('approval-info');
     if (select.value) {
@@ -326,7 +349,7 @@ function calculateLeaveDays() {
 function handleExpenseCategoryChange() {
     const expenseCategorySelect = document.getElementById('expense_category');
     const selectedValue = expenseCategorySelect.value;
-    
+
     if (selectedValue === '__ADD_NEW__') {
         // Open modal to add new category
         openInlineExpenseCategoryModal();
@@ -336,7 +359,46 @@ function handleExpenseCategoryChange() {
         // Update title
         updateExpenseTitle();
     }
+
+    // 🔧 Bike service fields only make sense for Maintenance. Values are CLEARED
+    // when hidden so switching category can never submit a stale service_type
+    // (the server also guards, but don't rely on it).
+    updateBikeServiceFields();
 }
+
+function updateBikeServiceFields() {
+    const expenseCategorySelect = document.getElementById('expense_category');
+    const wrap = document.getElementById('bike-service-fields');
+    if (!wrap) return;
+    // Only when the expense-category group itself is visible — switching the
+    // request category to Leave hides the group but keeps its value, and the
+    // bike fields must never outlive it.
+    const groupVisible = (document.getElementById('expense-category-field') || {}).style
+        ? document.getElementById('expense-category-field').style.display !== 'none' : false;
+    const isMaint = groupVisible && expenseCategorySelect && expenseCategorySelect.value === 'Maintenance';
+    wrap.style.display = isMaint ? 'block' : 'none';
+    if (!isMaint) {
+        const st = document.getElementById('service_type');
+        const mf = document.getElementById('meter_at_fill');
+        if (st) st.value = '';
+        if (mf) { mf.value = ''; mf.style.display = 'none'; }
+        const hint = document.getElementById('bike-service-hint');
+        if (hint) hint.style.display = 'none';
+    }
+}
+
+// Odometer + hint appear once a bike service type is chosen.
+document.addEventListener('DOMContentLoaded', function () {
+    const st = document.getElementById('service_type');
+    if (!st) return;
+    st.addEventListener('change', function () {
+        const mf = document.getElementById('meter_at_fill');
+        const hint = document.getElementById('bike-service-hint');
+        const show = st.value !== '';
+        if (mf) { mf.style.display = show ? 'block' : 'none'; if (!show) mf.value = ''; }
+        if (hint) hint.style.display = show ? 'block' : 'none';
+    });
+});
 
 function updateExpenseTitle() {
     const expenseCategorySelect = document.getElementById('expense_category');

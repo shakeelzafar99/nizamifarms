@@ -215,8 +215,11 @@ class PayrollService
             : $lateComputedCut;
 
         // ── Overtime → bonus leaves (÷ target hours; whole days only). No pay.
+        // The conversion lives in OvertimeService so the attendance/report screens show the
+        // SAME number this grants — the formula used to be duplicated here, which is exactly
+        // how a display and a payment silently drift apart.
         $otMinutes = $this->ot->overtimeMinutes($userId, $startDate, $effectiveEnd);
-        $bonusLeaves = (int) floor($otMinutes / max(1, (int) round($this->targetHours() * 60)));
+        $bonusLeaves = $this->ot->bonusLeaves($otMinutes);
 
         // ── Open salary advances (unsettled) — auto-deducted at pay, settled on pay.
         $advances = $this->openAdvances($userId);

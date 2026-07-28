@@ -20,6 +20,27 @@ Schedule::command('attendance:delete-old-meter-pictures')
         \Log::error('Old meter pictures cleanup failed');
     });
 
+// Blocked-checkout attempt log retention (GPS-hardening, Jul-2026). The table is
+// append-only with no purge; volume is low (blocked attempts only) but unbounded.
+// 180 days keeps a full season of dispute evidence — the row's whole purpose —
+// while the attendance row's latest-attempt columns (what the live alert reads)
+// are untouched. hasTable guard: prod may not have run the schema batch yet.
+Schedule::call(function () {
+    try {
+        if (!\Illuminate\Support\Facades\Schema::hasTable('t_ops_checkout_attempt_log')) {
+            return;
+        }
+        $deleted = \DB::table('t_ops_checkout_attempt_log')
+            ->where('attempted_at', '<', now()->subDays(180))
+            ->delete();
+        if ($deleted > 0) {
+            \Log::info('Checkout attempt log purged', ['rows' => $deleted]);
+        }
+    } catch (\Throwable $e) {
+        \Log::warning('Checkout attempt log purge failed (non-fatal)', ['error' => $e->getMessage()]);
+    }
+})->daily()->at('02:10')->name('purge-checkout-attempt-log')->withoutOverlapping();
+
 // Phase 3 (May-2026) — Qurbani auto-WhatsApp messages.
 // Cron-fallback runner. The worker is normally fired by the
 // manager-poll terminating() hook, but on quiet hours (e.g. very

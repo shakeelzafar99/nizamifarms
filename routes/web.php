@@ -243,6 +243,17 @@ Route::middleware(['auth'])->group(function () {
     // Rider Reports (Phase 2) — real-time Manager Issues + Report Card data
     Route::get('/orders/riders-map/reports', [\App\Http\Controllers\CRM\RiderReportsController::class, 'index'])->name('orders.riders-map.reports');
     Route::get('/orders/riders-map/timeline', [\App\Http\Controllers\CRM\RiderReportsController::class, 'timeline'])->name('orders.riders-map.timeline');
+    // Day Review (Jul-2026) — the tab that replaces History + Dispatch Tracker + Issues.
+    // MUST stay above the '/orders/riders-map/{riderId}' catch-all below, or
+    // 'day-review' would be swallowed as a rider id.
+    Route::get('/orders/riders-map/day-review', [\App\Http\Controllers\CRM\RiderDayReviewController::class, 'day'])->name('orders.riders-map.day-review');
+    Route::get('/orders/riders-map/day-review/rider', [\App\Http\Controllers\CRM\RiderDayReviewController::class, 'rider'])->name('orders.riders-map.day-review.rider');
+    // Fleet & Fuel (Jul-2026) — per-rider fuel/maintenance cost per month.
+    // Also above the '{riderId}' catch-all for the same reason as Day Review.
+    Route::get('/orders/riders-map/fleet', [\App\Http\Controllers\CRM\FleetFuelController::class, 'month'])->name('orders.riders-map.fleet');
+    Route::get('/orders/riders-map/fleet/rider', [\App\Http\Controllers\CRM\FleetFuelController::class, 'rider'])->name('orders.riders-map.fleet.rider');
+    Route::post('/orders/riders-map/fleet/mark-serviced', [\App\Http\Controllers\CRM\FleetFuelController::class, 'markServiced'])->name('orders.riders-map.fleet.mark-serviced');
+    Route::post('/orders/riders-map/fleet/default-interval', [\App\Http\Controllers\CRM\FleetFuelController::class, 'setDefaultInterval'])->name('orders.riders-map.fleet.default-interval');
     Route::get('/orders/riders-map/live-status', [\App\Http\Controllers\API\RiderController::class, 'getRidersLiveStatus'])->name('orders.riders-map.live-status');
     Route::get('/orders/riders-map/riders-for-history', [\App\Http\Controllers\API\RiderController::class, 'getRidersForHistory'])->name('orders.riders-map.riders-for-history');
     Route::get('/orders/riders-map/rider-history/{riderId}', [\App\Http\Controllers\API\RiderController::class, 'getRiderDeliveryHistory'])->name('orders.riders-map.rider-delivery-history');
@@ -984,6 +995,7 @@ Route::middleware(['auth'])->group(function () {
         Route::get('/sales-report/daily-ajax', [\App\Http\Controllers\KhaasController::class, 'salesReportDailyWeb'])->name('sales-report.daily-ajax');
         Route::get('/sales-report/product/{productId}/daily', [\App\Http\Controllers\KhaasController::class, 'productDailyBreakdown'])->name('sales-report.product-daily');
         Route::get('/products/{productId}/store-log', [\App\Http\Controllers\KhaasController::class, 'getStoreInventoryLog'])->name('products.store-log');
+        Route::get('/products/{productId}/warehouse-log', [\App\Http\Controllers\KhaasController::class, 'getWarehouseInventoryLog'])->name('products.warehouse-log');
 
         // Meat Order & Inventory views
         Route::get('/meat-order', [\App\Http\Controllers\KhaasController::class, 'meatOrder'])->name('meat-order');

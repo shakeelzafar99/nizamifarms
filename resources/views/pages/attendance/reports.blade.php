@@ -398,7 +398,11 @@ function renderReportTable(data) {
     const userWorkingDays = emp.working_days || calculatedWorkingDays || 27;
     const attendancePerc = userWorkingDays > 0 ? ((emp.present_days / userWorkingDays) * 100).toFixed(1) : 0;
     const totalLateMins = emp.total_late_minutes ? Math.round(emp.total_late_minutes) : 0;
-    const totalOTMins = emp.total_overtime_minutes ? Math.round(emp.total_overtime_minutes) : 0;
+    // Overtime = the TARGET-based figure that earns bonus leave (owner ruling Jul-28) — the
+    // same one the Attendance page and payroll use. `total_overtime_minutes` is the old
+    // shift-END number that feeds salary and reads ~0 for everyone; it must not appear here.
+    const totalOTMins = emp.overtime_target_minutes ? Math.round(emp.overtime_target_minutes) : 0;
+    const otBonusDays = Number(emp.overtime_bonus_leaves) || 0;
     
     return `
       <tr class="hover:bg-gray-50">
@@ -485,7 +489,12 @@ function showDailyDetails(userId) {
   document.getElementById('modalStatAbsent').textContent = employee.absent_days || 0;
   document.getElementById('modalStatLeave').textContent = employee.leave_days || 0;
   modalLate.textContent = employee.late_days || 0;
-  modalOT.textContent = employee.overtime_days || 0;
+  // Overtime tile = the bonus days those hours have earned, with the hours underneath.
+  // Was a day-count off the shift-END overtime, which reads ~0 for everyone.
+  (function () {
+    const b = Number(employee.overtime_bonus_leaves) || 0;
+    modalOT.textContent = b > 0 ? `${b} bonus day${b === 1 ? '' : 's'}` : '0';
+  })();
   modalHours.textContent = (employee.total_hours || 0).toFixed(1) + 'h';
   
   // Add hours/minutes for late and overtime
@@ -495,7 +504,9 @@ function showDailyDetails(userId) {
   const lateMins = lateMinutes % 60;
   document.getElementById('modalStatLateHours').textContent = `${lateHours}h ${lateMins}m`;
   
-  const otMinutes = Math.round(employee.total_overtime_minutes || 0);
+  // TARGET-based minutes (the ones that earn the bonus days above) — not the shift-END
+  // figure that feeds salary and shows ~0 because the resolved shift has no end time.
+  const otMinutes = Math.round(employee.overtime_target_minutes || 0);
   const otHours = Math.floor(otMinutes / 60);
   const otMins = otMinutes % 60;
   document.getElementById('modalStatOTHours').textContent = `${otHours}h ${otMins}m`;
@@ -536,7 +547,13 @@ function showDailyDetails(userId) {
       const logoutTime = day.logout_time || '-';
       const hours = (isAbsent || isOnLeave) ? '-' : calculateHours(day.login_time, day.logout_time);
       const lateBy = (isAbsent || isOnLeave) ? { duration: '-', isLate: false } : calculateLateBy(day.login_time, day.shift_start);
-      const overtime = (isAbsent || isOnLeave) ? { duration: '-', hasOvertime: false } : calculateOvertime(day.logout_time, day.shift_end);
+      // Server-supplied TARGET overtime for this day (the figure that earns bonus leave).
+      // Replaces a client-side logout-vs-shift_end calculation that was a third, disagreeing
+      // definition — and that silently defaulted to a 17:00 shift end when none was set.
+      const otDayMins = Number(day.overtime_minutes) || 0;
+      const overtime = (isAbsent || isOnLeave || otDayMins <= 0)
+        ? { duration: '-', hasOvertime: false }
+        : { duration: (otDayMins >= 60 ? `${Math.floor(otDayMins / 60)}h ${otDayMins % 60}m` : `${otDayMins}m`), hasOvertime: true };
       const status = isOnLeave ? 'On Leave' : (isAbsent ? 'Absent' : getStatus(day.login_time, day.shift_start));
       
       // Format date nicely

@@ -2852,14 +2852,30 @@ class OrderController extends Controller
                 ]);
             }
             
-            // ⭐ AUTO-GEOCODE: If customer has no geocoded coordinates, try to geocode their address
+            // ⭐ AUTO-GEOCODE: give this stop a location so dispatch can time it.
             // Note: geocoded_latitude/longitude is separate from latitude/longitude (verified location)
+            //
+            // Keyed on "has no VERIFIED pin" (not "has no geocode"), so it also
+            // REFRESHES a pin left by the old Nominatim engine — those are worth
+            // replacing: 1,611 customers were sitting on three city centroids, and
+            // a stop timed to the middle of Islamabad looks perfectly healthy while
+            // being kilometres wrong. Self-healing by design: every customer who
+            // still lacks a human pin gets Google's best answer on their next order,
+            // so no historical correction run is ever needed. Customers who DO have
+            // a verified pin are skipped — that pin wins everywhere downstream, so
+            // the call would be wasted work.
             if ($order->customer_id) {
                 $customer = \App\Models\CRM\CustomerModel::find($order->customer_id);
-                if ($customer && !$customer->geocoded_latitude && !$customer->geocoded_longitude) {
+                if ($customer && \App\Services\GeocodingService::needsGeocodeRefresh($customer)) {
                     // Geocode in background (don't block order creation)
                     try {
-                        \App\Services\GeocodingService::geocodeCustomer($order->customer_id);
+                        // force=true only when stale coords already exist, since
+                        // geocodeCustomer() returns early on a populated slot.
+                        \App\Services\GeocodingService::geocodeCustomer(
+                            $order->customer_id,
+                            (bool) ($customer->geocoded_latitude && $customer->geocoded_longitude),
+                            ['trigger' => 'order_create', 'order_id' => $order->id, 'user_id' => auth()->id()]
+                        );
                         \Log::info('Auto-geocoding triggered for new order', [
                             'order_id' => $order->id,
                             'customer_id' => $order->customer_id
@@ -3275,13 +3291,21 @@ class OrderController extends Controller
             }
             
             // ⭐ AUTO-GEOCODE: If customer has no coordinates, try to geocode their address
-            // This ensures converted Shopify orders get geocoded addresses just like new orders
+            // This ensures converted Shopify orders get geocoded addresses just like new orders.
+            // Same rule as the new-order path: refresh whenever there is no VERIFIED
+            // pin, which also replaces stale old-engine pins. (SH-21417 came through
+            // here on Jul-25, failed to geocode, and was silently dropped from the
+            // dispatch four hours later.)
             if ($convertedOrder->customer_id) {
                 $customer = \App\Models\CRM\CustomerModel::find($convertedOrder->customer_id);
-                if ($customer && !$customer->geocoded_latitude && !$customer->geocoded_longitude) {
+                if ($customer && \App\Services\GeocodingService::needsGeocodeRefresh($customer)) {
                     // Geocode in background (don't block order conversion)
                     try {
-                        \App\Services\GeocodingService::geocodeCustomer($convertedOrder->customer_id);
+                        \App\Services\GeocodingService::geocodeCustomer(
+                            $convertedOrder->customer_id,
+                            (bool) ($customer->geocoded_latitude && $customer->geocoded_longitude),
+                            ['trigger' => 'shopify_convert', 'order_id' => $convertedOrder->id, 'user_id' => auth()->id()]
+                        );
                         \Log::info('Auto-geocoding triggered for Shopify converted order', [
                             'order_id' => $convertedOrder->id,
                             'customer_id' => $convertedOrder->customer_id
@@ -4354,11 +4378,29 @@ class OrderController extends Controller
                 ->with('error', 'You do not have permission to view Riders Map.');
         }
 
-        // Rider Reports (Phase 2) — the ⚠ Issues tab is shown only to users
-        // holding the view_rider_reports permission (admins / Taimur / supervisor2).
+        // Rider Reports (Phase 2) — gates the forensic layer of Day Review
+        // (route, stops, pin-crossing verdicts), exactly as it gated the old
+        // ⚠ Issues tab that Day Review replaced.
         $canViewRiderReports = $user->hasPermission('view_rider_reports');
 
-        return view('pages.riders-map.index', compact('canViewRiderReports'));
+        // 🏍️ Bikes shows money, so it is gated. Same rule the FleetFuel controller
+        // enforces server-side — keep the two in sync. `view_bike_costs` is the
+        // standalone key: it lets someone (e.g. a Khaas-mode user) see running
+        // costs without any rider-ops or finance access tagging along.
+        $canViewBikes = $canViewRiderReports
+            || $user->hasPermission('web_menu_finance_hub')
+            || $user->hasPermission('view_bike_costs');
+
+        // Someone whose ONLY reason to be here is Bikes should land on Bikes and
+        // not be shown the live board or delivery reviews at all.
+        $bikesOnly = $canViewBikes && !$canViewRiderReports
+            && !$user->hasPermission('view_orders')
+            && !$user->hasPermission('view_all_riders')
+            && !$user->hasPermission('web_menu_finance_hub');
+
+        $canViewFleet = $canViewBikes;   // name kept: the blade + JS use `fleet`
+
+        return view('pages.riders-map.index', compact('canViewRiderReports', 'canViewFleet', 'bikesOnly'));
     }
 
     /**

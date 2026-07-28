@@ -176,6 +176,12 @@ class RequestController extends Controller
             'amount' => 'nullable|numeric|min:0',
             'expense_category' => 'nullable|string|max:255', // For expense requests
             'expense_date' => 'nullable|date', // ⭐ For backdated expense entries
+            // 🔧 Bike service capture (Jul-2026). Until now only the MOBILE form sent
+            // these, so a web-filed Maintenance row had service_type = NULL and could
+            // never reset the bike's service clock on approval. Whitelisted to the two
+            // values the mobile picker offers; blank = not bike-related (unchanged).
+            'service_type' => 'nullable|in:oil_change,repair',
+            'meter_at_fill' => 'nullable|integer|min:0|max:9999999',
             'payment_source_account_id' => 'nullable|exists:t_fin_accounts,id', // Payment source selection
             'receiving_account_id' => 'nullable|integer|exists:t_fin_online_receiving_accounts,id', // Which bank an ONLINE expense is paid from
             'business_unit_id' => 'nullable|exists:t_fin_business_units,id', // ⭐ Business unit for expense
@@ -495,6 +501,12 @@ class RequestController extends Controller
                 'amount' => $validated['amount'] ?? null,
                 'expense_category' => $validated['expense_category'] ?? null,
                 'expense_date' => $validated['expense_date'] ?? now()->toDateString(),
+                // 🔧 Only meaningful on a Maintenance row — never stamp a service type
+                // onto an unrelated expense if a stale form submits the hidden fields.
+                'service_type' => (($validated['expense_category'] ?? null) === 'Maintenance')
+                    ? ($validated['service_type'] ?? null) : null,
+                'meter_at_fill' => (($validated['expense_category'] ?? null) === 'Maintenance')
+                    ? ($validated['meter_at_fill'] ?? null) : null,
                 'payment_source_account_id' => $validated['payment_source_account_id'] ?? null,
                 'receiving_account_id' => $expenseBankId,
                 'business_unit_id' => $validated['business_unit_id'] ?? 1,
@@ -527,7 +539,13 @@ class RequestController extends Controller
             if ($overallStatus === RequestModel::STATUS_APPROVED) {
                 $categoryCode = $category->category_code;
                 $requestModel->setRelation('category', $category); // ensure relation is loaded for helper
-                
+
+                // 🔧 A request approved AT CREATION (category with no approval levels)
+                // never passes through processApproval(), so the bike service-clock
+                // hook must fire here too. Non-fatal; no-op unless it is an approved
+                // oil-change/general Maintenance row with a meter reading.
+                \App\Services\Riders\BikeServiceClock::onRequestApproved($requestModel);
+
                 if ($requestModel->isExpenseTypeCategory() && $requestModel->amount > 0) {
                     try {
                         $ledgerService = app(\App\Services\FIN\LedgerPostingService::class);

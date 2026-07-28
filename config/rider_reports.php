@@ -26,8 +26,19 @@ return [
     // the ~20-day GPS retention so the trail is always available.
     'live_window_days'    => 7,
 
+    // Day Review (Jul-2026): how long the GPS trail is actually kept. Beyond
+    // this the route/stops/gaps genuinely no longer exist, so Day Review says
+    // "trail expired" instead of drawing an empty map. Orders + ETA comparison
+    // still work for any date inside the controller's MAX_BACK_DAYS reach.
+    'trail_retention_days' => 20,
+
     // --- "Delivered at verified pin" (rider accountability, unified rule) ---
     'at_verified_m'       => 500,   // press within this of the customer's verified pin = OK
+    // A fix is only trustworthy to its own accuracy. Up to this many metres of the reported
+    // accuracy is allowed as slack before a drop is called "away from the pin", and a fix
+    // coarser than this is reported as coarse rather than as the rider having moved.
+    // Mirrors the COARSE_FIX_M config row used by the attendance gates.
+    'coarse_fix_m'        => 150,
 
     // --- On-time (delivery ETA) ---
     'late_card_minutes'   => 10,    // Report Card: flag an order later than this vs Google ETA

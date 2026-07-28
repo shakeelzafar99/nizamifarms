@@ -389,7 +389,9 @@
                                 <p class="text-xs text-gray-400 mt-1">📝 {{ $transfer->notes }}</p>
                             @endif
                             @if($transfer->status === 'approved' && $transfer->approver)
-                                <div class="text-xs text-green-600 mt-1">Approved by {{ $transfer->approver->fullname }} · {{ $transfer->approved_at ? $transfer->approved_at->format('M d, h:i A') : '' }}</div>
+                                {{-- approver may be null if the user record was removed; the
+                                     rejecter line below is already guarded the same way. --}}
+                                <div class="text-xs text-green-600 mt-1">Approved by {{ $transfer->approver->fullname ?? 'Unknown' }} · {{ $transfer->approved_at ? $transfer->approved_at->format('M d, h:i A') : '' }}</div>
                             @elseif($transfer->status === 'rejected')
                                 <div class="text-xs text-red-600 mt-1">
                                     Rejected{{ $transfer->rejected_at ? ' on ' . $transfer->rejected_at->format('M d, h:i A') : '' }}
@@ -435,8 +437,11 @@
 
 @push('modals')
 <!-- Reject Transfer Modal -->
-<div id="rejectModal" class="hidden fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4" style="z-index: 999999;" onclick="if(event.target===this)closeRejectModal()">
-    <div class="bg-white rounded-2xl shadow-2xl max-w-md w-full overflow-hidden" onclick="event.stopPropagation()">
+{{-- ⚠️ Shell inline-styled deliberately: inset-0, flex, max-w-md, overflow-y-auto and
+     flex-shrink-0 are ALL purged from the built styles.css, so a class-only shell renders
+     un-positioned with no backdrop. Same pattern as khaas/products.blade.php. --}}
+<div id="rejectModal" class="hidden fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4" style="z-index: 999999; position:fixed; top:0; right:0; bottom:0; left:0; background-color:rgba(0,0,0,0.5); display:flex; align-items:center; justify-content:center; padding:1rem;" onclick="if(event.target===this)closeRejectModal()">
+    <div class="bg-white rounded-2xl shadow-2xl max-w-md w-full overflow-hidden" style="width:100%; max-width:28rem; max-height:90vh; display:flex; flex-direction:column; background:#fff; border-radius:1rem; overflow:hidden; box-shadow:0 20px 25px -5px rgba(0,0,0,0.10), 0 10px 10px -5px rgba(0,0,0,0.04);" onclick="event.stopPropagation()">
         <div class="px-6 py-5 border-b border-gray-100" style="background: linear-gradient(to right, #fef2f2, #fff7ed);">
             <div class="flex items-center gap-3">
                 <div class="w-10 h-10 rounded-xl bg-red-100 flex items-center justify-center text-xl">❌</div>

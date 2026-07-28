@@ -11,10 +11,117 @@ namespace App\Services\Riders;
  * The GPS phase analyzer lives here too, and is the exact same code the GPS-details modal uses
  * (AttendanceController::gpsReadingsAudit delegates here) — so the 📡 tick and the modal always match.
  *
- * Everything is pure (timestamps + already-computed journey state) — no new DB queries.
+ * build() and computeGpsPhases() are pure (timestamps + already-computed journey state) — no DB.
+ * The only queries in here are in the batched month helpers (meterMissDays), which exist so the
+ * MONTH columns are counted by the very same rule the daily ⛽ tick uses.
  */
 class DayChecksService
 {
+    /** Why a completed working day counts as a missed meter (shared web + mobile wording). */
+    public const METER_MISS_LABELS = [
+        'none'     => 'No meter reading',
+        'no_start' => 'No start meter',
+        'no_end'   => 'No closing meter',
+    ];
+
+    /**
+     * THE meter rule — one definition for the daily ⛽ tick and the monthly "Meter" column.
+     * Returns null (= nothing missed / not applicable) or a METER_MISS_LABELS key.
+     *
+     * A day is only judged when the person is expected to carry a meter AND the day is FINISHED
+     * (checked in and checked out). That single condition is what keeps absences, leave days,
+     * not-needed days, future dates and today's still-running shift out of the count — none of
+     * them have both stamps.
+     */
+    public static function meterMissReason(bool $isMeterUser, $loginTime, $logoutTime, $meterStart, $meterEnd, $meterHome = null): ?string
+    {
+        if (!$isMeterUser || empty($loginTime) || empty($logoutTime)) { return null; }
+        $has = fn ($v) => $v !== null && $v !== '';
+        $noStart = !$has($meterStart);
+        // A bike rider closes on meter_home (mirrored to meter_end on write); accept either so a
+        // legacy row that only carries meter_home isn't reported as a missing closing reading.
+        $noEnd = !$has($meterEnd) && !$has($meterHome);
+        if ($noStart && $noEnd) { return 'none'; }
+        if ($noStart) { return 'no_start'; }
+        if ($noEnd) { return 'no_end'; }
+        return null;
+    }
+
+    /**
+     * Missed-meter days per user over a range (the Month "Meter" column + its date drill).
+     * Same shape as WorkJourneyService::workIssueDays so the month report treats all three
+     * flag families identically.
+     *
+     * @return array [userId => ['days' => int, 'detail' => [date => reasonKey]]]
+     */
+    public function meterMissDays(array $userIds, string $from, string $to): array
+    {
+        $out = [];
+        $userIds = array_values(array_filter(array_map('intval', $userIds)));
+        if (empty($userIds)) { return $out; }
+        // Never judge a day that hasn't happened yet, whatever range the caller passes.
+        $today = date('Y-m-d');
+        if ($to > $today) { $to = $today; }
+        if ($from > $to) { return $out; }
+        try {
+            // Who is even expected to carry a meter? Rider by role, company bike — OR anyone who
+            // ACTUALLY recorded meter readings in this range. The last test is what catches a
+            // supervisor who rides (e.g. types meters 17 of 18 days): the data proves the duty,
+            // the role name doesn't. Someone with zero readings all month (office staff, a
+            // supervisor with no vehicle) is left alone — a person who never carries a meter
+            // can't "miss" one.
+            $meterUsers = \Illuminate\Support\Facades\DB::table('t_sys_user as u')
+                ->leftJoin('t_sys_user_role as ur', 'ur.user_id', '=', 'u.id')
+                ->leftJoin('t_sys_role as r', 'r.id', '=', 'ur.role_id')
+                ->leftJoin('t_ops_rider_profile as rp', 'rp.user_id', '=', 'u.id')
+                ->whereIn('u.id', $userIds)
+                ->where(function ($q) {
+                    $q->where('r.urole_name', 'like', '%rider%')->orWhere('rp.company_bike', 1);
+                })
+                ->distinct()->pluck('u.id')->all();
+            $recordedUsers = \Illuminate\Support\Facades\DB::table('t_ops_attendance')
+                ->whereIn('user_id', $userIds)
+                ->whereBetween('attendance_date', [$from, $to])
+                ->where(function ($q) {
+                    $q->whereNotNull('meter_start')->orWhereNotNull('meter_end')->orWhereNotNull('meter_home');
+                })
+                ->distinct()->pluck('user_id')->all();
+            $meterUsers = array_values(array_unique(array_merge($meterUsers, $recordedUsers)));
+            // The owner's OWN exemption switch wins over every test above: Rider Management →
+            // "Meter reading is compulsory" unticked means the app stops asking this person for a
+            // meter, so the report must stop counting it against him. (Same flag the rider app
+            // reads as `meter_required`.)
+            if (\Illuminate\Support\Facades\Schema::hasColumn('t_ops_rider_profile', 'meter_required')) {
+                $exempt = \Illuminate\Support\Facades\DB::table('t_ops_rider_profile')
+                    ->whereIn('user_id', $meterUsers)->where('meter_required', 0)
+                    ->pluck('user_id')->all();
+                $meterUsers = array_values(array_diff($meterUsers, $exempt));
+            }
+            if (empty($meterUsers)) { return $out; }
+
+            $rows = \Illuminate\Support\Facades\DB::table('t_ops_attendance')
+                ->whereIn('user_id', $meterUsers)
+                ->whereBetween('attendance_date', [$from, $to])
+                ->whereNotNull('login_time')
+                ->whereNotNull('logout_time')   // finished days only — see meterMissReason()
+                ->orderBy('attendance_date')
+                ->get(['user_id', 'attendance_date', 'login_time', 'logout_time', 'meter_start', 'meter_end', 'meter_home']);
+
+            foreach ($rows as $r) {
+                $reason = self::meterMissReason(true, $r->login_time, $r->logout_time, $r->meter_start, $r->meter_end, $r->meter_home);
+                if ($reason === null) { continue; }
+                $uid = (int) $r->user_id;
+                if (!isset($out[$uid])) { $out[$uid] = ['days' => 0, 'detail' => []]; }
+                $out[$uid]['days']++;
+                $out[$uid]['detail'][substr((string) $r->attendance_date, 0, 10)] = $reason;
+            }
+        } catch (\Throwable $e) {
+            \Illuminate\Support\Facades\Log::warning('meterMissDays failed (non-fatal)', ['error' => $e->getMessage()]);
+            return [];
+        }
+        return $out;
+    }
+
     /**
      * Shared GPS phase analysis. Segments the day into ride-in / on-duty / ride-home (U5 timeline
      * anchors) and scores each phase on MOVING time only — stationary gaps folded out. Low-accuracy
@@ -70,21 +177,27 @@ class DayChecksService
                 'readings' => count($inb),
             ];
         };
+        // `judged` = does this phase drive the 📡 verdict? ONLY on-duty does. The commute phases
+        // (ride in / ride home) are the rider's own time on his own phone — they are still shown
+        // for context, but a dead GPS on the way to work must never raise an alert against him.
         $phases = [];
         $rideInStart = !empty($att->meter_start_recorded_at) ? strtotime((string) $att->meter_start_recorded_at) : null;
         if ($rideInStart && (string) ($att->meter_start_source ?? '') === 'home' && $rideInStart < $loginTime) {
             $p = $phaseCoverage($rideInStart, $loginTime);
-            if ($p) { $p['name'] = 'Ride in'; $p['from'] = date('H:i', $rideInStart); $p['to'] = date('H:i', $loginTime); $phases[] = $p; }
+            if ($p) { $p['name'] = 'Ride in'; $p['from'] = date('H:i', $rideInStart); $p['to'] = date('H:i', $loginTime); $p['judged'] = false; $phases[] = $p; }
         }
         $onDuty = $phaseCoverage($loginTime, $logoutTime);
-        if ($onDuty) { $onDuty['name'] = 'On duty'; $onDuty['from'] = date('H:i', $loginTime); $onDuty['to'] = !empty($att->logout_time) ? date('H:i', $logoutTime) : 'now'; $phases[] = $onDuty; }
+        if ($onDuty) { $onDuty['name'] = 'On duty'; $onDuty['from'] = date('H:i', $loginTime); $onDuty['to'] = !empty($att->logout_time) ? date('H:i', $logoutTime) : 'now'; $onDuty['judged'] = true; $phases[] = $onDuty; }
         $homeMeterTs = !empty($att->home_meter_recorded_at) ? strtotime((string) $att->home_meter_recorded_at) : null;
         if (!empty($att->logout_time) && $homeMeterTs && $homeMeterTs > $logoutTime) {
             $p = $phaseCoverage($logoutTime, $homeMeterTs);
-            if ($p) { $p['name'] = 'Ride home'; $p['from'] = date('H:i', $logoutTime); $p['to'] = date('H:i', $homeMeterTs); $phases[] = $p; }
+            if ($p) { $p['name'] = 'Ride home'; $p['from'] = date('H:i', $logoutTime); $p['to'] = date('H:i', $homeMeterTs); $p['judged'] = false; $phases[] = $p; }
         }
+        // Verdict inputs come from judged phases ONLY. No judged phase (shouldn't happen once he
+        // logs in) ⇒ worst stays null ⇒ callers show "can't judge", not a false alarm.
         $worst = null; $movingGapTotal = 0;
         foreach ($phases as $p) {
+            if (empty($p['judged'])) { continue; }
             $worst = $worst === null ? $p['coverage'] : min($worst, $p['coverage']);
             $movingGapTotal += array_sum(array_column($p['moving_gaps'], 'min'));
         }
@@ -135,8 +248,25 @@ class DayChecksService
 
         // ⛽ meter verdict — missing reading (rider who checked out) + meter-vs-GPS off.
         $meterStart = $g('meter_start'); $meterEnd = $g('meter_end'); $meterDistance = $g('meter_distance');
-        if ($isRider && !empty($g('logout_time')) && ($meterStart === null || $meterEnd === null)) {
-            $meterIssues[] = 'No meter reading'; $chips[] = ['label' => 'no meter', 'tone' => 'amber'];
+        // Shared rule (same one the Month "Meter" column counts with) — a finished working day
+        // for a meter-carrying person that is missing the start and/or the closing reading.
+        // "Carries a meter" = rider role, company bike, OR typed any reading today (a supervisor
+        // who rides proves the duty by recording; mirrors meterMissDays' recorded-users test —
+        // the one day this can't see is a zero-reading day for a role-less meter user, which the
+        // month column still catches with its month-wide view).
+        $meterHome = $g('meter_home') ?? (is_array($hj) ? ($hj['meter_home'] ?? null) : null);
+        $has = fn ($v) => $v !== null && $v !== '';
+        // meter_required === 0 = the owner exempted him in Rider Management; the app stops asking,
+        // so the tick must stop judging. Only an explicit 0 exempts (null/absent = judge as before).
+        $carriesMeter = ((int) ($g('meter_required') ?? 1) !== 0)
+            && ($isRider || $bike || $has($meterStart) || $has($meterEnd) || $has($meterHome));
+        $missReason = self::meterMissReason(
+            $carriesMeter, $g('login_time'), $g('logout_time'),
+            $meterStart, $meterEnd, $meterHome
+        );
+        if ($missReason !== null) {
+            $meterIssues[] = self::METER_MISS_LABELS[$missReason];
+            $chips[] = ['label' => 'no meter', 'tone' => 'amber'];
         }
         $cmp = $g('road_distance_km') ?? $g('gps_distance');
         if ($meterDistance !== null && $cmp !== null && $cmp > 0) {
@@ -157,7 +287,7 @@ class DayChecksService
             $gpsWorst = $pa['worst_coverage'];
             if ($gpsWorst !== null) {
                 $gpsOk = $gpsWorst >= 90;
-                if (!$gpsOk) { $gpsNote = 'GPS off ' . $pa['moving_gap_min'] . ' min while moving'; }
+                if (!$gpsOk) { $gpsNote = 'GPS off ' . $pa['moving_gap_min'] . ' min while moving on duty'; }
             }
         } catch (\Throwable $e) { $gpsOk = null; }
 
@@ -192,6 +322,7 @@ class DayChecksService
         $limit    = $get('checkout_attempt_limit_m');    $limit = $limit !== null ? (int) $limit : null;
         $age      = $get('checkout_attempt_age_min');    $age = $age !== null ? (int) $age : null;
         $label    = $get('checkout_attempt_drop_label');
+        $acc      = $get('checkout_attempt_accuracy_m'); $acc = $acc !== null ? (float) $acc : null;
         $aLat = $get('checkout_attempt_lat');      $aLat = $aLat !== null ? (float) $aLat : null;
         $aLng = $get('checkout_attempt_lng');      $aLng = $aLng !== null ? (float) $aLng : null;
         $dLat = $get('checkout_attempt_drop_lat'); $dLat = $dLat !== null ? (float) $dLat : null;
@@ -223,6 +354,14 @@ class DayChecksService
                     : 'Not at the office or a recent delivery';
         }
 
+        // How good was the fix we judged him on? A distance measured from a +-200 m network
+        // fix deserves a different decision from one measured at +-8 m, and until now the
+        // manager had no way to tell them apart. Only shown when the phone reported it.
+        if ($acc !== null) {
+            $headline .= ' [fix +-' . (int) round($acc) . ' m'
+                       . ($acc > 150 ? ', coarse — treat the distance as rough' : '') . ']';
+        }
+
         // Map link: a directions line from where he stood → the delivery/office pin, so the manager
         // literally sees "delivery was here, rider was there". Falls back to a single pin.
         $mapsUrl = null;
@@ -242,6 +381,8 @@ class DayChecksService
             'distance_m'  => $dist,
             'limit_m'     => $limit,
             'age_min'     => $age,
+            'accuracy_m'  => $acc,
+            'is_coarse'   => $acc !== null && $acc > 150,
             'drop_label'  => $label,
             'attempt_lat' => $aLat, 'attempt_lng' => $aLng,
             'drop_lat'    => $dLat, 'drop_lng'    => $dLng,

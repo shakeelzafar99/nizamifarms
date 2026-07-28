@@ -70,6 +70,14 @@ class RolePermissionController extends Controller
             // grantable only by raw SQL, now managed on the permissions screen.
             'manage_asset_categories' => 'Manage Asset Categories',
 
+            // Bikes & Khaas reporting (Jul-2026). Standalone keys so a person who
+            // needs only ONE of these — e.g. a Khaas-mode user reviewing bike
+            // running costs — can be given it without any rider-ops or finance
+            // access coming along with it.
+            'view_bike_costs' => 'View Bikes (fuel & running cost per rider)',
+            'manage_bike_service' => 'Set bike service schedules (record a service, per-bike & company-wide interval)',
+            'view_khaas_sales_report' => 'View Khaas Sales Report',
+
             // Restricted Web Menu keys (Jul-2026). Rendered in the amber warning card
             // on the permissions screen, NOT as ordinary checkboxes. If a role holds
             // ANY of these = 1, its users see ONLY those sidebar sections (+ Logout).

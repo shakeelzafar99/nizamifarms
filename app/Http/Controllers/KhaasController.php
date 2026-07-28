@@ -643,6 +643,18 @@ class KhaasController extends Controller
             $quantityChange = abs($quantityChange);
         }
 
+        // 'adjustment' is signed: the modal's Add / Reduce toggle posts adjust_direction and
+        // the SIGN IS APPLIED HERE, not in JavaScript — so a correction can subtract, and an
+        // absent field behaves exactly as before (add).
+        if ($changeType === 'adjustment' && $request->input('adjust_direction') === 'reduce' && $quantityChange > 0) {
+            $quantityChange = -$quantityChange;
+        }
+
+        // 'count' is an absolute target.
+        if ($changeType === 'count' && $quantityChange < 0) {
+            return back()->with('error', 'A stock count cannot be negative.');
+        }
+
         DB::beginTransaction();
         try {
             $inventory = WarehouseInventoryModel::getOrCreate($productId, $variantId, $businessUnitId);
@@ -668,7 +680,9 @@ class KhaasController extends Controller
                     'created_at' => now(),
                 ]);
             } else {
-                if ($changeType === 'stock_out' && ($inventory->quantity + $quantityChange) < 0) {
+                // Any negative movement (stock_out, or a subtracting adjustment) must not
+                // drive the warehouse below zero.
+                if ($quantityChange < 0 && ($inventory->quantity + $quantityChange) < 0) {
                     DB::rollBack();
                     return back()->with('error', "Insufficient stock. Current: {$inventory->quantity}, Requested: " . abs($quantityChange));
                 }
@@ -716,6 +730,10 @@ class KhaasController extends Controller
         if ($changeType === 'store_stock_in' && $quantityChange < 0) {
             $quantityChange = abs($quantityChange);
         }
+        // Store-side parity with the warehouse modal: Add / Reduce toggle, sign applied here.
+        if ($changeType === 'store_adjustment' && $request->input('adjust_direction') === 'reduce' && $quantityChange > 0) {
+            $quantityChange = -$quantityChange;
+        }
 
         DB::beginTransaction();
         try {
@@ -737,12 +755,17 @@ class KhaasController extends Controller
             $before = (int) $variant->inventory_quantity;
 
             if ($changeType === 'store_count') {
-                // Set to exact quantity
+                // Set to exact quantity — an absolute target, never negative.
+                if ($quantityChange < 0) {
+                    DB::rollBack();
+                    return back()->with('error', 'A stock count cannot be negative.');
+                }
                 $variant->inventory_quantity = $quantityChange;
                 $actualChange = $quantityChange - $before;
             } else {
-                // Stock in / stock out / adjustment
-                if ($changeType === 'store_stock_out' && ($before + $quantityChange) < 0) {
+                // Stock in / stock out / adjustment. Any negative movement (stock_out, or a
+                // subtracting adjustment) must not drive store stock below zero.
+                if ($quantityChange < 0 && ($before + $quantityChange) < 0) {
                     DB::rollBack();
                     return back()->with('error', "Insufficient store stock. Current: {$before}, Requested: " . abs($quantityChange));
                 }
@@ -1168,13 +1191,10 @@ class KhaasController extends Controller
                 return back()->with('error', "Insufficient warehouse stock. Available: {$inventory->quantity}, Requested: {$quantity}");
             }
 
-            // Deduct from warehouse
-            $inventory->adjustQuantity(-$quantity, 'transfer',
-                "Transfer to store (pending approval): {$quantity} units",
-                'transfer_to_store', null);
-
-            // Create pending transfer
-            WarehouseTransferModel::create([
+            // Create the pending transfer FIRST so the warehouse log row can carry its id in
+            // reference_id (see WarehouseController::initiateTransfer for the full note).
+            // Same transaction, same checks, same rollback path — only the order changed.
+            $transfer = WarehouseTransferModel::create([
                 'product_id' => $productId,
                 'product_variant_id' => $variantId,
                 'business_unit_id' => $businessUnitId,
@@ -1185,6 +1205,11 @@ class KhaasController extends Controller
                 'requested_by' => auth()->id(),
                 'notes' => $notes,
             ]);
+
+            // Deduct from warehouse
+            $inventory->adjustQuantity(-$quantity, 'transfer',
+                "Transfer to store (pending approval): {$quantity} units",
+                'transfer_to_store', $transfer->id);
 
             DB::commit();
 
@@ -1228,8 +1253,12 @@ class KhaasController extends Controller
         $limit = (int) ($request->get('limit', 30));
         $variantIds = $product->variants->pluck('id')->toArray();
 
-        // Current store qty
-        $currentStoreQty = $product->variants->sum('inventory_quantity') ?: ($product->total_inventory ?? 0);
+        // Current store qty. NOTE: `?:` would treat a genuine zero as "missing" and fall
+        // through to the denormalised total_inventory column, showing stale stock for a
+        // product that is actually sold out — and every balance below would inherit it.
+        $currentStoreQty = $product->variants->isNotEmpty()
+            ? (int) $product->variants->sum('inventory_quantity')
+            : (int) ($product->total_inventory ?? 0);
 
         $events = collect();
 
@@ -1455,6 +1484,301 @@ class KhaasController extends Controller
             'events' => $eventsWithBalance,
             'days' => array_values($days),
             'events_count' => count($eventsWithBalance),
+        ]);
+    }
+
+    /**
+     * GET /khaas/products/{productId}/warehouse-log   (web)
+     * GET /warehouse/products/{productId}/warehouse-log  (api)
+     *
+     * The COMPLETE warehouse in/out for one product, straight out of
+     * t_crm_warehouse_inventory_log — which is a real append-only ledger: every row
+     * already carries quantity_before / quantity_change / quantity_after / created_by,
+     * and every single write site goes through WarehouseInventoryModel::adjustQuantity()
+     * or one explicit log insert. So unlike the STORE log (getStoreInventoryLog above,
+     * which has no ledger table and must reconstruct history by walking backwards from
+     * the current quantity), here the balances are READ, not derived — they cannot drift.
+     *
+     * Cursor-paged with `before_id` so "Load more" can walk the whole history; the old
+     * /warehouse/product-history endpoint (hard-capped at 5 merged events) is left
+     * untouched for older APKs.
+     */
+    public function getWarehouseInventoryLog(Request $request, $productId)
+    {
+        // Same access triple as getStoreInventoryLog — this endpoint is new, so nobody
+        // can lose access; matching the sibling avoids a surprise 403 for store users.
+        $user = auth()->user();
+        $canAccess = $this->hasKhaasAccess()
+            || ($user && $user->hasMobilePermission('view_khaas_store_inventory'))
+            || ($user && $user->hasMobilePermission('access_store_mode'));
+        if (!$canAccess) {
+            return response()->json(['success' => false, 'message' => 'No access'], 403);
+        }
+
+        $khaasBU = $this->getKhaasBU();
+        if (!$khaasBU) {
+            return response()->json(['success' => false, 'message' => 'Khaas BU not found'], 404);
+        }
+
+        $product = ProductModel::find($productId);
+        if (!$product || (int) $product->business_unit_id !== (int) $khaasBU->id) {
+            return response()->json(['success' => false, 'message' => 'Product not found'], 404);
+        }
+
+        $limit = (int) $request->get('limit', 30);
+        $limit = max(1, min(100, $limit));
+        $beforeId = $request->get('before_id');
+
+        // Chip filters map straight onto the change_type ENUM
+        // ('stock_in','stock_out','adjustment','transfer','count').
+        $typeFilter = $request->get('type');
+        $allowedTypes = ['stock_in', 'stock_out', 'adjustment', 'transfer', 'count'];
+        if ($typeFilter && !in_array($typeFilter, $allowedTypes, true)) {
+            $typeFilter = null;
+        }
+
+        // Current warehouse qty = sum of this product's warehouse rows (the products page
+        // aggregates the same way).
+        $inventoryRows = WarehouseInventoryModel::where('business_unit_id', $khaasBU->id)
+            ->where('product_id', $productId)
+            ->where('is_active', true)
+            ->get(['id', 'quantity', 'unit']);
+        $currentWarehouseQty = (int) $inventoryRows->sum('quantity');
+        $unit = $inventoryRows->first()->unit ?? 'pcs';
+
+        // If a product somehow has more than one warehouse row, the per-row balances in the
+        // log describe only the row that changed, so they will NOT add up to the product
+        // total. Flag it rather than silently showing numbers that don't reconcile.
+        $multiRowWarning = $inventoryRows->count() > 1;
+
+        $query = WarehouseInventoryLogModel::where('product_id', $productId)
+            ->where('business_unit_id', $khaasBU->id);
+        if ($typeFilter) {
+            $query->where('change_type', $typeFilter);
+        }
+        if ($beforeId) {
+            $query->where('id', '<', (int) $beforeId);
+        }
+
+        // Fetch one extra row to detect "has more" without a second COUNT query.
+        $rows = $query->orderBy('id', 'desc')->limit($limit + 1)->get();
+        $hasMore = $rows->count() > $limit;
+        $rows = $rows->take($limit)->values();
+
+        // ─── Resolve display names for created_by in one query ───
+        $userIds = $rows->pluck('created_by')->filter()->unique()->values()->toArray();
+        $userNames = [];
+        if (!empty($userIds)) {
+            $userNames = DB::table('t_sys_user')->whereIn('id', $userIds)->pluck('fullname', 'id')->toArray();
+        }
+
+        // ─── Link transfer rows to their transfer record ───
+        // New rows carry reference_id (see initiateTransfer). Historical rows were logged
+        // BEFORE the transfer row existed, so reference_id is NULL for all of them; for
+        // those we fall back to an unambiguous match on (quantity, timestamp within 120s).
+        // If the match is ambiguous we deliberately leave the row unlinked rather than guess.
+        $transferIds = $rows->where('change_type', 'transfer')->pluck('reference_id')->filter()
+            ->merge($rows->where('reference_type', 'transfer_rejected')->pluck('reference_id')->filter())
+            ->unique()->values()->toArray();
+
+        $productTransfers = WarehouseTransferModel::where('product_id', $productId)
+            ->where('business_unit_id', $khaasBU->id)
+            ->with(['requester:id,fullname', 'approver:id,fullname', 'rejecter:id,fullname'])
+            ->get();
+        $transfersById = $productTransfers->keyBy('id');
+
+        $resolveTransfer = function ($log) use ($transfersById, $productTransfers) {
+            if ($log->reference_id && $transfersById->has($log->reference_id)) {
+                return $transfersById->get($log->reference_id);
+            }
+            if (!$log->created_at) {
+                return null;
+            }
+            $qty = abs((int) $log->quantity_change);
+            $logTs = $log->created_at->timestamp;
+            $candidates = $productTransfers->filter(function ($t) use ($qty, $logTs) {
+                if ((int) $t->quantity !== $qty || !$t->created_at) {
+                    return false;
+                }
+                return abs($t->created_at->timestamp - $logTs) <= 120;
+            });
+            return $candidates->count() === 1 ? $candidates->first() : null;
+        };
+
+        // ─── Batch numbers for batch-sourced stock-ins ───
+        $batchIds = $rows->where('reference_type', 'batch')->pluck('reference_id')->filter()->unique()->values()->toArray();
+        $batchNumbers = [];
+        if (!empty($batchIds)) {
+            $batchNumbers = \App\Models\CRM\ProductBatchModel::whereIn('id', $batchIds)
+                ->pluck('batch_number', 'id')->toArray();
+        }
+
+        $statusLabels = [
+            'pending' => 'awaiting acceptance',
+            'approved' => 'accepted into store',
+            'rejected' => 'rejected',
+        ];
+
+        $events = [];
+        foreach ($rows as $log) {
+            $change = (int) $log->quantity_change;
+            $byName = $log->created_by ? ($userNames[$log->created_by] ?? ('User #' . $log->created_by)) : 'System';
+            $subParts = [];
+            $countValue = null;
+
+            switch ($log->change_type) {
+                case 'stock_in':
+                    if ($log->reference_type === 'batch') {
+                        $label = 'Batch Production';
+                        $icon = '🏭';
+                        $color = 'teal';
+                        $batchNo = $log->reference_id ? ($batchNumbers[$log->reference_id] ?? null) : null;
+                        if ($batchNo) {
+                            $subParts[] = 'Batch ' . $batchNo;
+                        }
+                    } else {
+                        $label = 'Stock In';
+                        $icon = '📥';
+                        $color = 'green';
+                    }
+                    break;
+
+                case 'stock_out':
+                    $label = 'Stock Out';
+                    $icon = '📤';
+                    $color = 'red';
+                    break;
+
+                case 'transfer':
+                    // Warehouse → Store. Deducted at initiation, so this row is the moment
+                    // the stock physically left the warehouse.
+                    $label = 'Transfer to Store';
+                    $icon = '🔄';
+                    $color = 'amber';
+                    $t = $resolveTransfer($log);
+                    if ($t) {
+                        $subParts[] = 'Transfer #' . $t->id;
+                        $subParts[] = $statusLabels[$t->status] ?? $t->status;
+                        if ($t->status === 'approved' && $t->approver) {
+                            $subParts[] = 'accepted by ' . $t->approver->fullname;
+                        } elseif ($t->status === 'rejected' && $t->rejecter) {
+                            $subParts[] = 'rejected by ' . $t->rejecter->fullname;
+                        }
+                    }
+                    break;
+
+                case 'adjustment':
+                    if ($log->reference_type === 'transfer_rejected') {
+                        // A rejected transfer returns stock to the warehouse. It is logged as
+                        // 'adjustment' (the ENUM has no reversal type), so without this the
+                        // units read as a manual correction.
+                        $label = 'Transfer Rejected — Returned';
+                        $icon = '↩️';
+                        $color = 'blue';
+                        $t = $resolveTransfer($log);
+                        if ($t) {
+                            $subParts[] = 'Transfer #' . $t->id;
+                            if ($t->rejecter) {
+                                $subParts[] = 'rejected by ' . $t->rejecter->fullname;
+                            }
+                        }
+                    } else {
+                        $label = 'Adjustment';
+                        $icon = '🔧';
+                        $color = 'orange';
+                    }
+                    break;
+
+                case 'count':
+                    $label = 'Stock Count';
+                    $icon = '📊';
+                    $color = 'purple';
+                    // quantity_after IS the number the user typed (updateStock sets it
+                    // directly), so expose it — a count equal to the current balance has
+                    // change 0 and would otherwise read as a no-op.
+                    $countValue = (int) $log->quantity_after;
+                    break;
+
+                default:
+                    $label = ucfirst(str_replace('_', ' ', (string) $log->change_type));
+                    $icon = '📦';
+                    $color = 'gray';
+                    break;
+            }
+
+            if (!empty($log->notes)) {
+                $subParts[] = '📝 ' . $log->notes;
+            }
+
+            $parsedDate = $log->created_at ? \Carbon\Carbon::parse($log->created_at) : null;
+
+            $events[] = [
+                'id' => $log->id,
+                'date' => $log->created_at,
+                'type' => $log->change_type,
+                'reference_type' => $log->reference_type,
+                'label' => $label,
+                'change' => $change,
+                'quantity' => abs($change),
+                'count_value' => $countValue,
+                'detail' => 'By ' . $byName,
+                'sub_detail' => implode(' · ', $subParts),
+                'reference' => $log->reference_type
+                    ? ($log->reference_type . ($log->reference_id ? ' #' . $log->reference_id : ''))
+                    : ('Log #' . $log->id),
+                'icon' => $icon,
+                'color' => $color,
+                // Read straight from the ledger row — never recomputed.
+                'balance_before' => (int) $log->quantity_before,
+                'balance_after' => (int) $log->quantity_after,
+                'date_formatted' => $parsedDate ? $parsedDate->format('M d, h:i A') : 'Unknown',
+                'date_ago' => $parsedDate ? $parsedDate->diffForHumans() : '',
+                'date_day' => $parsedDate ? $parsedDate->toDateString() : 'unknown',
+                'date_day_label' => $parsedDate
+                    ? ($parsedDate->isToday() ? 'Today' : ($parsedDate->isYesterday() ? 'Yesterday' : $parsedDate->format('D, M d')))
+                    : 'Unknown',
+            ];
+        }
+
+        // Continuity marker: within this page, a row whose quantity_before does not equal the
+        // NEXT-OLDER row's quantity_after means the chain is broken (legacy gap, or a filter
+        // is hiding rows). Only meaningful on an unfiltered page.
+        if (!$typeFilter) {
+            for ($i = 0; $i < count($events) - 1; $i++) {
+                if ($events[$i]['balance_before'] !== $events[$i + 1]['balance_after']) {
+                    $events[$i]['gap'] = true;
+                }
+            }
+        }
+
+        // Group by day (newest first) with opening / closing / net per day.
+        $days = [];
+        foreach ($events as $ev) {
+            $dayKey = $ev['date_day'];
+            if (!isset($days[$dayKey])) {
+                $days[$dayKey] = ['date' => $dayKey, 'label' => $ev['date_day_label'], 'events' => []];
+            }
+            $days[$dayKey]['events'][] = $ev;
+        }
+        foreach ($days as &$day) {
+            $dayEvents = $day['events'];
+            $day['closing_balance'] = $dayEvents[0]['balance_after'];
+            $day['opening_balance'] = end($dayEvents)['balance_before'];
+            $day['net_change'] = $day['closing_balance'] - $day['opening_balance'];
+        }
+        unset($day);
+
+        return response()->json([
+            'success' => true,
+            'product_name' => $product->title,
+            'unit' => $unit,
+            'current_warehouse_qty' => $currentWarehouseQty,
+            'multi_row_warning' => $multiRowWarning,
+            'events' => $events,
+            'days' => array_values($days),
+            'events_count' => count($events),
+            'has_more' => $hasMore,
+            'next_before_id' => count($events) > 0 ? end($events)['id'] : null,
         ]);
     }
 
@@ -1686,6 +2010,9 @@ class KhaasController extends Controller
             ->where('d.business_unit_id', $khaasBU->id)
             ->whereIn('di.status', ['in_progress', 'accepted'])
             ->where('di.storage_deducted', 1)
+            // Belt-and-braces: an item under a cancelled/completed plan must never be
+            // counted as still "Processing" (see WarehouseController::cancelDemand).
+            ->whereNotIn('d.status', ['cancelled', 'completed'])
             ->select('di.khaas_product_id', 'di.quantity_kg', 'di.storage_product_id', 'di.storage_deducted_qty')
             ->get();
 

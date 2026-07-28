@@ -259,6 +259,22 @@ class AttendanceController extends Controller
             })
             ->orderBy('u.fullname');
 
+        // ⭐ GPS-accuracy hardening columns. Selected ONLY once the hardening SQL has been
+        // applied, so uploading the web files before running it can never 500 this page
+        // (unlike the checkout_attempt_* block above, which is unconditional). They carry the
+        // morning start-meter fix + the accuracy of a blocked checkout attempt.
+        if (\Illuminate\Support\Facades\Schema::hasColumn('t_ops_attendance', 'meter_start_gps')) {
+            $query->addSelect([
+                'a.meter_start_gps',
+                'a.meter_start_lat',
+                'a.meter_start_lng',
+                'a.meter_start_accuracy_m',
+                'a.meter_start_distance_m',
+                'a.meter_start_office_m',
+                'a.checkout_attempt_accuracy_m',
+            ]);
+        }
+
         // Filter by active/all users (default to active only)
         $activeFilter = $request->input('active_filter', 'active');
         if ($activeFilter === 'active') {
@@ -398,7 +414,7 @@ class AttendanceController extends Controller
         //    flags from these + the thresholds below. Fully guarded — a missing column
         //    or no prior data never breaks the daily view.
         $userIds = $rows->pluck('user_id')->filter()->values()->all();
-        $prevMeter = []; $bikeSet = []; $graceByUser = [];
+        $prevMeter = []; $bikeSet = []; $graceByUser = []; $meterExempt = [];
         if (!empty($userIds)) {
             try {
                 $ph = implode(',', array_fill(0, count($userIds), '?'));
@@ -428,6 +444,17 @@ class AttendanceController extends Controller
                     }
                 }
             } catch (\Throwable $e) { /* column not added yet → no bike flags */ }
+            // Riders the owner exempted from the meter in Rider Management ("Meter reading is
+            // compulsory" unticked) — the ⛽ tick must not judge them, same as the rider app
+            // stops asking them. Guarded: no column ⇒ nobody exempt ⇒ previous behaviour.
+            try {
+                if (\Illuminate\Support\Facades\Schema::hasColumn('t_ops_rider_profile', 'meter_required')) {
+                    foreach (DB::table('t_ops_rider_profile')->whereIn('user_id', $userIds)
+                        ->where('meter_required', 0)->pluck('user_id') as $uid) {
+                        $meterExempt[$uid] = true;
+                    }
+                }
+            } catch (\Throwable $e) { /* no column → nobody exempt */ }
         }
         // ── Company-bike GOING-HOME meter state per rider on this date (the manager valve:
         //    unlock a late-locked rider / enter the meter for a dead phone). Guarded — no
@@ -480,11 +507,16 @@ class AttendanceController extends Controller
                     ->where('company_bike', 1)->whereNotNull('home_latitude')
                     ->pluck('user_id')->all();
                 if (!empty($bikeUsers)) {
+                    $wCols = ['id', 'user_id', 'attendance_date', 'login_time', 'meter_start', 'meter_start_source',
+                              'meter_start_recorded_at', 'work_expected_by', 'work_eta_min', 'work_distance_km',
+                              'checkin_unlock_until', 'checkin_unlock_by', 'checkin_unlock_reason'];
+                    // Measured start-meter location (guarded — added by the GPS-accuracy hardening SQL).
+                    if (\Illuminate\Support\Facades\Schema::hasColumn('t_ops_attendance', 'meter_start_gps')) {
+                        array_push($wCols, 'meter_start_gps', 'meter_start_distance_m', 'meter_start_office_m', 'meter_start_accuracy_m');
+                    }
                     $wRows = DB::table('t_ops_attendance')
                         ->whereIn('user_id', $bikeUsers)->whereDate('attendance_date', $selectedDate)
-                        ->get(['id', 'user_id', 'attendance_date', 'login_time', 'meter_start', 'meter_start_source',
-                               'meter_start_recorded_at', 'work_expected_by', 'work_eta_min', 'work_distance_km',
-                               'checkin_unlock_until', 'checkin_unlock_by', 'checkin_unlock_reason']);
+                        ->get($wCols);
                     $unlockerIds = array_filter($wRows->pluck('checkin_unlock_by')->all());
                     $unlockerNames = empty($unlockerIds) ? collect()
                         : DB::table('t_sys_user')->whereIn('id', $unlockerIds)->pluck('fullname', 'id');
@@ -503,6 +535,8 @@ class AttendanceController extends Controller
                             'distance_km'   => $wr->work_distance_km !== null ? (float) $wr->work_distance_km : null,
                             'recorded_at'   => $wr->meter_start_recorded_at ? substr((string) $wr->meter_start_recorded_at, 11, 5) : null,
                             'source'        => $wr->meter_start_source,
+                            // WHERE it was recorded, as a measurement (null on pre-hardening rows).
+                            'place'         => \App\Services\Riders\WorkJourneyService::startPlace($wr),
                             'minutes_late'  => $wjSvc->minutesLate($wr),
                             'continuity'    => $cont, // {gap, breach, prev, prev_date} | null
                             'checkin_unlock'=> [
@@ -591,6 +625,8 @@ class AttendanceController extends Controller
             $row->prev_meter_end = $pm['end'] ?? null;
             $row->prev_meter_date = $pm['date'] ?? null;
             $row->company_bike = isset($bikeSet[$row->user_id]) ? 1 : 0;
+            // 0 = exempted from the meter in Rider Management (⛽ tick skips him).
+            $row->meter_required = isset($meterExempt[$row->user_id]) ? 0 : 1;
             // Effective overnight grace: per-rider override → global default.
             $row->overnight_grace_km = $graceByUser[$row->user_id] ?? $defaultGrace;
             // Going-home meter state (drives the manager valve on the row); null = not on the flow.
@@ -641,6 +677,7 @@ class AttendanceController extends Controller
             $row->day_checks = $row->login_time ? $dcSvc->build([
                 'login_time' => $row->login_time, 'logout_time' => $row->logout_time,
                 'role_name' => $row->role_name ?? null, 'company_bike' => ((int) $row->company_bike === 1),
+                'meter_required' => $row->meter_required,
                 'meter_start' => $row->meter_start, 'meter_end' => $row->meter_end, 'meter_distance' => $row->meter_distance,
                 'road_distance_km' => $row->road_distance_km, 'gps_distance' => $row->gps_distance,
                 'checkout_info' => $row->checkout_info, 'home_journey' => $row->home_journey,
@@ -712,7 +749,7 @@ class AttendanceController extends Controller
         $userId = (int) $request->input('user_id');
         $type = $request->input('type');
         $month = $request->input('month'); // Y-m (for month_* types)
-        if (!$userId || !in_array($type, ['month_absent', 'month_leave', 'year_absent', 'year_leave', 'month_overtime', 'month_late', 'leave_grants', 'month_office_checkout'], true)) {
+        if (!$userId || !in_array($type, ['month_absent', 'month_leave', 'year_absent', 'year_leave', 'month_overtime', 'month_late', 'leave_grants', 'month_office_checkout', 'month_meter_missed'], true)) {
             return response()->json(['success' => false, 'message' => 'Bad request'], 400);
         }
         $shiftService = new ShiftResolutionService();
@@ -767,6 +804,14 @@ class AttendanceController extends Controller
             foreach (($ocMap[$userId] ?? []) as $oc) {
                 $after = ($oc['minutes_after'] !== null) ? ($oc['minutes_after'] . ' min after last delivery to ' . $oc['last_customer']) : ('after delivering to ' . $oc['last_customer']);
                 $items[] = ['date' => $oc['date'], 'label' => 'out ' . $oc['checkout_time'] . ' · ' . $after];
+            }
+        } elseif ($type === 'month_meter_missed') {
+            // Finished working days with a start and/or closing meter missing (shared rule).
+            $svc = new \App\Services\Riders\DayChecksService();
+            $mm = $svc->meterMissDays([$userId], $start, min($end, $today));
+            $items = [];
+            foreach (($mm[$userId]['detail'] ?? []) as $d => $reason) {
+                $items[] = ['date' => $d, 'label' => \App\Services\Riders\DayChecksService::METER_MISS_LABELS[$reason] ?? $reason];
             }
         } elseif (str_ends_with($type, '_absent')) {
             // Absent is only meaningful up to today (future working days aren't absences yet).
@@ -2142,6 +2187,10 @@ class AttendanceController extends Controller
                     // Here we only tally hours worked.
                     if ($record->logout_time) {
                         $hours = (strtotime($record->logout_time) - strtotime($record->login_time)) / 3600;
+                        // Overnight checkout: bare TIMEs make a past-midnight logout read
+                        // as negative hours — roll to the next day (same rule as
+                        // OvertimeService::dailyOvertimeMinutes).
+                        if ($hours < 0) { $hours += 24; }
                         $byUser[$record->user_id]['total_hours'] += $hours;
                     }
                 }
@@ -2209,6 +2258,14 @@ class AttendanceController extends Controller
             $outViolMap = (new \App\Services\Riders\HomeJourneyService())
                 ->homeIssueDays(array_keys($byUser), $startDate, $effectiveEndDate);
         } catch (\Throwable $e) { $outViolMap = []; }
+        // Missed-meter days — the SAME rule as the daily ⛽ tick (DayChecksService), which only
+        // judges FINISHED working days, so absences / leave / today-still-running / future dates
+        // can never be counted. Meter-carrying people only. Guarded / non-fatal.
+        $meterMissMap = [];
+        try {
+            $meterMissMap = (new \App\Services\Riders\DayChecksService())
+                ->meterMissDays(array_keys($byUser), $startDate, $effectiveEndDate);
+        } catch (\Throwable $e) { $meterMissMap = []; }
         // Also add absent day records to the daily array for easier tracking
         foreach ($byUser as $userId => &$userData) {
             // Full leave dates count 1; half-days count 0.5 (matches the yearly counter).
@@ -2221,6 +2278,9 @@ class AttendanceController extends Controller
             $userData['checkin_violation_detail'] = $inViolMap[$userId]['detail'] ?? new \stdClass();
             $userData['checkout_violation_days'] = $outViolMap[$userId]['days'] ?? 0;
             $userData['checkout_violation_detail'] = $outViolMap[$userId]['detail'] ?? new \stdClass();
+            // Missed meter readings this month (0 for anyone who doesn't carry a meter).
+            $userData['meter_missed_days'] = $meterMissMap[$userId]['days'] ?? 0;
+            $userData['meter_missed_detail'] = $meterMissMap[$userId]['detail'] ?? new \stdClass();
             // Absent (MO) uses the SAME canonical definition as Absent (YR), the month_absent
             // drill, and the rider app: a working-kind day with no login and no approved leave.
             // This excludes manager "not needed" tags (and off/holiday), so tagging a no-show
@@ -2235,10 +2295,30 @@ class AttendanceController extends Controller
             $userData['late_days'] = $lateOt['late_days'];
             $userData['overtime_days'] = $lateOt['overtime_days'];
 
-            // TARGET-based overtime (worked beyond the configured shift length) — for the
-            // manager's "Overtime" column. Display-only; not the salary overtime above.
-            $userData['overtime_target_minutes'] = (new \App\Services\HR\OvertimeService())
-                ->overtimeMinutes($userId, $startDate, $effectiveEndDate);
+            // TARGET-based overtime (worked beyond the configured shift length) — this IS
+            // "overtime" on every manager-facing screen (owner ruling Jul-28): it is the work
+            // that earns BONUS LEAVE. The bonus figure comes from the same service payroll
+            // grants from, so the column and the payslip can never disagree.
+            $otSvcMonth = new \App\Services\HR\OvertimeService();
+            $otRangeMonth = $otSvcMonth->overtimeForRange($userId, $startDate, $effectiveEndDate);
+            $userData['overtime_target_minutes'] = (int) ($otRangeMonth['total'] ?? 0);
+            $userData['overtime_bonus_leaves'] = $otSvcMonth
+                ->bonusLeaves($userData['overtime_target_minutes']);
+            $userData['overtime_minutes_per_bonus'] = $otSvcMonth->minutesPerBonusDay();
+            // Stamp the per-DAY figure onto the day rows too. The Reports page used to derive
+            // overtime client-side from logout vs shift_end — a third implementation that
+            // could disagree with both the column above and payroll. Now every surface reads
+            // this one number.
+            foreach (($otRangeMonth['dates'] ?? []) as $otDate => $otMins) {
+                if (isset($userData['daily'][$otDate])) {
+                    $userData['daily'][$otDate]['overtime_minutes'] = (int) $otMins;
+                }
+            }
+            foreach ($userData['daily'] as $dKey => $dRow) {
+                if (!array_key_exists('overtime_minutes', $dRow)) {
+                    $userData['daily'][$dKey]['overtime_minutes'] = 0;
+                }
+            }
 
             // Create a set of dates that have attendance records
             $attendanceDates = [];
@@ -2669,6 +2749,19 @@ class AttendanceController extends Controller
             $totalHours = 0;
             $totalOrdersDelivered = 0;
 
+            // ⭐ OVERTIME = TARGET-BASED, everywhere (owner ruling Jul-28). Overtime is the
+            // work beyond SHIFT_TARGET_HOURS that EARNS BONUS LEAVE — the same figure payroll
+            // grants from. The old shift-END overtime is not shown to managers any more: it
+            // read ~0 for nearly everyone (the resolved shift returns a NULL shift_end), so a
+            // dead zero sat beside the Month tab's real number and looked like a contradiction.
+            // Computed once for the range; the per-day map below feeds the day rows and the
+            // "Overtime" tile filter, so tile, list and Month tab cannot disagree.
+            $otSvc      = new \App\Services\HR\OvertimeService();
+            $otRange    = $otSvc->overtimeForRange($userId, $startDate, $endDate);
+            $otByDate   = $otRange['dates'] ?? [];
+            $otMinutes  = (int) ($otRange['total'] ?? 0);
+            $otBonusDays = $otSvc->bonusLeaves($otMinutes);
+
             foreach ($records as $record) {
                 $recDate = substr((string) $record->attendance_date, 0, 10);
                 $record->is_half_day = isset($halfDaySet[$recDate]);
@@ -2720,22 +2813,12 @@ class AttendanceController extends Controller
                     }
                 }
 
-                if (!$record->logout_time) {
-                    $record->overtime_minutes = 0;
-                } elseif (!is_null($record->snap_overtime_minutes)) {
-                    $record->overtime_minutes = (int) $record->snap_overtime_minutes;
-                    if ($record->overtime_minutes > 0) { $overtimeDays++; }
-                } else {
-                    $dayEnd = $shiftService->getUserShift($userId, $record->attendance_date)['shift_end'] ?? null;
-                    $shiftEnd = $dayEnd ? strtotime($record->attendance_date . ' ' . $dayEnd) : null;
-                    $actualLogout = strtotime($record->attendance_date . ' ' . $record->logout_time);
-                    if ($shiftEnd && $actualLogout > $shiftEnd) {
-                        $overtimeDays++;
-                        $record->overtime_minutes = (int) (($actualLogout - $shiftEnd) / 60);
-                    } else {
-                        $record->overtime_minutes = 0;
-                    }
-                }
+                // Target-based overtime for THIS day, straight from the map built above. The
+                // service already drops half-days and days without a checkout, so a missing
+                // key simply means "no overtime earned".
+                $recDateOt = substr((string) $record->attendance_date, 0, 10);
+                $record->overtime_minutes = (int) ($otByDate[$recDateOt] ?? 0);
+                if ($record->overtime_minutes > 0) { $overtimeDays++; }
 
                 // Add order count to total
                 $totalOrdersDelivered += $record->total_orders_delivered;
@@ -2829,6 +2912,21 @@ class AttendanceController extends Controller
             // shown and excludes "not needed" (paid) + leave days. Mirrors salary's absent.
             $absentDays = $records->where('status', 'absent')->count();
 
+            // ⭐ …and recompute ON LEAVE from those same rows, for exactly the same reason.
+            // The earlier count (above) walks only rows that EXIST in t_ops_attendance, but
+            // approving a leave request does not reliably write an attendance row — 7 of 9
+            // approved July-2026 leaves had none. Those days are restored as `on_leave`
+            // filler rows just above, so the table already showed them; only this header
+            // tile still said otherwise, contradicting the list underneath it. Counting the
+            // rebuilt rows makes the tile agree with its own table AND with the Month tab /
+            // mobile, which both read the leave REQUESTS (the real source of truth).
+            // Half-days stay excluded, as before: they are 0.5 in the yearly balance and
+            // display as "½ day" (present), never as a full on-leave day.
+            $onLeaveDays = $records->filter(function ($r) use ($halfDaySet) {
+                $d = substr((string) ($r->attendance_date ?? ''), 0, 10);
+                return ($r->status ?? '') === 'on_leave' && !isset($halfDaySet[$d]);
+            })->count();
+
             return response()->json([
                 'success' => true,
                 'employee' => [
@@ -2842,6 +2940,11 @@ class AttendanceController extends Controller
                     'absent_days' => $absentDays,
                     'late_days' => $lateDays,
                     'overtime_days' => $overtimeDays,
+                    // Same three the Month tab and both mobile screens show, from the same
+                    // service — so "12h 10m → 1 bonus day" reads identically everywhere.
+                    'overtime_minutes' => $otMinutes,
+                    'overtime_bonus_leaves' => $otBonusDays,
+                    'overtime_minutes_per_bonus' => $otSvc->minutesPerBonusDay(),
                     'total_hours' => round($totalHours, 1),
                     'total_orders_delivered' => $totalOrdersDelivered,
                     'shift_info' => [
@@ -3142,6 +3245,9 @@ class AttendanceController extends Controller
                     'value'  => $meterStart !== null ? (int) $meterStart : null,
                     'time'   => !empty($attendance->meter_start_recorded_at) ? substr((string) $attendance->meter_start_recorded_at, 11, 5) : null,
                     'source' => $attendance->meter_start_source ?? null, // home | checkin | manager
+                    // Measured location behind that source (null on pre-hardening rows) — so the
+                    // modal can show "820 m from home" instead of assuming "typed at office".
+                    'place'  => \App\Services\Riders\WorkJourneyService::startPlace($attendance),
                     'photo'  => $attendance->picture_start ?? null,
                 ],
                 'end'   => [

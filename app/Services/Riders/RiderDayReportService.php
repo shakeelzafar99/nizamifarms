@@ -140,6 +140,33 @@ class RiderDayReportService
         return ['day' => $day, 'orders' => $orderRows, 'stops' => $stops, 'gaps' => $gaps, 'odd_routes' => $oddRoutes, 'checkout' => $checkout, 'mid_run_changes' => $midRunChanges];
     }
 
+    /**
+     * ADDITIVE (Day Review, Jul-2026) — the same quality-gated trail the report
+     * itself uses, exposed for the map polyline and proximity maths. Nothing in
+     * the existing report path calls this; it only re-runs the private loader so
+     * Day Review never has to duplicate the accuracy/speed/source gating rules.
+     *
+     * @return array<int,array{lat:float,lng:float,ts:int}> chronological
+     */
+    public function trailForDay(int $userId, string $date, bool $wholeDay = true): array
+    {
+        $dayStart = Carbon::parse($date)->startOfDay()->format('Y-m-d H:i:s');
+        $dayEnd   = Carbon::parse($date)->addDay()->addHours(3)->format('Y-m-d H:i:s');
+        $pts = $this->loadTrail($userId, $dayStart, $dayEnd);
+        if ($wholeDay) {
+            return $pts;
+        }
+        // caller wants it bounded the same way the report bounds it
+        $orders = $this->loadOrders($userId, $dayStart, $dayEnd, $this->detectTzOffset());
+        return $orders ? $this->boundToWorkWindow($pts, $orders, null) : $pts;
+    }
+
+    /** ADDITIVE (Day Review) — great-circle metres, exposed for reuse. */
+    public function distanceM(float $la1, float $lo1, float $la2, float $lo2): float
+    {
+        return $this->haversine($la1, $lo1, $la2, $lo2);
+    }
+
     // ---- data loaders -------------------------------------------------
 
     private function activeRiders(string $date): array
@@ -207,11 +234,17 @@ class RiderDayReportService
     /** Delivered orders for the rider that day, with pin/verified/eta/OFD. */
     private function loadOrders(int $userId, string $from, string $to, int $tz): array
     {
+        // delivery_accuracy_m only exists after the GPS-accuracy hardening SQL; select it
+        // conditionally so this report keeps working on a DB where that hasn't run yet.
+        $accCol = \Illuminate\Support\Facades\Schema::hasColumn('t_crm_order_status_history', 'delivery_accuracy_m')
+            ? 'h.delivery_accuracy_m'
+            : 'NULL';
         $rows = DB::select(
             "SELECT o.id, o.order_number, o.name AS customer_name, o.customer_id,
                     o.total_price, o.payment_method, o.delivery_priority, o.estimated_delivery_at AS eta,
                     o.eta_calculated_at AS wave, o.eta_calculated_by AS dispatched_by_id, du.fullname AS dispatched_by_name,
                     h.changed_at AS delivered_raw, h.delivery_latitude AS pin_lat, h.delivery_longitude AS pin_lng,
+                    {$accCol} AS delivery_accuracy_m,
                     c.latitude AS verified_lat, c.longitude AS verified_lng,
                     ofd.ofd_raw
                FROM t_crm_prod_order o
@@ -271,6 +304,7 @@ class RiderDayReportService
                 'dispatched_by_name'  => ($r->wave !== null && (int) $r->dispatched_by_id !== $userId) ? $r->dispatched_by_name : null,
                 'pin_lat'       => $r->pin_lat !== null ? (float) $r->pin_lat : null,
                 'pin_lng'       => $r->pin_lng !== null ? (float) $r->pin_lng : null,
+                'delivery_accuracy_m' => $r->delivery_accuracy_m !== null ? (float) $r->delivery_accuracy_m : null,
                 'verified_lat'  => $r->verified_lat !== null ? (float) $r->verified_lat : null,
                 'verified_lng'  => $r->verified_lng !== null ? (float) $r->verified_lng : null,
                 '_del_ts'       => $delTs,
@@ -352,7 +386,17 @@ class RiderDayReportService
         if ($o['has_verified'] && $o['pin_lat'] !== null) {
             $d = $this->haversine($o['pin_lat'], $o['pin_lng'], $o['verified_lat'], $o['verified_lng']);
             $o['pin_distance_m'] = (int) round($d);
-            $o['at_verified'] = $d <= $this->cfg['at_verified_m'] ? 1 : 0;
+            // A drop can only be placed as precisely as the fix that recorded it, so let the
+            // error bar reach the radius before calling a rider "away from the pin" — capped
+            // at coarse_fix_m so a wildly bad fix can never excuse a genuine miss. NULL
+            // accuracy (older APKs, and every historical row) ⇒ no slack ⇒ unchanged verdict.
+            $slack = ($o['delivery_accuracy_m'] !== null)
+                ? min((float) $o['delivery_accuracy_m'], (float) ($this->cfg['coarse_fix_m'] ?? 150))
+                : 0;
+            $o['at_verified'] = ($d - $slack) <= $this->cfg['at_verified_m'] ? 1 : 0;
+            // Flagged separately so the UI can say "fix was coarse" instead of implying he moved.
+            $o['fix_coarse'] = ($o['delivery_accuracy_m'] !== null
+                && (float) $o['delivery_accuracy_m'] > (float) ($this->cfg['coarse_fix_m'] ?? 150)) ? 1 : 0;
         }
 
         // press proof: nearest gated trail point within ±5 min of the press
@@ -624,6 +668,10 @@ class RiderDayReportService
             'pin_distance_m'=> $o['pin_distance_m'],
             'at_verified'   => $o['at_verified'],
             'has_verified'  => $o['has_verified'],
+            // Fix quality behind pin_distance_m — lets the UI say "coarse fix" instead of
+            // implying the rider was somewhere else. NULL on every pre-hardening row.
+            'fix_accuracy_m'=> $o['delivery_accuracy_m'] ?? null,
+            'fix_coarse'    => $o['fix_coarse'] ?? 0,
             'gps_ok'        => $o['gps_ok'],
             'press_trail_m' => $o['press_trail_m'],
             'door_wait_min' => $o['door_wait_min'],
@@ -635,6 +683,11 @@ class RiderDayReportService
             // dispatch button ("Get Times") was never pressed for this order —
             // eta_calculated_at is null. Catches "rider left without dispatching".
             'was_dispatched'=> $o['_wave'] !== null ? 1 : 0,
+            // ADDITIVE (Day Review, Jul-2026): the dispatch WAVE this order rode in
+            // (eta_calculated_at — the moment the store pressed dispatch for that
+            // batch). Day Review groups by it so "which dispatch group was this in"
+            // survives the Dispatch Tracker's removal. Existing consumers ignore it.
+            'wave'          => $o['_wave'],
             // dispatch was pressed by someone OTHER than the rider (store manager
             // did it for them because the rider forgot).
             'dispatched_by_other' => $o['dispatched_by_other'],

@@ -173,23 +173,37 @@
         <div class="bg-white border border-gray-200 rounded-xl">
             <div class="px-5 py-3 border-b border-gray-200 flex items-center justify-between">
                 <h3 class="font-semibold text-gray-900 text-sm">📋 Warehouse Activity</h3>
-                <a href="{{ route('khaas.products') }}" class="text-xs text-amber-600 hover:text-amber-700">View All</a>
+                {{-- Lands on Products, where each Warehouse count now opens that product's full ledger. --}}
+                <a href="{{ route('khaas.products') }}" class="text-xs text-amber-600 hover:text-amber-700">Open Products →</a>
             </div>
             <div class="divide-y divide-gray-100">
                 @forelse($recentActivity as $log)
+                @php
+                    // A rejected transfer returns stock and is logged as 'adjustment' (the ENUM
+                    // has no reversal type) — without this it reads as a manual correction.
+                    $isRejectReturn = $log->reference_type === 'transfer_rejected';
+                    $isBatchIn = $log->reference_type === 'batch';
+                    $actLabel = $isRejectReturn ? 'Transfer rejected — returned'
+                        : ($isBatchIn ? 'Batch production'
+                        : ucfirst(str_replace('_', ' ', $log->change_type)));
+                @endphp
                 <div class="px-4 py-2.5 flex items-center gap-2.5">
                     <span class="text-base">
-                        @switch($log->change_type)
-                            @case('stock_in') 📥 @break
-                            @case('stock_out') 📤 @break
-                            @case('transfer') 🔄 @break
-                            @case('count') 📊 @break
-                            @default ➕
-                        @endswitch
+                        @if($isRejectReturn) ↩️
+                        @elseif($isBatchIn) 🏭
+                        @else
+                            @switch($log->change_type)
+                                @case('stock_in') 📥 @break
+                                @case('stock_out') 📤 @break
+                                @case('transfer') 🔄 @break
+                                @case('count') 📊 @break
+                                @default ➕
+                            @endswitch
+                        @endif
                     </span>
                     <div class="flex-1 min-w-0">
                         <div class="text-xs font-medium text-gray-900 truncate">{{ $log->product?->title ?? 'Unknown Product' }}</div>
-                        <div class="text-[10px] text-gray-500">{{ ucfirst(str_replace('_', ' ', $log->change_type)) }} · {{ $log->quantity_before }} → {{ $log->quantity_after }} ({{ $log->quantity_change >= 0 ? '+' : '' }}{{ $log->quantity_change }})</div>
+                        <div class="text-[10px] text-gray-500">{{ $actLabel }} · {{ $log->quantity_before }} → {{ $log->quantity_after }} ({{ $log->quantity_change >= 0 ? '+' : '' }}{{ $log->quantity_change }})</div>
                     </div>
                     <div class="text-[10px] text-gray-400 whitespace-nowrap">{{ $log->created_at ? $log->created_at->diffForHumans() : '' }}</div>
                 </div>

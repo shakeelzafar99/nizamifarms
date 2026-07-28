@@ -194,7 +194,22 @@ class WarehouseController extends Controller
             if ($changeType === 'stock_in' && $quantityChange < 0) {
                 $quantityChange = abs($quantityChange);
             }
-            
+
+            // 'adjustment' is signed: an optional adjust_direction=reduce makes a correction
+            // subtract. The sign is applied HERE, not in the client. Absent field = add,
+            // exactly the previous behaviour, so existing callers are unaffected.
+            if ($changeType === 'adjustment' && $request->input('adjust_direction') === 'reduce' && $quantityChange > 0) {
+                $quantityChange = -$quantityChange;
+            }
+
+            // 'count' is an absolute target, so it can never be negative.
+            if ($changeType === 'count' && $quantityChange < 0) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'A stock count cannot be negative.'
+                ], 400);
+            }
+
             DB::beginTransaction();
             
             $inventory = WarehouseInventoryModel::getOrCreate($productId, $variantId, $businessUnitId);
@@ -221,15 +236,17 @@ class WarehouseController extends Controller
                     'created_at' => now(),
                 ]);
             } else {
-                // Validate stock_out doesn't go below 0
-                if ($changeType === 'stock_out' && ($inventory->quantity + $quantityChange) < 0) {
+                // Any negative movement (stock_out, or a subtracting adjustment) must not
+                // drive the warehouse below zero. Previously only stock_out was guarded, so
+                // a negative 'adjustment' could push stock negative.
+                if ($quantityChange < 0 && ($inventory->quantity + $quantityChange) < 0) {
                     DB::rollBack();
                     return response()->json([
                         'success' => false,
                         'message' => "Insufficient stock. Current: {$inventory->quantity}, Requested: " . abs($quantityChange)
                     ], 400);
                 }
-                
+
                 $inventory->adjustQuantity($quantityChange, $changeType, $notes);
             }
             
@@ -292,12 +309,12 @@ class WarehouseController extends Controller
                 ], 400);
             }
             
-            // Deduct from warehouse immediately
-            $inventory->adjustQuantity(-$quantity, 'transfer', 
-                "Transfer to store (pending approval): {$quantity} units", 
-                'transfer_to_store', null);
-            
-            // Create pending transfer record
+            // Create the pending transfer record FIRST so the warehouse log row can carry
+            // its id in reference_id — that is what lets the warehouse ledger view show
+            // "Transfer #12 · accepted by X". (Historical rows were logged before the
+            // transfer existed and have reference_id = NULL; the ledger endpoint falls back
+            // to an unambiguous quantity+timestamp match for those.)
+            // Same transaction, same checks, same rollback path — only the order changed.
             $transfer = WarehouseTransferModel::create([
                 'product_id' => $productId,
                 'product_variant_id' => $variantId,
@@ -309,7 +326,12 @@ class WarehouseController extends Controller
                 'requested_by' => auth()->id(),
                 'notes' => $notes,
             ]);
-            
+
+            // Deduct from warehouse immediately
+            $inventory->adjustQuantity(-$quantity, 'transfer',
+                "Transfer to store (pending approval): {$quantity} units",
+                'transfer_to_store', $transfer->id);
+
             DB::commit();
 
             // NOTE: the store-transfer PUSH is sent as a COMBINED, debounced alert
@@ -602,14 +624,21 @@ class WarehouseController extends Controller
                         'stock_in' => '📥',
                         'stock_out' => '📤',
                         'count' => '📊',
-                        'adjustment' => '🔧',
+                        'adjustment' => $log->reference_type === 'transfer_rejected' ? '↩️' : '🔧',
+                        'transfer' => '🔄',
                         default => '📦',
                     };
                     $typeLabel = match($log->change_type) {
-                        'stock_in' => 'Stock In',
+                        'stock_in' => $log->reference_type === 'batch' ? 'Batch Production' : 'Stock In',
                         'stock_out' => 'Stock Out',
                         'count' => 'Stock Count',
-                        'adjustment' => 'Adjustment',
+                        // A rejected transfer returns stock and is logged as 'adjustment'
+                        // (the ENUM has no reversal type) — without this it reads as a
+                        // manual correction.
+                        'adjustment' => $log->reference_type === 'transfer_rejected'
+                            ? 'Transfer Rejected — Returned'
+                            : 'Adjustment',
+                        'transfer' => 'Transfer to Store',
                         default => ucfirst($log->change_type ?? 'Unknown'),
                     };
                     return [
@@ -1165,6 +1194,9 @@ class WarehouseController extends Controller
                 ->where('d.business_unit_id', $businessUnitId)
                 ->whereIn('di.status', ['in_progress', 'accepted'])
                 ->where('di.storage_deducted', 1)
+                // Belt-and-braces: an item under a cancelled/completed plan must never be
+                // counted as still "Processing" (see cancelDemand).
+                ->whereNotIn('d.status', ['cancelled', 'completed'])
                 ->select('di.khaas_product_id', 'di.quantity_kg', 'di.storage_product_id', 'di.storage_deducted_qty')
                 ->get();
 
@@ -2069,8 +2101,17 @@ class WarehouseController extends Controller
                 ->where('khaas_business_unit_id', $businessUnitId)
                 ->where('created_at', '>=', now()->subMonths(6)->startOfMonth())
                 ->orderBy('created_at', 'desc')
-                ->select('id', 'change_type', 'quantity_before', 'quantity_change', 'quantity_after', 'notes', 'created_at')
+                // created_by is written on every insert but was never selected, so "who
+                // removed 12 kg" existed in the DB and never reached the screen.
+                ->select('id', 'change_type', 'quantity_before', 'quantity_change', 'quantity_after', 'notes', 'created_by', 'created_at')
                 ->get();
+
+            // Resolve names in one query.
+            $storageUserNames = [];
+            $storageUserIds = $logs->pluck('created_by')->filter()->unique()->values()->toArray();
+            if (!empty($storageUserIds)) {
+                $storageUserNames = DB::table('t_sys_user')->whereIn('id', $storageUserIds)->pluck('fullname', 'id')->toArray();
+            }
 
             $months = [];
             foreach ($logs as $log) {
@@ -2100,6 +2141,10 @@ class WarehouseController extends Controller
                     'after' => round((float) $log->quantity_after, 3),
                     'notes' => $log->notes,
                     'date' => date('d M, H:i', strtotime($log->created_at)),
+                    // Additive field — older APKs simply ignore it.
+                    'user' => $log->created_by
+                        ? ($storageUserNames[$log->created_by] ?? ('User #' . $log->created_by))
+                        : 'System',
                 ];
             }
 
@@ -3646,33 +3691,272 @@ class WarehouseController extends Controller
     }
 
     /**
-     * Cancel a demand
+     * Resolve the storage-inventory row that holds stock for a source product, using the
+     * SAME precedence as acceptDemand / useStorageItem / adjustStorageItem:
+     *   config's source_variant_id (NULL-safe)  →  fallback: row with the most stock.
+     * Returns null when the product has no storage row at all.
+     */
+    private function resolveStorageRow($sourceProductId, $businessUnitId, bool $lock = false)
+    {
+        $config = DB::table('t_crm_khaas_storage_config')
+            ->where('source_product_id', $sourceProductId)
+            ->where('khaas_business_unit_id', $businessUnitId)
+            ->where('is_active', 1)
+            ->first();
+        $configVariantId = $config?->source_variant_id;
+
+        $q = DB::table('t_crm_khaas_storage_inventory')
+            ->where('source_product_id', $sourceProductId)
+            ->where('khaas_business_unit_id', $businessUnitId);
+        // NULL = NULL is FALSE in SQL — must use whereNull.
+        if ($configVariantId) {
+            $q->where('source_variant_id', $configVariantId);
+        } else {
+            $q->whereNull('source_variant_id');
+        }
+        if ($lock) {
+            $q->lockForUpdate();
+        }
+        $row = $q->first();
+
+        if (!$row) {
+            $q2 = DB::table('t_crm_khaas_storage_inventory')
+                ->where('source_product_id', $sourceProductId)
+                ->where('khaas_business_unit_id', $businessUnitId)
+                ->orderByDesc('quantity_on_hand');
+            if ($lock) {
+                $q2->lockForUpdate();
+            }
+            $row = $q2->first();
+        }
+
+        return $row;
+    }
+
+    /**
+     * Cancel a demand.
+     *
+     * Owner ruling (27 Jul 2026): cancelling a plan that was already ACCEPTED must give the
+     * raw material back. Previously this method only flipped the demand to 'cancelled' and
+     * cancelled items still at status 'pending' — so for an accepted plan the kg that
+     * acceptDemand had deducted were lost, the auto-started batch stayed open, and the items
+     * stayed 'in_progress' forever, which kept that material showing as "Processing" on the
+     * stock screens.
+     *
+     * Now, inside one row-locked transaction:
+     *   1. restore each item's deducted kg to storage (+ a storage_log row),
+     *   2. cancel the auto-started batch — but only if no OTHER live demand shares it
+     *      (acceptDemand reuses an existing active batch),
+     *   3. cancel every remaining item, not just the pending ones.
+     *
+     * Idempotent: the restore is driven by storage_deducted = 1 and clears that flag in the
+     * same guarded UPDATE, so a double-tap cannot restore twice.
      */
     public function cancelDemand(Request $request, $demandId)
     {
         try {
-            $demand = DB::table('t_crm_khaas_production_demand')->where('id', $demandId)->first();
+            DB::beginTransaction();
+
+            $demand = DB::table('t_crm_khaas_production_demand')
+                ->where('id', $demandId)
+                ->lockForUpdate()
+                ->first();
+
             if (!$demand) {
+                DB::rollBack();
                 return response()->json(['success' => false, 'message' => 'Demand not found'], 404);
             }
 
             if (in_array($demand->status, ['completed', 'cancelled'])) {
+                DB::rollBack();
                 return response()->json(['success' => false, 'message' => 'Cannot cancel a ' . $demand->status . ' demand'], 400);
+            }
+
+            $businessUnitId = $demand->business_unit_id;
+
+            $items = DB::table('t_crm_khaas_production_demand_item')
+                ->where('demand_id', $demandId)
+                ->whereNotIn('status', ['cancelled', 'completed'])
+                ->lockForUpdate()
+                ->get();
+
+            $restoredTotal = 0;
+            $restoredLabels = [];
+            $batchIdsToConsider = [];
+
+            foreach ($items as $item) {
+                if ($item->batch_id) {
+                    $batchIdsToConsider[] = $item->batch_id;
+                }
+
+                // Only items that actually took stock out need a restore.
+                if (!$item->storage_deducted || (float) $item->storage_deducted_qty <= 0) {
+                    continue;
+                }
+
+                $deductedTotal = round((float) $item->storage_deducted_qty, 3);
+
+                // Rebuild the per-material split exactly the way acceptDemand computed it.
+                $portions = [];
+                if ($item->storage_product_id) {
+                    // Legacy single-material item.
+                    $portions[] = ['product_id' => $item->storage_product_id, 'qty' => $deductedTotal];
+                } else {
+                    $recipes = DB::table('t_crm_khaas_product_recipe')
+                        ->where('khaas_product_id', $item->khaas_product_id)
+                        ->where('is_active', 1)
+                        ->whereNotNull('storage_product_id')
+                        ->get();
+
+                    $recomputed = 0;
+                    foreach ($recipes as $recipe) {
+                        $qty = round((float) $item->quantity_kg * (float) $recipe->ratio_kg, 3);
+                        if ($qty <= 0) {
+                            continue;
+                        }
+                        $portions[] = ['product_id' => $recipe->storage_product_id, 'qty' => $qty];
+                        $recomputed += $qty;
+                    }
+
+                    // If the recipe changed between accept and cancel, the recomputed split
+                    // won't match what was actually taken. Scale it so the TOTAL restored is
+                    // always exactly what was deducted — conserve the total, best-effort on
+                    // the distribution.
+                    if ($recomputed > 0 && abs($recomputed - $deductedTotal) > 0.001) {
+                        $scale = $deductedTotal / $recomputed;
+                        foreach ($portions as &$p) {
+                            $p['qty'] = round($p['qty'] * $scale, 3);
+                        }
+                        unset($p);
+                        \Log::info('cancelDemand: recipe drift, scaled restore to match deduction', [
+                            'demand_id' => $demandId,
+                            'item_id' => $item->id,
+                            'deducted' => $deductedTotal,
+                            'recomputed' => round($recomputed, 3),
+                        ]);
+                    }
+                }
+
+                foreach ($portions as $portion) {
+                    $inv = $this->resolveStorageRow($portion['product_id'], $businessUnitId, true);
+                    if (!$inv) {
+                        // No storage row to return it to — log loudly, don't silently drop.
+                        \Log::warning('cancelDemand: no storage row to restore into', [
+                            'demand_id' => $demandId,
+                            'item_id' => $item->id,
+                            'source_product_id' => $portion['product_id'],
+                            'qty' => $portion['qty'],
+                        ]);
+                        continue;
+                    }
+
+                    $qtyBefore = (float) $inv->quantity_on_hand;
+                    $qtyAfter = round($qtyBefore + $portion['qty'], 3);
+
+                    DB::table('t_crm_khaas_storage_inventory')
+                        ->where('id', $inv->id)
+                        ->update([
+                            'quantity_on_hand' => $qtyAfter,
+                            // Never let the running total go negative.
+                            'total_used' => DB::raw('GREATEST(0, total_used - ' . $portion['qty'] . ')'),
+                            'updated_at' => now(),
+                        ]);
+
+                    DB::table('t_crm_khaas_storage_log')->insert([
+                        'storage_inventory_id' => $inv->id,
+                        'source_product_id' => $portion['product_id'],
+                        'khaas_business_unit_id' => $businessUnitId,
+                        // 'adjustment' is the only reversal value the ENUM allows
+                        // ('received','used','adjustment','wastage') and the monthly
+                        // breakdown already buckets it.
+                        'change_type' => 'adjustment',
+                        'quantity_before' => $qtyBefore,
+                        'quantity_change' => $portion['qty'],
+                        'quantity_after' => $qtyAfter,
+                        'notes' => 'Plan #' . $demandId . ' cancelled — ' . $portion['qty'] . ' returned to storage',
+                        'created_by' => auth()->id(),
+                        'created_at' => now(),
+                    ]);
+
+                    $restoredTotal += $portion['qty'];
+                    $name = DB::table('t_crm_prod_product')->where('id', $portion['product_id'])->value('title');
+                    $restoredLabels[] = ($name ?: ('Product #' . $portion['product_id'])) . ': ' . round($portion['qty'], 3);
+                }
+            }
+
+            // Cancel every remaining item and clear the deducted flag in the SAME update —
+            // this is what makes the restore idempotent and stops the item from ever being
+            // counted as "Processing" again.
+            DB::table('t_crm_khaas_production_demand_item')
+                ->where('demand_id', $demandId)
+                ->whereNotIn('status', ['cancelled', 'completed'])
+                ->update([
+                    'status' => 'cancelled',
+                    'storage_deducted' => 0,
+                    'updated_at' => now(),
+                ]);
+
+            // Close batches this plan auto-started — unless another still-live demand shares
+            // the same batch (acceptDemand reuses an existing active batch for a product).
+            $cancelledBatches = 0;
+            foreach (array_unique($batchIdsToConsider) as $batchId) {
+                $sharedWithLiveDemand = DB::table('t_crm_khaas_production_demand_item as di')
+                    ->join('t_crm_khaas_production_demand as d', 'd.id', '=', 'di.demand_id')
+                    ->where('di.batch_id', $batchId)
+                    ->where('di.demand_id', '!=', $demandId)
+                    ->whereNotIn('di.status', ['cancelled', 'completed'])
+                    ->whereNotIn('d.status', ['cancelled', 'completed'])
+                    ->exists();
+
+                if ($sharedWithLiveDemand) {
+                    continue;
+                }
+
+                $batch = \App\Models\CRM\ProductBatchModel::where('id', $batchId)
+                    ->where('status', \App\Models\CRM\ProductBatchModel::STATUS_IN_PROGRESS)
+                    ->first();
+                if ($batch) {
+                    $batch->update([
+                        'status' => \App\Models\CRM\ProductBatchModel::STATUS_CANCELLED,
+                        'ended_at' => now(),
+                        'ended_by' => auth()->id(),
+                        'notes_end' => 'Auto-cancelled: production plan #' . $demandId . ' cancelled',
+                    ]);
+                    $cancelledBatches++;
+                }
             }
 
             DB::table('t_crm_khaas_production_demand')
                 ->where('id', $demandId)
                 ->update(['status' => 'cancelled', 'updated_at' => now()]);
 
-            DB::table('t_crm_khaas_production_demand_item')
-                ->where('demand_id', $demandId)
-                ->where('status', 'pending')
-                ->update(['status' => 'cancelled', 'updated_at' => now()]);
+            DB::commit();
 
-            return response()->json(['success' => true, 'message' => 'Demand cancelled']);
+            $message = 'Plan cancelled.';
+            if ($restoredTotal > 0) {
+                $message .= ' Raw material returned to storage: ' . implode(', ', $restoredLabels) . '.';
+            }
+            if ($cancelledBatches > 0) {
+                $message .= ' ' . $cancelledBatches . ' batch' . ($cancelledBatches > 1 ? 'es' : '') . ' cancelled.';
+            }
+
+            return response()->json([
+                'success' => true,
+                'message' => $message,
+                'restored_qty' => round($restoredTotal, 3),
+                'cancelled_batches' => $cancelledBatches,
+            ]);
         } catch (\Exception $e) {
-            \Log::error('Failed to cancel demand', ['error' => $e->getMessage()]);
-            return response()->json(['success' => false, 'message' => 'Failed to cancel demand'], 500);
+            if (DB::transactionLevel() > 0) {
+                DB::rollBack();
+            }
+            \Log::error('Failed to cancel demand', [
+                'demand_id' => $demandId,
+                'user_id' => auth()->id(),
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString(),
+            ]);
+            return response()->json(['success' => false, 'message' => 'Failed to cancel demand: ' . $e->getMessage()], 500);
         }
     }
 }

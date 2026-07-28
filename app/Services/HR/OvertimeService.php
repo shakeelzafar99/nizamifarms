@@ -86,4 +86,34 @@ class OvertimeService
     {
         return $this->overtimeForRange($userId, $start, $end)['total'];
     }
+
+    /**
+     * Overtime minutes → whole BONUS LEAVE DAYS. One full target day of extra work earns
+     * one day off; the remainder does not carry over.
+     *
+     * ⭐ THE one implementation. PayrollService::grantOnce() writes leave grants from this,
+     * and every attendance/report screen displays this — so what a manager is shown and what
+     * payroll actually grants cannot drift apart. If the rule ever changes (part-days,
+     * carry-over, a different divisor), change it HERE and nowhere else.
+     */
+    public function bonusLeaves(int $overtimeMinutes): int
+    {
+        if ($overtimeMinutes <= 0) { return 0; }
+        $perDay = max(1, (int) round($this->targetHours() * 60));
+        return (int) floor($overtimeMinutes / $perDay);
+    }
+
+    /** Minutes still to run before the NEXT bonus day (0 when none are being earned). */
+    public function minutesToNextBonus(int $overtimeMinutes): int
+    {
+        if ($overtimeMinutes <= 0) { return 0; }
+        $perDay = max(1, (int) round($this->targetHours() * 60));
+        return $perDay - ($overtimeMinutes % $perDay);
+    }
+
+    /** The divisor itself, so a screen can explain "540 min = 1 day" without re-deriving it. */
+    public function minutesPerBonusDay(): int
+    {
+        return max(1, (int) round($this->targetHours() * 60));
+    }
 }

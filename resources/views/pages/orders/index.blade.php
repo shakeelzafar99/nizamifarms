@@ -15367,7 +15367,7 @@ function renderRiderDispatchPopup(riderId, riderName, ongoing, delivered) {
         ${deliveredHtml}
         ${renderDeliveredDetail(delivered, !!ongoing)}
         <div style="padding:10px 16px; text-align:right; border-top:1px solid #f3f4f6;">
-            <a href="/riders-map" style="font-size:12px; color:#2563eb; text-decoration:none;">Open full Dispatch Tracker →</a>
+            <a href="/riders-map#day-review" style="font-size:12px; color:#2563eb; text-decoration:none;">Open full Day Review →</a>
         </div>
     `;
 }

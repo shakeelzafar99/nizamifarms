@@ -686,6 +686,20 @@
                                   </div>
                               </a>
                           </div>
+                          {{-- 🏍️ Bikes — running cost per rider. Deep-links straight to the
+                               Bikes tab, so someone whose only access is this (a Khaas-mode
+                               user) never lands on the live board. Gated by its own key so it
+                               can be granted without any rider-ops or finance access. --}}
+                          @if(auth()->user() && auth()->user()->hasPermission('view_bike_costs'))
+                          <div class="kt-menu-item" data-kt-menu-item-toggle="accordion" data-kt-menu-item-trigger="click">
+                              <a href="{{ route('riders-map') }}#bikes">
+                                  <div class="kt-menu-link flex items-center grow cursor-pointer border border-transparent gap-[10px] ps-[10px] pe-[10px] py-[6px] hover:bg-amber-50 rounded-md transition-colors duration-200 group" tabindex="0">
+                                      <span class="kt-menu-icon items-start text-amber-600 group-hover:text-amber-700 w-[20px]"><i class="ki-filled ki-scooter text-lg"></i></span>
+                                      <span class="kt-menu-title text-sm font-medium text-gray-900 group-hover:text-amber-700">Bikes · fuel & running cost</span>
+                                  </div>
+                              </a>
+                          </div>
+                          @endif
                           <div class="kt-menu-item" data-kt-menu-item-toggle="accordion" data-kt-menu-item-trigger="click">
                               <a href="{{ route('khaas.meat-order') }}">
                                   <div class="kt-menu-link flex items-center grow cursor-pointer border border-transparent gap-[10px] ps-[10px] pe-[10px] py-[6px] hover:bg-amber-50 rounded-md transition-colors duration-200 group" tabindex="0">

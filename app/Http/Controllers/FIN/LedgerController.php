@@ -470,27 +470,17 @@ class LedgerController extends Controller
                 'created_by' => auth()->id()
             ]);
 
-            // Update balances (only if approved or cash)
+            // Update balances (only if approved or cash).
+            // Ledger L3: routed through the canonical gate instead of the old inline
+            // "asset-aware" arithmetic. apply() moves BOTH legs by the one convention, locks
+            // each account row FOR UPDATE (no lost read-modify-write), and — critically —
+            // sets balance_updated so a later reject/edit/delete knows the money was applied
+            // and can reverse it. The inline version left the flag at 0, which made
+            // reverse() a silent no-op and hid the row from the Finance Hub.
+            // Verified equivalent to the previous arithmetic for every account pair this
+            // path produces (asset↔asset), so no number changes.
             if ($approvalStatus === LedgerModel::STATUS_APPROVED) {
-                // From account: debit or credit based on account type
-                if ($fromAccount->account_type === 'asset') {
-                    // Money going OUT from asset = Decrease
-                    $fromAccount->current_balance -= $request->amount;
-                } else {
-                    // Money going OUT from liability/income/equity = Increase
-                    $fromAccount->current_balance += $request->amount;
-                }
-                $fromAccount->save();
-
-                // To account: opposite
-                if ($toAccount->account_type === 'asset') {
-                    // Money coming IN to asset = Increase
-                    $toAccount->current_balance += $request->amount;
-                } else {
-                    // Money coming IN to liability/income/equity = Decrease
-                    $toAccount->current_balance -= $request->amount;
-                }
-                $toAccount->save();
+                (new \App\Services\FIN\BalancePostingService())->apply($ledger);
             }
 
             DB::commit();

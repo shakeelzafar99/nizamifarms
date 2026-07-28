@@ -59,7 +59,11 @@ class RequestApprovalController extends Controller
                 // ⭐ SMART SYNC: Flag that requester needs to sync
                 $requestModel->requester_sync_required = true;
                 $requestModel->save();
-                
+
+                // 🔧 The bike service-clock reset (approved oil change → Fleet
+                // due/overdue chip) now fires inside RequestModel::processApproval,
+                // so every approval path gets it — see BikeServiceClock.
+
                 return response()->json([
                     'success' => true,
                     'message' => "Request approved at Level {$level}",

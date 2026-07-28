@@ -554,15 +554,14 @@
             <th class="px-4 py-3 text-center text-xs font-semibold text-gray-500 uppercase">Leave (mo)</th>
             <th class="px-4 py-3 text-center text-xs font-semibold text-gray-500 uppercase">Late (mo)</th>
             <th class="px-4 py-3 text-center text-xs font-semibold text-emerald-600 uppercase">OT (mo)</th>
-            <th class="px-4 py-3 text-center text-xs font-semibold text-amber-600 uppercase" title="Days he delivered but checked out at the office (came back)">Office CO</th>
-            <th class="px-4 py-3 text-center text-xs font-semibold text-cyan-700 uppercase" title="Company bike — check-IN violations: arrived after the ride-in deadline, no start meter from home, or a morning meter gap">In-flags</th>
-            <th class="px-4 py-3 text-center text-xs font-semibold text-amber-700 uppercase" title="Company bike — check-OUT violations: reached home late, meter locked, or manager had to unlock">Out-flags</th>
+            <th class="px-4 py-3 text-center text-xs font-semibold text-amber-700 uppercase" title="Day-flags this month — 🌅 morning (late ride-in / no home start / meter gap) · 🌙 evening (home late / meter locked / unlocked) · 🏢 delivered but checked out at the office. Click any chip for the days.">Flags</th>
+            <th class="px-4 py-3 text-center text-xs font-semibold text-orange-700 uppercase" title="Finished working days with a missing meter reading (start and/or closing). Absent days, leave, today's running shift and future days are never counted.">Meter</th>
             <th class="px-4 py-3 text-center text-xs font-semibold text-purple-500 uppercase">Leave (bal)</th>
             <th class="px-4 py-3 text-center text-xs font-semibold text-red-500 uppercase">Absent (yr)</th>
           </tr>
         </thead>
         <tbody id="monthBody" class="bg-white divide-y divide-gray-100">
-          <tr><td colspan="11" class="px-4 py-8 text-center text-gray-400 text-sm">Loading…</td></tr>
+          <tr><td colspan="10" class="px-4 py-8 text-center text-gray-400 text-sm">Loading…</td></tr>
         </tbody>
       </table>
     </div>
@@ -909,6 +908,7 @@
         <div id="empTileOvertime" onclick="setEmpDetailFilter('overtime')" title="Show only overtime days" style="text-align: center; cursor: pointer; border-radius: 8px; padding: 2px;">
           <p style="font-size: 10px; color: #6b7280; text-transform: uppercase; letter-spacing: 0.05em; margin: 0 0 4px 0;">Overtime</p>
           <p style="font-size: 16px; font-weight: bold; color: #16a34a; margin: 0;" id="detailsStatOT">0</p>
+          <p style="font-size: 9.5px; font-weight: 700; color: #6d28d9; margin: 1px 0 0 0; display: none;" id="detailsStatOTBonus"></p>
         </div>
         <div id="empTileLeave" onclick="openEmpDetailLeaves()" title="Yearly leaves — view / undo" style="text-align: center; cursor: pointer; border-radius: 8px; padding: 2px;">
           <p style="font-size: 10px; color: #6b7280; text-transform: uppercase; letter-spacing: 0.05em; margin: 0 0 4px 0;">On Leave</p>
@@ -1883,7 +1883,7 @@ async function loadMonthTab() {
     monthData = json.success ? (json.data || []) : [];
     renderMonthBody(monthData);
   } catch (e) {
-    body.innerHTML = '<tr><td colspan="11" class="px-4 py-8 text-center text-red-500 text-sm">Failed to load</td></tr>';
+    body.innerHTML = '<tr><td colspan="10" class="px-4 py-8 text-center text-red-500 text-sm">Failed to load</td></tr>';
   }
 }
 function fmtMinsShort(n) { n = Number(n) || 0; const h = Math.floor(n / 60), m = n % 60; return h > 0 ? `${h}h ${m}m` : `${m}m`; }
@@ -1900,7 +1900,7 @@ function renderMonthBody(data) {
     const c0 = data[0] || {};
     lbl.textContent = (c0.cycle_start && c0.cycle_end) ? '(' + fmtCycleShort(c0.cycle_start) + ' → ' + fmtCycleShort(c0.cycle_end) + ')' : '';
   }
-  if (!data.length) { body.innerHTML = '<tr><td colspan="11" class="px-4 py-8 text-center text-gray-400 text-sm">No data for this month</td></tr>'; return; }
+  if (!data.length) { body.innerHTML = '<tr><td colspan="10" class="px-4 py-8 text-center text-gray-400 text-sm">No data for this month</td></tr>'; return; }
   const sorted = [...data].sort((a, b) => String(a.fullname || '').localeCompare(String(b.fullname || '')));
   // A clickable count → opens the exact-dates drill-down. Zero shows a muted dash so the
   // eye skips it. stopPropagation keeps the row's own "open 30-day detail" from also firing.
@@ -1929,14 +1929,18 @@ function renderMonthBody(data) {
     const lateStyle = late > 300 ? 'background:#FEE2E2;color:#B91C1C;' : (late > 0 ? 'background:#FEF3C7;color:#92400E;' : 'background:#F3F4F6;color:#9CA3AF;');
     const uid = u.user_id;
     const nm = String(u.fullname || '').replace(/'/g, "\\'");
+    // Overtime is stated with what it BUYS: the hours, and the whole bonus leave days those
+    // hours have already earned (same divisor payroll grants on). Hours alone made a manager
+    // do the division in his head — and made this column look unrelated to the popup's.
     const ot = Number(u.overtime_target_minutes) || 0;
+    const otBonus = Number(u.overtime_bonus_leaves) || 0;
+    const otPer = Number(u.overtime_minutes_per_bonus) || 540;
+    const otTitle = `${fmtMinsShort(ot)} beyond the daily target. ${fmtMinsShort(otPer)} = 1 bonus leave day, so this earns ${otBonus}. Click to see the days.`;
     const otCell = ot > 0
-      ? `<td class="px-4 py-3 text-center"><button type="button" onclick="event.stopPropagation(); showDateBreakdown(${uid}, '${nm}', 'month_overtime')" title="Click to see the days" style="background:none;border:none;cursor:pointer;font-weight:700;color:#047857;text-decoration:underline;text-decoration-style:dotted;text-underline-offset:2px;font-size:13px;">${fmtMinsShort(ot)}</button></td>`
+      ? `<td class="px-4 py-3 text-center"><button type="button" onclick="event.stopPropagation(); showDateBreakdown(${uid}, '${nm}', 'month_overtime')" title="${otTitle}" style="background:none;border:none;cursor:pointer;font-weight:700;color:#047857;text-decoration:underline;text-decoration-style:dotted;text-underline-offset:2px;font-size:13px;line-height:1.25;">${fmtMinsShort(ot)}${otBonus > 0 ? `<span style="display:block;font-size:9.5px;font-weight:700;color:#6d28d9;text-decoration:none;">= ${otBonus} bonus day${otBonus === 1 ? '' : 's'}</span>` : ''}</button></td>`
       : `<td class="px-4 py-3 text-sm" style="text-align:center;color:#D1D5DB;">–</td>`;
-    const oco = Number(u.office_checkout_days) || 0;
-    const ocoCell = oco > 0
-      ? `<td class="px-4 py-3 text-center"><button type="button" onclick="event.stopPropagation(); showDateBreakdown(${uid}, '${nm}', 'month_office_checkout')" title="Days he delivered but checked out at the office — click to see them" style="display:inline-block;padding:2px 8px;border-radius:5px;font-size:12px;font-weight:700;background:#FEF3C7;color:#92400E;border:none;cursor:pointer;">${oco}</button></td>`
-      : `<td class="px-4 py-3 text-sm" style="text-align:center;color:#D1D5DB;">–</td>`;
+    const flagsTd = flagsCell(u, uid, nm);
+    const meterTd = meterCell(u, uid, nm);
     return `<tr class="hover:bg-gray-50 cursor-pointer" onclick="openMonthDetail(${uid}, '${nm}')">
       <td class="px-4 py-3 text-sm" style="font-weight:600;color:#1F2937;">${u.fullname || ''}</td>
       ${filterCell(u.present_days, '#374151', uid, nm, 'present')}
@@ -1946,24 +1950,48 @@ function renderMonthBody(data) {
         ? `<button type="button" onclick="event.stopPropagation(); openMonthDetail(${uid}, '${nm}', 'late')" title="Open this month's detail, filtered to late days" style="display:inline-block;padding:2px 8px;border-radius:5px;font-size:12px;font-weight:600;border:none;cursor:pointer;${lateStyle}">${fmtMinsShort(late)}</button>`
         : `<span style="display:inline-block;padding:2px 8px;border-radius:5px;font-size:12px;font-weight:600;${lateStyle}">${fmtMinsShort(late)}</span>`}</td>
       ${otCell}
-      ${ocoCell}
-      ${violCell(u.checkin_violation_days, '#0E7490', uid, nm, 'in')}
-      ${violCell(u.checkout_violation_days, '#B45309', uid, nm, 'out')}
+      ${flagsTd}
+      ${meterTd}
       ${leaveBalCell(u, uid, nm)}
       ${numCell(u.absent_days_year, '#B91C1C', uid, nm, 'year_absent')}
     </tr>`;
   }).join('');
 }
 
-// U5/U4 — company-bike violation count cell (In-flags / Out-flags). Click → the per-date
-// detail popup rendered from the payload (no extra fetch).
-function violCell(val, color, uid, nm, kind) {
-  const n = Number(val) || 0;
+// ONE "Flags" cell instead of three columns (In-flags / Out-flags / Office CO). The three are
+// the same kind of thing — a day that needs a manager's eye — so they read as one group of
+// chips, each still its own drill. Only non-zero chips are drawn; nothing to answer for = "–".
+//   🌅 morning (check-IN)  ·  🌙 evening (check-OUT)  ·  🏢 checked out at the office
+function flagsCell(u, uid, nm) {
+  const chips = [
+    { n: Number(u.checkin_violation_days) || 0,  icon: '🌅', bg: '#CFFAFE', fg: '#0E7490',
+      click: `showViolationDetail(${uid}, '${nm}', 'in')`,
+      title: 'Morning flags — arrived after the ride-in deadline, no start meter from home, or a morning meter gap. Click for the days.' },
+    { n: Number(u.checkout_violation_days) || 0, icon: '🌙', bg: '#FEF3C7', fg: '#B45309',
+      click: `showViolationDetail(${uid}, '${nm}', 'out')`,
+      title: 'Evening flags — reached home late, meter locked, or a manager had to unlock it. Click for the days.' },
+    { n: Number(u.office_checkout_days) || 0,    icon: '🏢', bg: '#F3E8D6', fg: '#92400E',
+      click: `showDateBreakdown(${uid}, '${nm}', 'month_office_checkout')`,
+      title: 'Delivered but checked out at the office (came back). Click for the days.' },
+  ].filter(c => c.n > 0);
+  if (!chips.length) return `<td class="px-4 py-3 text-sm" style="text-align:center;color:#D1D5DB;">–</td>`;
+  const html = chips.map(c =>
+    `<button type="button" onclick="event.stopPropagation(); ${c.click}" title="${c.title}"
+      style="display:inline-flex;align-items:center;gap:3px;padding:2px 7px;border-radius:5px;font-size:11.5px;font-weight:700;border:none;cursor:pointer;background:${c.bg};color:${c.fg};line-height:1.5;">${c.icon} ${c.n}</button>`).join('');
+  return `<td class="px-4 py-3"><div style="display:flex;flex-wrap:wrap;gap:4px;justify-content:center;">${html}</div></td>`;
+}
+
+// "Meter" cell — finished working days missing a meter reading. The count comes from the SAME
+// server rule as the daily ⛽ tick (DayChecksService::meterMissReason), which only judges days
+// with BOTH a check-in and a check-out — so an absence, a leave day, today's running shift and
+// any future date are structurally impossible here, not filtered out afterwards.
+function meterCell(u, uid, nm) {
+  const n = Number(u.meter_missed_days) || 0;
   if (n <= 0) return `<td class="px-4 py-3 text-sm" style="text-align:center;color:#D1D5DB;">–</td>`;
   return `<td class="px-4 py-3 text-sm" style="text-align:center;">
-    <button type="button" onclick="event.stopPropagation(); showViolationDetail(${uid}, '${nm}', '${kind}')"
-      title="Click to see each day and what was breached"
-      style="display:inline-block;padding:2px 8px;border-radius:5px;font-size:12px;font-weight:700;border:none;cursor:pointer;background:${kind === 'in' ? '#CFFAFE' : '#FEF3C7'};color:${color};">${n}</button>
+    <button type="button" onclick="event.stopPropagation(); showDateBreakdown(${uid}, '${nm}', 'month_meter_missed')"
+      title="Days he worked a full day but a meter reading is missing — click to see which, and whether it was the start or the closing one"
+      style="display:inline-flex;align-items:center;gap:3px;padding:2px 7px;border-radius:5px;font-size:11.5px;font-weight:700;background:#FFEDD5;color:#C2410C;border:none;cursor:pointer;line-height:1.5;">⛽ ${n}</button>
   </td>`;
 }
 
@@ -2196,6 +2224,7 @@ const BREAKDOWN_META = {
   year_absent:  { title: 'Absent days',       sub: 'this year cycle', color: '#B91C1C', icon: '❌' },
   month_overtime: { title: 'Overtime days',   sub: 'this month',      color: '#047857', icon: '⏱' },
   month_office_checkout: { title: 'Office checkouts', sub: 'delivered but came back to the office', color: '#92400E', icon: '🏢' },
+  month_meter_missed: { title: 'Missed meter readings', sub: 'finished working days only — never absences, leave or future days', color: '#C2410C', icon: '⛽' },
 };
 async function showDateBreakdown(userId, name, type) {
   const meta = BREAKDOWN_META[type] || { title: 'Dates', sub: '', color: '#374151', icon: '📅' };
@@ -2231,9 +2260,11 @@ async function showDateBreakdown(userId, name, type) {
 function closeDateBreakdown() { document.getElementById('dateBreakdownModal').style.display = 'none'; }
 function exportMonthCsv() {
   if (!monthData.length) { alert('Nothing to export.'); return; }
-  let csv = 'Employee,Present,Absent (month),Leave (month),Late minutes,Office checkouts,Leave (year),Absent (year)\n';
+  // Flags are split back out here — a spreadsheet wants one number per column, unlike the table
+  // where they read better as one group of chips.
+  let csv = 'Employee,Present,Absent (month),Leave (month),Late minutes,Morning flags,Evening flags,Office checkouts,Missed meter,Leave (year),Absent (year)\n';
   [...monthData].sort((a, b) => String(a.fullname || '').localeCompare(String(b.fullname || ''))).forEach(u => {
-    csv += `"${(u.fullname || '').replace(/"/g, '""')}",${u.present_days || 0},${u.absent_days || 0},${u.leave_days || 0},${u.total_late_minutes || 0},${u.office_checkout_days || 0},${u.leaves_taken_year || 0},${u.absent_days_year || 0}\n`;
+    csv += `"${(u.fullname || '').replace(/"/g, '""')}",${u.present_days || 0},${u.absent_days || 0},${u.leave_days || 0},${u.total_late_minutes || 0},${u.checkin_violation_days || 0},${u.checkout_violation_days || 0},${u.office_checkout_days || 0},${u.meter_missed_days || 0},${u.leaves_taken_year || 0},${u.absent_days_year || 0}\n`;
   });
   const blob = new Blob([csv], { type: 'text/csv' });
   const a = document.createElement('a'); a.href = URL.createObjectURL(blob);
@@ -2557,7 +2588,10 @@ function renderGraceBreachBanner(data) {
     // match last night within the tolerance. Same banner, same "manager sees it" purpose.
     const wj = r.work_journey;
     if (wj && checkedIn && wj.state === 'no_home_start') {
-      chips.push('<span style="font-size:12px;font-weight:700;color:#92400E;background:#FEF3C7;border:1px solid #FDE68A;border-radius:6px;padding:1px 7px;">🏠 no home start' + (wj.recorded_at ? ' (typed at office ' + wj.recorded_at + ')' : '') + '</span>');
+      // Say WHERE only when it was measured (wj.place); otherwise state the fact the column
+      // actually carries — not recorded at home — instead of asserting "office".
+      const npWhere = wj.place ? wj.place.label : 'not recorded at home';
+      chips.push('<span style="font-size:12px;font-weight:700;color:#92400E;background:#FEF3C7;border:1px solid #FDE68A;border-radius:6px;padding:1px 7px;">🏠 no home start' + (wj.recorded_at ? ' (' + npWhere + ' ' + wj.recorded_at + ')' : '') + '</span>');
     }
     if (wj && wj.continuity && wj.continuity.breach) {
       chips.push('<span style="font-size:12px;font-weight:700;color:#B91C1C;background:#FEE2E2;border:1px solid #FCA5A5;border-radius:6px;padding:1px 7px;">🏠 meter gap ' + (wj.continuity.gap > 0 ? '+' : '') + wj.continuity.gap + ' km</span>' +
@@ -2737,7 +2771,14 @@ function startTimelineLine(r) {
       `<span style="color:#6B7280;">riding — ${dueMeta()}</span>${late}${contChip}`);
   }
   if (wj.state === 'no_home_start') {
-    const how = wj.recorded_at ? `typed at office ${wj.recorded_at}` : 'no start meter';
+    // WHERE, as a measurement. This used to read "typed at office", which the system never
+    // actually verified — it printed the same words when the phone sent no fix at all, and a
+    // rider standing in his own house got told he was at the office (Waseem, Jul-25).
+    // wj.place is null on rows recorded before the hardening shipped: then we say only what
+    // meter_start_source really means — not recorded at home — and claim nothing about where.
+    const how = wj.place
+      ? `${wj.place.label}${wj.recorded_at ? ' ' + wj.recorded_at : ''}`
+      : (wj.recorded_at ? `not recorded at home · ${wj.recorded_at}` : 'no start meter');
     return wrap(`<span style="color:#B45309;font-weight:700;">no home start</span>${sep}<span style="color:#6B7280;">${how}</span>${contChip}`);
   }
   // Home start recorded (checked in on time / late, OR not yet checked in with no timer) —
@@ -2929,10 +2970,10 @@ function meterGpsTicks(record, nmEsc) {
   // 📡 GPS
   const gfn = `showGpsAudit(${record.user_id}, '${nmEsc}', '${record.attendance_date}')`;
   out.push(dc.gps_ok === true
-    ? btn(gfn, 'GPS on while riding (' + dc.gps_worst + '%). Click for phases.', '#E9F7EE', '#15803D', '#BFE8CC', '📡 ✓')
+    ? btn(gfn, 'GPS on while on duty (' + dc.gps_worst + '%). Commute is not judged. Click for phases.', '#E9F7EE', '#15803D', '#BFE8CC', '📡 ✓')
     : dc.gps_ok === false
-    ? btn(gfn, dc.gps_note || 'GPS gaps while moving', '#FDF3E3', '#B45309', '#F3DFB9', '📡 ⚠')
-    : btn(gfn, 'Not enough GPS to judge', '#F3F4F6', '#9CA3AF', '#E5E7EB', '📡 –'));
+    ? btn(gfn, dc.gps_note || 'GPS gaps while on duty', '#FDF3E3', '#B45309', '#F3DFB9', '📡 ⚠')
+    : btn(gfn, 'Not enough on-duty GPS to judge', '#F3F4F6', '#9CA3AF', '#E5E7EB', '📡 –'));
   return out.join('');
 }
 
@@ -3966,7 +4007,28 @@ async function showEmployeeDetails(userId, fullname, fromDate, startDate, endDat
     // Update stats with backend-calculated values
     document.getElementById('detailsStatPresent').textContent = emp.present_days || 0;
     document.getElementById('detailsStatLate').textContent = emp.late_days || 0;
-    document.getElementById('detailsStatOT').textContent = emp.overtime_days || 0;
+    // Overtime is shown the way it is EARNED and PAID OUT: hours beyond the target, and the
+    // whole bonus leave days those hours have already bought. A bare day-count told a manager
+    // nothing about what the rider gets — and disagreed with the Month tab.
+    (function () {
+      const otMin = Number(emp.overtime_minutes) || 0;
+      const bonus = Number(emp.overtime_bonus_leaves) || 0;
+      const el = document.getElementById('detailsStatOT');
+      el.textContent = otMin > 0 ? fmtMinsShort(otMin) : '0';
+      const sub = document.getElementById('detailsStatOTBonus');
+      if (sub) {
+        sub.textContent = bonus > 0 ? `= ${bonus} bonus day${bonus === 1 ? '' : 's'}` : '';
+        sub.style.display = bonus > 0 ? 'block' : 'none';
+      }
+      const tile = document.getElementById('empTileOvertime');
+      if (tile) {
+        const per = Number(emp.overtime_minutes_per_bonus) || 540;
+        tile.title = otMin > 0
+          ? `${fmtMinsShort(otMin)} worked beyond the daily target over ${emp.overtime_days || 0} day(s). `
+            + `${fmtMinsShort(per)} of overtime = 1 bonus leave day, so this earns ${bonus}. Click to see the days.`
+          : 'No overtime beyond the daily target this period.';
+      }
+    })();
     document.getElementById('detailsStatOnLeave').textContent = emp.on_leave_days || 0;
     document.getElementById('detailsStatAbsent').textContent = emp.absent_days || 0;
     document.getElementById('detailsStatHours').textContent = (emp.total_hours || 0) + 'h';
@@ -4468,31 +4530,43 @@ async function showGpsAudit(userId, userName, date) {
     const phases = json.phases || [];
     const dist = json.distance || {};
     const att = json.attendance;
-    const worst = phases.length ? Math.min(...phases.map(p => p.coverage)) : 0;
-    const [vBg, vColor, vText] = worst >= 90
-      ? ['#E9F7EE', '#15803D', '✓ GPS stayed on while he was riding']
+    // Only ON-DUTY GPS is judged. Ride in / ride home is the rider's own commute — shown for
+    // context, greyed out, and it can NEVER colour the verdict. (Server sets p.judged; older
+    // payloads without the flag fall back to the phase name.)
+    const isJudged = p => (p.judged !== undefined ? !!p.judged : p.name === 'On duty');
+    const judged = phases.filter(isJudged);
+    const worst = judged.length ? Math.min(...judged.map(p => p.coverage)) : null;
+    const [vBg, vColor, vText] = worst === null
+      ? ['#F3F4F6', '#6B7280', '– Not enough on-duty GPS to judge']
+      : worst >= 90
+      ? ['#E9F7EE', '#15803D', '✓ GPS stayed on while he was on duty']
       : worst >= 70
-      ? ['#FDF3E3', '#B45309', '⚠ Some GPS gaps while moving — check below']
-      : ['#FDECEC', '#B91C1C', '❌ Poor GPS while moving'];
+      ? ['#FDF3E3', '#B45309', '⚠ Some GPS gaps while on duty — check below']
+      : ['#FDECEC', '#B91C1C', '❌ Poor GPS while on duty'];
 
     const phaseHtml = phases.map(p => {
+      const jd = isJudged(p);
       const gapMin = p.moving_gaps.reduce((a, g) => a + g.min, 0);
       const gapPct = p.minutes > 0 ? Math.min(100, Math.round((gapMin / p.minutes) * 100)) : 0;
       const okPct = Math.max(0, 100 - gapPct);
-      const col = p.coverage >= 90 ? '#15803D' : p.coverage >= 70 ? '#B45309' : '#B91C1C';
+      const col = !jd ? '#9CA3AF' : p.coverage >= 90 ? '#15803D' : p.coverage >= 70 ? '#B45309' : '#B91C1C';
       const movingTxt = p.moving_gaps.length ? p.moving_gaps.map(g => `${g.from}–${g.to} (${g.min}m)`).join(', ') : null;
-      const note = (movingTxt || p.stationary_min)
-        ? `<div style="font-size:11px;color:#9CA3AF;margin-top:4px;">${movingTxt ? `<span style="color:#B91C1C;">GPS off while moving: ${movingTxt}</span>` : ''}${movingTxt && p.stationary_min ? ' · ' : ''}${p.stationary_min ? `${p.stationary_min} min parked — ignored` : ''}</div>`
+      const bits = [];
+      if (movingTxt) bits.push(`<span style="color:${jd ? '#B91C1C' : '#9CA3AF'};">GPS off while moving: ${movingTxt}</span>`);
+      if (p.stationary_min) bits.push(`${p.stationary_min} min parked — ignored`);
+      if (!jd) bits.push('commute — not counted');
+      const note = bits.length
+        ? `<div style="font-size:11px;color:#9CA3AF;margin-top:4px;">${bits.join(' · ')}</div>`
         : '';
       return `
-        <div style="margin-bottom:14px;">
+        <div style="margin-bottom:14px;${jd ? '' : 'opacity:.65;'}">
           <div style="display:flex;justify-content:space-between;align-items:baseline;font-size:13px;margin-bottom:5px;">
-            <div><strong style="font-size:13.5px;">${p.name}</strong> <span style="color:#9CA3AF;font-size:11.5px;">${p.from} → ${p.to} · ${p.minutes}m</span></div>
+            <div><strong style="font-size:13.5px;${jd ? '' : 'color:#6B7280;font-weight:600;'}">${p.name}</strong> <span style="color:#9CA3AF;font-size:11.5px;">${p.from} → ${p.to} · ${p.minutes}m</span></div>
             <strong style="color:${col};font-variant-numeric:tabular-nums;">${p.coverage}%</strong>
           </div>
           <div style="height:8px;border-radius:4px;background:#EFF0ED;overflow:hidden;display:flex;">
-            <div style="height:100%;background:#22C55E;width:${okPct}%;"></div>
-            <div style="height:100%;background:#EF4444;width:${gapPct}%;"></div>
+            <div style="height:100%;background:${jd ? '#22C55E' : '#D1D5DB'};width:${okPct}%;"></div>
+            <div style="height:100%;background:${jd ? '#EF4444' : '#E5E7EB'};width:${gapPct}%;"></div>
           </div>${note}
         </div>`;
     }).join('');
@@ -4546,7 +4620,11 @@ async function showMeterDetail(userId, userName, date) {
       return;
     }
     const m = json.meter_story;
-    const srcLabel = (s) => s === 'home' ? '🏠 at home' : s === 'checkin' ? '⌂ typed at office' : s === 'manager' ? '✎ by manager' : '';
+    // 'checkin' means "not GPS-confirmed at home" — NOT "at the office". Prefer the measured
+    // place when the row has one; fall back to wording that claims only what we know.
+    const srcLabel = (s, place) => s === 'home' ? '🏠 at home'
+      : s === 'checkin' ? (place ? place.label : '⌂ not at home')
+      : s === 'manager' ? '✎ by manager' : '';
     const srcColor = (s) => s === 'home' ? '#15803D' : s === 'checkin' ? '#B45309' : '#6B7280';
     const cam = (p) => p ? `<button type="button" onclick="viewMeterPicturePath('${String(p).replace(/'/g, "\\'")}')" title="View photo" style="background:none;border:none;cursor:pointer;font-size:13px;">📷</button>` : '<span title="no photo" style="filter:grayscale(1);opacity:.4;font-size:13px;">📷</span>';
     const row = (label, valHtml) => `<div style="display:flex;gap:10px;padding:9px 0;border-bottom:1px solid #EFF0ED;align-items:baseline;"><span style="flex:none;width:104px;font-size:11px;font-weight:800;letter-spacing:.05em;color:#9CA3AF;text-transform:uppercase;">${label}</span><span style="font-size:13px;">${valHtml}</span></div>`;
@@ -4570,7 +4648,7 @@ async function showMeterDetail(userId, userName, date) {
       // Company bike — the full home story: last night, morning start (place/photo/overnight gap), end.
       content.innerHTML = `
         ${row('Last night', `${num(m.prev.value)} <span style="color:#6B7280;font-size:12px;">${m.prev.date ? '· ' + m.prev.date : ''}</span>`)}
-        ${row('This morning', `${num(m.start.value)} <span style="color:#6B7280;font-size:12px;">${m.start.time ? '· ' + m.start.time : ''} ${m.start.source ? `· <span style="color:${srcColor(m.start.source)};font-weight:600;">${srcLabel(m.start.source)}</span>` : ''}</span> ${cam(m.start.photo)} ${gapChip}`)}
+        ${row('This morning', `${num(m.start.value)} <span style="color:#6B7280;font-size:12px;">${m.start.time ? '· ' + m.start.time : ''} ${m.start.source ? `· <span style="color:${srcColor(m.start.source)};font-weight:600;">${srcLabel(m.start.source, m.start.place)}</span>` : ''}${m.start.place && m.start.place.accuracy_m != null ? ` <span style="color:#9CA3AF;font-size:11px;">±${Math.round(m.start.place.accuracy_m)}m</span>` : ''}</span> ${cam(m.start.photo)} ${gapChip}`)}
         ${row('Day end', `${num(m.end.value)} <span style="color:#6B7280;font-size:12px;">${m.end.time ? '· ' + m.end.time : ''} ${m.end.source === 'home' ? '· <span style="color:#15803D;font-weight:600;">🏠 at home</span>' : ''}</span> ${cam(m.end.photo)}`)}
         ${dayRow}
       `;

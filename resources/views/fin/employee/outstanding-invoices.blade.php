@@ -329,6 +329,16 @@
                         <div class="flex items-center gap-3">
                             <span class="text-sm font-bold text-gray-800">{{ $riderData['rider_name'] }}</span>
                             <span class="text-xs bg-orange-100 text-orange-700 px-2 py-0.5 rounded-full font-medium">{{ $riderData['count'] }} request(s)</span>
+                            {{-- Month view: the rider's full fuel month (meter km, every claim,
+                                 duplicate flags) so the approver can judge THIS request in
+                                 context instead of in isolation. stopPropagation keeps the
+                                 row's expand/collapse from also firing. --}}
+                            @if(!empty($riderData['rider_user_id']))
+                            <button onclick="event.stopPropagation(); fmOpen({{ $riderData['rider_user_id'] }}, '{{ addslashes($riderData['rider_name']) }}')"
+                                    style="background:#fff; border:1px solid #fdba74; color:#c2410c; border-radius:999px; padding:2px 10px; font-size:11px; font-weight:600; cursor:pointer;">
+                                📊 Month view
+                            </button>
+                            @endif
                         </div>
                         <div class="flex items-center gap-2">
                             <span class="text-sm font-bold text-orange-700">Rs. {{ number_format($riderData['total_amount'], 2) }}</span>
@@ -450,6 +460,12 @@
                         <div class="flex items-center gap-3">
                             <span class="text-sm font-bold text-gray-800">{{ $riderData['rider_name'] }}</span>
                             <span class="text-xs bg-teal-100 text-teal-700 px-2 py-0.5 rounded-full font-medium">{{ $riderData['count'] }} request(s)</span>
+                            @if(!empty($riderData['rider_user_id']))
+                            <button onclick="event.stopPropagation(); fmOpen({{ $riderData['rider_user_id'] }}, '{{ addslashes($riderData['rider_name']) }}')"
+                                    style="background:#fff; border:1px solid #5eead4; color:#0f766e; border-radius:999px; padding:2px 10px; font-size:11px; font-weight:600; cursor:pointer;">
+                                📊 Month view
+                            </button>
+                            @endif
                         </div>
                         <div class="flex items-center gap-2">
                             <span class="text-sm font-bold text-teal-700">Rs. {{ number_format($riderData['total_amount'], 2) }}</span>
@@ -1462,5 +1478,281 @@ function rejectPetrolRequest(requestId, level) {
     animation: fadeIn 0.3s ease-in-out;
 }
 </style>
+
+{{-- =====================================================================
+     ⛽ Rider fuel MONTH VIEW popup (Jul-2026)
+
+     Lets the approver see the rider's whole month — meter km per day, every
+     approved/pending claim, duplicate flags, service state — before pressing
+     Approve on the request in front of them. Same data as the riders-map ⛽
+     Fleet tab (same endpoint, fresh=1 so a claim filed seconds ago shows).
+
+     Shell is INLINE-STYLED on purpose: the purged utility classes (inset-0,
+     max-h-*, flex) render class-based modals top-left and unscrollable on
+     this stack — see the Metronic legacy-class note.
+===================================================================== --}}
+<div id="fmModal" onclick="if (event.target === this) fmClose()"
+     style="display:none; position:fixed; top:0; left:0; right:0; bottom:0; z-index:4000;
+            background:rgba(0,0,0,.55); align-items:center; justify-content:center;">
+    <div style="background:#fff; border-radius:10px; width:min(96vw, 880px); max-height:88vh;
+                display:flex; flex-direction:column; overflow:hidden; box-shadow:0 12px 44px rgba(0,0,0,.35);">
+        <div style="display:flex; align-items:center; gap:10px; padding:12px 16px; border-bottom:1px solid #e5e7eb; background:#f9fafb;">
+            <span style="font-size:16px;">⛽</span>
+            <b id="fmTitle" style="font-size:14px; color:#111827;">Fuel month</b>
+            <span id="fmSub" style="font-size:12px; color:#6b7280;"></span>
+            <button onclick="fmClose()" title="Close"
+                    style="margin-left:auto; border:none; background:none; font-size:22px; color:#9ca3af; cursor:pointer; line-height:1;">&times;</button>
+        </div>
+        <div id="fmBody" style="overflow-y:auto; padding:6px 0;"></div>
+    </div>
+</div>
+
+<div id="fmLightbox" onclick="this.style.display='none'"
+     style="display:none; position:fixed; top:0; left:0; right:0; bottom:0; z-index:4100;
+            background:rgba(0,0,0,.78); align-items:center; justify-content:center; cursor:zoom-out;">
+    <img id="fmLightboxImg" src="" alt="Receipt"
+         style="max-width:92vw; max-height:88vh; border-radius:8px; background:#fff;">
+</div>
+
+<script>
+let fmApproval = null;   // what this user may approve + payment sources
+
+function fmOpen(riderId, riderName) {
+    const modal = document.getElementById('fmModal');
+    window.fmRiderId = riderId; window.fmRiderName = riderName;
+    document.getElementById('fmTitle').textContent = riderName + ' — fuel this month';
+    document.getElementById('fmSub').textContent = '';
+    document.getElementById('fmBody').innerHTML =
+        '<div style="padding:26px; text-align:center; color:#9ca3af; font-size:13px;">Loading…</div>';
+    modal.style.display = 'flex';
+
+    const month = new Date().toISOString().substring(0, 7);
+    fetch('/orders/riders-map/fleet/rider?month=' + month + '&rider_id=' + riderId + '&fresh=1')
+        .then(r => r.status === 403 ? Promise.reject(new Error('403')) : r.json())
+        .then(res => {
+            if (!res.success || !res.rider) throw new Error(res.message || 'Failed');
+            fmApproval = res.approval || null;
+            fmRender(res.rider);
+        })
+        .catch(err => {
+            document.getElementById('fmBody').innerHTML =
+                '<div style="padding:26px; text-align:center; color:#b91c1c; font-size:13px;">' +
+                (err.message === '403' ? 'You do not have permission to see fleet costs.'
+                                       : 'Could not load this rider\'s month.') + '</div>';
+        });
+}
+
+function fmClose() { document.getElementById('fmModal').style.display = 'none'; }
+
+/**
+ * Approve / reject from inside the month view. Uses the SAME endpoint, level and
+ * payload as the panel behind this popup, so money is booked identically. The
+ * panel row is greyed out too, so the approver never acts on it twice.
+ */
+function fmAct(id, level, action) {
+    if (action === 'approve') {
+        if (!confirm('Approve this claim?')) return;
+    }
+    let comments = 'Approved from month view';
+    if (action === 'reject') {
+        const reason = window.prompt('Why is this being rejected? (the rider sees this)');
+        if (reason === null) return;
+        if (!String(reason).trim()) { alert('Please give a short reason.'); return; }
+        comments = reason.trim();
+    }
+
+    const payload = {level: level, comments: comments};
+    if (action === 'approve') {
+        const sel = document.getElementById('fmSrc' + id);
+        if (sel && sel.value) payload.payment_source_account_id = parseInt(sel.value, 10);
+    }
+
+    const box = document.getElementById('fmAct' + id);
+    if (box) box.innerHTML = '<span style="color:#6b7280; font-size:11px;">working…</span>';
+
+    fetch('/requests/' + id + '/' + action, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json', 'Accept': 'application/json',
+            'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').getAttribute('content')
+        },
+        body: JSON.stringify(payload)
+    })
+    .then(r => r.json())
+    .then(res => {
+        if (!res.success) throw new Error(res.message || 'Failed');
+        const row = document.getElementById('fmClaim' + id);
+        if (row) {
+            row.style.background = action === 'approve' ? '#f0fdf4' : '#fef2f2';
+            row.style.borderColor = action === 'approve' ? '#86efac' : '#fecaca';
+            row.innerHTML = '<b style="color:' + (action === 'approve' ? '#15803d' : '#b91c1c') + ';">' +
+                (action === 'approve' ? '✅ Approved' : '❌ Rejected') + '</b>';
+        }
+        // The same request is listed in the panel behind — mark it done there too
+        // so nobody tries to approve it a second time from the other surface.
+        const panelRow = document.getElementById('petrol-req-' + id) || document.getElementById('maint-req-' + id);
+        if (panelRow) {
+            panelRow.style.opacity = '0.55';
+            panelRow.innerHTML = '<div class="px-4 py-3 text-xs font-bold" style="color:' +
+                (action === 'approve' ? '#15803d' : '#b91c1c') + ';">' +
+                (action === 'approve' ? '✅ Approved' : '❌ Rejected') + ' from month view</div>';
+        }
+    })
+    .catch(err => {
+        alert(err.message || 'Could not complete that.');
+        if (window.fmRiderId) fmOpen(window.fmRiderId, window.fmRiderName || '');
+    });
+}
+document.addEventListener('keydown', e => { if (e.key === 'Escape') fmClose(); });
+
+function fmRender(r) {
+    const esc = s => String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+    const num = n => Number(n ?? 0).toLocaleString('en-PK', {maximumFractionDigits: 0});
+    const dt = d => { const x = new Date(String(d).substring(0,10) + 'T12:00:00');
+                      return isNaN(x) ? d : x.toLocaleDateString('en-GB', {weekday:'short', day:'numeric', month:'short'}); };
+    const flagText = {
+        double_tap: 'same amount filed minutes apart — likely a double tap',
+        flat_on_metered_day: 'cash claim on a day the meter already paid for',
+        second_same_day: 'second cash claim of the day'
+    };
+
+    document.getElementById('fmSub').textContent =
+        (r.bike === 'company' ? '🏢 company bike' : r.bike === 'own' ? '👤 own bike' : '❓ bike unclassified');
+
+    // month roll-up across what the popup shows (approved + pending)
+    let approvedRs = 0, pendingRs = 0, flags = 0;
+    (r.days || []).forEach(d => (d.claims || []).forEach(c => {
+        if (c.kind !== 'fuel') return;
+        if (c.status === 'approved') approvedRs += c.amount; else pendingRs += c.amount;
+        if (c.flag) flags++;
+    }));
+
+    let html = '<div style="display:flex; gap:14px; flex-wrap:wrap; padding:10px 16px; font-size:12.5px; color:#374151; border-bottom:1px solid #f1f5f9;">' +
+        '<span>Fuel approved: <b>Rs ' + num(approvedRs) + '</b></span>' +
+        '<span>Pending: <b>Rs ' + num(pendingRs) + '</b></span>' +
+        (flags ? '<span style="color:#b45309;">⚠ <b>' + flags + '</b> flagged claim' + (flags === 1 ? '' : 's') + '</span>' : '') +
+        (r.service && r.service.state === 'overdue' ? '<span style="color:#b91c1c;">🔴 service overdue ' + num(Math.abs(r.service.due_in_km)) + ' km</span>' : '') +
+        '</div>';
+
+    (r.days || []).forEach(d => {
+        let km;
+        if (d.work_km !== null && d.work_km !== undefined) {
+            km = d.meter_start + ' → ' + d.meter_end + ' · <b>' + d.work_km + ' km</b>' +
+                 (d.offduty_km ? ' · +' + d.offduty_km + ' km off-duty' + (d.offduty_since ? ' since ' + dt(d.offduty_since) : '') : '') +
+                 // Same stretch the Bikes screen shows. Deliberately NOT called
+                 // off-duty: it spans a day he worked with no meter, so part of it
+                 // is work and it cannot be split. Approvers see the same words here.
+                 (d.unattributed_km
+                    ? ' · <span style="color:#b45309;">+' + d.unattributed_km + ' km unattributed'
+                      + (d.offduty_since ? ' since ' + dt(d.offduty_since) : '') + '</span>'
+                    : '');
+        } else if (d.meter_start !== null || d.meter_end !== null) {
+            km = '<span style="color:#9ca3af;">meter reading unusable</span>';
+        } else {
+            km = '<span style="color:#9ca3af;">no meter reading</span>';
+        }
+
+        let claims = '';
+        (d.claims || []).forEach(c => {
+            const photo = c.photo
+                ? '<img src="' + c.photo + '" alt="" onclick="document.getElementById(\'fmLightboxImg\').src=this.src; document.getElementById(\'fmLightbox\').style.display=\'flex\';"' +
+                  ' style="width:34px; height:34px; object-fit:cover; border-radius:5px; border:1px solid #d1d5db; cursor:zoom-in; flex-shrink:0;">'
+                : '<div style="width:34px; height:34px; border-radius:5px; border:1px dashed #d1d5db; flex-shrink:0;"></div>';
+            const status = c.status === 'approved'
+                ? '<span style="background:#dcfce7; color:#15803d; border-radius:999px; padding:1px 8px; font-size:10.5px; font-weight:600;">✓ approved</span>'
+                : '<span style="background:#fef3c7; color:#b45309; border-radius:999px; padding:1px 8px; font-size:10.5px; font-weight:600;">⏳ pending</span>';
+            const flag = c.flag
+                ? ' <span title="' + esc(flagText[c.flag] || '') + '" style="background:#fef3c7; color:#b45309; border-radius:999px; padding:1px 8px; font-size:10.5px; font-weight:600;">⚠ ' + esc(flagText[c.flag] || c.flag) + '</span>'
+                : '';
+            // Approve / reject in place — this popup is opened FROM the approval
+            // queue, so the decision belongs here. Same endpoint/level/payload as
+            // the panel behind it.
+            let actions = '';
+            if (c.status === 'pending' && fmApproval && fmApproval.can_approve
+                && c.next_level && fmApproval.levels.indexOf(c.next_level) !== -1) {
+                const accs = (fmApproval.accounts || []).map(a =>
+                    '<option value="' + a.id + '">' + esc(a.account_name) + '</option>').join('');
+                actions = '<span style="margin-left:auto; display:flex; gap:6px; align-items:center; flex-wrap:wrap;" id="fmAct' + c.id + '">' +
+                    (accs ? '<select id="fmSrc' + c.id + '" style="border:1px solid #d1d5db; border-radius:6px; padding:3px 6px; font-size:11px; max-width:140px;">' + accs + '</select>' : '') +
+                    '<button onclick="fmAct(' + c.id + ',' + c.next_level + ',\'approve\')" style="background:#16a34a; color:#fff; border:none; border-radius:6px; padding:4px 10px; font-size:11px; font-weight:700; cursor:pointer;">✅ Approve</button>' +
+                    '<button onclick="fmAct(' + c.id + ',' + c.next_level + ',\'reject\')" style="background:#dc2626; color:#fff; border:none; border-radius:6px; padding:4px 10px; font-size:11px; font-weight:700; cursor:pointer;">❌ Reject</button>' +
+                    '</span>';
+            }
+
+            const svcLabel = {oil_change: 'regular service', general: 'general service', repair: 'repair', other: 'other'}[c.service_type] || '';
+            // "▲ N km since last fill" — the number the approver needs: how far
+            // the bike went on the previous tank before this request was made.
+            const since = c.km_since_fill
+                ? ' <span style="background:#e0e7ff; color:#3730a3; border-radius:999px; padding:1px 8px; font-size:10.5px; font-weight:600;">▲ ' + num(c.km_since_fill) + ' km since last fill</span>'
+                : (c.km_since_fill_odd
+                    ? ' <span style="background:#fef3c7; color:#b45309; border-radius:999px; padding:1px 8px; font-size:10.5px; font-weight:600;" title="This reading and the previous fill\'s don\'t add up — typo or a different bike">⚠ meter vs last fill doesn\'t add up</span>'
+                    : '');
+
+            // Service context, so a maintenance bill is never approved blind.
+            // A pending regular service hasn't reset the bike's clock yet, so the
+            // overdue figure from the rider card belongs right here, next to the
+            // Approve button. Once approved, the frozen snapshot takes over.
+            const warnPill = (t, title) =>
+                ' <span title="' + esc(title || '') + '" style="background:#fee2e2; color:#b91c1c; border-radius:999px; padding:1px 8px; font-size:10.5px; font-weight:700;">' + t + '</span>';
+            const dimPill = (t) =>
+                ' <span style="background:#e0e7ff; color:#3730a3; border-radius:999px; padding:1px 8px; font-size:10.5px; font-weight:600;">' + t + '</span>';
+
+            let svcCtx = '';
+            if (c.overdue_now_km) {
+                svcCtx += warnPill('🔴 bike is ' + num(c.overdue_now_km) + ' km overdue',
+                    'The bike has run past its service schedule and this request is not approved yet');
+            }
+            if (c.service_early_by) {
+                svcCtx += warnPill('⏱ serviced ' + num(c.service_early_by) + ' km early',
+                    num(c.km_since_service) + ' km since the last service; schedule is ' + num(c.service_interval) + ' km');
+            } else if (c.service_late_by) {
+                svcCtx += warnPill('⏱ serviced ' + num(c.service_late_by) + ' km overdue',
+                    num(c.km_since_service) + ' km since the last service; schedule is ' + num(c.service_interval) + ' km');
+            }
+            if (c.service_due_km_at_approval !== null && c.service_due_km_at_approval !== undefined) {
+                const dk = c.service_due_km_at_approval;
+                svcCtx += dk < 0
+                    ? warnPill('🔴 done ' + num(-dk) + ' km overdue', 'Recorded when this was approved')
+                    : (dk > 25 ? dimPill('⏱ done ' + num(dk) + ' km before due') : dimPill('⏱ done on schedule'));
+            }
+
+            // Who typed what, and who signed it off from where.
+            let trail = '';
+            (c.approval_notes || []).forEach(n => {
+                trail += '<div style="width:100%; font-size:11px; color:#3730a3;">💬 ' + esc(n.text) +
+                         ' <span style="color:#9ca3af;">— ' + esc(n.by || 'approver') + '</span></div>';
+            });
+            (c.approval_actions || []).forEach(a => {
+                trail += '<div style="width:100%; font-size:10.5px; color:#4b5563;">' +
+                         (a.status === 'rejected' ? '❌ Rejected' : '✅ Approved') +
+                         (a.level ? ' (L' + a.level + ')' : '') +
+                         ' by <b style="color:#111827;">' + esc(a.by || 'unknown') + '</b>' +
+                         (a.source ? ' from ' + esc(a.source) : '') + '</div>';
+            });
+
+            claims += '<div id="fmClaim' + c.id + '" style="display:flex; align-items:center; gap:9px; margin-top:5px; padding:6px 9px; ' +
+                'background:' + (c.flag ? '#fffbeb' : '#f9fafb') + '; border:1px solid ' + (c.flag ? '#fcd34d' : '#e5e7eb') + '; border-radius:7px; font-size:12px; flex-wrap:wrap;">' +
+                photo + '<b>Rs ' + num(c.amount) + '</b> ' +
+                (c.kind === 'fuel' ? '⛽' : '🔧' + (svcLabel ? ' <span style="color:#6b7280;">' + svcLabel + '</span>' : '')) + ' ' +
+                (c.source === 'meter' ? '<span style="color:#6b7280;">' + c.meter_distance + ' km × ' + c.petrol_rate + '</span>' : '<span style="color:#6b7280;">cash claim</span>') +
+                (c.meter_at_fill ? ' <span style="color:#6b7280;">· meter ' + num(c.meter_at_fill) + '</span>' : '') +
+                (c.litres ? ' <span style="color:#6b7280;">· ' + c.litres + ' L</span>' : '') +
+                since + svcCtx +
+                ' ' + status + flag + actions + trail + '</div>';
+        });
+
+        html += '<div style="padding:8px 16px; border-bottom:1px solid #f1f5f9;">' +
+            '<div style="display:flex; gap:10px; font-size:12.5px;">' +
+            '<span style="font-weight:600; color:#111827; min-width:92px;">' + dt(d.date) + '</span>' +
+            '<span style="color:#6b7280;">' + km + '</span></div>' + claims + '</div>';
+    });
+
+    if (!(r.days || []).length) {
+        html += '<div style="padding:26px; text-align:center; color:#9ca3af; font-size:13px;">Nothing recorded this month.</div>';
+    }
+
+    document.getElementById('fmBody').innerHTML = html;
+}
+</script>
 
 @endsection

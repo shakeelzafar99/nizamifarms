@@ -1273,6 +1273,11 @@ class RiderController extends Controller
                     'c.longitude',
                     'c.geocoded_latitude',
                     'c.geocoded_longitude',
+                    // How good the machine-geocoded pin is, so a rooftop match can
+                    // be timed normally while an area-level one is labelled a
+                    // guess. Requires add_location_confidence_jul2026.sql — the
+                    // SQL must be run BEFORE this file is uploaded.
+                    'c.geocode_precision',
                     \DB::raw('CONCAT(COALESCE(c.first_name, ""), " ", COALESCE(c.last_name, "")) as customer_name'),
                 ]);
             
@@ -1315,53 +1320,117 @@ class RiderController extends Controller
                 ], 400);
             }
             
-            // Build waypoints: [rider_location, order1, order2, ...]
-            $waypoints = [];
-            $ordersWithLocation = [];
-            
+            // ⭐ Resolve every stop's location AND how much it can be trusted, in
+            //    sequence. One brain does this (CustomerLocationResolver) so the
+            //    times, the labels the team reads, and anything added later can
+            //    never disagree about where a customer is.
+            //
+            //    EVERY stop in scope stays in the plan. A stop with no usable pin
+            //    used to be dropped here — it got no time, so an un-timed stop sat
+            //    ahead of timed ones and the board reported "a new order was placed
+            //    ahead of stops that already have times" about an order nobody had
+            //    added, while a Re-dispatch could never clear it (Jul-25: SH-21417,
+            //    4 stops sent, 3 timed). Worse, the stops BEHIND it were costed as
+            //    if it did not exist — that route came out 67 min for 3 stops
+            //    against 87 for the same 4, so three customers were promised times
+            //    ~20 min early. Now it keeps its position and is costed with a flat
+            //    estimated leg instead, which is honest and self-correcting: the
+            //    moment someone pins the customer, the next dispatch is exact.
+            $noPinLegMinutes = max(1, min(120, (int) $this->attnConfig('DISPATCH_NO_PIN_LEG_MINUTES', 15)));
+
+            $plan = [];               // every stop, in dispatch order
+            $waypoints = [];          // only the stops Google can actually route
+            $unverifiedOrders = [];   // routed, but not from a human pin (unchanged meaning)
+            $noLocationOrders = [];   // no usable pin — timed from the estimated leg
+            $locationNotes = [];      // per-stop explanation for the app
+
             // Start with rider's current location
             $waypoints[] = [
                 'lat' => (float)$riderLocation->latitude,
                 'lng' => (float)$riderLocation->longitude,
             ];
-            
-            $unverifiedOrders = [];
-            $noLocationOrders = [];
 
             foreach ($orders as $order) {
-                $lat = $order->latitude ?: $order->geocoded_latitude;
-                $lng = $order->longitude ?: $order->geocoded_longitude;
-                
-                if ($lat && $lng) {
+                $loc = \App\Services\Location\CustomerLocationResolver::resolve($order);
+                $plan[] = ['order' => $order, 'loc' => $loc];
+
+                if ($loc['routable']) {
                     $waypoints[] = [
-                        'lat' => (float)$lat,
-                        'lng' => (float)$lng,
+                        'lat' => (float) $loc['latitude'],
+                        'lng' => (float) $loc['longitude'],
                     ];
-                    $ordersWithLocation[] = $order;
-                    if (!$order->latitude || !$order->longitude) {
+                    // Same list, same meaning as before: has coordinates, but they
+                    // are not a verified pin. Old app builds still read this key.
+                    if ($loc['tier'] !== \App\Services\Location\CustomerLocationResolver::TIER_VERIFIED) {
                         $unverifiedOrders[] = $order->order_number;
                     }
                 } else {
                     $noLocationOrders[] = $order->order_number;
                 }
-            }
-            
-            if (count($ordersWithLocation) === 0) {
-                \Log::warning('Dispatch failed: no orders have GPS coordinates', ['rider_id' => $riderId, 'orders' => $orders->count()]);
-                return response()->json([
-                    'success' => false,
-                    'message' => 'No orders have GPS coordinates'
-                ], 400);
+
+                if ($loc['tier'] !== \App\Services\Location\CustomerLocationResolver::TIER_VERIFIED) {
+                    $locationNotes[] = [
+                        'order_id'     => (int) $order->id,
+                        'order_number' => $order->order_number,
+                        'customer_name'=> trim((string) $order->customer_name),
+                        'tier'         => $loc['tier'],
+                        'label'        => $loc['label'],
+                        'short'        => $loc['short'],
+                        'approximate'  => $loc['approximate'],
+                        'routable'     => $loc['routable'],
+                        // English sentence AND a stable key. The app renders Roman Urdu
+                        // from the key and falls back to `note` for anything it doesn't
+                        // recognise, so a missing translation can never blank a warning.
+                        'note'         => \App\Services\Location\CustomerLocationResolver::dispatchNote($loc['tier'], $noPinLegMinutes),
+                        'key'          => \App\Services\Location\CustomerLocationResolver::noteKey($loc['tier']),
+                        'params'       => ['order' => $order->order_number, 'mins' => $noPinLegMinutes],
+                    ];
+                }
             }
 
-            $etaResult = $this->getMultiStopEtaFromGoogle($waypoints);
-
-            if (!$etaResult) {
-                \Log::warning('Dispatch failed: multi-stop ETA returned null (Google Maps API error or monthly cap)', ['rider_id' => $riderId, 'stops' => count($ordersWithLocation)]);
+            // ⭐ Optional hard gate, OFF by default (DISPATCH_REQUIRE_PIN=0).
+            //    Enforced server-side so flipping the config works immediately, on
+            //    old app builds too. Default is to let the dispatch through:
+            //    refusing it does not stop the delivery, only the timing of it —
+            //    the rider leaves regardless, every stop loses its ETA, the
+            //    customer app gets nothing, and he is then flagged for "leaving
+            //    without dispatching". One rough time beats none at all.
+            if (!empty($noLocationOrders)
+                && (string) $this->attnConfig('DISPATCH_REQUIRE_PIN', '0') === '1') {
+                \Log::warning('Dispatch refused: stops without a location pin (DISPATCH_REQUIRE_PIN=1)', [
+                    'rider_id' => $riderId, 'orders' => $noLocationOrders,
+                ]);
                 return response()->json([
                     'success' => false,
-                    'message' => 'Failed to calculate ETA (API error or limit reached)'
-                ], 500);
+                    'message' => count($noLocationOrders) === 1
+                        ? "{$noLocationOrders[0]} has no location pin. Please add the pin, then dispatch."
+                        : 'These orders have no location pin: ' . implode(', ', $noLocationOrders)
+                          . '. Please add the pins, then dispatch.',
+                    'no_location_orders' => $noLocationOrders,
+                    'pin_required' => true,
+                ], 422);
+            }
+
+            // Google is only called when there is at least one routable stop. A van
+            // where NOTHING can be routed still gets timed (every leg estimated)
+            // rather than being refused — same principle as above.
+            $etaResult = ['legs' => []];
+            if (count($waypoints) > 1) {
+                $etaResult = $this->getMultiStopEtaFromGoogle($waypoints);
+
+                if (!$etaResult) {
+                    \Log::warning('Dispatch failed: multi-stop ETA returned null (Google Maps API error or monthly cap)', ['rider_id' => $riderId, 'stops' => count($waypoints) - 1]);
+                    return response()->json([
+                        'success' => false,
+                        'message' => 'Failed to calculate ETA (API error or limit reached)'
+                    ], 500);
+                }
+            } else {
+                \Log::warning('Dispatch: no stop has a usable location — timing every leg from the estimate', [
+                    'rider_id' => $riderId,
+                    'orders' => $noLocationOrders,
+                    'estimated_leg_minutes' => $noPinLegMinutes,
+                ]);
             }
             
             // ⭐ Accountability: how far into his day was he when he pressed?
@@ -1378,9 +1447,9 @@ class RiderController extends Controller
             // who finished wave 1 and dispatches wave 2 has delivered_before > 0
             // but is re-timing nothing — and it measures how far the times moved.
             $previousEtas = [];
-            foreach ($ordersWithLocation as $o) {
-                if (!empty($o->estimated_delivery_at)) {
-                    $previousEtas[(int) $o->id] = $o->estimated_delivery_at;
+            foreach ($plan as $entry) {
+                if (!empty($entry['order']->estimated_delivery_at)) {
+                    $previousEtas[(int) $entry['order']->id] = $entry['order']->estimated_delivery_at;
                 }
             }
             $isRedispatch = !empty($previousEtas);
@@ -1412,10 +1481,39 @@ class RiderController extends Controller
             // unaffected — it's still added after each stop.
             $cumulativeMinutes = $startOffsetMinutes;
             $updatedOrders = [];
-            
-            foreach ($ordersWithLocation as $index => $order) {
-                // Get travel time to this order from previous point
-                $legDuration = $etaResult['legs'][$index] ?? 0; // Duration in minutes
+            // Google returned one leg per ROUTABLE stop, but we walk every stop in
+            // the plan — so the leg pointer advances only when a stop was actually
+            // sent to Google. Without this the legs would shift onto the wrong
+            // stops as soon as one had no pin.
+            $legIndex = 0;
+            // ⭐ Once ANY leg has been estimated, every LATER stop's cumulative time
+            //    contains that guess — and Google's leg that skips over the pinless
+            //    stop is missing the detour too. So the "≈" honesty flag propagates
+            //    downstream instead of marking only the pinless stop itself: the
+            //    times behind it are exactly as approximate as its own.
+            $estimatedLegSeen = false;
+
+            foreach ($plan as $index => $entry) {
+                $order = $entry['order'];
+                $loc   = $entry['loc'];
+
+                if ($loc['routable']) {
+                    // Get travel time to this order from previous point
+                    $legDuration = $etaResult['legs'][$legIndex] ?? 0; // Duration in minutes
+                    $legIndex++;
+                } else {
+                    // No pin to route to. Charge a flat estimate so the stop still
+                    // occupies real time in the route and every stop behind it is
+                    // pushed back accordingly.
+                    //
+                    // Known approximation: when this stop sits BETWEEN two routable
+                    // ones, Google's leg between those two does not include the
+                    // detour, so the estimate stands in for it. It errs toward
+                    // allowing more time, which is the safe direction for a promise.
+                    $legDuration = $noPinLegMinutes;
+                    $estimatedLegSeen = true;
+                }
+
                 $cumulativeMinutes += $legDuration;
                 
                 // Calculate estimated arrival time
@@ -1459,6 +1557,14 @@ class RiderController extends Controller
                     'travel_minutes' => round($legDuration),
                     'estimated_at' => $estimatedAt->format('h:i A'),
                     'estimated_at_raw' => $estimatedAt->toIso8601String(),
+                    // ⭐ How trustworthy this particular time is, so the app can show
+                    //    "≈" instead of quoting a guess as a promise. TRUE for the
+                    //    stop's own approximate pin AND for every stop downstream of
+                    //    an estimated leg — its cumulative time carries the guess.
+                    'location_tier' => $loc['tier'],
+                    'location_label' => $loc['label'],
+                    'time_is_estimate' => $loc['approximate'] || $estimatedLegSeen,
+                    'leg_was_estimated' => !$loc['routable'],
                 ];
                 
                 // Add stop time for next order calculation
@@ -1501,6 +1607,10 @@ class RiderController extends Controller
                 }
             }
 
+            // orders_count now equals the number of stops SENT (it silently meant
+            // "stops we could locate" before — that gap between sequence_count and
+            // orders_count is what gave the Jul-25 incident away). estimated_legs
+            // makes the remaining uncertainty visible in the log itself.
             \Log::info('📊 Delivery ETAs calculated', [
                 'rider_id' => $riderId,
                 'orders_count' => count($updatedOrders),
@@ -1508,6 +1618,8 @@ class RiderController extends Controller
                 'start_offset_minutes' => $startOffsetMinutes,
                 'delivered_before' => $deliveredBefore,
                 'is_mid_run' => $origin['is_mid_run'],
+                'estimated_legs' => count($noLocationOrders),
+                'approx_stops' => count($locationNotes),
             ]);
             
             $response = [
@@ -1527,7 +1639,14 @@ class RiderController extends Controller
                 'start_offset_minutes' => $startOffsetMinutes,
                 'orders' => $updatedOrders,
                 'unverified_orders' => $unverifiedOrders,
+                // Kept for older app builds, but the meaning has softened: these
+                // stops were still dispatched and still carry a time — they were
+                // simply costed from the estimate rather than dropped.
                 'no_location_orders' => $noLocationOrders,
+                // ⭐ New clients: one entry per stop that is not a verified pin,
+                //    already written in plain English for display.
+                'location_notes' => $locationNotes,
+                'no_pin_leg_minutes' => $noPinLegMinutes,
             ];
 
             if ($usedShopLocation) {
@@ -2053,6 +2172,7 @@ class RiderController extends Controller
                 ->select([
                     'o.id', 'o.order_number', 'o.delivery_priority',
                     'c.latitude', 'c.longitude', 'c.geocoded_latitude', 'c.geocoded_longitude',
+                    'c.geocode_precision',
                     \DB::raw('CONCAT(COALESCE(c.first_name, ""), " ", COALESCE(c.last_name, "")) as customer_name'),
                     \DB::raw('CONCAT(COALESCE(c.address1, ""), ", ", COALESCE(c.city, "")) as address_short'),
                 ])
@@ -2067,23 +2187,45 @@ class RiderController extends Controller
             $ordersWithLocation = [];
             $unverifiedOrders = [];
             $noLocationOrders = [];
+            $locationNotes = [];
 
+            // Auto Route can only ORDER stops it can place on a map. Unlike dispatch
+            // — which must never refuse, because the rider leaves regardless — a stop
+            // with no location genuinely cannot be sequenced, so it is reported and
+            // the client blocks (this is a suggestion tool; nothing operational stops).
             foreach ($orders as $order) {
-                $lat = $order->latitude ?: $order->geocoded_latitude;
-                $lng = $order->longitude ?: $order->geocoded_longitude;
-                if ($lat && $lng) {
-                    $waypoints[] = ['lat' => (float)$lat, 'lng' => (float)$lng];
+                $loc = \App\Services\Location\CustomerLocationResolver::resolve($order);
+                if ($loc['routable']) {
+                    $waypoints[] = ['lat' => (float) $loc['latitude'], 'lng' => (float) $loc['longitude']];
                     $ordersWithLocation[] = $order;
-                    if (!$order->latitude || !$order->longitude) {
+                    if ($loc['tier'] !== \App\Services\Location\CustomerLocationResolver::TIER_VERIFIED) {
                         $unverifiedOrders[] = $order->order_number;
                     }
                 } else {
                     $noLocationOrders[] = $order->order_number;
                 }
+                if ($loc['tier'] !== \App\Services\Location\CustomerLocationResolver::TIER_VERIFIED) {
+                    $locationNotes[] = [
+                        'order_id'      => (int) $order->id,
+                        'order_number'  => $order->order_number,
+                        'customer_name' => trim((string) $order->customer_name),
+                        'tier'          => $loc['tier'],
+                        'label'         => $loc['label'],
+                        'short'         => $loc['short'],
+                        'approximate'   => $loc['approximate'],
+                        'routable'      => $loc['routable'],
+                        'key'           => \App\Services\Location\CustomerLocationResolver::chipKey($loc['tier']),
+                    ];
+                }
             }
 
             if (count($ordersWithLocation) === 0) {
-                return response()->json(['success' => false, 'message' => 'No orders have GPS coordinates'], 400);
+                return response()->json([
+                    'success' => false,
+                    'message' => 'None of these orders has a location pin, so a route cannot be worked out. Please add the pins first.',
+                    'no_location_orders' => $noLocationOrders,
+                    'location_notes' => $locationNotes,
+                ], 400);
             }
 
             $result = $this->getOptimizedRouteFromGoogle($waypoints);
@@ -2133,7 +2275,11 @@ class RiderController extends Controller
                 'total_distance_km' => $result['total_distance_km'] ?? null,
                 'orders_count' => count($optimizedSequence),
                 'unverified_orders' => $unverifiedOrders,
+                // Stops that could NOT be placed in the suggested order. The client
+                // blocks on these so the team pins them before routing, rather than
+                // silently receiving a sequence that is missing stops.
                 'no_location_orders' => $noLocationOrders,
+                'location_notes' => $locationNotes,
             ];
 
             if ($usedShopLocation) {
@@ -2308,8 +2454,144 @@ class RiderController extends Controller
 
 
     /**
+     * PREVIEW a pin from the written address — geocode it, save NOTHING.
+     *
+     * WHY A PREVIEW STEP EXISTS (Jul-28-2026)
+     * The old button geocoded the address and wrote the VERIFIED coordinates in
+     * one blind step. Those columns are the team's truth: the pin lock, the 150 m
+     * checkout rule, delivery-region assignment and the customer app all read
+     * them. Writing them from an unseen machine answer meant a sector-level guess
+     * could be promoted into truth with nobody ever looking at it.
+     *
+     * Now the human sees the candidate on a map first and confirms it (or drags
+     * it), so pressing the button is an actual verification rather than an act of
+     * faith. The confirm then travels the ordinary
+     * setCustomerVerifiedLocation() path with real coordinates.
+     *
+     * Two rules this endpoint keeps:
+     *   - It writes NOTHING to the customer. A failed lookup can no longer leave
+     *     the half-record it used to (URL saved, lat/lng NULL).
+     *   - It enforces the SAME pin lock as the save. Showing a rider a pin he is
+     *     not allowed to save would just be a confusing dead end.
+     */
+    public function previewLocationFromAddress(Request $request, $orderId)
+    {
+        try {
+            $validated = $request->validate([
+                'customer_id' => 'required|integer',
+                'address'     => 'required|string',
+                'source'      => 'nullable|string|in:shopify',
+            ]);
+
+            $customer = \App\Models\CRM\CustomerModel::find($validated['customer_id']);
+
+            if (!$customer) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Customer not found',
+                ], 404);
+            }
+
+            if ($this->riderPinBindApplies(Auth::user()) && $customer->isVerifiedPinLocked()) {
+                return response()->json([
+                    'success' => false,
+                    'message' => "This customer's location is locked. Ask the store to unlock it before changing the pin.",
+                    'pin_locked' => true,
+                ], 423);
+            }
+
+            $original = trim($validated['address']);
+            $cleaned  = \App\Services\GeocodingService::cleanAddressForGeocoding($original);
+
+            // The Shopify store screen passes ids from t_crm_shopify_order, which
+            // overlap t_crm_prod_order ids (golden rule: same number, unrelated
+            // orders). A staging id must never be recorded where a reader would
+            // join it against prod orders — so it goes to NULL and the trigger
+            // name carries the context instead.
+            $fromShopify = ($validated['source'] ?? null) === 'shopify';
+
+            $geo = \App\Services\GeocodingService::geocodeAddress($original, $customer->city, [
+                'customer_id' => $customer->id,
+                'order_id'    => (!$fromShopify && is_numeric($orderId)) ? (int) $orderId : null,
+                'trigger'     => $fromShopify ? 'store_preview_shopify' : 'store_preview',
+                'user_id'     => Auth::id(),
+            ]);
+
+            $precision = $geo['precision'] ?? null;
+
+            \Log::info('Geocode preview from address', [
+                'order_id'    => $orderId,
+                'customer_id' => $customer->id,
+                'original'    => $original,
+                'cleaned'     => $cleaned,
+                'was_cleaned' => $cleaned !== $original,
+                'found'       => (bool) $geo,
+                'precision'   => $precision,
+                'by'          => Auth::user()->fullname ?? null,
+            ]);
+
+            if (!$geo) {
+                return response()->json([
+                    'success'          => true,
+                    'found'            => false,
+                    'original_address' => $original,
+                    'cleaned_address'  => $cleaned,
+                    'was_cleaned'      => $cleaned !== $original,
+                    'message'          => "Google could not place this address precisely enough to trust. "
+                                        . 'Please drop the pin on the map, or ask the customer for their location.',
+                ]);
+            }
+
+            // Plain-English wording for the confirm screen. It describes what
+            // Google actually matched, so the person confirming knows whether they
+            // are accepting a rooftop or a best guess at the street.
+            $note = match ($precision) {
+                \App\Services\Location\CustomerLocationResolver::PRECISION_EXACT =>
+                    'Google matched the building. Check the pin looks right, then confirm.',
+                \App\Services\Location\CustomerLocationResolver::PRECISION_STREET =>
+                    'Google matched the street but not the exact house. Move the pin onto the right house if you know it.',
+                default =>
+                    'Google could only match the area. Move the pin onto the right spot before confirming.',
+            };
+
+            return response()->json([
+                'success'          => true,
+                'found'            => true,
+                'latitude'         => $geo['latitude'],
+                'longitude'        => $geo['longitude'],
+                'precision'        => $precision,
+                'matched_address'  => $geo['matched_address'] ?? null,
+                'original_address' => $original,
+                'cleaned_address'  => $cleaned,
+                'was_cleaned'      => $cleaned !== $original,
+                'message'          => $note,
+            ]);
+        } catch (\Illuminate\Validation\ValidationException $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Invalid data',
+                'errors'  => $e->errors(),
+            ], 422);
+        } catch (\Exception $e) {
+            \Log::error('Geocode preview failed', [
+                'order_id' => $orderId,
+                'error'    => $e->getMessage(),
+            ]);
+
+            return response()->json([
+                'success' => false,
+                'message' => 'Could not look up this address right now. Please drop the pin on the map.',
+            ], 500);
+        }
+    }
+
+    /**
      * Quick verify location from address (for Store Mode)
      * Geocodes the address and saves it as verified location
+     *
+     * LEGACY as of Jul-28-2026 — superseded by previewLocationFromAddress() plus
+     * an ordinary confirmed save. Kept working because phones on the old APK
+     * still call it until every store device is updated.
      */
     public function setVerifiedLocationFromAddress(Request $request, $orderId)
     {
@@ -2352,15 +2634,60 @@ class RiderController extends Controller
                 'verified_pin_unlocked_by' => null,
             ];
 
+            // NOTE: whether any of the above is actually written is decided below.
+            // Until Jul-28-2026 this update ran unconditionally, so a failed
+            // geocode still stamped verified_location_url + saved_by/saved_at with
+            // lat/lng left NULL. That half-record reads as "someone verified this
+            // customer" to three different consumers — the rider bundle
+            // (verified_location_url || lat&&lng), the customer app's
+            // buildPin() is_verified flag, and resolveCustomerDispatchCoords()
+            // which then reports url_unparseable instead of the honest
+            // no_pin_no_url. Taimur Nizami / customer 6469 was left in exactly
+            // that state this morning. Nothing is written now unless we have
+            // coordinates.
+
             // This method's whole point is "from the address" — so GEOCODE it and
             // store real coords. Previously it saved a search URL only, leaving
-            // lat/lng NULL (invisible to reports + the pin lock). Result is
-            // address-level (approximate); the response says so.
-            $geo = \App\Services\GeocodingService::geocodeAddress($validated['address'], $customer->city);
-            if ($geo) {
-                $updateData['latitude']  = $geo['latitude'];
-                $updateData['longitude'] = $geo['longitude'];
+            // lat/lng NULL (invisible to reports + the pin lock).
+            //
+            // Writing the VERIFIED columns from a geocode is deliberate here and is
+            // not a machine deciding on its own: a human pressed "set pin from
+            // address", which is them asserting that address is where to go. What
+            // WAS missing is how good the match is — on Jul-25 this button was
+            // pressed for SH-21417 and logged `geocoded: false` (the old engine
+            // could not find the building), so the stop stayed location-less and
+            // the manager had no way to know the press had achieved nothing.
+            $geo = \App\Services\GeocodingService::geocodeAddress($validated['address'], $customer->city, [
+                'customer_id' => $customer->id,
+                'order_id'    => is_numeric($orderId) ? (int) $orderId : null,
+                'trigger'     => 'store_button',
+                'user_id'     => Auth::id(),
+            ]);
+            $precision = $geo['precision'] ?? null;
+
+            if (!$geo) {
+                // Nothing usable — so write nothing at all and say so plainly.
+                // Leaving the customer untouched keeps "no pin" honest, which is
+                // what makes the missing-location warning trustworthy.
+                \Log::warning('Quick verify from address found no usable location — nothing saved', [
+                    'order_id'    => $orderId,
+                    'customer_id' => $validated['customer_id'],
+                    'address'     => $validated['address'],
+                    'saved_by'    => Auth::user()->fullname,
+                ]);
+
+                return response()->json([
+                    'success'        => false,
+                    'coords_source'  => 'none',
+                    'coords_missing' => true,
+                    'precision'      => null,
+                    'message'        => "Google could not place this address precisely enough to trust, "
+                                      . 'so nothing was saved. Please drop the pin on the map instead.',
+                ]);
             }
+
+            $updateData['latitude']  = $geo['latitude'];
+            $updateData['longitude'] = $geo['longitude'];
 
             // Update customer
             $customer->update($updateData);
@@ -2370,19 +2697,35 @@ class RiderController extends Controller
                 'customer_id' => $validated['customer_id'],
                 'address' => $validated['address'],
                 'url' => $googleMapsUrl,
-                'geocoded' => $geo ? true : false,
+                'geocoded' => true,
+                'precision' => $precision,
                 'saved_by' => Auth::user()->fullname,
             ]);
 
+            // Tell the truth about what was saved, in plain English, so the person
+            // who pressed it knows whether to stop or still chase a precise pin.
+            // (The "couldn't pinpoint it" case returned earlier without saving.)
+            if ($precision === \App\Services\Location\CustomerLocationResolver::PRECISION_EXACT) {
+                $message = 'Location saved from the address — matched to the building. '
+                         . 'Delivery times will now be calculated properly.';
+            } elseif ($precision === \App\Services\Location\CustomerLocationResolver::PRECISION_STREET) {
+                $message = 'Location saved from the address — matched to the street, '
+                         . 'but not the exact house. Good enough to route; drop the pin on arrival.';
+            } else {
+                $message = 'Location saved from the address, but only the area could be matched. '
+                         . 'Times will be approximate — please drop the pin on the map when you can.';
+            }
+
             return response()->json([
                 'success' => true,
-                'message' => $geo
-                    ? 'Verified location saved from the address (approximate). For precise delivery, drop the pin on the map.'
-                    : "Saved the address, but we couldn't pinpoint it. Please drop the pin on the map for precise coordinates.",
+                'message' => $message,
                 'verified_location_url' => $googleMapsUrl,
-                'coords_source'  => $geo ? 'geocoded' : 'none',
-                'approximate'    => (bool) $geo,
-                'coords_missing' => ! $geo,
+                'coords_source'  => 'geocoded',
+                // Unchanged key/meaning for existing clients: an address-derived pin
+                // is never as good as a dropped one. `precision` is the new detail.
+                'approximate'    => true,
+                'precision'      => $precision,
+                'coords_missing' => false,
             ]);
         } catch (\Illuminate\Validation\ValidationException $e) {
             return response()->json([
@@ -2614,19 +2957,68 @@ class RiderController extends Controller
 
             // Update the status history record with GPS coordinates if provided
             if ($result && $latitude && $longitude) {
+                $histUpdate = [
+                    'delivery_latitude' => $latitude,
+                    'delivery_longitude' => $longitude
+                ];
+                // ⭐ How good was this fix? This point is later measured TWICE — the
+                // "delivered N m from pin" flag, and the checkout rule's "within 150 m of your
+                // last delivery" — so a vague fix can penalise a rider at both ends without
+                // anyone knowing it was vague. Stored when the app sends it (new APK);
+                // Schema-guarded + NULL from older builds, so nothing changes until then.
+                $accuracy = $request->input('accuracy');
+                $fixAge   = $request->input('fix_age_s');
+                if (\Illuminate\Support\Facades\Schema::hasColumn('t_crm_order_status_history', 'delivery_accuracy_m')) {
+                    $histUpdate['delivery_accuracy_m'] = is_numeric($accuracy) ? (float) $accuracy : null;
+                    $histUpdate['delivery_fix_age_s']  = is_numeric($fixAge) ? (int) $fixAge : null;
+                }
                 \DB::table('t_crm_order_status_history')
                     ->where('order_id', $order->id)
                     ->where('status_code', 'delivered')
                     ->where('is_current', 1)
-                    ->update([
-                        'delivery_latitude' => $latitude,
-                        'delivery_longitude' => $longitude
-                    ]);
-                
+                    ->update($histUpdate);
+
                 \Log::info('GPS location stored', [
                     'order_id' => $order->id,
                     'latitude' => $latitude,
-                    'longitude' => $longitude
+                    'longitude' => $longitude,
+                    'accuracy_m' => is_numeric($accuracy) ? (float) $accuracy : null,
+                    'fix_age_s' => is_numeric($fixAge) ? (int) $fixAge : null,
+                ]);
+            }
+
+            // ⭐ This customer has no verified pin, and the rider is standing at her
+            //    door right now with a GPS fix — the one moment the exact location
+            //    is free to capture. Offer it back so the app can ask "save this as
+            //    her location?" instead of the address staying un-pinned for months
+            //    (SH-21417 was navigated to by address, dropped from a dispatch, and
+            //    only pinned by the rider on arrival — after the damage).
+            //
+            //    We hand back the DELIVERY coordinates, not "wherever the phone is
+            //    when you tap": by then he may have ridden off. Nothing is written
+            //    here — promoting a machine reading into the verified columns stays
+            //    a human decision, made through setCustomerVerifiedLocation.
+            $suggestPinSave = null;
+            try {
+                if ($result && $latitude && $longitude && $order->customer_id) {
+                    $cust = \DB::table('t_crm_prod_customer')
+                        ->where('id', $order->customer_id)
+                        ->select('id', 'first_name', 'last_name', 'latitude', 'longitude')
+                        ->first();
+                    if ($cust && !($cust->latitude && $cust->longitude)) {
+                        $suggestPinSave = [
+                            'customer_id'   => (int) $cust->id,
+                            'customer_name' => trim(($cust->first_name ?? '') . ' ' . ($cust->last_name ?? '')),
+                            'latitude'      => (float) $latitude,
+                            'longitude'     => (float) $longitude,
+                            'prompt'        => 'Save this spot as the delivery location? Next time the route and delivery time will be exact.',
+                        ];
+                    }
+                }
+            } catch (\Throwable $e) {
+                // Never let a suggestion break a delivery confirmation.
+                \Log::warning('suggest_pin_save check failed (non-fatal)', [
+                    'order_id' => $order->id, 'error' => $e->getMessage(),
                 ]);
             }
 
@@ -2646,6 +3038,8 @@ class RiderController extends Controller
                         'order_number' => $order->order_number,
                         'order_status' => $order->order_status,
                     ],
+                    // null unless this customer still has no verified pin (see above).
+                    'suggest_pin_save' => $suggestPinSave,
                 ]);
             } else {
                 return response()->json([
@@ -4005,6 +4399,27 @@ class RiderController extends Controller
                 ->whereDate('attendance_date', $today)
                 ->first();
 
+            // ⭐ Past-midnight shift (owner-approved Jul-28): at 00:05 "today" has no row, so the
+            //    app showed "Check In" to a rider still mid-shift — the wrong button at the worst
+            //    moment (tapping IN would orphan yesterday's open shift AND block the server's
+            //    midnight checkout fallback). Before 06:00, yesterday's OPEN shift IS his day:
+            //    serve that row, so the app shows checked-in state + the OUT button. Same bound
+            //    and same open-row condition as checkOut's fallback — the two must stay in step.
+            //    After he checks out (or past 06:00) this no-ops and the new day starts clean.
+            $crossMidnight = false;
+            if ((!$attendance || !$attendance->login_time) && now()->format('H:i:s') < '06:00:00') {
+                $openYesterday = \DB::table('t_ops_attendance')
+                    ->where('user_id', $user->id)
+                    ->whereDate('attendance_date', now()->subDay()->format('Y-m-d'))
+                    ->whereNotNull('login_time')
+                    ->whereNull('logout_time')
+                    ->first();
+                if ($openYesterday) {
+                    $attendance = $openYesterday;
+                    $crossMidnight = true;
+                }
+            }
+
             // Get user's assigned office location
             $assignedLocation = \DB::table('t_ops_user_location_assignment as ula')
                 ->join('t_ops_company_locations as loc', 'loc.id', '=', 'ula.location_id')
@@ -4134,6 +4549,10 @@ class RiderController extends Controller
                     // instead of the bare upload button (additive; old APKs ignore).
                     'picture_start' => !empty($attendance->picture_start) ? $this->getMeterPictureUrl($attendance->picture_start) : null,
                     'picture_end' => !empty($attendance->picture_end) ? $this->getMeterPictureUrl($attendance->picture_end) : null,
+                    // ⭐ TRUE when this is yesterday's still-open shift served past midnight
+                    //    (before 06:00). Additive — current APKs ignore it and simply render
+                    //    the checked-in state, which is exactly the point.
+                    'cross_midnight' => $crossMidnight,
                 ] : null,
                 'assigned_location' => $assignedLocation ? [
                     'name' => $assignedLocation->location_name,
@@ -4194,6 +4613,171 @@ class RiderController extends Controller
     }
 
     /** Read a t_fin_config value with a default (never throws). */
+    /**
+     * The most recent odometer reading we hold for this rider's bike — the
+     * highest of his attendance meters and any earlier fill reading.
+     *
+     * Used to sanity-check a new meter_at_fill. Deliberately tolerant: readings
+     * below 1000 are dropped-digit typos and must not become the baseline, or
+     * one bad entry would reject every honest reading after it.
+     * Returns null when we have nothing to compare against.
+     */
+    private function lastKnownOdometer(int $userId): ?int
+    {
+        try {
+            $att = DB::table('t_ops_attendance')
+                ->where('user_id', $userId)
+                ->where('attendance_date', '>=', \Carbon\Carbon::today()->subDays(45)->format('Y-m-d'))
+                ->selectRaw('MAX(GREATEST(COALESCE(meter_end,0), COALESCE(meter_home,0), COALESCE(meter_start,0))) AS m')
+                ->value('m');
+
+            $fill = DB::table('t_req_master')
+                ->where('requester_user_id', $userId)
+                ->whereNotNull('meter_at_fill')
+                ->where('created_at', '>=', \Carbon\Carbon::today()->subDays(45))
+                ->max('meter_at_fill');
+
+            $best = max((int) $att, (int) $fill);
+            return $best > 1000 ? $best : null;
+        } catch (\Throwable $e) {
+            return null;   // never block a request because the check itself failed
+        }
+    }
+
+    /**
+     * A company-bike rider's own month: shift km vs off-duty km.
+     *
+     * Uses the SAME plausibility bounds as the Fleet tab (readings under 1000 are
+     * dropped-digit typos; a day over 500 km or an overnight gap over 500 km is a
+     * meter change, not a ride) so the rider and management can never be looking
+     * at two different numbers.
+     */
+    private function monthBikeUsage(int $userId, string $startDate, string $endDate): array
+    {
+        $rows = DB::table('t_ops_attendance')
+            ->select('attendance_date', 'meter_start', 'meter_end')
+            ->where('user_id', $userId)
+            ->whereBetween('attendance_date', [$startDate, $endDate])
+            ->orderBy('attendance_date')
+            ->get();
+
+        $work = 0; $offDuty = 0; $days = 0; $prevEnd = null;
+        foreach ($rows as $r) {
+            $s = $r->meter_start !== null ? (int) $r->meter_start : null;
+            $e = $r->meter_end !== null ? (int) $r->meter_end : null;
+            $sane = $s !== null && $e !== null && $s > 1000 && $e >= $s && ($e - $s) <= 500;
+            if (!$sane) continue;
+
+            $days++;
+            $work += $e - $s;
+            if ($prevEnd !== null && $s >= $prevEnd && ($s - $prevEnd) <= 500) {
+                $offDuty += $s - $prevEnd;
+            }
+            $prevEnd = $e;
+        }
+
+        return [
+            'days'        => $days,
+            'work_km'     => $work,
+            'offduty_km'  => $offDuty,
+            'total_km'    => $work + $offDuty,
+            'offduty_pct' => ($work + $offDuty) > 0 ? (int) round($offDuty * 100 / ($work + $offDuty)) : 0,
+        ];
+    }
+
+    /**
+     * The odometer range a reading dated $date must sit inside.
+     *
+     *   floor — the highest reading recorded on any day BEFORE $date. An odometer
+     *           never runs backwards, so a reading below this is wrong.
+     *   ceil  — the lowest reading recorded on any day AFTER $date. A reading
+     *           above this would mean the bike un-drove those kilometres.
+     *
+     * Same-day readings are deliberately excluded from BOTH bounds: a service or
+     * fill at 11am sits below that evening's closing meter, and bracketing by the
+     * neighbouring days is what lets an honest backdated entry through while still
+     * catching a dropped or extra digit. Either bound may be null (nothing on that
+     * side yet), and any failure returns nulls — a broken check must never block a
+     * rider from filing.
+     */
+    /**
+     * SQL predicate for an attendance row whose meter readings can be trusted.
+     * Mirrors FleetFuelService's isSaneDay()/MIN_METER bounds — keep them in step.
+     */
+    private function saneMeterRowSql(): string
+    {
+        return 'meter_start > 1000
+                AND (meter_end IS NULL OR (meter_end >= meter_start AND meter_end - meter_start <= 500))
+                AND (meter_home IS NULL OR (meter_home >= meter_start AND meter_home - meter_start <= 700))';
+    }
+
+    private function odometerWindowFor(int $userId, string $date): array
+    {
+        try {
+            // ⚠ Only PLAUSIBLE rows. The data contains typo'd meters (one row has
+            // 26,261 → 56,403 in a single day). Taking a raw MAX lets one such row
+            // become the floor forever, and the rider can then never file a correct
+            // reading again. Same bounds the Bikes screen uses: opening above 1,000,
+            // a day's run 0–500 km, the ride home no more than 700.
+            $attBefore = DB::table('t_ops_attendance')
+                ->where('user_id', $userId)
+                ->where('attendance_date', '<', $date)
+                ->whereRaw($this->saneMeterRowSql())
+                ->selectRaw('MAX(GREATEST(COALESCE(meter_end,0), COALESCE(meter_home,0), COALESCE(meter_start,0))) AS m')
+                ->value('m');
+
+            $fillBefore = DB::table('t_req_master')
+                ->where('requester_user_id', $userId)
+                ->whereNotNull('meter_at_fill')
+                ->whereNotIn('status', ['cancelled', 'rejected'])
+                ->whereRaw('COALESCE(expense_date, DATE(created_at)) < ?', [$date])
+                ->max('meter_at_fill');
+
+            $floor = max((int) $attBefore, (int) $fillBefore);
+            $floor = $floor > 1000 ? $floor : null;
+
+            // Earliest reading known on a later day (a day's opening meter first).
+            // Sub-1000 values are dropped-digit junk (there are such rows in the
+            // data). They are excluded INSIDE the query — taking MIN() first would
+            // let one junk row become the ceiling and silently disable the check.
+            $attAfter = DB::table('t_ops_attendance')
+                ->where('user_id', $userId)
+                ->where('attendance_date', '>', $date)
+                ->whereRaw($this->saneMeterRowSql())
+                ->selectRaw('MIN(COALESCE(NULLIF(meter_start,0), NULLIF(meter_end,0), NULLIF(meter_home,0))) AS m')
+                ->value('m');
+
+            $fillAfter = DB::table('t_req_master')
+                ->where('requester_user_id', $userId)
+                ->whereNotNull('meter_at_fill')
+                ->where('meter_at_fill', '>', 1000)
+                ->whereNotIn('status', ['cancelled', 'rejected'])
+                ->whereRaw('COALESCE(expense_date, DATE(created_at)) > ?', [$date])
+                ->min('meter_at_fill');
+
+            $candidates = array_filter([
+                (int) $attAfter > 1000 ? (int) $attAfter : null,
+                (int) $fillAfter > 1000 ? (int) $fillAfter : null,
+            ], fn ($v) => $v !== null);
+            $ceil = $candidates ? min($candidates) : null;
+
+            return ['floor' => $floor, 'ceil' => $ceil];
+        } catch (\Throwable $e) {
+            return ['floor' => null, 'ceil' => null];
+        }
+    }
+
+    /** Is this rider on a company-owned bike (company pays the actual fuel)? */
+    private function ridesCompanyBike(int $userId): bool
+    {
+        try {
+            return (int) DB::table('t_ops_rider_profile')
+                ->where('user_id', $userId)->value('company_bike') === 1;
+        } catch (\Throwable $e) {
+            return false;
+        }
+    }
+
     private function attnConfig(string $key, $default)
     {
         try {
@@ -4214,8 +4798,14 @@ class RiderController extends Controller
      * Phase H gate: when the checkout rule is ON, a rider may only check out at the office,
      * or at his MOST RECENT delivery within the configured window + radius. Returns
      * ['ok'=>true] to allow, else ['ok'=>false,'reason'=>..,'message'=>..]. Server-authoritative.
+     *
+     * $accuracy = the fix's own accuracy in metres (NULL from older APKs). It is RECORDED on
+     * every blocked attempt so a manager can see whether the rider was judged on a sharp fix
+     * or a vague one before deciding to unlock. It only moves the pass/fail line if
+     * CHECKOUT_ACCURACY_SLACK_M is raised above its default of 0 — this gate guards hours and
+     * anti-abuse, so its behaviour is unchanged until someone deliberately turns that on.
      */
-    private function checkoutRuleResult(int $userId, $lat, $lng): array
+    private function checkoutRuleResult(int $userId, $lat, $lng, $accuracy = null, ?string $shiftDate = null): array
     {
         if (!$this->checkoutRuleEnabled()) {
             return ['ok' => true];
@@ -4230,12 +4820,20 @@ class RiderController extends Controller
                     'attempt_lat' => null, 'attempt_lng' => null,
                     'ref_type' => null, 'ref_lat' => null, 'ref_lng' => null, 'ref_label' => null,
                     'distance_m' => null, 'limit_m' => null, 'age_min' => null,
+                    'accuracy_m' => null, 'is_coarse' => false,
                 ]];
         }
         $lat = (float) $lat; $lng = (float) $lng;
 
         $windowMins = (int) $this->attnConfig('CHECKOUT_DELIVERY_WINDOW_MINS', 15);
         $radiusM    = (float) $this->attnConfig('CHECKOUT_DELIVERY_RADIUS_M', 150);
+
+        // Fix quality. $accM is recorded on the attempt either way; $slack only widens the
+        // radius when CHECKOUT_ACCURACY_SLACK_M is deliberately raised (default 0 = no change).
+        $accM = ($accuracy !== null && is_numeric($accuracy)) ? (float) $accuracy : null;
+        $coarseM = (float) $this->attnConfig('COARSE_FIX_M', 150);
+        $isCoarseFix = $accM !== null && $accM > $coarseM;
+        $slack = $accM !== null ? min($accM, (float) $this->attnConfig('CHECKOUT_ACCURACY_SLACK_M', 0)) : 0.0;
 
         // 1) Office (primary company location) within its radius.
         $office = \DB::table('t_ops_company_locations')->where('is_primary', 1)->where('is_active', 1)
@@ -4244,18 +4842,23 @@ class RiderController extends Controller
         if ($office && $office->latitude !== null && $office->longitude !== null) {
             $officeRadius = (float) ($office->radius_meters ?: 300);
             $dOffice = $this->haversineDistance($lat, $lng, (float) $office->latitude, (float) $office->longitude);
-            if ($dOffice <= $officeRadius) {
+            if (($dOffice - $slack) <= $officeRadius) {
                 return ['ok' => true, 'basis' => 'office'];
             }
         }
 
-        // 2) His MOST RECENT delivered order today, within window + radius (H-Q3).
+        // 2) His MOST RECENT delivered order THIS SHIFT, within window + radius (H-Q3).
+        //    Anchored to the shift's own date (normally today; yesterday when the
+        //    checkout rolled past midnight) so a 23:58 delivery still counts as the
+        //    reference for a 00:05 OUT instead of vanishing at midnight and leaving
+        //    only the office. Same-day shifts: >= today 00:00 == the old whereDate.
+        $sinceTs = ($shiftDate ?: now()->toDateString()) . ' 00:00:00';
         $last = \DB::table('t_crm_order_status_history as h')
             ->join('t_crm_prod_order as o', 'o.id', '=', 'h.order_id')
             ->where('h.status_code', 'delivered')
             ->where('o.assigned_rider_user_id', $userId)
             ->whereNotNull('h.delivery_latitude')->whereNotNull('h.delivery_longitude')
-            ->whereDate('h.changed_at', now()->toDateString())
+            ->where('h.changed_at', '>=', $sinceTs)
             ->orderByDesc('h.changed_at')
             ->select('h.delivery_latitude', 'h.delivery_longitude', 'h.changed_at', 'o.order_number')
             ->first();
@@ -4263,7 +4866,7 @@ class RiderController extends Controller
         if ($last) {
             $ageMin = \Carbon\Carbon::parse($last->changed_at)->diffInMinutes(now(), false);
             $dDrop = $this->haversineDistance($lat, $lng, (float) $last->delivery_latitude, (float) $last->delivery_longitude);
-            if ($ageMin >= 0 && $ageMin <= $windowMins && $dDrop <= $radiusM) {
+            if ($ageMin >= 0 && $ageMin <= $windowMins && ($dDrop - $slack) <= $radiusM) {
                 return ['ok' => true, 'basis' => 'delivery'];
             }
         }
@@ -4286,6 +4889,8 @@ class RiderController extends Controller
                 'distance_m'  => $dDrop !== null ? (int) round($dDrop) : null,
                 'limit_m'     => (int) $radiusM,
                 'age_min'     => $ageMin !== null ? (int) $ageMin : null,
+                'accuracy_m'  => $accM,
+                'is_coarse'   => $isCoarseFix,
             ];
         } else {
             $detail = [
@@ -4298,6 +4903,8 @@ class RiderController extends Controller
                 'distance_m'  => $dOffice !== null ? (int) round($dOffice) : null,
                 'limit_m'     => $officeRadius !== null ? (int) $officeRadius : null,
                 'age_min'     => null,
+                'accuracy_m'  => $accM,
+                'is_coarse'   => $isCoarseFix,
             ];
         }
 
@@ -4313,13 +4920,13 @@ class RiderController extends Controller
      * capture columns aren't applied yet (SQL not run) so it can never fail a checkout.
      * $detail is the 'detail' array from checkoutRuleResult() (may be null defensively).
      */
-    private function recordCheckoutAttempt(int $attendanceId, ?array $detail): void
+    private function recordCheckoutAttempt(int $attendanceId, ?array $detail, ?int $userId = null): void
     {
         if (!\Illuminate\Support\Facades\Schema::hasColumn('t_ops_attendance', 'checkout_attempt_at')) {
             return; // capture SQL not applied — skip quietly
         }
         $d = $detail ?: [];
-        \DB::table('t_ops_attendance')->where('id', $attendanceId)->update([
+        $update = [
             'checkout_attempt_at'         => now(),
             'checkout_attempt_lat'        => $d['attempt_lat']  ?? null,
             'checkout_attempt_lng'        => $d['attempt_lng']  ?? null,
@@ -4332,7 +4939,41 @@ class RiderController extends Controller
             'checkout_attempt_drop_label' => $d['ref_label']    ?? null,
             'checkout_attempt_count'      => \DB::raw('COALESCE(checkout_attempt_count, 0) + 1'),
             'updated_at'                  => now(),
-        ]);
+        ];
+        if (\Illuminate\Support\Facades\Schema::hasColumn('t_ops_attendance', 'checkout_attempt_accuracy_m')) {
+            $update['checkout_attempt_accuracy_m'] = $d['accuracy_m'] ?? null;
+        }
+        \DB::table('t_ops_attendance')->where('id', $attendanceId)->update($update);
+
+        // ⭐ Append EVERY attempt. The row above is latest-wins, which inverted how Asim's
+        // Jul-26 looked: his first press was 248 m from the drop, his last (an hour later)
+        // was 7.5 km — and only the last survived. The log keeps the whole sequence, so
+        // "he tried while he was still there, then gave up and rode off" stays readable.
+        // Separate try: a log failure must never cost us the latest-attempt capture above.
+        try {
+            if (\Illuminate\Support\Facades\Schema::hasTable('t_ops_checkout_attempt_log')) {
+                \DB::table('t_ops_checkout_attempt_log')->insert([
+                    'attendance_id' => $attendanceId,
+                    'user_id'       => $userId ?? 0,
+                    'attempted_at'  => now(),
+                    'latitude'      => $d['attempt_lat'] ?? null,
+                    'longitude'     => $d['attempt_lng'] ?? null,
+                    'accuracy_m'    => $d['accuracy_m']  ?? null,
+                    'reason'        => $d['subreason']   ?? 'wrong_place',
+                    'distance_m'    => $d['distance_m']  ?? null,
+                    'limit_m'       => $d['limit_m']     ?? null,
+                    'age_min'       => $d['age_min']     ?? null,
+                    'ref_lat'       => $d['ref_lat']     ?? null,
+                    'ref_lng'       => $d['ref_lng']     ?? null,
+                    'ref_label'     => $d['ref_label']   ?? null,
+                    'created_at'    => now(),
+                ]);
+            }
+        } catch (\Throwable $logErr) {
+            \Log::warning('checkout attempt log insert failed (non-fatal)', [
+                'attendance_id' => $attendanceId, 'error' => $logErr->getMessage(),
+            ]);
+        }
     }
 
     public function checkIn(Request $request)
@@ -4358,6 +4999,27 @@ class RiderController extends Controller
 
             if ($existing && $existing->login_time) {
                 return response()->json(['success' => false, 'message' => 'Already checked in today'], 400);
+            }
+
+            // ⭐ Past-midnight guard (owner-approved Jul-28): before 06:00, a rider whose
+            //    YESTERDAY shift is still open must check OUT of it, not open a fresh day —
+            //    an accidental IN here would orphan the open shift AND create a today-row
+            //    that blocks the midnight checkout fallback. Same 06:00 bound as checkOut
+            //    and getTodayAttendance; a genuine new day always starts after 06:00.
+            //    The manager's web "Mark Attendance" is a separate path and unaffected.
+            if (now()->format('H:i:s') < '06:00:00') {
+                $openYesterday = \DB::table('t_ops_attendance')
+                    ->where('user_id', $user->id)
+                    ->whereDate('attendance_date', now()->subDay()->format('Y-m-d'))
+                    ->whereNotNull('login_time')
+                    ->whereNull('logout_time')
+                    ->first();
+                if ($openYesterday) {
+                    return response()->json([
+                        'success' => false,
+                        'message' => "You're still checked in from yesterday — check out first, or ask your manager to close that shift.",
+                    ], 400);
+                }
             }
 
             // Process location data for check-in
@@ -4388,6 +5050,35 @@ class RiderController extends Controller
                             . "You can only check in at $where.",
                     ], 422);
                 }
+            }
+
+            // ⭐ Meter-required gate (owner ruling Jul-28: "required cannot skip meter").
+            //    A rider tagged meter_required=1 cannot check in without a START reading on the
+            //    row — the app's "Meter & Check In" chain records it first, so this is the
+            //    server backstop for anything that isn't the chain. Store staff / managers have
+            //    no rider profile (or the tag off, e.g. Shabib's exemption) and are untouched.
+            //    The manager check-in unlock is the valve, same as the ETA lock below.
+            //    FAIL-OPEN on errors — a DB hiccup must never strand a rider at the office.
+            try {
+                if (\Illuminate\Support\Facades\Schema::hasColumn('t_ops_rider_profile', 'meter_required')) {
+                    $mrFlag = \DB::table('t_ops_rider_profile')->where('user_id', $user->id)->value('meter_required');
+                    if ((int) $mrFlag === 1
+                        && (!$existing || $existing->meter_start === null || $existing->meter_start === '')) {
+                        $mrUnlock = false;
+                        if ($existing && \Illuminate\Support\Facades\Schema::hasColumn('t_ops_attendance', 'checkin_unlock_until')) {
+                            $mrUnlock = (new \App\Services\Riders\WorkJourneyService())->checkinUnlockActive($existing);
+                        }
+                        if (!$mrUnlock) {
+                            return response()->json([
+                                'success' => false,
+                                'meter_required' => true,
+                                'message' => 'Record your start meter first — use "Meter & Check In".',
+                            ], 422);
+                        }
+                    }
+                }
+            } catch (\Throwable $mrErr) {
+                \Log::warning('checkin meter gate failed open (non-fatal)', ['user_id' => $user->id, 'error' => $mrErr->getMessage()]);
             }
 
             // ⭐ U5 Phase-2 check-in LOCK (config CHECKIN_ETA_LOCK, ships OFF): a company-bike
@@ -5353,6 +6044,8 @@ class RiderController extends Controller
                 'meter_reading' => 'required_without:meter_picture|nullable|numeric|min:0|max:9999999',
                 'latitude' => 'nullable|numeric|between:-90,90',   // U5: proves an at-home start
                 'longitude' => 'nullable|numeric|between:-180,180',
+                'accuracy' => 'nullable|numeric',    // metres; lets a coarse fix be judged as coarse
+                'fix_age_s' => 'nullable|numeric',   // how old the fix was when it was sent
                 'confirm_gap' => 'nullable|boolean', // U5: rider confirmed a continuity gap
                 'u5' => 'nullable|boolean',          // U5: new-APK marker (enables needs_confirm replies)
             ]);
@@ -5407,7 +6100,8 @@ class RiderController extends Controller
                         (int) $meterReading,
                         $request->file('meter_picture'),
                         $request->input('latitude'),
-                        $request->input('longitude')
+                        $request->input('longitude'),
+                        $request->input('accuracy')
                     );
                     if ($resp->getStatusCode() !== 200) {
                         $payload = $resp->getData(true);
@@ -5500,12 +6194,21 @@ class RiderController extends Controller
                             && !$isHomeStamped && $startHomePin !== null) {
                             $gpsValid = $request->filled('latitude') && $request->filled('longitude')
                                 && LocationService::isValidCoordinates($request->latitude, $request->longitude);
+                            // A fix is only trustworthy to its OWN accuracy, so let the error bar
+                            // reach the fence before calling a rider "not at home" — capped at
+                            // COARSE_FIX_M so a wildly bad fix can never buy a home stamp. No
+                            // accuracy sent (older APKs) ⇒ no slack ⇒ exactly the previous rule.
+                            $startAccuracy = ($request->filled('accuracy') && is_numeric($request->input('accuracy')))
+                                ? (float) $request->input('accuracy') : null;
+                            $coarseM = (float) $this->attnConfig('COARSE_FIX_M', 150);
+                            $startSlack = $startAccuracy !== null ? min($startAccuracy, $coarseM) : 0;
                             $atHomeForStart = false;
+                            $dHome = null;
                             if ($gpsValid) {
                                 $dHome = $this->haversineDistance(
                                     (float) $request->latitude, (float) $request->longitude,
                                     $startHomePin['lat'], $startHomePin['lng']);
-                                $atHomeForStart = $dHome <= $startHomePin['radius_m'];
+                                $atHomeForStart = ($dHome - $startSlack) <= $startHomePin['radius_m'];
                             }
                             $updateData['meter_start_recorded_at'] = now();
                             $startGps = $atHomeForStart ? 'home' : ($gpsValid ? 'away' : 'none');
@@ -5515,6 +6218,42 @@ class RiderController extends Controller
                                 $updateData['meter_start_source'] = 'checkin';
                                 $homeStartMissed = true;
                             }
+
+                            // ⭐ KEEP WHAT WE JUDGED HIM ON. Until now the position and the verdict
+                            // were computed here and discarded, so the row could never justify the
+                            // "typed at office" label — which also fired when there was NO fix at
+                            // all (Waseem, Jul-25). Store the fix, its accuracy, and the metres from
+                            // home AND from the office so the UI can state a measurement instead of
+                            // an assumption. Schema-guarded: skipped until the hardening SQL is run.
+                            if (\Illuminate\Support\Facades\Schema::hasColumn('t_ops_attendance', 'meter_start_gps')) {
+                                $dOfficeStart = null; $atOfficeStart = false;
+                                if ($gpsValid) {
+                                    $startOffice = $this->todayShiftLocation($user->id);
+                                    if ($startOffice) {
+                                        $dOfficeStart = $this->haversineDistance(
+                                            (float) $request->latitude, (float) $request->longitude,
+                                            $startOffice['lat'], $startOffice['lng']);
+                                        $atOfficeStart = ($dOfficeStart - $startSlack) <= (float) ($startOffice['radius_m'] ?? 300);
+                                    }
+                                }
+                                // Richer than the app-facing start_gps (kept at home|away|none above
+                                // so deployed APKs keep their exact routing): 'office' is a measured
+                                // fact, 'coarse' says the fix was too vague to place him at all.
+                                $verdict = 'none';
+                                if ($gpsValid) {
+                                    if ($atHomeForStart)   { $verdict = 'home'; }
+                                    elseif ($atOfficeStart) { $verdict = 'office'; }
+                                    elseif ($startAccuracy !== null && $startAccuracy > $coarseM) { $verdict = 'coarse'; }
+                                    else { $verdict = 'away'; }
+                                }
+                                $updateData['meter_start_gps']        = $verdict;
+                                $updateData['meter_start_lat']        = $gpsValid ? (float) $request->latitude : null;
+                                $updateData['meter_start_lng']        = $gpsValid ? (float) $request->longitude : null;
+                                $updateData['meter_start_accuracy_m'] = $startAccuracy;
+                                $updateData['meter_start_distance_m'] = $dHome !== null ? (int) round($dHome) : null;
+                                $updateData['meter_start_office_m']   = $dOfficeStart !== null ? (int) round($dOfficeStart) : null;
+                            }
+
                             if (empty($existing->work_expected_by)) {
                                 $armStartTimer = true;
                                 $armOrigin = $gpsValid
@@ -5604,6 +6343,25 @@ class RiderController extends Controller
                 ->whereDate('attendance_date', $today)
                 ->first();
 
+            // ⭐ Past-midnight shift: at 00:05 "today" has no attendance row — the open
+            //    shift lives on YESTERDAY's row — so checkout dead-ended on "Please
+            //    check in first" and the day closed with logout NULL. Bounded to the
+            //    small hours (before 06:00) so a forgotten checkout from a normal day
+            //    still goes through the manager, not a silent morning self-checkout;
+            //    within the window the location rule below still applies unchanged.
+            //    (The bike-rider home-meter flow already does this via openJourneyRow.)
+            if ((!$existing || !$existing->login_time) && now()->format('H:i:s') < '06:00:00') {
+                $openYesterday = \DB::table('t_ops_attendance')
+                    ->where('user_id', $user->id)
+                    ->whereDate('attendance_date', now()->subDay()->format('Y-m-d'))
+                    ->whereNotNull('login_time')
+                    ->whereNull('logout_time')
+                    ->first();
+                if ($openYesterday) {
+                    $existing = $openYesterday;
+                }
+            }
+
             if (!$existing || !$existing->login_time) {
                 return response()->json(['success' => false, 'message' => 'Please check in first'], 400);
             }
@@ -5611,6 +6369,12 @@ class RiderController extends Controller
             if ($existing->logout_time) {
                 return response()->json(['success' => false, 'message' => 'Already checked out today'], 400);
             }
+
+            // The day this shift BELONGS to — normally today, yesterday when the
+            // checkout rolled past midnight. Every per-day side effect below
+            // (snapshot, road distance, delivery reference) keys off this, not the
+            // wall-clock date, so the work lands on the row it describes.
+            $shiftDate = substr((string) $existing->attendance_date, 0, 10);
 
             // Phase H — mandatory checkout location (only when the manager turned it on).
             // Must be at the office, or at his most recent delivery within window+radius.
@@ -5620,25 +6384,73 @@ class RiderController extends Controller
             $checkoutBypass = !empty($existing->checkout_unlock_until)
                 && strtotime((string) $existing->checkout_unlock_until) >= time();
             if (!$checkoutBypass) {
-                $ruleCheck = $this->checkoutRuleResult($user->id, $request->input('latitude'), $request->input('longitude'));
+                $ruleCheck = $this->checkoutRuleResult(
+                    $user->id, $request->input('latitude'), $request->input('longitude'),
+                    $request->input('accuracy'), $shiftDate);
                 if (!$ruleCheck['ok']) {
                     // Record the blocked attempt (where he was, where his last delivery was, how
                     // far, why) so a manager sees it LIVE and in the bypass modal — the attempt
                     // otherwise leaves no trace. NON-FATAL: capturing must never break checkout.
                     try {
-                        $this->recordCheckoutAttempt((int) $existing->id, $ruleCheck['detail'] ?? null);
+                        $this->recordCheckoutAttempt((int) $existing->id, $ruleCheck['detail'] ?? null, (int) $user->id);
                     } catch (\Throwable $capErr) {
                         \Log::warning('recordCheckoutAttempt failed (non-fatal)', [
                             'attendance_id' => $existing->id, 'error' => $capErr->getMessage(),
                         ]);
                     }
+                    // ⭐ Hand the app what it needs to help him FIX it instead of just refusing:
+                    // the reference point + limit let the new APK show a live "you are N m from
+                    // the drop" card and re-enable OUT the moment he walks back. Asim was 39 m
+                    // from his drop one minute after being blocked and never knew to retry.
+                    // Additive — deployed APKs ignore unknown keys and keep today's behaviour.
+                    $rd = $ruleCheck['detail'] ?? [];
                     return response()->json([
                         'success' => false,
                         'checkout_rule' => true,
                         'reason' => $ruleCheck['reason'],
                         'message' => $ruleCheck['message'],
+                        'retry' => [
+                            'subreason'  => $rd['subreason']  ?? null,
+                            'distance_m' => $rd['distance_m'] ?? null,
+                            'limit_m'    => $rd['limit_m']    ?? null,
+                            'age_min'    => $rd['age_min']    ?? null,
+                            'window_min' => (int) $this->attnConfig('CHECKOUT_DELIVERY_WINDOW_MINS', 15),
+                            'ref_lat'    => $rd['ref_lat']    ?? null,
+                            'ref_lng'    => $rd['ref_lng']    ?? null,
+                            'ref_label'  => $rd['ref_label']  ?? null,
+                            'accuracy_m' => $rd['accuracy_m'] ?? null,
+                            'is_coarse'  => (bool) ($rd['is_coarse'] ?? false),
+                        ],
                     ], 422);
                 }
+            }
+
+            // ⭐ Meter-required gate (owner ruling Jul-28: "meter required must force it").
+            //    A rider tagged meter_required=1 cannot check OUT without the day-closing
+            //    reading — the "Meter & Check Out" chain records meter_end first, so this is
+            //    the server backstop. TWO deliberate exceptions:
+            //      • HOME-FLOW riders (company bike with a home pin): their day-closing meter
+            //        is recorded AT HOME after checkout — blocking here would deadlock them.
+            //      • An active manager checkout unlock: the valve stays the master key (a
+            //        rider unlocked from home can close the day; the missing meter still
+            //        shows on the attendance/Bikes pages).
+            //    FAIL-OPEN on errors — never strand a rider at the office over a DB hiccup.
+            try {
+                if (!$checkoutBypass
+                    && \Illuminate\Support\Facades\Schema::hasColumn('t_ops_rider_profile', 'meter_required')
+                    && ($existing->meter_end === null || $existing->meter_end === '')) {
+                    $mrFlagOut = \DB::table('t_ops_rider_profile')->where('user_id', $user->id)->value('meter_required');
+                    if ((int) $mrFlagOut === 1
+                        && (new \App\Services\Riders\HomeJourneyService())->riderHomePin($user->id) === null) {
+                        return response()->json([
+                            'success' => false,
+                            'meter_required' => true,
+                            'message' => 'Record your closing meter first — use "Meter & Check Out".',
+                        ], 422);
+                    }
+                }
+            } catch (\Throwable $mrOutErr) {
+                \Log::warning('checkout meter gate failed open (non-fatal)', ['user_id' => $user->id, 'error' => $mrOutErr->getMessage()]);
             }
 
             // Process location data for check-out (no distance calculation)
@@ -5667,9 +6479,10 @@ class RiderController extends Controller
                 ->where('id', $existing->id)
                 ->update($updateData);
 
-            // ⭐ Freeze overtime minutes onto the row (same-day). NON-FATAL.
+            // ⭐ Freeze overtime minutes onto the row (keyed to the SHIFT's date, so a
+            //    past-midnight checkout stamps yesterday's row). NON-FATAL.
             try {
-                (new \App\Services\ShiftResolutionService())->stampAttendanceSnapshot($user->id, $today);
+                (new \App\Services\ShiftResolutionService())->stampAttendanceSnapshot($user->id, $shiftDate);
             } catch (\Exception $snapErr) {
                 \Log::warning('Attendance shift snapshot failed on check-out (non-fatal)', [
                     'user_id' => $user->id,
@@ -5694,7 +6507,7 @@ class RiderController extends Controller
             // This runs in background - doesn't block the checkout response
             $roadDistanceResult = null;
             try {
-                $roadDistanceResult = $this->calculateAndStoreRoadDistance($user->id, $today, $existing->id);
+                $roadDistanceResult = $this->calculateAndStoreRoadDistance($user->id, $shiftDate, $existing->id);
             } catch (\Exception $rdError) {
                 // Non-fatal - log but don't fail checkout
                 \Log::warning('Road distance calculation failed (non-fatal)', [
@@ -5872,13 +6685,15 @@ class RiderController extends Controller
                 'meter_picture' => 'nullable|image|max:5120',
                 'latitude' => 'nullable|numeric|between:-90,90',
                 'longitude' => 'nullable|numeric|between:-180,180',
+                'accuracy' => 'nullable|numeric',   // fix accuracy → benefit-of-the-doubt at the fence
             ]);
             return $this->processHomeMeterSubmission(
                 $user,
                 (int) $request->meter_home,
                 $request->hasFile('meter_picture') ? $request->file('meter_picture') : null,
                 $request->input('latitude'),
-                $request->input('longitude')
+                $request->input('longitude'),
+                $request->input('accuracy')
             );
         } catch (\Illuminate\Validation\ValidationException $ve) {
             return response()->json(['success' => false, 'message' => $ve->validator->errors()->first()], 422);
@@ -5895,7 +6710,7 @@ class RiderController extends Controller
      * valve can never be sidestepped by picking a different button. Writes meter_home and
      * mirrors meter_end in the same update.
      */
-    private function processHomeMeterSubmission($user, int $meterHome, $pictureFile, $lat, $lng)
+    private function processHomeMeterSubmission($user, int $meterHome, $pictureFile, $lat, $lng, $accuracy = null)
     {
             $today = now()->format('Y-m-d');
             $hj = new \App\Services\Riders\HomeJourneyService();
@@ -5918,11 +6733,22 @@ class RiderController extends Controller
             }
 
             // Is he AT HOME right now? (GPS in the request vs the home pin.)
+            // ⭐ Accuracy slack (owner-approved Jul-28): a fix is only trustworthy to its OWN
+            // accuracy, so let the error bar reach the fence before calling him "not at home" —
+            // the SAME min(accuracy, COARSE_FIX_M) rule the checkout gate and the morning
+            // start-meter verdict already apply. This gate was the only sibling without it:
+            // indoors (where the bike parks) phones fall back to ±100–300 m network fixes, and
+            // a rider standing at his own house could read "380 m from home". Capped at
+            // COARSE_FIX_M so a wildly bad fix can never buy a pass; no accuracy sent (current
+            // APKs) ⇒ zero slack ⇒ exactly today's behaviour until the new APK ships it.
             $atHomeNow = false;
             $distM = null;
             if ($lat !== null && $lat !== '' && $lng !== null && $lng !== '' && is_numeric($lat) && is_numeric($lng)) {
+                $homeSlack = ($accuracy !== null && is_numeric($accuracy))
+                    ? min((float) $accuracy, (float) $this->attnConfig('COARSE_FIX_M', 150))
+                    : 0.0;
                 $distM = $this->haversineDistance((float) $lat, (float) $lng, $home['lat'], $home['lng']);
-                $atHomeNow = $distM <= $home['radius_m'];
+                $atHomeNow = ($distM - $homeSlack) <= $home['radius_m'];
             }
             // Arrival already proven by the live-GPS geofence (heartbeat stamped it)?
             $arrivalStamped = !empty($att->home_arrived_at);
@@ -5976,7 +6802,16 @@ class RiderController extends Controller
             if (\Illuminate\Support\Facades\Schema::hasColumn('t_ops_attendance', 'home_meter_recorded_at')) {
                 $upd['home_meter_recorded_at'] = now();
             }
-            if ($picPath) { $upd['picture_home'] = $picPath; }
+            // Mirror the photo to picture_end too — the home photo IS the day-closing (meter_end)
+            // photo for a bike rider, just as meter_home mirrors meter_end above. Every End-meter
+            // surface (web row camera icon, rider-app preview/history, mobile store view) keys off
+            // picture_end; without this mirror the reading shows but the photo icon greys out and
+            // the rider can't see the photo he just took (only the details modal, which reads
+            // picture_home ?? picture_end, showed it). Non-bike checkout photos are unaffected.
+            if ($picPath) {
+                $upd['picture_home'] = $picPath;
+                $upd['picture_end']  = $picPath;
+            }
             \DB::table('t_ops_attendance')->where('id', $att->id)->update($upd);
 
             return response()->json([
@@ -6164,23 +6999,26 @@ class RiderController extends Controller
             if (!empty($shift['location_id'])) {
                 $loc = \DB::table('t_ops_company_locations')
                     ->where('id', $shift['location_id'])->where('is_active', 1)
-                    ->select('location_name', 'latitude', 'longitude')->first();
+                    ->select('location_name', 'latitude', 'longitude', 'radius_meters')->first();
             }
         } catch (\Throwable $e) { $loc = null; }
         if (!$loc) {
             $loc = \DB::table('t_ops_user_location_assignment as ula')
                 ->join('t_ops_company_locations as loc', 'loc.id', '=', 'ula.location_id')
                 ->where('ula.user_id', $userId)->where('ula.is_active', 1)->where('loc.is_active', 1)
-                ->select('loc.location_name', 'loc.latitude', 'loc.longitude')->first();
+                ->select('loc.location_name', 'loc.latitude', 'loc.longitude', 'loc.radius_meters')->first();
         }
         if (!$loc) {
             $loc = \DB::table('t_ops_company_locations')->where('is_primary', 1)->where('is_active', 1)
-                ->select('location_name', 'latitude', 'longitude')->first();
+                ->select('location_name', 'latitude', 'longitude', 'radius_meters')->first();
         }
         if (!$loc || $loc->latitude === null || $loc->longitude === null) {
             return null;
         }
-        return ['lat' => (float) $loc->latitude, 'lng' => (float) $loc->longitude, 'name' => $loc->location_name];
+        // radius_m is additive — armWorkJourney (the original caller) ignores it; the
+        // morning-meter labeller uses it to say "at office" as a measurement.
+        return ['lat' => (float) $loc->latitude, 'lng' => (float) $loc->longitude, 'name' => $loc->location_name,
+                'radius_m' => (float) ($loc->radius_meters ?: 300)];
     }
 
     /**
@@ -6598,6 +7436,52 @@ class RiderController extends Controller
                 } catch (\Throwable $e) { /* fall through to the normal rejection */ }
             }
 
+            // ⭐ U5 — RIDE-IN phase (mirror of the going-home branch above): a company-bike
+            // rider who has recorded his start meter but has NOT checked in yet is on the road
+            // for us, so his heartbeats count. Without this the morning commute is the only leg
+            // of the day with no trail at all — which is exactly why Waseem's disputed 11:51
+            // position (Jul-25) could never be checked against anything.
+            // Bounded to work_expected_by + 60 min (same rule the phone applies), so a forgotten
+            // service on a rider who never turns up cannot keep uploading all day.
+            $workPhase = false;
+            if (!$attendance) {
+                try {
+                    if (\Illuminate\Support\Facades\Schema::hasColumn('t_ops_attendance', 'work_expected_by')) {
+                        $wjAtt = \DB::table('t_ops_attendance')
+                            ->where('user_id', $user->id)
+                            ->whereDate('attendance_date', $today)
+                            ->whereNull('login_time')          // not checked in yet = still riding in
+                            ->whereNotNull('meter_start_recorded_at')  // journey actually armed
+                            ->whereNotNull('work_expected_by')
+                            ->first();
+                        if ($wjAtt && time() <= strtotime((string) $wjAtt->work_expected_by) + 3600) {
+                            $attendance = $wjAtt;
+                            $workPhase = true;
+                        }
+                    }
+                } catch (\Throwable $e) { /* fall through to the normal rejection */ }
+            }
+
+            // ⭐ Past-midnight ON-DUTY (owner-approved Jul-28): a shift that runs past 00:00
+            //    lives on YESTERDAY's row, so heartbeats died at midnight ("not_on_duty") and
+            //    the app self-stopped GPS mid-shift — exactly when the checkout-retry card and
+            //    the delivery trail need it. Before 06:00, an open yesterday shift counts as
+            //    on duty. Same bound and open-row condition as checkOut / getTodayAttendance.
+            //    (Distinct from the U4 home phase above, which requires logout SET.)
+            if (!$attendance && now()->format('H:i:s') < '06:00:00') {
+                try {
+                    $midShift = \DB::table('t_ops_attendance')
+                        ->where('user_id', $user->id)
+                        ->whereDate('attendance_date', now()->subDay()->format('Y-m-d'))
+                        ->whereNotNull('login_time')
+                        ->whereNull('logout_time')
+                        ->first();
+                    if ($midShift) {
+                        $attendance = $midShift;
+                    }
+                } catch (\Throwable $e) { /* fall through to the normal rejection */ }
+            }
+
             if (!$attendance) {
                 // ⭐ Log when we return 400 - helps diagnose why heartbeats stop
                 $anyAttendanceToday = \DB::table('t_ops_attendance')
@@ -6745,7 +7629,11 @@ class RiderController extends Controller
 
             return response()->json([
                 'success' => true,
-                'message' => 'Location recorded'
+                'message' => 'Location recorded',
+                // Which leg of the day this point belongs to — lets the app (and anyone reading
+                // the response while diagnosing) tell an accepted ride-in/ride-home heartbeat
+                // from a normal on-duty one, since all three now reach this endpoint.
+                'phase' => $workPhase ? 'ride_in' : ($homePhase ? 'ride_home' : 'on_duty'),
             ]);
 
         } catch (\Exception $e) {
@@ -10072,6 +10960,16 @@ class RiderController extends Controller
                 ->get()
                 ->keyBy('attendance_id');
 
+            // 🏢 Company-bike riders: show the SAME work/off-duty split management
+            // sees on the Fleet tab. Off-duty km (the ride home and personal use)
+            // is company-funded fuel, so the rider seeing his own number is the
+            // cheapest form of accountability. Own-bike riders get nothing extra —
+            // their off-shift riding is their own business.
+            $bikeUsage = null;
+            if ($this->ridesCompanyBike($user->id)) {
+                $bikeUsage = $this->monthBikeUsage($user->id, $startDate, $endDate);
+            }
+
             return response()->json([
                 'success' => true,
                 'month' => $month,
@@ -10081,6 +10979,7 @@ class RiderController extends Controller
                 'petrol_rate' => $petrolRate,
                 'petrol_requests' => $petrolRequests,
                 'petrol_window_days' => (int) $this->attnConfig('PETROL_WINDOW_DAYS', 5),
+                'bike_usage' => $bikeUsage,
             ]);
         } catch (\Exception $e) {
             \Log::error('Failed to get monthly attendance', [
@@ -10301,6 +11200,11 @@ class RiderController extends Controller
                 'expense_date' => 'nullable|date',
                 'meter_distance' => 'nullable|numeric|min:0',
                 'petrol_rate' => 'nullable|numeric|min:0',
+                // Fuel capture (Jul-2026). meter_at_fill is the odometer at the
+                // moment of filling — it puts the fill on the bike's km timeline.
+                'meter_at_fill' => 'nullable|integer|min:0|max:9999999',
+                'litres' => 'nullable|numeric|min:0|max:99',
+                'service_type' => 'nullable|string|max:30',
                 'attendance_id' => 'nullable|integer',
                 'leave_start_date' => 'nullable|date',
                 'leave_end_date' => 'nullable|date|after_or_equal:leave_start_date',
@@ -10351,6 +11255,101 @@ class RiderController extends Controller
                         'message' => 'A petrol request has already been submitted for this day.'
                     ], 422);
                 }
+            }
+
+            // ---- FLAT (cash) petrol guards, Jul-2026 -------------------------
+            // Metered petrol is self-auditing; FLAT cash claims are where the
+            // June leakage lived — three 500-rupee claims filed inside two
+            // minutes, and cash claims on days the meter had already paid for.
+            $isFlatPetrol = ($request->input('expense_category') === 'Petrol') && !$request->filled('attendance_id');
+            $flatNotice = null;
+
+            if ($isFlatPetrol) {
+                $claimDate = $request->filled('expense_date')
+                    ? \Carbon\Carbon::parse($request->input('expense_date'))->format('Y-m-d')
+                    : \Carbon\Carbon::today()->format('Y-m-d');
+
+                $sameDay = DB::table('t_req_master')
+                    ->where('requester_user_id', $user->id)
+                    ->where('expense_category', 'Petrol')
+                    ->whereRaw('COALESCE(expense_date, DATE(created_at)) = ?', [$claimDate])
+                    ->whereNotIn('status', ['cancelled', 'rejected'])
+                    ->get(['id', 'amount', 'attendance_id', 'created_at']);
+
+                // (a) HARD BLOCK — same amount, minutes apart. Always a double
+                //     tap on the button, never a real second fill-up.
+                $amount = (float) ($request->input('amount') ?? 0);
+                foreach ($sameDay as $prev) {
+                    if ($prev->attendance_id !== null) continue;
+                    if (abs((float) $prev->amount - $amount) < 0.01 &&
+                        abs(time() - strtotime($prev->created_at)) <= 600) {
+                        return response()->json([
+                            'success' => false,
+                            'message' => 'You already submitted Rs ' . number_format($amount) .
+                                         ' for petrol a moment ago. Check "My Requests" before sending it again.',
+                        ], 422);
+                    }
+                }
+
+                // (b) SOFT FLAG — a cash claim on a day the meter already paid
+                //     for, or simply the 2nd cash claim of the day. Allowed
+                //     (there are honest reasons), but the approver is told.
+                $meteredToday = $sameDay->first(fn ($x) => $x->attendance_id !== null);
+                if ($meteredToday) {
+                    $flatNotice = 'Cash claim on a day already paid by meter reading (request #' . $meteredToday->id . ').';
+                } elseif ($sameDay->count() > 0) {
+                    $flatNotice = 'This is petrol cash claim #' . ($sameDay->count() + 1) . ' for ' . $claimDate . '.';
+                }
+            }
+
+            // ---- Odometer at fill: sanity-check against the reading's OWN DATE ---
+            // Catches dropped digits and the wrong bike's meter at entry time.
+            //
+            // ⚠ It must be checked against what the odometer read AROUND THAT DATE,
+            // not against today's highest reading. Both fuel and maintenance can be
+            // filed for an earlier day (a service done yesterday, a fill inside the
+            // petrol back-date window), and by then the bike has moved on — so a
+            // perfectly correct backdated reading is LOWER than today's. Comparing
+            // to "latest known" rejected exactly those honest entries.
+            if ($request->filled('meter_at_fill')) {
+                $entered  = (int) $request->input('meter_at_fill');
+                $claimDay = $request->filled('expense_date')
+                    ? \Carbon\Carbon::parse($request->input('expense_date'))->format('Y-m-d')
+                    : \Carbon\Carbon::today()->format('Y-m-d');
+                $win = $this->odometerWindowFor($user->id, $claimDay);
+
+                // Can't be below what the bike had already covered before that day.
+                if ($win['floor'] !== null && $entered < $win['floor'] - 20) {
+                    return response()->json([
+                        'success' => false,
+                        'message' => 'That reading (' . number_format($entered) . ' km) is lower than this bike\'s '
+                            . number_format($win['floor']) . ' km recorded before ' . $claimDay
+                            . '. Please check the number.',
+                    ], 422);
+                }
+                // Can't be above what it read on a LATER day.
+                if ($win['ceil'] !== null && $entered > $win['ceil'] + 20) {
+                    return response()->json([
+                        'success' => false,
+                        'message' => 'That reading (' . number_format($entered) . ' km) is higher than this bike\'s '
+                            . number_format($win['ceil']) . ' km recorded after ' . $claimDay
+                            . '. Please check the number.',
+                    ], 422);
+                }
+                // Nothing recorded after that day — guard a stray extra digit only.
+                if ($win['ceil'] === null && $win['floor'] !== null && $entered > $win['floor'] + 2000) {
+                    return response()->json([
+                        'success' => false,
+                        'message' => 'That reading (' . number_format($entered) . ' km) is far above this bike\'s last '
+                            . number_format($win['floor']) . ' km. Please check the number.',
+                    ], 422);
+                }
+            } elseif ($isFlatPetrol && $this->attnConfig('FUEL_METER_REQUIRED', 'N') === 'Y'
+                      && $this->ridesCompanyBike($user->id)) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Please enter the bike\'s meter reading with this fuel request.',
+                ], 422);
             }
 
             // ⭐ Validate expense_date is within allowed backdate range
@@ -10524,12 +11523,18 @@ class RiderController extends Controller
                 'category_id' => $category->id,
                 'requester_user_id' => $user->id,
                 'title' => $validated['title'],
-                'description' => $validated['description'] ?? null,
+                // A flat-petrol notice is appended to the description so the
+                // approver sees WHY it is flagged, on whichever screen they use.
+                'description' => trim(($validated['description'] ?? '') .
+                    ($flatNotice ? "\n\n⚠ " . $flatNotice : '')) ?: null,
                 'amount' => $validated['amount'] ?? null,
                 'expense_category' => $validated['expense_category'] ?? null,
                 'expense_date' => $validated['expense_date'] ?? now()->toDateString(),
                 'meter_distance' => $validated['meter_distance'] ?? null,
                 'petrol_rate' => $validated['petrol_rate'] ?? null,
+                'meter_at_fill' => $validated['meter_at_fill'] ?? null,
+                'litres' => $validated['litres'] ?? null,
+                'service_type' => $validated['service_type'] ?? null,
                 'attendance_id' => $validated['attendance_id'] ?? null,
                 'payment_source_account_id' => $paymentSourceAccountId,
                 'receiving_account_id' => $expenseBankId,
@@ -11630,7 +12635,10 @@ class RiderController extends Controller
             // Build optimized query - load line items for immediate "mark prepared" functionality
             // Note: Not using select() to avoid column name issues - optimization is in relationships
             $query = OrderModel::with(['customer' => function($q) {
-                    $q->select('id', 'first_name', 'last_name', 'phone_original', 'latitude', 'longitude', 'geocoded_latitude', 'geocoded_longitude', 'verified_location_url', 'notes', 'verified_location_saved_by', 'verified_location_saved_at', 'merged_into_customer_id', 'delivery_region_id');
+                    // geocode_precision rides along so the board can tell a rooftop
+                    // Google pin from an area guess BEFORE dispatch is pressed —
+                    // that is what the pin prompts and the Auto Route gate key off.
+                    $q->select('id', 'first_name', 'last_name', 'phone_original', 'latitude', 'longitude', 'geocoded_latitude', 'geocoded_longitude', 'geocode_precision', 'verified_location_url', 'notes', 'verified_location_saved_by', 'verified_location_saved_at', 'merged_into_customer_id', 'delivery_region_id');
                 }])
                 ->with(['assignedRider' => function($q) {
                     $q->select('id', 'fullname');
@@ -11942,12 +12950,17 @@ class RiderController extends Controller
                     'has_khaas_item' => $khaasOrderIds->contains($order->id), // ❄️ Khaas product indicator
                     'has_unread_message' => isset($unreadCustomerIds[(int) $order->customer_id]),
                     'has_wa_access' => $hasWaAccess,
-                    // ⭐ Customer location data for route map
+                    // ⭐ Customer location data for route map + the location-confidence
+                    //    chip. The client derives the tier from these four fields, so
+                    //    it re-derives on every poll and clears itself the moment a
+                    //    pin is added — nothing to invalidate by hand.
                     'customer' => $order->customer ? [
+                        'id' => $order->customer->id,
                         'latitude' => $order->customer->latitude,
                         'longitude' => $order->customer->longitude,
                         'geocoded_latitude' => $order->customer->geocoded_latitude,
                         'geocoded_longitude' => $order->customer->geocoded_longitude,
+                        'geocode_precision' => $order->customer->geocode_precision,
                     ] : null,
                     'external_source' => $order->external_source,
                     'delivery_region_id' => $order->customer->delivery_region_id ?? null,
@@ -12055,6 +13068,54 @@ class RiderController extends Controller
                 // Never let the watch break the orders feed.
                 $response['left_without_dispatch_riders'] = [];
                 \Log::warning('left_without_dispatch watch failed (non-fatal)', ['error' => $e->getMessage()]);
+            }
+
+            // ⭐ Store-wide watch: orders that went out WITH A GUESSED TIME because
+            //    the customer has no location at all — no verified pin and no Google
+            //    pin either. The rider is driving to a written address and the ETA on
+            //    that stop is a flat estimate, so the store should know while the run
+            //    is still live and can still fix it.
+            //
+            //    Deliberately DERIVED, not a stored flag: "dispatched" = OFD with an
+            //    eta_calculated_at, "no location" = both coordinate pairs empty. So it
+            //    disappears by itself the moment anyone adds a pin or the order is
+            //    delivered — there is no stale alert to clear, and no schema for it.
+            //
+            //    A Google pin (any precision) does NOT appear here. That is the whole
+            //    point of the tiers: raising this for stops we CAN time would train
+            //    everyone to ignore the banner.
+            try {
+                $noPinRows = \DB::table('t_crm_prod_order as o')
+                    ->join('t_crm_prod_customer as c', 'c.id', '=', 'o.customer_id')
+                    ->leftJoin('t_sys_user as u', 'u.id', '=', 'o.assigned_rider_user_id')
+                    ->where('o.order_status', 'out_for_delivery')
+                    ->whereNotNull('o.eta_calculated_at')
+                    ->where(function ($q) {
+                        $q->whereNull('c.latitude')->orWhereNull('c.longitude');
+                    })
+                    ->where(function ($q) {
+                        $q->whereNull('c.geocoded_latitude')->orWhereNull('c.geocoded_longitude');
+                    })
+                    ->orderBy('o.delivery_priority')
+                    ->limit(25)
+                    ->get([
+                        'o.id',
+                        'o.order_number',
+                        'o.assigned_rider_user_id',
+                        'u.fullname as rider_name',
+                        \DB::raw('CONCAT(COALESCE(c.first_name, ""), " ", COALESCE(c.last_name, "")) as customer_name'),
+                    ]);
+
+                $response['no_pin_dispatch_orders'] = $noPinRows->map(fn($r) => [
+                    'order_id'      => (int) $r->id,
+                    'order_number'  => $r->order_number,
+                    'customer_name' => trim((string) $r->customer_name),
+                    'rider_id'      => $r->assigned_rider_user_id ? (int) $r->assigned_rider_user_id : null,
+                    'rider_name'    => $r->rider_name ?: null,
+                ])->values()->all();
+            } catch (\Throwable $e) {
+                $response['no_pin_dispatch_orders'] = [];
+                \Log::warning('no_pin_dispatch watch failed (non-fatal)', ['error' => $e->getMessage()]);
             }
             
             // Single rider summary (backward compatible)
@@ -16199,9 +17260,23 @@ class RiderController extends Controller
                 })
                 ->where('u.is_active', 1)
                 ->orderBy('u.fullname')
-                ->limit(100)
-                ->get();
-            
+                ->limit(100);
+
+            // ⭐ GPS-accuracy hardening columns — same guarded set the web page selects, so the
+            // phone and the web keep showing identical day checks. Only once the SQL is applied.
+            if (\Illuminate\Support\Facades\Schema::hasColumn('t_ops_attendance', 'meter_start_gps')) {
+                $query->addSelect([
+                    'a.meter_start_gps',
+                    'a.meter_start_lat',
+                    'a.meter_start_lng',
+                    'a.meter_start_accuracy_m',
+                    'a.meter_start_distance_m',
+                    'a.meter_start_office_m',
+                    'a.checkout_attempt_accuracy_m',
+                ]);
+            }
+            $query = $query->get();
+
             // Resolve shifts using ShiftResolutionService
             $shiftService = new \App\Services\ShiftResolutionService();
             $formattedData = [];
@@ -16275,6 +17350,16 @@ class RiderController extends Controller
             //    skipped-home-start lock case has nothing else to hang the section on).
             $wjByUser = [];
             $bikeUidSet = [];
+            // Riders exempted from the meter in Rider Management ("Meter reading is compulsory"
+            // unticked) — the ⛽ tick must skip them on the phone exactly as it does on the web.
+            $meterExemptSet = [];
+            try {
+                $exUids = $uids ?? $query->pluck('user_id')->filter()->values()->all();
+                if (!empty($exUids) && \Illuminate\Support\Facades\Schema::hasColumn('t_ops_rider_profile', 'meter_required')) {
+                    $meterExemptSet = array_flip(DB::table('t_ops_rider_profile')->whereIn('user_id', $exUids)
+                        ->where('meter_required', 0)->pluck('user_id')->all());
+                }
+            } catch (\Throwable $e) { /* no column → nobody exempt */ }
             try {
                 $uids = $uids ?? $query->pluck('user_id')->filter()->values()->all();
                 if (!empty($uids) && \Illuminate\Support\Facades\Schema::hasColumn('t_ops_attendance', 'work_expected_by')) {
@@ -16283,11 +17368,17 @@ class RiderController extends Controller
                         ->where('company_bike', 1)->whereNotNull('home_latitude')->pluck('user_id')->all();
                     $bikeUidSet = array_flip($bikeUids);
                     if (!empty($bikeUids)) {
+                        $wCols = ['id', 'user_id', 'attendance_date', 'login_time', 'meter_start', 'meter_start_source',
+                                  'meter_start_recorded_at', 'work_expected_by', 'work_eta_min', 'work_distance_km',
+                                  'checkin_unlock_until', 'checkin_unlock_by', 'checkin_unlock_reason'];
+                        // Measured start-meter location — same guarded set the web page reads, so
+                        // the phone and the web describe the morning identically.
+                        if (\Illuminate\Support\Facades\Schema::hasColumn('t_ops_attendance', 'meter_start_gps')) {
+                            array_push($wCols, 'meter_start_gps', 'meter_start_distance_m', 'meter_start_office_m', 'meter_start_accuracy_m');
+                        }
                         $wRows = DB::table('t_ops_attendance')->whereIn('user_id', $bikeUids)
                             ->whereDate('attendance_date', $selectedDate)
-                            ->get(['id', 'user_id', 'attendance_date', 'login_time', 'meter_start', 'meter_start_source',
-                                   'meter_start_recorded_at', 'work_expected_by', 'work_eta_min', 'work_distance_km',
-                                   'checkin_unlock_until', 'checkin_unlock_by', 'checkin_unlock_reason']);
+                            ->get($wCols);
                         $wNames = DB::table('t_sys_user')->whereIn('id', array_filter($wRows->pluck('checkin_unlock_by')->all()))
                             ->pluck('fullname', 'id');
                         foreach ($wRows as $wr) {
@@ -16303,6 +17394,8 @@ class RiderController extends Controller
                                 'distance_km'   => $wr->work_distance_km !== null ? (float) $wr->work_distance_km : null,
                                 'recorded_at'   => $wr->meter_start_recorded_at ? substr((string) $wr->meter_start_recorded_at, 11, 5) : null,
                                 'source'        => $wr->meter_start_source,
+                                // WHERE it was recorded, as a measurement (null on pre-hardening rows).
+                                'place'         => \App\Services\Riders\WorkJourneyService::startPlace($wr),
                                 'minutes_late'  => $wjSvc->minutesLate($wr),
                                 'continuity'    => $wjSvc->continuity($wr),
                                 'checkin_unlock'=> [
@@ -16500,6 +17593,7 @@ class RiderController extends Controller
                     $employee['day_checks'] = $dcSvc->build([
                         'login_time' => $employee['login_time'], 'logout_time' => $employee['logout_time'],
                         'role_name' => $employee['role_name'] ?? null, 'company_bike' => !empty($employee['is_company_bike']),
+                        'meter_required' => isset($meterExemptSet[$employee['user_id']]) ? 0 : 1,
                         'meter_start' => $employee['meter_start'], 'meter_end' => $employee['meter_end'], 'meter_distance' => $employee['meter_distance'],
                         'road_distance_km' => $employee['road_distance_km'], 'gps_distance' => $employee['gps_distance'],
                         'checkout_info' => $employee['checkout_info'], 'home_journey' => $employee['home_journey'],
@@ -16818,7 +17912,15 @@ class RiderController extends Controller
             $overtimeDays = 0;
             $totalHours = 0;
             $totalOrdersDelivered = 0;
-            
+
+            // ⭐ Overtime = TARGET-based here too (owner ruling Jul-28) — the work beyond the
+            // daily target that earns BONUS LEAVE, matching the web popup, the Month tab and
+            // the payslip. Computed once; the per-day map feeds the day rows below.
+            $otSvcDet    = new \App\Services\HR\OvertimeService();
+            $otRangeDet  = $otSvcDet->overtimeForRange($userId, $startDate, $endDate);
+            $otByDateDet = $otRangeDet['dates'] ?? [];
+            $otMinutesDet = (int) ($otRangeDet['total'] ?? 0);
+
             foreach ($query as $record) {
                 $record->is_half_day = isset($halfDaySet[substr((string) $record->attendance_date, 0, 10)]);
                 // Calculate hours worked
@@ -16853,23 +17955,11 @@ class RiderController extends Controller
                     }
                 }
 
-                // A half-day counts no overtime either (owner's rule) — short-circuit to 0.
-                if (!$record->logout_time || $record->is_half_day) {
-                    $record->overtime_minutes = 0;
-                } elseif (!is_null($record->snap_overtime_minutes)) {
-                    $record->overtime_minutes = (int) $record->snap_overtime_minutes;
-                    if ($record->overtime_minutes > 0) { $overtimeDays++; }
-                } else {
-                    $dayEnd = $shiftService->getUserShift($userId, $record->attendance_date)['shift_end'] ?? null;
-                    $shiftEnd = $dayEnd ? strtotime($record->attendance_date . ' ' . $dayEnd) : null;
-                    $actualLogout = strtotime($record->attendance_date . ' ' . $record->logout_time);
-                    if ($shiftEnd && $actualLogout > $shiftEnd) {
-                        $overtimeDays++;
-                        $record->overtime_minutes = (int) (($actualLogout - $shiftEnd) / 60);
-                    } else {
-                        $record->overtime_minutes = 0;
-                    }
-                }
+                // Target-based overtime for THIS day, from the map above. The service already
+                // drops half-days and days with no checkout, so a missing key means none earned.
+                $recDateOtDet = substr((string) $record->attendance_date, 0, 10);
+                $record->overtime_minutes = (int) ($otByDateDet[$recDateOtDet] ?? 0);
+                if ($record->overtime_minutes > 0) { $overtimeDays++; }
 
                 // Add order count to total
                 $totalOrdersDelivered += $record->total_orders_delivered;
@@ -17060,6 +18150,11 @@ class RiderController extends Controller
                     'absent_days' => $absentDays,
                     'late_days' => $lateDays,
                     'overtime_days' => $overtimeDays,
+                    // Same shape the web popup returns — hours earned and the bonus days they
+                    // buy, from the one service payroll grants on.
+                    'overtime_minutes' => $otMinutesDet,
+                    'overtime_bonus_leaves' => $otSvcDet->bonusLeaves($otMinutesDet),
+                    'overtime_minutes_per_bonus' => $otSvcDet->minutesPerBonusDay(),
                     'total_hours' => round($totalHours, 1),
                     'total_orders_delivered' => $totalOrdersDelivered,
                     // ⭐ NEW: Meter/Distance statistics
@@ -17228,6 +18323,26 @@ class RiderController extends Controller
                 foreach ($ocMap as $uid => $days) { $officeCheckoutCounts[$uid] = count($days); }
             } catch (\Throwable $e) { $officeCheckoutCounts = []; }
 
+            // Same three flag families + missed meters the WEB Month tab shows, from the SAME
+            // batched services — so the phone's monthly card can't disagree with the web table.
+            // All guarded / non-fatal and additive (old APKs ignore the new keys).
+            $allUserIds = $users->pluck('user_id')->all();
+            $inFlagMap = [];
+            $outFlagMap = [];
+            $meterMissMap = [];
+            try {
+                $inFlagMap = (new \App\Services\Riders\WorkJourneyService())
+                    ->workIssueDays($allUserIds, $startDate, $effectiveEndDate);
+            } catch (\Throwable $e) { $inFlagMap = []; }
+            try {
+                $outFlagMap = (new \App\Services\Riders\HomeJourneyService())
+                    ->homeIssueDays($allUserIds, $startDate, $effectiveEndDate);
+            } catch (\Throwable $e) { $outFlagMap = []; }
+            try {
+                $meterMissMap = (new \App\Services\Riders\DayChecksService())
+                    ->meterMissDays($allUserIds, $startDate, $effectiveEndDate);
+            } catch (\Throwable $e) { $meterMissMap = []; }
+
             foreach ($users as $user) {
                 // Resolve shift using ShiftResolutionService (same as web) for accurate shift times
                 try {
@@ -17299,9 +18414,14 @@ class RiderController extends Controller
                 $lateMinutes = $lateOt['late_minutes'];
                 $overtimeDays = $lateOt['overtime_days'];
                 $overtimeMinutes = $lateOt['overtime_minutes'];
-                // TARGET-based overtime (worked beyond the shift length) — manager display.
-                $overtimeTargetMinutes = (new \App\Services\HR\OvertimeService())
+                // TARGET-based overtime (worked beyond the shift length) — this IS "overtime"
+                // on every manager screen (owner ruling Jul-28), because it is the work that
+                // earns BONUS LEAVE. Bonus days come from the same service payroll grants
+                // from, so mobile, web and the payslip always state the same thing.
+                $otSvcMob = new \App\Services\HR\OvertimeService();
+                $overtimeTargetMinutes = $otSvcMob
                     ->overtimeMinutes($user->user_id, $startDate, $effectiveEndDate);
+                $overtimeBonusLeaves = $otSvcMob->bonusLeaves($overtimeTargetMinutes);
 
                 // Calculate working days using ShiftResolutionService (same as web app),
                 // only up to today for the current month.
@@ -17342,7 +18462,13 @@ class RiderController extends Controller
                     'overtime_days' => $overtimeDays,
                     'overtime_minutes' => $overtimeMinutes,
                     'overtime_target_minutes' => $overtimeTargetMinutes,
+                    'overtime_bonus_leaves' => $overtimeBonusLeaves,
+                    'overtime_minutes_per_bonus' => $otSvcMob->minutesPerBonusDay(),
                     'office_checkouts_count' => (int) ($officeCheckoutCounts[$user->user_id] ?? 0), // R9.1 mobile
+                    // Web-parity flag counts (one "Flags" group on the card) + missed meters.
+                    'checkin_flag_days'  => (int) ($inFlagMap[$user->user_id]['days'] ?? 0),
+                    'checkout_flag_days' => (int) ($outFlagMap[$user->user_id]['days'] ?? 0),
+                    'meter_missed_days'  => (int) ($meterMissMap[$user->user_id]['days'] ?? 0),
                     'total_hours' => round($totalHours, 1),
                     'working_days' => $workingDays,
                     'attendance_percentage' => $workingDays > 0 ? round(($presentDays / $workingDays) * 100, 1) : 0,
@@ -17504,27 +18630,13 @@ class RiderController extends Controller
                 'created_by' => $user->id
             ]);
             
-            // Update balances (only if approved or cash)
+            // Update balances (only if approved or cash).
+            // Ledger L3: routed through the canonical gate (see LedgerController::store for
+            // the full note). Sets balance_updated so a later reject/edit can reverse it,
+            // and locks both account rows. Verified arithmetically identical to the old
+            // inline code for every account pair this path produces (asset↔asset).
             if ($approvalStatus === \App\Models\FIN\LedgerModel::STATUS_APPROVED) {
-                // From account: debit or credit based on account type
-                if ($fromAccount->account_type === 'asset') {
-                    // Money going OUT from asset = Decrease
-                    $fromAccount->current_balance -= $request->amount;
-                } else {
-                    // Money going OUT from liability/income/equity = Increase
-                    $fromAccount->current_balance += $request->amount;
-                }
-                $fromAccount->save();
-                
-                // To account: opposite
-                if ($toAccount->account_type === 'asset') {
-                    // Money coming IN to asset = Increase
-                    $toAccount->current_balance += $request->amount;
-                } else {
-                    // Money coming IN to liability/income/equity = Decrease
-                    $toAccount->current_balance -= $request->amount;
-                }
-                $toAccount->save();
+                (new \App\Services\FIN\BalancePostingService())->apply($ledger);
             }
             
             DB::commit();
@@ -19069,23 +20181,18 @@ class RiderController extends Controller
             $transaction->approval_date = now()->toDateString(); // ← FIXED: Use approval_date (DATE) not approved_at (DATETIME)
             $transaction->save();
             
-            // Update account balances (EXACT web app logic)
-            // From account: Asset accounts decrease on outflow
-            if ($fromAccount->account_type === 'asset') {
-                $fromAccount->current_balance -= $transaction->amount;
-            } else {
-                $fromAccount->current_balance += $transaction->amount;
-            }
-            $fromAccount->save();
-            
-            // To account: Asset accounts increase on inflow
-            if ($toAccount->account_type === 'asset') {
-                $toAccount->current_balance += $transaction->amount;
-            } else {
-                $toAccount->current_balance -= $transaction->amount;
-            }
-            $toAccount->save();
-            
+            // Update account balances via the canonical gate (Ledger L3).
+            // This is the mobile Daily Closing approve. It previously hand-rolled the same
+            // "asset-aware" arithmetic as the web approve path but never set balance_updated,
+            // which is why settlement deposits approved from the phone since Mar-2026 were
+            // left unstamped: the money moved correctly, but a later reject could not reverse
+            // it (reverse() no-ops on an unstamped row) and the Finance Hub — which counts
+            // only stamped rows — did not see them.
+            // Verified arithmetically identical to the old code for this path's account pair
+            // (employee_cash asset → cash asset), so no balance changes.
+            (new \App\Services\FIN\BalancePostingService())->apply($transaction);
+
+
             // Process settlement metadata if exists (EXACT web app logic)
             if ($transaction->settlement_metadata && isset($transaction->settlement_metadata['invoice_ids'])) {
                 \Log::info('Processing invoice settlement via mobile', [
@@ -22576,7 +23683,8 @@ class RiderController extends Controller
 
             $query = OrderModel::with(['customer' => function($q) {
                     $q->select('id', 'first_name', 'last_name', 'phone_original', 'latitude', 'longitude',
-                               'geocoded_latitude', 'geocoded_longitude', 'verified_location_url', 'notes',
+                               'geocoded_latitude', 'geocoded_longitude', 'geocode_precision',
+                               'verified_location_url', 'notes',
                                'verified_location_saved_by', 'verified_location_saved_at', 'delivery_region_id');
                 }])
                 ->with(['assignedRider' => function($q) {

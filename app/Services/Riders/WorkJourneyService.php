@@ -111,6 +111,52 @@ class WorkJourneyService
         return 'none';
     }
 
+    /**
+     * WHERE was the morning start meter actually recorded? Pure — reads the meter_start_*
+     * columns written by RiderController::uploadMeterPicture.
+     *
+     * This exists because `meter_start_source = 'checkin'` was being rendered as "typed at
+     * office", which is a claim the system never verified: that value is also what you get
+     * when the phone sent NO usable fix at all (Waseem, Jul-25 — he was at home). Now the
+     * row carries the measured distance, so the UI can state a fact:
+     *   home   — GPS inside the home fence
+     *   office — GPS inside the shift-location fence (the only case that may say "at office")
+     *   away   — a good fix, neither place: report the metres from home
+     *   coarse — a fix too vague to place him at all
+     *   none   — no usable fix was sent
+     * Returns null for rows recorded before this shipped, so callers keep their old wording.
+     *
+     * @param object|array $row attendance row
+     */
+    public static function startPlace($row): ?array
+    {
+        $g = fn ($k) => is_array($row) ? ($row[$k] ?? null) : ($row->$k ?? null);
+        $verdict = $g('meter_start_gps');
+        if ($verdict === null || $verdict === '') {
+            return null; // pre-hardening row (or SQL not applied) — nothing measured to show
+        }
+        $dist = $g('meter_start_distance_m'); $dist = $dist !== null ? (int) $dist : null;
+        $acc  = $g('meter_start_accuracy_m'); $acc  = $acc !== null ? (float) $acc : null;
+        $off  = $g('meter_start_office_m');   $off  = $off !== null ? (int) $off : null;
+
+        $fmt = fn ($m) => $m === null ? null : ($m < 1000 ? ($m . ' m') : (round($m / 1000, 1) . ' km'));
+
+        switch ((string) $verdict) {
+            case 'home':   $label = '🏠 at home'; break;
+            case 'office': $label = '⌂ at office'; break;
+            case 'away':   $label = '📍 ' . ($fmt($dist) ?? 'away') . ' from home'; break;
+            case 'coarse': $label = '❓ location unclear' . ($acc !== null ? ' (±' . (int) round($acc) . ' m fix)' : ''); break;
+            default:       $label = '❓ location unavailable'; break; // 'none'
+        }
+        return [
+            'verdict'    => (string) $verdict,
+            'label'      => $label,
+            'distance_m' => $dist,
+            'office_m'   => $off,
+            'accuracy_m' => $acc,
+        ];
+    }
+
     /** login_time (TIME) + attendance_date → unix ts, null when absent. */
     public function loginTimestamp($att): ?int
     {

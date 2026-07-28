@@ -83,7 +83,17 @@
         </div>
         <div class="divide-y divide-amber-100">
             @foreach($pendingTransferRecords as $ptr)
-            <div class="px-5 py-3 flex items-center justify-between gap-4">
+            @php
+                // Aging: stock has already left the warehouse, so a transfer sitting here is
+                // stock nobody can sell. Amber past 24h, red past 48h.
+                $ptrAgeHours = $ptr->created_at ? abs($ptr->created_at->diffInHours(now())) : 0;
+                $ptrIsOld = $ptrAgeHours >= 48;
+                $ptrIsAging = !$ptrIsOld && $ptrAgeHours >= 24;
+                $ptrRowStyle = $ptrIsOld
+                    ? 'border-left: 3px solid #dc2626; background-color: #fef2f2;'
+                    : ($ptrIsAging ? 'border-left: 3px solid #f59e0b;' : '');
+            @endphp
+            <div class="px-5 py-3 flex items-center justify-between gap-4" style="{{ $ptrRowStyle }}">
                 <div class="flex items-center gap-3 flex-1 min-w-0">
                     <div class="w-9 h-9 rounded-lg flex items-center justify-center text-sm font-bold shrink-0" style="background-color: #fef3c7; color: #92400e;">
                         {{ strtoupper(substr($ptr->product ? $ptr->product->title : '?', 0, 1)) }}
@@ -100,6 +110,12 @@
                             <span>🏭→🏪</span>
                             <span>by {{ $ptr->requester ? $ptr->requester->fullname : '—' }}</span>
                             <span>· {{ $ptr->created_at->format('M d, h:i A') }}</span>
+                            @if($ptrIsOld || $ptrIsAging)
+                                <span class="px-1.5 py-0.5 rounded font-bold text-[10px]"
+                                      style="{{ $ptrIsOld ? 'background-color:#fee2e2; color:#991b1b;' : 'background-color:#fef3c7; color:#92400e;' }}">
+                                    ⏱ pending {{ $ptrAgeHours }}h
+                                </span>
+                            @endif
                         </div>
                         @if($ptr->notes)
                             <div class="text-[10px] text-gray-400 mt-0.5 truncate">📝 {{ $ptr->notes }}</div>
@@ -126,7 +142,11 @@
         @forelse($products as $product)
         @php
             $firstVariant = $product->variants->first();
-            $storeQty = $product->variants->sum('inventory_quantity') ?: ($product->total_inventory ?? 0);
+            // NOTE: `?:` would treat a genuine zero as "missing" and fall through to the
+            // denormalised total_inventory column, showing stale stock for a sold-out product.
+            $storeQty = $product->variants->isNotEmpty()
+                ? (int) $product->variants->sum('inventory_quantity')
+                : (int) ($product->total_inventory ?? 0);
             $price = $firstVariant ? $firstVariant->price : 0;
             $whData = $warehouseInventory[$product->id] ?? null;
             $warehouseQty = $whData['warehouse_qty'] ?? 0;
@@ -173,9 +193,11 @@
                             <div class="mt-1 text-[10px] text-amber-600 font-medium">⏳ +{{ $pendingQty }} pending</div>
                         @endif
                     </div>
-                    <!-- Warehouse Inventory -->
-                    <div class="rounded-lg p-3 text-center {{ $isLowStock ? 'bg-red-50' : 'bg-amber-50' }}">
-                        <div class="text-xs {{ $isLowStock ? 'text-red-600' : 'text-amber-600' }} font-medium mb-1">🏭 Warehouse</div>
+                    <!-- Warehouse Inventory (clickable for the full warehouse ledger) -->
+                    <div class="rounded-lg p-3 text-center cursor-pointer transition-colors group {{ $isLowStock ? 'bg-red-50 hover:bg-red-100' : 'bg-amber-50 hover:bg-amber-100' }}"
+                         onclick="openWarehouseLogModal({{ $product->id }}, '{{ addslashes($product->title) }}', {{ $warehouseQty }})"
+                         title="Click to see the full warehouse in/out history">
+                        <div class="text-xs {{ $isLowStock ? 'text-red-600' : 'text-amber-600' }} font-medium mb-1">🏭 Warehouse <span class="opacity-0 group-hover:opacity-100 transition-opacity text-[9px]">📋</span></div>
                         <div class="text-xl font-bold {{ $isLowStock ? 'text-red-800' : 'text-amber-800' }}">{{ $warehouseQty }}</div>
                         <div class="text-[10px] {{ $isLowStock ? 'text-red-500' : 'text-amber-500' }}">{{ $unit }}</div>
                         @if($isLowStock)
@@ -189,6 +211,15 @@
                     <span class="text-xs text-gray-600">Combined Total</span>
                     <span class="text-sm font-bold text-gray-800">{{ $storeQty + $warehouseQty }} {{ $unit }}</span>
                 </div>
+                {{-- In-transit: a pending transfer has ALREADY left the warehouse but has not yet
+                     been accepted into the store, so it is in neither tile and NOT in the
+                     Combined Total above. Shown explicitly rather than silently missing. --}}
+                @if($pendingQty > 0)
+                <div class="mt-1 rounded-lg px-3 py-2 flex items-center justify-between" style="background-color:#fffbeb; border:1px solid #fde68a;">
+                    <span class="text-xs" style="color:#92400e;">🚚 In transit <span class="text-[10px]" style="color:#b45309;">(left warehouse, awaiting store)</span></span>
+                    <span class="text-sm font-bold" style="color:#92400e;">{{ $pendingQty }} {{ $unit }}</span>
+                </div>
+                @endif
             </div>
 
             <!-- Actions -->
@@ -228,10 +259,14 @@
 {{-- ⭐ MODALS: Pushed to @stack('modals') so they render at <body> level for proper fixed positioning --}}
 @push('modals')
 <!-- Stock In/Adjust Modal -->
-<div id="stockModal" class="hidden fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4" style="z-index: 999999;" onclick="if(event.target===this)closeStockModal()">
-    <div class="w-full max-w-lg bg-white rounded-2xl shadow-2xl text-left overflow-hidden" onclick="event.stopPropagation()">
+{{-- ⚠️ Shell is inline-styled deliberately. inset-0, flex, max-w-*, max-h-*, overflow-y-auto
+     and flex-shrink-0 are ALL PURGED from the built styles.css (verified: 0 occurrences), so a
+     class-only shell renders un-positioned and its body cannot scroll. Same fix as invLogModal
+     below. See the metronic-v9 purge note. --}}
+<div id="stockModal" class="hidden fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4" style="z-index: 999999; position:fixed; top:0; right:0; bottom:0; left:0; background-color:rgba(0,0,0,0.5); display:flex; align-items:center; justify-content:center; padding:1rem;" onclick="if(event.target===this)closeStockModal()">
+    <div class="w-full max-w-lg bg-white rounded-2xl shadow-2xl text-left overflow-hidden" style="width:100%; max-width:32rem; max-height:90vh; display:flex; flex-direction:column; background:#fff; border-radius:1rem; overflow:hidden; box-shadow:0 20px 25px -5px rgba(0,0,0,0.10), 0 10px 10px -5px rgba(0,0,0,0.04);" onclick="event.stopPropagation()">
         <!-- Header -->
-        <div class="px-6 py-4 border-b border-gray-100" style="background: linear-gradient(to right, #fffbeb, #fff7ed);">
+        <div class="px-6 py-4 border-b border-gray-100" style="background: linear-gradient(to right, #fffbeb, #fff7ed); flex-shrink:0;">
             <div class="flex items-center justify-between">
                 <div class="flex items-center gap-3">
                     <div class="w-10 h-10 rounded-xl bg-amber-100 flex items-center justify-center">
@@ -252,7 +287,7 @@
             <input type="hidden" name="product_id" id="stock_product_id">
             <input type="hidden" name="product_variant_id" id="stock_variant_id">
             <input type="hidden" name="business_unit_id" value="{{ $khaasBU->id }}">
-            <div class="px-6 py-4 space-y-4 max-h-[70vh] overflow-y-auto">
+            <div class="px-6 py-4 space-y-4 max-h-[70vh] overflow-y-auto" style="flex:1 1 auto; min-height:0; overflow-y:auto; overscroll-behavior:contain;">
                 <!-- Product Info Card -->
                 <div class="flex items-center gap-3 p-3 bg-gray-50 rounded-xl border border-gray-100">
                     <div class="w-10 h-10 rounded-lg bg-amber-100 flex items-center justify-center text-lg font-bold text-amber-700" id="stock_product_initial">—</div>
@@ -299,6 +334,21 @@
                         </label>
                     </div>
                 </div>
+                <!-- Adjust direction (only meaningful for change_type=adjustment) -->
+                <div id="stock_adjust_direction_wrap" style="display:none;">
+                    <label class="block text-sm font-semibold text-gray-700 mb-2">Correction Direction</label>
+                    <div class="grid grid-cols-2 gap-2">
+                        <label class="flex items-center justify-center gap-2 p-2.5 border-2 rounded-xl cursor-pointer transition-all" style="border-color: #f59e0b; background-color: #fffbeb;" id="stock_dir_add">
+                            <input type="radio" name="adjust_direction" value="add" class="sr-only" checked onchange="updateStockDirStyles()">
+                            <span class="text-sm font-medium text-gray-900">➕ Add</span>
+                        </label>
+                        <label class="flex items-center justify-center gap-2 p-2.5 border-2 border-gray-200 rounded-xl cursor-pointer transition-all" id="stock_dir_reduce">
+                            <input type="radio" name="adjust_direction" value="reduce" class="sr-only" onchange="updateStockDirStyles()">
+                            <span class="text-sm font-medium text-gray-900">➖ Reduce</span>
+                        </label>
+                    </div>
+                    <p class="text-[11px] text-gray-400 mt-1">Reduce subtracts from the warehouse. Stock cannot go below zero.</p>
+                </div>
                 <!-- Quantity -->
                 <div>
                     <label class="block text-sm font-semibold text-gray-700 mb-1.5">Quantity</label>
@@ -313,7 +363,7 @@
                 </div>
             </div>
             <!-- Footer -->
-            <div class="px-6 py-3 border-t border-gray-100 bg-gray-50 flex items-center justify-end gap-3">
+            <div class="px-6 py-3 border-t border-gray-100 bg-gray-50 flex items-center justify-end gap-3" style="flex-shrink:0; display:flex; align-items:center; justify-content:flex-end; gap:0.75rem;">
                 <button type="button" onclick="closeStockModal()" class="px-5 py-2.5 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-xl hover:bg-gray-50 transition-colors">Cancel</button>
                 <button type="submit" class="px-5 py-2.5 text-sm font-medium text-white rounded-xl shadow-sm transition-colors" style="background-color: #d97706;" onmouseover="this.style.backgroundColor='#b45309'" onmouseout="this.style.backgroundColor='#d97706'">
                     Update Stock
@@ -324,10 +374,10 @@
 </div>
 
 <!-- Store Stock Adjust Modal -->
-<div id="storeStockModal" class="hidden fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4" style="z-index: 999999;" onclick="if(event.target===this)closeStoreStockModal()">
-    <div class="w-full max-w-lg bg-white rounded-2xl shadow-2xl text-left overflow-hidden" onclick="event.stopPropagation()">
+<div id="storeStockModal" class="hidden fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4" style="z-index: 999999; position:fixed; top:0; right:0; bottom:0; left:0; background-color:rgba(0,0,0,0.5); display:flex; align-items:center; justify-content:center; padding:1rem;" onclick="if(event.target===this)closeStoreStockModal()">
+    <div class="w-full max-w-lg bg-white rounded-2xl shadow-2xl text-left overflow-hidden" style="width:100%; max-width:32rem; max-height:90vh; display:flex; flex-direction:column; background:#fff; border-radius:1rem; overflow:hidden; box-shadow:0 20px 25px -5px rgba(0,0,0,0.10), 0 10px 10px -5px rgba(0,0,0,0.04);" onclick="event.stopPropagation()">
         <!-- Header -->
-        <div class="px-6 py-4 border-b border-gray-100" style="background: linear-gradient(to right, #eff6ff, #e0f2fe);">
+        <div class="px-6 py-4 border-b border-gray-100" style="background: linear-gradient(to right, #eff6ff, #e0f2fe); flex-shrink:0;">
             <div class="flex items-center justify-between">
                 <div class="flex items-center gap-3">
                     <div class="w-10 h-10 rounded-xl bg-blue-100 flex items-center justify-center">
@@ -348,7 +398,7 @@
             <input type="hidden" name="product_id" id="store_stock_product_id">
             <input type="hidden" name="product_variant_id" id="store_stock_variant_id">
             <input type="hidden" name="business_unit_id" value="{{ $khaasBU->id }}">
-            <div class="px-6 py-4 space-y-4 max-h-[70vh] overflow-y-auto">
+            <div class="px-6 py-4 space-y-4 max-h-[70vh] overflow-y-auto" style="flex:1 1 auto; min-height:0; overflow-y:auto; overscroll-behavior:contain;">
                 <!-- Product Info Card -->
                 <div class="flex items-center gap-3 p-3 bg-blue-50 rounded-xl border border-blue-100">
                     <div class="w-10 h-10 rounded-lg bg-blue-100 flex items-center justify-center text-lg font-bold text-blue-700" id="store_stock_product_initial">—</div>
@@ -395,6 +445,21 @@
                         </label>
                     </div>
                 </div>
+                <!-- Adjust direction (only meaningful for change_type=store_adjustment) -->
+                <div id="store_adjust_direction_wrap" style="display:none;">
+                    <label class="block text-sm font-semibold text-gray-700 mb-2">Correction Direction</label>
+                    <div class="grid grid-cols-2 gap-2">
+                        <label class="flex items-center justify-center gap-2 p-2.5 border-2 rounded-xl cursor-pointer transition-all" style="border-color: #3b82f6; background-color: #eff6ff;" id="store_dir_add">
+                            <input type="radio" name="adjust_direction" value="add" class="sr-only" checked onchange="updateStoreDirStyles()">
+                            <span class="text-sm font-medium text-gray-900">➕ Add</span>
+                        </label>
+                        <label class="flex items-center justify-center gap-2 p-2.5 border-2 border-gray-200 rounded-xl cursor-pointer transition-all" id="store_dir_reduce">
+                            <input type="radio" name="adjust_direction" value="reduce" class="sr-only" onchange="updateStoreDirStyles()">
+                            <span class="text-sm font-medium text-gray-900">➖ Reduce</span>
+                        </label>
+                    </div>
+                    <p class="text-[11px] text-gray-400 mt-1">Reduce subtracts from store stock. Stock cannot go below zero.</p>
+                </div>
                 <!-- Quantity -->
                 <div>
                     <label class="block text-sm font-semibold text-gray-700 mb-1.5">Quantity</label>
@@ -409,7 +474,7 @@
                 </div>
             </div>
             <!-- Footer -->
-            <div class="px-6 py-3 border-t border-gray-100 bg-gray-50 flex items-center justify-end gap-3">
+            <div class="px-6 py-3 border-t border-gray-100 bg-gray-50 flex items-center justify-end gap-3" style="flex-shrink:0; display:flex; align-items:center; justify-content:flex-end; gap:0.75rem;">
                 <button type="button" onclick="closeStoreStockModal()" class="px-5 py-2.5 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-xl hover:bg-gray-50 transition-colors">Cancel</button>
                 <button type="submit" class="px-5 py-2.5 text-sm font-medium text-white rounded-xl shadow-sm transition-colors" style="background-color: #2563eb;" onmouseover="this.style.backgroundColor='#1d4ed8'" onmouseout="this.style.backgroundColor='#2563eb'">
                     Update Store Stock
@@ -420,9 +485,9 @@
 </div>
 
 <!-- Reject Transfer Modal (for pending approvals) -->
-<div id="productRejectModal" class="hidden fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4" style="z-index: 999999;" onclick="if(event.target===this)closeProductRejectModal()">
-    <div class="bg-white rounded-2xl shadow-2xl max-w-md w-full overflow-hidden" onclick="event.stopPropagation()">
-        <div class="px-6 py-5 border-b border-gray-100" style="background: linear-gradient(to right, #fef2f2, #fff7ed);">
+<div id="productRejectModal" class="hidden fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4" style="z-index: 999999; position:fixed; top:0; right:0; bottom:0; left:0; background-color:rgba(0,0,0,0.5); display:flex; align-items:center; justify-content:center; padding:1rem;" onclick="if(event.target===this)closeProductRejectModal()">
+    <div class="bg-white rounded-2xl shadow-2xl max-w-md w-full overflow-hidden" style="width:100%; max-width:28rem; max-height:90vh; display:flex; flex-direction:column; background:#fff; border-radius:1rem; overflow:hidden; box-shadow:0 20px 25px -5px rgba(0,0,0,0.10), 0 10px 10px -5px rgba(0,0,0,0.04);" onclick="event.stopPropagation()">
+        <div class="px-6 py-5 border-b border-gray-100" style="background: linear-gradient(to right, #fef2f2, #fff7ed); flex-shrink:0;">
             <div class="flex items-center gap-3">
                 <div class="w-10 h-10 rounded-xl bg-red-100 flex items-center justify-center text-xl">❌</div>
                 <div>
@@ -433,11 +498,11 @@
         </div>
         <form id="productRejectForm" method="POST">
             @csrf
-            <div class="px-6 py-5">
+            <div class="px-6 py-5" style="flex:1 1 auto; min-height:0; overflow-y:auto;">
                 <label class="block text-sm font-semibold text-gray-700 mb-2">Reason for Rejection</label>
                 <textarea name="reason" rows="3" class="w-full px-4 py-3 border-2 border-gray-200 rounded-xl text-sm focus:ring-2 focus:ring-red-500 focus:border-red-500 resize-none" placeholder="Provide a reason..." required></textarea>
             </div>
-            <div class="px-6 py-4 border-t border-gray-100 bg-gray-50 flex items-center justify-end gap-3">
+            <div class="px-6 py-4 border-t border-gray-100 bg-gray-50 flex items-center justify-end gap-3" style="flex-shrink:0; display:flex; align-items:center; justify-content:flex-end; gap:0.75rem;">
                 <button type="button" onclick="closeProductRejectModal()" class="px-5 py-2.5 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-xl hover:bg-gray-50">Cancel</button>
                 <button type="submit" class="px-5 py-2.5 text-sm font-medium text-white rounded-xl shadow-sm" style="background-color: #dc2626;" onmouseover="this.style.backgroundColor='#b91c1c'" onmouseout="this.style.backgroundColor='#dc2626'">Reject Transfer</button>
             </div>
@@ -446,10 +511,10 @@
 </div>
 
 <!-- Transfer to Store Modal -->
-<div id="transferModal" class="hidden fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4" style="z-index: 999999;" onclick="if(event.target===this)closeTransferModal()">
-    <div class="w-full max-w-lg bg-white rounded-2xl shadow-2xl text-left overflow-hidden" onclick="event.stopPropagation()">
+<div id="transferModal" class="hidden fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4" style="z-index: 999999; position:fixed; top:0; right:0; bottom:0; left:0; background-color:rgba(0,0,0,0.5); display:flex; align-items:center; justify-content:center; padding:1rem;" onclick="if(event.target===this)closeTransferModal()">
+    <div class="w-full max-w-lg bg-white rounded-2xl shadow-2xl text-left overflow-hidden" style="width:100%; max-width:32rem; max-height:90vh; display:flex; flex-direction:column; background:#fff; border-radius:1rem; overflow:hidden; box-shadow:0 20px 25px -5px rgba(0,0,0,0.10), 0 10px 10px -5px rgba(0,0,0,0.04);" onclick="event.stopPropagation()">
         <!-- Header -->
-        <div class="px-6 py-4 border-b border-gray-100" style="background: linear-gradient(to right, #eff6ff, #eef2ff);">
+        <div class="px-6 py-4 border-b border-gray-100" style="background: linear-gradient(to right, #eff6ff, #eef2ff); flex-shrink:0;">
             <div class="flex items-center justify-between">
                 <div class="flex items-center gap-3">
                     <div class="w-10 h-10 rounded-xl bg-blue-100 flex items-center justify-center">
@@ -470,7 +535,7 @@
             <input type="hidden" name="product_id" id="transfer_product_id">
             <input type="hidden" name="product_variant_id" id="transfer_variant_id">
             <input type="hidden" name="business_unit_id" value="{{ $khaasBU->id }}">
-            <div class="px-6 py-4 space-y-4 max-h-[70vh] overflow-y-auto">
+            <div class="px-6 py-4 space-y-4 max-h-[70vh] overflow-y-auto" style="flex:1 1 auto; min-height:0; overflow-y:auto; overscroll-behavior:contain;">
                 <!-- Product Info Card -->
                 <div class="flex items-center gap-3 p-3 bg-gray-50 rounded-xl border border-gray-100">
                     <div class="w-10 h-10 rounded-lg bg-blue-100 flex items-center justify-center text-lg font-bold text-blue-700" id="transfer_product_initial">—</div>
@@ -516,7 +581,7 @@
                 </div>
             </div>
             <!-- Footer -->
-            <div class="px-6 py-3 border-t border-gray-100 bg-gray-50 flex items-center justify-end gap-3">
+            <div class="px-6 py-3 border-t border-gray-100 bg-gray-50 flex items-center justify-end gap-3" style="flex-shrink:0; display:flex; align-items:center; justify-content:flex-end; gap:0.75rem;">
                 <button type="button" onclick="closeTransferModal()" class="px-5 py-2.5 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-xl hover:bg-gray-50 transition-colors">Cancel</button>
                 <button type="submit" class="px-5 py-2.5 text-sm font-medium text-white rounded-xl shadow-sm transition-colors" style="background-color: #2563eb;" onmouseover="this.style.backgroundColor='#1d4ed8'" onmouseout="this.style.backgroundColor='#2563eb'">
                     🔄 Initiate Transfer
@@ -525,39 +590,48 @@
         </form>
     </div>
 </div>
-<!-- Store Inventory Transaction Log Modal -->
-<div id="storeLogModal" class="hidden fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4" style="z-index: 999999; top:0; right:0; bottom:0; left:0; background-color:rgba(0,0,0,0.5); padding:1rem;" onclick="if(event.target===this)closeStoreLogModal()">
+{{-- Inventory Transaction Log Modal — shared by BOTH the Store tile and the Warehouse tile.
+     One modal, two modes (see openStoreLogModal / openWarehouseLogModal below).
+     ⚠️ The shell is inline-styled on purpose: the purged styles.css drops inset-0 / max-h /
+     max-w / overflow-y-auto / flex-shrink-0, which makes class-only modal shells render in
+     the top-left corner and refuse to scroll. Do not "clean this up" into classes. --}}
+<div id="invLogModal" class="hidden fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4" style="z-index: 999999; position:fixed; top:0; right:0; bottom:0; left:0; background-color:rgba(0,0,0,0.5); display:flex; align-items:center; justify-content:center; padding:1rem;" onclick="if(event.target===this)closeInvLogModal()">
     <div class="w-full max-w-xl bg-white rounded-2xl shadow-2xl text-left overflow-hidden" style="width:100%; max-width:36rem; max-height:85vh; display:flex; flex-direction:column; background:#fff; border-radius:1rem; box-shadow:0 20px 25px -5px rgba(0,0,0,0.10), 0 10px 10px -5px rgba(0,0,0,0.04);" onclick="event.stopPropagation()">
         <!-- Header (fixed) -->
-        <div class="px-6 py-4 border-b border-gray-100" style="background: linear-gradient(to right, #eff6ff, #e0f2fe); flex-shrink:0; padding:1rem 1.5rem;">
+        <div id="inv-log-header" class="px-6 py-4 border-b border-gray-100" style="background: linear-gradient(to right, #eff6ff, #e0f2fe); flex-shrink:0; padding:1rem 1.5rem;">
             <div class="flex items-center justify-between">
                 <div class="flex items-center gap-3">
-                    <div class="w-10 h-10 rounded-xl bg-blue-100 flex items-center justify-center">
-                        <span class="text-xl">📋</span>
+                    <div id="inv-log-icon-wrap" class="w-10 h-10 rounded-xl flex items-center justify-center" style="background-color:#dbeafe;">
+                        <span id="inv-log-icon" class="text-xl">📋</span>
                     </div>
                     <div>
-                        <h3 id="store-log-title" class="text-lg font-bold text-gray-900">Store Inventory Log</h3>
+                        <h3 id="inv-log-title" class="text-lg font-bold text-gray-900">Inventory Log</h3>
                         <p class="text-xs text-gray-500 mt-0.5">
-                            Current balance: <span id="store-log-balance" class="font-bold text-blue-700">—</span> units
+                            Current balance: <span id="inv-log-balance" class="font-bold" style="color:#1d4ed8;">—</span> <span id="inv-log-unit">units</span>
                         </p>
                     </div>
                 </div>
-                <button onclick="closeStoreLogModal()" class="w-8 h-8 rounded-lg flex items-center justify-center text-gray-400 hover:text-gray-600 hover:bg-gray-100 transition-colors">
+                <button onclick="closeInvLogModal()" class="w-8 h-8 rounded-lg flex items-center justify-center text-gray-400 hover:text-gray-600 hover:bg-gray-100 transition-colors">
                     <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
                 </button>
             </div>
+            <!-- Type filter chips (warehouse mode only; hidden for the store log) -->
+            <div id="inv-log-filters" class="flex flex-wrap items-center gap-1.5 mt-3" style="display:none;"></div>
         </div>
         <!-- Body (scrolls; header & footer stay pinned) -->
-        <div id="store-log-body" style="flex:1 1 auto; min-height:0; overflow-y:auto; overscroll-behavior:contain;">
+        <div id="inv-log-body" style="flex:1 1 auto; min-height:0; overflow-y:auto; overscroll-behavior:contain;">
             <div class="flex items-center justify-center py-12 text-gray-400">
                 <svg class="animate-spin w-6 h-6 mr-2" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
                 Loading transactions...
             </div>
         </div>
         <!-- Footer (fixed) -->
-        <div class="px-6 py-3 border-t border-gray-100 bg-gray-50 flex items-center justify-between" style="flex-shrink:0; padding:0.75rem 1.5rem;">
-            <p class="text-[10px] text-gray-400">Showing recent transactions that affected store inventory</p>
-            <button onclick="closeStoreLogModal()" class="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors">Close</button>
+        <div class="px-6 py-3 border-t border-gray-100 bg-gray-50 flex items-center justify-between gap-3" style="flex-shrink:0; padding:0.75rem 1.5rem;">
+            <p id="inv-log-footnote" class="text-[10px] text-gray-400">Showing recent transactions</p>
+            <div class="flex items-center gap-2">
+                <button id="inv-log-more" onclick="loadMoreInvLog()" class="px-3 py-2 text-sm font-medium rounded-lg transition-colors" style="display:none; background-color:#f3f4f6; color:#374151; border:1px solid #d1d5db;">Load more</button>
+                <button onclick="closeInvLogModal()" class="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors">Close</button>
+            </div>
         </div>
     </div>
 </div>
@@ -574,6 +648,10 @@ function openStockModal(productId, productName, variantId, currentQty) {
     // Reset radio to stock_in
     var stockInRadio = document.querySelector('input[name="change_type"][value="stock_in"]');
     if (stockInRadio) stockInRadio.checked = true;
+    // Reset the correction direction so a previous "Reduce" can't leak into the next open.
+    var stockDirAdd = document.querySelector('#stockModal input[name="adjust_direction"][value="add"]');
+    if (stockDirAdd) stockDirAdd.checked = true;
+    updateStockDirStyles();
     updateStockRadioStyles();
     var modal = document.getElementById('stockModal');
     modal.classList.remove('hidden');
@@ -603,13 +681,35 @@ function closeTransferModal() {
 }
 function updateStockRadioStyles() {
     var labels = ['stock_in', 'stock_out', 'count', 'adjustment'];
+    var selected = null;
     labels.forEach(function(val) {
         var label = document.getElementById('stock_radio_' + val);
         var radio = label ? label.querySelector('input[type="radio"]') : null;
         if (label && radio) {
             if (radio.checked) {
+                selected = val;
                 label.style.borderColor = '#f59e0b';
                 label.style.backgroundColor = '#fffbeb';
+            } else {
+                label.style.borderColor = '#e5e7eb';
+                label.style.backgroundColor = '';
+            }
+        }
+    });
+    // The Add/Reduce direction only applies to a correction; the server ignores the field for
+    // every other action, but hiding it keeps the form honest.
+    var wrap = document.getElementById('stock_adjust_direction_wrap');
+    if (wrap) wrap.style.display = (selected === 'adjustment') ? 'block' : 'none';
+}
+
+function updateStockDirStyles() {
+    ['add', 'reduce'].forEach(function(dir) {
+        var label = document.getElementById('stock_dir_' + dir);
+        var radio = label ? label.querySelector('input[type="radio"]') : null;
+        if (label && radio) {
+            if (radio.checked) {
+                label.style.borderColor = dir === 'reduce' ? '#ea580c' : '#f59e0b';
+                label.style.backgroundColor = dir === 'reduce' ? '#fff7ed' : '#fffbeb';
             } else {
                 label.style.borderColor = '#e5e7eb';
                 label.style.backgroundColor = '';
@@ -628,6 +728,9 @@ function openStoreStockModal(productId, productName, variantId, currentQty) {
     // Reset radio to store_stock_in
     var storeStockInRadio = document.querySelector('#storeStockModal input[name="change_type"][value="store_stock_in"]');
     if (storeStockInRadio) storeStockInRadio.checked = true;
+    var storeDirAdd = document.querySelector('#storeStockModal input[name="adjust_direction"][value="add"]');
+    if (storeDirAdd) storeDirAdd.checked = true;
+    updateStoreDirStyles();
     updateStoreStockRadioStyles();
     var modal = document.getElementById('storeStockModal');
     modal.classList.remove('hidden');
@@ -640,13 +743,33 @@ function closeStoreStockModal() {
 }
 function updateStoreStockRadioStyles() {
     var labels = ['store_stock_in', 'store_stock_out', 'store_count', 'store_adjustment'];
+    var selected = null;
     labels.forEach(function(val) {
         var label = document.getElementById('store_stock_radio_' + val);
         var radio = label ? label.querySelector('input[type="radio"]') : null;
         if (label && radio) {
             if (radio.checked) {
+                selected = val;
                 label.style.borderColor = '#3b82f6';
                 label.style.backgroundColor = '#eff6ff';
+            } else {
+                label.style.borderColor = '#e5e7eb';
+                label.style.backgroundColor = '';
+            }
+        }
+    });
+    var wrap = document.getElementById('store_adjust_direction_wrap');
+    if (wrap) wrap.style.display = (selected === 'store_adjustment') ? 'block' : 'none';
+}
+
+function updateStoreDirStyles() {
+    ['add', 'reduce'].forEach(function(dir) {
+        var label = document.getElementById('store_dir_' + dir);
+        var radio = label ? label.querySelector('input[type="radio"]') : null;
+        if (label && radio) {
+            if (radio.checked) {
+                label.style.borderColor = dir === 'reduce' ? '#ea580c' : '#3b82f6';
+                label.style.backgroundColor = dir === 'reduce' ? '#fff7ed' : '#eff6ff';
             } else {
                 label.style.borderColor = '#e5e7eb';
                 label.style.backgroundColor = '';
@@ -668,120 +791,384 @@ function closeProductRejectModal() {
 }
 
 // ═══════════════════════════════════════════════════════════════
-// ⭐ Store Inventory Transaction Log
+// ⭐ Inventory Transaction Log — ONE implementation, TWO modes
+//
+//   Store mode     → /khaas/products/{id}/store-log      (reconstructed history)
+//   Warehouse mode → /khaas/products/{id}/warehouse-log  (real ledger, pageable)
+//
+// Both endpoints return the same `events` shape (label / change / detail / sub_detail /
+// balance_before / balance_after / date_day / date_day_label / count_value), so the day
+// grouping and row rendering below are shared. Day open/close is computed CLIENT-side from
+// the flat event list so that "Load more" keeps the day totals correct across pages.
 // ═══════════════════════════════════════════════════════════════
+
+var invLog = {
+    mode: 'store',
+    productId: null,
+    productName: '',
+    events: [],
+    currentQty: 0,
+    unit: 'units',
+    typeFilter: '',
+    nextBeforeId: null,
+    hasMore: false,
+    loading: false
+};
+
+var INV_LOG_MODES = {
+    store: {
+        title: 'Store Log',
+        icon: '🏪',
+        iconBg: '#dbeafe',
+        headerBg: 'linear-gradient(to right, #eff6ff, #e0f2fe)',
+        accent: '#1d4ed8',
+        balanceLabel: 'Current Store Balance',
+        balanceBg: '#eff6ff',
+        balanceText: '#1d4ed8',
+        footnote: 'Reconstructed from transfers, order deductions and manual store adjustments',
+        showFilters: false,
+        emptyText: 'No store inventory transactions found yet.',
+        legend: [
+            ['#22c55e', 'Transfer In'],
+            ['#ef4444', 'Order Deduction'],
+            ['#3b82f6', 'Cancelled Restore'],
+            ['#8b5cf6', 'Manual Adjust']
+        ]
+    },
+    warehouse: {
+        title: 'Warehouse Ledger',
+        icon: '🏭',
+        iconBg: '#fef3c7',
+        headerBg: 'linear-gradient(to right, #fffbeb, #fff7ed)',
+        accent: '#b45309',
+        balanceLabel: 'Current Warehouse Balance',
+        balanceBg: '#fffbeb',
+        balanceText: '#92400e',
+        footnote: 'Complete in/out from the warehouse ledger — every movement, with who made it',
+        showFilters: true,
+        emptyText: 'No warehouse movements recorded for this product yet.',
+        legend: [
+            ['#22c55e', 'Stock In'],
+            ['#14b8a6', 'Batch Production'],
+            ['#ef4444', 'Stock Out'],
+            ['#f59e0b', 'Transfer to Store'],
+            ['#3b82f6', 'Rejected Return'],
+            ['#8b5cf6', 'Count'],
+            ['#f97316', 'Adjustment']
+        ]
+    }
+};
+
+var INV_LOG_FILTERS = [
+    {key: '', label: 'All'},
+    {key: 'stock_in', label: '📥 In'},
+    {key: 'stock_out', label: '📤 Out'},
+    {key: 'transfer', label: '🔄 Transfers'},
+    {key: 'count', label: '📊 Counts'},
+    {key: 'adjustment', label: '🔧 Adjustments'}
+];
+
 function openStoreLogModal(productId, productName, currentQty) {
-    document.getElementById('store-log-title').textContent = productName + ' — Store Log';
-    document.getElementById('store-log-balance').textContent = currentQty;
-    document.getElementById('store-log-body').innerHTML =
-        '<div class="flex items-center justify-center py-12 text-gray-400">' +
-        '<svg class="animate-spin w-6 h-6 mr-2" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>' +
-        'Loading transactions...</div>';
-
-    var modal = document.getElementById('storeLogModal');
-    modal.classList.remove('hidden');
-    document.body.style.overflow = 'hidden';
-
-    // Fetch transaction log
-    fetch('{{ url("khaas/products") }}/' + productId + '/store-log?limit=30')
-        .then(function(r) { return r.json(); })
-        .then(function(data) {
-            if (!data.success || !data.events || data.events.length === 0) {
-                document.getElementById('store-log-body').innerHTML =
-                    '<div class="text-center py-12 text-gray-400">' +
-                    '<div class="text-3xl mb-2">📭</div>' +
-                    '<p class="text-sm">No store inventory transactions found yet.</p></div>';
-                return;
-            }
-            renderStoreLog(data.days || [], data.current_store_qty);
-        })
-        .catch(function(err) {
-            document.getElementById('store-log-body').innerHTML =
-                '<div class="text-center py-12 text-red-400">' +
-                '<div class="text-3xl mb-2">⚠️</div>' +
-                '<p class="text-sm">Failed to load transactions.</p></div>';
-            console.error('Store log error:', err);
-        });
+    openInvLogModal('store', productId, productName, currentQty);
 }
 
-function closeStoreLogModal() {
-    document.getElementById('storeLogModal').classList.add('hidden');
+function openWarehouseLogModal(productId, productName, currentQty) {
+    openInvLogModal('warehouse', productId, productName, currentQty);
+}
+
+function openInvLogModal(mode, productId, productName, currentQty) {
+    var cfg = INV_LOG_MODES[mode];
+    invLog.mode = mode;
+    invLog.productId = productId;
+    invLog.productName = productName;
+    invLog.events = [];
+    invLog.currentQty = currentQty;
+    invLog.unit = 'units';
+    invLog.typeFilter = '';
+    invLog.nextBeforeId = null;
+    invLog.hasMore = false;
+
+    document.getElementById('inv-log-title').textContent = productName + ' — ' + cfg.title;
+    document.getElementById('inv-log-balance').textContent = currentQty;
+    document.getElementById('inv-log-balance').style.color = cfg.balanceText;
+    document.getElementById('inv-log-unit').textContent = 'units';
+    document.getElementById('inv-log-icon').textContent = cfg.icon;
+    document.getElementById('inv-log-icon-wrap').style.backgroundColor = cfg.iconBg;
+    document.getElementById('inv-log-header').style.background = cfg.headerBg;
+    document.getElementById('inv-log-footnote').textContent = cfg.footnote;
+    document.getElementById('inv-log-more').style.display = 'none';
+
+    // Filter chips only make sense for the ledger-backed warehouse view.
+    var filterWrap = document.getElementById('inv-log-filters');
+    if (cfg.showFilters) {
+        filterWrap.innerHTML = INV_LOG_FILTERS.map(function(f) {
+            var active = f.key === invLog.typeFilter;
+            return '<button type="button" onclick="setInvLogFilter(\'' + f.key + '\')" '
+                + 'class="px-2 py-1 rounded-full text-[11px] font-medium transition-colors" '
+                + 'style="' + (active
+                    ? 'background-color:#d97706; color:#fff; border:1px solid #d97706;'
+                    : 'background-color:#fff; color:#92400e; border:1px solid #fde68a;') + '">'
+                + f.label + '</button>';
+        }).join('');
+        filterWrap.style.display = 'flex';
+    } else {
+        filterWrap.innerHTML = '';
+        filterWrap.style.display = 'none';
+    }
+
+    showInvLogLoading();
+    document.getElementById('invLogModal').classList.remove('hidden');
+    document.body.style.overflow = 'hidden';
+
+    fetchInvLog(false);
+}
+
+function closeInvLogModal() {
+    document.getElementById('invLogModal').classList.add('hidden');
     document.body.style.overflow = '';
 }
 
-function renderStoreLog(days, currentQty) {
+function showInvLogLoading() {
+    document.getElementById('inv-log-body').innerHTML =
+        '<div class="flex items-center justify-center py-12 text-gray-400">' +
+        '<svg class="animate-spin w-6 h-6 mr-2" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>' +
+        'Loading transactions...</div>';
+}
+
+function setInvLogFilter(key) {
+    if (invLog.loading || key === invLog.typeFilter) return;
+    invLog.typeFilter = key;
+    invLog.events = [];
+    invLog.nextBeforeId = null;
+    invLog.hasMore = false;
+
+    // Repaint chips
+    var filterWrap = document.getElementById('inv-log-filters');
+    filterWrap.innerHTML = INV_LOG_FILTERS.map(function(f) {
+        var active = f.key === invLog.typeFilter;
+        return '<button type="button" onclick="setInvLogFilter(\'' + f.key + '\')" '
+            + 'class="px-2 py-1 rounded-full text-[11px] font-medium transition-colors" '
+            + 'style="' + (active
+                ? 'background-color:#d97706; color:#fff; border:1px solid #d97706;'
+                : 'background-color:#fff; color:#92400e; border:1px solid #fde68a;') + '">'
+            + f.label + '</button>';
+    }).join('');
+
+    showInvLogLoading();
+    fetchInvLog(false);
+}
+
+function loadMoreInvLog() {
+    if (invLog.loading || !invLog.hasMore) return;
+    var btn = document.getElementById('inv-log-more');
+    btn.textContent = 'Loading…';
+    btn.disabled = true;
+    fetchInvLog(true);
+}
+
+function fetchInvLog(append) {
+    invLog.loading = true;
+
+    var base = '{{ url("khaas/products") }}/' + invLog.productId +
+        (invLog.mode === 'warehouse' ? '/warehouse-log' : '/store-log');
+    var params = ['limit=30'];
+    if (invLog.mode === 'warehouse') {
+        if (invLog.typeFilter) params.push('type=' + encodeURIComponent(invLog.typeFilter));
+        if (append && invLog.nextBeforeId) params.push('before_id=' + encodeURIComponent(invLog.nextBeforeId));
+    }
+
+    fetch(base + '?' + params.join('&'))
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            invLog.loading = false;
+            if (!data.success) {
+                if (!append) renderInvLogError(data.message);
+                return;
+            }
+
+            var incoming = data.events || [];
+            invLog.events = append ? invLog.events.concat(incoming) : incoming;
+            // The store endpoint has no cursor — it always returns its full window.
+            invLog.hasMore = invLog.mode === 'warehouse' ? !!data.has_more : false;
+            invLog.nextBeforeId = data.next_before_id || null;
+            invLog.currentQty = (invLog.mode === 'warehouse')
+                ? (data.current_warehouse_qty != null ? data.current_warehouse_qty : invLog.currentQty)
+                : (data.current_store_qty != null ? data.current_store_qty : invLog.currentQty);
+            if (data.unit) {
+                invLog.unit = data.unit;
+                document.getElementById('inv-log-unit').textContent = data.unit;
+            }
+            document.getElementById('inv-log-balance').textContent = invLog.currentQty;
+
+            renderInvLog(data.multi_row_warning === true);
+        })
+        .catch(function(err) {
+            invLog.loading = false;
+            if (!append) renderInvLogError(null);
+            else {
+                var btn = document.getElementById('inv-log-more');
+                btn.textContent = 'Load more';
+                btn.disabled = false;
+            }
+            console.error('Inventory log error:', err);
+        });
+}
+
+function renderInvLogError(msg) {
+    document.getElementById('inv-log-body').innerHTML =
+        '<div class="text-center py-12 text-red-400">' +
+        '<div class="text-3xl mb-2">⚠️</div>' +
+        '<p class="text-sm">' + escInvLog(msg || 'Failed to load transactions.') + '</p></div>';
+    document.getElementById('inv-log-more').style.display = 'none';
+}
+
+// Group a flat event list into days, computing opening/closing/net per day. Done here rather
+// than server-side so paged results stay correct when a day spans two pages.
+function groupInvLogDays(events) {
+    var days = [];
+    var byKey = {};
+    for (var i = 0; i < events.length; i++) {
+        var ev = events[i];
+        var key = ev.date_day || 'unknown';
+        if (!byKey[key]) {
+            byKey[key] = {date: key, label: ev.date_day_label || key, events: []};
+            days.push(byKey[key]);
+        }
+        byKey[key].events.push(ev);
+    }
+    for (var d = 0; d < days.length; d++) {
+        var list = days[d].events;
+        days[d].closing_balance = list[0].balance_after;
+        days[d].opening_balance = list[list.length - 1].balance_before;
+        days[d].net_change = days[d].closing_balance - days[d].opening_balance;
+    }
+    return days;
+}
+
+function invLogRowStyle(ev) {
+    var isPositive = ev.change > 0;
+    // Warehouse ledger types
+    if (ev.type === 'stock_in') {
+        return ev.reference_type === 'batch'
+            ? {change: 'color:#0d9488;', border: 'border-left: 3px solid #14b8a6;', iconBg: 'background-color:#ccfbf1;'}
+            : {change: 'color:#16a34a;', border: 'border-left: 3px solid #22c55e;', iconBg: 'background-color:#dcfce7;'};
+    }
+    if (ev.type === 'stock_out') {
+        return {change: 'color:#dc2626;', border: 'border-left: 3px solid #ef4444;', iconBg: 'background-color:#fee2e2;'};
+    }
+    if (ev.type === 'transfer') {
+        return {change: 'color:#b45309;', border: 'border-left: 3px solid #f59e0b;', iconBg: 'background-color:#fef3c7;'};
+    }
+    if (ev.type === 'count') {
+        return {change: 'color:#7c3aed;', border: 'border-left: 3px solid #8b5cf6;', iconBg: 'background-color:#ede9fe;'};
+    }
+    if (ev.type === 'adjustment') {
+        return ev.reference_type === 'transfer_rejected'
+            ? {change: 'color:#2563eb;', border: 'border-left: 3px solid #3b82f6;', iconBg: 'background-color:#dbeafe;'}
+            : {change: isPositive ? 'color:#16a34a;' : 'color:#ea580c;', border: 'border-left: 3px solid #f97316;', iconBg: 'background-color:#fff7ed;'};
+    }
+    // Store log types
+    if (ev.type === 'transfer_in') {
+        return {change: 'color:#16a34a;', border: 'border-left: 3px solid #22c55e;', iconBg: 'background-color:#dcfce7;'};
+    }
+    if (ev.type === 'order_deduction') {
+        return {change: 'color:#dc2626;', border: 'border-left: 3px solid #ef4444;', iconBg: 'background-color:#fee2e2;'};
+    }
+    if (ev.type === 'cancellation_restore') {
+        return {change: 'color:#2563eb;', border: 'border-left: 3px solid #3b82f6;', iconBg: 'background-color:#dbeafe;'};
+    }
+    if (ev.type === 'store_adjustment') {
+        return {
+            change: isPositive ? 'color:#7c3aed;' : 'color:#ea580c;',
+            border: isPositive ? 'border-left: 3px solid #8b5cf6;' : 'border-left: 3px solid #f97316;',
+            iconBg: isPositive ? 'background-color:#ede9fe;' : 'background-color:#fff7ed;'
+        };
+    }
+    return {
+        change: isPositive ? 'color:#16a34a;' : 'color:#dc2626;',
+        border: 'border-left: 3px solid #9ca3af;',
+        iconBg: 'background-color:#f3f4f6;'
+    };
+}
+
+function renderInvLog(multiRowWarning) {
+    var cfg = INV_LOG_MODES[invLog.mode];
+    var events = invLog.events;
+
+    if (!events || events.length === 0) {
+        document.getElementById('inv-log-body').innerHTML =
+            '<div class="text-center py-12 text-gray-400">' +
+            '<div class="text-3xl mb-2">📭</div>' +
+            '<p class="text-sm">' + escInvLog(invLog.typeFilter ? 'No movements of this type.' : cfg.emptyText) + '</p></div>';
+        document.getElementById('inv-log-more').style.display = 'none';
+        return;
+    }
+
+    var days = groupInvLogDays(events);
     var html = '';
 
-    html += '<div class="px-5 py-3 bg-blue-50 border-b border-blue-100 flex items-center justify-between" style="position:sticky; top:0; z-index:2; background-color:#eff6ff; padding:0.75rem 1.25rem;">';
-    html += '<span class="text-xs font-semibold text-blue-700">Current Store Balance</span>';
-    html += '<span class="text-lg font-bold text-blue-800">' + currentQty + ' units</span>';
+    html += '<div class="px-5 py-3 flex items-center justify-between" style="position:sticky; top:0; z-index:2; background-color:' + cfg.balanceBg + '; padding:0.75rem 1.25rem; border-bottom:1px solid rgba(0,0,0,0.06);">';
+    html += '<span class="text-xs font-semibold" style="color:' + cfg.balanceText + ';">' + cfg.balanceLabel + '</span>';
+    html += '<span class="text-lg font-bold" style="color:' + cfg.balanceText + ';">' + invLog.currentQty + ' ' + escInvLog(invLog.unit) + '</span>';
     html += '</div>';
+
+    if (multiRowWarning) {
+        html += '<div class="px-5 py-2" style="background-color:#fef2f2; border-bottom:1px solid #fecaca;">';
+        html += '<p class="text-[11px]" style="color:#991b1b;">⚠️ This product has more than one warehouse record. The balances below track one record, so they will not add up to the combined total above.</p>';
+        html += '</div>';
+    }
 
     for (var d = 0; d < days.length; d++) {
         var day = days[d];
         var netSign = day.net_change > 0 ? '+' : '';
         var netColor = day.net_change > 0 ? '#16a34a' : day.net_change < 0 ? '#dc2626' : '#6b7280';
 
-        // Day separator header
         html += '<div class="px-5 py-2 bg-gray-100 border-y border-gray-200 flex items-center justify-between">';
-        html += '<span class="text-xs font-bold text-gray-700">📅 ' + escStoreLog(day.label) + '</span>';
+        html += '<span class="text-xs font-bold text-gray-700">📅 ' + escInvLog(day.label) + '</span>';
         html += '<div class="flex items-center gap-3 text-[10px]">';
         html += '<span class="text-gray-500">Open: <b>' + day.opening_balance + '</b></span>';
         html += '<span class="text-gray-500">Close: <b>' + day.closing_balance + '</b></span>';
         html += '<span style="color:' + netColor + ';font-weight:700;">' + netSign + day.net_change + '</span>';
         html += '</div></div>';
 
-        // Events for this day
         html += '<div class="divide-y divide-gray-50">';
         for (var i = 0; i < day.events.length; i++) {
             var ev = day.events[i];
             var isPositive = ev.change > 0;
-            var changeColor, borderColor, iconBg;
-            if (ev.type === 'transfer_in') {
-                changeColor = 'color: #16a34a;';
-                borderColor = 'border-left: 3px solid #22c55e;';
-                iconBg = 'background-color: #dcfce7;';
-            } else if (ev.type === 'order_deduction') {
-                changeColor = 'color: #dc2626;';
-                borderColor = 'border-left: 3px solid #ef4444;';
-                iconBg = 'background-color: #fee2e2;';
-            } else if (ev.type === 'cancellation_restore') {
-                changeColor = 'color: #2563eb;';
-                borderColor = 'border-left: 3px solid #3b82f6;';
-                iconBg = 'background-color: #dbeafe;';
-            } else if (ev.type === 'store_adjustment') {
-                changeColor = isPositive ? 'color: #7c3aed;' : 'color: #ea580c;';
-                borderColor = isPositive ? 'border-left: 3px solid #8b5cf6;' : 'border-left: 3px solid #f97316;';
-                iconBg = isPositive ? 'background-color: #ede9fe;' : 'background-color: #fff7ed;';
-            } else {
-                changeColor = isPositive ? 'color: #16a34a;' : 'color: #dc2626;';
-                borderColor = 'border-left: 3px solid #9ca3af;';
-                iconBg = 'background-color: #f3f4f6;';
-            }
-            html += '<div class="px-5 py-2.5 hover:bg-gray-50 transition-colors" style="' + borderColor + '">';
+            var st = invLogRowStyle(ev);
+
+            html += '<div class="px-5 py-2.5 hover:bg-gray-50 transition-colors" style="' + st.border + '">';
             html += '<div class="flex items-start gap-3">';
-            html += '<div class="w-7 h-7 rounded-lg flex items-center justify-center flex-shrink-0 mt-0.5" style="' + iconBg + '">';
-            html += '<span class="text-xs">' + ev.icon + '</span></div>';
+            html += '<div class="w-7 h-7 rounded-lg flex items-center justify-center flex-shrink-0 mt-0.5" style="' + st.iconBg + '">';
+            html += '<span class="text-xs">' + escInvLog(ev.icon) + '</span></div>';
             html += '<div class="flex-1 min-w-0">';
             html += '<div class="flex items-center justify-between">';
-            html += '<span class="text-xs font-semibold text-gray-900">' + escStoreLog(ev.label) + '</span>';
+            html += '<span class="text-xs font-semibold text-gray-900">' + escInvLog(ev.label) + '</span>';
             if (ev.count_value !== null && ev.count_value !== undefined) {
-                // Physical count: show the value that was SET, delta as secondary info
+                // Physical count: the number the user SET is the headline; delta is secondary,
+                // otherwise a count that matches the balance reads as a no-op.
                 var countDelta = ev.change === 0 ? 'no change' : ((ev.change > 0 ? '+' : '') + ev.change);
                 html += '<span class="text-xs font-bold" style="color:#7c3aed;">Counted: ' + ev.count_value
                      + ' <span style="color:#9ca3af;font-weight:600;">(' + countDelta + ')</span></span>';
             } else {
-                html += '<span class="text-xs font-bold" style="' + changeColor + '">' + (isPositive ? '+' : '') + ev.change + '</span>';
+                html += '<span class="text-xs font-bold" style="' + st.change + '">' + (isPositive ? '+' : '') + ev.change + '</span>';
             }
             html += '</div>';
-            html += '<div class="text-[11px] text-gray-600 mt-0.5">' + escStoreLog(ev.detail) + '</div>';
+            if (ev.detail) {
+                html += '<div class="text-[11px] text-gray-600 mt-0.5">' + escInvLog(ev.detail) + '</div>';
+            }
             if (ev.sub_detail) {
-                html += '<div class="text-[10px] text-gray-400 mt-0.5">' + escStoreLog(ev.sub_detail) + '</div>';
+                html += '<div class="text-[10px] text-gray-400 mt-0.5">' + escInvLog(ev.sub_detail) + '</div>';
             }
             html += '<div class="flex items-center justify-between mt-1">';
-            html += '<span class="text-[10px] text-gray-400">' + escStoreLog(ev.date_formatted) + '</span>';
+            html += '<span class="text-[10px] text-gray-400">' + escInvLog(ev.date_formatted) + '</span>';
             html += '<span class="text-[10px] font-medium text-gray-500 bg-gray-100 px-1.5 py-0.5 rounded">' + ev.balance_before + ' → ' + ev.balance_after + '</span>';
             html += '</div></div></div></div>';
+
+            if (ev.gap) {
+                html += '<div class="px-5 py-1" style="background-color:#fffbeb;">';
+                html += '<p class="text-[10px] text-center" style="color:#b45309;">· earlier records may be incomplete here ·</p></div>';
+            }
         }
         html += '</div>';
     }
@@ -789,17 +1176,25 @@ function renderStoreLog(days, currentQty) {
     // Legend
     html += '<div class="px-5 py-3 bg-gray-50 border-t border-gray-100">';
     html += '<div class="flex flex-wrap items-center gap-3 text-[10px] text-gray-500">';
-    html += '<span><span style="display:inline-block;width:8px;height:8px;background:#22c55e;border-radius:2px;margin-right:3px;"></span>Transfer In</span>';
-    html += '<span><span style="display:inline-block;width:8px;height:8px;background:#ef4444;border-radius:2px;margin-right:3px;"></span>Order Deduction</span>';
-    html += '<span><span style="display:inline-block;width:8px;height:8px;background:#3b82f6;border-radius:2px;margin-right:3px;"></span>Cancelled Restore</span>';
-    html += '<span><span style="display:inline-block;width:8px;height:8px;background:#8b5cf6;border-radius:2px;margin-right:3px;"></span>Manual Adjust</span>';
+    for (var l = 0; l < cfg.legend.length; l++) {
+        html += '<span><span style="display:inline-block;width:8px;height:8px;background:' + cfg.legend[l][0] + ';border-radius:2px;margin-right:3px;"></span>' + cfg.legend[l][1] + '</span>';
+    }
     html += '</div></div>';
 
-    document.getElementById('store-log-body').innerHTML = html;
+    document.getElementById('inv-log-body').innerHTML = html;
+
+    var btn = document.getElementById('inv-log-more');
+    btn.textContent = 'Load more';
+    btn.disabled = false;
+    btn.style.display = invLog.hasMore ? 'inline-block' : 'none';
+
+    document.getElementById('inv-log-footnote').textContent =
+        events.length + ' movement' + (events.length === 1 ? '' : 's') + ' shown'
+        + (invLog.hasMore ? ' · more available' : ' · that is everything');
 }
 
-function escStoreLog(str) {
-    if (!str) return '';
+function escInvLog(str) {
+    if (str === null || str === undefined) return '';
     var div = document.createElement('div');
     div.textContent = str;
     return div.innerHTML;
@@ -812,7 +1207,7 @@ document.addEventListener('keydown', function(e) {
         closeStoreStockModal();
         closeTransferModal();
         closeProductRejectModal();
-        closeStoreLogModal();
+        closeInvLogModal();
     }
 });
 </script>

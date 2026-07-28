@@ -2835,6 +2835,8 @@ class EmployeeCashController extends Controller
             $byRider = $petrolRequests->groupBy('requester_user_id')->map(function ($requests) use ($base) {
                 $requester = $requests->first()->requester;
                 return [
+                    // Needed by the "month view" popup — the group key is lost by ->values()
+                    'rider_user_id' => (int) $requests->first()->requester_user_id,
                     'rider_name' => $requester ? $requester->fullname : 'Unknown',
                     'count' => $requests->count(),
                     'total_amount' => round($requests->sum('amount'), 2),
@@ -3454,10 +3456,23 @@ class EmployeeCashController extends Controller
                 'comments' => $approvalStatus === LedgerModel::STATUS_PENDING ? "Awaiting approval" : "Auto-approved"
             ]);
 
-            // If approved, update balances immediately
+            // If approved, update balances immediately.
+            //
+            // ⚠️ NOT yet routed through BalancePostingService, deliberately — this is the one
+            // remaining unstamped writer and it needs an owner ruling first.
+            // Reason: an EXTERNAL payment posts the counter-leg to EQUITY_OPENING, which is
+            // account_type = 'equity' (credit-arithmetic). The code below increments it
+            // unconditionally, whereas the canonical convention would DECREMENT it — so
+            // switching would change the direction of that leg for external payments. Every
+            // existing approved row happens to be asset→asset (where the two agree), so
+            // nothing is wrong today, but the two rules genuinely disagree for the
+            // Opening-Equity case and that is a business decision, not a refactor.
+            // Consequence of leaving it: rows created here stay unstamped (balance_updated=0),
+            // so they remain invisible to the Finance Hub and cannot be auto-reversed.
+            // See LEDGER-SOLIDITY-PLAN — "company_payment ruling".
             if ($approvalStatus === LedgerModel::STATUS_APPROVED) {
                 $companyAccount->decrement('current_balance', $request->amount);
-                
+
                 if ($toAccountId) {
                     $toAccount = AccountModel::find($toAccountId);
                     if ($toAccount) {
@@ -3544,9 +3559,12 @@ class EmployeeCashController extends Controller
                 'comments' => "Internal transfer - auto-approved"
             ]);
 
-            // Update balances immediately
-            $fromAccount->decrement('current_balance', $request->amount);
-            $toAccount->increment('current_balance', $request->amount);
+            // Update balances via the canonical gate (Ledger L3) — sets balance_updated so a
+            // later reversal works and the Finance Hub counts this row, and locks both
+            // account rows. Internal company transfers are always company cash/bank, i.e.
+            // asset → asset, where the canonical convention is arithmetically identical to
+            // the previous decrement/increment (verified against all 72 existing rows).
+            (new \App\Services\FIN\BalancePostingService())->apply($ledger);
 
             DB::commit();
 

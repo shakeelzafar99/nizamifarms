@@ -387,6 +387,12 @@ class ShiftResolutionService
                     if ($endRaw) {
                         $e = strtotime($date . ' ' . $endRaw);
                         $o = strtotime($date . ' ' . $r->logout_time);
+                        // Overnight checkout: logout is a bare TIME on the shift's row, so a
+                        // past-midnight OUT reads EARLIER than the login. Roll it to the next
+                        // day — same rule OvertimeService::dailyOvertimeMinutes already applies.
+                        if (!empty($r->login_time) && $o < strtotime($date . ' ' . $r->login_time)) {
+                            $o += 86400;
+                        }
                         // Truncate seconds to whole minutes — matches legacy TIMESTAMPDIFF(MINUTE).
                         $ot = ($o > $e) ? (int) (($o - $e) / 60) : 0;
                     } else {
@@ -533,6 +539,11 @@ class ShiftResolutionService
         } elseif (!empty($row->logout_time)) {
             $e = strtotime($date . ' ' . $end);
             $o = strtotime($date . ' ' . $row->logout_time);
+            // Overnight checkout: a past-midnight OUT reads earlier than the login —
+            // roll to the next day (same rule as OvertimeService::dailyOvertimeMinutes).
+            if (!empty($row->login_time) && $o < strtotime($date . ' ' . $row->login_time)) {
+                $o += 86400;
+            }
             $update['overtime_minutes'] = ($o > $e) ? (int) (($o - $e) / 60) : 0;
         }
 

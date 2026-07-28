@@ -28,6 +28,11 @@ class RequestModel extends BaseModel
         'expense_date', // ⭐ Backdated expense date
         'meter_distance',
         'petrol_rate',
+        // Fuel capture (Jul-2026): the odometer at the moment of filling, litres
+        // put in, and for MAINTENANCE rows the kind of service performed.
+        'meter_at_fill',
+        'litres',
+        'service_type',
         'attendance_id',
         'payment_source_account_id',
         'receiving_account_id', // Which of OUR banks an ONLINE expense is paid from
@@ -62,6 +67,8 @@ class RequestModel extends BaseModel
         'amount' => 'decimal:2',
         'meter_distance' => 'decimal:2',
         'petrol_rate' => 'decimal:2',
+        'meter_at_fill' => 'integer',
+        'litres' => 'decimal:2',
         'attendance_id' => 'integer',
         'expense_date' => 'date', // ⭐ Expense date for backdated entries
         'leave_start_date' => 'date',
@@ -325,6 +332,16 @@ class RequestModel extends BaseModel
             $this->save();
 
             DB::commit();
+
+            // 🔧 An approved oil-change / general service resets the bike's service
+            // clock. Hooked HERE (after commit, non-fatal) so every path that fully
+            // approves a request gets it — the L1/L2 approve endpoint AND the
+            // short-cash-settlement auto-approves that call processApproval()
+            // directly. Guards inside make non-maintenance requests a no-op.
+            if ($this->getAttribute('status') === self::STATUS_APPROVED) {
+                \App\Services\Riders\BikeServiceClock::onRequestApproved($this);
+            }
+
             return true;
         } catch (\Exception $e) {
             DB::rollBack();

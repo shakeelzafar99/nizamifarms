@@ -1178,7 +1178,40 @@ class CustomerController extends Controller
                 $payload['phone_original'] = $newOriginal;
             }
 
+            // Snapshot the address BEFORE the write so we can tell whether it moved.
+            $addressBefore = trim(($customer->address1 ?? '') . '|' . ($customer->city ?? ''));
+
             $customer->update($payload);
+
+            // ⭐ Address edited → the machine-geocoded pin describes the OLD address
+            //    and is now simply wrong. Re-geocode so the pin and the written
+            //    address always agree; otherwise a corrected address quietly keeps
+            //    routing the rider to the previous place.
+            //
+            //    Only when there is NO verified pin: a human pin is the truth and
+            //    outlives an address correction (people fix spellings and add
+            //    landmarks all the time — that must not move a pin someone stood on).
+            //    force=true because geocodeCustomer() skips a populated slot.
+            //    Non-fatal: a geocode failure must never fail the customer save.
+            $addressAfter = trim(($customer->address1 ?? '') . '|' . ($customer->city ?? ''));
+            if ($addressBefore !== $addressAfter
+                && !empty($customer->address1)
+                && empty($customer->latitude)
+                && empty($customer->longitude)) {
+                try {
+                    \App\Services\GeocodingService::geocodeCustomer($customer->id, true, [
+                        'trigger' => 'address_edit', 'user_id' => auth()->id(),
+                    ]);
+                    \Log::info('Re-geocoded after address edit', [
+                        'customer_id' => $customer->id,
+                        'address' => $customer->address1,
+                    ]);
+                } catch (\Throwable $e) {
+                    \Log::warning('Re-geocode after address edit failed (non-fatal)', [
+                        'customer_id' => $customer->id, 'error' => $e->getMessage(),
+                    ]);
+                }
+            }
 
             // If the customer was just flipped regular -> shop, convert their
             // existing PENDING online invoices into the shop payment flow so
@@ -1959,7 +1992,9 @@ class CustomerController extends Controller
                 ]);
             }
             
-            $result = \App\Services\GeocodingService::geocodeCustomer($id, $forceUpdate);
+            $result = \App\Services\GeocodingService::geocodeCustomer($id, $forceUpdate, [
+                'trigger' => 'customer_api', 'user_id' => auth()->id(),
+            ]);
             
             if ($result) {
                 $customer->refresh();
@@ -2045,7 +2080,9 @@ class CustomerController extends Controller
             }
             
             // Perform geocoding
-            $result = \App\Services\GeocodingService::geocodeCustomer($customerId, $forceUpdate);
+            $result = \App\Services\GeocodingService::geocodeCustomer($customerId, $forceUpdate, [
+                'trigger' => 'customer_api', 'user_id' => auth()->id(),
+            ]);
             
             if ($result) {
                 // Fetch updated coordinates

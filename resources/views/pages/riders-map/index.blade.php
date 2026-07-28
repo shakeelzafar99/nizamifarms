@@ -63,7 +63,38 @@
     .view-toggle button:hover:not(.active) {
         background: rgba(255,255,255,0.15);
     }
-    
+
+    /* Live layer switch (Riders / Open orders) — sits under the header, inside
+       the 🔴 Live tab. Secondary styling on purpose: it is a layer switch, not
+       a navigation tab, and must not compete with the toggle above it. */
+    .live-layers {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 8px 16px;
+        background: #fff;
+        border-bottom: 1px solid #e5e7eb;
+    }
+    .live-layer {
+        background: #f3f4f6;
+        border: 1px solid #e5e7eb;
+        color: #4b5563;
+        padding: 5px 13px;
+        border-radius: 999px;
+        cursor: pointer;
+        font-size: 12.5px;
+        font-weight: 500;
+        transition: background .15s, color .15s, border-color .15s;
+    }
+    .live-layer:hover:not(.active) { background: #e5e7eb; }
+    .live-layer.active {
+        background: #fef3c7;
+        border-color: #f59e0b;
+        color: #92400e;
+        font-weight: 600;
+    }
+    .live-layer-hint { font-size: 12px; color: #9ca3af; margin-left: 4px; }
+
     /* Date picker */
     .date-picker {
         display: flex;
@@ -503,12 +534,29 @@
         <div class="header-controls">
             <!-- View Toggle -->
             <div class="view-toggle">
-                <button id="viewRidersBtn" onclick="switchView('riders')" class="active">📍 Rider Map</button>
-                <button id="viewOrdersBtn" onclick="switchView('orders')">📦 Open Orders</button>
-                <button id="viewHistoryBtn" onclick="switchView('history')">📅 History</button>
-                <button id="viewDispatchBtn" onclick="switchView('dispatch')">🚀 Dispatch Tracker</button>
+                {{-- 🔴 Live holds what were two separate tabs (Rider Map + Open
+                     Orders); they are now two layers switched by the segmented
+                     control below the header, since a manager watching riders
+                     almost always wants the open orders in the same glance. --}}
+                @unless($bikesOnly ?? false)
+                <button id="viewRidersBtn" onclick="switchView('riders')" class="active">🔴 Live</button>
+                @endunless
+                {{-- Day Review (Jul-2026) replaces the old History and Dispatch Tracker
+                     tabs (their markup + JS below are intentionally left in place,
+                     unreachable, until a later cleanup pass). ⚠ Issues was NOT absorbed —
+                     it carries the RIDER/DAY-level checks (attendance lateness, GPS-off,
+                     odd route, missing meters, checkout-at-office) that Day Review's
+                     order-level review has no equivalent for, so its tab stays. --}}
+                @unless($bikesOnly ?? false)
+                <button id="viewDayReviewBtn" onclick="switchView('dayreview')">📅 Day Review</button>
+                @endunless
+                {{-- Gated on the same permission RiderReportsController enforces, so
+                     nobody sees a tab that would only ever answer 403. --}}
                 @if($canViewRiderReports ?? false)
                 <button id="viewReportsBtn" onclick="switchView('reports')">⚠️ Issues</button>
+                @endif
+                @if($canViewFleet ?? false)
+                <button id="viewFleetBtn" onclick="switchView('fleet')">🏍️ Bikes</button>
                 @endif
             </div>
             
@@ -548,6 +596,13 @@
         </div>
     </div>
     
+    <!-- Live layer switch (Riders ⇄ Open orders) — only shown inside 🔴 Live -->
+    <div id="liveLayerBar" class="live-layers" style="display:none;">
+        <button id="liveLayerRiders" class="live-layer active" onclick="switchView('riders')">🛵 Riders</button>
+        <button id="liveLayerOrders" class="live-layer" onclick="switchView('orders')">📦 Open orders</button>
+        <span id="liveLayerHint" class="live-layer-hint"></span>
+    </div>
+
     <!-- Main Content -->
     <div class="main-content">
         <!-- ========== RIDERS LIST VIEW ========== -->
@@ -646,6 +701,14 @@
             <div id="rrSummaryBar" class="dt-summary-bar"></div>
             <div id="rrContainer"></div>
         </div>
+
+        <!-- ========== DAY REVIEW (replaces History + Dispatch + Issues) ========== -->
+        @include('pages.riders-map.partials.day-review')
+
+        <!-- ========== FLEET & FUEL (monthly bike cost) ========== -->
+        @if($canViewFleet ?? false)
+        @include('pages.riders-map.partials.fleet')
+        @endif
     </div>
 </div>
 
@@ -716,7 +779,30 @@ document.addEventListener('DOMContentLoaded', function() {
     const today = new Date().toISOString().split('T')[0];
     document.getElementById('dateInput').value = today;
     document.getElementById('dateInput').max = today;
-    
+
+    // Deep link support: /riders-map#day-review opens straight into Day Review.
+    // The orders page's rider popup links here, and the old link said
+    // "Dispatch Tracker" — which Day Review now contains.
+    var hash = (window.location.hash || '').replace('#', '').toLowerCase();
+    if (hash === 'day-review' || hash === 'dayreview' || hash === 'dispatch') {
+        switchView('dayreview');
+        return;
+    }
+    if (hash === 'bikes' || hash === 'fleet') {
+        switchView('fleet');
+        return;
+    }
+    if (hash === 'issues' || hash === 'reports') {
+        switchView('reports');
+        return;
+    }
+
+    // A user whose only access here is Bikes has no Live board to fall back to.
+    @if($bikesOnly ?? false)
+        switchView('fleet');
+        return;
+    @endif
+
     loadRiders();
     startAutoRefresh();
 });
@@ -727,36 +813,61 @@ document.addEventListener('DOMContentLoaded', function() {
 function switchView(view) {
     currentView = view;
     
-    // Update button states
-    document.getElementById('viewRidersBtn').classList.toggle('active', view === 'riders');
-    document.getElementById('viewOrdersBtn').classList.toggle('active', view === 'orders');
-    document.getElementById('viewHistoryBtn').classList.toggle('active', view === 'history');
-    document.getElementById('viewDispatchBtn').classList.toggle('active', view === 'dispatch');
-    var reportsBtn = document.getElementById('viewReportsBtn');
-    if (reportsBtn) reportsBtn.classList.toggle('active', view === 'reports');
+    // Update button states.
+    // NOTE: History / Dispatch Tracker / Issues no longer have toggle buttons
+    // (Day Review replaced them), so every lookup here must tolerate a missing
+    // element — switchView('dispatch') is still reachable from old deep links.
+    var setActive = function (id, on) {
+        var el = document.getElementById(id);
+        if (el) el.classList.toggle('active', on);
+    };
+    // Riders and Open orders are two layers of the SAME 🔴 Live tab, so the tab
+    // stays lit for both.
+    setActive('viewRidersBtn', view === 'riders' || view === 'orders');
+    setActive('viewDayReviewBtn', view === 'dayreview');
+    setActive('viewFleetBtn', view === 'fleet');
+    setActive('viewHistoryBtn', view === 'history');
+    setActive('viewDispatchBtn', view === 'dispatch');
+    setActive('viewReportsBtn', view === 'reports');
 
     // Hide all views
-    document.getElementById('ridersListView').style.display = 'none';
-    document.getElementById('singleRiderView').style.display = 'none';
-    document.getElementById('openOrdersView').style.display = 'none';
-    document.getElementById('historyView').style.display = 'none';
-    document.getElementById('dispatchView').style.display = 'none';
-    var reportsView = document.getElementById('reportsView');
-    if (reportsView) reportsView.style.display = 'none';
+    var hide = function (id) {
+        var el = document.getElementById(id);
+        if (el) el.style.display = 'none';
+    };
+    hide('ridersListView');
+    hide('singleRiderView');
+    hide('openOrdersView');
+    hide('historyView');
+    hide('dispatchView');
+    hide('reportsView');
+    hide('dayReviewView');
+    hide('fleetView');
     document.getElementById('filtersSection').style.display = 'none';
     document.getElementById('historyBanner').style.display = 'none';
-    
+    hide('liveLayerBar');
+
+    // The Live layer switch is visible for both of its layers.
+    var isLive = (view === 'riders' || view === 'orders');
+    if (isLive) {
+        document.getElementById('liveLayerBar').style.display = 'flex';
+        setActive('liveLayerRiders', view === 'riders');
+        setActive('liveLayerOrders', view === 'orders');
+    }
+
     if (view === 'riders') {
         document.getElementById('datePicker').style.display = 'flex';
         document.getElementById('ridersListView').style.display = 'block';
-        document.getElementById('pageTitle').textContent = currentDate ? '📅 Riders History' : '📍 All Riders - Live Map';
+        document.getElementById('pageTitle').textContent = currentDate ? '📅 Riders History' : '🔴 Live — Riders';
+        document.getElementById('liveLayerHint').textContent = currentDate ? '' : 'Live positions, refreshing automatically';
         loadRiders();
         startAutoRefresh();
     } else if (view === 'orders') {
         document.getElementById('datePicker').style.display = 'none';
         document.getElementById('filtersSection').style.display = 'flex';
         document.getElementById('openOrdersView').style.display = 'block';
-        document.getElementById('pageTitle').textContent = '📦 Open Orders Map';
+        document.getElementById('pageTitle').textContent = '🔴 Live — Open Orders';
+        document.getElementById('liveLayerHint').textContent = 'Every order still to be delivered';
         stopAutoRefresh();
         loadOpenOrders();
     } else if (view === 'history') {
@@ -778,6 +889,18 @@ function switchView(view) {
         document.getElementById('pageTitle').textContent = '⚠️ Daily Issues';
         stopAutoRefresh();
         rrInit();
+    } else if (view === 'dayreview') {
+        document.getElementById('datePicker').style.display = 'none';
+        document.getElementById('dayReviewView').style.display = 'block';
+        document.getElementById('pageTitle').textContent = '📅 Day Review';
+        stopAutoRefresh();
+        drInit();
+    } else if (view === 'fleet') {
+        document.getElementById('datePicker').style.display = 'none';
+        document.getElementById('fleetView').style.display = 'block';
+        document.getElementById('pageTitle').textContent = '🏍️ Bikes — fuel & running cost';
+        stopAutoRefresh();
+        flInit();
     }
 }
 
@@ -2284,7 +2407,16 @@ function rrOrderIssues(o){
     // route order changed vs the planned dispatch priority (P{planned}→#{actual})
     var ps = rrNum(o.planned_seq), as = rrNum(o.actual_seq);
     if(ps != null && as != null && ps !== as) out.push({sev:'info', text:'order changed (P'+ps+'→#'+as+')'});
-    if(hasV && atV === 0 && dist != null) out.push({sev:'crit', text:'delivered '+rrDist(dist)+' from pin', map:true});
+    // "Delivered N m from pin" now carries the fix quality that produced N. A drop stamped by a
+    // +-200 m network fix reads identically to one stamped at +-8 m, and the rider gets blamed
+    // either way — so when the phone told us the fix was coarse, say so on the chip.
+    if(hasV && atV === 0 && dist != null){
+        var facc = rrNum(o.fix_accuracy_m);
+        out.push({sev: rrNum(o.fix_coarse) === 1 ? 'warn' : 'crit',
+                  text:'delivered '+rrDist(dist)+' from pin'
+                       + (facc != null ? ' (fix ±'+Math.round(facc)+'m'+(rrNum(o.fix_coarse) === 1 ? ', coarse' : '')+')' : ''),
+                  map:true});
+    }
     if(!hasV) out.push({sev:'warn', text:'no pin saved'});
     if(!gpsOk) out.push({sev:'crit', text:'GPS off at delivery'});
     return out;

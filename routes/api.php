@@ -197,6 +197,15 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('/orders/{orderId}/live-flags', [\App\Http\Controllers\API\RiderController::class, 'getOrderLiveFlags']);
 
         // Quick verify location from address (Store Mode)
+        // PREVIEW (Jul-28-2026): geocodes the written address and RETURNS the
+        // candidate pin without saving anything. The app shows it on the map and
+        // the human confirms — which is what makes the saved pin a real
+        // verification rather than a machine guess promoted into the verified
+        // column. The save then goes through the normal
+        // /customers/{id}/set-verified-location path.
+        Route::post('/store/orders/{orderId}/geocode-preview', [\App\Http\Controllers\API\RiderController::class, 'previewLocationFromAddress']);
+        // Legacy blind-save, kept because phones on the old APK still call it
+        // until everyone updates.
         Route::post('/store/orders/{orderId}/set-verified-location', [\App\Http\Controllers\API\RiderController::class, 'setVerifiedLocationFromAddress']);
         
         // Ledger & Settlements
@@ -306,6 +315,18 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/store/dispatch-report', [\App\Http\Controllers\API\RiderController::class, 'getDateDeliveryReport']); // ⭐ Dispatch tracker report by date
     Route::get('/store/rider-reports', [\App\Http\Controllers\CRM\RiderReportsController::class, 'apiIndex']); // ⭐ Rider Reports (⚠ Issues + Report Card), real-time, mobile-permission gated
     Route::get('/store/rider-timeline', [\App\Http\Controllers\CRM\RiderReportsController::class, 'apiTimeline']); // ⭐ Per-rider day timeline
+    // Day Review (Jul-2026) — mobile parity with the web tab that replaced History/Dispatch/Issues.
+    // Base = view_dispatch_tracker OR view_rider_reports (mobile grants); forensics stripped without the latter.
+    Route::get('/store/day-review', [\App\Http\Controllers\CRM\RiderDayReviewController::class, 'apiDay']);
+    Route::get('/store/day-review/rider', [\App\Http\Controllers\CRM\RiderDayReviewController::class, 'apiRider']);
+    // Fleet & Fuel (Jul-2026) — monthly bike cost + the fuel/maintenance approval
+    // queue with the month's context. Mobile grants: view_rider_reports OR view_expenses.
+    Route::get('/store/fleet', [\App\Http\Controllers\CRM\FleetFuelController::class, 'apiMonth']);
+    Route::get('/store/fleet/rider', [\App\Http\Controllers\CRM\FleetFuelController::class, 'apiRider']);
+    // Service schedule from the app — per-bike and company-wide. Both need the
+    // MOBILE `manage_bike_service` grant on top of Bikes read access.
+    Route::post('/store/fleet/mark-serviced', [\App\Http\Controllers\CRM\FleetFuelController::class, 'apiMarkServiced']);
+    Route::post('/store/fleet/default-interval', [\App\Http\Controllers\CRM\FleetFuelController::class, 'apiSetDefaultInterval']);
     Route::get('/store/cancelled-orders', [\App\Http\Controllers\API\RiderController::class, 'getStoreCancelledOrders']); // ⭐ Cancelled orders grouped by date
     Route::get('/store/delivered-quantities-tree', [\App\Http\Controllers\API\RiderController::class, 'getDeliveredQuantitiesTree']); // ⭐ Delivered quantities with drill-down (lazy)
     Route::get('/store/delivered-quantities-full-tree', [\App\Http\Controllers\API\RiderController::class, 'getDeliveredQuantitiesFullTree']); // ⭐ Full tree for instant access (last 10 days)
@@ -740,6 +761,7 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::post('/storage/settings', [\App\Http\Controllers\CRM\WarehouseController::class, 'updateStorageSettings']);
         
         Route::get('/products/{productId}/store-log', [\App\Http\Controllers\KhaasController::class, 'getStoreInventoryLog']);
+        Route::get('/products/{productId}/warehouse-log', [\App\Http\Controllers\KhaasController::class, 'getWarehouseInventoryLog']);
         Route::get('/sales-report', [\App\Http\Controllers\KhaasController::class, 'salesReportApi']);
         Route::get('/sales-report/daily', [\App\Http\Controllers\KhaasController::class, 'salesReportDaily']);
         Route::get('/sales-report/product/{productId}/daily', [\App\Http\Controllers\KhaasController::class, 'productDailyBreakdown']);

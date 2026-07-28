@@ -659,6 +659,14 @@
             <!-- Dynamically populated -->
         </div>
 
+        <!-- Level-settings notice. Only shown when /open-quantities/settings could not be
+             read; the levels themselves still self-correct from the data response. Inline
+             styles on purpose (utility classes are purged on this build). -->
+        <div id="hierarchy-notice" style="display: none; margin-bottom: 1rem; padding: 10px 14px; background: #fffbeb; border: 1px solid #fcd34d; border-radius: 8px; color: #92400e; font-size: 13px;">
+            <span id="hierarchy-notice-text"></span>
+            <span onclick="document.getElementById('hierarchy-notice').style.display='none';" style="float: right; cursor: pointer; font-weight: 700;">&times;</span>
+        </div>
+
         <!-- Data Table -->
         <div class="data-table-wrapper">
             <div id="loading-state" class="loading-state">
@@ -800,6 +808,75 @@ window.allOrderStatuses = [];
 // Default excluded statuses (closed orders) - will be updated from API if available
 window.defaultExcludedStatuses = ['delivered', 'completed', 'cancelled', 'refunded'];
 
+// ─── Hierarchy sync ──────────────────────────────────────────────────────────
+// The SERVER owns the drill-down levels (t_crm_open_quantities_settings) and
+// interprets every filter key against them. This page used to keep its own copy,
+// loaded only from /open-quantities/settings, and fall back to the 3-level default
+// in silence when that call failed. The two then disagreed: the page sent
+// filters[product_name] for a level the server had grouped by attribute_2, which
+// became `li.name = '<attribute value>'` and matched nothing — the last level came
+// back permanently empty. Every data response carries the authoritative hierarchy,
+// so we adopt it and let the server settle the argument. (Same rule the mobile
+// store screen already follows.)
+window.openQtyState.hierarchySaveInFlight = 0; // >0 while a Taimur edit is being saved
+window.openQtyState.lastHierarchyEditAt = 0;   // guards that edit against in-flight responses
+
+// Accepts a JSON array, or an object with numeric keys — which is what a re-indexed
+// PHP array json_encodes to, and which used to throw inside updateHierarchyDisplay()
+// and drop the page back to the defaults.
+function normalizeHierarchy(value) {
+    let list = null;
+    if (Array.isArray(value)) {
+        list = value;
+    } else if (value && typeof value === 'object') {
+        list = Object.keys(value).sort((a, b) => a - b).map(k => value[k]);
+    }
+    if (!list) return null;
+    const fields = list.filter(f => typeof f === 'string' && f !== '');
+    return fields.length ? fields : null;
+}
+
+// Adopt the server's levels. Returns true only when they actually differed, so the
+// caller knows the current filters were keyed off levels that no longer apply.
+function applyServerHierarchy(serverHierarchy, requestStartedAt) {
+    const incoming = normalizeHierarchy(serverHierarchy);
+    if (!incoming) return false;
+
+    // Never let a response undo a hierarchy edit the user just made: saveHierarchy()
+    // is fired without being awaited, so a request issued before the save can land
+    // after it and would otherwise revert the new levels.
+    if (window.openQtyState.hierarchySaveInFlight > 0) return false;
+    if (requestStartedAt && requestStartedAt < window.openQtyState.lastHierarchyEditAt) return false;
+
+    if (JSON.stringify(incoming) === JSON.stringify(window.openQtyState.hierarchy)) return false;
+
+    console.warn('Levels differed from the server — adopting the server levels.', {
+        page: window.openQtyState.hierarchy,
+        server: incoming
+    });
+    window.openQtyState.hierarchy = incoming;
+    updateHierarchyDisplay();
+    return true;
+}
+
+// Drop back to the root. Used when the levels change underneath us, because the
+// accumulated filters belong to the old level list.
+function resetDrillToRoot() {
+    window.openQtyState.currentLevel = 0;
+    window.openQtyState.breadcrumbs = [];
+    window.openQtyState.filters = {};
+    updateHierarchyDisplay();
+    updateBreadcrumbs();
+}
+
+function showHierarchyNotice(message) {
+    const box = document.getElementById('hierarchy-notice');
+    const text = document.getElementById('hierarchy-notice-text');
+    if (!box || !text) return;
+    text.textContent = message;
+    box.style.display = 'block';
+}
+
 // Load global settings from API
 async function loadGlobalSettings() {
     try {
@@ -813,8 +890,13 @@ async function loadGlobalSettings() {
         const data = await response.json();
         
         if (data.success) {
-            // Load global settings
-            window.openQtyState.hierarchy = data.settings.hierarchy_levels || window.defaultHierarchy;
+            // Load global settings. A missing/odd-shaped hierarchy is not fatal any more:
+            // loadData() adopts the authoritative one from the data response.
+            const savedHierarchy = normalizeHierarchy(data.settings.hierarchy_levels);
+            if (!savedHierarchy) {
+                console.warn('Settings returned no usable hierarchy; waiting for the data response to supply it.', data.settings.hierarchy_levels);
+            }
+            window.openQtyState.hierarchy = savedHierarchy || window.defaultHierarchy;
             window.openQtyState.excludedStatuses = data.settings.excluded_statuses || window.defaultExcludedStatuses;
             window.canEditSettings = data.can_edit || false;
             
@@ -859,18 +941,20 @@ async function loadGlobalSettings() {
             loadData();
         } else {
             console.error('Failed to load settings:', data.message);
-            // Fall back to defaults
+            // Start on the defaults; loadData() replaces them with the server's levels.
             window.openQtyState.hierarchy = [...window.defaultHierarchy];
             window.openQtyState.excludedStatuses = [...window.defaultExcludedStatuses];
+            showHierarchyNotice('Could not load the saved level settings, so the levels shown here come straight from the data instead. Editing levels is disabled until this is fixed. (' + (data.message || 'settings request failed') + ')');
             updateStatusFilterIndicator();
             updateHierarchyDisplay();
             loadData();
         }
     } catch (error) {
         console.error('Error loading global settings:', error);
-        // Fall back to defaults
+        // Start on the defaults; loadData() replaces them with the server's levels.
         window.openQtyState.hierarchy = [...window.defaultHierarchy];
         window.openQtyState.excludedStatuses = [...window.defaultExcludedStatuses];
+        showHierarchyNotice('Could not load the saved level settings, so the levels shown here come straight from the data instead. Editing levels is disabled until this is fixed.');
         updateStatusFilterIndicator();
         updateHierarchyDisplay();
         loadData();
@@ -913,9 +997,10 @@ function startAutoRefresh() {
     // Poll every 5 seconds for updates (matches Open Orders behavior)
     autoRefreshInterval = setInterval(() => {
         // Silent refresh - no loading spinner
+        const requestStartedAt = Date.now();
         const params = new URLSearchParams();
         params.append('level', window.openQtyState.currentLevel);
-        
+
         // Add parent filters
         Object.entries(window.openQtyState.filters).forEach(([key, value]) => {
             params.append('filters[' + key + ']', value);
@@ -931,13 +1016,22 @@ function startAutoRefresh() {
         .then(response => response.json())
         .then(data => {
             if (data.success && data.data) {
+                // A manager can change the levels while this page is open. Adopt them
+                // and start over from the root instead of repainting rows that were
+                // grouped and filtered on the old level list.
+                if (applyServerHierarchy(data.hierarchy, requestStartedAt)) {
+                    resetDrillToRoot();
+                    loadData();
+                    return;
+                }
+
                 // Only update if data has changed (compare counts)
                 const currentCount = document.querySelectorAll('#table-body tr').length;
                 const newCount = data.data.length;
-                
+
                 if (currentCount !== newCount || hasDataChanged(data.data)) {
                     renderTable(data.data, data.summary);
-                    renderSummaryCards(data.summary);
+                    updateSummaryCards(data.summary);
                     console.log('🔄 Auto-refreshed Open Quantities data');
                 }
             }
@@ -1001,7 +1095,9 @@ document.addEventListener('DOMContentLoaded', function() {
 async function loadData() {
     try {
         showLoading();
-        
+
+        const requestStartedAt = Date.now();
+
         // Note: hierarchy and excluded_statuses are now read from database by backend
         // We only send level and filters
         const params = new URLSearchParams({
@@ -1018,11 +1114,21 @@ async function loadData() {
         });
 
         const result = await response.json();
-        
+
         // Debug logging
         console.log('API Response:', result);
 
         if (result.success) {
+            // The server's levels win. If they differ from the ones this page used to
+            // build the current filters, those filters point at levels that no longer
+            // exist — go back to the root and ask again rather than render a result
+            // that was filtered on the wrong field.
+            if (applyServerHierarchy(result.hierarchy, requestStartedAt)) {
+                if (window.openQtyState.currentLevel > 0 || window.openQtyState.breadcrumbs.length > 0) {
+                    resetDrillToRoot();
+                    return loadData();
+                }
+            }
             console.log('Data received:', result.data.length, 'categories');
             console.log('Summary:', result.summary);
             updateSummaryCards(result.summary);
@@ -1367,7 +1473,13 @@ async function saveHierarchy() {
         alert('Only Taimur role can modify these settings.');
         return false;
     }
-    
+
+    // Callers fire this without awaiting it and then reload immediately, so mark the
+    // edit: applyServerHierarchy() must not revert it with a response that was already
+    // in flight (or with this save's own pre-change value).
+    window.openQtyState.lastHierarchyEditAt = Date.now();
+    window.openQtyState.hierarchySaveInFlight++;
+
     try {
         const response = await fetch('/orders/open-quantities/settings', {
             method: 'POST',
@@ -1398,6 +1510,8 @@ async function saveHierarchy() {
         console.error('Failed to save hierarchy:', e);
         alert('Error saving settings. Please try again.');
         return false;
+    } finally {
+        window.openQtyState.hierarchySaveInFlight--;
     }
 }
 

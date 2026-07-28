@@ -125,6 +125,48 @@
                         <p class="text-base mt-1 whitespace-pre-wrap">{{ $request->description }}</p>
                     </div>
 
+                    {{-- Fuel / expense details captured on the mobile request (Jul-2026).
+                         Shown here because this page is ALSO what the Approvals screen
+                         loads in its frame — before this, an approver could never see
+                         the odometer or the receipt they were approving. --}}
+                    @if($request->meter_distance || $request->meter_at_fill || $request->litres)
+                    <div class="md:col-span-2">
+                        <label class="text-sm font-semibold text-gray-700">⛽ Fuel details</label>
+                        <p class="text-base mt-1">
+                            @if($request->meter_distance)
+                                <span>{{ number_format($request->meter_distance) }} km ridden
+                                @if($request->petrol_rate) × Rs {{ $request->petrol_rate }}/km @endif</span>
+                            @endif
+                            @if($request->meter_at_fill)
+                                <span class="ml-3">Meter at fill: <strong>{{ number_format($request->meter_at_fill) }} km</strong></span>
+                            @endif
+                            @if($request->litres)
+                                <span class="ml-3">{{ $request->litres }} litres</span>
+                            @endif
+                        </p>
+                    </div>
+                    @endif
+
+                    @php
+                        // attachments is a JSON array of storage-relative paths; the
+                        // /public-storage/{path} route streams them.
+                        $reqAttachments = collect((array) ($request->attachments ?? []))
+                            ->filter()->map(fn ($p) => '/public-storage/' . ltrim($p, '/'))->values();
+                    @endphp
+                    @if($reqAttachments->isNotEmpty())
+                    <div class="md:col-span-2">
+                        <label class="text-sm font-semibold text-gray-700">📷 Attached photo</label>
+                        <div class="mt-2" style="display:flex; gap:10px; flex-wrap:wrap;">
+                            @foreach($reqAttachments as $url)
+                            <img src="{{ $url }}" alt="Attachment"
+                                 onclick="reqOpenPhoto('{{ $url }}')"
+                                 style="width:130px; height:130px; object-fit:cover; border:1px solid #d1d5db; border-radius:8px; cursor:zoom-in; background:#f3f4f6;">
+                            @endforeach
+                        </div>
+                        <p class="text-xs mt-1" style="color:#6b7280;">Click to enlarge.</p>
+                    </div>
+                    @endif
+
                     @if($request->rejection_reason)
                     <div class="md:col-span-2">
                         <label class="text-sm font-semibold text-red-700">Rejection Reason</label>
@@ -416,7 +458,36 @@ if (window.parent && window.parent !== window) {
     }, 1500);
 }
 @endif
+
+// Attachment lightbox. The shell is inline-styled on purpose: the utility
+// classes this project's CSS build once provided (inset-0, max-h-*, flex-*)
+// were purged, so a class-based overlay renders in the top-left corner and
+// cannot scroll. Inline styles are the reliable option here.
+function reqOpenPhoto(url) {
+    var box = document.getElementById('reqPhotoLightbox');
+    document.getElementById('reqPhotoLightboxImg').src = url;
+    box.style.display = 'flex';
+}
+function reqClosePhoto() {
+    var box = document.getElementById('reqPhotoLightbox');
+    box.style.display = 'none';
+    document.getElementById('reqPhotoLightboxImg').src = '';
+}
+document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape') reqClosePhoto();
+});
 </script>
+
+<div id="reqPhotoLightbox" onclick="reqClosePhoto()"
+     style="display:none; position:fixed; top:0; left:0; right:0; bottom:0; z-index:5000;
+            background:rgba(0,0,0,.78); align-items:center; justify-content:center;">
+    <button onclick="reqClosePhoto()" title="Close"
+            style="position:absolute; top:14px; right:20px; background:none; border:none;
+                   color:#fff; font-size:30px; line-height:1; cursor:pointer;">&times;</button>
+    <img id="reqPhotoLightboxImg" src="" alt="Attachment"
+         style="max-width:92vw; max-height:88vh; border-radius:8px; background:#fff;
+                box-shadow:0 12px 44px rgba(0,0,0,.5);">
+</div>
 
 @endsection
 

@@ -41,8 +41,15 @@ return [
     // When config is cached (php artisan config:cache), env() returns null
     // outside config files, which silently breaks dispatch ETAs. Keeping the
     // env() read here (inside a config file) is cache-safe.
+    // Geocoding (address -> coordinates) rides the SAME Google project and, by
+    // default, the same key: "Maps Platform API Key" already allows the Geocoding
+    // API, so no .env change is needed to switch GeocodingService off Nominatim.
+    // Set GOOGLE_MAPS_GEOCODING_API_KEY only if you later mint a Geocoding-only
+    // key to cap or rotate separately — then run /api/public/xclean, because a
+    // cached config will otherwise keep serving the old value.
     'google_maps' => [
         'directions_key' => env('GOOGLE_MAPS_DIRECTIONS_API_KEY'),
+        'geocoding_key'  => env('GOOGLE_MAPS_GEOCODING_API_KEY', env('GOOGLE_MAPS_DIRECTIONS_API_KEY')),
     ],
 
 ];
