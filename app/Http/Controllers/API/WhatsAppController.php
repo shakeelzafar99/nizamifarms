@@ -2374,6 +2374,17 @@ class WhatsAppController extends Controller
             }
 
             $context = $request->query('context');
+
+            // Mirror of the web picker rule (WhatsAppWebController::getTemplates):
+            // automation-ONLY templates are fired by rules, never sent by hand,
+            // so a context-less picker must not list them. The mobile WhatsApp
+            // Messages and Campaigns screens both ask with no context — fixing it
+            // HERE cleans both up with the web deploy, no APK rebuild needed.
+            // Opt back in with include_automation=1.
+            if (!$context && !$request->boolean('include_automation', false)) {
+                $query->whereRaw("TRIM(COALESCE(show_in, '')) <> 'automation'");
+            }
+
             if ($context) {
                 $contexts = array_map('trim', explode(',', $context));
                 $query->where(function ($q) use ($contexts) {

@@ -135,6 +135,14 @@
   #hq-root .health .h-row{display:flex;align-items:flex-start;gap:8px;font-size:12px;color:var(--mut)}
   #hq-root .h-dot{width:8px;height:8px;border-radius:50%;margin-top:4px;flex:0 0 auto}
   #hq-root .h-ok{background:var(--good)} #hq-root .h-warn{background:#f59e0b}
+  #hq-root .netpos .health .h-row{color:#d6d3d1}
+  /* the arithmetic behind Net working capital, shown on the card itself */
+  #hq-root .nwcf{margin-top:9px;padding-top:9px;border-top:1px solid #44403c;
+                 display:flex;flex-direction:column;gap:4px;font-size:11.5px}
+  #hq-root .nwcf .f-row{display:flex;align-items:baseline;gap:8px;color:#d6d3d1;font-variant-numeric:tabular-nums}
+  #hq-root .nwcf .f-op{width:9px;flex:0 0 auto;color:#a8a29e;font-weight:700}
+  #hq-root .nwcf .f-val{margin-left:auto;white-space:nowrap}
+  #hq-root .nwcf .f-sum{border-top:1px solid #44403c;margin-top:3px;padding-top:6px;color:#fff;font-weight:700}
   #hq-root .wc-note{font-size:11px;color:var(--faint);margin-top:6px}
 
   #hq-root .trend-card svg{display:block;width:100%;height:150px}
@@ -580,14 +588,6 @@
       : '<div class="row"><span>Regular · pending approvals ('+rsS(r.regular_count)+')</span><span>'+rsS(r.regular)+'</span></div>'+
         '<div class="row"><span>Shops · outstanding ('+rsS(r.shop_count)+')</span><span>'+rsS(r.shop)+'</span></div>'+
         '<div class="row"><span>Riders · cash to settle</span><span>'+rsS(r.rider)+'</span></div>';
-    var health=(w.health||[]).map(function(h){
-      if(h.drill){
-        return '<div class="h-row h-click" tabindex="0" role="button" onclick="hqDrill(\''+h.drill+'\')" onkeydown="if(event.key===\'Enter\')hqDrill(\''+h.drill+'\')" style="cursor:pointer"><span class="h-dot '+(h.ok?'h-ok':'h-warn')+'"></span><span style="text-decoration:underline dotted;text-underline-offset:2px">'+esc(h.label)+' ›</span></div>';
-      }
-      return '<div class="h-row"><span class="h-dot '+(h.ok?'h-ok':'h-warn')+'"></span>'+esc(h.label)+'</div>';
-    }).join('');
-    if(isQb) health='<div class="h-row"><span class="h-dot h-ok"></span>Season-to-date position · no vendor payables (Qurbani costs are expenses)</div>';
-
     var html=
       '<div class="card"><div class="k-label">'+(isQb?'Qurbani cash':'Cash in hand · NF till')+iBtn('cash')+'</div><div class="k-val">'+rs(w.cash)+'</div>'+
         (cashRows?'<div class="banklist">'+cashRows+'</div>':'<div class="k-sub">'+esc(w.cash_label||'')+'</div>')+'</div>'+
@@ -608,7 +608,29 @@
         '<div class="card click" tabindex="0" role="button" onclick="hqDrill(\'assets\')"><div class="k-label">Fixed assets'+iBtn('assets')+'<span class="drill">›</span></div><div class="k-val">'+rs(a.value)+'</div>'+
           (assetRows?'<div class="banklist">'+assetRows+'</div>':'<div class="k-sub">'+a.count+' active assets</div>')+'</div>';
     }
-    html+='<div class="card netpos"><div class="k-label">Net working capital'+iBtn('net')+'</div><div class="k-val">'+rs(w.net)+'</div><div class="health">'+health+'</div></div>';
+    // The card shows the arithmetic that produced the number, so the four
+    // inputs can be checked against their own cards without opening the "i".
+    // NOTE: cash uses cash_total (ALL regular tills), not the cash card's
+    // headline — that headline is NF_CASH only (owner rule), so the two
+    // deliberately differ. Health rows below are WARNINGS ONLY; the "all
+    // clear" lines were noise on a money card.
+    var fRows=[['+', isQb?'Qurbani cash':'Cash · all tills', w.cash_total],
+               ['+', isQb?'Qurbani online':'Online · ledger', w.online],
+               ['+', isQb?'Season receivables':'Receivables', r.total]];
+    if(!isQb) fRows.push(['−','Payables', w.payables]);
+    var formula=fRows.map(function(x){
+        return '<div class="f-row"><span class="f-op">'+x[0]+'</span><span>'+x[1]+'</span><span class="f-val">'+rsS(x[2])+'</span></div>';
+      }).join('')+
+      '<div class="f-row f-sum"><span class="f-op">=</span><span>'+(isQb?'Net position':'Net working capital')+'</span><span class="f-val">'+rsS(w.net)+'</span></div>';
+    var warnings=(w.health||[]).filter(function(h){return !h.ok;});
+    var warnHtml=warnings.length?'<div class="health">'+warnings.map(function(h){
+        if(h.drill){
+          return '<div class="h-row h-click" tabindex="0" role="button" onclick="hqDrill(\''+h.drill+'\')" onkeydown="if(event.key===\'Enter\')hqDrill(\''+h.drill+'\')" style="cursor:pointer"><span class="h-dot h-warn"></span><span style="text-decoration:underline dotted;text-underline-offset:2px">'+esc(h.label)+' ›</span></div>';
+        }
+        return '<div class="h-row"><span class="h-dot h-warn"></span>'+esc(h.label)+'</div>';
+      }).join('')+'</div>':'';
+    html+='<div class="card netpos"><div class="k-label">Net working capital'+iBtn('net')+'</div><div class="k-val">'+rs(w.net)+'</div>'+
+      '<div class="nwcf">'+formula+'</div>'+warnHtml+'</div>';
     $('hqWc').innerHTML=html;
   }
 

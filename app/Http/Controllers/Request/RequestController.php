@@ -381,6 +381,19 @@ class RequestController extends Controller
                     }
                 }
                 
+                // 🏍️ BIKE CLAIMS ONLY: `manage_bike_service` holders may file
+                // petrol/maintenance for a rider even without an admin/manager
+                // role — Qasim (role type 'user', name 'khaas') runs the Bikes
+                // screen in Frozen mode and must be able to raise these. The
+                // bypass is scoped to the two bike categories, so it grants no
+                // general on-behalf power (leaves, advances, vendor bills still
+                // need the roles above).
+                if (!$hasPermission
+                    && in_array($validated['expense_category'] ?? null, ['Petrol', 'Maintenance'], true)
+                    && $loggedInUser->hasPermission('manage_bike_service')) {
+                    $hasPermission = true;
+                }
+
                 if (!$hasPermission) {
                     return response()->json([
                         'success' => false,
@@ -392,6 +405,41 @@ class RequestController extends Controller
                 $requesterId = $validated['requester_user_id'];
                 $requesterUser = \App\Models\SysAdmin\UserModel::find($requesterId);
                 $createdByNote = "\n\n[Created by {$loggedInUser->fullname} on behalf of employee]";
+            }
+
+            // ⭐ FUEL / MAINTENANCE RULES — the SAME service the rider's own app calls
+            //    (API\RiderController::createRequest). This path used to enforce none
+            //    of them, so a manager filing for a rider bypassed the company-bike
+            //    meter requirement, the odometer sanity check and the double-tap
+            //    block. Keyed to $requesterId — the bike and the odometer history
+            //    belong to the rider the claim is FOR, never to the manager filing it.
+            $fuelRules = (new \App\Services\Riders\FuelClaimRules())->check(
+                (int) $requesterId,
+                $validated['expense_category'] ?? null,
+                [
+                    'amount'        => $validated['amount'] ?? null,
+                    'expense_date'  => $validated['expense_date'] ?? null,
+                    'meter_at_fill' => $validated['meter_at_fill'] ?? null,
+                    'service_type'  => $validated['service_type'] ?? null,
+                    // This path never creates the self-auditing metered petrol row
+                    // (that comes from the rider's attendance screen), so there is
+                    // no attendance_id to pass — every claim here is the flat kind.
+                    'attendance_id' => null,
+                ],
+                // WHO is filing. When a manager picks a rider, actor ≠ requester and
+                // the own-bike "don't file your own petrol" rule steps aside — that
+                // rule exists to stop a rider double-claiming, not to stop a manager
+                // recording a genuine one for him.
+                (int) $loggedInUser->id
+            );
+            if (!$fuelRules['ok']) {
+                DB::rollBack();
+                return response()->json(['success' => false, 'message' => $fuelRules['message']], 422);
+            }
+            // Soft flag (2nd cash claim of the day, or a day the meter already paid
+            // for) — carried into the description so the approver sees it.
+            if (!empty($fuelRules['notice'])) {
+                $createdByNote .= "\n[" . $fuelRules['notice'] . ']';
             }
 
             // Calculate leave days if it's a leave request
@@ -505,7 +553,11 @@ class RequestController extends Controller
                 // onto an unrelated expense if a stale form submits the hidden fields.
                 'service_type' => (($validated['expense_category'] ?? null) === 'Maintenance')
                     ? ($validated['service_type'] ?? null) : null,
-                'meter_at_fill' => (($validated['expense_category'] ?? null) === 'Maintenance')
+                // ⚠ This used to be stored for Maintenance ONLY, which silently threw
+                // away the odometer on every PETROL claim filed here — so a
+                // manager-filed company-bike fill was invisible to km-since-last-fill
+                // and to the Bikes tank economics. Both categories keep it now.
+                'meter_at_fill' => in_array($validated['expense_category'] ?? null, ['Maintenance', 'Petrol'], true)
                     ? ($validated['meter_at_fill'] ?? null) : null,
                 'payment_source_account_id' => $validated['payment_source_account_id'] ?? null,
                 'receiving_account_id' => $expenseBankId,

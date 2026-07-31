@@ -1004,6 +1004,16 @@ class WhatsAppWebController extends Controller
             }
         }
 
+        // Jul-2026: templates that carry a FIXED media header (e.g. the app
+        // launch banner) attach it automatically. A media-header template must
+        // send its image every time or Meta rejects it with 132012 (verified), and
+        // in the chat UI supplies one — only the invoice path above did, and
+        // only for order-linked sends. Deliberately does not override a header
+        // the caller already set (the invoice image wins).
+        if (empty($headerParams)) {
+            $headerParams = $service->headerParamsForTemplate($request->template_name);
+        }
+
         $result = $service->sendTemplateMessage($phone, $request->template_name, 'en', $bodyParams, $headerParams);
 
         if (!($result['success'] ?? false)) {
@@ -1927,6 +1937,24 @@ class WhatsAppWebController extends Controller
         }
 
         $context = $request->query('context');
+
+        // Automation-only templates (show_in = 'automation') exist purely to be
+        // fired by a rule — order_received_*, deliver_*, invoice_paychange,
+        // monsoon, ... A picker that names its contexts already excludes them
+        // (FIND_IN_SET never matches). But a picker that asks with NO context
+        // gets EVERYTHING, which is how ~11 automation templates ended up in the
+        // manual "Send Template" list and the mobile Campaigns picker —
+        // confusing, since sending one by hand is never the intent.
+        //
+        // So: no context => hide automation-ONLY templates unless the caller
+        // explicitly opts in with include_automation=1. Two callers do (the
+        // automation rule picker and Manage Templates, which shows them in its
+        // own collapsed 🤖 section). Templates tagged 'automation,messages' are
+        // deliberately dual-purpose and are NOT hidden.
+        if (!$context && !$request->boolean('include_automation', false)) {
+            $query->whereRaw("TRIM(COALESCE(show_in, '')) <> 'automation'");
+        }
+
         if ($context) {
             $contexts = array_map('trim', explode(',', $context));
             $query->where(function ($q) use ($contexts) {

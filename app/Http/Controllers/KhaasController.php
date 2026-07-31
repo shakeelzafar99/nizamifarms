@@ -1783,6 +1783,46 @@ class KhaasController extends Controller
     }
 
     /**
+     * GET /khaas/account-activity/{accountId}
+     *
+     * Last N movements IN and OUT of one of this BU's payment accounts, with date, time and
+     * who moved it — the web twin of the mobile Expenses "Recent Activity" view. Same
+     * AccountActivityService, so the two can never disagree.
+     *
+     * Exists because the Expenses tab showed a bare balance per account with no way to see
+     * what changed it: on the Frozen fund account almost every movement is a vendor_payment
+     * outflow, so the number moved daily and nothing on screen explained why.
+     */
+    public function accountActivity(Request $request, $accountId)
+    {
+        if (!$this->hasKhaasAccess()) {
+            return response()->json(['success' => false, 'message' => 'Access denied'], 403);
+        }
+
+        $khaasBU = $this->getKhaasBU();
+        if (!$khaasBU) {
+            return response()->json(['success' => false, 'message' => 'Khaas BU not found'], 404);
+        }
+
+        // BU guard: only this business unit's own accounts, and only ones the user may see
+        // (mirrors the visibility rule used everywhere else for accounts).
+        $account = \App\Models\FIN\AccountModel::where('id', $accountId)
+            ->where('business_unit_id', $khaasBU->id)
+            ->visibleTo(auth()->user())
+            ->first();
+
+        if (!$account) {
+            return response()->json(['success' => false, 'message' => 'Account not found'], 404);
+        }
+
+        $limit = (int) $request->get('limit', 10);
+
+        return response()->json(
+            ['success' => true] + (new \App\Services\FIN\AccountActivityService())->recent($account, $limit)
+        );
+    }
+
+    /**
      * Khaas Meat Order — Track Orders & Place New Order
      */
     public function meatOrder(Request $request)

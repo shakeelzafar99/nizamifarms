@@ -379,24 +379,21 @@ class RiderDayReportService
             $o['on_time'] = null;
         }
 
-        // pin vs verified
+        // pin vs verified — VerifiedPinRule is the ONE implementation of this verdict; the
+        // store's Delivered Orders screen and the dispatch tracker now ask the same class, so
+        // two screens can no longer disagree about one delivery. (The forgiveness-for-a-vague-
+        // fix rule that used to be written out here lives in that class unchanged.)
         $o['has_verified'] = ($o['verified_lat'] !== null && $o['verified_lng'] !== null) ? 1 : 0;
         $o['pin_distance_m'] = null;
         $o['at_verified'] = null;
-        if ($o['has_verified'] && $o['pin_lat'] !== null) {
-            $d = $this->haversine($o['pin_lat'], $o['pin_lng'], $o['verified_lat'], $o['verified_lng']);
-            $o['pin_distance_m'] = (int) round($d);
-            // A drop can only be placed as precisely as the fix that recorded it, so let the
-            // error bar reach the radius before calling a rider "away from the pin" — capped
-            // at coarse_fix_m so a wildly bad fix can never excuse a genuine miss. NULL
-            // accuracy (older APKs, and every historical row) ⇒ no slack ⇒ unchanged verdict.
-            $slack = ($o['delivery_accuracy_m'] !== null)
-                ? min((float) $o['delivery_accuracy_m'], (float) ($this->cfg['coarse_fix_m'] ?? 150))
-                : 0;
-            $o['at_verified'] = ($d - $slack) <= $this->cfg['at_verified_m'] ? 1 : 0;
+        $verdict = VerifiedPinRule::judge(
+            $o['pin_lat'], $o['pin_lng'], $o['verified_lat'], $o['verified_lng'], $o['delivery_accuracy_m']
+        );
+        if ($verdict) {
+            $o['pin_distance_m'] = $verdict['distance_m'];
+            $o['at_verified'] = $verdict['at_verified'] ? 1 : 0;
             // Flagged separately so the UI can say "fix was coarse" instead of implying he moved.
-            $o['fix_coarse'] = ($o['delivery_accuracy_m'] !== null
-                && (float) $o['delivery_accuracy_m'] > (float) ($this->cfg['coarse_fix_m'] ?? 150)) ? 1 : 0;
+            $o['fix_coarse'] = $verdict['fix_coarse'] ? 1 : 0;
         }
 
         // press proof: nearest gated trail point within ±5 min of the press

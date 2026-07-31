@@ -20,11 +20,24 @@
             <div class="d-arrow">→</div>
             <div class="d-acct dst">To<b id="nfhubDTo">—</b><span id="nfhubDToSub"></span></div>
         </div>
+        {{-- How this row moved the balance. Shown for bank-statement rows, where an attribution
+             entry (⇄ transfer, ⚖ fix, ⟲ reset) has no ledger record standing behind it. --}}
+        <div class="d-section" id="nfhubDBalWrap" style="display:none">
+            <h4>Balance</h4>
+            <div class="d-bal">
+                <div><span>Before</span><b class="num" id="nfhubDBefore">—</b></div>
+                <div class="d-bal-arrow">→</div>
+                <div><span>After</span><b class="num" id="nfhubDAfter">—</b></div>
+            </div>
+        </div>
         <div class="d-section">
             <h4>Details</h4>
             <dl class="d-kv">
                 <dt>Status</dt><dd id="nfhubDStatus">—</dd>
                 <dt>Date</dt><dd id="nfhubDDate">—</dd>
+                {{-- When it was typed into the system — matters when the date was backdated. Hidden
+                     for rows that don't carry it (e.g. overview rows built elsewhere). --}}
+                <dt id="nfhubDEnteredT" style="display:none">Entered</dt><dd id="nfhubDEntered" style="display:none">—</dd>
                 <dt>Created by</dt><dd id="nfhubDBy">—</dd>
             </dl>
         </div>
@@ -62,10 +75,32 @@
         set('nfhubDToSub', d.tosub || '');
         set('nfhubDStatus', d.statusLabel || '—');
         set('nfhubDDate', d.date || '—');
+        var entT = document.getElementById('nfhubDEnteredT'), entD = document.getElementById('nfhubDEntered');
+        if (entT && entD) {
+            entT.style.display = d.entered ? '' : 'none';
+            entD.style.display = d.entered ? '' : 'none';
+            entD.textContent = d.entered || '—';
+        }
         set('nfhubDBy', d.by || '—');
+        // Balance before → after (bank statements only).
+        var balWrap = document.getElementById('nfhubDBalWrap');
+        if (balWrap) {
+            var hasBal = d.before != null || d.after != null;
+            balWrap.style.display = hasBal ? '' : 'none';
+            set('nfhubDBefore', d.before || '—');
+            set('nfhubDAfter', d.after || '—');
+        }
+
+        // Attribution rows have no transaction page to open — hide the link rather than dead-end it.
         var action = document.getElementById('nfhubDAction');
-        action.href = d.url || '#';
-        action.textContent = d.pending ? 'Review & approve ↗' : 'Open full details ↗';
+        var foot = action.closest('.drawer-foot');
+        if (d.url) {
+            if (foot) foot.style.display = '';
+            action.href = d.url;
+            action.textContent = d.pending ? 'Review & approve ↗' : 'Open full details ↗';
+        } else if (foot) {
+            foot.style.display = 'none';
+        }
         drawer.classList.add('on');
         scrim.classList.add('on');
     });

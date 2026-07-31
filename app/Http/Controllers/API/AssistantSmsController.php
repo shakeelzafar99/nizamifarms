@@ -131,9 +131,10 @@ class AssistantSmsController extends Controller
         }
 
         $request->validate([
-            'type'             => 'required|in:expense,vendor_payment',
+            'type'             => 'required|in:expense,vendor_payment,account_transfer',
             'expense_category' => 'nullable|string|max:255',
             'vendor_id'        => 'nullable|integer',
+            'to_account_id'    => 'nullable|integer',
         ]);
 
         $sms = DB::table('t_ai_bank_sms')->where('id', $id)->where('user_id', $user->id)->first();
@@ -174,7 +175,31 @@ class AssistantSmsController extends Controller
             '_from_sms'                  => true,
         ];
 
-        if ($request->input('type') === 'expense') {
+        if ($request->input('type') === 'account_transfer') {
+            // Money that left the bank but is STILL OURS — a rider/staff cash
+            // float, NF food, another till. Not an expense (nothing was spent)
+            // and not a vendor payment (nobody was owed): a ledger transfer.
+            // FROM is the bank the SMS came out of, TO is what the user picked.
+            $toId = (int) $request->input('to_account_id', 0);
+            if (!$toId) {
+                return response()->json(['success' => false, 'message' => 'Which account did the money go to?'], 422);
+            }
+            if ($toId === (int) $online->id) {
+                return response()->json(['success' => false, 'message' => 'That is the same account the money left from.'], 422);
+            }
+            $result = $this->drafts->draftAccountTransfer([
+                'from_account_id'      => $online->id,
+                'to_account_id'        => $toId,
+                'amount'               => (float) $sms->amount,
+                // The SMS already names which of our banks it moved through, so
+                // the card never has to ask (storeTransfer requires it).
+                'receiving_account_id' => $sms->receiving_account_id,
+                'mode'                 => 'online',
+                'description'          => $this->smsNote($sms),
+                // (no _from_sms needed: draftAccountTransfer never attaches the
+                // latest chat image, unlike the expense/vendor builders.)
+            ], $user);
+        } elseif ($request->input('type') === 'expense') {
             $category = trim((string) $request->input('expense_category', ''));
             if ($category === '') {
                 return response()->json(['success' => false, 'message' => 'What was this expense for?'], 422);
@@ -382,15 +407,37 @@ class AssistantSmsController extends Controller
         }
 
         $sms = DB::table('t_ai_bank_sms')->where('id', $id)->where('user_id', $user->id)->first();
-        if (!$sms || $sms->status !== 'ignored') {
-            return response()->json(['success' => false, 'message' => 'That SMS is not in the ignored pile.'], 422);
+
+        // Restore now also undoes an AUTOMATIC close (the reconcile sweeps), not
+        // just an ignore — otherwise a wrong auto-close would be permanent, and
+        // automation you cannot reverse is automation you cannot trust. A row
+        // closed by a real confirmed DRAFT is excluded: that one represents
+        // money actually recorded, so it is not the sweep's to undo.
+        $undoable = ['already_recorded', 'already_in_ledger', 'order_approved', 'approved_in_queue'];
+        $isAutoClosed = $sms
+            && in_array($sms->status, ['recorded', 'matched'], true)
+            && in_array((string) $sms->auto_reason, $undoable, true)
+            && !$sms->linked_draft_id;
+
+        if (!$sms || ($sms->status !== 'ignored' && !$isAutoClosed)) {
+            return response()->json(['success' => false, 'message' => 'That SMS is not in the ignored or auto-handled pile.'], 422);
         }
 
         DB::table('t_ai_bank_sms')->where('id', $id)->update([
-            'status'      => 'new',
-            'auto_reason' => null,
-            'updated_at'  => now(),
+            'status'           => 'new',
+            'auto_reason'      => null,
+            // Release the ledger row so it can legitimately match another SMS.
+            'linked_ledger_id' => null,
+            'updated_at'       => now(),
         ]);
+
+        // A restored auto-close must NOT be swallowed again on the next inbox
+        // load. Park the ledger row it matched on an ignore-list keyed to this
+        // SMS by reusing linked_ledger_id's absence + an explicit marker.
+        if ($isAutoClosed && $sms->linked_ledger_id) {
+            DB::table('t_ai_bank_sms')->where('id', $id)
+                ->update(['auto_reason' => 'reconcile_rejected']);
+        }
 
         // Back in the inbox = back in the pipeline — CREDITS only: a restored
         // credit re-holds/pairs exactly like a fresh ingest. Never for debits:
@@ -434,7 +481,10 @@ class AssistantSmsController extends Controller
         }
 
         $request->validate([
-            'entity_type'  => 'required|in:vendor,customer,expense,ignore',
+            // 'account' = one of OUR accounts (staff cash float, NF food, …).
+            // Like vendor/expense it only ever PRE-FILLS a card — the auto-action
+            // path still acts on 'ignore' alone, so no rule here can move money.
+            'entity_type'  => 'required|in:vendor,customer,expense,ignore,account',
             'entity_id'    => 'nullable|integer',
             'entity_label' => 'nullable|string|max:120',
         ]);

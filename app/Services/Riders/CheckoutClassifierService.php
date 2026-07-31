@@ -7,8 +7,8 @@ use Illuminate\Support\Facades\DB;
 /**
  * Classifies WHERE a rider checked out (for the manager's attendance screens): at the
  * office, at a customer's delivery point, or somewhere else — plus a flag when that
- * delivery point was NOT the address's verified pin. Display-only; reuses the app-wide
- * verified-pin rule (config rider_reports.at_verified_m) and the checkout radius.
+ * delivery point was NOT the address's verified pin. Display-only; the pin verdict comes from
+ * VerifiedPinRule (the one shared implementation), the radius from the checkout config.
  *
  * This is the attendance-screen twin of RiderDayReportService::checkoutAudit (which flags
  * the same thing on the daily-issues report). Kept separate because this labels every
@@ -18,7 +18,6 @@ class CheckoutClassifierService
 {
     private ?array $officeMemo = null;
     private ?float $radiusMemo = null;
-    private ?float $atVerifiedMemo = null;
     private ?float $officeAtMemo = null;
 
     private function office(): ?object
@@ -64,14 +63,6 @@ class CheckoutClassifierService
         return $this->radiusMemo;
     }
 
-    private function atVerifiedM(): float
-    {
-        if ($this->atVerifiedMemo === null) {
-            $this->atVerifiedMemo = (float) config('rider_reports.at_verified_m', 500);
-        }
-        return $this->atVerifiedMemo;
-    }
-
     private function haversine(float $lat1, float $lng1, float $lat2, float $lng2): float
     {
         $R = 6371000.0;
@@ -98,6 +89,11 @@ class CheckoutClassifierService
         // Checked FIRST — a delivery drop can sit within the office's loose radius, so checking
         // the office first would mis-label a genuine at-door checkout near the office as "office".
         try {
+            // delivery_accuracy_m only exists after the GPS-accuracy hardening SQL; select it
+            // conditionally so this keeps working on a DB where that hasn't run yet.
+            $accCol = \Illuminate\Support\Facades\Schema::hasColumn('t_crm_order_status_history', 'delivery_accuracy_m')
+                ? 'h.delivery_accuracy_m'
+                : DB::raw('NULL as delivery_accuracy_m');
             $last = DB::table('t_crm_order_status_history as h')
                 ->join('t_crm_prod_order as o', 'o.id', '=', 'h.order_id')
                 ->leftJoin('t_crm_prod_customer as c', 'c.id', '=', 'o.customer_id')
@@ -108,7 +104,7 @@ class CheckoutClassifierService
                 ->orderByDesc('h.changed_at')
                 ->select('h.delivery_latitude as pin_lat', 'h.delivery_longitude as pin_lng',
                          'o.order_number', 'o.name as customer_name',
-                         'c.latitude as ver_lat', 'c.longitude as ver_lng')
+                         'c.latitude as ver_lat', 'c.longitude as ver_lng', $accCol)
                 ->first();
         } catch (\Throwable $e) {
             $last = null;
@@ -116,11 +112,16 @@ class CheckoutClassifierService
         if ($last) {
             $dDrop = $this->haversine($lat, $lng, (float) $last->pin_lat, (float) $last->pin_lng);
             if ($dDrop <= $this->checkoutRadiusM()) {
+                // Same verdict class every other screen uses — a checkout flagged here can no
+                // longer contradict the same delivery's row on Day Review.
                 $pinAway = null; $pinDist = null;
-                if ($last->ver_lat !== null && $last->ver_lng !== null) {
-                    $dPin = $this->haversine((float) $last->pin_lat, (float) $last->pin_lng, (float) $last->ver_lat, (float) $last->ver_lng);
-                    $pinDist = (int) round($dPin);
-                    $pinAway = $dPin > $this->atVerifiedM();
+                $verdict = VerifiedPinRule::judge(
+                    $last->pin_lat, $last->pin_lng, $last->ver_lat, $last->ver_lng,
+                    $last->delivery_accuracy_m ?? null
+                );
+                if ($verdict) {
+                    $pinDist = $verdict['distance_m'];
+                    $pinAway = !$verdict['at_verified'];
                 }
                 $cust = trim((string) $last->customer_name) ?: 'customer';
                 return ['status' => 'delivery', 'label' => 'At ' . $cust,

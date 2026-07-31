@@ -204,12 +204,53 @@ class AccountModel extends BaseModel
     }
 
     /**
-     * Create employee cash account
+     * Get or create the employee cash account for a user.
+     *
+     * Resolution is by user_id, NOT by the name-derived code: the code used to
+     * be the lookup key, so renaming a user forked a second empty account and
+     * split his ledger between the two (Asim/Kanan incident, Jul-2026). The
+     * account_code is frozen at creation; only the display name follows the
+     * user's current name. Deliberately no is_active filter — a deactivated
+     * account must be found, not forked.
      */
     public static function createEmployeeCashAccount($userId, $userName)
     {
+        $userName = trim((string) $userName);
+
+        $account = static::where('user_id', $userId)
+            ->where('account_category', self::CATEGORY_EMPLOYEE_CASH)
+            ->orderBy('id')
+            ->first();
+
         $code = 'CASH_EMP_' . strtoupper(str_replace([' ', '-', '.'], '_', $userName));
-        
+
+        if (!$account) {
+            // Legacy account created under the name-derived code before
+            // user_id was reliably set — adopt it instead of forking.
+            $account = static::where('account_code', $code)
+                ->where('account_category', self::CATEGORY_EMPLOYEE_CASH)
+                ->whereNull('user_id')
+                ->first();
+            if ($account) {
+                $account->user_id = $userId;
+                $account->save();
+            }
+        }
+
+        if ($account) {
+            if ($userName !== '' && $account->account_name !== 'Cash - ' . $userName) {
+                $account->account_name = 'Cash - ' . $userName;
+                $account->save();
+            }
+            return $account;
+        }
+
+        // New account. If the name-derived code is already taken it belongs to
+        // a same-named OTHER user — suffix the user id rather than share a till.
+        if (static::where('account_code', $code)->exists()) {
+            $code .= '_U' . $userId;
+        }
+
         return static::firstOrCreate(
             ['account_code' => $code],
             [

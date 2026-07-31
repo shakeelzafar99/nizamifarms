@@ -38,8 +38,16 @@ class FleetFuelController extends Controller
                 return response()->json(['success' => false, 'message' => 'Invalid month'], 422);
             }
 
-            $data = Cache::remember("fleet_fuel_month_{$month}", self::CACHE_SECS,
-                fn () => $svc->monthSummary($month));
+            // fresh=1 → recompute now. Used right after a claim is created from the
+            // Bikes screen itself: a 2-minute-old cache would show the manager his
+            // own new request missing. Same contract as rider().
+            $key = "fleet_fuel_month_{$month}";
+            if ($request->boolean('fresh')) {
+                $data = $svc->monthSummary($month);
+                Cache::put($key, $data, self::CACHE_SECS);
+            } else {
+                $data = Cache::remember($key, self::CACHE_SECS, fn () => $svc->monthSummary($month));
+            }
 
             return response()->json(array_merge(['success' => true], $data));
         } catch (\Throwable $e) {

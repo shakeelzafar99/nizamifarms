@@ -832,22 +832,13 @@ class SalarySlipController extends Controller
             return null;
         }
 
-        $accountCode = 'CASH_EMP_' . strtoupper(str_replace(' ', '_', $user->fullname));
-
-        $accountId = DB::table('t_fin_accounts')->insertGetId([
-            'account_code' => $accountCode,
-            'account_name' => $user->fullname . ' - Cash',
-            'account_type' => 'asset',
-            'account_category' => 'employee_cash',
-            'user_id' => $userId,
-            'opening_balance' => 0,
-            'current_balance' => 0,
-            'is_active' => 1,
-            'created_at' => now(),
-            'created_by' => auth()->id()
-        ]);
-
-        return DB::table('t_fin_accounts')->find($accountId);
+        // Single source of truth for employee-cash accounts — this used to be a
+        // blind INSERT with its own name formula, which could mint a duplicate
+        // account alongside the one the rest of the system uses.
+        return \App\Models\FIN\AccountModel::createEmployeeCashAccount(
+            $userId,
+            $user->fullname ?? $user->name ?? 'User #' . $userId
+        );
     }
 
     /**

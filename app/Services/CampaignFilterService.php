@@ -78,6 +78,73 @@ class CampaignFilterService
      *                              matching how `buildFilterGroupQuery`
      *                              references it today.
      */
+    /**
+     * Live per-customer order count + lifetime spend, as a derived table.
+     *
+     * WHY THIS EXISTS: `t_crm_prod_customer.total_orders` / `total_spent` are
+     * stale. 2,986 customers on the live replica have real delivered orders but
+     * a stored counter of 0 — nothing keeps those columns current, and the
+     * Customers page quietly recomputes them at render time instead. The
+     * campaign spend filter used to read the stored column, so "customers who
+     * spent >= X" silently skipped roughly half of everyone who qualified.
+     * Every spend / order-count filter now goes through this instead.
+     *
+     * The definition deliberately mirrors CustomerController::getCombinedCustomerStats()
+     * so campaign counts agree with what the owner sees on the Customers page:
+     *   - production orders: delivered|completed, excluding external_source='shopify'
+     *     (SH-numbered orders are tagged 'webapp' and DO count)
+     *   - history orders: delivered
+     *
+     * Static SQL, no bindings — safe to interpolate into a join.
+     */
+    public function orderStatsSubquerySql(): string
+    {
+        $hasHistory = Schema::hasTable('t_crm_history_order');
+
+        $prod = "SELECT customer_id, COUNT(*) AS cnt, COALESCE(SUM(total_price),0) AS spent
+                 FROM t_crm_prod_order
+                 WHERE customer_id IS NOT NULL
+                   AND (external_source <> 'shopify' OR external_source IS NULL)
+                   AND order_status IN ('delivered','completed')
+                 GROUP BY customer_id";
+
+        if (!$hasHistory) {
+            return "SELECT customer_id, SUM(cnt) AS orders_count, SUM(spent) AS spent_total
+                    FROM ({$prod}) p GROUP BY customer_id";
+        }
+
+        $hist = "SELECT customer_id, COUNT(*) AS cnt, COALESCE(SUM(total_price),0) AS spent
+                 FROM t_crm_history_order
+                 WHERE customer_id IS NOT NULL
+                   AND order_status = 'delivered'
+                 GROUP BY customer_id";
+
+        return "SELECT customer_id, SUM(cnt) AS orders_count, SUM(spent) AS spent_total
+                FROM ({$prod} UNION ALL {$hist}) x
+                GROUP BY customer_id";
+    }
+
+    /** Does this filter group need the (relatively costly) live order stats join? */
+    public function needsOrderStats(array $group): bool
+    {
+        foreach (['min_spend', 'max_spend', 'min_orders', 'max_orders'] as $k) {
+            if (isset($group[$k]) && $group[$k] !== '' && $group[$k] !== null) return true;
+        }
+        return false;
+    }
+
+    /**
+     * LEFT JOIN the live stats so customers with no orders survive as 0 rather
+     * than vanishing (important for "spent under X" and churn targeting).
+     */
+    protected function joinOrderStats($query): void
+    {
+        $query->leftJoin(
+            DB::raw('(' . $this->orderStatsSubquerySql() . ') as ostats'),
+            'ostats.customer_id', '=', 't_crm_prod_customer.id'
+        );
+    }
+
     public function shopifyExistsExpr(string $customerAlias = 't_crm_prod_customer'): string
     {
         $days = (int) self::SHOPIFY_RECENT_WINDOW_DAYS;
@@ -112,7 +179,10 @@ class CampaignFilterService
         $tagsById = []; // customer_id => [label, label, ...]
 
         foreach ($groups as $idx => $group) {
-            $ids = $this->buildFilterGroupQuery($group)->pluck('id')->toArray();
+            // Qualify the column — a group using spend/order-count filters joins
+            // a derived table, and an unqualified `id` would be ambiguous the
+            // moment that subquery ever exposes one.
+            $ids = $this->buildFilterGroupQuery($group)->pluck('t_crm_prod_customer.id')->toArray();
             $groupCounts[] = count($ids);
 
             $label = $this->buildGroupLabel($group, $idx);
@@ -147,12 +217,11 @@ class CampaignFilterService
         }
 
         // Apply the global sort so the campaign_customers rows have a stable
-        // ordering that matches the preview.
-        $sortedIds = CustomerModel::query()
-            ->whereIn('id', array_keys($unionIds))
-            ->orderBy($sortBy, $sortDir)
-            ->pluck('id')
-            ->toArray();
+        // ordering that matches the preview — and, crucially, the order the
+        // sender will work through them in.
+        $sortQuery = CustomerModel::query()->whereIn('t_crm_prod_customer.id', array_keys($unionIds));
+        $this->applySort($sortQuery, $sortBy, $sortDir);
+        $sortedIds = $sortQuery->pluck('t_crm_prod_customer.id')->toArray();
 
         return [
             'customer_ids' => array_map('intval', $sortedIds),
@@ -196,8 +265,29 @@ class CampaignFilterService
         $parts = [];
         if (!empty($group['qurbani_year'])) $parts[] = 'Qurbani ' . (int) $group['qurbani_year'];
         if (!empty($group['activity'])) {
-            if ($group['activity'] === '30day') $parts[] = '30d active';
-            elseif ($group['activity'] === '90day') $parts[] = '90d active';
+            $labels = ['30day' => '30d active', '90day' => '90d active', '180day' => '180d active', '365day' => '1y active'];
+            if (isset($labels[$group['activity']])) $parts[] = $labels[$group['activity']];
+        }
+        if (!empty($group['inactive_days'])) {
+            $parts[] = 'quiet ' . (int) $group['inactive_days'] . 'd+';
+        }
+        if (!empty($group['last_order_from']) || !empty($group['last_order_to'])) {
+            $from = !empty($group['last_order_from']) ? substr((string) $group['last_order_from'], 0, 10) : '…';
+            $to   = !empty($group['last_order_to'])   ? substr((string) $group['last_order_to'], 0, 10)   : '…';
+            $parts[] = 'last order ' . $from . '→' . $to;
+        }
+        if (!empty($group['never_ordered'])) $parts[] = 'never ordered';
+        if (!empty($group['first_order_from']) || !empty($group['first_order_to'])) {
+            $from = !empty($group['first_order_from']) ? substr((string) $group['first_order_from'], 0, 10) : '…';
+            $to   = !empty($group['first_order_to'])   ? substr((string) $group['first_order_to'], 0, 10)   : '…';
+            $parts[] = 'joined ' . $from . '→' . $to;
+        }
+        if (!empty($group['customer_type'])) $parts[] = strtolower($group['customer_type']) === 'shop' ? 'shops' : 'regular';
+        if (isset($group['min_orders']) && $group['min_orders'] !== '' && $group['min_orders'] !== null) {
+            $parts[] = (int) $group['min_orders'] . '+ orders';
+        }
+        if (isset($group['max_orders']) && $group['max_orders'] !== '' && $group['max_orders'] !== null) {
+            $parts[] = '≤' . (int) $group['max_orders'] . ' orders';
         }
         if (!empty($group['source']) && is_string($group['source'])) {
             $src = strtolower($group['source']);
@@ -243,18 +333,127 @@ class CampaignFilterService
                   ->orWhereRaw("CONCAT(first_name, ' ', last_name) LIKE ?", ["%{$s}%"]);
             });
         }
+        // City — accepts a single value (legacy) or an array (multi-select).
         if (!empty($group['city'])) {
-            $query->where('city', $group['city']);
+            $cities = is_array($group['city'])
+                ? array_values(array_filter(array_map('strval', $group['city'])))
+                : [(string) $group['city']];
+            if (count($cities) === 1) {
+                $query->where('city', $cities[0]);
+            } elseif (count($cities) > 1) {
+                $query->whereIn('city', $cities);
+            }
         }
+
+        // ------------------------------------------------------------------
+        // WHEN did they last order? This is the heart of churn targeting.
+        //
+        //   activity        = ordered WITHIN the last N days  (still warm)
+        //   inactive_days   = has NOT ordered in the last N days (gone quiet)
+        //   last_order_from / last_order_to = an explicit window, which is what
+        //                     you want for "customers whose last order was
+        //                     between 6 and 12 months ago" — the classic
+        //                     win-back slice. Combining the two bounds is how
+        //                     you avoid lumping a 2-year-dead customer in with
+        //                     someone who lapsed last month.
+        //   never_ordered   = on file but never bought
+        //
+        // All of these read `last_order_date`, which IS maintained live
+        // (verified: max value tracks the newest order). Do NOT switch them to
+        // last_delivery_date — that column has been frozen since Jan-2026.
+        // ------------------------------------------------------------------
         if (!empty($group['activity'])) {
-            if ($group['activity'] === '30day') $query->where('last_order_date', '>=', now()->subDays(30));
-            elseif ($group['activity'] === '90day') $query->where('last_order_date', '>=', now()->subDays(90));
+            $map = ['30day' => 30, '90day' => 90, '180day' => 180, '365day' => 365];
+            $days = $map[$group['activity']] ?? null;
+            if ($days) {
+                $query->where('last_order_date', '>=', now()->subDays($days));
+            }
         }
-        if (isset($group['min_spend']) && $group['min_spend'] !== '' && $group['min_spend'] !== null) {
-            $query->where('total_spent', '>=', (float) $group['min_spend']);
+
+        if (isset($group['inactive_days']) && $group['inactive_days'] !== '' && $group['inactive_days'] !== null) {
+            $days = max(0, (int) $group['inactive_days']);
+            if ($days > 0) {
+                // "Quiet for N days" must include people who never ordered at
+                // all — otherwise the biggest dormant group is invisible.
+                $query->where(function ($q) use ($days) {
+                    $q->where('last_order_date', '<', now()->subDays($days))
+                      ->orWhereNull('last_order_date');
+                });
+            }
         }
-        if (isset($group['max_spend']) && $group['max_spend'] !== '' && $group['max_spend'] !== null) {
-            $query->where('total_spent', '<=', (float) $group['max_spend']);
+
+        if (!empty($group['last_order_from'])) {
+            $query->whereDate('last_order_date', '>=', $group['last_order_from']);
+        }
+        if (!empty($group['last_order_to'])) {
+            $query->whereDate('last_order_date', '<=', $group['last_order_to']);
+        }
+
+        if (!empty($group['never_ordered'])) {
+            $query->whereNull('last_order_date');
+        }
+
+        // Acquisition cohort — when did this customer FIRST buy? Lets you talk
+        // to "people who joined during last Qurbani" as a group.
+        if (!empty($group['first_order_from'])) {
+            $query->whereDate('first_order_date', '>=', $group['first_order_from']);
+        }
+        if (!empty($group['first_order_to'])) {
+            $query->whereDate('first_order_date', '<=', $group['first_order_to']);
+        }
+
+        // When the customer record itself was created (covers people with no
+        // orders, who have no first_order_date to filter on).
+        if (!empty($group['created_from'])) {
+            $query->whereDate('t_crm_prod_customer.created_at', '>=', $group['created_from']);
+        }
+        if (!empty($group['created_to'])) {
+            $query->whereDate('t_crm_prod_customer.created_at', '<=', $group['created_to']);
+        }
+
+        // Shop vs regular customer.
+        if (!empty($group['customer_type']) && is_string($group['customer_type'])) {
+            $ct = strtolower($group['customer_type']);
+            if (in_array($ct, [CustomerModel::TYPE_REGULAR, CustomerModel::TYPE_SHOP], true)) {
+                $query->where('customer_type', $ct);
+            }
+        }
+
+        // A campaign is a WhatsApp send, so a customer with no number can never
+        // receive it — they would just pile up as "No phone number" failures.
+        // Default-on in the UI; absent here means no filter, so old stored
+        // campaigns behave exactly as before.
+        if (!empty($group['require_phone'])) {
+            $query->where(function ($q) {
+                $q->where(function ($w) {
+                    $w->whereNotNull('phone_normalized')->where('phone_normalized', '!=', '');
+                })->orWhere(function ($w) {
+                    $w->whereNotNull('phone')->where('phone', '!=', '');
+                });
+            });
+        }
+
+        // ------------------------------------------------------------------
+        // Spend + order count — computed LIVE (see orderStatsSubquerySql).
+        // These used to read the stored total_spent/total_orders columns, which
+        // are stale for thousands of customers, so the old filter under-targeted
+        // badly. COALESCE keeps no-order customers at 0 instead of NULL.
+        // ------------------------------------------------------------------
+        if ($this->needsOrderStats($group)) {
+            $this->joinOrderStats($query);
+
+            if (isset($group['min_spend']) && $group['min_spend'] !== '' && $group['min_spend'] !== null) {
+                $query->whereRaw('COALESCE(ostats.spent_total, 0) >= ?', [(float) $group['min_spend']]);
+            }
+            if (isset($group['max_spend']) && $group['max_spend'] !== '' && $group['max_spend'] !== null) {
+                $query->whereRaw('COALESCE(ostats.spent_total, 0) <= ?', [(float) $group['max_spend']]);
+            }
+            if (isset($group['min_orders']) && $group['min_orders'] !== '' && $group['min_orders'] !== null) {
+                $query->whereRaw('COALESCE(ostats.orders_count, 0) >= ?', [(int) $group['min_orders']]);
+            }
+            if (isset($group['max_orders']) && $group['max_orders'] !== '' && $group['max_orders'] !== null) {
+                $query->whereRaw('COALESCE(ostats.orders_count, 0) <= ?', [(int) $group['max_orders']]);
+            }
         }
 
         // Shopify source filter. Three-state: 'shopify' | 'non_shopify' | 'any'
@@ -371,15 +570,58 @@ class CampaignFilterService
     }
 
     /**
+     * Sort keys the campaign UI may ask for. 'spent' and 'orders' are computed
+     * live; the legacy 'total_spent' key maps onto 'spent' so campaigns saved
+     * before Jul-2026 stop sorting by the stale stored column.
+     */
+    public const SORT_KEYS = ['last_order_date', 'first_order_date', 'created_at', 'spent', 'orders'];
+
+    /**
      * Return [sortBy, sortDir], defaulting + guarding against unknown values.
      */
     public function normalizeSort(array $filters): array
     {
         $sortBy = $filters['sort_by'] ?? 'last_order_date';
         $sortDir = $filters['sort_dir'] ?? 'desc';
-        if (!in_array($sortBy, ['last_order_date', 'total_spent', 'created_at'])) $sortBy = 'last_order_date';
-        if (!in_array($sortDir, ['asc', 'desc'])) $sortDir = 'desc';
+
+        if ($sortBy === 'total_spent') $sortBy = 'spent';   // legacy payloads
+        if ($sortBy === 'total_orders') $sortBy = 'orders';
+
+        if (!in_array($sortBy, self::SORT_KEYS, true)) $sortBy = 'last_order_date';
+        if (!in_array($sortDir, ['asc', 'desc'], true)) $sortDir = 'desc';
         return [$sortBy, $sortDir];
+    }
+
+    /** Does this sort key need the live order-stats join? */
+    public function sortNeedsOrderStats(string $sortBy): bool
+    {
+        return in_array($sortBy, ['spent', 'orders'], true);
+    }
+
+    /**
+     * Apply the campaign sort to any customer query, joining live order stats
+     * when the chosen key needs them.
+     *
+     * Every place that orders campaign customers goes through here — the
+     * preview/insert order, the detail list, and the SEND order — so "send to
+     * the first 100" means the same 100 the operator saw on screen. $alias is
+     * whatever the customer table is called in the caller's query.
+     */
+    public function applySort($query, string $sortBy, string $sortDir, string $alias = 't_crm_prod_customer'): void
+    {
+        if ($this->sortNeedsOrderStats($sortBy)) {
+            $query->leftJoin(
+                DB::raw('(' . $this->orderStatsSubquerySql() . ') as sort_stats'),
+                'sort_stats.customer_id', '=', $alias . '.id'
+            );
+            $col = $sortBy === 'spent'
+                ? 'COALESCE(sort_stats.spent_total, 0)'
+                : 'COALESCE(sort_stats.orders_count, 0)';
+            $query->orderByRaw($col . ' ' . ($sortDir === 'asc' ? 'asc' : 'desc'));
+            return;
+        }
+
+        $query->orderBy($alias . '.' . $sortBy, $sortDir);
     }
 
     /**

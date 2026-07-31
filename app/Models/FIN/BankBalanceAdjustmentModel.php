@@ -25,6 +25,7 @@ class BankBalanceAdjustmentModel extends Model
         'amount',
         'adjustment_date',
         'note',
+        'transfer_group',
         'created_by',
     ];
 

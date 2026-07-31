@@ -263,7 +263,7 @@
      and flex-shrink-0 are ALL PURGED from the built styles.css (verified: 0 occurrences), so a
      class-only shell renders un-positioned and its body cannot scroll. Same fix as invLogModal
      below. See the metronic-v9 purge note. --}}
-<div id="stockModal" class="hidden fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4" style="z-index: 999999; position:fixed; top:0; right:0; bottom:0; left:0; background-color:rgba(0,0,0,0.5); display:flex; align-items:center; justify-content:center; padding:1rem;" onclick="if(event.target===this)closeStockModal()">
+<div id="stockModal" class="hidden fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4" style="z-index: 999999; top:0; right:0; bottom:0; left:0; background-color:rgba(0,0,0,0.5); padding:1rem;" onclick="if(event.target===this)closeStockModal()">
     <div class="w-full max-w-lg bg-white rounded-2xl shadow-2xl text-left overflow-hidden" style="width:100%; max-width:32rem; max-height:90vh; display:flex; flex-direction:column; background:#fff; border-radius:1rem; overflow:hidden; box-shadow:0 20px 25px -5px rgba(0,0,0,0.10), 0 10px 10px -5px rgba(0,0,0,0.04);" onclick="event.stopPropagation()">
         <!-- Header -->
         <div class="px-6 py-4 border-b border-gray-100" style="background: linear-gradient(to right, #fffbeb, #fff7ed); flex-shrink:0;">
@@ -374,7 +374,7 @@
 </div>
 
 <!-- Store Stock Adjust Modal -->
-<div id="storeStockModal" class="hidden fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4" style="z-index: 999999; position:fixed; top:0; right:0; bottom:0; left:0; background-color:rgba(0,0,0,0.5); display:flex; align-items:center; justify-content:center; padding:1rem;" onclick="if(event.target===this)closeStoreStockModal()">
+<div id="storeStockModal" class="hidden fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4" style="z-index: 999999; top:0; right:0; bottom:0; left:0; background-color:rgba(0,0,0,0.5); padding:1rem;" onclick="if(event.target===this)closeStoreStockModal()">
     <div class="w-full max-w-lg bg-white rounded-2xl shadow-2xl text-left overflow-hidden" style="width:100%; max-width:32rem; max-height:90vh; display:flex; flex-direction:column; background:#fff; border-radius:1rem; overflow:hidden; box-shadow:0 20px 25px -5px rgba(0,0,0,0.10), 0 10px 10px -5px rgba(0,0,0,0.04);" onclick="event.stopPropagation()">
         <!-- Header -->
         <div class="px-6 py-4 border-b border-gray-100" style="background: linear-gradient(to right, #eff6ff, #e0f2fe); flex-shrink:0;">
@@ -485,7 +485,7 @@
 </div>
 
 <!-- Reject Transfer Modal (for pending approvals) -->
-<div id="productRejectModal" class="hidden fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4" style="z-index: 999999; position:fixed; top:0; right:0; bottom:0; left:0; background-color:rgba(0,0,0,0.5); display:flex; align-items:center; justify-content:center; padding:1rem;" onclick="if(event.target===this)closeProductRejectModal()">
+<div id="productRejectModal" class="hidden fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4" style="z-index: 999999; top:0; right:0; bottom:0; left:0; background-color:rgba(0,0,0,0.5); padding:1rem;" onclick="if(event.target===this)closeProductRejectModal()">
     <div class="bg-white rounded-2xl shadow-2xl max-w-md w-full overflow-hidden" style="width:100%; max-width:28rem; max-height:90vh; display:flex; flex-direction:column; background:#fff; border-radius:1rem; overflow:hidden; box-shadow:0 20px 25px -5px rgba(0,0,0,0.10), 0 10px 10px -5px rgba(0,0,0,0.04);" onclick="event.stopPropagation()">
         <div class="px-6 py-5 border-b border-gray-100" style="background: linear-gradient(to right, #fef2f2, #fff7ed); flex-shrink:0;">
             <div class="flex items-center gap-3">
@@ -511,7 +511,7 @@
 </div>
 
 <!-- Transfer to Store Modal -->
-<div id="transferModal" class="hidden fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4" style="z-index: 999999; position:fixed; top:0; right:0; bottom:0; left:0; background-color:rgba(0,0,0,0.5); display:flex; align-items:center; justify-content:center; padding:1rem;" onclick="if(event.target===this)closeTransferModal()">
+<div id="transferModal" class="hidden fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4" style="z-index: 999999; top:0; right:0; bottom:0; left:0; background-color:rgba(0,0,0,0.5); padding:1rem;" onclick="if(event.target===this)closeTransferModal()">
     <div class="w-full max-w-lg bg-white rounded-2xl shadow-2xl text-left overflow-hidden" style="width:100%; max-width:32rem; max-height:90vh; display:flex; flex-direction:column; background:#fff; border-radius:1rem; overflow:hidden; box-shadow:0 20px 25px -5px rgba(0,0,0,0.10), 0 10px 10px -5px rgba(0,0,0,0.04);" onclick="event.stopPropagation()">
         <!-- Header -->
         <div class="px-6 py-4 border-b border-gray-100" style="background: linear-gradient(to right, #eff6ff, #eef2ff); flex-shrink:0;">
@@ -595,7 +595,7 @@
      ⚠️ The shell is inline-styled on purpose: the purged styles.css drops inset-0 / max-h /
      max-w / overflow-y-auto / flex-shrink-0, which makes class-only modal shells render in
      the top-left corner and refuse to scroll. Do not "clean this up" into classes. --}}
-<div id="invLogModal" class="hidden fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4" style="z-index: 999999; position:fixed; top:0; right:0; bottom:0; left:0; background-color:rgba(0,0,0,0.5); display:flex; align-items:center; justify-content:center; padding:1rem;" onclick="if(event.target===this)closeInvLogModal()">
+<div id="invLogModal" class="hidden fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4" style="z-index: 999999; top:0; right:0; bottom:0; left:0; background-color:rgba(0,0,0,0.5); padding:1rem;" onclick="if(event.target===this)closeInvLogModal()">
     <div class="w-full max-w-xl bg-white rounded-2xl shadow-2xl text-left overflow-hidden" style="width:100%; max-width:36rem; max-height:85vh; display:flex; flex-direction:column; background:#fff; border-radius:1rem; box-shadow:0 20px 25px -5px rgba(0,0,0,0.10), 0 10px 10px -5px rgba(0,0,0,0.04);" onclick="event.stopPropagation()">
         <!-- Header (fixed) -->
         <div id="inv-log-header" class="px-6 py-4 border-b border-gray-100" style="background: linear-gradient(to right, #eff6ff, #e0f2fe); flex-shrink:0; padding:1rem 1.5rem;">

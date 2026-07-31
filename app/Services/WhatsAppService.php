@@ -57,6 +57,101 @@ class WhatsAppService
     }
 
     /**
+     * Header parameters for a template that has a MEDIA header (image/video/
+     * document), ready to pass to sendTemplateMessage().
+     *
+     * Why this is needed at all: a template whose header format is IMAGE does
+     * NOT carry a fixed image. The picture uploaded when the template was
+     * created lives under Meta's `example.header_handle` — it is the sample used
+     * for approval only. Every send must supply the media itself.
+     *
+     * VERIFIED by a live send Jul-2026 (app_launch_template to a test number):
+     * without the header Meta returns
+     *     132012 "Parameter format does not match format in the created template"
+     * and delivers nothing; with the header the message goes through. So this is
+     * not optional for any media-header template.
+     *
+     * Attached by MEDIA_ID, never by link: Meta fetching a link from this host
+     * 403s (error 131053 — the lesson already baked into the invoice sender).
+     *
+     * The image is identical for every recipient, so the upload happens ONCE and
+     * the media_id is cached and reused for the whole batch — a 2,000-message
+     * campaign costs one upload, not 2,000. Meta expires media ids at roughly 30
+     * days; the 20-day TTL keeps us comfortably inside that.
+     *
+     * Returns [] for any template without a media header, so callers can pass
+     * the result unconditionally.
+     */
+    public function headerParamsForTemplate(?string $templateName): array
+    {
+        $templateName = trim((string) $templateName);
+        if ($templateName === '') return [];
+
+        try {
+            if (!\Illuminate\Support\Facades\Schema::hasColumn('t_wa_templates', 'header_media_path')) {
+                return [];   // migration not applied on this instance yet
+            }
+
+            $path = \DB::table('t_wa_templates')->where('name', $templateName)->value('header_media_path');
+            if (empty($path)) return [];
+
+            $mediaId = \Illuminate\Support\Facades\Cache::remember(
+                $this->headerMediaCacheKey($templateName),
+                now()->addDays(20),
+                function () use ($templateName, $path) {
+                    $full = storage_path('app/' . ltrim($path, '/'));
+                    if (!file_exists($full)) {
+                        Log::error('WhatsApp: template header media missing on disk', [
+                            'template' => $templateName, 'path' => $full,
+                        ]);
+                        return null;
+                    }
+                    $mime = @mime_content_type($full) ?: 'image/png';
+                    $id = $this->uploadMediaToWhatsApp($full, $mime);
+                    Log::info('WhatsApp: uploaded template header media', [
+                        'template' => $templateName, 'media_id' => $id, 'mime' => $mime,
+                    ]);
+                    return $id;
+                }
+            );
+
+            // Never cache a failure — a null would otherwise stick for 20 days
+            // and silently break every send of this template.
+            if (!$mediaId) {
+                \Illuminate\Support\Facades\Cache::forget($this->headerMediaCacheKey($templateName));
+                return [];
+            }
+
+            return [['type' => 'image', 'image' => ['id' => $mediaId]]];
+
+        } catch (\Throwable $e) {
+            Log::error('WhatsApp: headerParamsForTemplate failed', [
+                'template' => $templateName, 'error' => $e->getMessage(),
+            ]);
+            return [];
+        }
+    }
+
+    /**
+     * Drop the cached media id so the next send re-uploads.
+     *
+     * Called when Meta rejects a send for a media reason — an id can expire or
+     * be revoked before our TTL runs out, and without this the campaign would
+     * keep replaying the same dead id for the rest of the batch.
+     */
+    public function forgetTemplateHeaderMedia(?string $templateName): void
+    {
+        $templateName = trim((string) $templateName);
+        if ($templateName === '') return;
+        \Illuminate\Support\Facades\Cache::forget($this->headerMediaCacheKey($templateName));
+    }
+
+    protected function headerMediaCacheKey(string $templateName): string
+    {
+        return 'wa_tpl_header_media:' . md5($templateName);
+    }
+
+    /**
      * Send a template message.
      * $headerParams can be:
      *   - Array of strings for text header variables
@@ -919,6 +1014,21 @@ class WhatsAppService
 
             $message = MessageModel::where('wa_message_id', $waMessageId)->first();
             if (!$message) {
+                // Jul-2026: log instead of vanishing. A status can arrive for a
+                // wamid this database has never seen — most commonly a message
+                // sent from the LOCAL dev environment (Meta's webhook points at
+                // prod only, so prod receives receipts for local test sends).
+                // Before this line those statuses were discarded with zero
+                // trace, which made "I sent a test locally and never received
+                // it" undiagnosable: the delivery failure reason existed only
+                // in this payload, and we threw it away. Now it's greppable:
+                //   grep 'status for unknown wamid' storage/logs/laravel.log
+                Log::info('WhatsApp: status for unknown wamid (sent from another environment?)', [
+                    'wa_message_id' => $waMessageId,
+                    'status'        => $newStatus,
+                    'recipient'     => $status['recipient_id'] ?? null,
+                    'errors'        => $status['errors'] ?? null,
+                ]);
                 return;
             }
 
@@ -953,10 +1063,74 @@ class WhatsAppService
 
             $message->update($updates);
 
+            // Jul-2026 — mirror the receipt onto the campaign recipient row.
+            // Meta has always reported delivered/read/failed here, but campaigns
+            // could not see any of it: t_crm_campaign_customers had no link to
+            // the message. Now that the send stores the wamid, one cheap indexed
+            // update gives every campaign a real delivery funnel.
+            $this->stampCampaignReceipt($waMessageId, $mappedStatus, $updates['error_message'] ?? null);
+
         } catch (\Exception $e) {
             Log::error('WhatsApp: Failed to process status update', [
                 'error' => $e->getMessage(),
                 'status_data' => $status,
+            ]);
+        }
+    }
+
+    /**
+     * Copy a Meta delivery receipt onto the campaign row that sent this message.
+     *
+     * Semantics that matter:
+     *  - A 'read' receipt also proves delivery, so it back-fills delivered_at
+     *    when the delivered webhook was missed or arrived out of order.
+     *  - Timestamps are only ever set once (whereNull), so a later duplicate
+     *    webhook can't move the story backwards.
+     *  - A 'failed' status here is a POST-ACCEPTANCE delivery failure (dead or
+     *    blocked number). It does NOT flip the row to status='failed' — that
+     *    value means "the send API call was rejected" and drives the retry
+     *    button. Retrying a number WhatsApp says doesn't exist is pointless, so
+     *    these land in their own Undelivered view instead.
+     *
+     * Non-fatal by design: a webhook must never 500 because of campaign
+     * bookkeeping.
+     */
+    protected function stampCampaignReceipt(string $waMessageId, string $mappedStatus, ?string $errorMessage = null): void
+    {
+        if (!in_array($mappedStatus, ['delivered', 'read', 'failed'], true)) {
+            return;
+        }
+
+        try {
+            if (!\Illuminate\Support\Facades\Schema::hasColumn('t_crm_campaign_customers', 'wa_message_id')) {
+                return; // migration not applied on this instance yet
+            }
+
+            $base = fn() => \DB::table('t_crm_campaign_customers')->where('wa_message_id', $waMessageId);
+
+            if ($mappedStatus === 'delivered') {
+                $base()->whereNull('delivered_at')->update(['delivered_at' => now()]);
+                return;
+            }
+
+            if ($mappedStatus === 'read') {
+                $base()->whereNull('read_at')->update(['read_at' => now()]);
+                $base()->whereNull('delivered_at')->update(['delivered_at' => now()]);
+                return;
+            }
+
+            // failed
+            $payload = ['undelivered_at' => now()];
+            if ($errorMessage) {
+                $payload['error_message'] = mb_substr('Undelivered: ' . $errorMessage, 0, 500);
+            }
+            $base()->whereNull('undelivered_at')->update($payload);
+
+        } catch (\Exception $e) {
+            Log::debug('WhatsApp: campaign receipt stamp failed (non-fatal)', [
+                'wa_message_id' => $waMessageId,
+                'status' => $mappedStatus,
+                'error' => $e->getMessage(),
             ]);
         }
     }
@@ -1956,9 +2130,30 @@ class WhatsAppService
     {
         try {
             $type = $payload['type'] ?? 'text';
-            $category = $type === 'template' ? 'utility' : 'service';
             $templateName = $payload['template']['name'] ?? null;
             $to = $payload['to'] ?? null;
+
+            // Jul-2026 — read the real category off the template instead of
+            // calling every template send 'utility'. Marketing templates cost
+            // materially more than utility ones, so the old blanket label made
+            // campaign spend look far cheaper than it is. Falls back to
+            // 'utility' only when the template genuinely isn't on file.
+            $category = 'service';
+            if ($type === 'template') {
+                $category = 'utility';
+                if ($templateName) {
+                    try {
+                        $tplCategory = \DB::table('t_wa_templates')
+                            ->where('name', $templateName)
+                            ->value('category');
+                        if ($tplCategory) {
+                            $category = strtolower((string) $tplCategory);
+                        }
+                    } catch (\Exception $e) {
+                        // keep the 'utility' default — cost logging is best-effort
+                    }
+                }
+            }
 
             \DB::table('t_wa_cost_log')->insert([
                 'wa_phone' => $to,

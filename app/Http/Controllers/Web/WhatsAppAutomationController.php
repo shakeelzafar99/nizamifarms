@@ -297,6 +297,61 @@ class WhatsAppAutomationController extends Controller
     }
 
     /**
+     * POST /messages/automations/rules/{key}/enabled
+     *
+     * Flip ONLY a rule's on/off switch, leaving its template and config exactly
+     * as saved. Exists because saveRule() is a full upsert: posting just
+     * {enabled:false} to it would null out template_name (it treats an absent
+     * field as "cleared"), so the operator's chosen template would be lost. Used
+     * by the Open Orders page banner's "Turn off" button.
+     *
+     * Same manage_wa_auto_reply gate as the rest of this controller — the banner
+     * only renders the button for users who have it. Config-proxy rules (the
+     * location automation) are refused here: their switch lives in t_fin_config,
+     * so they must go through saveRule().
+     */
+    public function setRuleEnabled(Request $request, string $key)
+    {
+        $this->gate();
+
+        $desc = AutomationRegistry::get($key);
+        if (!$desc) {
+            return response()->json(['success' => false, 'message' => 'Unknown automation rule.'], 404);
+        }
+        if (!empty($desc['config_proxy']) || !empty($desc['invoice_proxy'])) {
+            return response()->json([
+                'success' => false,
+                'message' => 'This automation is configured from the Messages screen.',
+            ], 422);
+        }
+
+        $request->validate(['enabled' => 'required|boolean']);
+
+        // Same off-by-default guard as saveRule: only a wired rule can go on.
+        $enabled = $request->boolean('enabled') && !empty($desc['available']);
+
+        $rule = AutomationModel::where('rule_key', $key)->first();
+        if (!$rule) {
+            // Nothing saved yet — turning OFF is already the state; don't create
+            // a row (absence == disabled). Turning ON without a template chosen
+            // would send nothing, so send them to the settings screen.
+            if (!$enabled) {
+                return response()->json(['success' => true, 'enabled' => false]);
+            }
+            return response()->json([
+                'success' => false,
+                'message' => 'Set this automation up in Messages → 🤖 first (it has no template yet).',
+            ], 422);
+        }
+
+        $rule->enabled = $enabled ? 1 : 0;
+        $rule->updated_by = auth()->id();
+        $rule->save();
+
+        return response()->json(['success' => true, 'enabled' => $enabled]);
+    }
+
+    /**
      * GET /messages/automations/invoice-template-map
      * Tiny, NON-gated lookup the Send-Invoice dialogs call to pre-fill the
      * online vs cash template by the order's payment method. Returns only

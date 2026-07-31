@@ -2433,7 +2433,9 @@ select.wa-mgr-input { background: #fff; cursor: pointer; }
 
     function ensureAutoTemplates(){
         if (_waAutoTemplates) return Promise.resolve(_waAutoTemplates);
-        return apiFetch('/messages/templates').then(d => { _waAutoTemplates = d.templates || []; return _waAutoTemplates; })
+        // include_automation=1: this IS the automation rule picker, so it must
+        // see the 🤖 automation-only templates the manual pickers now hide.
+        return apiFetch('/messages/templates?include_automation=1').then(d => { _waAutoTemplates = d.templates || []; return _waAutoTemplates; })
             .catch(() => { _waAutoTemplates = []; return []; });
     }
 
@@ -2715,6 +2717,22 @@ select.wa-mgr-input { background: #fff; cursor: pointer; }
                     <div style="font-size:11px;color:#9ca3af;margin-top:4px;">On these days nothing is sent. Orders queue and go out automatically on the next working day.</div>
                 </div>`;
             }
+            // Per-customer cooldown (delivered → storage guidelines). Stops a
+            // weekly customer getting the identical message on every delivery.
+            if ((r.editable||[]).includes('cooldown')){
+                const cfg = r.config || {};
+                const cd = (cfg.cooldown_days === undefined || cfg.cooldown_days === null || cfg.cooldown_days === '')
+                    ? 30 : parseInt(cfg.cooldown_days, 10);
+                tplBody += `<div style="margin-top:10px;">
+                    <label style="font-size:12px;font-weight:600;color:#374151;">Don't message the same customer again for</label>
+                    <div style="display:flex;gap:8px;align-items:center;margin-top:4px;">
+                        <input type="number" min="0" max="365" step="1" id="waCooldown-${tk}" value="${isNaN(cd)?30:cd}"
+                               style="width:90px;padding:6px 8px;border:1px solid #e5e7eb;border-radius:6px;font-size:13px;">
+                        <span style="font-size:12px;color:#6b7280;">days</span>
+                    </div>
+                    <div style="font-size:11px;color:#9ca3af;margin-top:4px;">A customer who orders weekly would otherwise get the same message on every delivery. <b>0</b> = send after every single delivery. Each order is still messaged at most once either way.</div>
+                </div>`;
+            }
             body = tplBody;
         }
         // The on/off toggle only shows for rules that expose 'enabled' (order +
@@ -2777,6 +2795,16 @@ select.wa-mgr-input { background: #fff; cursor: pointer; }
                     window_offdays: Array.from(document.querySelectorAll('.waLocOff-'+key))
                         .filter(c => c.checked).map(c => parseInt(c.dataset.day, 10)),
                 };
+            }
+            if ((r.editable||[]).includes('cooldown')) {
+                const raw = (document.getElementById('waCooldown-'+key) || {}).value;
+                const n = parseInt(raw, 10);
+                // Blank / junk falls back to the 30-day default rather than 0 —
+                // 0 means "message on every delivery", which must be a DELIBERATE
+                // choice, never the result of an empty box.
+                payload.config = Object.assign(payload.config || {}, {
+                    cooldown_days: isNaN(n) ? 30 : Math.max(0, Math.min(365, n)),
+                });
             }
         }
         apiFetch('/messages/automations/rules/'+encodeURIComponent(key), { method:'POST', body: JSON.stringify(payload) })
@@ -4009,7 +4037,9 @@ select.wa-mgr-input { background: #fff; cursor: pointer; }
     function loadExistingTemplates() {
         // Pass include_inactive=1 so the manager can see + re-enable templates
         // that are currently hidden from regular pickers.
-        apiFetch('/messages/templates?include_inactive=1').then(d => {
+        // Manage Templates lists EVERYTHING (it's the editor) — automation-only
+        // ones included, shown in their own collapsed 🤖 section below.
+        apiFetch('/messages/templates?include_inactive=1&include_automation=1').then(d => {
             const el = document.getElementById('waExistingTemplates');
             const tpls = d.templates || [];
             _existingTemplatesById = {};

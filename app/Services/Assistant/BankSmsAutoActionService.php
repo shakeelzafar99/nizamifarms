@@ -300,7 +300,14 @@ class BankSmsAutoActionService
             $this->map->bump((int) $rule->id);
             return ['action' => 'auto_ignored', 'label' => $this->map->entityName($rule)];
         }
-        // Vendor / expense rules only pre-fill the card — never auto-post.
+        // Vendor / expense / account rules only pre-fill the card — never
+        // auto-post. But RECOGNISING the SMS still counts: bump here (once per
+        // ingested SMS) so the review panel's "recognised N×, last seen" is
+        // truthful. Before this, only ignore/customer rules ever bumped and a
+        // heavily-used vendor rule read "not seen yet" forever.
+        if ($rule && in_array($rule->entity_type, ['vendor', 'expense', 'account'], true)) {
+            $this->map->bump((int) $rule->id);
+        }
         return null;
     }
 

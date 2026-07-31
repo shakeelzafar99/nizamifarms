@@ -9716,6 +9716,11 @@ class RiderController extends Controller
                     'osh_del.delivery_longitude',
                     'c.latitude as verified_lat',
                     'c.longitude as verified_lng',
+                    // delivery_accuracy_m only exists after the GPS-accuracy hardening SQL —
+                    // selected conditionally so this report keeps working before it runs.
+                    \Illuminate\Support\Facades\Schema::hasColumn('t_crm_order_status_history', 'delivery_accuracy_m')
+                        ? 'osh_del.delivery_accuracy_m'
+                        : \DB::raw('NULL as delivery_accuracy_m'),
                 ])
                 ->orderBy('osh_del.changed_at', 'asc')
                 ->get();
@@ -9834,13 +9839,17 @@ class RiderController extends Controller
                 $hasDeliveryGps = !empty($order->delivery_latitude) && !empty($order->delivery_longitude);
                 $deliveredAtVerified = false;
                 $verificationDistance = null;
-                if ($hasDeliveryGps && $hasVerifiedLoc) {
-                    $dist = $this->haversineDistance(
-                        (float)$order->delivery_latitude, (float)$order->delivery_longitude,
-                        (float)$order->verified_lat, (float)$order->verified_lng
-                    );
-                    $verificationDistance = $dist;
-                    $deliveredAtVerified = $dist <= (float) config('rider_reports.at_verified_m', 500); // unified rule
+                $verificationFixCoarse = false;
+                // ONE rule, every screen — see App\Services\Riders\VerifiedPinRule.
+                $pinVerdict = \App\Services\Riders\VerifiedPinRule::judge(
+                    $order->delivery_latitude, $order->delivery_longitude,
+                    $order->verified_lat, $order->verified_lng,
+                    $order->delivery_accuracy_m ?? null
+                );
+                if ($pinVerdict) {
+                    $verificationDistance = $pinVerdict['distance_m'];
+                    $deliveredAtVerified = $pinVerdict['at_verified'];
+                    $verificationFixCoarse = $pinVerdict['fix_coarse'];
                 }
 
                 $riderMap[$riderId]['orders'][] = [
@@ -9870,7 +9879,9 @@ class RiderController extends Controller
                     'has_verified_location' => $hasVerifiedLoc,
                     'has_delivery_gps' => $hasDeliveryGps,
                     'delivered_at_verified' => $deliveredAtVerified,
-                    'verification_distance_m' => $verificationDistance !== null ? (int)round($verificationDistance) : null,
+                    'verification_distance_m' => $verificationDistance,
+                    // "the GPS was vague" is a different accusation from "he was somewhere else".
+                    'verification_fix_coarse' => $verificationFixCoarse,
                 ];
             }
 
@@ -10135,14 +10146,15 @@ class RiderController extends Controller
             $dayHasVerified = $orders->filter(fn($o) => !empty($o->verified_lat) && !empty($o->verified_lng))->count();
             $dayDeliveredAtVerified = 0;
             foreach ($orders as $o) {
-                if (!empty($o->delivery_latitude) && !empty($o->delivery_longitude)
-                    && !empty($o->verified_lat) && !empty($o->verified_lng)) {
-                    $dist = $this->haversineDistance(
-                        (float)$o->delivery_latitude, (float)$o->delivery_longitude,
-                        (float)$o->verified_lat, (float)$o->verified_lng
-                    );
-                    if ($dist <= 1000) $dayDeliveredAtVerified++;
-                }
+                // This counter used to have its own hardcoded 1000 m while the rows it summarises
+                // used 500 m — so the day header could read "15/15 at verified" above rows carrying
+                // ⚠ marks. It now asks the same class as everything else.
+                $v = \App\Services\Riders\VerifiedPinRule::judge(
+                    $o->delivery_latitude, $o->delivery_longitude,
+                    $o->verified_lat, $o->verified_lng,
+                    $o->delivery_accuracy_m ?? null
+                );
+                if ($v && $v['at_verified']) $dayDeliveredAtVerified++;
             }
 
             // ⭐ LIVE ongoing-dispatch tracking — only meaningful for "today".
@@ -11044,6 +11056,15 @@ class RiderController extends Controller
             return response()->json([
                 'success' => true,
                 'categories' => $categories,
+                // ⛽ Lets the rider's own request form hide "Petrol" for a PER-KM
+                // rider (his claim is generated from the meter) instead of letting
+                // him fill the whole form and then hit a 422. The SERVER is still
+                // the gate (FuelClaimRules) — this only explains it up front.
+                // Judged by canSelfFilePetrol(), NOT the company_bike flag: people
+                // like Taimur or Farooq are not on the scheme and must keep the
+                // option even though they don't ride company bikes.
+                'can_self_file_petrol' => (new \App\Services\Riders\FuelClaimRules())
+                    ->canSelfFilePetrol((int) $user->id),
             ]);
         } catch (\Exception $e) {
             \Log::error('Failed to get request categories', [
@@ -11256,101 +11277,33 @@ class RiderController extends Controller
                     ], 422);
                 }
             }
-
-            // ---- FLAT (cash) petrol guards, Jul-2026 -------------------------
-            // Metered petrol is self-auditing; FLAT cash claims are where the
-            // June leakage lived — three 500-rupee claims filed inside two
-            // minutes, and cash claims on days the meter had already paid for.
-            $isFlatPetrol = ($request->input('expense_category') === 'Petrol') && !$request->filled('attendance_id');
-            $flatNotice = null;
-
-            if ($isFlatPetrol) {
-                $claimDate = $request->filled('expense_date')
-                    ? \Carbon\Carbon::parse($request->input('expense_date'))->format('Y-m-d')
-                    : \Carbon\Carbon::today()->format('Y-m-d');
-
-                $sameDay = DB::table('t_req_master')
-                    ->where('requester_user_id', $user->id)
-                    ->where('expense_category', 'Petrol')
-                    ->whereRaw('COALESCE(expense_date, DATE(created_at)) = ?', [$claimDate])
-                    ->whereNotIn('status', ['cancelled', 'rejected'])
-                    ->get(['id', 'amount', 'attendance_id', 'created_at']);
-
-                // (a) HARD BLOCK — same amount, minutes apart. Always a double
-                //     tap on the button, never a real second fill-up.
-                $amount = (float) ($request->input('amount') ?? 0);
-                foreach ($sameDay as $prev) {
-                    if ($prev->attendance_id !== null) continue;
-                    if (abs((float) $prev->amount - $amount) < 0.01 &&
-                        abs(time() - strtotime($prev->created_at)) <= 600) {
-                        return response()->json([
-                            'success' => false,
-                            'message' => 'You already submitted Rs ' . number_format($amount) .
-                                         ' for petrol a moment ago. Check "My Requests" before sending it again.',
-                        ], 422);
-                    }
-                }
-
-                // (b) SOFT FLAG — a cash claim on a day the meter already paid
-                //     for, or simply the 2nd cash claim of the day. Allowed
-                //     (there are honest reasons), but the approver is told.
-                $meteredToday = $sameDay->first(fn ($x) => $x->attendance_id !== null);
-                if ($meteredToday) {
-                    $flatNotice = 'Cash claim on a day already paid by meter reading (request #' . $meteredToday->id . ').';
-                } elseif ($sameDay->count() > 0) {
-                    $flatNotice = 'This is petrol cash claim #' . ($sameDay->count() + 1) . ' for ' . $claimDate . '.';
-                }
+            // ---- FUEL / MAINTENANCE RULES ------------------------------------
+            // ⭐ ONE implementation, shared with the manager-on-behalf path
+            //    (Request\RequestController::store). These guards used to live
+            //    inline here only, which is exactly why a manager filing for a
+            //    rider skipped every one of them. Behaviour is unchanged; the
+            //    rules simply moved into FuelClaimRules so both callers agree.
+            $isFlatPetrol = ($request->input("expense_category") === "Petrol") && !$request->filled("attendance_id");
+            $fuelRules = (new \App\Services\Riders\FuelClaimRules())->check(
+                (int) $user->id,
+                $request->input("expense_category"),
+                [
+                    "amount"        => $request->input("amount"),
+                    "expense_date"  => $request->input("expense_date"),
+                    "meter_at_fill" => $request->input("meter_at_fill"),
+                    "service_type"  => $request->input("service_type"),
+                    "attendance_id" => $request->input("attendance_id"),
+                ],
+                // This endpoint IS the rider's own app — he is always filing for
+                // himself, which is what makes the own-bike petrol block apply here
+                // and not on the manager's on-behalf path.
+                (int) $user->id
+            );
+            if (!$fuelRules["ok"]) {
+                return response()->json(["success" => false, "message" => $fuelRules["message"]], 422);
             }
+            $flatNotice = $fuelRules["notice"] ?? null;
 
-            // ---- Odometer at fill: sanity-check against the reading's OWN DATE ---
-            // Catches dropped digits and the wrong bike's meter at entry time.
-            //
-            // ⚠ It must be checked against what the odometer read AROUND THAT DATE,
-            // not against today's highest reading. Both fuel and maintenance can be
-            // filed for an earlier day (a service done yesterday, a fill inside the
-            // petrol back-date window), and by then the bike has moved on — so a
-            // perfectly correct backdated reading is LOWER than today's. Comparing
-            // to "latest known" rejected exactly those honest entries.
-            if ($request->filled('meter_at_fill')) {
-                $entered  = (int) $request->input('meter_at_fill');
-                $claimDay = $request->filled('expense_date')
-                    ? \Carbon\Carbon::parse($request->input('expense_date'))->format('Y-m-d')
-                    : \Carbon\Carbon::today()->format('Y-m-d');
-                $win = $this->odometerWindowFor($user->id, $claimDay);
-
-                // Can't be below what the bike had already covered before that day.
-                if ($win['floor'] !== null && $entered < $win['floor'] - 20) {
-                    return response()->json([
-                        'success' => false,
-                        'message' => 'That reading (' . number_format($entered) . ' km) is lower than this bike\'s '
-                            . number_format($win['floor']) . ' km recorded before ' . $claimDay
-                            . '. Please check the number.',
-                    ], 422);
-                }
-                // Can't be above what it read on a LATER day.
-                if ($win['ceil'] !== null && $entered > $win['ceil'] + 20) {
-                    return response()->json([
-                        'success' => false,
-                        'message' => 'That reading (' . number_format($entered) . ' km) is higher than this bike\'s '
-                            . number_format($win['ceil']) . ' km recorded after ' . $claimDay
-                            . '. Please check the number.',
-                    ], 422);
-                }
-                // Nothing recorded after that day — guard a stray extra digit only.
-                if ($win['ceil'] === null && $win['floor'] !== null && $entered > $win['floor'] + 2000) {
-                    return response()->json([
-                        'success' => false,
-                        'message' => 'That reading (' . number_format($entered) . ' km) is far above this bike\'s last '
-                            . number_format($win['floor']) . ' km. Please check the number.',
-                    ], 422);
-                }
-            } elseif ($isFlatPetrol && $this->attnConfig('FUEL_METER_REQUIRED', 'N') === 'Y'
-                      && $this->ridesCompanyBike($user->id)) {
-                return response()->json([
-                    'success' => false,
-                    'message' => 'Please enter the bike\'s meter reading with this fuel request.',
-                ], 422);
-            }
 
             // ⭐ Validate expense_date is within allowed backdate range
             if ($request->filled('expense_date')) {
@@ -16419,10 +16372,78 @@ class RiderController extends Controller
                 'error' => $e->getMessage(),
                 'trace' => $e->getTraceAsString()
             ]);
-            
+
             return response()->json([
                 'success' => false,
                 'message' => 'Failed to load fund transfers: ' . $e->getMessage()
+            ], 500);
+        }
+    }
+
+    /**
+     * GET /rider/expenses/account-activity
+     *
+     * The last N movements — IN **and** OUT — of the expense account the Expenses screen is
+     * showing a balance for, with date, time and who moved it.
+     *
+     * Why this exists: getFundTransfers() above is deliberately narrow — it answers "how much
+     * was ADDED to the fund this month" (to_account only, transaction_type = 'transfer',
+     * current month). For the Frozen fund account that returns 2 rows, while the account
+     * actually has hundreds of movements, almost all of them vendor_payment OUTflows. So the
+     * balance changed constantly and nothing on screen explained why.
+     *
+     * getFundTransfers is left untouched (old APKs keep working, and "money added this month"
+     * is still a useful view in its own right) — this is a separate, additive endpoint.
+     */
+    public function getAccountActivity(Request $request)
+    {
+        try {
+            $user = Auth::user();
+
+            // Same gate as the screen this feeds.
+            if (!$user->hasMobilePermission('view_expenses')) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'You do not have permission to view expenses'
+                ], 403);
+            }
+
+            $businessUnitId = $request->input('business_unit_id');
+            $limit = (int) $request->input('limit', 10);
+            $limit = max(1, min(50, $limit));
+
+            // Resolve the SAME account getFundTransfers resolves, so the list always explains
+            // the balance shown on the card next to it.
+            if ($businessUnitId && (int) $businessUnitId !== 1) {
+                $account = \App\Models\FIN\ConfigModel::getBuDefaultExpenseAccount((int) $businessUnitId);
+            } else {
+                $account = \App\Models\FIN\ConfigModel::getExpenseFundingAccount()
+                    ?? \App\Models\FIN\AccountModel::where('account_code', 'EXP_FUND')->first();
+            }
+
+            if (!$account) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Expense account not found'
+                ], 404);
+            }
+
+            // One shared implementation with the web Frozen Operations tab, so the two views
+            // can never disagree about what counts as a movement.
+            $payload = (new \App\Services\FIN\AccountActivityService())->recent($account, $limit);
+
+            return response()->json(['success' => true] + $payload);
+
+        } catch (\Exception $e) {
+            \Log::error('Failed to get account activity', [
+                'user_id' => Auth::id(),
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString()
+            ]);
+
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to load account activity'
             ], 500);
         }
     }
@@ -20776,8 +20797,8 @@ class RiderController extends Controller
     {
         try {
             $user = Auth::user();
-            if (!$user->hasMobilePermission('view_campaigns')) {
-                return response()->json(['success' => false, 'message' => 'No permission'], 403);
+            if (!app(\App\Services\Campaigns\CampaignAccess::class)->canManage($user)) {
+                return response()->json(['success' => false, 'message' => 'Your account can view campaigns but not send or change them.'], 403);
             }
 
             $request->validate([
@@ -20938,6 +20959,11 @@ class RiderController extends Controller
             }
 
             $statusFilter = $request->get('status', 'pending');
+            // Paged: an unpaged list meant a 5,700-recipient campaign shipped
+            // every row to the phone. Defaults keep older APKs working — they
+            // just receive the first page, which is all they ever rendered.
+            $page    = max(1, (int) $request->get('page', 1));
+            $perPage = min(500, max(10, (int) $request->get('per_page', 100)));
 
             $customersQuery = DB::table('t_crm_campaign_customers as cc')
                 ->join('t_crm_prod_customer as c', 'cc.customer_id', '=', 'c.id')
@@ -20956,7 +20982,8 @@ class RiderController extends Controller
                     'c.city',
                     'c.total_orders',
                     'c.total_spent',
-                    'c.last_order_date'
+                    'c.last_order_date',
+                    'c.is_on_mobile_app'
                 );
 
             // Derived Shopify-customer flag for the mobile badge. Same
@@ -20974,53 +21001,53 @@ class RiderController extends Controller
             if (\Illuminate\Support\Facades\Schema::hasColumn('t_crm_campaign_customers', 'match_tags')) {
                 $customersQuery->addSelect('cc.match_tags');
             }
-
-            // "skipped" vs "excluded" both live under status='skipped' at
-            // the DB level — we split them via the 'Excluded:'
-            // error_message prefix set at insert time. Keeps parity with
-            // the web detail() endpoint and avoids an ENUM migration.
-            if ($statusFilter === 'excluded') {
-                $customersQuery
-                    ->where('cc.status', 'skipped')
-                    ->where('cc.error_message', 'LIKE', 'Excluded:%');
-            } elseif ($statusFilter === 'skipped') {
-                $customersQuery
-                    ->where('cc.status', 'skipped')
-                    ->where(function ($q) {
-                        $q->whereNull('cc.error_message')
-                          ->orWhere('cc.error_message', 'NOT LIKE', 'Excluded:%');
-                    });
-            } elseif ($statusFilter !== 'all') {
-                $customersQuery->where('cc.status', $statusFilter);
+            // Delivery receipts (Jul-2026). Guarded so a mobile build talking to
+            // a DB without the migration keeps working.
+            if (\Illuminate\Support\Facades\Schema::hasColumn('t_crm_campaign_customers', 'delivered_at')) {
+                $customersQuery->addSelect('cc.delivered_at', 'cc.read_at', 'cc.undelivered_at');
             }
 
-            $customersQuery->orderByRaw("FIELD(cc.status, 'pending', 'failed', 'sent', 'skipped')");
+            // Status filtering + the skipped/excluded split live in the shared
+            // stats service so web and mobile can't drift on what a tab means.
+            $statsService = app(\App\Services\Campaigns\CampaignStatsService::class);
+            $statsService->applyStatusFilter($customersQuery, $statusFilter);
 
-            $sortBy = json_decode($campaign->filters_json, true)['sort_by'] ?? 'last_order_date';
-            $sortDir = json_decode($campaign->filters_json, true)['sort_dir'] ?? 'desc';
-            if (in_array($sortBy, ['last_order_date', 'total_spent', 'created_at'])) {
-                $customersQuery->orderBy("c.{$sortBy}", $sortDir);
-            }
+            $total = (clone $customersQuery)->count();
 
-            $customers = $customersQuery->get();
+            $customersQuery->orderByRaw("FIELD(cc.status, 'pending', 'sending', 'failed', 'sent', 'skipped')");
 
-            $counts = DB::table('t_crm_campaign_customers')
-                ->where('campaign_id', $id)
-                ->selectRaw("
-                    COUNT(*) as total,
-                    SUM(CASE WHEN status = 'sent' THEN 1 ELSE 0 END) as sent,
-                    SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) as pending,
-                    SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) as failed,
-                    SUM(CASE WHEN status = 'skipped' AND (error_message IS NULL OR error_message NOT LIKE 'Excluded:%') THEN 1 ELSE 0 END) as skipped,
-                    SUM(CASE WHEN status = 'skipped' AND error_message LIKE 'Excluded:%' THEN 1 ELSE 0 END) as excluded
-                ")
-                ->first();
+            $filters = json_decode($campaign->filters_json ?? '{}', true) ?: [];
+            [$sortBy, $sortDir] = $filterService->normalizeSort($filters);
+            $filterService->applySort($customersQuery, $sortBy, $sortDir, 'c');
+
+            $customers = $customersQuery->forPage($page, $perPage)->get();
+
+            $counts = $statsService->counts((int) $id);
+
+            $sendService = app(\App\Services\Campaigns\CampaignSendService::class);
+            $q = $sendService->quota();
 
             return response()->json([
                 'success' => true,
                 'campaign' => $campaign,
                 'customers' => $customers,
                 'counts' => $counts,
+                'pagination' => [
+                    'page' => $page, 'per_page' => $perPage,
+                    'total' => $total, 'pages' => (int) ceil($total / max(1, $perPage)),
+                ],
+                // Send control, so the app's send sheet can mirror the web dialog.
+                'eligible'      => $sendService->eligibleCount((int) $id),
+                'session_limit' => (int) ($campaign->session_limit ?: $sendService->defaultSessionLimit()),
+                'run'           => $campaign->active_run_id ? $sendService->runProgress((int) $campaign->active_run_id) : null,
+                'quota'         => [
+                    'cap'       => $q['cap'],
+                    'used'      => $q['used'],
+                    'remaining' => $q['unlimited'] ? null : $q['remaining'],
+                    'unlimited' => $q['unlimited'],
+                    'default_session_limit' => $sendService->defaultSessionLimit(),
+                    'background_enabled'    => $sendService->backgroundEnabled(),
+                ],
             ]);
         } catch (\Exception $e) {
             return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
@@ -21034,6 +21061,13 @@ class RiderController extends Controller
     {
         try {
             $user = Auth::user();
+            // Jul-2026: this endpoint had NO permission check at all, while every
+            // other campaign action had one — any authenticated app user could
+            // mark campaign recipients as sent. It writes campaign state, so it
+            // takes the same gate as the rest.
+            if (!app(\App\Services\Campaigns\CampaignAccess::class)->canManage($user)) {
+                return response()->json(['success' => false, 'message' => 'Your account can view campaigns but not send or change them.'], 403);
+            }
 
             $updated = DB::table('t_crm_campaign_customers')
                 ->where('campaign_id', $campaignId)
@@ -21075,6 +21109,11 @@ class RiderController extends Controller
     public function markCampaignCustomerSkipped(Request $request, $campaignId, $customerId)
     {
         try {
+            // Same missing-gate fix as markCampaignCustomerSent above.
+            if (!app(\App\Services\Campaigns\CampaignAccess::class)->canManage(Auth::user())) {
+                return response()->json(['success' => false, 'message' => 'Your account can view campaigns but not send or change them.'], 403);
+            }
+
             DB::table('t_crm_campaign_customers')
                 ->where('campaign_id', $campaignId)
                 ->where('customer_id', $customerId)
@@ -21102,236 +21141,92 @@ class RiderController extends Controller
     /**
      * Send campaign template to one or more customers via WhatsApp Business API
      */
+    /**
+     * Send campaign templates via WhatsApp — delegates to the shared
+     * CampaignSendService so mobile gets the identical safety behaviour as web:
+     * one sender per campaign at a time, an atomic per-recipient claim (no
+     * double sends), the WhatsApp daily-tier cap, Meta error classification
+     * (throttle/cap/auth stop the run and leave people Pending; only a genuinely
+     * undeliverable recipient is marked failed), and a session cap so a tap can
+     * never fire off thousands of messages at once.
+     *
+     * `limit` is how many this call may send. The app passes the operator's
+     * confirmed batch size; if it's absent we fall back to the selection size or
+     * the campaign's remembered session limit rather than sending unbounded.
+     */
     public function sendCampaignBulk(Request $request, $id)
     {
         try {
             $user = Auth::user();
-            if (!$user->hasMobilePermission('view_campaigns')) {
-                return response()->json(['success' => false, 'message' => 'No permission'], 403);
-            }
-
-            $campaign = DB::table('t_crm_campaigns')->where('id', $id)->where('status', 'active')->first();
-            if (!$campaign) {
-                return response()->json(['success' => false, 'message' => 'Campaign not found or ended'], 404);
-            }
-
-            $templateName = $campaign->wa_template_name;
-            if (!$templateName) {
-                return response()->json(['success' => false, 'message' => 'No WhatsApp template configured for this campaign'], 422);
+            if (!app(\App\Services\Campaigns\CampaignAccess::class)->canManage($user)) {
+                return response()->json(['success' => false, 'message' => 'Your account can view campaigns but not send or change them.'], 403);
             }
 
             $request->validate([
-                'customer_ids' => 'required|array|min:1',
+                'customer_ids'   => 'nullable|array',
                 'customer_ids.*' => 'integer',
-                'body_params' => 'nullable|array',
+                'body_params'    => 'nullable|array',
                 'include_failed' => 'nullable|boolean',
+                'limit'          => 'nullable|integer|min:1|max:100000',
+                'run_id'         => 'nullable|integer',
             ]);
 
+            $sendService  = app(\App\Services\Campaigns\CampaignSendService::class);
+            $statsService = app(\App\Services\Campaigns\CampaignStatsService::class);
+
             $customerIds = $request->input('customer_ids');
-            $language = $campaign->wa_template_language ?: 'en';
-            // Retry flow: when include_failed=true we also send to rows currently in `failed`.
-            $includeFailed = (bool) $request->input('include_failed', false);
-            $eligibleStatuses = $includeFailed ? ['pending', 'failed'] : ['pending'];
-
-            // Expected variable_count of the template — used to size body_params correctly.
-            // Without this, a 0-variable template (e.g. pure marketing copy) will be rejected
-            // by Meta with error 132000 when the caller sends any placeholder.
-            $templateMeta = DB::table('t_wa_templates')->where('name', $templateName)->first();
-            $expectedVarCount = $templateMeta ? (int) $templateMeta->variable_count : null;
-
-            $customers = DB::table('t_crm_campaign_customers as cc')
-                ->join('t_crm_prod_customer as c', 'cc.customer_id', '=', 'c.id')
-                ->where('cc.campaign_id', $id)
-                ->whereIn('cc.status', $eligibleStatuses)
-                ->whereIn('cc.customer_id', $customerIds)
-                ->select('cc.customer_id', 'c.first_name', 'c.last_name', 'c.phone', 'c.phone_normalized')
-                ->get();
-
-            if ($customers->isEmpty()) {
-                $label = $includeFailed ? 'pending or failed' : 'pending';
-                return response()->json(['success' => false, 'message' => "No {$label} customers found for the given IDs"], 422);
+            $limit = (int) $request->input('limit', 0);
+            if ($limit <= 0) {
+                $limit = is_array($customerIds) && !empty($customerIds)
+                    ? count($customerIds)
+                    : (int) (DB::table('t_crm_campaigns')->where('id', $id)->value('session_limit')
+                             ?: $sendService->defaultSessionLimit());
             }
 
-            // Send-time dedup guard — mirrors CampaignWebController::sendBulk().
-            // Catches pending customers who received the template via a
-            // newer campaign since this one was created. One batch-level
-            // lookup against the shared CampaignFilterService keeps web
-            // + mobile in lockstep on what "already received" means.
-            $dedupWindow = (int) ($campaign->dedup_window_days ?? 0);
-            $sendTimeExcluded = 0;
-            $filterService = app(\App\Services\CampaignFilterService::class);
-            if ($dedupWindow > 0 && $templateName !== '') {
-                $batchIds = $customers->pluck('customer_id')->map(fn($v) => (int) $v)->all();
-                $nowExcludedIds = $filterService->customersRecentlySentTemplate(
-                    $batchIds,
-                    $templateName,
-                    $dedupWindow
-                );
-                if (!empty($nowExcludedIds)) {
-                    $excludedSet = array_flip($nowExcludedIds);
-                    $reason = 'Excluded: already received template "' . $templateName . '" in last '
-                        . $dedupWindow . ' day' . ($dedupWindow === 1 ? '' : 's');
+            $result = $sendService->sendBatch((int) $id, [
+                'limit'          => $limit,
+                'customer_ids'   => $customerIds,
+                'include_failed' => (bool) $request->input('include_failed', false),
+                'mode'           => 'manual',
+                'user_id'        => $user->id,
+                'run_id'         => $request->input('run_id'),
+                'body_params'    => $request->input('body_params'),
+            ]);
 
-                    DB::table('t_crm_campaign_customers')
-                        ->where('campaign_id', $id)
-                        ->whereIn('customer_id', $nowExcludedIds)
-                        ->whereIn('status', $eligibleStatuses)
-                        ->update(['status' => 'skipped', 'error_message' => $reason, 'sent_at' => null]);
-
-                    $customers = $customers->reject(fn($c) => isset($excludedSet[(int) $c->customer_id]))->values();
-                    $sendTimeExcluded = count($nowExcludedIds);
-
-                    \Illuminate\Support\Facades\Log::info('Campaign bulk send (mobile): dedup guard auto-excluded', [
-                        'campaign_id' => $id,
-                        'template' => $templateName,
-                        'window_days' => $dedupWindow,
-                        'excluded' => $sendTimeExcluded,
-                    ]);
-                }
-            }
-
-            if ($customers->isEmpty()) {
-                // Whole batch was auto-excluded by the guard — return
-                // success with the excluded count so the app can show a
-                // "nothing sent, N moved to Excluded" toast.
-                $counts = DB::table('t_crm_campaign_customers')
-                    ->where('campaign_id', $id)
-                    ->selectRaw("
-                        COUNT(*) as total,
-                        SUM(CASE WHEN status = 'sent' THEN 1 ELSE 0 END) as sent,
-                        SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) as pending,
-                        SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) as failed,
-                        SUM(CASE WHEN status = 'skipped' AND (error_message IS NULL OR error_message NOT LIKE 'Excluded:%') THEN 1 ELSE 0 END) as skipped,
-                        SUM(CASE WHEN status = 'skipped' AND error_message LIKE 'Excluded:%' THEN 1 ELSE 0 END) as excluded
-                    ")
-                    ->first();
+            if (!($result['ok'] ?? false)) {
                 return response()->json([
-                    'success' => true,
-                    'results' => ['sent' => 0, 'failed' => 0, 'excluded' => $sendTimeExcluded, 'errors' => []],
-                    'counts' => $counts,
+                    'success' => false,
+                    'busy'    => $result['busy'] ?? false,
+                    'message' => $result['message'] ?? 'Send failed',
+                ], ($result['busy'] ?? false) ? 409 : 422);
+            }
+
+            // Close the session run once this batch is genuinely finished, so a
+            // campaign never looks mid-send after the app closes.
+            if (($result['stop_reason'] ?? null) !== 'time_budget' && !empty($result['run_id'])) {
+                $sendService->finishRun((int) $result['run_id'], (string) $result['stop_reason']);
+                DB::table('t_crm_campaigns')->where('id', $id)->update([
+                    'active_run_id'      => null,
+                    'send_paused_reason' => $result['message'] ?? null,
+                    'updated_at'         => now(),
                 ]);
             }
 
-            $whatsapp = app(\App\Services\WhatsAppService::class);
-            $results = ['sent' => 0, 'failed' => 0, 'excluded' => $sendTimeExcluded, 'errors' => []];
-
-            // Pace outbound WhatsApp API calls to stay within Meta's per-second
-            // template throughput and reduce the chance of 131056 rate-limit
-            // errors on large retries. Mirrors the web sendBulk behaviour.
-            $total = $customers->count();
-            $paceMicros = $total > 1 ? 200_000 : 0;
-            \Illuminate\Support\Facades\Log::info('Campaign bulk send (mobile): starting batch', [
-                'campaign_id'    => $id,
-                'template'       => $templateName,
-                'customer_count' => $total,
-                'include_failed' => $includeFailed,
-                'user_id'        => $user->id,
-            ]);
-
-            foreach ($customers as $index => $customer) {
-                if ($paceMicros && $index > 0) { usleep($paceMicros); }
-
-                $phone = $customer->phone_normalized ?: $customer->phone;
-                if (!$phone) {
-                    DB::table('t_crm_campaign_customers')
-                        ->where('campaign_id', $id)
-                        ->where('customer_id', $customer->customer_id)
-                        ->update(['status' => 'failed', 'error_message' => 'No phone number']);
-                    $results['failed']++;
-                    continue;
-                }
-
-                try {
-                    // Dial-resolve (known-number override; no-op for PK numbers).
-                    $formattedPhone = $whatsapp->resolveDialPhone((string) $phone);
-                    $customerName = trim(($customer->first_name ?? '') . ' ' . ($customer->last_name ?? ''));
-
-                    $bodyParams = $request->input('body_params', []);
-                    $resolvedParams = array_map(function ($p) use ($customerName) {
-                        return $p === '{{customer_name}}' ? $customerName : $p;
-                    }, $bodyParams);
-
-                    // Resize to match the template's actual variable_count so we never
-                    // over-send (error 132000) or under-send placeholders.
-                    if ($expectedVarCount !== null) {
-                        if (count($resolvedParams) > $expectedVarCount) {
-                            $resolvedParams = array_slice($resolvedParams, 0, $expectedVarCount);
-                        }
-                        while (count($resolvedParams) < $expectedVarCount) {
-                            $resolvedParams[] = $customerName;
-                        }
-                    }
-
-                    $response = $whatsapp->sendTemplateMessage($formattedPhone, $templateName, $language, $resolvedParams);
-
-                    if ($response['success'] ?? false) {
-                        DB::table('t_crm_campaign_customers')
-                            ->where('campaign_id', $id)
-                            ->where('customer_id', $customer->customer_id)
-                            ->update([
-                                'status' => 'sent',
-                                'sent_at' => now(),
-                                'sent_by' => $user->id,
-                                'error_message' => null,
-                            ]);
-                        DB::table('t_crm_campaigns')->where('id', $id)->increment('sent_count');
-                        $results['sent']++;
-
-                        $conversation = $whatsapp->findOrCreateConversation($formattedPhone);
-                        if (!$conversation->customer_id) {
-                            $conversation->update(['customer_id' => $customer->customer_id]);
-                        }
-                        $whatsapp->saveOutboundMessage(
-                            $conversation->id,
-                            $response,
-                            'template',
-                            "Campaign: {$campaign->name}",
-                            $user->id,
-                            $templateName,
-                            $resolvedParams
-                        );
-                    } else {
-                        $error = $response['error'] ?? 'API send failed';
-                        DB::table('t_crm_campaign_customers')
-                            ->where('campaign_id', $id)
-                            ->where('customer_id', $customer->customer_id)
-                            ->update(['status' => 'failed', 'error_message' => mb_substr($error, 0, 500)]);
-                        $results['failed']++;
-                        $results['errors'][] = ['customer_id' => $customer->customer_id, 'phone' => $phone, 'error' => $error];
-                    }
-                } catch (\Exception $e) {
-                    $error = $e->getMessage();
-                    DB::table('t_crm_campaign_customers')
-                        ->where('campaign_id', $id)
-                        ->where('customer_id', $customer->customer_id)
-                        ->update(['status' => 'failed', 'error_message' => mb_substr($error, 0, 500)]);
-                    $results['failed']++;
-                    $results['errors'][] = ['customer_id' => $customer->customer_id, 'phone' => $phone, 'error' => $error];
-                }
-            }
-
-            $counts = DB::table('t_crm_campaign_customers')
-                ->where('campaign_id', $id)
-                ->selectRaw("
-                    COUNT(*) as total,
-                    SUM(CASE WHEN status = 'sent' THEN 1 ELSE 0 END) as sent,
-                    SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) as pending,
-                    SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) as failed,
-                    SUM(CASE WHEN status = 'skipped' AND (error_message IS NULL OR error_message NOT LIKE 'Excluded:%') THEN 1 ELSE 0 END) as skipped,
-                    SUM(CASE WHEN status = 'skipped' AND error_message LIKE 'Excluded:%' THEN 1 ELSE 0 END) as excluded
-                ")
-                ->first();
-
-            \Illuminate\Support\Facades\Log::info('Campaign bulk send (mobile): batch finished', [
-                'campaign_id' => $id,
-                'sent'        => $results['sent'],
-                'failed'      => $results['failed'],
-            ]);
-
             return response()->json([
-                'success' => true,
-                'results' => $results,
-                'counts' => $counts,
+                'success'     => true,
+                'results'     => [
+                    'sent'      => $result['sent'],
+                    'failed'    => $result['failed'],
+                    'excluded'  => $result['excluded'],
+                    'attempted' => $result['attempted'],
+                    'errors'    => $result['errors'],
+                ],
+                'run_id'      => $result['run_id'] ?? null,
+                'stop_reason' => $result['stop_reason'] ?? null,
+                'message'     => $result['message'] ?? null,
+                'remaining'   => $result['remaining'] ?? null,
+                'quota'       => $result['quota'] ?? null,
+                'counts'      => $statsService->counts((int) $id),
             ]);
         } catch (\Exception $e) {
             \Illuminate\Support\Facades\Log::error('Campaign bulk send failed', ['error' => $e->getMessage()]);
@@ -21346,8 +21241,8 @@ class RiderController extends Controller
     {
         try {
             $user = Auth::user();
-            if (!$user->hasMobilePermission('view_campaigns')) {
-                return response()->json(['success' => false, 'message' => 'No permission'], 403);
+            if (!app(\App\Services\Campaigns\CampaignAccess::class)->canManage($user)) {
+                return response()->json(['success' => false, 'message' => 'Your account can view campaigns but not send or change them.'], 403);
             }
 
             $campaign = DB::table('t_crm_campaigns')->where('id', $id)->where('status', 'active')->first();
@@ -21416,8 +21311,8 @@ class RiderController extends Controller
     {
         try {
             $user = Auth::user();
-            if (!$user->hasMobilePermission('view_campaigns')) {
-                return response()->json(['success' => false, 'message' => 'No permission'], 403);
+            if (!app(\App\Services\Campaigns\CampaignAccess::class)->canManage($user)) {
+                return response()->json(['success' => false, 'message' => 'Your account can view campaigns but not send or change them.'], 403);
             }
 
             $campaign = DB::table('t_crm_campaigns')->where('id', $id)->first();
@@ -21550,8 +21445,8 @@ class RiderController extends Controller
     {
         try {
             $user = Auth::user();
-            if (!$user->hasMobilePermission('view_campaigns')) {
-                return response()->json(['success' => false, 'message' => 'No permission'], 403);
+            if (!app(\App\Services\Campaigns\CampaignAccess::class)->canManage($user)) {
+                return response()->json(['success' => false, 'message' => 'Your account can view campaigns but not send or change them.'], 403);
             }
 
             $campaign = DB::table('t_crm_campaigns')->where('id', $id)->first();
@@ -21642,8 +21537,8 @@ class RiderController extends Controller
     {
         try {
             $user = Auth::user();
-            if (!$user->hasMobilePermission('view_campaigns')) {
-                return response()->json(['success' => false, 'message' => 'No permission'], 403);
+            if (!app(\App\Services\Campaigns\CampaignAccess::class)->canManage($user)) {
+                return response()->json(['success' => false, 'message' => 'Your account can view campaigns but not send or change them.'], 403);
             }
 
             DB::table('t_crm_campaigns')
@@ -21663,6 +21558,19 @@ class RiderController extends Controller
     /**
      * Get campaign conversion stats
      */
+    /**
+     * Campaign results — delegates to the shared CampaignStatsService.
+     *
+     * Previously this ran two queries PER SENT CUSTOMER, so a 5,700-recipient
+     * campaign meant ~11,000 queries and a stats screen that timed out. It is
+     * now a fixed handful of set-based queries whatever the campaign size, and
+     * because web calls the same service the two surfaces can no longer
+     * disagree about what a conversion is.
+     *
+     * The legacy top-level keys (total_sent, conversion_rate, ...) are kept so
+     * an older APK keeps working; the delivery funnel and order-source split
+     * are added alongside them.
+     */
     public function getCampaignStats(Request $request, $id)
     {
         try {
@@ -21671,117 +21579,212 @@ class RiderController extends Controller
                 return response()->json(['success' => false, 'message' => 'No permission'], 403);
             }
 
+            $statsService = app(\App\Services\Campaigns\CampaignStatsService::class);
+            $stats = $statsService->forCampaign((int) $id);
+            if (!$stats) {
+                return response()->json(['success' => false, 'message' => 'Campaign not found'], 404);
+            }
+
+            $f = $stats['funnel'];
+
+            return response()->json([
+                'success' => true,
+                'stats' => [
+                    // --- legacy keys: older APKs read these ---
+                    'total_sent'            => $f['sent'],
+                    'customers_who_ordered' => $f['ordered'],
+                    'conversion_rate'       => $f['rates']['ordered'],
+                    'customers_who_replied' => $f['replied'],
+                    'reply_rate'            => $f['rates']['replied'],
+                    'total_orders'          => $f['orders'],
+                    'total_revenue'         => $f['revenue'],
+                    'tracking_type'         => $stats['tracking_type'],
+                    'tracking_window_days'  => $stats['tracking_window_days'],
+                    'product_breakdown'     => $stats['product_breakdown'],
+                    // Per-customer rows are no longer built for the whole
+                    // campaign — that WAS the N+1. The app shows the funnel and
+                    // drills into the paginated customer list instead.
+                    'customer_details'      => [],
+
+                    // --- new: the delivery funnel from Meta's receipts ---
+                    'funnel'                => $f,
+                    'delivered'             => $f['delivered'],
+                    'delivered_rate'        => $f['rates']['delivered'],
+                    'read'                  => $f['read'],
+                    'read_rate'             => $f['rates']['read'],
+                    'undelivered'           => $f['undelivered'],
+                    'receipts_tracked'      => $f['receipts_tracked'],
+                    'source_split'          => $stats['source_split'],
+                    'tracking_note'         => $stats['tracking_note'],
+                ],
+            ]);
+        } catch (\Exception $e) {
+            return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
+        }
+    }
+
+    /**
+     * Combined results for every campaign that used a given template, plus a
+     * deduplicated total where each customer counts once. Mobile mirror of the
+     * web "By Template" view.
+     */
+    public function getCampaignTemplateResults(Request $request)
+    {
+        try {
+            $user = Auth::user();
+            if (!$user->hasMobilePermission('view_campaigns')) {
+                return response()->json(['success' => false, 'message' => 'No permission'], 403);
+            }
+
+            $statsService = app(\App\Services\Campaigns\CampaignStatsService::class);
+            $template = trim((string) $request->get('template', ''));
+
+            return response()->json([
+                'success'   => true,
+                'templates' => $statsService->templatesWithCampaigns(),
+                'result'    => $template !== '' ? $statsService->forTemplate($template) : null,
+            ]);
+        } catch (\Exception $e) {
+            return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
+        }
+    }
+
+    /**
+     * WhatsApp daily-allowance snapshot plus this campaign's send state, so the
+     * mobile send sheet can show the same numbers the web dialog does.
+     */
+    public function getCampaignSendStatus(Request $request, $id)
+    {
+        try {
+            $user = Auth::user();
+            if (!$user->hasMobilePermission('view_campaigns')) {
+                return response()->json(['success' => false, 'message' => 'No permission'], 403);
+            }
+
+            $sendService  = app(\App\Services\Campaigns\CampaignSendService::class);
+            $statsService = app(\App\Services\Campaigns\CampaignStatsService::class);
+
             $campaign = DB::table('t_crm_campaigns')->where('id', $id)->first();
             if (!$campaign) {
                 return response()->json(['success' => false, 'message' => 'Campaign not found'], 404);
             }
 
-            $trackingDays = $campaign->tracking_window_days ?: 30;
-            $trackingType = $campaign->tracking_type ?: 'general';
-            $trackedProducts = $campaign->tracked_product_ids ? json_decode($campaign->tracked_product_ids, true) : [];
+            $q = $sendService->quota();
 
-            $sentCustomers = DB::table('t_crm_campaign_customers')
-                ->where('campaign_id', $id)
-                ->where('status', 'sent')
-                ->get();
+            return response()->json([
+                'success'       => true,
+                'send_state'    => $campaign->send_state ?? 'idle',
+                'send_mode'     => $campaign->send_mode ?? 'manual',
+                'paused_reason' => $campaign->send_paused_reason,
+                'session_limit' => (int) ($campaign->session_limit ?: $sendService->defaultSessionLimit()),
+                'eligible'      => $sendService->eligibleCount((int) $id),
+                'run'           => $campaign->active_run_id ? $sendService->runProgress((int) $campaign->active_run_id) : null,
+                'runs'          => $statsService->runHistory((int) $id, 10),
+                'counts'        => $statsService->counts((int) $id),
+                'quota'         => [
+                    'cap'       => $q['cap'],
+                    'used'      => $q['used'],
+                    'remaining' => $q['unlimited'] ? null : $q['remaining'],
+                    'unlimited' => $q['unlimited'],
+                    'default_session_limit' => $sendService->defaultSessionLimit(),
+                    'background_enabled'    => $sendService->backgroundEnabled(),
+                ],
+            ]);
+        } catch (\Exception $e) {
+            return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
+        }
+    }
 
-            $totalSent = $sentCustomers->count();
-            $customersWhoOrdered = 0;
-            $customersWhoReplied = 0;
-            $totalOrders = 0;
-            $totalRevenue = 0;
-            $customerDetails = [];
-            $productBreakdown = [];
-
-            foreach ($sentCustomers as $cc) {
-                $ordersQuery = DB::table('t_crm_prod_order')
-                    ->where('customer_id', $cc->customer_id)
-                    ->where('order_date', '>', $cc->sent_at)
-                    ->where('order_date', '<=', Carbon::parse($cc->sent_at)->addDays($trackingDays))
-                    ->whereIn('order_status', ['delivered', 'completed']);
-
-                if ($trackingType === 'products' && !empty($trackedProducts)) {
-                    $ordersQuery->whereExists(function ($q) use ($trackedProducts) {
-                        $q->select(DB::raw(1))
-                          ->from('t_crm_prod_order_line_item')
-                          ->whereColumn('t_crm_prod_order_line_item.order_id', 't_crm_prod_order.id')
-                          ->whereIn('t_crm_prod_order_line_item.product_id', $trackedProducts);
-                    });
-                }
-
-                $orders = $ordersQuery->get();
-                $orderCount = $orders->count();
-                $revenue = $orders->sum('total_price');
-
-                if ($orderCount > 0) {
-                    $customersWhoOrdered++;
-                    $totalOrders += $orderCount;
-                    $totalRevenue += $revenue;
-                }
-
-                $customer = DB::table('t_crm_prod_customer')
-                    ->where('id', $cc->customer_id)
-                    ->select('first_name', 'last_name', 'phone_normalized')
-                    ->first();
-
-                $replied = !empty($cc->replied_at ?? null);
-                if ($replied) $customersWhoReplied++;
-
-                $customerDetails[] = [
-                    'customer_id' => $cc->customer_id,
-                    'name' => $customer ? trim($customer->first_name . ' ' . $customer->last_name) : 'Unknown',
-                    'phone' => $customer->phone_normalized ?? '',
-                    'sent_at' => $cc->sent_at,
-                    'ordered' => $orderCount > 0,
-                    'order_count' => $orderCount,
-                    'revenue' => $revenue,
-                    'replied' => $replied,
-                    'replied_at' => $cc->replied_at ?? null,
-                ];
-
-                if ($trackingType === 'products' && !empty($trackedProducts) && $orderCount > 0) {
-                    $orderIds = $orders->pluck('id')->toArray();
-                    if (!empty($orderIds)) {
-                        $lineItems = DB::table('t_crm_prod_order_line_item as li')
-                            ->join('t_crm_prod_product as p', 'li.product_id', '=', 'p.id')
-                            ->whereIn('li.order_id', $orderIds)
-                            ->whereIn('li.product_id', $trackedProducts)
-                            ->select('li.product_id', 'p.title as product_name', DB::raw('SUM(li.quantity) as total_qty'), DB::raw('SUM(li.price * li.quantity) as total_value'))
-                            ->groupBy('li.product_id', 'p.title')
-                            ->get();
-
-                        foreach ($lineItems as $item) {
-                            $key = $item->product_id;
-                            if (!isset($productBreakdown[$key])) {
-                                $productBreakdown[$key] = [
-                                    'product_id' => $item->product_id,
-                                    'product_name' => $item->product_name,
-                                    'total_qty' => 0,
-                                    'total_value' => 0,
-                                ];
-                            }
-                            $productBreakdown[$key]['total_qty'] += $item->total_qty;
-                            $productBreakdown[$key]['total_value'] += $item->total_value;
-                        }
-                    }
-                }
+    /**
+     * Hand the campaign to the background sender so the phone does not have to
+     * stay awake and on-screen for a long batch.
+     */
+    public function startCampaignBackgroundSend(Request $request, $id)
+    {
+        try {
+            $user = Auth::user();
+            if (!app(\App\Services\Campaigns\CampaignAccess::class)->canManage($user)) {
+                return response()->json(['success' => false, 'message' => 'Your account can view campaigns but not send or change them.'], 403);
             }
+
+            $request->validate(['limit' => 'required|integer|min:1|max:100000']);
+
+            $sendService = app(\App\Services\Campaigns\CampaignSendService::class);
+
+            $campaign = DB::table('t_crm_campaigns')->where('id', $id)->where('status', 'active')->first();
+            if (!$campaign) {
+                return response()->json(['success' => false, 'message' => 'Campaign not found or ended'], 404);
+            }
+            if (!$campaign->wa_template_name) {
+                return response()->json(['success' => false, 'message' => 'No WhatsApp template configured'], 422);
+            }
+            if (($campaign->send_state ?? 'idle') === 'running') {
+                return response()->json(['success' => false, 'message' => 'This campaign is already sending in the background.'], 409);
+            }
+
+            $eligible = $sendService->eligibleCount((int) $id);
+            if ($eligible <= 0) {
+                return response()->json(['success' => false, 'message' => 'No one left to send to.'], 422);
+            }
+
+            $limit = min((int) $request->input('limit'), $eligible);
+            $runId = $sendService->startRun((int) $id, $limit, 'background', $user->id);
+
+            DB::table('t_crm_campaigns')->where('id', $id)->update([
+                'send_state'         => 'running',
+                'send_mode'          => 'background',
+                'active_run_id'      => $runId,
+                'session_limit'      => $limit,
+                'send_paused_reason' => null,
+                'updated_at'         => now(),
+            ]);
+
+            $msg = 'Started in the background - ' . $limit . ' message'
+                 . ($limit === 1 ? '' : 's')
+                 . ' will go out over the next few minutes. You can close the app.';
 
             return response()->json([
                 'success' => true,
-                'stats' => [
-                    'total_sent' => $totalSent,
-                    'customers_who_ordered' => $customersWhoOrdered,
-                    'conversion_rate' => $totalSent > 0 ? round(($customersWhoOrdered / $totalSent) * 100, 1) : 0,
-                    'customers_who_replied' => $customersWhoReplied,
-                    'reply_rate' => $totalSent > 0 ? round(($customersWhoReplied / $totalSent) * 100, 1) : 0,
-                    'total_orders' => $totalOrders,
-                    'total_revenue' => round($totalRevenue, 2),
-                    'tracking_type' => $trackingType,
-                    'tracking_window_days' => $trackingDays,
-                    'product_breakdown' => array_values($productBreakdown),
-                    'customer_details' => $customerDetails,
-                ],
+                'run_id'  => $runId,
+                'target'  => $limit,
+                'message' => $msg,
+            ]);
+        } catch (\Exception $e) {
+            return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
+        }
+    }
+
+    /** Stop a background run. Everyone not yet messaged stays Pending. */
+    public function pauseCampaignSend(Request $request, $id)
+    {
+        try {
+            $user = Auth::user();
+            if (!app(\App\Services\Campaigns\CampaignAccess::class)->canManage($user)) {
+                return response()->json(['success' => false, 'message' => 'Your account can view campaigns but not send or change them.'], 403);
+            }
+
+            $sendService  = app(\App\Services\Campaigns\CampaignSendService::class);
+            $statsService = app(\App\Services\Campaigns\CampaignStatsService::class);
+
+            $campaign = DB::table('t_crm_campaigns')->where('id', $id)->first();
+            if (!$campaign) {
+                return response()->json(['success' => false, 'message' => 'Campaign not found'], 404);
+            }
+            if ($campaign->active_run_id) {
+                $sendService->finishRun((int) $campaign->active_run_id, 'operator_paused');
+            }
+
+            DB::table('t_crm_campaigns')->where('id', $id)->update([
+                'send_state'         => 'idle',
+                'active_run_id'      => null,
+                'send_paused_reason' => 'Paused by you - nobody else was messaged.',
+                'updated_at'         => now(),
+            ]);
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Paused. Everyone not yet messaged is still Pending.',
+                'counts'  => $statsService->counts((int) $id),
             ]);
         } catch (\Exception $e) {
             return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
@@ -21927,6 +21930,12 @@ class RiderController extends Controller
                     // ⭐ Delivery location (GPS captured when rider marked delivered)
                     'osh.delivery_latitude',
                     'osh.delivery_longitude',
+                    // How good that fix was — the pin verdict forgives up to the fix's own error
+                    // bar. Column only exists after the GPS-accuracy hardening SQL, so it is
+                    // selected conditionally and reads NULL (= no forgiveness) until then.
+                    \Illuminate\Support\Facades\Schema::hasColumn('t_crm_order_status_history', 'delivery_accuracy_m')
+                        ? 'osh.delivery_accuracy_m'
+                        : \DB::raw('NULL as delivery_accuracy_m'),
                     // ⭐ Customer verified location (manually set - high accuracy)
                     'c.latitude as verified_lat',
                     'c.longitude as verified_lng',
@@ -22037,23 +22046,34 @@ class RiderController extends Controller
                 // ⭐ Calculate location verification
                 $locationVerification = null;
                 if ($deliveryLocation) {
-                    // Check against verified location first (higher priority)
-                    if ($verifiedLocation) {
-                        $distance = $this->haversineDistance(
+                    // Check against verified location first (higher priority).
+                    // The verdict comes from App\Services\Riders\VerifiedPinRule — the same class
+                    // Day Review and the dispatch tracker use. This screen used to do its own raw
+                    // comparison with no allowance for a vague fix, so it flagged deliveries that
+                    // Day Review called clean.
+                    $v = $verifiedLocation
+                        ? \App\Services\Riders\VerifiedPinRule::judge(
                             $deliveryLocation['latitude'], $deliveryLocation['longitude'],
-                            $verifiedLocation['latitude'], $verifiedLocation['longitude']
-                        );
-                        $distanceKm = round($distance / 1000, 2);
-                        $isClose = $distance <= (float) config('rider_reports.at_verified_m', 500); // unified verified-pin rule
+                            $verifiedLocation['latitude'], $verifiedLocation['longitude'],
+                            $order->delivery_accuracy_m ?? null
+                          )
+                        : null;
+                    if ($v) {
+                        $isClose = $v['at_verified'];
+                        $tail = $v['note'] ? ' (' . $v['note'] . ')' : '';
 
                         $locationVerification = [
                             'type' => 'verified',
                             'is_match' => $isClose,
-                            'distance_km' => $distanceKm,
-                            'distance_display' => $distanceKm < 1 ? round($distance) . 'm' : $distanceKm . 'km',
+                            'distance_km' => round($v['distance_m'] / 1000, 2),
+                            'distance_display' => $v['distance_display'],
                             'expected_location' => $verifiedLocation,
+                            'fix_coarse' => $v['fix_coarse'],
+                            'accuracy_m' => $v['accuracy_m'],
                             'status' => $isClose ? 'verified_match' : 'verified_mismatch',
-                            'status_text' => $isClose ? '✓ Delivered at verified location' : '⚠ Delivered ' . ($distanceKm < 1 ? round($distance) . 'm' : $distanceKm . 'km') . ' from verified',
+                            'status_text' => ($isClose
+                                ? '✓ Delivered at verified location'
+                                : '⚠ Delivered ' . $v['distance_display'] . ' from verified') . $tail,
                         ];
                     }
                     // If no verified, check against geocoded

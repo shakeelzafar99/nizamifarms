@@ -1329,20 +1329,26 @@ class VendorController extends Controller
 
             $transaction->save();
 
-            // Update account balances if amount changed
-            if ($oldAmount != $newAmount) {
+            // Update account balances if the amount changed — but ONLY when the row's money is
+            // actually applied. balance_updated is the engine's truth of applied-ness: a pending
+            // payment is flag=0 (its later approval applies the NEW amount, so no delta here); an
+            // L1-approved payment (pending_l2) IS applied. The old approval_status===approved check
+            // wrongly skipped pending_l2 — editing one changed the row but not the balances, the
+            // exact silent drift the balance_updated hardening exists to prevent. Same sign
+            // convention as BalancePostingService: purchase applies both legs +, payment both −.
+            if ($oldAmount != $newAmount && $transaction->balance_updated) {
                 $amountDiff = $newAmount - $oldAmount;
-                
+
                 // Get accounts
                 $vendorAccount = AccountModel::find($transaction->to_account_id);
-                
+
                 if ($isPurchase) {
                     // Update vendor balance
                     if ($vendorAccount) {
                         $vendorAccount->current_balance += $amountDiff;
                         $vendorAccount->save();
                     }
-                    
+
                     // Update purchase account
                     $purchaseAccount = AccountModel::find($transaction->from_account_id);
                     if ($purchaseAccount) {
@@ -1350,18 +1356,15 @@ class VendorController extends Controller
                         $purchaseAccount->save();
                     }
                 } else {
-                    // For payments, only update if approved
-                    if ($transaction->approval_status === LedgerModel::STATUS_APPROVED) {
-                        if ($vendorAccount) {
-                            $vendorAccount->current_balance -= $amountDiff;
-                            $vendorAccount->save();
-                        }
-                        
-                        $paymentAccount = AccountModel::find($transaction->from_account_id);
-                        if ($paymentAccount) {
-                            $paymentAccount->current_balance -= $amountDiff;
-                            $paymentAccount->save();
-                        }
+                    if ($vendorAccount) {
+                        $vendorAccount->current_balance -= $amountDiff;
+                        $vendorAccount->save();
+                    }
+
+                    $paymentAccount = AccountModel::find($transaction->from_account_id);
+                    if ($paymentAccount) {
+                        $paymentAccount->current_balance -= $amountDiff;
+                        $paymentAccount->save();
                     }
                 }
             }

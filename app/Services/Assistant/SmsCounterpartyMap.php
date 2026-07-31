@@ -9,8 +9,10 @@ use Illuminate\Support\Facades\DB;
  *
  * t_ai_counterparty_map rows say: this counterparty identity (a normalized
  * account fragment like AKBL*9400 / MBL*4602 / PK56UNIL01090 / MERCHANT:JAMIL
- * SWEETS..., and/or a name) belongs to a vendor / customer / expense category,
- * or should be ignored (personal debit-card merchants).
+ * SWEETS..., and/or a name) belongs to a vendor / customer / expense category /
+ * one of OUR OWN accounts (entity_type 'account' — a rider or staff cash float,
+ * NF food, another till: money that MOVED but is still ours), or should be
+ * ignored (personal debit-card merchants).
  *
  * CONFIDENCE RULES (owner-approved Jul-20):
  *   • account_key hit  → high confidence, may drive AUTO actions
@@ -137,6 +139,12 @@ class SmsCounterpartyMap
         }
         if ($rule->entity_type === 'vendor' && $rule->entity_id) {
             return (string) (DB::table('t_fin_vendors')->where('id', $rule->entity_id)->value('vendor_name') ?: 'vendor #' . $rule->entity_id);
+        }
+        // 'account' — money moved to one of OUR OWN accounts (a rider/staff cash
+        // float, NF food, another till). Not a vendor and not an expense: the
+        // rupees are still ours, they just sit somewhere else.
+        if ($rule->entity_type === 'account' && $rule->entity_id) {
+            return (string) (DB::table('t_fin_accounts')->where('id', $rule->entity_id)->value('account_name') ?: 'account #' . $rule->entity_id);
         }
         return (string) ($rule->entity_label ?: $rule->entity_type);
     }

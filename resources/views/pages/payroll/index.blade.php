@@ -141,6 +141,7 @@
   .pr-cust-adv { margin-top: 8px; font-size: 11.5px; color: #b45309; }
   .pr-cust-adv .give { color: #2563eb; cursor: pointer; margin-left: 8px; }
   .pr-cust-adv .give:hover { text-decoration: underline; }
+  .pr-cust-adv .view { font-weight: 700; cursor: pointer; text-decoration: underline dotted; }
 
   /* custom pay modal computed line */
   .pr-calc { background: #f9fafb; border: 1px solid #eef0f2; border-radius: 10px; padding: 12px 14px; margin: 4px 0 12px; }
@@ -721,12 +722,19 @@
     }
   });
 
-  function showAdvances(r) {
-    openSheet('Advances', '');
+  // mode 'custom' = the recovery rule differs: a custom period only recovers what
+  // that period's pay can absorb, so the note must not promise full settlement.
+  function showAdvances(r, mode) {
+    openSheet('Advances — ' + r.fullname, '');
     if (!r.advances || !r.advances.length) { el('prSheetBody').innerHTML = '<div class="pr-empty">No open advances.</div>'; return; }
+    const note = mode === 'custom'
+      ? 'Open advances are recovered from the next period you pay — oldest first, and only as much as that pay can cover. An advance bigger than the pay stays open for a later period.'
+      : 'Open advances are deducted from this pay and marked settled when you pay.';
     el('prSheetBody').innerHTML = r.advances.map(a =>
       '<div class="pr-daterow"><span class="dt">' + fmt(a.amount) + '</span><span class="lb">' + (a.date || '') + (a.request_number ? ' · ' + esc(a.request_number) : '') + '</span></div>'
-    ).join('') + '<div style="padding:12px 14px;font-size:11.5px;color:#9ca3af;">Open advances are deducted from this pay and marked settled when you pay.</div>';
+    ).join('')
+      + '<div class="pr-daterow" style="font-weight:700;border-top:2px solid #eef0f2;"><span class="dt">Total open</span><span class="dt">' + fmt(r.advance_total) + '</span></div>'
+      + '<div style="padding:12px 14px;font-size:11.5px;color:#9ca3af;">' + note + '</div>';
   }
 
   // ---- deductions breakdown ----
@@ -985,8 +993,12 @@
     }
     cover += '<button class="pr-cover-add" data-addperiod="' + i + '">＋ Add period</button>';
 
+    // Open advances: the amount opens the same list the Monthly tab shows (each
+    // advance's amount, date and request number) — the manager can see WHAT is open,
+    // not just the total. `data-cadv` (not `data-adv`) because both views live in the
+    // DOM at once and a shared attribute would wire the monthly row's element.
     const adv = r.advance_total > 0
-      ? '<div class="pr-cust-adv">Open advances: ' + fmt(r.advance_total) + ' (deducted next pay) <span class="give" data-cgive="' + i + '">＋ advance</span></div>'
+      ? '<div class="pr-cust-adv">Open advances: <span class="view" data-cadv="' + i + '">' + fmt(r.advance_total) + '</span> (deducted next pay) <span class="give" data-cgive="' + i + '">＋ advance</span></div>'
       : '<div class="pr-cust-adv" style="color:#9ca3af;">No open advances <span class="give" data-cgive="' + i + '">＋ advance</span></div>';
 
     return '<div class="pr-cust-card">' +
@@ -1016,6 +1028,8 @@
     if (add) add.onclick = () => openCustomPay(r);
     const give = document.querySelector('[data-cgive="' + i + '"]');
     if (give) give.onclick = () => openAdvance(r);
+    const cadv = document.querySelector('[data-cadv="' + i + '"]');
+    if (cadv) cadv.onclick = () => showAdvances(r, 'custom');
     (r.paid_periods || []).forEach((p, pi) => {
       const chip = document.querySelector('[data-period="' + i + '_' + pi + '"]');
       if (chip) chip.onclick = () => showCustomPeriod(r, p);
@@ -1038,12 +1052,37 @@
     }).catch(e => alert('Could not save rate: ' + (e.message || e)));
   }
 
+  // The frozen receipt for a paid period — the same story the Monthly tab tells:
+  // what the period earned, what advance was recovered from it, what was handed
+  // over, from which account and by whom. Every figure comes from the payment row.
   function showCustomPeriod(r, p) {
+    const line = (label, value, neg, muted) =>
+      '<div class="pr-daterow"><span class="dt" style="font-weight:400;color:#6b7280;">' + label + '</span>' +
+      '<span class="dt"' + (neg ? ' style="color:#b91c1c;"' : (muted ? ' style="color:#cbd5e1;"' : '')) + '>' + value + '</span></div>';
+
+    const adv = Number(p.advance_total || 0);
+    const gross = (p.gross !== undefined && p.gross !== null) ? Number(p.gross) : (Number(p.net || 0) + adv);
+    let html = '';
+    html += line('Period', esc(p.label));
+    html += line('Paid on', p.paid_at ? esc(String(p.paid_at).slice(0, 16)) : '—');
+    if (p.paid_by_name) html += line('Paid by', esc(p.paid_by_name));
+    html += line('Paid from', p.funding === 'online' ? ('🏦 ' + esc(p.bank_label || 'Online')) : '💵 NF Cash');
+    html += '<div style="height:8px;"></div>';
+    if (p.days_paid) html += line('Days paid', p.days_paid + ' day' + (p.days_paid === 1 ? '' : 's'));
+    html += line('Amount for the period', fmt(gross));
+    html += line('Advances recovered', adv > 0 ? '− ' + fmt(adv) : 'none', adv > 0, adv === 0);
+    if (p.present_days !== undefined && p.present_days !== null) {
+      html += line('Attendance (reference)', p.present_days + ' present · ' + p.absent_days + ' absent');
+    }
+    if (p.notes) html += line('Note', esc(p.notes));
+    html += '<div class="pr-daterow" style="font-weight:700;border-top:2px solid #eef0f2;margin-top:4px;"><span class="dt">Net paid</span><span class="dt" style="color:#047857;">' + fmt(p.net) + '</span></div>';
+    html += '<div style="padding:12px 14px;font-size:11.5px;color:#9ca3af;">' +
+      (p.ledger_id ? ('Ledger entry #' + p.ledger_id + '. ')
+                   : (adv > 0 ? 'No cash moved — the whole amount went to recovering advances. ' : '')) +
+      'This range is settled; overlapping days are blocked for new periods.</div>';
+
     el('prSheetTitle').textContent = 'Period — ' + r.fullname;
-    el('prSheetBody').innerHTML =
-      '<div class="pr-daterow"><span class="dt">' + esc(p.label) + '</span><span class="lb">' + fmt(p.net) + '</span></div>' +
-      '<div class="pr-daterow"><span class="dt" style="font-weight:400;color:#6b7280;">Paid on</span><span class="lb">' + esc(String(p.paid_at).slice(0, 16)) + '</span></div>' +
-      '<div style="padding:12px 14px;font-size:11.5px;color:#9ca3af;">This range is settled. Overlapping days are blocked for new periods.</div>';
+    el('prSheetBody').innerHTML = html;
     el('prSheet').classList.add('show');
   }
 

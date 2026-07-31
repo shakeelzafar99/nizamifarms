@@ -163,6 +163,12 @@ class WhatsAppAutomationService
                     continue;
                 }
 
+                // Expose the operator's saved rule to eligibility() so a handler
+                // can apply a CONFIGURED skip (e.g. the delivered-storage-tips
+                // per-customer cooldown) without changing the interface. Purely
+                // additive — handlers that don't read it are unaffected.
+                $context['rule'] = $rule;
+
                 $skip = $handler->eligibility($context);
                 if ($skip !== null) {
                     $this->recordLog([

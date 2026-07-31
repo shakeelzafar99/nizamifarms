@@ -1350,6 +1350,40 @@ button[onclick*="switchToShopifyApprovals"] { display: none !important; }
             </div>
         </div>
 
+    {{-- NF (Jul-2026): live WhatsApp-automation strips. A SEASONAL automation
+         (monsoon storage guidelines) is easy to switch on and then forget, so
+         every registry rule with `orders_banner` announces itself here while it
+         is genuinely live (master switch + rule both on). Turn off acts on the
+         rule immediately; ✕ hides it for TODAY only and it returns tomorrow.
+
+         Placed OUTSIDE the sticky header on purpose: the header's contents are
+         re-parented into #nfTopFlex at DOMContentLoaded, and anything sitting
+         next to the status cards gets moved with them. --}}
+    @if(!empty($automationBanners))
+    <div id="nfAutomationBanners" class="px-4 lg:px-6 pt-2 min-w-0"
+         style="display: {{ ($source === 'other' && ($tab ?? 'all') === 'open') ? 'block' : 'none' }};">
+        @foreach($automationBanners as $ab)
+        <div class="nf-auto-banner" data-rule="{{ $ab['key'] }}"
+             style="display:flex;align-items:center;gap:10px;padding:7px 12px;margin-bottom:6px;background:#eff6ff;border:1px solid #bfdbfe;border-left:3px solid #3b82f6;border-radius:8px;font-size:12.5px;color:#1e40af;">
+            <span style="font-size:14px;line-height:1;">{{ $ab['icon'] }}</span>
+            <span style="font-weight:600;">{{ $ab['title'] }}</span>
+            <span style="color:#3b82f6;">— running automatically</span>
+            <span style="margin-left:auto;display:flex;align-items:center;gap:6px;">
+                @if($ab['can_manage'])
+                <button type="button" onclick="nfTurnOffAutomation('{{ $ab['key'] }}', this)"
+                        style="background:#fff;border:1px solid #bfdbfe;color:#1d4ed8;padding:3px 10px;border-radius:6px;font-size:11.5px;font-weight:600;cursor:pointer;">
+                    Turn off
+                </button>
+                @endif
+                <button type="button" onclick="nfDismissAutomationBanner('{{ $ab['key'] }}')"
+                        title="Hide for today — it comes back tomorrow"
+                        style="background:none;border:none;color:#60a5fa;font-size:14px;line-height:1;cursor:pointer;padding:0 2px;">✕</button>
+            </span>
+        </div>
+        @endforeach
+    </div>
+    @endif
+
     <!-- Modern Orders Table Container -->
     {{-- NF UI: dropped max-w-7xl so the table uses the full content width (less horizontal scroll); card is now a flex column that caps its height so pagination is always visible inside it. --}}
     <div class="px-4 lg:px-6 pt-2 pb-6 min-w-0">
@@ -15068,7 +15102,87 @@ function riderBoardShouldShow() {
     return onOpen && window.innerWidth >= 1024;
 }
 
+/* ====== Live WhatsApp-automation strips (Open Orders tab) ======
+   Server-rendered from OrderController::liveAutomationBanners() — no polling.
+   Two independent hide paths:
+     • ✕  = dismissed for TODAY, remembered in localStorage per rule + date, so
+            it returns on the next calendar day (the point of the reminder).
+     • Turn off = actually disables the rule; the strip goes for good because
+            the server stops rendering it on the next load.
+   Visibility follows the Open Orders tab via nfSyncAutomationBanners(), called
+   from the same places the rider board's visibility is updated. */
+function nfAutoBannerToday() {
+    const d = new Date();
+    return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+}
+
+function nfAutoBannerDismissed(key) {
+    try {
+        return localStorage.getItem('nfAutoBannerDismissed:' + key) === nfAutoBannerToday();
+    } catch (e) {
+        return false; // private mode / storage blocked — just show it
+    }
+}
+
+window.nfDismissAutomationBanner = function(key) {
+    try { localStorage.setItem('nfAutoBannerDismissed:' + key, nfAutoBannerToday()); } catch (e) {}
+    nfSyncAutomationBanners();
+};
+
+window.nfTurnOffAutomation = function(key, btn) {
+    if (!confirm('Turn this automation off?\n\nNo further messages will be sent until you switch it back on in Messages → 🤖.')) return;
+    if (btn) { btn.disabled = true; btn.textContent = 'Turning off…'; }
+    fetch('/messages/automations/rules/' + encodeURIComponent(key) + '/enabled', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest', 'X-CSRF-TOKEN': csrf() },
+        credentials: 'same-origin',
+        body: JSON.stringify({ enabled: false })
+    })
+    .then(r => r.json())
+    .then(d => {
+        if (d && d.success) {
+            const row = document.querySelector('.nf-auto-banner[data-rule="' + key + '"]');
+            if (row) row.remove();
+            nfSyncAutomationBanners();
+        } else {
+            alert((d && d.message) || 'Could not turn it off. Try Messages → 🤖.');
+            if (btn) { btn.disabled = false; btn.textContent = 'Turn off'; }
+        }
+    })
+    .catch(() => {
+        alert('Could not turn it off. Try Messages → 🤖.');
+        if (btn) { btn.disabled = false; btn.textContent = 'Turn off'; }
+    });
+};
+
+function nfSyncAutomationBanners() {
+    const host = document.getElementById('nfAutomationBanners');
+    if (!host) return;
+
+    // Same runtime-context read as riderBoardShouldShow() — the default /orders
+    // landing renders Open Orders with no ?source/?tab params, so trust the
+    // globals first. No width test: the strip is one line and fits anywhere.
+    const params = new URLSearchParams(window.location.search);
+    const source = window.currentSource || params.get('source') || 'other';
+    const tab = window.currentTab || params.get('tab') || 'open';
+    const onOpenOrders = (source === 'other' && tab === 'open');
+
+    let visible = 0;
+    host.querySelectorAll('.nf-auto-banner').forEach(row => {
+        const show = onOpenOrders && !nfAutoBannerDismissed(row.dataset.rule);
+        row.style.display = show ? 'flex' : 'none';
+        if (show) visible++;
+    });
+    host.style.display = visible > 0 ? 'block' : 'none';
+}
+
+document.addEventListener('DOMContentLoaded', nfSyncAutomationBanners);
+
 function updateRiderLiveBoardVisibility() {
+    // Keep the automation strips in step with every client-side tab switch
+    // (this runs from updateTabsForOpenOrders / updateTabsForRiders).
+    nfSyncAutomationBanners();
+
     const col = document.getElementById('riderLiveBoardCol');
     if (!col) return;
     var nfc = document.getElementById('nfRiderCards'); // S3: keep the new cards row visible in lockstep with the board
@@ -15704,6 +15818,13 @@ function hideAllCardSections() {
     const statusCards = document.getElementById('openOrdersStatusCards');
     if (ridersCards) ridersCards.style.display = 'none';
     if (statusCards) statusCards.style.display = 'none';
+    // Automation strips are Open-Orders-only. Hidden UNCONDITIONALLY here (not
+    // via nfSyncAutomationBanners) because this runs BEFORE the caller updates
+    // window.currentSource/currentTab, so a context-based check would still read
+    // the old tab and leave the strip on screen. Coming back to Open Orders
+    // re-shows it through updateRiderLiveBoardVisibility().
+    const autoBanners = document.getElementById('nfAutomationBanners');
+    if (autoBanners) autoBanners.style.display = 'none';
     const board = document.getElementById('riderLiveBoardCol');
     if (board) board.style.display = 'none';
     if (_riderBoardInterval) { clearInterval(_riderBoardInterval); _riderBoardInterval = null; }

@@ -8,18 +8,85 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Schema;
-use App\Services\WhatsAppService;
 use App\Services\CampaignFilterService;
+use App\Services\Campaigns\CampaignAccess;
+use App\Services\Campaigns\CampaignSendService;
+use App\Services\Campaigns\CampaignStatsService;
 use App\Models\CRM\CustomerModel;
 use Carbon\Carbon;
 
 class CampaignWebController extends Controller
 {
     protected CampaignFilterService $filterService;
+    protected CampaignSendService $sendService;
+    protected CampaignStatsService $statsService;
+    protected CampaignAccess $access;
 
-    public function __construct(CampaignFilterService $filterService)
-    {
+    public function __construct(
+        CampaignFilterService $filterService,
+        CampaignSendService $sendService,
+        CampaignStatsService $statsService,
+        CampaignAccess $access
+    ) {
         $this->filterService = $filterService;
+        $this->sendService   = $sendService;
+        $this->statsService  = $statsService;
+        $this->access        = $access;
+    }
+
+    /**
+     * Campaigns can start thousands of WhatsApp messages and spend real money,
+     * so the web side now enforces the same permission the mobile app always
+     * has (`view_campaigns`). Until Jul-2026 any signed-in web user could open
+     * the page and send — the sidebar link was hidden, but the routes were not
+     * protected. Mirrors the sidebar's own condition, Taimur role included.
+     */
+    protected function denyIfNotPermitted()
+    {
+        $user = Auth::user();
+        if (!$user) {
+            return response()->json(['success' => false, 'message' => 'Not signed in'], 401);
+        }
+
+        // Same conditions the sidebar uses to show the Campaigns link, so a
+        // visible menu item can never lead to a 403 (or vice-versa).
+        if ($this->access->canView($user)) {
+            return null;
+        }
+
+        return response()->json([
+            'success' => false,
+            'message' => 'You do not have permission to view campaigns.',
+        ], 403);
+    }
+
+    /**
+     * Gate for anything that CHANGES a campaign — create, add customers, send,
+     * pause, refresh dedup, skip, end.
+     *
+     * Separating write from read (Jul-2026) is what lets a view-only analyst
+     * account be given campaign-running rights without being handed write access
+     * to the rest of the operational system. `ReadOnlyGuard` also checks
+     * `manage_campaigns` before it will let a view-only user's POST through, so
+     * the two layers agree.
+     *
+     * Backwards-compatible on purpose: if `manage_campaigns` has not been seeded
+     * yet (code uploaded before the SQL), everyone who can view can still send —
+     * exactly today's behaviour. Otherwise a deploy in the wrong order would
+     * silently stop all campaign sending.
+     */
+    protected function denyIfCannotManage()
+    {
+        if ($deny = $this->denyIfNotPermitted()) return $deny;
+
+        if ($this->access->canManage(Auth::user())) {
+            return null;
+        }
+
+        return response()->json([
+            'success' => false,
+            'message' => 'Your account can view campaigns but not send or change them.',
+        ], 403);
     }
 
     public function index()
@@ -27,24 +94,67 @@ class CampaignWebController extends Controller
         return view('pages.campaigns.index');
     }
 
+    // =====================================================================
+    // Lists / pickers
+    // =====================================================================
+
     public function getCampaigns()
     {
+        if ($deny = $this->denyIfNotPermitted()) return $deny;
+
         $campaigns = DB::table('t_crm_campaigns')
+            // Display name so cards can show "eid bookings" rather than the raw
+            // Cloud API key. LEFT JOIN so a campaign whose template was deleted
+            // still lists.
+            ->leftJoin('t_wa_templates as tpl', 'tpl.name', '=', 't_crm_campaigns.wa_template_name')
             ->select(
                 't_crm_campaigns.*',
-                DB::raw("(SELECT COUNT(*) FROM t_crm_campaign_customers WHERE campaign_id = t_crm_campaigns.id AND status = 'pending') as pending_count"),
-                DB::raw("(SELECT COUNT(*) FROM t_crm_campaign_customers WHERE campaign_id = t_crm_campaigns.id AND status = 'skipped') as skipped_count"),
-                DB::raw("(SELECT COUNT(*) FROM t_crm_campaign_customers WHERE campaign_id = t_crm_campaigns.id AND status = 'failed') as failed_count")
+                'tpl.display_name as template_display_name',
+                DB::raw("(SELECT COUNT(*) FROM t_crm_campaign_customers WHERE campaign_id = t_crm_campaigns.id AND status IN ('pending','sending')) as pending_count"),
+                DB::raw("(SELECT COUNT(*) FROM t_crm_campaign_customers WHERE campaign_id = t_crm_campaigns.id AND status = 'skipped' AND (error_message IS NULL OR error_message NOT LIKE 'Excluded:%')) as skipped_count"),
+                DB::raw("(SELECT COUNT(*) FROM t_crm_campaign_customers WHERE campaign_id = t_crm_campaigns.id AND status = 'skipped' AND error_message LIKE 'Excluded:%') as excluded_count"),
+                DB::raw("(SELECT COUNT(*) FROM t_crm_campaign_customers WHERE campaign_id = t_crm_campaigns.id AND status = 'failed') as failed_count"),
+                // When this campaign last actually messaged someone — lets the
+                // card distinguish live work from a forgotten campaign.
+                DB::raw("(SELECT MAX(sent_at) FROM t_crm_campaign_customers WHERE campaign_id = t_crm_campaigns.id AND status = 'sent') as last_sent_at")
             )
-            ->orderByRaw("FIELD(status, 'active', 'ended')")
-            ->orderBy('created_at', 'desc')
+            ->orderByRaw("FIELD(t_crm_campaigns.status, 'active', 'ended')")
+            ->orderBy('t_crm_campaigns.created_at', 'desc')
             ->get();
 
-        return response()->json(['success' => true, 'campaigns' => $campaigns]);
+        return response()->json([
+            'success'   => true,
+            'campaigns' => $campaigns,
+            'quota'     => $this->quotaPayload(),
+            // Cards dim a campaign that hasn't sent in this long; the threshold
+            // lives on the server so the list and the overview agree.
+            'stale_days' => CampaignStatsService::STALE_DAYS,
+        ]);
+    }
+
+    /**
+     * The campaigns landing view. Answers "how is my messaging doing, and does
+     * anything need me?" — today's WhatsApp allowance, anything sending right
+     * now, per-template results, and a needs-attention list.
+     *
+     * Template results are reachable from here in ONE click; before this they
+     * were two clicks deep (open a campaign, then By Template).
+     */
+    public function overview()
+    {
+        if ($deny = $this->denyIfNotPermitted()) return $deny;
+
+        return response()->json([
+            'success'  => true,
+            'overview' => $this->statsService->overview(),
+            'quota'    => $this->quotaPayload(),
+        ]);
     }
 
     public function getTemplates()
     {
+        if ($deny = $this->denyIfNotPermitted()) return $deny;
+
         $templates = DB::table('t_wa_templates')
             ->where('status', 'approved')
             ->orderBy('display_name')
@@ -55,6 +165,8 @@ class CampaignWebController extends Controller
 
     public function getCities()
     {
+        if ($deny = $this->denyIfNotPermitted()) return $deny;
+
         $cities = DB::table('t_crm_prod_customer')
             ->whereNull('merged_into_customer_id')
             ->whereNotNull('city')
@@ -76,6 +188,8 @@ class CampaignWebController extends Controller
      */
     public function getQurbaniYears()
     {
+        if ($deny = $this->denyIfNotPermitted()) return $deny;
+
         $years = collect();
 
         // Years from current orders (qurbani_day set OR line item with attribute_1=qurbani)
@@ -117,8 +231,32 @@ class CampaignWebController extends Controller
         return response()->json(['success' => true, 'years' => $years]);
     }
 
+    /** Products for the "track specific products" campaign type. */
+    public function getProducts(Request $request)
+    {
+        if ($deny = $this->denyIfNotPermitted()) return $deny;
+
+        $search = trim((string) $request->get('q', ''));
+
+        $q = DB::table('t_crm_prod_product')
+            ->select('id', 'title', 'attribute_1')
+            ->orderBy('title');
+
+        if ($search !== '') {
+            $q->where('title', 'LIKE', "%{$search}%");
+        }
+
+        return response()->json(['success' => true, 'products' => $q->limit(200)->get()]);
+    }
+
+    // =====================================================================
+    // Preview / create / extend
+    // =====================================================================
+
     public function preview(Request $request)
     {
+        if ($deny = $this->denyIfNotPermitted()) return $deny;
+
         $filters = $request->input('filters', []);
         $result = $this->filterService->buildCustomerIdSet($filters);
 
@@ -142,6 +280,8 @@ class CampaignWebController extends Controller
             $alreadySentCount = count($alreadySentIds);
         }
 
+        $netToSend = max(0, count($result['customer_ids']) - $alreadySentCount);
+
         return response()->json([
             'success' => true,
             'count' => count($result['customer_ids']),
@@ -150,12 +290,16 @@ class CampaignWebController extends Controller
             'already_sent_count' => $alreadySentCount,
             // Net customers that will actually be queued as 'pending' if
             // the campaign is created/extended right now.
-            'net_to_send' => max(0, count($result['customer_ids']) - $alreadySentCount),
+            'net_to_send' => $netToSend,
             'dedup_window_days' => $windowDays,
             'wa_template_name' => $template ?: null,
+            // Everything the send dialog needs to set expectations up front:
+            // how many sessions this will take at the proposed batch size, and
+            // whether today's WhatsApp allowance can even cover one.
+            'quota' => $this->quotaPayload(),
+            'no_phone_count' => $this->countWithoutPhone($result['customer_ids']),
         ]);
     }
-
 
     /**
      * Add more customers to an existing active campaign from a filter payload.
@@ -165,6 +309,8 @@ class CampaignWebController extends Controller
      */
     public function addCustomers(Request $request, $id)
     {
+        if ($deny = $this->denyIfCannotManage()) return $deny;
+
         $campaign = DB::table('t_crm_campaigns')->where('id', $id)->first();
         if (!$campaign) {
             return response()->json(['success' => false, 'message' => 'Campaign not found'], 404);
@@ -173,7 +319,10 @@ class CampaignWebController extends Controller
             return response()->json(['success' => false, 'message' => 'Cannot add customers to an ended campaign'], 422);
         }
 
-        $request->validate(['filters' => 'required|array']);
+        $request->validate([
+            'filters' => 'required|array',
+            'dedup_window_days' => 'nullable|integer|min:0|max:365',
+        ]);
 
         $filters = $request->input('filters', []);
         $result = $this->filterService->buildCustomerIdSet($filters);
@@ -211,7 +360,6 @@ class CampaignWebController extends Controller
         // in the window are inserted as status='skipped' with the
         // 'Excluded:' error_message prefix so they land in the Excluded
         // tab rather than Pending. Operator-Skipped stays separate.
-        $request->validate(['dedup_window_days' => 'nullable|integer|min:0|max:365']);
         $windowDays = (int) $request->input('dedup_window_days', 0);
         $templateName = (string) ($campaign->wa_template_name ?: '');
         $alreadySentIds = $this->filterService->customersRecentlySentTemplate($toInsert, $templateName, $windowDays);
@@ -252,20 +400,6 @@ class CampaignWebController extends Controller
                 ->increment('total_customers', count($toInsert), ['updated_at' => now()]);
         }
 
-        // Match the split we return everywhere else so the Add More
-        // modal can show "X newly added (including Y excluded)".
-        $counts = DB::table('t_crm_campaign_customers')
-            ->where('campaign_id', $id)
-            ->selectRaw("
-                COUNT(*) as total,
-                SUM(CASE WHEN status='sent' THEN 1 ELSE 0 END) as sent,
-                SUM(CASE WHEN status='pending' THEN 1 ELSE 0 END) as pending,
-                SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END) as failed,
-                SUM(CASE WHEN status='skipped' AND (error_message IS NULL OR error_message NOT LIKE 'Excluded:%') THEN 1 ELSE 0 END) as skipped,
-                SUM(CASE WHEN status='skipped' AND error_message LIKE 'Excluded:%' THEN 1 ELSE 0 END) as excluded
-            ")
-            ->first();
-
         return response()->json([
             'success' => true,
             // "added" now means rows actually inserted into the campaign
@@ -277,7 +411,7 @@ class CampaignWebController extends Controller
             'matched' => count($candidateIds),
             'excluded_count' => $result['excluded_count'],
             'group_counts' => $result['group_counts'],
-            'counts' => $counts,
+            'counts' => $this->statsService->counts((int) $id),
             'excluded_by_dedup' => $excludedByDedup,
             'dedup_window_days' => $windowDays,
         ]);
@@ -285,11 +419,21 @@ class CampaignWebController extends Controller
 
     public function create(Request $request)
     {
+        if ($deny = $this->denyIfCannotManage()) return $deny;
+
         $request->validate([
             'name' => 'required|string|max:255',
             'wa_template_name' => 'required|string|max:255',
             'filters' => 'required|array',
             'dedup_window_days' => 'nullable|integer|min:0|max:365',
+            // 'general' = any order counts; 'products' = only orders containing
+            // the tracked products; 'app_orders' = only orders placed through
+            // the customer mobile app (the app-install campaign).
+            'tracking_type' => 'nullable|in:general,products,app_orders',
+            'tracking_window_days' => 'nullable|integer|min:1|max:365',
+            'session_limit' => 'nullable|integer|min:1|max:100000',
+            'tracked_product_ids' => 'nullable|array',
+            'tracked_product_ids.*' => 'integer',
         ]);
 
         $filters = $request->input('filters', []);
@@ -317,20 +461,28 @@ class CampaignWebController extends Controller
             ? 'Excluded: already received template "' . $templateName . '" in last ' . $windowDays . ' day' . ($windowDays === 1 ? '' : 's')
             : 'Excluded: recent template send';
 
+        $trackedProducts = $request->input('tracked_product_ids', []);
+
         $campaignId = DB::table('t_crm_campaigns')->insertGetId([
             'name' => $request->input('name'),
             'status' => 'active',
+            'send_state' => 'idle',
+            'send_mode' => 'manual',
             'filters_json' => json_encode($filters),
             'message_template' => $request->input('notes', ''),
             'wa_template_name' => $templateName,
             'wa_template_language' => $request->input('wa_template_language', 'en'),
             'tracking_type' => $request->input('tracking_type', 'general'),
+            'tracked_product_ids' => !empty($trackedProducts) ? json_encode(array_map('intval', $trackedProducts)) : null,
             'tracking_window_days' => $request->input('tracking_window_days', 30),
-            // Persisting the dedup window lets sendBulk() and the
+            // Persisting the dedup window lets the sender and the
             // "Refresh Dedup" action re-check later — the operator's
             // original intent follows the campaign for its whole life.
             // 0 disables the guard entirely (same as today's opt-out).
             'dedup_window_days' => $windowDays,
+            // Remembered per campaign so the send dialog proposes the same
+            // batch size next session instead of making them retype it.
+            'session_limit' => (int) $request->input('session_limit', $this->sendService->defaultSessionLimit()),
             // total_customers reflects every row this campaign knows
             // about (Pending + Excluded). That way the stats on the
             // campaigns list still match what you see inside.
@@ -385,311 +537,246 @@ class CampaignWebController extends Controller
         ]);
     }
 
+    // =====================================================================
+    // Detail
+    // =====================================================================
+
     public function detail(Request $request, $id)
     {
+        if ($deny = $this->denyIfNotPermitted()) return $deny;
+
         $campaign = DB::table('t_crm_campaigns')->where('id', $id)->first();
         if (!$campaign) {
             return response()->json(['success' => false, 'message' => 'Campaign not found'], 404);
         }
 
+        // Same friendly template label the campaign cards show, so the header
+        // and the list can't disagree about what this campaign sends.
+        $campaign->template_display_name = $campaign->wa_template_name
+            ? $this->filterService->lookupTemplateDisplayName($campaign->wa_template_name)
+            : null;
+
         $statusFilter = $request->get('status', 'pending');
+        $page    = max(1, (int) $request->get('page', 1));
+        $perPage = min(500, max(10, (int) $request->get('per_page', 100)));
 
-        $customersQuery = DB::table('t_crm_campaign_customers as cc')
-            ->join('t_crm_prod_customer as c', 'cc.customer_id', '=', 'c.id')
-            ->where('cc.campaign_id', $id)
-            ->select(
-                'cc.id as campaign_customer_id', 'cc.customer_id',
-                'cc.status as campaign_status', 'cc.sent_at', 'cc.sent_by', 'cc.error_message',
-                'cc.replied_at',
-                'c.first_name', 'c.last_name', 'c.phone', 'c.phone_normalized',
-                'c.city', 'c.total_orders', 'c.total_spent', 'c.last_order_date'
-            );
-
-        // Derived Shopify-customer flag for the badge in the campaigns UI.
-        // One EXISTS sub-query per returned row; hits the existing
-        // customer_id index and short-circuits on first match. Same access
-        // pattern as the qurbani_year filter — no new burden.
-        $customersQuery->selectRaw('(' . $this->filterService->shopifyExistsExpr('c') . ') as is_shopify');
-
-        if (Schema::hasColumn('t_crm_campaign_customers', 'match_tags')) {
-            $customersQuery->addSelect('cc.match_tags');
-        }
-
-        // "skipped" and "excluded" both live under status='skipped' — we
-        // split them via the 'Excluded:' error_message prefix set at
-        // insert time by create()/addCustomers(). This keeps the DB
-        // ENUM untouched (no migration) while surfacing a clean
-        // operator vs dedup distinction in the UI.
-        if ($statusFilter === 'excluded') {
-            $customersQuery
-                ->where('cc.status', 'skipped')
-                ->where('cc.error_message', 'LIKE', 'Excluded:%');
-        } elseif ($statusFilter === 'skipped') {
-            $customersQuery
-                ->where('cc.status', 'skipped')
-                ->where(function ($q) {
-                    $q->whereNull('cc.error_message')
-                      ->orWhere('cc.error_message', 'NOT LIKE', 'Excluded:%');
-                });
-        } elseif ($statusFilter !== 'all') {
-            $customersQuery->where('cc.status', $statusFilter);
-        }
-
-        $customersQuery->orderByRaw("FIELD(cc.status, 'pending', 'failed', 'sent', 'skipped')");
-
-        $sortBy = json_decode($campaign->filters_json, true)['sort_by'] ?? 'last_order_date';
-        $sortDir = json_decode($campaign->filters_json, true)['sort_dir'] ?? 'desc';
-        if (in_array($sortBy, ['last_order_date', 'total_spent', 'created_at'])) {
-            $customersQuery->orderBy("c.{$sortBy}", $sortDir);
-        }
-
-        $customers = $customersQuery->get();
-
-        $counts = DB::table('t_crm_campaign_customers')
-            ->where('campaign_id', $id)
-            ->selectRaw("
-                COUNT(*) as total,
-                SUM(CASE WHEN status = 'sent' THEN 1 ELSE 0 END) as sent,
-                SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) as pending,
-                SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) as failed,
-                SUM(CASE WHEN status = 'skipped' AND (error_message IS NULL OR error_message NOT LIKE 'Excluded:%') THEN 1 ELSE 0 END) as skipped,
-                SUM(CASE WHEN status = 'skipped' AND error_message LIKE 'Excluded:%' THEN 1 ELSE 0 END) as excluded
-            ")
-            ->first();
+        // Paginated: the old endpoint returned EVERY row, so opening a
+        // 5,700-recipient campaign shipped the whole list to the browser.
+        $rows = $this->statsService->customerRows((int) $id, $statusFilter, $page, $perPage);
 
         return response()->json([
-            'success' => true,
-            'campaign' => $campaign,
-            'customers' => $customers,
-            'counts' => $counts,
+            'success'      => true,
+            'campaign'     => $campaign,
+            'customers'    => $rows['customers'],
+            'pagination'   => [
+                'page' => $rows['page'], 'per_page' => $rows['per_page'],
+                'total' => $rows['total'], 'pages' => $rows['pages'],
+            ],
+            'counts'       => $this->statsService->counts((int) $id),
+            'eligible'     => $this->sendService->eligibleCount((int) $id),
+            'quota'        => $this->quotaPayload(),
+            'session_limit'=> (int) ($campaign->session_limit ?: $this->sendService->defaultSessionLimit()),
+            'run'          => $campaign->active_run_id ? $this->sendService->runProgress((int) $campaign->active_run_id) : null,
+            'runs'         => $this->statsService->runHistory((int) $id, 10),
         ]);
     }
 
-    public function sendBulk(Request $request, $id)
+    // =====================================================================
+    // Sending
+    // =====================================================================
+
+    /**
+     * The one send endpoint. Called repeatedly by the browser for a foreground
+     * send: each call does a bounded slice of work and reports progress, and the
+     * client keeps calling while stop_reason is 'time_budget'.
+     *
+     * Session accounting lives on the run row, so passing run_id back means the
+     * "first 100" the operator asked for stays 100 no matter how many HTTP calls
+     * it takes to get through them.
+     */
+    public function send(Request $request, $id)
     {
+        if ($deny = $this->denyIfCannotManage()) return $deny;
+
+        $request->validate([
+            'limit'          => 'nullable|integer|min:1|max:100000',
+            'customer_ids'   => 'nullable|array',
+            'customer_ids.*' => 'integer',
+            'include_failed' => 'nullable|boolean',
+            'run_id'         => 'nullable|integer',
+            'body_params'    => 'nullable|array',
+        ]);
+
+        // `limit` is how the operator caps a session. It is optional only so the
+        // legacy /send-bulk alias (an old browser tab mid-send) still behaves:
+        // there we fall back to the explicit selection size, then the campaign's
+        // remembered session limit. A send with no cap at all never happens.
+        $customerIds = $request->input('customer_ids');
+        $limit = (int) $request->input('limit', 0);
+        if ($limit <= 0) {
+            $limit = is_array($customerIds) && !empty($customerIds)
+                ? count($customerIds)
+                : (int) (DB::table('t_crm_campaigns')->where('id', $id)->value('session_limit')
+                         ?: $this->sendService->defaultSessionLimit());
+        }
+
+        $result = $this->sendService->sendBatch((int) $id, [
+            'limit'          => $limit,
+            'customer_ids'   => $customerIds,
+            'include_failed' => (bool) $request->input('include_failed', false),
+            'mode'           => 'manual',
+            'user_id'        => Auth::id(),
+            'run_id'         => $request->input('run_id'),
+            'body_params'    => $request->input('body_params'),
+        ]);
+
+        if (!($result['ok'] ?? false)) {
+            return response()->json([
+                'success' => false,
+                'busy'    => $result['busy'] ?? false,
+                'message' => $result['message'] ?? 'Send failed',
+            ], ($result['busy'] ?? false) ? 409 : 422);
+        }
+
+        // A foreground session that has finished should not leave the campaign
+        // looking like it is mid-run.
+        if (($result['stop_reason'] ?? null) !== 'time_budget' && !empty($result['run_id'])) {
+            $this->sendService->finishRun((int) $result['run_id'], (string) $result['stop_reason']);
+            DB::table('t_crm_campaigns')->where('id', $id)->update([
+                'active_run_id' => null,
+                'send_paused_reason' => $result['message'] ?? null,
+                'updated_at' => now(),
+            ]);
+        }
+
+        return response()->json([
+            'success'  => true,
+            'results'  => [
+                'sent' => $result['sent'], 'failed' => $result['failed'],
+                'excluded' => $result['excluded'], 'attempted' => $result['attempted'],
+                'errors' => $result['errors'],
+            ],
+            'run_id'      => $result['run_id'] ?? null,
+            'stop_reason' => $result['stop_reason'] ?? null,
+            'message'     => $result['message'] ?? null,
+            'remaining'   => $result['remaining'] ?? null,
+            'quota'       => $result['quota'] ?? $this->quotaPayload(),
+            'counts'      => $this->statsService->counts((int) $id),
+            'run'         => !empty($result['run_id']) ? $this->sendService->runProgress((int) $result['run_id']) : null,
+        ]);
+    }
+
+    /**
+     * Hand this campaign to the background worker. The operator can close the
+     * browser; campaigns:send-process finishes the session on the schedule.
+     */
+    public function sendBackground(Request $request, $id)
+    {
+        if ($deny = $this->denyIfCannotManage()) return $deny;
+
+        $request->validate(['limit' => 'required|integer|min:1|max:100000']);
+
         $campaign = DB::table('t_crm_campaigns')->where('id', $id)->where('status', 'active')->first();
         if (!$campaign) {
             return response()->json(['success' => false, 'message' => 'Campaign not found or ended'], 404);
         }
-
-        $templateName = $campaign->wa_template_name;
-        if (!$templateName) {
+        if (!$campaign->wa_template_name) {
             return response()->json(['success' => false, 'message' => 'No WhatsApp template configured'], 422);
         }
+        if ($campaign->send_state === 'running') {
+            return response()->json(['success' => false, 'message' => 'This campaign is already sending in the background.'], 409);
+        }
 
-        $request->validate([
-            'customer_ids' => 'required|array|min:1',
-            'customer_ids.*' => 'integer',
-            'include_failed' => 'nullable|boolean',
+        $eligible = $this->sendService->eligibleCount((int) $id);
+        if ($eligible <= 0) {
+            return response()->json(['success' => false, 'message' => 'No one left to send to.'], 422);
+        }
+
+        $limit = min((int) $request->input('limit'), $eligible);
+        $runId = $this->sendService->startRun((int) $id, $limit, 'background', Auth::id());
+
+        DB::table('t_crm_campaigns')->where('id', $id)->update([
+            'send_state'         => 'running',
+            'send_mode'          => 'background',
+            'active_run_id'      => $runId,
+            'session_limit'      => $limit,
+            'send_paused_reason' => null,
+            'updated_at'         => now(),
         ]);
 
-        $customerIds = $request->input('customer_ids');
-        $language = $campaign->wa_template_language ?: 'en';
-        // When include_failed=true (retry flow), we accept failed rows too and reset them
-        // back to pending on success. Default is pending-only for the normal send path.
-        $includeFailed = (bool) $request->input('include_failed', false);
-        $eligibleStatuses = $includeFailed ? ['pending', 'failed'] : ['pending'];
-
-        // Look up the template's expected variable_count once so we can size body_params
-        // exactly right per customer. Templates with 0 variables (e.g. marketing broadcasts)
-        // must receive NO body params, otherwise Meta returns error #132000.
-        $templateMeta = DB::table('t_wa_templates')->where('name', $templateName)->first();
-        $expectedVarCount = $templateMeta ? (int) $templateMeta->variable_count : null;
-
-        $customers = DB::table('t_crm_campaign_customers as cc')
-            ->join('t_crm_prod_customer as c', 'cc.customer_id', '=', 'c.id')
-            ->where('cc.campaign_id', $id)
-            ->whereIn('cc.status', $eligibleStatuses)
-            ->whereIn('cc.customer_id', $customerIds)
-            ->select('cc.customer_id', 'c.first_name', 'c.last_name', 'c.phone', 'c.phone_normalized', 'cc.status as prev_status')
-            ->get();
-
-        if ($customers->isEmpty()) {
-            $label = $includeFailed ? 'pending or failed' : 'pending';
-            return response()->json(['success' => false, 'message' => "No {$label} customers found"], 422);
-        }
-
-        // Send-time dedup guard. Even though we dedup at create/add time,
-        // an older campaign can still have 'pending' customers who have
-        // since received the same template via a newer campaign. Without
-        // this re-check, hitting Send Bulk would message them again.
-        //
-        // We run ONE query for the whole batch (cheap) and auto-move
-        // matching rows to status='skipped' with the 'Excluded:' prefix,
-        // so they surface in the Excluded tab consistently with create
-        // time and can be audited. Operator doesn't need to remember to
-        // click Refresh Dedup first.
-        //
-        // Controlled by the campaign's own dedup_window_days — if that
-        // is 0 (opt-out or legacy campaign) we short-circuit and behave
-        // exactly like before.
-        $dedupWindow = (int) ($campaign->dedup_window_days ?? 0);
-        $sendTimeExcluded = 0;
-        if ($dedupWindow > 0 && $templateName !== '') {
-            $batchIds = $customers->pluck('customer_id')->map(fn($v) => (int) $v)->all();
-            $nowExcludedIds = $this->filterService->customersRecentlySentTemplate(
-                $batchIds,
-                $templateName,
-                $dedupWindow
-            );
-            if (!empty($nowExcludedIds)) {
-                $excludedSet = array_flip($nowExcludedIds);
-                $reason = 'Excluded: already received template "' . $templateName . '" in last '
-                    . $dedupWindow . ' day' . ($dedupWindow === 1 ? '' : 's');
-
-                // Persist the auto-exclusion before filtering the
-                // working set so the UI reflects it on next refresh.
-                DB::table('t_crm_campaign_customers')
-                    ->where('campaign_id', $id)
-                    ->whereIn('customer_id', $nowExcludedIds)
-                    ->whereIn('status', $eligibleStatuses)
-                    ->update(['status' => 'skipped', 'error_message' => $reason, 'sent_at' => null]);
-
-                $customers = $customers->reject(fn($c) => isset($excludedSet[(int) $c->customer_id]))->values();
-                $sendTimeExcluded = count($nowExcludedIds);
-
-                \Log::info('Campaign bulk send: dedup guard auto-excluded customers', [
-                    'campaign_id' => $id,
-                    'template' => $templateName,
-                    'window_days' => $dedupWindow,
-                    'excluded' => $sendTimeExcluded,
-                ]);
-            }
-        }
-
-        if ($customers->isEmpty()) {
-            // Everybody in the selection was auto-excluded by the guard.
-            // Return success:true with excluded count so the UI can show
-            // a friendly "N customers moved to Excluded (already received
-            // the template recently); nothing was sent" message.
-            $counts = DB::table('t_crm_campaign_customers')
-                ->where('campaign_id', $id)
-                ->selectRaw("
-                    COUNT(*) as total,
-                    SUM(CASE WHEN status='sent' THEN 1 ELSE 0 END) as sent,
-                    SUM(CASE WHEN status='pending' THEN 1 ELSE 0 END) as pending,
-                    SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END) as failed,
-                    SUM(CASE WHEN status='skipped' AND (error_message IS NULL OR error_message NOT LIKE 'Excluded:%') THEN 1 ELSE 0 END) as skipped,
-                    SUM(CASE WHEN status='skipped' AND error_message LIKE 'Excluded:%' THEN 1 ELSE 0 END) as excluded
-                ")
-                ->first();
-            return response()->json([
-                'success' => true,
-                'results' => ['sent' => 0, 'failed' => 0, 'excluded' => $sendTimeExcluded, 'errors' => []],
-                'counts' => $counts,
-            ]);
-        }
-
-        $whatsapp = app(WhatsAppService::class);
-        $results = ['sent' => 0, 'failed' => 0, 'excluded' => $sendTimeExcluded, 'errors' => []];
-
-        // NF: small inter-message delay to keep Meta happy on larger batches.
-        // Meta's WhatsApp Business Cloud API tolerates short bursts but can
-        // throttle (error 131056 / 80007) when many templates are fired in
-        // quick succession. 200ms paces us to ~5 req/s which is well inside
-        // Meta's published guidance for template sends. We only sleep when
-        // there's more than one customer in this sub-batch (single sends
-        // and first-in-batch run immediately).
-        $total = count($customers);
-        $paceMicros = $total > 1 ? 200_000 : 0;
-        $index = 0;
-
-        \Log::info('Campaign bulk send: starting batch', [
-            'campaign_id' => $id,
-            'template' => $templateName,
-            'batch_size' => $total,
-            'include_failed' => $includeFailed,
+        Log::info('Campaign background send started', [
+            'campaign_id' => $id, 'run_id' => $runId, 'target' => $limit, 'user_id' => Auth::id(),
         ]);
 
-        foreach ($customers as $customer) {
-            // Pace between API calls (skip the delay before the very first one).
-            if ($paceMicros && $index > 0) {
-                usleep($paceMicros);
-            }
-            $index++;
-
-            $phone = $customer->phone_normalized ?: $customer->phone;
-            if (!$phone) {
-                DB::table('t_crm_campaign_customers')
-                    ->where('campaign_id', $id)->where('customer_id', $customer->customer_id)
-                    ->update(['status' => 'failed', 'error_message' => 'No phone number']);
-                $results['failed']++;
-                continue;
-            }
-
-            try {
-                // Dial-resolve (known-number override; no-op for PK numbers).
-                $formattedPhone = $whatsapp->resolveDialPhone((string) $phone);
-                $customerName = trim(($customer->first_name ?? '') . ' ' . ($customer->last_name ?? ''));
-                $bodyParams = $request->input('body_params', []);
-                $resolvedParams = array_map(fn($p) => $p === '{{customer_name}}' ? $customerName : $p, $bodyParams);
-
-                // Normalise the parameter array to match the template's real variable_count.
-                // This protects us when the caller sends a {{customer_name}} placeholder for
-                // every template (old default) even if the template itself declares 0 or N vars.
-                if ($expectedVarCount !== null) {
-                    if (count($resolvedParams) > $expectedVarCount) {
-                        $resolvedParams = array_slice($resolvedParams, 0, $expectedVarCount);
-                    }
-                    while (count($resolvedParams) < $expectedVarCount) {
-                        $resolvedParams[] = $customerName;
-                    }
-                }
-
-                $response = $whatsapp->sendTemplateMessage($formattedPhone, $templateName, $language, $resolvedParams);
-
-                if ($response['success'] ?? false) {
-                    DB::table('t_crm_campaign_customers')
-                        ->where('campaign_id', $id)->where('customer_id', $customer->customer_id)
-                        ->update(['status' => 'sent', 'sent_at' => now(), 'sent_by' => Auth::id(), 'error_message' => null]);
-                    // Only bump sent_count when we're transitioning from a non-sent state,
-                    // so retrying a failed row still increments (retry = failed -> sent).
-                    DB::table('t_crm_campaigns')->where('id', $id)->increment('sent_count');
-                    $results['sent']++;
-
-                    $conversation = $whatsapp->findOrCreateConversation($formattedPhone);
-                    if (!$conversation->customer_id) {
-                        $conversation->update(['customer_id' => $customer->customer_id]);
-                    }
-                    $whatsapp->saveOutboundMessage($conversation->id, $response, 'template', "Campaign: {$campaign->name}", Auth::id(), $templateName, $resolvedParams);
-                } else {
-                    $error = $response['error'] ?? 'API send failed';
-                    DB::table('t_crm_campaign_customers')
-                        ->where('campaign_id', $id)->where('customer_id', $customer->customer_id)
-                        ->update(['status' => 'failed', 'error_message' => mb_substr($error, 0, 500)]);
-                    $results['failed']++;
-                    $results['errors'][] = ['customer_id' => $customer->customer_id, 'name' => $customerName, 'error' => $error];
-                }
-            } catch (\Exception $e) {
-                $error = $e->getMessage();
-                DB::table('t_crm_campaign_customers')
-                    ->where('campaign_id', $id)->where('customer_id', $customer->customer_id)
-                    ->update(['status' => 'failed', 'error_message' => mb_substr($error, 0, 500)]);
-                $results['failed']++;
-            }
-        }
-
-        $counts = DB::table('t_crm_campaign_customers')
-            ->where('campaign_id', $id)
-            ->selectRaw("
-                COUNT(*) as total,
-                SUM(CASE WHEN status='sent' THEN 1 ELSE 0 END) as sent,
-                SUM(CASE WHEN status='pending' THEN 1 ELSE 0 END) as pending,
-                SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END) as failed,
-                SUM(CASE WHEN status='skipped' AND (error_message IS NULL OR error_message NOT LIKE 'Excluded:%') THEN 1 ELSE 0 END) as skipped,
-                SUM(CASE WHEN status='skipped' AND error_message LIKE 'Excluded:%' THEN 1 ELSE 0 END) as excluded
-            ")
-            ->first();
-
-        \Log::info('Campaign bulk send: batch finished', [
-            'campaign_id' => $id,
-            'template' => $templateName,
-            'sent' => $results['sent'],
-            'failed' => $results['failed'],
+        return response()->json([
+            'success' => true,
+            'run_id'  => $runId,
+            'target'  => $limit,
+            'message' => "Started in the background — {$limit} message" . ($limit === 1 ? '' : 's')
+                . " will go out over the next few minutes. You can close this page.",
+            'background_enabled' => $this->sendService->backgroundEnabled(),
         ]);
-
-        return response()->json(['success' => true, 'results' => $results, 'counts' => $counts]);
     }
+
+    /** Stop a background run (recipients stay Pending). */
+    public function sendPause(Request $request, $id)
+    {
+        if ($deny = $this->denyIfCannotManage()) return $deny;
+
+        $campaign = DB::table('t_crm_campaigns')->where('id', $id)->first();
+        if (!$campaign) {
+            return response()->json(['success' => false, 'message' => 'Campaign not found'], 404);
+        }
+
+        if ($campaign->active_run_id) {
+            $this->sendService->finishRun((int) $campaign->active_run_id, 'operator_paused');
+        }
+
+        DB::table('t_crm_campaigns')->where('id', $id)->update([
+            'send_state'         => 'idle',
+            'active_run_id'      => null,
+            'send_paused_reason' => 'Paused by you — nobody else was messaged.',
+            'updated_at'         => now(),
+        ]);
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Paused. Everyone not yet messaged is still Pending.',
+            'counts'  => $this->statsService->counts((int) $id),
+        ]);
+    }
+
+    /** Live progress for a background run — polled by the detail panel. */
+    public function sendStatus(Request $request, $id)
+    {
+        if ($deny = $this->denyIfNotPermitted()) return $deny;
+
+        $campaign = DB::table('t_crm_campaigns')->where('id', $id)->first();
+        if (!$campaign) {
+            return response()->json(['success' => false, 'message' => 'Campaign not found'], 404);
+        }
+
+        return response()->json([
+            'success'       => true,
+            'send_state'    => $campaign->send_state,
+            'send_mode'     => $campaign->send_mode,
+            'paused_reason' => $campaign->send_paused_reason,
+            'run'           => $campaign->active_run_id ? $this->sendService->runProgress((int) $campaign->active_run_id) : null,
+            'counts'        => $this->statsService->counts((int) $id),
+            'eligible'      => $this->sendService->eligibleCount((int) $id),
+            'quota'         => $this->quotaPayload(),
+        ]);
+    }
+
+    public function quota()
+    {
+        if ($deny = $this->denyIfNotPermitted()) return $deny;
+        return response()->json(['success' => true, 'quota' => $this->quotaPayload()]);
+    }
+
+    // =====================================================================
+    // Dedup / lifecycle
+    // =====================================================================
 
     /**
      * Manual "Refresh Dedup" action. Re-evaluates every pending row in
@@ -698,19 +785,13 @@ class CampaignWebController extends Controller
      * newly-matching rows into status='skipped' with the 'Excluded:'
      * prefix so they surface in the Excluded tab.
      *
-     * Rationale: create()/addCustomers() only dedup at insert time. A
-     * pending customer may later receive the same template via a newer
-     * campaign, so without this the stale pending list would still
-     * message them when the operator hits Send Bulk. sendBulk() has its
-     * own guard for safety, but surfacing this manually before sending
-     * lets operators see the up-to-date numbers and re-decide who to
-     * target.
-     *
      * Idempotent + safe on campaigns without dedup configured
      * (window=0 or no template) — returns moved=0 and a hint message.
      */
     public function refreshDedup(Request $request, $id)
     {
+        if ($deny = $this->denyIfCannotManage()) return $deny;
+
         $campaign = DB::table('t_crm_campaigns')->where('id', $id)->first();
         if (!$campaign) {
             return response()->json(['success' => false, 'message' => 'Campaign not found'], 404);
@@ -758,19 +839,7 @@ class CampaignWebController extends Controller
             }
         }
 
-        $counts = DB::table('t_crm_campaign_customers')
-            ->where('campaign_id', $id)
-            ->selectRaw("
-                COUNT(*) as total,
-                SUM(CASE WHEN status='sent' THEN 1 ELSE 0 END) as sent,
-                SUM(CASE WHEN status='pending' THEN 1 ELSE 0 END) as pending,
-                SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END) as failed,
-                SUM(CASE WHEN status='skipped' AND (error_message IS NULL OR error_message NOT LIKE 'Excluded:%') THEN 1 ELSE 0 END) as skipped,
-                SUM(CASE WHEN status='skipped' AND error_message LIKE 'Excluded:%' THEN 1 ELSE 0 END) as excluded
-            ")
-            ->first();
-
-        \Log::info('Campaign dedup refresh', [
+        Log::info('Campaign dedup refresh', [
             'campaign_id' => $id,
             'template'    => $templateName,
             'window_days' => $windowDays,
@@ -784,106 +853,125 @@ class CampaignWebController extends Controller
             'pending_scanned' => count($pendingIds),
             'dedup_window_days' => $windowDays,
             'wa_template_name'  => $templateName,
-            'counts' => $counts,
+            'counts' => $this->statsService->counts((int) $id),
         ]);
     }
 
     public function end(Request $request, $id)
     {
+        if ($deny = $this->denyIfCannotManage()) return $deny;
+
+        $campaign = DB::table('t_crm_campaigns')->where('id', $id)->first();
+        if ($campaign && $campaign->active_run_id) {
+            $this->sendService->finishRun((int) $campaign->active_run_id, 'campaign_ended');
+        }
+
         DB::table('t_crm_campaigns')->where('id', $id)->update([
             'status' => 'ended', 'ended_at' => now(), 'updated_at' => now(),
+            // Ending a campaign must also stop the background worker, or it
+            // would keep messaging people for a campaign the operator closed.
+            'send_state' => 'idle', 'active_run_id' => null,
         ]);
+
         return response()->json(['success' => true]);
     }
 
     public function skip(Request $request, $id, $customerId)
     {
+        if ($deny = $this->denyIfCannotManage()) return $deny;
+
         // Operator-skipped rows deliberately leave error_message NULL
         // so the campaign detail view's 'Excluded:' LIKE check excludes
         // them — they land in the Skipped tab, not the Excluded tab.
         DB::table('t_crm_campaign_customers')
-            ->where('campaign_id', $id)->where('customer_id', $customerId)->where('status', 'pending')
-            ->update(['status' => 'skipped']);
+            ->where('campaign_id', $id)->where('customer_id', $customerId)
+            ->whereIn('status', ['pending', 'sending'])
+            ->update(['status' => 'skipped', 'claimed_at' => null]);
 
-        $counts = DB::table('t_crm_campaign_customers')
-            ->where('campaign_id', $id)
-            ->selectRaw("
-                COUNT(*) as total,
-                SUM(CASE WHEN status='sent' THEN 1 ELSE 0 END) as sent,
-                SUM(CASE WHEN status='pending' THEN 1 ELSE 0 END) as pending,
-                SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END) as failed,
-                SUM(CASE WHEN status='skipped' AND (error_message IS NULL OR error_message NOT LIKE 'Excluded:%') THEN 1 ELSE 0 END) as skipped,
-                SUM(CASE WHEN status='skipped' AND error_message LIKE 'Excluded:%' THEN 1 ELSE 0 END) as excluded
-            ")
-            ->first();
-
-        return response()->json(['success' => true, 'counts' => $counts]);
+        return response()->json(['success' => true, 'counts' => $this->statsService->counts((int) $id)]);
     }
+
+    // =====================================================================
+    // Results
+    // =====================================================================
 
     public function stats(Request $request, $id)
     {
-        $campaign = DB::table('t_crm_campaigns')->where('id', $id)->first();
-        if (!$campaign) {
+        if ($deny = $this->denyIfNotPermitted()) return $deny;
+
+        $stats = $this->statsService->forCampaign((int) $id);
+        if (!$stats) {
             return response()->json(['success' => false, 'message' => 'Campaign not found'], 404);
         }
 
-        $trackingDays = $campaign->tracking_window_days ?: 30;
-        $sentCustomers = DB::table('t_crm_campaign_customers')
-            ->where('campaign_id', $id)
-            ->where('status', 'sent')
-            ->get();
+        return response()->json(['success' => true, 'stats' => $stats]);
+    }
 
-        $totalSent = $sentCustomers->count();
-        $customersWhoOrdered = 0;
-        $customersWhoReplied = 0;
-        $totalRevenue = 0;
-        $customerDetails = [];
+    /**
+     * Results grouped by TEMPLATE: every campaign that used it, each with its
+     * own funnel, plus one combined funnel counting each customer once.
+     *
+     * Answers two different questions at the same time — "how did each campaign
+     * do?" and "how does this template perform?" — which is exactly why the
+     * combined block deduplicates instead of summing the campaigns.
+     */
+    public function byTemplate(Request $request)
+    {
+        if ($deny = $this->denyIfNotPermitted()) return $deny;
 
-        foreach ($sentCustomers as $cc) {
-            $orders = DB::table('t_crm_prod_order')
-                ->where('customer_id', $cc->customer_id)
-                ->where('order_date', '>', $cc->sent_at)
-                ->where('order_date', '<=', Carbon::parse($cc->sent_at)->addDays($trackingDays))
-                ->whereIn('order_status', ['delivered', 'completed'])
-                ->get();
+        $template = trim((string) $request->get('template', ''));
 
-            $orderCount = $orders->count();
-            $revenue = $orders->sum('total_price');
-            if ($orderCount > 0) {
-                $customersWhoOrdered++;
-                $totalRevenue += $revenue;
-            }
-
-            $replied = !empty($cc->replied_at);
-            if ($replied) $customersWhoReplied++;
-
-            $cust = DB::table('t_crm_prod_customer')->where('id', $cc->customer_id)->select('first_name', 'last_name')->first();
-            $customerDetails[] = [
-                'customer_id' => (int) $cc->customer_id,
-                'name' => $cust ? trim($cust->first_name . ' ' . $cust->last_name) : 'Unknown',
-                'ordered' => $orderCount > 0,
-                'order_count' => $orderCount,
-                'revenue' => $revenue,
-                'replied' => $replied,
-                'replied_at' => $cc->replied_at,
-            ];
+        if ($template === '') {
+            return response()->json([
+                'success'   => true,
+                'templates' => $this->statsService->templatesWithCampaigns(),
+                'result'    => null,
+            ]);
         }
 
         return response()->json([
-            'success' => true,
-            'stats' => [
-                'total_sent' => $totalSent,
-                'customers_who_ordered' => $customersWhoOrdered,
-                'conversion_rate' => $totalSent > 0 ? round(($customersWhoOrdered / $totalSent) * 100, 1) : 0,
-                'customers_who_replied' => $customersWhoReplied,
-                'reply_rate' => $totalSent > 0 ? round(($customersWhoReplied / $totalSent) * 100, 1) : 0,
-                'total_revenue' => round($totalRevenue, 2),
-                'tracking_window_days' => $trackingDays,
-                'customer_details' => $customerDetails,
-            ],
+            'success'   => true,
+            'templates' => $this->statsService->templatesWithCampaigns(),
+            'result'    => $this->statsService->forTemplate($template),
         ]);
     }
 
-    // All filter logic now lives in App\Services\CampaignFilterService so the
-    // mobile RiderController stays in lockstep with the web controller.
+    // =====================================================================
+    // Helpers
+    // =====================================================================
+
+    protected function quotaPayload(): array
+    {
+        $q = $this->sendService->quota();
+        return [
+            'cap'        => $q['cap'],
+            'used'       => $q['used'],
+            'remaining'  => $q['unlimited'] ? null : $q['remaining'],
+            'unlimited'  => $q['unlimited'],
+            'window'     => $q['window'],
+            'default_session_limit' => $this->sendService->defaultSessionLimit(),
+            'background_enabled'    => $this->sendService->backgroundEnabled(),
+        ];
+    }
+
+    /**
+     * How many of the matched customers have no phone number. They can never
+     * receive a WhatsApp message, so telling the operator up front beats letting
+     * them discover it as a pile of "No phone number" failures.
+     */
+    protected function countWithoutPhone(array $customerIds): int
+    {
+        if (empty($customerIds)) return 0;
+
+        return (int) DB::table('t_crm_prod_customer')
+            ->whereIn('id', $customerIds)
+            ->where(function ($q) {
+                $q->where(function ($w) {
+                    $w->whereNull('phone_normalized')->orWhere('phone_normalized', '');
+                })->where(function ($w) {
+                    $w->whereNull('phone')->orWhere('phone', '');
+                });
+            })
+            ->count();
+    }
 }

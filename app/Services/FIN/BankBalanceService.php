@@ -110,6 +110,66 @@ class BankBalanceService
     }
 
     /**
+     * Net tagged movement per bank for rows dated on/after $sinceDate, ignoring each bank's own
+     * opening date. Same CASE rule as balancesByBank() so the two can be composed.
+     *
+     * Used by the rebalance: a bank's baseline has to be the figure the owner typed MINUS whatever
+     * is already on the books for that same day, or the day's movements are counted twice (the
+     * typed statement balance already contains them).
+     *
+     * @return array<int,float> keyed by t_fin_online_receiving_accounts.id
+     */
+    public function netsSince(string $sinceDate): array
+    {
+        $onlineIds = $this->onlineAccountIds();
+        if (empty($onlineIds)) {
+            return [];
+        }
+        $in = implode(',', array_map('intval', $onlineIds));
+        $statuses = "'" . implode("','", self::APPROVED_STATUSES) . "'";
+
+        $rows = DB::select(
+            "SELECT l.receiving_account_id AS bank_id,
+                    COALESCE(SUM(CASE WHEN l.to_account_id IN ($in) AND l.from_account_id IN ($in) THEN 0
+                                      WHEN l.to_account_id IN ($in) THEN l.amount
+                                      WHEN l.from_account_id IN ($in) THEN -l.amount
+                                      ELSE 0 END), 0) AS net
+             FROM t_fin_ledger l
+             WHERE l.approval_status IN ($statuses)
+               AND l.receiving_account_id IS NOT NULL
+               AND l.transaction_date >= ?
+             GROUP BY l.receiving_account_id",
+            [$sinceDate]
+        );
+
+        $out = [];
+        foreach ($rows as $r) {
+            $out[(int) $r->bank_id] = (float) $r->net;
+        }
+
+        // Manual ⚖ fixes count towards a bank's balance exactly like tagged movements do (see
+        // balancesByBank), so "what already contributes from this date" MUST include them. Leaving
+        // them out made a same-day fix survive a rebalance uncancelled — the bank then settled a
+        // fix-sized distance away from the figure that was typed, re-opening the recon gap.
+        try {
+            $adj = DB::select(
+                "SELECT receiving_account_id AS bank_id, COALESCE(SUM(amount), 0) AS net
+                 FROM t_fin_bank_balance_adjustment
+                 WHERE adjustment_date >= ?
+                 GROUP BY receiving_account_id",
+                [$sinceDate]
+            );
+            foreach ($adj as $r) {
+                $out[(int) $r->bank_id] = ($out[(int) $r->bank_id] ?? 0.0) + (float) $r->net;
+            }
+        } catch (\Throwable $e) {
+            // Table not created yet — nothing to cancel.
+        }
+
+        return $out;
+    }
+
+    /**
      * Optional "start tracking the No-bank bucket from" date (config). Lets the
      * owner ignore the large pre-go-live untagged history and watch only leaks
      * since a chosen date. Null = count all history.

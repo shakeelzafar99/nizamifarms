@@ -124,5 +124,19 @@ Schedule::command('location:auto-process')
     ->withoutOverlapping(2)
     ->runInBackground();
 
+// Jul-2026 — Background campaign sender.
+// Drains campaigns the operator started with "Send in background", so a large
+// WhatsApp campaign finishes without anyone keeping a browser tab open. Each
+// tick sends one bounded slice (~25s) of ONE campaign, taking turns between
+// campaigns, and re-checks the WhatsApp daily tier cap every time. Costs a
+// couple of config lookups per minute when nothing is running; the master
+// switch (t_fin_config wa_campaign_auto_send = 0) makes it a hard no-op.
+// The command owns its own 55s Cache lock, so withoutOverlapping is belt-and-
+// braces rather than the real guard.
+Schedule::command('campaigns:send-process')
+    ->everyMinute()
+    ->withoutOverlapping(2)
+    ->runInBackground();
+
 // Rider Reports are computed REAL-TIME on open (RiderReportsController) — no
 // scheduled job, no stored tables, so there is no staleness to reconcile.

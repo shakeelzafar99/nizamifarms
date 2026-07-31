@@ -863,6 +863,13 @@ class AssistantDraftService
                 ]);
         }
 
+        // A payment recorded from CHAT usually has a bank SMS for the very same
+        // transaction sitting unsorted in the money inbox (Taimur typed it out
+        // instead of tapping the SMS). Adopt that SMS onto this draft so it
+        // leaves the to-sort pile — and so the remember-prompt below can offer
+        // its account key. Conservative: exact bank + amount, one candidate only.
+        $this->adoptMatchingSms($draftId, $draft->type, $payload, $user);
+
         // "Save this for next time?" — when the confirmed draft came from a bank
         // SMS whose counterparty isn't mapped yet, offer to remember the account
         // → entity link so the next SMS from it is recognized automatically.
@@ -873,6 +880,86 @@ class AssistantDraftService
         }
 
         return $result;
+    }
+
+    /**
+     * Link a just-confirmed money-OUT draft to the bank SMS that describes the
+     * same transaction, when the draft did not come from an SMS in the first
+     * place (i.e. Taimur recorded it by typing in the chat).
+     *
+     * WHY: the SMS inbox and the chat never spoke to each other, so every
+     * chat-recorded bank payment left its own SMS sitting in "needs sorting"
+     * forever (observed in prod: the Jul-27 Imran Qureshi payment was recorded
+     * from chat while its Meezan SMS stayed unsorted). Adopting the SMS both
+     * clears the pile AND lets rememberPromptFor() offer that SMS's account key
+     * — so a typed payment still teaches the system the vendor's account.
+     *
+     * SAFETY — this only ever re-labels an SMS row; it moves no money and posts
+     * nothing. It still refuses unless the match is unambiguous:
+     *   • money-out drafts only (expense / vendor_payment),
+     *   • the draft must have a receiving bank — a CASH payment has no bank SMS,
+     *     and `receiving_account_id` is present in the payload only when the
+     *     paying source was a bank account,
+     *   • same bank, amount within Rs 1,
+     *   • the SMS landed within a day either side of the date the payment is
+     *     BOOKED FOR — not of "now". Taimur routinely records a payment a day
+     *     or two after making it (a now()-anchored window silently missed the
+     *     real Jul-27 Imran payment when confirmed on Jul-29),
+     *   • EXACTLY ONE candidate. Two same-amount debits on the same bank in
+     *     that span is precisely where a wrong guess would mislabel a vendor,
+     *     so ambiguity does nothing and the rows stay in the inbox for the
+     *     human. Widening the window therefore fails safe: more ambiguity means
+     *     more no-ops, never more wrong guesses.
+     */
+    private function adoptMatchingSms(int $draftId, string $draftType, array $payload, $user): void
+    {
+        try {
+            if (!in_array($draftType, ['expense', 'vendor_payment', 'account_transfer'], true)) {
+                return;
+            }
+            $bankId = (int) ($payload['receiving_account_id'] ?? 0);
+            $amount = (float) ($payload['amount'] ?? 0);
+            if ($bankId <= 0 || $amount <= 0) {
+                return; // cash payment (no bank SMS exists) or nothing to match
+            }
+            // Already SMS-originated → it has its SMS; never steal a second one.
+            if (DB::table('t_ai_bank_sms')->where('linked_draft_id', $draftId)->exists()) {
+                return;
+            }
+
+            // vendor_payment carries transaction_date, expense carries
+            // expense_date; both are 'Y-m-d'. Fall back to today.
+            $anchor = $payload['transaction_date'] ?? $payload['expense_date'] ?? null;
+            try {
+                $anchor = $anchor ? \Illuminate\Support\Carbon::parse($anchor) : now();
+            } catch (\Throwable) {
+                $anchor = now();
+            }
+
+            $candidates = DB::table('t_ai_bank_sms')
+                ->where('user_id', $user->id)
+                ->where('status', 'new')
+                ->whereIn('direction', ['debit', 'unknown'])
+                ->where('receiving_account_id', $bankId)
+                ->whereRaw('ABS(COALESCE(amount,0) - ?) <= 1', [$amount])
+                ->where('sms_at', '>=', $anchor->copy()->subDay()->startOfDay())
+                ->where('sms_at', '<=', $anchor->copy()->addDay()->endOfDay())
+                ->limit(2)
+                ->get(['id']);
+
+            if ($candidates->count() !== 1) {
+                return;
+            }
+
+            DB::table('t_ai_bank_sms')->where('id', $candidates->first()->id)->update([
+                'status'          => 'recorded',
+                'linked_draft_id' => $draftId,
+                'updated_at'      => now(),
+            ]);
+        } catch (\Throwable $e) {
+            // Housekeeping only — a failure here must never affect the confirm.
+            Log::warning('[adoptMatchingSms] ' . $e->getMessage(), ['draft' => $draftId]);
+        }
     }
 
     /**
@@ -894,6 +981,10 @@ class AssistantDraftService
                 'vendor_payment',
                 'vendor_purchase' => ['vendor', (int) ($payload['vendor_id'] ?? 0) ?: null, null],
                 'expense'         => ['expense', null, $payload['category'] ?? $payload['expense_category'] ?? null],
+                // A transfer teaches the DESTINATION ("this account is always
+                // Qasim's float"). from_account_id is always our own bank here,
+                // so it carries no information worth remembering.
+                'account_transfer' => ['account', (int) ($payload['to_account_id'] ?? 0) ?: null, null],
                 default           => [null, null, null],
             };
             if (!$entityType || (!$entityId && !$entityLabel)) {

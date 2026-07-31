@@ -720,6 +720,10 @@ class CustomerController extends Controller
             // The summary L1 total itself comes from getCustomerReceivables below
             // so it matches the approvals L1 tab exactly. Not built for shops.
             $approvalStateByOrder = [];
+            // Per-order L1-pending LEDGER amount (not the order total — they can
+            // differ). The date-range summary in the UI sums these, so a range of
+            // "everything" adds up to the same figure as the all-time tile above.
+            $pendingAmountByOrder = [];
             if (!$isShop) {
                 $prodIds = $prodOrders->pluck('id')->all();
                 if (!empty($prodIds)) {
@@ -742,6 +746,12 @@ class CustomerController extends Controller
                         if ($existing === null || ($rank[$state] ?? 0) > ($rank[$existing] ?? 0)) {
                             $approvalStateByOrder[$lr->order_id] = $state;
                         }
+                        if ($state === 'pending_l1') {
+                            // SUM, not overwrite — the L1 tab counts every pending
+                            // row, and an order can carry more than one.
+                            $pendingAmountByOrder[$lr->order_id] =
+                                ($pendingAmountByOrder[$lr->order_id] ?? 0.0) + (float) $lr->amount;
+                        }
                     }
                 }
             }
@@ -760,7 +770,7 @@ class CustomerController extends Controller
                 // regulars settle via invoice approval (ledger state). The UI
                 // shows the right column set per type via this flag.
                 'is_shop' => $isShop,
-                'orders' => $allOrders->map(function($order) use ($isShop, $onlineMethods, $approvalStateByOrder) {
+                'orders' => $allOrders->map(function($order) use ($isShop, $onlineMethods, $approvalStateByOrder, $pendingAmountByOrder) {
                     $isProduction = $order->source_type === 'production';
                     $isDelivered  = ($order->order_status ?? '') === 'delivered';
                     $invoiceSettled = $isProduction && (int) ($order->invoice_settled ?? 0) === 1;
@@ -781,9 +791,13 @@ class CustomerController extends Controller
                             $balanceRemaining = max(0, (float) $order->total_price - $rawPaid);
                         }
                         // else: non-online / not-delivered shop order → '—'
-                    } else {
+                    }
+
+                    $pendingAmount = null;
+                    if (!$isShop) {
                         // Regular: online-invoice approval state (pending_l1/l2/approved).
                         $approvalState = $isProduction ? ($approvalStateByOrder[$order->id] ?? null) : null;
+                        $pendingAmount = $isProduction ? ($pendingAmountByOrder[$order->id] ?? null) : null;
                     }
 
                     return [
@@ -796,6 +810,8 @@ class CustomerController extends Controller
                         'total_paid' => $displayPaid,
                         'balance_remaining' => $balanceRemaining,
                         'approval_state' => $approvalState,
+                        // L1-pending ledger amount for this order (regulars only).
+                        'pending_amount' => $pendingAmount,
                         'line_items_count' => $order->line_items_count,
                         'external_source' => $order->external_source ?? 'csv_import',
                         'payment_method' => $order->payment_method,

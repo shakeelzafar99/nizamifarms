@@ -192,9 +192,18 @@
                 <p class="text-xl font-bold text-amber-700 mt-1">{{ $pendingExpenseCount }} <span class="text-sm font-normal text-amber-500">(Rs. {{ number_format($pendingExpenseAmount, 0) }})</span></p>
             </div>
             @foreach($buPaymentAccounts as $buAcc)
-            <div class="bg-white border border-gray-200 rounded-xl p-4">
-                <p class="text-xs font-medium text-gray-500 uppercase">{{ $buAcc->account_name }}</p>
+            {{-- Clickable: the balance alone never explained itself. Almost every movement on
+                 the fund account is a vendor-payment outflow, so it changed daily with nothing
+                 on screen to say why, by whom, or when. --}}
+            <div class="bg-white border border-gray-200 rounded-xl p-4 cursor-pointer hover:border-amber-300 hover:shadow-sm transition-all group"
+                 onclick="openAccountActivity({{ $buAcc->id }}, '{{ addslashes($buAcc->account_name) }}')"
+                 title="Click to see the last movements in and out of this account">
+                <p class="text-xs font-medium text-gray-500 uppercase">
+                    {{ $buAcc->account_name }}
+                    <span class="opacity-0 group-hover:opacity-100 transition-opacity text-[9px]">📋</span>
+                </p>
                 <p class="text-xl font-bold mt-1" style="color: {{ $buAcc->current_balance >= 0 ? '#059669' : '#DC2626' }}">Rs. {{ number_format($buAcc->current_balance, 0) }}</p>
+                <p class="text-[10px] text-gray-400 mt-0.5">View activity 👆</p>
             </div>
             @endforeach
         </div>
@@ -440,7 +449,7 @@
 {{-- ⚠️ Shell inline-styled deliberately: inset-0, flex, max-w-md, overflow-y-auto and
      flex-shrink-0 are ALL purged from the built styles.css, so a class-only shell renders
      un-positioned with no backdrop. Same pattern as khaas/products.blade.php. --}}
-<div id="rejectModal" class="hidden fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4" style="z-index: 999999; position:fixed; top:0; right:0; bottom:0; left:0; background-color:rgba(0,0,0,0.5); display:flex; align-items:center; justify-content:center; padding:1rem;" onclick="if(event.target===this)closeRejectModal()">
+<div id="rejectModal" class="hidden fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4" style="z-index: 999999; top:0; right:0; bottom:0; left:0; background-color:rgba(0,0,0,0.5); padding:1rem;" onclick="if(event.target===this)closeRejectModal()">
     <div class="bg-white rounded-2xl shadow-2xl max-w-md w-full overflow-hidden" style="width:100%; max-width:28rem; max-height:90vh; display:flex; flex-direction:column; background:#fff; border-radius:1rem; overflow:hidden; box-shadow:0 20px 25px -5px rgba(0,0,0,0.10), 0 10px 10px -5px rgba(0,0,0,0.04);" onclick="event.stopPropagation()">
         <div class="px-6 py-5 border-b border-gray-100" style="background: linear-gradient(to right, #fef2f2, #fff7ed);">
             <div class="flex items-center gap-3">
@@ -464,6 +473,43 @@
         </form>
     </div>
 </div>
+
+{{-- Account Activity Modal — last movements in/out of a BU payment account.
+     ⚠️ Shell rules (learned the hard way): inset-0 / max-w-* / overflow-y-auto / flex-shrink-0
+     ARE purged from the built styles.css, so those must be inline. But .hidden, .flex,
+     .items-center and .justify-center are NOT purged — so do NOT put `display` on the outer
+     overlay inline, or it outranks .hidden{display:none} and the modal can never close. --}}
+<div id="acctActivityModal" class="hidden fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4" style="z-index: 999999; top:0; right:0; bottom:0; left:0; background-color:rgba(0,0,0,0.5); padding:1rem;" onclick="if(event.target===this)closeAccountActivity()">
+    <div class="w-full bg-white rounded-2xl shadow-2xl text-left overflow-hidden" style="width:100%; max-width:40rem; max-height:85vh; display:flex; flex-direction:column; background:#fff; border-radius:1rem; overflow:hidden; box-shadow:0 20px 25px -5px rgba(0,0,0,0.10), 0 10px 10px -5px rgba(0,0,0,0.04);" onclick="event.stopPropagation()">
+        <div class="px-6 py-4 border-b border-gray-100" style="background: linear-gradient(to right, #f0fdf4, #ecfdf5); flex-shrink:0;">
+            <div class="flex items-center justify-between">
+                <div class="flex items-center gap-3">
+                    <div class="w-10 h-10 rounded-xl flex items-center justify-center" style="background-color:#d1fae5;"><span class="text-xl">💰</span></div>
+                    <div>
+                        <h3 id="acct-activity-title" class="text-lg font-bold text-gray-900">Account Activity</h3>
+                        <p class="text-xs text-gray-500 mt-0.5">Balance: <span id="acct-activity-balance" class="font-bold" style="color:#047857;">—</span></p>
+                    </div>
+                </div>
+                <button onclick="closeAccountActivity()" class="w-8 h-8 rounded-lg flex items-center justify-center text-gray-400 hover:text-gray-600 hover:bg-gray-100 transition-colors">
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+                </button>
+            </div>
+        </div>
+        <div id="acct-activity-body" style="flex:1 1 auto; min-height:0; overflow-y:auto; overscroll-behavior:contain;">
+            <div class="flex items-center justify-center py-12 text-gray-400">
+                <svg class="animate-spin w-6 h-6 mr-2" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
+                Loading activity...
+            </div>
+        </div>
+        <div class="px-6 py-3 border-t border-gray-100 bg-gray-50 flex items-center justify-between gap-3" style="flex-shrink:0; display:flex; align-items:center; justify-content:space-between; gap:0.75rem;">
+            <p id="acct-activity-foot" class="text-[10px] text-gray-400">Most recent movements in and out of this account</p>
+            <div class="flex items-center gap-2">
+                <button id="acct-activity-more" onclick="loadAccountActivity(50)" class="px-3 py-2 text-sm font-medium rounded-lg" style="background-color:#f3f4f6; color:#374151; border:1px solid #d1d5db;">Show 50</button>
+                <button onclick="closeAccountActivity()" class="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">Close</button>
+            </div>
+        </div>
+    </div>
+</div>
 @endpush
 
 @push('demo1_js')
@@ -478,6 +524,122 @@ function closeRejectModal() {
     document.getElementById('rejectModal').classList.add('hidden');
     document.body.style.overflow = '';
 }
-document.addEventListener('keydown', function(e) { if (e.key === 'Escape') closeRejectModal(); });
+// ═══════════════════════════════════════════════════════════════
+// Account Activity — what actually moved this account's balance
+// ═══════════════════════════════════════════════════════════════
+var acctActivityId = null;
+
+function openAccountActivity(accountId, accountName) {
+    acctActivityId = accountId;
+    document.getElementById('acct-activity-title').textContent = accountName;
+    document.getElementById('acct-activity-balance').textContent = '—';
+    document.getElementById('acct-activity-body').innerHTML =
+        '<div class="flex items-center justify-center py-12 text-gray-400">' +
+        '<svg class="animate-spin w-6 h-6 mr-2" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>' +
+        'Loading activity...</div>';
+    document.getElementById('acctActivityModal').classList.remove('hidden');
+    document.body.style.overflow = 'hidden';
+    loadAccountActivity(10);
+}
+
+function closeAccountActivity() {
+    document.getElementById('acctActivityModal').classList.add('hidden');
+    document.body.style.overflow = '';
+}
+
+function loadAccountActivity(limit) {
+    if (!acctActivityId) return;
+    var more = document.getElementById('acct-activity-more');
+    more.disabled = true;
+    fetch('{{ url("khaas/account-activity") }}/' + acctActivityId + '?limit=' + limit)
+        .then(function(r) { return r.json(); })
+        .then(function(d) {
+            more.disabled = false;
+            if (!d.success) { renderAcctError(d.message); return; }
+            renderAccountActivity(d, limit);
+        })
+        .catch(function(e) { more.disabled = false; renderAcctError(null); console.error(e); });
+}
+
+function renderAcctError(msg) {
+    document.getElementById('acct-activity-body').innerHTML =
+        '<div class="text-center py-12 text-red-400"><div class="text-3xl mb-2">⚠️</div>' +
+        '<p class="text-sm">' + escAcct(msg || 'Failed to load activity.') + '</p></div>';
+}
+
+function renderAccountActivity(d, limit) {
+    document.getElementById('acct-activity-balance').textContent = 'Rs. ' + Math.round(d.account.balance).toLocaleString();
+
+    var rows = d.activity || [];
+    if (rows.length === 0) {
+        document.getElementById('acct-activity-body').innerHTML =
+            '<div class="text-center py-12 text-gray-400"><div class="text-3xl mb-2">📭</div>' +
+            '<p class="text-sm">No movements recorded for this account yet.</p></div>';
+        document.getElementById('acct-activity-more').style.display = 'none';
+        return;
+    }
+
+    var html = '';
+    // In / Out / Balance strip
+    html += '<div class="px-5 py-3 grid grid-cols-3 gap-2 border-b" style="position:sticky; top:0; z-index:2; background-color:#f9fafb; border-color:#e5e7eb;">';
+    html += '<div><div class="text-[10px] text-gray-500 uppercase">In</div><div class="text-sm font-bold" style="color:#059669;">Rs. ' + Math.round(d.summary.total_in).toLocaleString() + '</div></div>';
+    html += '<div><div class="text-[10px] text-gray-500 uppercase">Out</div><div class="text-sm font-bold" style="color:#dc2626;">Rs. ' + Math.round(d.summary.total_out).toLocaleString() + '</div></div>';
+    html += '<div><div class="text-[10px] text-gray-500 uppercase">Balance</div><div class="text-sm font-bold" style="color:#2563eb;">Rs. ' + Math.round(d.account.balance).toLocaleString() + '</div></div>';
+    html += '</div>';
+
+    var lastDay = null;
+    html += '<div class="divide-y divide-gray-50">';
+    for (var i = 0; i < rows.length; i++) {
+        var ev = rows[i];
+        var isIn = ev.direction === 'in';
+
+        if (ev.date_display !== lastDay) {
+            lastDay = ev.date_display;
+            html += '<div class="px-5 py-2 bg-gray-100 border-y border-gray-200">';
+            html += '<span class="text-xs font-bold text-gray-700">📅 ' + escAcct(ev.date_display) + '</span></div>';
+        }
+
+        html += '<div class="px-5 py-2.5 hover:bg-gray-50 transition-colors" style="border-left: 3px solid ' + (isIn ? '#22c55e' : '#ef4444') + ';">';
+        html += '<div class="flex items-start justify-between gap-3">';
+        html += '<div class="flex-1 min-w-0">';
+        html += '<div class="text-xs font-semibold text-gray-900">' + (isIn ? '📥' : '📤') + ' ' + escAcct(ev.type_label) + '</div>';
+        html += '<div class="text-[11px] text-gray-600 mt-0.5">' + (isIn ? 'From' : 'To') + ': ' + escAcct(ev.counterparty) + '</div>';
+        if (ev.description) {
+            html += '<div class="text-[10px] text-gray-400 mt-0.5">' + escAcct(ev.description) + '</div>';
+        }
+        // the point of the whole view: exactly when, and who
+        html += '<div class="text-[10px] text-gray-400 mt-1">🕒 ' + escAcct(ev.when_display) + ' · by <span class="font-medium text-gray-600">' + escAcct(ev.moved_by) + '</span></div>';
+        html += '</div>';
+        html += '<div class="text-right shrink-0">';
+        html += '<div class="text-sm font-bold" style="color:' + (isIn ? '#059669' : '#dc2626') + ';">' + (isIn ? '+' : '−') + 'Rs. ' + Math.round(ev.amount).toLocaleString() + '</div>';
+        if (ev.balance_after !== null && ev.balance_after !== undefined) {
+            html += '<div class="text-[10px] text-gray-500 bg-gray-100 px-1.5 py-0.5 rounded mt-1">bal ' + Math.round(ev.balance_after).toLocaleString() + '</div>';
+        }
+        if (ev.is_pending) {
+            html += '<div class="text-[10px] font-bold mt-1" style="color:#b45309;">⏳ pending</div>';
+        }
+        html += '</div></div></div>';
+    }
+    html += '</div>';
+
+    document.getElementById('acct-activity-body').innerHTML = html;
+
+    var more = document.getElementById('acct-activity-more');
+    // Only offer "Show 50" while there could be more to show.
+    more.style.display = (limit < 50 && rows.length >= limit) ? 'inline-block' : 'none';
+    document.getElementById('acct-activity-foot').textContent =
+        rows.length + ' movement' + (rows.length === 1 ? '' : 's') + ' shown, newest first';
+}
+
+function escAcct(s) {
+    if (s === null || s === undefined) return '';
+    var d = document.createElement('div');
+    d.textContent = s;
+    return d.innerHTML;
+}
+
+document.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape') { closeRejectModal(); closeAccountActivity(); }
+});
 </script>
 @endpush

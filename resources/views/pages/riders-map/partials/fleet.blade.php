@@ -18,6 +18,16 @@
             <button class="fl-nav" onclick="flShiftMonth(1)" title="Next month">›</button>
         </div>
         <div id="flHeadline" class="fl-headline"></div>
+        {{-- ⛽/🔧 File a bike expense WITHOUT leaving Bikes. Opens a small modal
+             here rather than navigating to the full request form — that form has
+             a company-wide employee dropdown (long, and the names render cut off)
+             and it takes the manager away from the numbers he is looking at.
+             The rider list here is the Bikes roster, already loaded.
+             Posts to the SAME endpoint, so the same FuelClaimRules apply. --}}
+        <div class="fl-newreq">
+            <button type="button" class="fl-newreqbtn" onclick="flOpenNew('Petrol')" title="File a petrol claim for a rider">⛽ New petrol</button>
+            <button type="button" class="fl-newreqbtn" onclick="flOpenNew('Maintenance')" title="File a maintenance claim for a rider">🔧 New maintenance</button>
+        </div>
     </div>
 
     <div id="flVerdict" class="fl-verdict" style="display:none;"></div>
@@ -66,6 +76,9 @@
 .fl-headline{font-size:12.5px;color:#6b7280;}
 .fl-headline b{color:#111827;}
 
+.fl-newreq{display:flex;gap:8px;margin-left:auto;}
+.fl-newreqbtn{display:inline-block;padding:6px 12px;border:1px solid #fcd34d;background:#fff;color:#92400e;border-radius:7px;font-size:12.5px;font-weight:700;text-decoration:none;white-space:nowrap;}
+.fl-newreqbtn:hover{background:#fffbeb;}
 .fl-verdict{margin:12px 16px 0;padding:11px 14px;border-radius:8px;background:#f0fdf4;border:1px solid #86efac;font-size:13px;color:#14532d;line-height:1.5;}
 .fl-verdict.tie{background:#fffbeb;border-color:#fcd34d;color:#78350f;}
 .fl-verdict b{font-weight:700;}
@@ -168,12 +181,94 @@
     <img id="flLightboxImg" src="" alt="Receipt photo">
 </div>
 
+{{-- New bike expense. Inline-styled shell on purpose — this page's CSS is purged
+     of the legacy utility classes, so a class-based modal renders top-left and
+     will not scroll (see the metronic-v9 note). --}}
+<div id="flNewModal" onclick="if(event.target===this)flCloseNew()"
+     style="display:none;position:fixed;inset:0;z-index:4200;background:rgba(0,0,0,.5);
+            align-items:center;justify-content:center;padding:16px;">
+  <div style="background:#fff;border-radius:12px;width:100%;max-width:440px;max-height:90vh;
+              overflow-y:auto;box-shadow:0 18px 60px rgba(0,0,0,.35);">
+    <div style="display:flex;align-items:center;gap:9px;padding:14px 18px;border-bottom:1px solid #e5e7eb;">
+      <b id="flNewTitle" style="font-size:15px;color:#111827;">⛽ New petrol request</b>
+      <button type="button" onclick="flCloseNew()" title="Close"
+              style="margin-left:auto;border:none;background:none;font-size:24px;color:#9ca3af;cursor:pointer;line-height:1;">&times;</button>
+    </div>
+    <div style="padding:16px 18px;display:flex;flex-direction:column;gap:12px;">
+
+      <div>
+        <label style="display:block;font-size:11.5px;font-weight:700;color:#374151;margin-bottom:4px;">Rider</label>
+        <select id="flNewRider" onchange="flNewRiderChanged()"
+                style="width:100%;border:1px solid #d1d5db;border-radius:8px;padding:8px 10px;font-size:13px;"></select>
+        <div id="flNewBikeHint" style="font-size:11px;color:#6b7280;margin-top:4px;"></div>
+      </div>
+
+      <div id="flNewSvcWrap" style="display:none;">
+        <label style="display:block;font-size:11.5px;font-weight:700;color:#374151;margin-bottom:4px;">What was done</label>
+        <select id="flNewServiceType" onchange="flNewSvcChanged()"
+                style="width:100%;border:1px solid #d1d5db;border-radius:8px;padding:8px 10px;font-size:13px;">
+          <option value="">Not a bike / other maintenance</option>
+          <option value="oil_change">🛢️ Regular service (oil change / tuning)</option>
+          <option value="repair">🔧 Repair (anything broken)</option>
+        </select>
+      </div>
+
+      <div style="display:flex;gap:10px;">
+        <div style="flex:1;">
+          <label style="display:block;font-size:11.5px;font-weight:700;color:#374151;margin-bottom:4px;">Amount (Rs)</label>
+          <input id="flNewAmount" type="number" min="1" step="0.01" placeholder="e.g. 1000"
+                 style="width:100%;border:1px solid #d1d5db;border-radius:8px;padding:8px 10px;font-size:13px;">
+        </div>
+        <div style="flex:1;">
+          <label style="display:block;font-size:11.5px;font-weight:700;color:#374151;margin-bottom:4px;">Date</label>
+          <input id="flNewDate" type="date"
+                 style="width:100%;border:1px solid #d1d5db;border-radius:8px;padding:8px 10px;font-size:13px;">
+        </div>
+      </div>
+
+      <div id="flNewMeterWrap">
+        <label style="display:block;font-size:11.5px;font-weight:700;color:#374151;margin-bottom:4px;">
+          Bike meter reading <span id="flNewMeterReq" style="font-weight:500;color:#b45309;"></span>
+        </label>
+        <input id="flNewMeter" type="number" min="0" max="9999999" step="1" placeholder="Odometer (km)"
+               oninput="flNewMeterTyped()"
+               style="width:100%;border:1px solid #d1d5db;border-radius:8px;padding:8px 10px;font-size:13px;">
+        {{-- Live "that's N km since his last fill" — the same number the approver
+             sees on the claim later, shown while the amount is still being typed. --}}
+        <div id="flNewSince" style="font-size:11.5px;font-weight:700;color:#3730a3;margin-top:5px;display:none;"></div>
+        <div id="flNewMeterHint" style="font-size:11px;color:#6b7280;margin-top:4px;"></div>
+      </div>
+
+      <div>
+        <label style="display:block;font-size:11.5px;font-weight:700;color:#374151;margin-bottom:4px;">Note (optional)</label>
+        <input id="flNewNote" type="text" maxlength="200" placeholder="e.g. filled at Shell"
+               style="width:100%;border:1px solid #d1d5db;border-radius:8px;padding:8px 10px;font-size:13px;">
+      </div>
+
+      <div id="flNewError" style="display:none;font-size:12px;color:#b91c1c;background:#fef2f2;
+           border:1px solid #fecaca;border-radius:8px;padding:8px 10px;"></div>
+    </div>
+    <div style="display:flex;gap:8px;padding:12px 18px;border-top:1px solid #e5e7eb;">
+      <button type="button" onclick="flCloseNew()"
+              style="flex:1;padding:9px;border:1px solid #d1d5db;background:#fff;border-radius:8px;
+                     font-size:13px;font-weight:600;color:#374151;cursor:pointer;">Cancel</button>
+      <button type="button" id="flNewSubmit" onclick="flSubmitNew()"
+              style="flex:2;padding:9px;border:none;background:#f59e0b;color:#fff;border-radius:8px;
+                     font-size:13px;font-weight:700;cursor:pointer;">Create request</button>
+    </div>
+  </div>
+</div>
+
 <script>
 // =============================================
 // FLEET & FUEL — state
 // =============================================
 let flMonth = null;
 let flData = null;
+// The "expense" request category, needed to file a claim from the inline modal.
+// Null if that category is ever missing — the buttons then explain rather than
+// posting something the server would reject.
+const flExpenseCategoryId = {{ $expenseCategoryId ?? 'null' }};
 let flSelected = null;
 let flInitDone = false;
 let flApproval = null;    // what THIS user may approve + the payment sources
@@ -207,12 +302,14 @@ function flShiftMonth(delta) {
     flLoad(next);
 }
 
-function flLoad(month) {
+// `fresh` skips the 2-minute server cache — used right after creating a claim
+// here, so the money and the "N to approve" counts move immediately.
+function flLoad(month, fresh) {
     flMonth = month;
     flCloseDetail();
     document.getElementById('flBody').innerHTML = '<tr><td colspan="11" class="fl-empty">Loading…</td></tr>';
 
-    fetch(FL_BASE + '?month=' + encodeURIComponent(month))
+    fetch(FL_BASE + '?month=' + encodeURIComponent(month) + (fresh ? '&fresh=1' : ''))
         .then(r => r.status === 403 ? Promise.reject(new Error('403')) : r.json())
         .then(res => {
             if (!res.success) throw new Error(res.message || 'Failed');
@@ -779,6 +876,155 @@ function flPostService(payload) {
         flSelectRider(payload.rider_id);
     })
     .catch(() => alert('Could not save. Please try again.'));
+}
+
+// =============================================
+// NEW BIKE EXPENSE — inline modal
+// Posts to the SAME endpoint the full request form uses, so FuelClaimRules
+// applies identically. The rider list is the Bikes roster already on screen,
+// which is both shorter and more relevant than the company-wide employee list.
+// =============================================
+let flNewCat = 'Petrol';
+
+function flOpenNew(cat) {
+    if (!flExpenseCategoryId) {
+        alert('The "Expense" request category is not configured, so a claim cannot be filed from here.');
+        return;
+    }
+    flNewCat = cat;
+    const isPetrol = cat === 'Petrol';
+    document.getElementById('flNewTitle').textContent = isPetrol ? '⛽ New petrol request' : '🔧 New maintenance request';
+    document.getElementById('flNewSvcWrap').style.display = isPetrol ? 'none' : 'block';
+    document.getElementById('flNewServiceType').value = '';
+
+    // Riders come from the month payload already loaded for this screen.
+    const sel = document.getElementById('flNewRider');
+    const riders = (flData && flData.riders) ? flData.riders : [];
+    sel.innerHTML = '<option value="">— choose a rider —</option>' + riders.map(r =>
+        '<option value="' + r.user_id + '" data-company="' + (r.bike === 'company' ? '1' : '0') + '">' +
+        flEsc(r.name) + (r.bike === 'company' ? ' — company bike' : ' — own bike') + '</option>').join('');
+
+    document.getElementById('flNewAmount').value = '';
+    document.getElementById('flNewMeter').value = '';
+    document.getElementById('flNewNote').value = '';
+    document.getElementById('flNewDate').value = new Date().toISOString().split('T')[0];
+    document.getElementById('flNewDate').max = new Date().toISOString().split('T')[0];
+    flNewError('');
+    flNewRiderChanged();
+    document.getElementById('flNewModal').style.display = 'flex';
+}
+
+function flCloseNew() { document.getElementById('flNewModal').style.display = 'none'; }
+
+function flNewError(msg) {
+    const el = document.getElementById('flNewError');
+    el.textContent = msg || '';
+    el.style.display = msg ? 'block' : 'none';
+}
+
+/** Tell the manager, before he submits, whether the meter is required. */
+function flNewRiderChanged() {
+    const sel = document.getElementById('flNewRider');
+    const opt = sel.options[sel.selectedIndex];
+    const isCompany = opt && opt.dataset && opt.dataset.company === '1';
+    document.getElementById('flNewBikeHint').textContent = !opt || !sel.value
+        ? '' : (isCompany
+            ? 'Company bike — the firm buys the fuel, so the meter is required.'
+            : 'Own bike — paid per shift kilometre. The meter is optional here.');
+    flNewSvcChanged();
+    flNewMeterTyped();          // the since-last-fill line is per rider
+}
+
+/**
+ * "That's N km since his last fill" while the manager types the odometer — the
+ * same figure that will sit on the claim for whoever approves it. Petrol only,
+ * and silent unless we actually have a previous fill reading to measure from.
+ */
+function flNewMeterTyped() {
+    const el = document.getElementById('flNewSince');
+    const sel = document.getElementById('flNewRider');
+    const r = ((flData && flData.riders) || []).find(x => String(x.user_id) === String(sel.value));
+    const prev = r ? r.last_fill_meter : null;
+    const now = parseInt(document.getElementById('flNewMeter').value, 10);
+
+    if (flNewCat !== 'Petrol' || !prev || !now || isNaN(now)) { el.style.display = 'none'; return; }
+    const gap = now - prev;
+    if (gap <= 0) {
+        el.style.color = '#b45309';
+        el.textContent = '⚠ That is not above his last fill reading (' + flNum(prev) + ' km).';
+    } else if (gap > 2000) {
+        el.style.color = '#b45309';
+        el.textContent = '⚠ ' + flNum(gap) + ' km since his last fill (' + flNum(prev) + ') — check the reading.';
+    } else {
+        el.style.color = '#3730a3';
+        el.textContent = '▲ ' + flNum(gap) + ' km since his last fill (' + flNum(prev) + ' km).';
+    }
+    el.style.display = 'block';
+}
+
+function flNewSvcChanged() {
+    const sel = document.getElementById('flNewRider');
+    const opt = sel.options[sel.selectedIndex];
+    const isCompany = opt && opt.dataset && opt.dataset.company === '1';
+    const svc = document.getElementById('flNewServiceType').value;
+    // Required on a company bike for petrol, and for a SCHEDULED service (a
+    // service with no odometer can never reset the bike's service clock).
+    // A repair never needs it.
+    const need = isCompany && (flNewCat === 'Petrol' || svc === 'oil_change');
+    document.getElementById('flNewMeterReq').textContent = need ? '(required)' : '(optional)';
+    document.getElementById('flNewMeterHint').textContent = flNewCat === 'Petrol'
+        ? 'The odometer at the moment of filling — this is what links the fill to the km ridden.'
+        : (svc === 'oil_change' ? 'The odometer at the service — this resets the bike\'s service-due clock on approval.' : '');
+}
+
+function flSubmitNew() {
+    const uid    = document.getElementById('flNewRider').value;
+    const amount = parseFloat(document.getElementById('flNewAmount').value);
+    const date   = document.getElementById('flNewDate').value;
+    const meter  = document.getElementById('flNewMeter').value;
+    const svc    = document.getElementById('flNewServiceType').value;
+    const note   = document.getElementById('flNewNote').value;
+
+    if (!uid) { flNewError('Choose which rider this is for.'); return; }
+    if (!amount || amount <= 0) { flNewError('Enter the amount.'); return; }
+    if (!date) { flNewError('Choose the date.'); return; }
+
+    const btn = document.getElementById('flNewSubmit');
+    btn.disabled = true; btn.textContent = 'Creating…';
+    flNewError('');
+
+    const body = {
+        category_id: flExpenseCategoryId,
+        requester_user_id: parseInt(uid, 10),
+        title: flNewCat,
+        description: note || (flNewCat + ' recorded from the Bikes screen'),
+        amount: amount,
+        expense_category: flNewCat,
+        expense_date: date,
+    };
+    if (meter !== '') body.meter_at_fill = parseInt(meter, 10);
+    if (flNewCat === 'Maintenance' && svc) body.service_type = svc;
+
+    fetch('/requests', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'Accept': 'application/json',
+            'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || ''
+        },
+        body: JSON.stringify(body)
+    })
+    .then(r => r.json().then(j => ({ok: r.ok, j})))
+    .then(({ok, j}) => {
+        // The server's own message is shown verbatim — it is the one that
+        // explains WHY (meter required, reading out of range, double tap).
+        if (!ok || !j.success) { flNewError(j.message || 'Could not create the request.'); return; }
+        flCloseNew();
+        flLoad(flMonth, true);              // money + counts move immediately
+        if (flSelected) flSelectRider(flSelected);
+    })
+    .catch(() => flNewError('Could not create the request. Please try again.'))
+    .finally(() => { btn.disabled = false; btn.textContent = 'Create request'; });
 }
 
 // ---- photo lightbox ----

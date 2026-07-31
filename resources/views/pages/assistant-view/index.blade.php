@@ -28,11 +28,42 @@
   .nfa .stat{flex:1;min-width:120px;background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:12px 14px}
   .nfa .stat .n{font-size:22px;font-weight:800;letter-spacing:-.02em}
   .nfa .stat .l{font-size:11px;color:var(--ink3);text-transform:uppercase;letter-spacing:.05em;font-weight:700;margin-top:2px}
+  /* strip tiles that filter the box below */
+  .nfa .stat.pick{cursor:pointer;transition:border-color .12s,background .12s}
+  .nfa .stat.pick:hover{border-color:var(--brand);background:var(--brand-wash)}
+  .nfa .stat.pick.on{border-color:var(--brand);background:var(--brand-wash);box-shadow:inset 0 0 0 1px var(--brand)}
+  .nfa .stat.pick.on .l{color:var(--brand)}
+  .nfa .scopebar{display:flex;align-items:center;gap:8px;background:var(--brand-wash);
+      border:1px solid #BFE3CC;border-radius:10px;padding:8px 12px;margin-top:12px;
+      font-size:12.5px;font-weight:700;color:var(--brand);cursor:pointer}
+  .nfa .scopebar .sb-x{margin-left:auto;opacity:.75}
+  .nfa .scopebar:hover .sb-x{opacity:1}
   .nfa .sec{padding:12px 14px}
   .nfa .sec-h{display:flex;align-items:center;gap:8px;font-size:11px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;color:var(--ink3);margin-bottom:6px}
   .nfa .pill{margin-left:auto;font-size:10.5px;font-weight:800;padding:2px 8px;border-radius:999px}
   .nfa .pill.amber{background:var(--amber-wash);color:var(--amber);border:1px solid var(--amber-line)}
   .nfa .pill.green{background:var(--brand-wash);color:var(--brand)}
+  /* direction boxes: money out / money in, each needs-action then collapsed done */
+  .nfa .grp{border:1px solid var(--line);border-radius:12px;padding:10px 12px;margin-top:12px;background:var(--surface)}
+  .nfa .grp-h{display:flex;align-items:center;gap:8px;padding-bottom:8px;border-bottom:1px solid var(--line)}
+  .nfa .grp-t{font-size:14.5px;font-weight:800}
+  .nfa .grp-h .pill{margin-left:auto}
+  .nfa .grp-clear{margin-left:auto;font-size:11.5px;font-weight:700;color:var(--ink3)}
+  .nfa .sub-h{font-size:10.5px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;color:var(--ink3);margin:12px 0 2px}
+  .nfa .donebar{margin-top:12px;padding:8px 10px;background:var(--surface2);border-radius:9px;
+      font-size:12px;font-weight:700;color:var(--ink3);cursor:pointer;user-select:none}
+  .nfa .donebar:hover{color:var(--ink2)}
+  .nfa .donewrap .row:first-child{border-top:0}
+  .nfa button.b.tag{background:var(--purple-wash);border-color:#ddd6fe;color:var(--purple)}
+  .nfa button.b.acct{background:#F0F9FF;border-color:#bae6fd;color:#0369a1}
+  .nfa button.b.more{color:var(--ink3)}
+  .nfa .flag{color:var(--amber);font-weight:700}
+  /* repeat debits from ONE account, clubbed so a double payment is obvious */
+  .nfa .club{border:1px solid var(--amber-line);background:var(--amber-wash);border-radius:10px;padding:2px 10px 8px;margin-top:8px}
+  .nfa .club-h{display:flex;align-items:center;gap:8px;padding:8px 0 2px;font-size:12.5px;font-weight:800;color:var(--amber)}
+  .nfa .club-tot{margin-left:auto}
+  .nfa .club-warn{font-size:11.5px;color:var(--amber);opacity:.85;padding-bottom:2px}
+  .nfa .club .row{border-top:1px solid var(--amber-line)}
   .nfa .row{display:flex;align-items:flex-start;gap:10px;padding:9px 0;border-top:1px solid var(--line);flex-wrap:wrap}
   .nfa .row .body{flex:1;min-width:0}
   .nfa .row .t{font-weight:600}
@@ -99,12 +130,18 @@
     <span class="ro-chip"><span class="dot" id="nfaLive"></span> auto-refresh</span>
   </div>
 
-  {{-- Counters strip --}}
+  {{-- Counters strip — mirrors the two inbox boxes exactly. The old five tiles
+       mixed directions ("to sort" counted both) and split backward-looking work
+       across "done" and "matched"; these three answer one question each:
+       what's waiting from me going out, coming in, and what's already settled. --}}
+  {{-- Each tile FILTERS the money box below to what it counts (mobile parity:
+       the strip chips navigate with a focus param). A tile that only scrolls you
+       to a combined list makes the number you clicked vanish into everything
+       else. The Rs tile is informational, so it is not clickable. --}}
   <div class="strip" id="nfaStrip">
-    <div class="stat"><div class="n" id="stTosort">–</div><div class="l">To sort</div></div>
-    <div class="stat"><div class="n" id="stMatched">–</div><div class="l">Credits matched today</div></div>
-    <div class="stat"><div class="n" id="stPending">–</div><div class="l">Cards waiting</div></div>
-    <div class="stat"><div class="n" id="stDone">–</div><div class="l">Done today</div></div>
+    <div class="stat pick" data-focus="out"><div class="n" id="stOut">–</div><div class="l">💸 Money out · waiting</div></div>
+    <div class="stat pick" data-focus="in"><div class="n" id="stIn">–</div><div class="l">💰 Money in · waiting</div></div>
+    <div class="stat pick" data-focus="handled"><div class="n" id="stHandled">–</div><div class="l">✓ Handled today</div></div>
     <div class="stat"><div class="n" id="stDoneAmt">–</div><div class="l">Recorded today (Rs)</div></div>
   </div>
 
@@ -147,6 +184,7 @@
     newTopic:'{{ route('assistant-view.new-topic') }}',
     vendorSearch:   '{{ route('assistant-view.vendor-search') }}',
     customerSearch: '{{ route('assistant-view.customer-search') }}',
+    accountSearch:  '{{ route('assistant-view.account-search') }}',
     confirm: id => '{{ url('assistant-view/confirm') }}/'+id,
     cancel:  id => '{{ url('assistant-view/cancel') }}/'+id,
     choose:  id => '{{ url('assistant-view/draft') }}/'+id+'/choose',
@@ -154,6 +192,7 @@
     smsIgnore: id => '{{ url('assistant-view/sms') }}/'+id+'/ignore',
     smsRestore:id => '{{ url('assistant-view/sms') }}/'+id+'/restore',
     smsDraft:  id => '{{ url('assistant-view/sms') }}/'+id+'/draft',
+    smsSaveMap:id => '{{ url('assistant-view/sms') }}/'+id+'/save-map',
   };
   const $ = s => document.querySelector(s);
   const esc = s => (s==null?'':String(s)).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
@@ -183,10 +222,18 @@
   let picker = null;                       // {smsId, mode:'expense'|'vendor'|'customer'}
   let searchT = null;
 
+  // The box is grouped by DIRECTION first (money out / money in) and by STATE
+  // second (needs action on top, everything settled collapsed underneath).
+  // Mobile parity: AssistantInboxScreen.js renders the same two boxes.
+  let doneOpen = {out:false, in:false};
+  const expanded = new Set();   // sms ids whose secondary actions are showing
+  // Which strip tile is selected: 'all' | 'out' | 'in' | 'handled'. Mirrors the
+  // mobile screen's `focus` route param.
+  let focus = 'all';
+
   function renderBox(d){
     if(!d) return;
     const box = $('#boxBody');
-    const parts = [];
     // ALL credits — unhandled ('new', actionable) AND today's auto-handled
     // (⚡, shown so the owner can watch). matchedList scopes handled ones to
     // today, so this can't grow unbounded.
@@ -195,33 +242,135 @@
     const cards = d.pending_cards||[];
     const done = d.done_today||[];
     const autoIg = d.auto_ignored||[];
+    const autoOut = d.auto_out||[];   // debits the sweep closed as already recorded
+    const autoIn  = d.auto_in||[];    // credits closed as approved / verified
 
-    if(cards.length){
-      parts.push(secH('Waiting for confirm', cards.length, 'green'));
-      cards.forEach(c=>parts.push(cardRow(c)));
+    const isOut = t => t==='expense'||t==='vendor_payment'||t==='vendor_purchase';
+    const outCards = cards.filter(c=>isOut(c.type));
+    const inCards  = cards.filter(c=>!isOut(c.type));   // payment_proof | shop_payment
+    const outDone  = done.filter(x=>isOut(x.type));
+    const inDone   = done.filter(x=>!isOut(x.type));
+    const creditsOpen = credits.filter(m=>!m.matched);
+    // A matched credit appears in BOTH `matched` and `auto_in` (verified: 100%
+    // overlap on live data — matchedList and autoHandledToday select the same
+    // rows). The auto row is the richer one (it states WHY and offers Bring
+    // back), so it wins and the duplicate is dropped.
+    const autoInIds = new Set(autoIn.map(a=>a.id));
+    const creditsDone = credits.filter(m=>m.matched && !autoInIds.has(m.id));
+    // Rows the counterparty map already recognises are one tap — kept apart
+    // from the ones that still need Taimur to say what they were.
+    const outKnown   = toSort.filter(s=>s.suggestion);
+    const outUnknown = toSort.filter(s=>!s.suggestion);
+
+    const outWaiting = toSort.length + outCards.length;
+    const inWaiting  = creditsOpen.length + inCards.length;
+
+    const parts = [];
+    const showOut = focus === 'out' || focus === 'all';
+    const showIn  = focus === 'in'  || focus === 'all';
+
+    // Say the box is filtered, and give one click back — a filtered box and a
+    // box that lost half its rows look identical otherwise.
+    if(focus !== 'all'){
+      parts.push('<div class="scopebar" data-act="focus-all">'
+        + '<span>'+(focus==='out' ? 'Showing money out only'
+                  : focus==='in'  ? 'Showing money in only'
+                                  : 'Showing only what was handled today')+'</span>'
+        + '<span class="sb-x">Show all ✕</span></div>');
     }
-    if(credits.length){
-      parts.push(secH('Incoming — customer credits', credits.length));
-      credits.forEach(m=>parts.push(creditRow(m)));
+
+    /* ── handled: its OWN view, not the two waiting boxes with strips open.
+       The tile counts settled work, so the view shows settled work only. ── */
+    if(focus === 'handled'){
+      const outRows = outDone.map(doneRow).join('') + autoOut.map(autoRow).join('') + autoIg.map(autoIgnoredRow).join('');
+      const inRows  = autoIn.map(autoRow).join('') + creditsDone.map(creditRow).join('') + inDone.map(doneRow).join('');
+      const total = outDone.length + autoOut.length + autoIg.length
+                  + autoIn.length + creditsDone.length + inDone.length;
+      parts.push('<div class="grp"><div class="grp-h"><span class="grp-t">✓ Handled today</span>'
+        + '<span class="grp-clear">'+total+(total===1?' item':' items')+'</span></div>');
+      if(!total){
+        parts.push('<div class="empty">Nothing has been handled yet today.</div>');
+      } else {
+        if(outRows){ parts.push(sub('💸 Money out')); parts.push(outRows); }
+        if(inRows){ parts.push(sub('💰 Money in')); parts.push(inRows); }
+      }
+      parts.push('</div>');
+      box.innerHTML = parts.join('');
+      const p0 = box.querySelector('.picker input'); if(p0) p0.focus();
+      return;
     }
-    if(toSort.length){
-      parts.push(secH('Outgoing — needs sorting', toSort.length, 'amber'));
-      toSort.forEach(s=>parts.push(debitRow(s)));
+
+    /* ── money out ── */
+    if(showOut){
+    parts.push(groupHead('💸 Money out', outWaiting));
+    if(outCards.length){ parts.push(sub('Waiting for your confirm')); outCards.forEach(c=>parts.push(cardRow(c))); }
+    if(outKnown.length){ parts.push(sub('Recognised — one tap')); parts.push(clubbed(outKnown)); }
+    if(outUnknown.length){ parts.push(sub('Needs tagging — what was it?')); parts.push(clubbed(outUnknown)); }
+    if(!outWaiting) parts.push('<div class="empty">Nothing waiting — every bank debit is sorted.</div>');
+    parts.push(doneStrip('out', outDone.length + autoIg.length + autoOut.length,
+      () => outDone.map(doneRow).join('') + autoOut.map(autoRow).join('') + autoIg.map(autoIgnoredRow).join('')));
+    parts.push('</div>');
     }
-    if(autoIg.length){
-      parts.push(secH('Auto-ignored today', autoIg.length));
-      autoIg.forEach(s=>parts.push(autoIgnoredRow(s)));
+
+    /* ── money in ── */
+    if(showIn){
+    parts.push(groupHead('💰 Money in', inWaiting));
+    if(inCards.length){ parts.push(sub('Waiting for your confirm')); inCards.forEach(c=>parts.push(cardRow(c))); }
+    if(creditsOpen.length){ parts.push(sub('Customer payments — who paid?')); creditsOpen.forEach(m=>parts.push(creditRow(m))); }
+    if(!inWaiting) parts.push('<div class="empty">Nothing waiting — every credit is matched.</div>');
+    parts.push(doneStrip('in', creditsDone.length + inDone.length + autoIn.length,
+      () => creditsDone.map(creditRow).join('') + autoIn.map(autoRow).join('') + inDone.map(doneRow).join('')));
+    parts.push('</div>');
     }
-    parts.push(secH('Done today', done.length));
-    if(done.length){ done.forEach(x=>parts.push('<div class="row"><div class="body"><div class="t">'+esc(x.label)+'</div><div class="s">'+esc(x.type)+(x.time?' · '+esc(x.time):'')+'</div></div><div class="amt out">'+money(x.amount)+'</div></div>')); }
-    else parts.push('<div class="empty">Nothing recorded yet today.</div>');
 
     box.innerHTML = parts.join('');
     const pin = box.querySelector('.picker input');
     if(pin) pin.focus();
   }
-  function secH(t,n,cls){return '<div class="sec-h" style="margin-top:14px">'+esc(t)+(n!=null?'<span class="pill '+(cls||'')+'">'+n+'</span>':'')+'</div>';}
-  function autoTag(a){return a==='mapped_customer'?'<span class="auto">⚡ auto-attached</span>':a==='proof_pair'?'<span class="auto">⚡ auto-verified</span>':a==='already_verified'?'<span class="auto">⚡ already verified</span>':'';}
+  function groupHead(t,n){
+    return '<div class="grp"><div class="grp-h"><span class="grp-t">'+esc(t)+'</span>'
+      +(n>0?'<span class="pill amber">'+n+' to action</span>':'<span class="grp-clear">all clear</span>')+'</div>';
+  }
+  function sub(t){return '<div class="sub-h">'+esc(t)+'</div>';}
+
+  /**
+   * Club debits that came from the SAME account under one heading.
+   * Two of Taimur's rows were "I.SAEED · Rs 100,000" on Jul-25 and Jul-27 — as
+   * separate cards they look like one row shown twice, which is exactly how the
+   * same payment gets recorded a second time. Grouped, the repeat is explicit
+   * and the total is stated, so a genuine double is obvious at a glance.
+   * Rows keep their OWN buttons — nothing here records more than one at a time.
+   */
+  function clubbed(rows){
+    const order = [], byKey = new Map();
+    rows.forEach(r=>{
+      const k = r.account_key || ('_solo'+r.id);
+      if(!byKey.has(k)){ byKey.set(k, []); order.push(k); }
+      byKey.get(k).push(r);
+    });
+    return order.map(k=>{
+      const g = byKey.get(k);
+      if(g.length < 2) return debitRow(g[0]);
+      const total = g.reduce((s,r)=>s+Number(r.amount||0),0);
+      const who = g[0].suggestion ? g[0].suggestion.label : (g[0].counterparty || 'the same account');
+      return '<div class="club"><div class="club-h">'
+        + '<span>'+esc(who)+' · '+g.length+' debits</span>'
+        + '<span class="club-tot">'+money(total)+'</span></div>'
+        + '<div class="club-warn">Same account on different days — check these are not one payment entered twice.</div>'
+        + g.map(debitRow).join('') + '</div>';
+    }).join('');
+  }
+  // Settled work, collapsed. Built lazily so a closed strip costs nothing.
+  function doneStrip(key,n,build){
+    if(!n) return '';
+    const open = doneOpen[key];
+    return '<div class="donebar" data-act="toggle-done" data-key="'+key+'">Done today ('+n+') '+(open?'▾':'▸')+'</div>'
+      + (open ? '<div class="donewrap">'+build()+'</div>' : '');
+  }
+  function doneRow(x){
+    return '<div class="row"><div class="body"><div class="t">'+esc(x.label)+'</div><div class="s">'+esc(x.type)+(x.time?' · '+esc(x.time):'')+'</div></div><div class="amt out">'+money(x.amount)+'</div></div>';
+  }
+  function autoTag(a){return a==='mapped_customer'?'<span class="auto">⚡ auto-attached</span>':a==='proof_pair'?'<span class="auto">⚡ auto-verified</span>':a==='already_verified'?'<span class="auto">⚡ already verified</span>':a==='approved_in_queue'?'<span class="auto">✓ approved in queue</span>':'';}
 
   function cardRow(c){
     return '<div class="row"><div class="body"><div class="t">'+esc(c.summary)+'</div><div class="s">'+esc(c.type)+(c.time?' · '+esc(c.time):'')+'</div>'
@@ -236,27 +385,70 @@
       btns+='<button class="b" data-act="pick-customer" data-id="'+m.id+'">'+(m.suggested_customer||m.suggested_order?'Someone else…':'Match customer…')+'</button>';
       btns+='<button class="b warn" data-act="ignore-credit" data-id="'+m.id+'" data-cp="'+esc(m.counterparty||'')+'">Ignore</button>';
     }
+    const when = [m.date, m.time].filter(Boolean).map(esc).join(' · ');
     return '<div class="row"><div class="body"><div class="t">'+esc(m.counterparty||'Credit')+' '+autoTag(m.auto)+'</div>'
-      +'<div class="s">'+(m.matched?'✓ matched':'Received'+(m.time?' · '+esc(m.time):''))+'</div>'
+      +'<div class="s">'+(m.matched?'✓ matched':'Received'+(when?' · '+when:''))+'</div>'
       +(btns?'<div class="btns">'+btns+'</div>':'')+'</div><div class="amt in">+ '+money(m.amount)+'</div>'
       +pickerPanel(m.id)+'</div>';
   }
   function debitRow(s){
-    let btns='';
+    // WHO is the headline; the bank repeats on every row and belongs in the
+    // meta line with the date/time/ref.
+    const who = s.counterparty || s.bank_name || ('Sender '+(s.sender_id||'?'));
+    const meta = [s.bank_name, s.date, s.time, s.reference ? 'ref '+s.reference : null]
+      .filter(Boolean).map(esc).join(' · ')
+      + (s.direction==='unknown' ? ' · <span class="flag">direction unclear</span>' : '');
+
+    // One-tap when the account is already known.
+    let lead='';
     if(s.suggestion){
-      // Mobile parity (AssistantInboxScreen ~461): one-tap prefilled draft.
       if(s.suggestion.type==='vendor' && s.suggestion.entity_id)
-        btns+='<button class="b vend" data-act="draft-vendor" data-id="'+s.id+'" data-vid="'+s.suggestion.entity_id+'">Payment to '+esc(s.suggestion.label)+' →</button>';
+        lead='<button class="b vend" data-act="draft-vendor" data-id="'+s.id+'" data-vid="'+s.suggestion.entity_id+'">Payment to '+esc(s.suggestion.label)+' →</button>';
+      else if(s.suggestion.type==='account' && s.suggestion.entity_id)
+        lead='<button class="b acct" data-act="draft-transfer" data-id="'+s.id+'" data-aid="'+s.suggestion.entity_id+'">Transfer to '+esc(s.suggestion.label)+' →</button>';
       else if(s.suggestion.type==='expense')
-        btns+='<button class="b sug" data-act="draft-expense" data-id="'+s.id+'" data-cat="'+esc(s.suggestion.label)+'">Expense: '+esc(s.suggestion.label)+' →</button>';
+        lead='<button class="b sug" data-act="draft-expense" data-id="'+s.id+'" data-cat="'+esc(s.suggestion.label)+'">Expense: '+esc(s.suggestion.label)+' →</button>';
     }
-    btns+='<button class="b" data-act="pick-expense" data-id="'+s.id+'">Expense…</button>';
-    btns+='<button class="b" data-act="pick-vendor" data-id="'+s.id+'">Vendor payment…</button>';
-    btns+='<button class="b warn" data-act="ignore-debit" data-id="'+s.id+'" data-cp="'+esc(s.counterparty||'')+'">Ignore</button>';
-    return '<div class="row"><div class="body"><div class="t">'+esc(s.bank_name||('Sender '+(s.sender_id||'?')))+'</div>'
-      +'<div class="s">'+esc(s.counterparty||'Bank SMS')+(s.time?' · '+esc(s.time):'')+'</div>'
+
+    // Everything else. On a recognised row these hide behind "Something else…"
+    // so the one-tap stands alone instead of competing with four siblings.
+    let rest='<button class="b" data-act="pick-expense" data-id="'+s.id+'">Expense…</button>'
+      +'<button class="b" data-act="pick-vendor" data-id="'+s.id+'">Vendor payment…</button>'
+      +'<button class="b" data-act="pick-account" data-id="'+s.id+'">Transfer…</button>'
+      +'<button class="b warn" data-act="ignore-debit" data-id="'+s.id+'" data-cp="'+esc(s.counterparty||'')+'">Ignore</button>';
+    // Teach the account WITHOUT recording anything — only when the SMS actually
+    // carries an account key, since a name-only rule can never drive the
+    // one-tap suggestion above.
+    if(s.account_key && !s.suggestion){
+      rest+='<button class="b tag" data-act="pick-tag" data-id="'+s.id+'" title="'+esc(s.account_key)+'">🏷 Always tag this account…</button>';
+    }
+
+    let btns;
+    if(lead && !expanded.has(s.id)){
+      btns = lead + '<button class="b more" data-act="expand" data-id="'+s.id+'">Something else…</button>';
+    } else {
+      btns = lead + rest;
+    }
+
+    return '<div class="row"><div class="body"><div class="t">'+esc(who)+'</div>'
+      +'<div class="s">'+meta+'</div>'
       +'<div class="btns">'+btns+'</div></div><div class="amt out">'+(s.amount?'− '+money(s.amount):'?')+'</div>'
       +pickerPanel(s.id)+'</div>';
+  }
+  // A row the SWEEP closed on its own. It must say WHY, and be one tap from
+  // coming back — automation you cannot reverse is automation you cannot trust.
+  function autoRow(s){
+    let btns = '<button class="b" data-act="restore" data-id="'+s.id+'">Bring back</button>';
+    // Reconciling a vendor payment tells us whose account this is, but nobody
+    // was ever asked to remember it — so offer that here, for free.
+    if(s.teach && s.teach.account){
+      btns += '<button class="b tag" data-act="pick-tag" data-id="'+s.id+'" title="'+esc(s.teach.account)+'">🏷 Remember this account…</button>';
+    }
+    return '<div class="row"><div class="body">'
+      + '<div class="t" style="font-weight:600">'+esc(s.counterparty||'Bank SMS')+' <span class="auto">⚡</span></div>'
+      + '<div class="s">'+esc(s.note||'Handled automatically')+(s.time?' · '+esc(s.time):'')+'</div>'
+      + '<div class="btns">'+btns+'</div></div>'
+      + '<div class="amt out">'+money(s.amount)+'</div>'+pickerPanel(s.id)+'</div>';
   }
   function autoIgnoredRow(s){
     return '<div class="row"><div class="body"><div class="s">'+esc(s.counterparty||'SMS')+(s.amount?' · '+money(s.amount):'')+(s.time?' · '+esc(s.time):'')+'</div>'
@@ -265,30 +457,77 @@
   }
 
   // Inline picker panel, rendered inside the matching row while open.
+  // picker.tag = "remember this account as…" instead of "record this payment as…"
   function pickerPanel(smsId){
     if(!picker || picker.smsId!==smsId) return '';
+    const tagNote = picker.tag ? '<div class="s" style="margin:-4px 0 8px">Saves the account for next time. Nothing is recorded now.</div>' : '';
+    // Tag mode first asks vendor-or-expense; both then reuse the pickers below.
+    if(picker.mode==='tag'){
+      return '<div class="picker"><div class="ph">Remember this account as…<span class="x" data-act="close-picker">✕</span></div>'+tagNote
+        +'<div class="btns"><button class="b vend" data-act="pick-tag-vendor" data-id="'+smsId+'">A vendor…</button>'
+        +'<button class="b" data-act="pick-tag-expense" data-id="'+smsId+'">An expense category…</button>'
+        +'<button class="b acct" data-act="pick-tag-account" data-id="'+smsId+'">One of our accounts…</button></div></div>';
+    }
     if(picker.mode==='expense'){
       const cats = (lastInbox&&lastInbox.expense_categories)||[];
-      return '<div class="picker"><div class="ph">What was this expense for?<span class="x" data-act="close-picker">✕</span></div>'
+      return '<div class="picker"><div class="ph">'+(picker.tag?'Which expense is this account always for?':'What was this expense for?')+'<span class="x" data-act="close-picker">✕</span></div>'+tagNote
         +(cats.length?'<div class="chips">'+cats.map(c=>'<span class="chip" data-act="cat" data-id="'+smsId+'" data-cat="'+esc(c)+'">'+esc(c)+'</span>').join('')+'</div>':'')
         +'<input type="text" id="pickerInput" placeholder="Or type a category and press Enter…" data-role="cat-input" data-id="'+smsId+'" /></div>';
     }
+    if(picker.mode==='account'){
+      return '<div class="picker"><div class="ph">'+(picker.tag?'Which account does this always go to?':'Which account did the money go to?')+'<span class="x" data-act="close-picker">✕</span></div>'+tagNote
+        +'<div class="s" style="margin:-4px 0 8px">Our own money moving — a rider or staff float, NF food, another till. Not an expense.</div>'
+        +'<input type="text" id="pickerInput" placeholder="Search accounts…" data-role="account-search" data-id="'+smsId+'" />'
+        +'<div class="pres" id="pickerResults"></div></div>';
+    }
     const isV = picker.mode==='vendor';
-    return '<div class="picker"><div class="ph">'+(isV?'Which vendor was paid?':'Whose payment is this?')+'<span class="x" data-act="close-picker">✕</span></div>'
+    return '<div class="picker"><div class="ph">'+(isV?(picker.tag?'Whose account is this?':'Which vendor was paid?'):'Whose payment is this?')+'<span class="x" data-act="close-picker">✕</span></div>'+tagNote
       +'<input type="text" id="pickerInput" placeholder="Type 2+ letters to search…" data-role="'+(isV?'vendor-search':'customer-search')+'" data-id="'+smsId+'" />'
       +'<div class="pres" id="pickerResults"></div></div>';
   }
-  function openPicker(smsId, mode){ picker={smsId, mode}; renderBox(lastInbox); }
+  // Filter the box from a strip tile. Clicking the tile you're already on clears
+  // the filter, so a tile is a toggle rather than a one-way trip.
+  function setFocus(next){
+    focus = (next === focus && next !== 'all') ? 'all' : next;
+    document.querySelectorAll('#nfaStrip .stat.pick').forEach(el => {
+      el.classList.toggle('on', el.dataset.focus === focus);
+    });
+    renderBox(lastInbox);
+  }
+  // Guarded: this whole file is one IIFE, so an unexpected missing element here
+  // would throw and take the chat down with it.
+  const stripEl = document.getElementById('nfaStrip');
+  if(stripEl) stripEl.addEventListener('click', e => {
+    const tile = e.target.closest('.stat.pick');
+    if(tile) setFocus(tile.dataset.focus);
+  });
+
+  function openPicker(smsId, mode, tag){
+    picker={smsId, mode, tag:!!tag};
+    renderBox(lastInbox);
+    if(mode==='account') primeAccountPicker();
+  }
   function closePicker(){ picker=null; renderBox(lastInbox); }
+
+  // Remember "this account belongs to X" without recording a payment. Money-safe:
+  // vendor/expense rules only ever pre-fill a card, they never post.
+  async function saveMap(id, entityType, entityId, entityLabel){
+    const body = {entity_type:entityType};
+    if(entityId) body.entity_id = Number(entityId);
+    if(entityLabel) body.entity_label = entityLabel;
+    const r = await api(U.smsSaveMap(id),{method:'POST',body});
+    toast(r.data.message || (r.ok?'Saved — I\'ll recognise it next time.':'Could not save that.'));
+    if(r.ok) closePicker();
+    return r;
+  }
 
   async function loadBox(){
     const [sm, ib] = await Promise.all([api(U.summary), api(U.inbox)]);
     if(sm.ok && sm.data.success){
-      $('#stTosort').textContent = sm.data.to_sort?.count ?? 0;
-      $('#stMatched').textContent = sm.data.matched?.count ?? 0;
-      $('#stPending').textContent = sm.data.pending_cards?.count ?? 0;
-      $('#stDone').textContent = sm.data.done_today?.count ?? 0;
-      $('#stDoneAmt').textContent = money(sm.data.done_today?.amount ?? 0);
+      $('#stOut').textContent = sm.data.money_out?.count ?? 0;
+      $('#stIn').textContent = sm.data.money_in?.count ?? 0;
+      $('#stHandled').textContent = sm.data.handled?.count ?? 0;
+      $('#stDoneAmt').textContent = money(sm.data.handled?.amount ?? sm.data.done_today?.amount ?? 0);
     }
     if(ib.ok && ib.data.success){
       lastInbox = ib.data;
@@ -324,6 +563,14 @@
     if(act==='pick-expense'){ openPicker(Number(id),'expense'); return; }
     if(act==='pick-vendor'){ openPicker(Number(id),'vendor'); return; }
     if(act==='pick-customer'){ openPicker(Number(id),'customer'); return; }
+    if(act==='pick-account'){ openPicker(Number(id),'account'); return; }
+    if(act==='pick-tag'){ openPicker(Number(id),'tag'); return; }
+    if(act==='pick-tag-vendor'){ openPicker(Number(id),'vendor',true); return; }
+    if(act==='pick-tag-expense'){ openPicker(Number(id),'expense',true); return; }
+    if(act==='pick-tag-account'){ openPicker(Number(id),'account',true); return; }
+    if(act==='expand'){ expanded.add(Number(id)); renderBox(lastInbox); return; }
+    if(act==='toggle-done'){ doneOpen[b.dataset.key]=!doneOpen[b.dataset.key]; renderBox(lastInbox); return; }
+    if(act==='focus-all'){ setFocus('all'); return; }
     if(busy[id]) return; busy[id]=1; if(b.disabled!==undefined) b.disabled=true;
     try{
       if(act==='confirm'){ const r=await api(U.confirm(id),{method:'POST',body:{}}); toast(r.data.message||'Done'); if(r.ok) loadChat(); }
@@ -334,8 +581,19 @@
       else if(act==='restore-forget'){ const r=await api(U.smsRestore(id),{method:'POST',body:{forget:true}}); toast(r.ok?'Restored — rule removed, future SMS will show again':(r.data.message||'Failed')); }
       else if(act==='match'){ const r=await api(U.smsMatch(id),{method:'POST',body:{customer_id:Number(b.dataset.cust)}}); toast(r.data.message||(r.ok?'Card prepared — see chat':'Failed')); if(r.ok) loadChat(); }
       else if(act==='match-picked'){ const r=await api(U.smsMatch(id),{method:'POST',body:{customer_id:Number(b.dataset.cust)}}); toast(r.data.message||(r.ok?'Card prepared — see chat':'Failed')); if(r.ok){ closePicker(); loadChat(); } }
-      else if(act==='draft-vendor' || act==='vend-picked'){ await smsDraft(id,{type:'vendor_payment', vendor_id:Number(b.dataset.vid)}); }
-      else if(act==='draft-expense' || act==='cat'){ await smsDraft(id,{type:'expense', expense_category:b.dataset.cat}); }
+      // In TAG mode the same pickers save a rule instead of preparing a card.
+      else if(act==='draft-vendor' || act==='vend-picked'){
+        if(picker && picker.tag) await saveMap(id,'vendor',b.dataset.vid,null);
+        else await smsDraft(id,{type:'vendor_payment', vendor_id:Number(b.dataset.vid)});
+      }
+      else if(act==='draft-expense' || act==='cat'){
+        if(picker && picker.tag) await saveMap(id,'expense',null,b.dataset.cat);
+        else await smsDraft(id,{type:'expense', expense_category:b.dataset.cat});
+      }
+      else if(act==='draft-transfer' || act==='acct-picked'){
+        if(picker && picker.tag) await saveMap(id,'account',b.dataset.aid,null);
+        else await smsDraft(id,{type:'account_transfer', to_account_id:Number(b.dataset.aid)});
+      }
       await loadBox();
       if(picker) renderBox(lastInbox);
     }catch(err){ toast('Something went wrong'); }
@@ -346,30 +604,46 @@
   $('#nfaBox').addEventListener('keydown', async e=>{
     const inp=e.target.closest('input[data-role="cat-input"]'); if(!inp || e.key!=='Enter') return;
     const cat=inp.value.trim(); if(!cat) return;
-    await smsDraft(Number(inp.dataset.id), {type:'expense', expense_category:cat});
+    if(picker && picker.tag) await saveMap(Number(inp.dataset.id), 'expense', null, cat);
+    else await smsDraft(Number(inp.dataset.id), {type:'expense', expense_category:cat});
     await loadBox(); if(picker) renderBox(lastInbox);
   });
 
   // vendor / customer live search (debounced; only the results div re-renders,
   // so the input keeps focus)
   $('#nfaBox').addEventListener('input', e=>{
-    const inp=e.target.closest('input[data-role="vendor-search"],input[data-role="customer-search"]'); if(!inp) return;
-    const isV = inp.dataset.role==='vendor-search';
+    const inp=e.target.closest('input[data-role="vendor-search"],input[data-role="customer-search"],input[data-role="account-search"]'); if(!inp) return;
+    const role = inp.dataset.role;
     const smsId = inp.dataset.id;
     clearTimeout(searchT);
     const q=inp.value.trim();
-    if(q.length<2){ const d=$('#pickerResults'); if(d) d.innerHTML=''; return; }
+    // Accounts are a short, fixed list — show them all with an empty box.
+    const minLen = role==='account-search' ? 0 : 2;
+    if(q.length<minLen){ const d=$('#pickerResults'); if(d) d.innerHTML=''; return; }
     searchT=setTimeout(async ()=>{
-      const r = await api((isV?U.vendorSearch:U.customerSearch)+'?q='+encodeURIComponent(q));
+      const url = role==='vendor-search' ? U.vendorSearch : role==='account-search' ? U.accountSearch : U.customerSearch;
+      const r = await api(url+'?q='+encodeURIComponent(q));
       const d=$('#pickerResults'); if(!d||!r.ok) return;
-      const rows = isV ? (r.data.vendors||[]) : (r.data.customers||[]);
+      const rows = role==='vendor-search' ? (r.data.vendors||[])
+                 : role==='account-search' ? (r.data.accounts||[])
+                 : (r.data.customers||[]);
       if(!rows.length){ d.innerHTML='<div class="empty">No match.</div>'; return; }
-      d.innerHTML = rows.map(x=> isV
+      d.innerHTML = rows.map(x=>
+        role==='vendor-search'
         ? '<div class="pr" data-act="vend-picked" data-id="'+smsId+'" data-vid="'+x.id+'"><span>'+esc(x.name)+'</span><span class="m">owed '+money(x.owed)+'</span></div>'
+        : role==='account-search'
+        ? '<div class="pr" data-act="acct-picked" data-id="'+smsId+'" data-aid="'+x.id+'"><span>'+esc(x.name)+'</span><span class="m">'+esc(x.group)+'</span></div>'
         : '<div class="pr" data-act="match-picked" data-id="'+smsId+'" data-cust="'+x.id+'"><span>'+esc(x.name)+'</span><span class="m">'+(x.open_orders?x.open_orders+' in approvals':'nothing in approvals')+'</span></div>'
       ).join('');
     }, 300);
   });
+
+  // The account list is short and fixed, so populate it the moment the picker
+  // opens rather than making the user type to discover what exists.
+  function primeAccountPicker(){
+    const inp = document.querySelector('input[data-role="account-search"]');
+    if(inp) inp.dispatchEvent(new Event('input', {bubbles:true}));
+  }
 
   /* ---------- chat ---------- */
   let pinned = true;

@@ -250,6 +250,25 @@ class BankBalancesController extends Controller
         }
 
         $adj = \App\Models\FIN\BankBalanceAdjustmentModel::findOrFail($adjustmentId);
+
+        // Both halves of a bank-to-bank transfer, or neither. They only stay harmless while they sum
+        // to zero — dropping one leg would move the tracked total away from the pool and surface as
+        // an unexplained gap on the Banks tab with nothing on screen to explain it.
+        $group = $adj->transfer_group ?? null;
+        if ($group) {
+            $removed = \App\Models\FIN\BankBalanceAdjustmentModel::where('transfer_group', $group)->get();
+            \Illuminate\Support\Facades\DB::transaction(function () use ($removed) {
+                foreach ($removed as $leg) {
+                    $leg->delete();
+                }
+            });
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Transfer removed from both banks.',
+            ]);
+        }
+
         $adj->delete();
 
         return response()->json(['success' => true, 'message' => 'Adjustment removed.']);

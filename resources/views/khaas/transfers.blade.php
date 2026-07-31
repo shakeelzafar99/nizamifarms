@@ -194,7 +194,7 @@
 <!-- Reject Modal -->
 {{-- ⚠️ Shell inline-styled deliberately: inset-0, flex and max-w-md are ALL purged from the
      built styles.css, so a class-only shell renders un-positioned with no backdrop. --}}
-<div id="rejectModal" class="hidden fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4" style="z-index: 999999; position:fixed; top:0; right:0; bottom:0; left:0; background-color:rgba(0,0,0,0.5); display:flex; align-items:center; justify-content:center; padding:1rem;" onclick="if(event.target===this)closeRejectModal()">
+<div id="rejectModal" class="hidden fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4" style="z-index: 999999; top:0; right:0; bottom:0; left:0; background-color:rgba(0,0,0,0.5); padding:1rem;" onclick="if(event.target===this)closeRejectModal()">
     <div class="bg-white rounded-xl shadow-xl max-w-md w-full p-6" style="width:100%; max-width:28rem; max-height:90vh; overflow-y:auto; background:#fff; border-radius:0.75rem; padding:1.5rem; box-shadow:0 20px 25px -5px rgba(0,0,0,0.10), 0 10px 10px -5px rgba(0,0,0,0.04);" onclick="event.stopPropagation()">
         <h3 class="text-lg font-semibold text-gray-900 mb-1">Reject Transfer</h3>
         <p class="text-sm text-gray-500 mb-4" id="rejectModalInfo"></p>

@@ -332,7 +332,26 @@ window.viewCustomer = function(id) {
 
             content.innerHTML = html;
             // Unified modal: load the full orders + receivable view inline.
-            loadCustomerOrdersInline(customer.id);
+            // The customer object goes along so the printed statement can carry
+            // the name / phone / address header.
+            loadCustomerOrdersInline(customer.id, customer);
+            // Which bank accounts the NF Assistant has learned belong to this
+            // customer (it auto-learns one whenever a bank SMS and their payment
+            // screenshot share a reference). Reviewable + removable + manually
+            // addable here, since a customer rule is the ONE kind that can
+            // auto-attach money. Placed ABOVE Orders & Invoices — appended to
+            // the end it sat below the whole orders table and nobody found it.
+            if (window.nfCounterpartyAccounts) {
+                const box = document.createElement('div');
+                box.style.cssText = 'margin:14px 0 18px;padding:12px 14px;border:1px solid #e5e7eb;border-radius:10px;background:#fafbfa';
+                const ordersWrap = content.querySelector('#customerOrdersInlineWrap');
+                if (ordersWrap && ordersWrap.parentNode) {
+                    ordersWrap.parentNode.insertBefore(box, ordersWrap);
+                } else {
+                    content.appendChild(box); // fallback: never lose the panel
+                }
+                nfCounterpartyAccounts.mount(box, 'customer', customer.id);
+            }
         } else {
             content.innerHTML = '<div style="text-align: center; padding: 40px; color: #ef4444;">Error loading customer details</div>';
         }
@@ -1561,56 +1580,228 @@ function buildCustomerInvoiceRow(order, isShop) {
         </tr>`;
 }
 
-function filterCustomerInvoices(status) {
-    const state = window.__custInv;
-    if (!state) return;
-    const rows = (status === 'all')
-        ? state.orders
-        : state.orders.filter(o => state.isShop ? (o.payment_status === status) : (o.approval_state === status));
-    const body = document.getElementById('custInvBody');
-    const cols = state.isShop ? 8 : 7;
-    if (body) {
-        body.innerHTML = rows.length
-            ? rows.map(o => buildCustomerInvoiceRow(o, state.isShop)).join('')
-            : `<tr><td colspan="${cols}" style="padding:20px;text-align:center;color:#9ca3af;">No invoices in this filter.</td></tr>`;
-    }
-    document.querySelectorAll('[data-invchip]').forEach(c => {
-        const on = c.getAttribute('data-invchip') === status;
-        c.style.background = on ? '#4f46e5' : '#fff';
-        c.style.color = on ? '#fff' : '#6b7280';
-        c.style.borderColor = on ? '#4f46e5' : '#d1d5db';
+// ---- Date-range + status filtering over the loaded invoice list ----------
+// The whole order set is fetched once; every filter below re-renders from
+// window.__custInv without hitting the server again.
+
+// 'YYYY-MM-DD' key for an order_date. These come from a raw query (no date
+// cast), so the leading 10 chars are already the local calendar day — parsing
+// through Date() would risk a UTC shift.
+function custInvDateKey(dateString) {
+    if (!dateString) return '';
+    const s = String(dateString);
+    const m = s.match(/^(\d{4}-\d{2}-\d{2})/);
+    if (m) return m[1];
+    const d = new Date(s);
+    if (isNaN(d.getTime())) return '';
+    const p = n => String(n).padStart(2, '0');
+    return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate());
+}
+
+function custInvPretty(key) {
+    if (!key) return '';
+    const [y, m, d] = key.split('-');
+    return new Date(Number(y), Number(m) - 1, Number(d))
+        .toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' });
+}
+
+// Human label for the active period — used on screen, on print and in the CSV.
+function custInvRangeLabel() {
+    const st = window.__custInv;
+    if (!st || (!st.from && !st.to)) return 'All time';
+    if (st.from && st.to) return custInvPretty(st.from) + ' — ' + custInvPretty(st.to);
+    if (st.from) return 'From ' + custInvPretty(st.from);
+    return 'Up to ' + custInvPretty(st.to);
+}
+
+// Date filter only (drives the tiles + the chip counts).
+function custInvRanged() {
+    const st = window.__custInv;
+    if (!st) return [];
+    if (!st.from && !st.to) return st.orders;
+    return st.orders.filter(o => {
+        const k = custInvDateKey(o.order_date);
+        if (!k) return false;
+        if (st.from && k < st.from) return false;
+        if (st.to && k > st.to) return false;
+        return true;
     });
 }
 
-function buildCustomerOrdersSection(data) {
-    if (!data || !data.success) return '<div style="color:#ef4444;padding:16px;">Could not load orders.</div>';
-    const orders = data.orders || [];
-    const isShop = !!data.is_shop;
-    const sum = data.summary || {};
-    if (orders.length === 0) return '<div style="text-align:center;color:#6b7280;padding:20px;">No orders found for this customer.</div>';
+// Date + status (drives the table, the print sheet and the CSV).
+function custInvVisible() {
+    const st = window.__custInv;
+    if (!st) return [];
+    const rows = custInvRanged();
+    if (st.status === 'all') return rows;
+    return rows.filter(o => st.isShop ? (o.payment_status === st.status) : (o.approval_state === st.status));
+}
 
-    // Receivable + oldest-pending tiles. Receivable matches the approvals page exactly.
+function custInvStatusLabel() {
+    const st = window.__custInv;
+    if (!st || st.status === 'all') return 'All invoices';
+    const labels = { unpaid: 'Unpaid', partial: 'Partial', paid: 'Paid', settled: 'Settled',
+                     pending_l1: 'Pending L1', pending_l2: 'Pending L2', approved: 'Approved' };
+    return (labels[st.status] || st.status) + ' only';
+}
+
+// Totals over a row set — shared by the tiles, the print sheet and the CSV so
+// the three can never disagree.
+function custInvTotals(rows) {
+    const st = window.__custInv || { isShop: false };
+    const t = { count: rows.length, value: 0, paid: 0, outstanding: 0, pending: 0 };
+    rows.forEach(o => {
+        t.value += Number(o.total_price) || 0;
+        t.paid += Number(o.total_paid) || 0;
+        t.outstanding += Number(o.balance_remaining) || 0;
+        t.pending += Number(o.pending_amount) || 0;
+    });
+    return t;
+}
+
+function filterCustomerInvoices(status) {
+    const st = window.__custInv;
+    if (!st) return;
+    st.status = status;
+    renderCustomerInvoices();
+}
+
+window.applyCustInvDates = function() {
+    const st = window.__custInv;
+    if (!st) return;
+    const from = (document.getElementById('custInvFrom') || {}).value || '';
+    const to = (document.getElementById('custInvTo') || {}).value || '';
+    // Swapped dates are a typo, not an empty result — straighten them out.
+    if (from && to && from > to) { st.from = to; st.to = from; } else { st.from = from; st.to = to; }
+    renderCustomerInvoices();
+};
+
+window.setCustInvPreset = function(key) {
+    const st = window.__custInv;
+    if (!st) return;
+    const p = n => String(n).padStart(2, '0');
+    const iso = d => d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate());
+    const now = new Date();
+    const y = now.getFullYear(), m = now.getMonth();
+    let from = '', to = '';
+    if (key === 'this_month')      { from = iso(new Date(y, m, 1));      to = iso(now); }
+    else if (key === 'last_month') { from = iso(new Date(y, m - 1, 1));  to = iso(new Date(y, m, 0)); }
+    else if (key === 'last_3m')    { from = iso(new Date(y, m - 2, 1));  to = iso(now); }
+    else if (key === 'this_year')  { from = iso(new Date(y, 0, 1));      to = iso(now); }
+    st.from = from; st.to = to;
+    const fEl = document.getElementById('custInvFrom'); if (fEl) fEl.value = from;
+    const tEl = document.getElementById('custInvTo');   if (tEl) tEl.value = to;
+    renderCustomerInvoices();
+};
+
+// Re-renders tiles + chips + rows from the current filters.
+function renderCustomerInvoices() {
+    const st = window.__custInv;
+    if (!st) return;
+    const isShop = st.isShop;
+    const sum = st.summary || {};
+    const ranged = custInvRanged();
+    const hasRange = !!(st.from || st.to);
+
+    // A status chip that no longer has rows in this range would strand the
+    // table on "no invoices" — fall back to All.
+    if (st.status !== 'all') {
+        const still = ranged.some(o => isShop ? (o.payment_status === st.status) : (o.approval_state === st.status));
+        if (!still) st.status = 'all';
+    }
+    const visible = custInvVisible();
+    const t = custInvTotals(ranged);
+
+    // ---- Tiles. The receivable tile stays the SERVER figure (it matches the
+    // approvals page exactly); the range tiles are computed from the rows. ----
     const rLabel = sum.receivable_label || (isShop ? 'Outstanding' : 'Pending approval');
     const rAmount = Number(sum.receivable_amount || 0);
     const rCount = Number(sum.receivable_count || 0);
-    const pendingOrders = orders.filter(o => isShop ? (o.balance_remaining !== null && o.balance_remaining > 0.01) : (o.approval_state === 'pending_l1'));
+    const pendingOrders = st.orders.filter(o => isShop
+        ? (o.balance_remaining !== null && o.balance_remaining > 0.01)
+        : (o.approval_state === 'pending_l1'));
     let oldestAge = null, oldestNum = null;
-    pendingOrders.forEach(o => { const d = new Date(o.order_date); if (!isNaN(d.getTime())) { const age = Math.floor((Date.now() - d.getTime()) / 86400000); if (oldestAge === null || age > oldestAge) { oldestAge = age; oldestNum = o.order_number; } } });
+    pendingOrders.forEach(o => {
+        const d = new Date(o.order_date);
+        if (!isNaN(d.getTime())) {
+            const age = Math.floor((Date.now() - d.getTime()) / 86400000);
+            if (oldestAge === null || age > oldestAge) { oldestAge = age; oldestNum = o.order_number; }
+        }
+    });
+    const allTime = hasRange ? ' · all time' : '';
+    const money = v => 'PKR ' + Math.round(v).toLocaleString();
     const tile = (cap, big, sub, alert) => `<div style="flex:1 1 160px;min-width:160px;border:1px solid ${alert ? '#fecaca' : '#e5e7eb'};background:${alert ? '#fef2f2' : '#f9fafb'};border-radius:12px;padding:12px 14px;"><div style="font-size:11px;text-transform:uppercase;letter-spacing:.04em;font-weight:700;color:${alert ? '#b91c1c' : '#9ca3af'};">${cap}</div><div style="font-size:19px;font-weight:800;color:${alert ? '#b91c1c' : '#111827'};margin-top:2px;">${big}</div><div style="font-size:12px;color:#6b7280;margin-top:2px;">${sub || '&nbsp;'}</div></div>`;
-    const tilesHtml = `<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px;">
-        ${tile(rLabel, rAmount > 0.01 ? ('PKR ' + Math.round(rAmount).toLocaleString()) : 'PKR 0', rCount > 0 ? (rCount + ' invoice' + (rCount > 1 ? 's' : '')) : 'nothing pending', rAmount > 0.01)}
-        ${tile('Oldest pending', oldestAge !== null ? (oldestAge + ' days') : '—', oldestNum || '', false)}
-    </div>`;
+    const rangeSub = isShop
+        ? (t.outstanding > 0.01 ? money(t.outstanding) + ' unpaid' : 'nothing unpaid')
+        : (t.pending > 0.01 ? money(t.pending) + ' pending L1' : 'nothing pending');
+    const tilesHtml =
+        tile(rLabel, rAmount > 0.01 ? money(rAmount) : 'PKR 0',
+             (rCount > 0 ? (rCount + ' invoice' + (rCount > 1 ? 's' : '')) : 'nothing pending') + allTime, rAmount > 0.01) +
+        tile('Oldest pending', oldestAge !== null ? (oldestAge + ' days') : '—', (oldestNum || '') + (oldestNum ? allTime : ''), false) +
+        tile(hasRange ? 'Orders in range' : 'Total orders', String(t.count), hasRange ? custInvRangeLabel() : 'all time', false) +
+        tile(hasRange ? 'Value in range' : 'Lifetime value', money(t.value), rangeSub, false);
 
-    // Filter chips — only show a status chip when it has rows.
+    // ---- Chips: counts are scoped to the date range. ----
     const chipDefs = isShop
         ? [['unpaid', 'Unpaid'], ['partial', 'Partial'], ['paid', 'Paid'], ['settled', 'Settled']]
         : [['pending_l1', 'Pending L1'], ['pending_l2', 'Pending L2'], ['approved', 'Approved']];
-    const countFor = (key) => orders.filter(o => isShop ? o.payment_status === key : o.approval_state === key).length;
+    const countFor = (key) => ranged.filter(o => isShop ? o.payment_status === key : o.approval_state === key).length;
     const chip = (key, label, count, on) => `<span data-invchip="${key}" onclick="filterCustomerInvoices('${key}')" style="cursor:pointer;font-size:12.5px;font-weight:600;padding:5px 11px;border-radius:999px;border:1px solid ${on ? '#4f46e5' : '#d1d5db'};background:${on ? '#4f46e5' : '#fff'};color:${on ? '#fff' : '#6b7280'};">${label} <span style="opacity:.75;">${count}</span></span>`;
-    let chipsHtml = `<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px;">${chip('all', 'All', orders.length, true)}`;
-    chipDefs.forEach(([k, l]) => { const c = countFor(k); if (c > 0) chipsHtml += chip(k, l, c, false); });
-    chipsHtml += '</div>';
+    let chipsHtml = chip('all', 'All', ranged.length, st.status === 'all');
+    chipDefs.forEach(([k, l]) => { const c = countFor(k); if (c > 0) chipsHtml += chip(k, l, c, st.status === k); });
+
+    const tilesEl = document.getElementById('custInvTiles');
+    const chipsEl = document.getElementById('custInvChips');
+    const body = document.getElementById('custInvBody');
+    if (tilesEl) tilesEl.innerHTML = tilesHtml;
+    if (chipsEl) chipsEl.innerHTML = chipsHtml;
+    if (body) {
+        const cols = isShop ? 8 : 7;
+        body.innerHTML = visible.length
+            ? visible.map(o => buildCustomerInvoiceRow(o, isShop)).join('')
+            : `<tr><td colspan="${cols}" style="padding:20px;text-align:center;color:#9ca3af;">No invoices in this ${hasRange ? 'date range' : 'filter'}.</td></tr>`;
+    }
+    const cnt = document.getElementById('custInvShowing');
+    if (cnt) cnt.textContent = visible.length === st.orders.length
+        ? `Showing all ${st.orders.length} invoices`
+        : `Showing ${visible.length} of ${st.orders.length} invoices`;
+}
+
+function buildCustomerOrdersSection(data, customer) {
+    if (!data || !data.success) return '<div style="color:#ef4444;padding:16px;">Could not load orders.</div>';
+    const orders = data.orders || [];
+    const isShop = !!data.is_shop;
+    if (orders.length === 0) {
+        // Drop any previous customer's state — nothing here can be filtered or printed.
+        window.__custInv = null;
+        return '<div style="text-align:center;color:#6b7280;padding:20px;">No orders found for this customer.</div>';
+    }
+
+    // State for the filters / print / CSV. Rendered by renderCustomerInvoices().
+    window.__custInv = {
+        orders, isShop,
+        summary: data.summary || {},
+        customer: customer || null,
+        status: 'all', from: '', to: ''
+    };
+
+    const preset = (key, label) => `<button type="button" onclick="setCustInvPreset('${key}')" style="padding:4px 10px;background:#fff;color:#4b5563;border:1px solid #d1d5db;border-radius:999px;font-size:12px;font-weight:600;cursor:pointer;">${label}</button>`;
+    const toolbar = `
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:12px;padding:10px 12px;background:#f8fafc;border:1px solid #e5e7eb;border-radius:10px;">
+            <span style="font-size:12px;font-weight:700;color:#6b7280;text-transform:uppercase;letter-spacing:.04em;">📅 Period</span>
+            <input type="date" id="custInvFrom" onchange="applyCustInvDates()" style="padding:4px 8px;border:1px solid #d1d5db;border-radius:6px;font-size:12.5px;">
+            <span style="color:#9ca3af;">→</span>
+            <input type="date" id="custInvTo" onchange="applyCustInvDates()" style="padding:4px 8px;border:1px solid #d1d5db;border-radius:6px;font-size:12.5px;">
+            ${preset('this_month', 'This month')}
+            ${preset('last_month', 'Last month')}
+            ${preset('last_3m', 'Last 3 months')}
+            ${preset('this_year', 'This year')}
+            ${preset('all', 'All time')}
+            <div style="flex:1;min-width:8px;"></div>
+            <span id="custInvShowing" style="font-size:12px;color:#6b7280;"></span>
+            <button type="button" onclick="printCustomerStatement()" style="padding:5px 12px;background:#4f46e5;color:#fff;border:none;border-radius:8px;font-size:12.5px;font-weight:600;cursor:pointer;" title="Print / save as PDF what is shown below">🖨️ Print</button>
+            <button type="button" onclick="exportCustomerStatementCsv()" style="padding:5px 12px;background:#fff;color:#374151;border:1px solid #d1d5db;border-radius:8px;font-size:12.5px;font-weight:600;cursor:pointer;" title="Download what is shown below as a spreadsheet">⬇️ CSV</button>
+        </div>`;
 
     const header = `<tr style="background-color:#f9fafb;border-bottom:1px solid #e5e7eb;">
             <th style="padding:12px;text-align:left;font-size:12px;font-weight:600;color:#374151;text-transform:uppercase;">Order #</th>
@@ -1621,28 +1812,208 @@ function buildCustomerOrdersSection(data) {
             ${isShop ? `<th style="padding:12px;text-align:center;font-size:12px;font-weight:600;color:#374151;text-transform:uppercase;">Payment</th><th style="padding:12px;text-align:right;font-size:12px;font-weight:600;color:#374151;text-transform:uppercase;">Balance</th>` : `<th style="padding:12px;text-align:center;font-size:12px;font-weight:600;color:#374151;text-transform:uppercase;">Approval</th>`}
             <th style="padding:12px;text-align:center;font-size:12px;font-weight:600;color:#374151;text-transform:uppercase;">Actions</th>
         </tr>`;
-    const bodyRows = orders.map(o => buildCustomerInvoiceRow(o, isShop)).join('');
 
-    // Stash for the filter chips.
-    window.__custInv = { orders, isShop };
-
-    return tilesHtml + chipsHtml + `
+    return `<div id="custInvTiles" style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px;"></div>`
+        + toolbar
+        + `<div id="custInvChips" style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px;"></div>
         <div style="overflow-x:auto;border:1px solid #e5e7eb;border-radius:8px;">
             <table style="width:100%;border-collapse:collapse;">
                 <thead>${header}</thead>
-                <tbody id="custInvBody">${bodyRows}</tbody>
+                <tbody id="custInvBody"></tbody>
             </table>
         </div>`;
 }
 
-function loadCustomerOrdersInline(customerId) {
+function loadCustomerOrdersInline(customerId, customer) {
     const el = document.getElementById('customerOrdersInline');
     if (!el) return;
     fetch(`/customers/${customerId}/orders`)
         .then(r => r.json())
-        .then(data => { el.innerHTML = buildCustomerOrdersSection(data); })
+        .then(data => {
+            el.innerHTML = buildCustomerOrdersSection(data, customer);
+            renderCustomerInvoices();
+        })
         .catch(e => { console.error('orders inline load failed', e); el.innerHTML = '<div style="color:#ef4444;padding:16px;">Could not load orders.</div>'; });
 }
+
+// ---- Print / CSV of exactly what the filters are showing -------------------
+
+function custInvEsc(v) {
+    return String(v === null || v === undefined ? '' : v)
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+function custInvCustomerName() {
+    const c = (window.__custInv || {}).customer || {};
+    return (String(c.first_name || '') + ' ' + String(c.last_name || '')).trim() || ('Customer #' + (c.id || ''));
+}
+
+window.printCustomerStatement = function() {
+    const st = window.__custInv;
+    if (!st) return;
+    const rows = custInvVisible();
+    if (!rows.length) { alert('Nothing to print — no invoices match the current period / filter.'); return; }
+    const isShop = st.isShop;
+    const c = st.customer || {};
+    const t = custInvTotals(rows);
+    const money = v => 'PKR ' + Math.round(v).toLocaleString();
+    const e = custInvEsc;
+
+    const payLabels = { paid: 'Paid', partial: 'Partial', unpaid: 'Unpaid', settled: 'Settled' };
+    const apLabels  = { pending_l1: 'Pending L1', pending_l2: 'Pending L2', approved: 'Approved' };
+
+    const box = (cap, val, strong) => `<div class="box"><div class="cap">${e(cap)}</div><div class="val${strong ? ' red' : ''}">${e(val)}</div></div>`;
+    const boxes = isShop
+        ? box('Invoices', String(t.count)) + box('Total value', money(t.value)) + box('Paid', money(t.paid)) + box('Outstanding', money(t.outstanding), t.outstanding > 0.01)
+        : box('Invoices', String(t.count)) + box('Total value', money(t.value)) + box('Pending approval (L1)', money(t.pending), t.pending > 0.01);
+
+    const head = ['Order #', 'Date', 'Status', 'Items', 'Total']
+        .concat(isShop ? ['Payment', 'Paid', 'Balance'] : ['Approval'])
+        .map((h, i) => `<th class="${i >= 4 ? 'r' : ''}">${e(h)}</th>`).join('');
+
+    const bodyRows = rows.map(o => {
+        const cells = [
+            `<td>#${e(o.order_number || o.id)}${o.source_type === 'history' ? ' <span class="muted">(legacy)</span>' : ''}</td>`,
+            `<td>${e(window.formatDateLocal(o.order_date))}</td>`,
+            `<td>${e(o.order_status ? o.order_status.charAt(0).toUpperCase() + o.order_status.slice(1) : '—')}</td>`,
+            `<td>${e(o.line_items_count || 0)}</td>`,
+            `<td class="r">${e(money(Number(o.total_price) || 0))}</td>`
+        ];
+        if (isShop) {
+            cells.push(`<td>${e(payLabels[o.payment_status] || '—')}</td>`);
+            cells.push(`<td class="r">${o.total_paid === null || o.total_paid === undefined ? '—' : e(money(Number(o.total_paid)))}</td>`);
+            const bal = Number(o.balance_remaining) || 0;
+            cells.push(`<td class="r${bal > 0.01 ? ' red' : ''}">${bal > 0.01 ? e(money(bal)) : '—'}</td>`);
+        } else {
+            cells.push(`<td>${e(apLabels[o.approval_state] || '—')}</td>`);
+        }
+        return '<tr>' + cells.join('') + '</tr>';
+    }).join('');
+
+    const totalCells = isShop
+        ? `<td class="r">${e(money(t.value))}</td><td></td><td class="r">${e(money(t.paid))}</td><td class="r">${e(money(t.outstanding))}</td>`
+        : `<td class="r">${e(money(t.value))}</td><td></td>`;
+
+    const addr = [c.address1, c.address2, c.city].filter(Boolean).join(', ');
+    const phone = c.phone_original || c.phone || '';
+
+    const doc = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Statement — ${e(custInvCustomerName())}</title>
+<style>
+  body { font-family: -apple-system, "Segoe UI", Roboto, Arial, sans-serif; color: #111827; margin: 0; padding: 22px 26px; font-size: 12.5px; }
+  h1 { font-size: 19px; margin: 0; }
+  .brand { font-size: 11px; letter-spacing: .14em; text-transform: uppercase; color: #6b7280; font-weight: 700; }
+  .top { display: flex; justify-content: space-between; align-items: flex-start; gap: 20px; border-bottom: 2px solid #111827; padding-bottom: 12px; margin-bottom: 14px; }
+  .who div { margin-top: 2px; color: #4b5563; }
+  .who .nm { font-size: 16px; font-weight: 700; color: #111827; margin-top: 6px; }
+  .tag { display: inline-block; padding: 1px 7px; border: 1px solid #d1d5db; border-radius: 999px; font-size: 10.5px; font-weight: 700; color: #6b7280; vertical-align: 2px; }
+  .period { text-align: right; }
+  .period .lbl { color: #6b7280; font-size: 11px; text-transform: uppercase; letter-spacing: .05em; font-weight: 700; }
+  .period .v { font-weight: 700; font-size: 13.5px; margin-top: 2px; }
+  .boxes { display: flex; gap: 10px; margin-bottom: 14px; flex-wrap: wrap; }
+  .box { flex: 1 1 120px; border: 1px solid #e5e7eb; border-radius: 8px; padding: 8px 11px; }
+  .cap { font-size: 10px; text-transform: uppercase; letter-spacing: .05em; color: #6b7280; font-weight: 700; }
+  .val { font-size: 15px; font-weight: 800; margin-top: 2px; }
+  .red { color: #b91c1c; }
+  table { width: 100%; border-collapse: collapse; }
+  thead { display: table-header-group; }
+  th { text-align: left; font-size: 10.5px; text-transform: uppercase; letter-spacing: .04em; color: #374151; border-bottom: 1.5px solid #9ca3af; padding: 7px 8px; }
+  td { padding: 6px 8px; border-bottom: 1px solid #eef0f3; }
+  tr { page-break-inside: avoid; }
+  .r { text-align: right; }
+  .muted { color: #9ca3af; font-size: 10.5px; }
+  tfoot td { border-top: 2px solid #111827; border-bottom: none; font-weight: 800; padding-top: 8px; }
+  .foot { margin-top: 16px; color: #9ca3af; font-size: 10.5px; border-top: 1px solid #e5e7eb; padding-top: 8px; }
+  .noprint { margin-bottom: 14px; }
+  .noprint button { padding: 7px 16px; font-size: 13px; font-weight: 600; border-radius: 8px; border: 1px solid #4f46e5; background: #4f46e5; color: #fff; cursor: pointer; }
+</style></head><body>
+<div class="noprint"><button onclick="window.print()">🖨️ Print / Save as PDF</button></div>
+<div class="top">
+  <div class="who">
+    <div class="brand">Nizami Farms</div>
+    <h1>${isShop ? 'Shop Statement' : 'Customer Statement'}</h1>
+    <div class="nm">${e(custInvCustomerName())} <span class="tag">${isShop ? 'Shop' : 'Regular'} · #${e(c.id || '')}</span></div>
+    ${phone ? `<div>${e(phone)}</div>` : ''}
+    ${c.email ? `<div>${e(c.email)}</div>` : ''}
+    ${addr ? `<div>${e(addr)}</div>` : ''}
+  </div>
+  <div class="period">
+    <div class="lbl">Period</div>
+    <div class="v">${e(custInvRangeLabel())}</div>
+    <div class="lbl" style="margin-top:8px;">Filter</div>
+    <div class="v">${e(custInvStatusLabel())}</div>
+  </div>
+</div>
+<div class="boxes">${boxes}</div>
+<table>
+  <thead><tr>${head}</tr></thead>
+  <tbody>${bodyRows}</tbody>
+  <tfoot><tr><td colspan="4">TOTAL — ${e(t.count)} invoice${t.count === 1 ? '' : 's'}</td>${totalCells}</tr></tfoot>
+</table>
+<div class="foot">Generated ${e(new Date().toLocaleString())}${isShop ? ' · Outstanding = delivered online invoices not yet settled.' : ' · Pending approval = invoices awaiting L1 approval.'} Figures cover the invoices listed above.</div>
+<script>window.onload = function() { setTimeout(function() { window.focus(); window.print(); }, 350); };<\/script>
+</body></html>`;
+
+    const w = window.open('', '_blank');
+    if (!w) { alert('Please allow pop-ups for this site to print the statement.'); return; }
+    w.document.open();
+    w.document.write(doc);
+    w.document.close();
+};
+
+window.exportCustomerStatementCsv = function() {
+    const st = window.__custInv;
+    if (!st) return;
+    const rows = custInvVisible();
+    if (!rows.length) { alert('Nothing to export — no invoices match the current period / filter.'); return; }
+    const isShop = st.isShop;
+    const t = custInvTotals(rows);
+    const q = v => '"' + String(v === null || v === undefined ? '' : v).replace(/"/g, '""') + '"';
+    const line = arr => arr.map(q).join(',');
+    const payLabels = { paid: 'Paid', partial: 'Partial', unpaid: 'Unpaid', settled: 'Settled' };
+    const apLabels  = { pending_l1: 'Pending L1', pending_l2: 'Pending L2', approved: 'Approved' };
+
+    const out = [];
+    out.push(line([isShop ? 'Shop statement' : 'Customer statement', custInvCustomerName()]));
+    out.push(line(['Period', custInvRangeLabel(), 'Filter', custInvStatusLabel()]));
+    out.push('');
+    out.push(line(['Order #', 'Date', 'Status', 'Items', 'Total']
+        .concat(isShop ? ['Payment', 'Paid', 'Balance'] : ['Approval', 'Pending amount'])));
+    rows.forEach(o => {
+        const base = [
+            '#' + (o.order_number || o.id) + (o.source_type === 'history' ? ' (legacy)' : ''),
+            custInvDateKey(o.order_date),
+            o.order_status || '',
+            o.line_items_count || 0,
+            Math.round(Number(o.total_price) || 0)
+        ];
+        out.push(line(base.concat(isShop
+            ? [payLabels[o.payment_status] || '',
+               (o.total_paid === null || o.total_paid === undefined) ? '' : Math.round(Number(o.total_paid)),
+               (o.balance_remaining === null || o.balance_remaining === undefined) ? '' : Math.round(Number(o.balance_remaining))]
+            : [apLabels[o.approval_state] || '',
+               (o.pending_amount === null || o.pending_amount === undefined) ? '' : Math.round(Number(o.pending_amount))])));
+    });
+    out.push('');
+    out.push(line(['TOTAL invoices', t.count]));
+    out.push(line(['TOTAL value', Math.round(t.value)]));
+    if (isShop) {
+        out.push(line(['TOTAL paid', Math.round(t.paid)]));
+        out.push(line(['TOTAL outstanding', Math.round(t.outstanding)]));
+    } else {
+        out.push(line(['TOTAL pending approval (L1)', Math.round(t.pending)]));
+    }
+
+    const slug = custInvCustomerName().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'customer';
+    const span = (st.from || st.to) ? ((st.from || 'start') + '_to_' + (st.to || 'today')) : 'all-time';
+    // BOM so Excel opens the UTF-8 correctly.
+    const blob = new Blob(["﻿" + out.join('\r\n')], { type: 'text/csv;charset=utf-8;' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `statement-${slug}-${span}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 0);
+};
 
 // Functions to integrate with existing order modals (these will call the same functions used in orders page)
 window.viewOrderDetailsFromCustomer = function(orderId) {
@@ -5062,5 +5433,11 @@ window.confirmMergeInto = function() {
     });
 };
 </script>
+
+{{-- "Known bank accounts" panel used by the customer detail modal (viewCustomer
+     appends its container after the details load). Defines
+     window.nfCounterpartyAccounts; the caller feature-detects it, so include
+     order is not load-bearing. --}}
+@include('partials.counterparty-accounts')
 
 @endsection

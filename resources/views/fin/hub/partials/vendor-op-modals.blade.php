@@ -16,7 +16,7 @@
           <div class="fld"><label>Amount (Rs.)</label><input type="number" step="0.01" min="0.01" name="amount" placeholder="0.00"></div>
           <div class="fld"><label>Date</label><input type="date" name="transaction_date" value="{{ now()->format('Y-m-d') }}"></div>
         </div>
-        <div class="fld"><label>Description</label><textarea name="description" rows="2" placeholder="Entry by {{ auth()->user()->name ?? '' }}">Entry by {{ auth()->user()->name ?? '' }}</textarea></div>
+        <div class="fld"><label>Description</label><textarea name="description" rows="2" placeholder="Entry by {{ auth()->user()->fullname ?? '' }}">Entry by {{ auth()->user()->fullname ?? '' }}</textarea></div>
         <div class="fld"><label>Bill image (optional)</label><input type="file" name="bill_image" accept="image/*"></div>
       </form>
     </div>
@@ -36,7 +36,7 @@
         <div class="fld"><label>Adjustment (Rs., +/−)</label><input type="number" step="0.01" id="hubWtAdj" value="0" oninput="hubWtTotal()"><span class="hint">discount (−) or extra (+)</span></div>
         <div class="fld"><label>Date</label><input type="date" id="hubWtDate" value="{{ now()->format('Y-m-d') }}"></div>
       </div>
-      <div class="fld"><label>Description</label><input type="text" id="hubWtDesc" placeholder="Entry by {{ auth()->user()->name ?? '' }}" value="Entry by {{ auth()->user()->name ?? '' }}"></div>
+      <div class="fld"><label>Description</label><input type="text" id="hubWtDesc" placeholder="Entry by {{ auth()->user()->fullname ?? '' }}" value="Entry by {{ auth()->user()->fullname ?? '' }}"></div>
       <div class="fld"><label>Bill image (optional)</label><input type="file" id="hubWtBill" accept="image/*"></div>
       <div class="inv-total"><span>Grand total</span><span class="num" id="hubWtGrand">Rs. 0.00</span></div>
     </div>
@@ -142,8 +142,23 @@
     }
     function done(msg){ hubToast(msg); setTimeout(function(){ location.reload(); }, 800); }
 
+    // View a row's bill/receipt image. /storage first (symlink — fast), /public-storage as the
+    // fallback for hosts where the symlink is missing (same pattern the attendance pages use).
+    window.hubViewBill = function(p){
+        var u='/storage/'+p, f='/public-storage/'+p, probe=new Image();
+        probe.onload=function(){ window.open(u,'_blank'); };
+        probe.onerror=function(){ window.open(f,'_blank'); };
+        probe.src=u;
+    };
+
     // ---------- Purchase (by_total) ----------
-    window.hubOpenPurchase = function(){ errHide('hubPuErr'); document.getElementById('hubPurchaseForm').reset(); open('hubPurchase'); };
+    // Optional date: the day-header ＋ buttons prefill the day they sit on.
+    window.hubOpenPurchase = function(date){
+        errHide('hubPuErr');
+        var f=document.getElementById('hubPurchaseForm'); f.reset();
+        if(date) f.transaction_date.value=date;
+        open('hubPurchase');
+    };
     window.hubSubmitPurchase = async function(){
         errHide('hubPuErr'); var f=document.getElementById('hubPurchaseForm');
         if(!(parseFloat(f.amount.value)>0)) return errShow('hubPuErr','Enter an amount.');
@@ -157,8 +172,9 @@
     };
 
     // ---------- Weighted purchase ----------
-    window.hubOpenWeighted = async function(){
+    window.hubOpenWeighted = async function(date){
         errHide('hubWtErr'); document.getElementById('hubWtLines').innerHTML=''; document.getElementById('hubWtAdj').value='0';
+        document.getElementById('hubWtDate').value = date || @json(now()->format('Y-m-d'));
         open('hubWeighted');
         if(products===null){
             try{ var r=await fetch('/finance/vendors/'+VID+'/products/list',{headers:{'Accept':'application/json'}}); var j=await r.json(); products=(j.products||[]); }
@@ -230,7 +246,18 @@
     };
 
     // ---------- Payment ----------
-    window.hubOpenPayment = function(){ errHide('hubPayErr'); document.getElementById('hubPayForm').reset(); document.getElementById('hubPayBankWrap').style.display='none'; document.getElementById('hubPayBank').value=''; open('hubPay'); };
+    // Optional prefill from a day header: both dates = that day (payments key off posted_date, and
+    // "pay for this day" means the money moved that day), amount = the day's still-owed net —
+    // capped at the vendor's payable so the max-guard can't instantly reject it.
+    window.hubOpenPayment = function(date, amt){
+        errHide('hubPayErr');
+        var f=document.getElementById('hubPayForm'); f.reset();
+        document.getElementById('hubPayBankWrap').style.display='none'; document.getElementById('hubPayBank').value='';
+        if(date){ f.transaction_date.value=date; f.posted_date.value=date; }
+        var v=Math.min(parseFloat(amt)||0, PAYABLE);
+        if(v>0) f.amount.value=v.toFixed(2);
+        open('hubPay');
+    };
     window.hubPaySrcChange = function(){
         var o=document.getElementById('hubPaySrc').selectedOptions[0];
         var isBank = o && o.dataset.cat==='bank';

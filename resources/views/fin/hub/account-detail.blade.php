@@ -18,7 +18,8 @@
 
 @section('content')
 <div class="nfhub">
-    @include('fin.hub.partials.nav', ['active' => 'accounts', 'scope' => $scope, 'canSeeKhaas' => $canSeeKhaas, 'canSeeMulti' => $canSeeMulti])
+    @include('fin.hub.partials.nav', ['active' => 'accounts', 'scope' => $scope, 'canSeeKhaas' => $canSeeKhaas, 'canSeeMulti' => $canSeeMulti,
+        'oldNavUrl' => $oldUrl, 'oldNavLabel' => 'Old account page ↗'])
 
     <a class="back-link" href="{{ route('fin.hub.accounts', ['scope' => $scope]) }}">‹ Accounts</a>
 

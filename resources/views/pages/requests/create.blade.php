@@ -165,13 +165,15 @@
                         <p class="text-xs text-gray-500 mt-1">Select the type of expense for proper accounting, or add a new category</p>
                     </div>
 
-                    <!-- 🔧 Bike service capture (Jul-2026): shown only for Maintenance.
-                         Mirrors the mobile picker. Selecting "Regular service" and giving the
-                         odometer is what lets approval reset the bike's service-due clock —
-                         without it a web-filed service leaves the bike showing overdue.
-                         Both optional: Maintenance is also used for non-bike repairs. -->
+                    <!-- 🔧 Bike capture (Jul-2026): Maintenance AND Petrol.
+                         Petrol used to have no meter field here at all, and the server
+                         discarded the reading even if sent — so a manager-filed
+                         company-bike fill was invisible to km-since-last-fill and to
+                         the Bikes running-cost figures. Both categories now carry it,
+                         and the server (FuelClaimRules) REQUIRES it on a company bike.
+                         Service type stays Maintenance-only. -->
                     <div id="bike-service-fields" style="display: none;" class="mb-6">
-                        <label class="kt-label">Bike Service (only if this is for a rider's bike)</label>
+                        <label class="kt-label" id="bike-fields-label">Bike Service (only if this is for a rider's bike)</label>
                         <select name="service_type" id="service_type" class="kt-select mb-2">
                             <option value="">Not a bike / other maintenance</option>
                             <option value="oil_change">🛢️ Regular service (oil change / tuning)</option>
@@ -375,14 +377,44 @@ function updateBikeServiceFields() {
     // bike fields must never outlive it.
     const groupVisible = (document.getElementById('expense-category-field') || {}).style
         ? document.getElementById('expense-category-field').style.display !== 'none' : false;
-    const isMaint = groupVisible && expenseCategorySelect && expenseCategorySelect.value === 'Maintenance';
-    wrap.style.display = isMaint ? 'block' : 'none';
-    if (!isMaint) {
-        const st = document.getElementById('service_type');
-        const mf = document.getElementById('meter_at_fill');
+    const cat = groupVisible && expenseCategorySelect ? expenseCategorySelect.value : '';
+    const isMaint  = cat === 'Maintenance';
+    const isPetrol = cat === 'Petrol';
+    const st = document.getElementById('service_type');
+    const mf = document.getElementById('meter_at_fill');
+    const hint = document.getElementById('bike-service-hint');
+    const label = document.getElementById('bike-fields-label');
+
+    // The block now serves BOTH bike categories. Petrol shows the odometer alone
+    // (no service type), and shows it straight away — on a company bike the server
+    // will refuse the claim without it.
+    wrap.style.display = (isMaint || isPetrol) ? 'block' : 'none';
+    if (st) st.style.display = isMaint ? 'block' : 'none';
+    if (label) label.textContent = isPetrol
+        ? "Bike meter (required for a company bike)"
+        : "Bike Service (only if this is for a rider's bike)";
+
+    if (isPetrol) {
+        if (st) st.value = '';                       // never a service type on petrol
+        if (mf) { mf.style.display = 'block'; mf.placeholder = 'Odometer at the fill (km)'; }
+        if (hint) {
+            hint.style.display = 'block';
+            hint.innerHTML = 'The odometer at the moment of filling. It ties this fill to the '
+                + "bike's kilometres, and is <b>required</b> for a company bike.";
+        }
+    } else if (isMaint) {
+        if (mf) mf.placeholder = 'Odometer at the service (km)';
+        // Odometer + hint stay driven by the service-type picker below.
+        const show = st && st.value !== '';
+        if (mf) mf.style.display = show ? 'block' : 'none';
+        if (hint) {
+            hint.style.display = show ? 'block' : 'none';
+            hint.innerHTML = 'A <b>Regular service</b> with the odometer resets the '
+                + "bike's service-due clock on approval. A Repair never does.";
+        }
+    } else {
         if (st) st.value = '';
         if (mf) { mf.value = ''; mf.style.display = 'none'; }
-        const hint = document.getElementById('bike-service-hint');
         if (hint) hint.style.display = 'none';
     }
 }
@@ -390,14 +422,39 @@ function updateBikeServiceFields() {
 // Odometer + hint appear once a bike service type is chosen.
 document.addEventListener('DOMContentLoaded', function () {
     const st = document.getElementById('service_type');
-    if (!st) return;
-    st.addEventListener('change', function () {
-        const mf = document.getElementById('meter_at_fill');
-        const hint = document.getElementById('bike-service-hint');
-        const show = st.value !== '';
-        if (mf) { mf.style.display = show ? 'block' : 'none'; if (!show) mf.value = ''; }
-        if (hint) hint.style.display = show ? 'block' : 'none';
-    });
+    if (st) {
+        st.addEventListener('change', function () {
+            const mf = document.getElementById('meter_at_fill');
+            const hint = document.getElementById('bike-service-hint');
+            const show = st.value !== '';
+            if (mf) { mf.style.display = show ? 'block' : 'none'; if (!show) mf.value = ''; }
+            if (hint) hint.style.display = show ? 'block' : 'none';
+        });
+    }
+
+    // ⛽/🔧 Deep link from the Bikes tab: /requests/create?expense_category=Petrol
+    // preselects Request Type = Expense and that category, so the manager lands on
+    // a form that already knows what he pressed. Only the two bike categories are
+    // honoured — this is a shortcut, not a way to drive the form from a URL.
+    try {
+        const wanted = new URLSearchParams(window.location.search).get('expense_category');
+        if (!['Petrol', 'Maintenance'].includes(wanted)) return;
+
+        const catSel = document.getElementById('category_id');
+        if (catSel) {
+            const expenseOpt = [...catSel.options].find(o => o.dataset && o.dataset.code === 'expense');
+            if (expenseOpt) {
+                catSel.value = expenseOpt.value;
+                catSel.dispatchEvent(new Event('change'));
+            }
+        }
+        const expSel = document.getElementById('expense_category');
+        if (expSel && [...expSel.options].some(o => o.value === wanted)) {
+            expSel.value = wanted;
+            expSel.dispatchEvent(new Event('change'));
+            if (typeof handleExpenseCategoryChange === 'function') handleExpenseCategoryChange();
+        }
+    } catch (e) { /* prefill is a convenience — never block the form */ }
 });
 
 function updateExpenseTitle() {

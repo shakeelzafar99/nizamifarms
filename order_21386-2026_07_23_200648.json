@@ -1,0 +1,592 @@
+{
+    "id": 7399356989729,
+    "admin_graphql_api_id": "gid:\/\/shopify\/Order\/7399356989729",
+    "app_id": 283966930945,
+    "browser_ip": null,
+    "buyer_accepts_marketing": false,
+    "cancel_reason": null,
+    "cancelled_at": null,
+    "cart_token": null,
+    "checkout_id": null,
+    "checkout_token": null,
+    "client_details": null,
+    "closed_at": null,
+    "company": null,
+    "confirmation_number": "FWKPALWG0",
+    "confirmed": true,
+    "contact_email": null,
+    "created_at": "2026-07-23T20:06:45+05:00",
+    "currency": "PKR",
+    "current_shipping_price_set": {
+        "shop_money": {
+            "amount": "300.00",
+            "currency_code": "PKR"
+        },
+        "presentment_money": {
+            "amount": "300.00",
+            "currency_code": "PKR"
+        }
+    },
+    "current_subtotal_price": "24620.00",
+    "current_subtotal_price_set": {
+        "shop_money": {
+            "amount": "24620.00",
+            "currency_code": "PKR"
+        },
+        "presentment_money": {
+            "amount": "24620.00",
+            "currency_code": "PKR"
+        }
+    },
+    "current_total_additional_fees_set": null,
+    "current_total_discounts": "0.00",
+    "current_total_discounts_set": {
+        "shop_money": {
+            "amount": "0.00",
+            "currency_code": "PKR"
+        },
+        "presentment_money": {
+            "amount": "0.00",
+            "currency_code": "PKR"
+        }
+    },
+    "current_total_duties_set": null,
+    "current_total_price": "24920.00",
+    "current_total_price_set": {
+        "shop_money": {
+            "amount": "24920.00",
+            "currency_code": "PKR"
+        },
+        "presentment_money": {
+            "amount": "24920.00",
+            "currency_code": "PKR"
+        }
+    },
+    "current_total_tax": "0.00",
+    "current_total_tax_set": {
+        "shop_money": {
+            "amount": "0.00",
+            "currency_code": "PKR"
+        },
+        "presentment_money": {
+            "amount": "0.00",
+            "currency_code": "PKR"
+        }
+    },
+    "customer_locale": null,
+    "device_id": null,
+    "discount_codes": [],
+    "duties_included": false,
+    "email": "",
+    "estimated_taxes": false,
+    "financial_status": "pending",
+    "fulfillment_status": null,
+    "landing_site": null,
+    "landing_site_ref": null,
+    "location_id": null,
+    "merchant_business_entity_id": "MTY5MjQzNTM1NjQ5",
+    "merchant_of_record_app_id": null,
+    "name": "#21386",
+    "note": null,
+    "note_attributes": [
+        {
+            "name": "source",
+            "value": "ios_app"
+        },
+        {
+            "name": "paymentMethodName",
+            "value": "Regular Meat: Direct Bank Transfer"
+        },
+        {
+            "name": "Invoice note",
+            "value": "This is an estimated invoice. As all items are freshly cut and weighed to your order, the final amount may vary by 3-5%. A confirmed invoice will be sent via WhatsApp before delivery. Payment is collected based on the final invoice."
+        }
+    ],
+    "number": 20386,
+    "order_number": 21386,
+    "order_status_url": "https:\/\/nizamifarms.com\/69243535649\/orders\/40731b2401393835202bb5b02af3065f\/authenticate?key=8517b7b9de66918b8d7d1a7da0644137",
+    "original_total_additional_fees_set": null,
+    "original_total_duties_set": null,
+    "payment_gateway_names": [
+        "Regular Meat: Direct Bank Transfer"
+    ],
+    "phone": "+923015102546",
+    "po_number": null,
+    "presentment_currency": "PKR",
+    "processed_at": "2026-07-23T20:06:45+05:00",
+    "reference": null,
+    "referring_site": null,
+    "source_identifier": null,
+    "source_name": "ios_app",
+    "source_url": null,
+    "subtotal_price": "24620.00",
+    "subtotal_price_set": {
+        "shop_money": {
+            "amount": "24620.00",
+            "currency_code": "PKR"
+        },
+        "presentment_money": {
+            "amount": "24620.00",
+            "currency_code": "PKR"
+        }
+    },
+    "tags": "ios-app",
+    "tax_exempt": false,
+    "tax_lines": [],
+    "taxes_included": false,
+    "test": false,
+    "token": "40731b2401393835202bb5b02af3065f",
+    "total_cash_rounding_payment_adjustment_set": {
+        "shop_money": {
+            "amount": "0.00",
+            "currency_code": "PKR"
+        },
+        "presentment_money": {
+            "amount": "0.00",
+            "currency_code": "PKR"
+        }
+    },
+    "total_cash_rounding_refund_adjustment_set": {
+        "shop_money": {
+            "amount": "0.00",
+            "currency_code": "PKR"
+        },
+        "presentment_money": {
+            "amount": "0.00",
+            "currency_code": "PKR"
+        }
+    },
+    "total_discounts": "0.00",
+    "total_discounts_set": {
+        "shop_money": {
+            "amount": "0.00",
+            "currency_code": "PKR"
+        },
+        "presentment_money": {
+            "amount": "0.00",
+            "currency_code": "PKR"
+        }
+    },
+    "total_line_items_price": "24620.00",
+    "total_line_items_price_set": {
+        "shop_money": {
+            "amount": "24620.00",
+            "currency_code": "PKR"
+        },
+        "presentment_money": {
+            "amount": "24620.00",
+            "currency_code": "PKR"
+        }
+    },
+    "total_outstanding": "24920.00",
+    "total_price": "24920.00",
+    "total_price_set": {
+        "shop_money": {
+            "amount": "24920.00",
+            "currency_code": "PKR"
+        },
+        "presentment_money": {
+            "amount": "24920.00",
+            "currency_code": "PKR"
+        }
+    },
+    "total_shipping_price_set": {
+        "shop_money": {
+            "amount": "300.00",
+            "currency_code": "PKR"
+        },
+        "presentment_money": {
+            "amount": "300.00",
+            "currency_code": "PKR"
+        }
+    },
+    "total_tax": "0.00",
+    "total_tax_set": {
+        "shop_money": {
+            "amount": "0.00",
+            "currency_code": "PKR"
+        },
+        "presentment_money": {
+            "amount": "0.00",
+            "currency_code": "PKR"
+        }
+    },
+    "total_tip_received": "0.00",
+    "total_weight": 4000,
+    "updated_at": "2026-07-23T20:06:46+05:00",
+    "user_id": null,
+    "billing_address": {
+        "first_name": "Tahira",
+        "address1": "House 36 Lane 6 Sector H DHA 2 Islamabad",
+        "phone": "+923015102546",
+        "city": "Islamabad",
+        "zip": "44000",
+        "province": null,
+        "country": "Pakistan",
+        "last_name": "Parveen",
+        "address2": "",
+        "company": null,
+        "latitude": 33.523976400000002,
+        "longitude": 73.171421499999994,
+        "name": "Tahira Parveen",
+        "country_code": "PK",
+        "province_code": null
+    },
+    "customer": {
+        "id": 9377546404129,
+        "created_at": "2025-08-28T11:08:17+05:00",
+        "updated_at": "2026-07-23T20:06:47+05:00",
+        "first_name": "Tahira",
+        "last_name": "Parveen",
+        "state": "disabled",
+        "note": null,
+        "verified_email": true,
+        "multipass_identifier": null,
+        "tax_exempt": false,
+        "email": null,
+        "phone": "+923015102546",
+        "currency": "PKR",
+        "tax_exemptions": [],
+        "admin_graphql_api_id": "gid:\/\/shopify\/Customer\/9377546404129",
+        "default_address": {
+            "id": 11083881480481,
+            "customer_id": 9377546404129,
+            "first_name": "Tahira",
+            "last_name": "Parveen",
+            "company": null,
+            "address1": "House 36 Lane 6 Sector H DHA 2 Islamabad",
+            "address2": null,
+            "city": "Islamabad",
+            "province": null,
+            "country": "Pakistan",
+            "zip": null,
+            "phone": "03015102546",
+            "name": "Tahira Parveen",
+            "province_code": null,
+            "country_code": "PK",
+            "country_name": "Pakistan",
+            "default": true
+        }
+    },
+    "discount_applications": [],
+    "fulfillments": [],
+    "line_items": [
+        {
+            "id": 17506377269537,
+            "admin_graphql_api_id": "gid:\/\/shopify\/LineItem\/17506377269537",
+            "attributed_staffs": [],
+            "current_quantity": 2,
+            "fulfillable_quantity": 2,
+            "fulfillment_service": "manual",
+            "fulfillment_status": null,
+            "gift_card": false,
+            "grams": 0,
+            "name": "Mutton Leg (Raan) - Mutton Leg (Raan) Boti Cut \/ Lean (Net weight) \/ Approx weight 1.2 kg (Without testicle)",
+            "price": "4990.00",
+            "price_set": {
+                "shop_money": {
+                    "amount": "4990.00",
+                    "currency_code": "PKR"
+                },
+                "presentment_money": {
+                    "amount": "4990.00",
+                    "currency_code": "PKR"
+                }
+            },
+            "product_exists": true,
+            "product_id": 8043997298977,
+            "properties": [],
+            "quantity": 2,
+            "requires_shipping": false,
+            "sales_line_item_group_id": null,
+            "sku": "P2-LGB",
+            "taxable": true,
+            "title": "Mutton Leg (Raan)",
+            "total_discount": "0.00",
+            "total_discount_set": {
+                "shop_money": {
+                    "amount": "0.00",
+                    "currency_code": "PKR"
+                },
+                "presentment_money": {
+                    "amount": "0.00",
+                    "currency_code": "PKR"
+                }
+            },
+            "variant_id": 49727782912289,
+            "variant_inventory_management": null,
+            "variant_title": "Mutton Leg (Raan) Boti Cut \/ Lean (Net weight) \/ Approx weight 1.2 kg (Without testicle)",
+            "vendor": "Nizami Farms",
+            "tax_lines": [],
+            "duties": [],
+            "discount_allocations": []
+        },
+        {
+            "id": 17506377302305,
+            "admin_graphql_api_id": "gid:\/\/shopify\/LineItem\/17506377302305",
+            "attributed_staffs": [],
+            "current_quantity": 2,
+            "fulfillable_quantity": 2,
+            "fulfillment_service": "manual",
+            "fulfillment_status": null,
+            "gift_card": false,
+            "grams": 1000,
+            "name": "Chicken Boneless (Breast \/ Cubes \/ Julienne \/ Steaks \/ Tenderloins \/ Thigh Boneles ) - Lean (Net Weight) \/ Cube Cut \/ Economy 1000 grams",
+            "price": "1210.00",
+            "price_set": {
+                "shop_money": {
+                    "amount": "1210.00",
+                    "currency_code": "PKR"
+                },
+                "presentment_money": {
+                    "amount": "1210.00",
+                    "currency_code": "PKR"
+                }
+            },
+            "product_exists": true,
+            "product_id": 8913415962913,
+            "properties": [],
+            "quantity": 2,
+            "requires_shipping": false,
+            "sales_line_item_group_id": null,
+            "sku": "PH-CBS",
+            "taxable": true,
+            "title": "Chicken Boneless (Breast \/ Cubes \/ Julienne \/ Steaks \/ Tenderloins \/ Thigh Boneles )",
+            "total_discount": "0.00",
+            "total_discount_set": {
+                "shop_money": {
+                    "amount": "0.00",
+                    "currency_code": "PKR"
+                },
+                "presentment_money": {
+                    "amount": "0.00",
+                    "currency_code": "PKR"
+                }
+            },
+            "variant_id": 49731300884769,
+            "variant_inventory_management": null,
+            "variant_title": "Lean (Net Weight) \/ Cube Cut \/ Economy 1000 grams",
+            "vendor": "Nizami Farms",
+            "tax_lines": [],
+            "duties": [],
+            "discount_allocations": []
+        },
+        {
+            "id": 17506377335073,
+            "admin_graphql_api_id": "gid:\/\/shopify\/LineItem\/17506377335073",
+            "attributed_staffs": [],
+            "current_quantity": 2,
+            "fulfillable_quantity": 2,
+            "fulfillment_service": "manual",
+            "fulfillment_status": null,
+            "gift_card": false,
+            "grams": 1000,
+            "name": "Chicken Boneless (Breast \/ Cubes \/ Julienne \/ Steaks \/ Tenderloins \/ Thigh Boneles ) - Lean (Net Weight) \/ Julienne Cut \/ Economy 1000 grams",
+            "price": "1210.00",
+            "price_set": {
+                "shop_money": {
+                    "amount": "1210.00",
+                    "currency_code": "PKR"
+                },
+                "presentment_money": {
+                    "amount": "1210.00",
+                    "currency_code": "PKR"
+                }
+            },
+            "product_exists": true,
+            "product_id": 8913415962913,
+            "properties": [],
+            "quantity": 2,
+            "requires_shipping": false,
+            "sales_line_item_group_id": null,
+            "sku": "PH-JC",
+            "taxable": true,
+            "title": "Chicken Boneless (Breast \/ Cubes \/ Julienne \/ Steaks \/ Tenderloins \/ Thigh Boneles )",
+            "total_discount": "0.00",
+            "total_discount_set": {
+                "shop_money": {
+                    "amount": "0.00",
+                    "currency_code": "PKR"
+                },
+                "presentment_money": {
+                    "amount": "0.00",
+                    "currency_code": "PKR"
+                }
+            },
+            "variant_id": 49731300950305,
+            "variant_inventory_management": null,
+            "variant_title": "Lean (Net Weight) \/ Julienne Cut \/ Economy 1000 grams",
+            "vendor": "Nizami Farms",
+            "tax_lines": [],
+            "duties": [],
+            "discount_allocations": []
+        },
+        {
+            "id": 17506377367841,
+            "admin_graphql_api_id": "gid:\/\/shopify\/LineItem\/17506377367841",
+            "attributed_staffs": [],
+            "current_quantity": 2,
+            "fulfillable_quantity": 2,
+            "fulfillment_service": "manual",
+            "fulfillment_status": null,
+            "gift_card": false,
+            "grams": 0,
+            "name": "Veal Minced (Qeema) - Premium Lean 100% Fat-Free (Net Weight) \/ Standard (Machine Grinded) \/ Standard 1000 grams - Single Economy Pack",
+            "price": "2450.00",
+            "price_set": {
+                "shop_money": {
+                    "amount": "2450.00",
+                    "currency_code": "PKR"
+                },
+                "presentment_money": {
+                    "amount": "2450.00",
+                    "currency_code": "PKR"
+                }
+            },
+            "product_exists": true,
+            "product_id": 8043384111393,
+            "properties": [],
+            "quantity": 2,
+            "requires_shipping": false,
+            "sales_line_item_group_id": null,
+            "sku": "PB-MC",
+            "taxable": true,
+            "title": "Veal Minced (Qeema)",
+            "total_discount": "0.00",
+            "total_discount_set": {
+                "shop_money": {
+                    "amount": "0.00",
+                    "currency_code": "PKR"
+                },
+                "presentment_money": {
+                    "amount": "0.00",
+                    "currency_code": "PKR"
+                }
+            },
+            "variant_id": 44720442736929,
+            "variant_inventory_management": null,
+            "variant_title": "Premium Lean 100% Fat-Free (Net Weight) \/ Standard (Machine Grinded) \/ Standard 1000 grams - Single Economy Pack",
+            "vendor": "Nizami Farms",
+            "tax_lines": [],
+            "duties": [],
+            "discount_allocations": []
+        },
+        {
+            "id": 17506377400609,
+            "admin_graphql_api_id": "gid:\/\/shopify\/LineItem\/17506377400609",
+            "attributed_staffs": [],
+            "current_quantity": 2,
+            "fulfillable_quantity": 2,
+            "fulfillment_service": "manual",
+            "fulfillment_status": null,
+            "gift_card": false,
+            "grams": 0,
+            "name": "Veal Boneless Boti - Premium Lean (Net Weight) \/ Economy 1000 grams",
+            "price": "2450.00",
+            "price_set": {
+                "shop_money": {
+                    "amount": "2450.00",
+                    "currency_code": "PKR"
+                },
+                "presentment_money": {
+                    "amount": "2450.00",
+                    "currency_code": "PKR"
+                }
+            },
+            "product_exists": true,
+            "product_id": 8043345772833,
+            "properties": [],
+            "quantity": 2,
+            "requires_shipping": false,
+            "sales_line_item_group_id": null,
+            "sku": "PB-BL",
+            "taxable": true,
+            "title": "Veal Boneless Boti",
+            "total_discount": "0.00",
+            "total_discount_set": {
+                "shop_money": {
+                    "amount": "0.00",
+                    "currency_code": "PKR"
+                },
+                "presentment_money": {
+                    "amount": "0.00",
+                    "currency_code": "PKR"
+                }
+            },
+            "variant_id": 44720512139553,
+            "variant_inventory_management": null,
+            "variant_title": "Premium Lean (Net Weight) \/ Economy 1000 grams",
+            "vendor": "Nizami Farms",
+            "tax_lines": [],
+            "duties": [],
+            "discount_allocations": []
+        }
+    ],
+    "payment_terms": null,
+    "refunds": [],
+    "shipping_address": {
+        "first_name": "Tahira",
+        "address1": "House 36 Lane 6 Sector H DHA 2 Islamabad",
+        "phone": "+923015102546",
+        "city": "Islamabad",
+        "zip": "44000",
+        "province": null,
+        "country": "Pakistan",
+        "last_name": "Parveen",
+        "address2": "",
+        "company": null,
+        "latitude": 33.523976400000002,
+        "longitude": 73.171421499999994,
+        "name": "Tahira Parveen",
+        "country_code": "PK",
+        "province_code": null
+    },
+    "shipping_lines": [
+        {
+            "id": 5641205612833,
+            "carrier_identifier": null,
+            "code": "Zone 1",
+            "current_discounted_price_set": {
+                "shop_money": {
+                    "amount": "300.00",
+                    "currency_code": "PKR"
+                },
+                "presentment_money": {
+                    "amount": "300.00",
+                    "currency_code": "PKR"
+                }
+            },
+            "discounted_price": "300.00",
+            "discounted_price_set": {
+                "shop_money": {
+                    "amount": "300.00",
+                    "currency_code": "PKR"
+                },
+                "presentment_money": {
+                    "amount": "300.00",
+                    "currency_code": "PKR"
+                }
+            },
+            "is_removed": false,
+            "phone": null,
+            "price": "300.00",
+            "price_set": {
+                "shop_money": {
+                    "amount": "300.00",
+                    "currency_code": "PKR"
+                },
+                "presentment_money": {
+                    "amount": "300.00",
+                    "currency_code": "PKR"
+                }
+            },
+            "requested_fulfillment_service_id": null,
+            "source": null,
+            "title": "Zone 1",
+            "tax_lines": [],
+            "discount_allocations": []
+        }
+    ],
+    "returns": [],
+    "line_item_groups": []
+}

@@ -704,12 +704,19 @@ class PayrollService
         }
     }
 
-    /** Insert a leave-grant row only if one for this user+source+effective_date doesn't already exist. */
+    /**
+     * Insert a leave-grant row only if one for this user+source+effective_date+reason doesn't
+     * already exist. The reason is part of the key because manager bonus ADJUSTMENTS (attendance
+     * grant-leave, kind=bonus) also write source='overtime' rows — payroll's own reasons are
+     * deterministic per month ("Overtime bonus Jul 2026"), so a retry still dedupes, but a
+     * manual adjustment that happens to land on the 1st can't block the month's real grant.
+     */
     private function grantOnce(int $userId, int $days, string $source, string $reason, string $effectiveDate, int $actorId): void
     {
         $exists = DB::table('t_hr_leave_grant')
             ->where('user_id', $userId)->where('source', $source)
-            ->whereDate('effective_date', $effectiveDate)->exists();
+            ->whereDate('effective_date', $effectiveDate)
+            ->where('reason', $reason)->exists();
         if ($exists) {
             return;
         }
@@ -991,7 +998,14 @@ class PayrollService
     private function userPaidRows(int $userId, bool $forUpdate = false): array
     {
         try {
-            $cols = ['id', 'pay_month', 'net_salary', 'paid_at'];
+            // The frozen receipt columns ride along so a paid CUSTOM period can explain
+            // itself on the Custom tab (what was recovered, from which account, by whom)
+            // without a second query per chip. All of these predate the period columns.
+            $cols = [
+                'id', 'pay_month', 'net_salary', 'paid_at',
+                'base_salary', 'working_days', 'present_days', 'absent_days',
+                'advance_total', 'funding', 'bank_id', 'ledger_id', 'notes', 'paid_by',
+            ];
             $hasPeriods = $this->payrollHasPeriodCols();
             if ($hasPeriods) {
                 $cols = array_merge($cols, ['period_start', 'period_end', 'period_key']);
@@ -1262,6 +1276,20 @@ class PayrollService
                             'net'     => (float) $r->net_salary,
                             'paid_at' => (string) $r->paid_at,
                             'label'   => $this->fmtRange($r->period_start, $r->period_end),
+                            // Frozen receipt: what was actually paid, and how. `gross` is
+                            // derived from the two frozen numbers so it can never disagree
+                            // with them (the live rate may have changed since).
+                            'days_paid'      => (int) ($r->working_days ?? 0),
+                            'present_days'   => (int) ($r->present_days ?? 0),
+                            'absent_days'    => (int) ($r->absent_days ?? 0),
+                            'rate_at_pay'    => (float) ($r->base_salary ?? 0),
+                            'advance_total'  => (float) ($r->advance_total ?? 0),
+                            'gross'          => round((float) $r->net_salary + (float) ($r->advance_total ?? 0), 2),
+                            'funding'        => $r->funding ?? null,
+                            'bank_id'        => $r->bank_id ? (int) $r->bank_id : null,
+                            'ledger_id'      => $r->ledger_id ? (int) $r->ledger_id : null,
+                            'notes'          => $r->notes ?? null,
+                            'paid_by'        => $r->paid_by ? (int) $r->paid_by : null,
                         ];
                     }
                 }
@@ -1290,6 +1318,36 @@ class PayrollService
                 \Log::warning('Payroll custom row failed', ['user_id' => $uid, 'month' => $month, 'error' => $e->getMessage()]);
             }
         }
+
+        // Human labels for the paid-period receipts (bank + who paid), two queries
+        // for the whole grid. Cosmetic — a failure here never blanks a row.
+        try {
+            $bankIds = []; $payerIds = [];
+            foreach ($rows as $r) {
+                foreach ($r['paid_periods'] as $p) {
+                    if (!empty($p['bank_id'])) { $bankIds[$p['bank_id']] = true; }
+                    if (!empty($p['paid_by'])) { $payerIds[$p['paid_by']] = true; }
+                }
+            }
+            $bankLabels = $bankIds
+                ? DB::table('t_fin_online_receiving_accounts')->whereIn('id', array_keys($bankIds))
+                    ->get(['id', 'name', 'bank_name', 'account_last4'])
+                    ->mapWithKeys(fn ($b) => [$b->id => trim(($b->name ?: $b->bank_name) . ($b->account_last4 ? ' ••' . $b->account_last4 : ''))])
+                    ->toArray()
+                : [];
+            $payerNames = $payerIds
+                ? DB::table('t_sys_user')->whereIn('id', array_keys($payerIds))->pluck('fullname', 'id')->toArray()
+                : [];
+            foreach ($rows as $i => $r) {
+                foreach ($r['paid_periods'] as $j => $p) {
+                    $rows[$i]['paid_periods'][$j]['bank_label'] = !empty($p['bank_id'])
+                        ? ($bankLabels[$p['bank_id']] ?? ('Bank #' . $p['bank_id'])) : null;
+                    $rows[$i]['paid_periods'][$j]['paid_by_name'] = !empty($p['paid_by'])
+                        ? ($payerNames[$p['paid_by']] ?? null) : null;
+                }
+            }
+        } catch (\Throwable $e) { /* labels are cosmetic */ }
+
         return $rows;
     }
 

@@ -33,17 +33,42 @@ class AssistantWorkspaceController extends Controller
 
         $this->revertOrphanedSms((int) $user->id);
         $this->closeCorroboratedSms((int) $user->id);
+        $this->reconcileRecordedDebits((int) $user->id);
         $done = $this->doneToday((int) $user->id);
+
+        // The strip now mirrors the two inbox boxes exactly: how much money OUT
+        // and how much money IN is still waiting on a human, plus one
+        // backward-looking "handled" tile. The old trio counted "to sort"
+        // (both directions mashed into one number), "done" (money out recorded)
+        // and "matched" (money in) — three tiles that answered no single
+        // question. Legacy keys stay for the live APK.
+        $cards   = $this->pendingCards((int) $user->id);
+        $isOut   = fn($t) => in_array($t, ['expense', 'vendor_payment', 'vendor_purchase', 'account_transfer'], true);
+        $outWait = count($this->toSortList((int) $user->id))
+                 + count(array_filter($cards, fn($c) => $isOut($c['type'])));
+        $inWait  = count(array_filter($this->matchedList((int) $user->id), fn($m) => !$m['matched']))
+                 + count(array_filter($cards, fn($c) => !$isOut($c['type'])));
 
         return response()->json([
             'success'    => true,
+            // ── new shape ──
+            'money_out'  => ['count' => $outWait],
+            'money_in'   => ['count' => $inWait],
+            'handled'    => [
+                'count'  => count($done)
+                          + count($this->autoHandledToday((int) $user->id, 'out'))
+                          + count($this->autoHandledToday((int) $user->id, 'in')),
+                'amount' => round(array_sum(array_column($done, 'amount')), 0),
+            ],
+            // ── legacy keys: the SHIPPED APK reads these, so they must survive
+            //    until it is rebuilt. Same numbers as before. ──
             'to_sort'    => ['count' => $this->toSortCount((int) $user->id)],
             'done_today' => [
                 'count'  => count($done),
                 'amount' => round(array_sum(array_column($done, 'amount')), 0),
             ],
             'matched'       => ['count' => $this->matchedCount((int) $user->id)],
-            'pending_cards' => ['count' => count($this->pendingCards((int) $user->id))],
+            'pending_cards' => ['count' => count($cards)],
         ]);
     }
 
@@ -57,6 +82,7 @@ class AssistantWorkspaceController extends Controller
 
         $this->revertOrphanedSms((int) $user->id);
         $this->closeCorroboratedSms((int) $user->id);
+        $this->reconcileRecordedDebits((int) $user->id);
         $done = $this->doneToday((int) $user->id);
 
         return response()->json([
@@ -74,6 +100,10 @@ class AssistantWorkspaceController extends Controller
             'expense_categories' => $this->recentCategories(),
             // Remembered personal merchants auto-ignored today (audit row).
             'auto_ignored'       => $this->autoIgnoredToday((int) $user->id),
+            // What the sweeps closed on their own today, per direction — shown
+            // inside each box's "Handled today" strip, each row with a Restore.
+            'auto_out'           => $this->autoHandledToday((int) $user->id, 'out'),
+            'auto_in'            => $this->autoHandledToday((int) $user->id, 'in'),
         ]);
     }
 
@@ -111,6 +141,54 @@ class AssistantWorkspaceController extends Controller
             ])->all();
 
         return response()->json(['success' => true, 'vendors' => $vendors]);
+    }
+
+    /**
+     * GET /api/assistant/workspace/account-search?q= — for a money-out SMS that
+     * was neither an expense nor a vendor payment but a MOVE of our own money
+     * (a rider/staff cash float, NF food, another till).
+     *
+     * Same three groups the Ledger Hub's transfer picker offers, minus BANK
+     * accounts: the money is already leaving our bank, so a bank destination
+     * would be a bank-to-bank move — that has its own ⇄ tool in the Hub and
+     * must not be modelled as an SMS-driven transfer.
+     */
+    public function accountSearch(Request $request)
+    {
+        $user = Auth::user();
+        if (!$this->allowed($user)) {
+            return response()->json(['success' => false, 'message' => 'No permission'], 403);
+        }
+
+        $q = trim((string) $request->input('q', ''));
+        $groups = [
+            \App\Models\FIN\AccountModel::CATEGORY_CASH           => 'Company cash',
+            \App\Models\FIN\AccountModel::CATEGORY_EMPLOYEE_CASH  => 'Rider & staff cash',
+        ];
+
+        $rows = \App\Models\FIN\AccountModel::where('is_active', 1)
+            ->whereIn('account_category', array_keys($groups))
+            ->visibleTo($user)
+            ->when($q !== '', function ($w) use ($q) {
+                $norm = mb_strtolower(str_replace(' ', '', $q));
+                $w->where(function ($x) use ($q, $norm) {
+                    $x->where('account_name', 'like', '%' . $q . '%')
+                      ->orWhereRaw("LOWER(REPLACE(account_name, ' ', '')) LIKE ?", ['%' . $norm . '%'])
+                      ->orWhere('account_code', 'like', '%' . $q . '%');
+                });
+            })
+            ->orderBy('account_name')
+            ->limit(20)
+            ->get(['id', 'account_name', 'account_code', 'account_category']);
+
+        return response()->json([
+            'success'  => true,
+            'accounts' => $rows->map(fn($a) => [
+                'id'    => (int) $a->id,
+                'name'  => $a->account_name,
+                'group' => $groups[$a->account_category] ?? 'Other',
+            ])->all(),
+        ]);
     }
 
     /**
@@ -240,7 +318,8 @@ class AssistantWorkspaceController extends Controller
             ->whereIn('s.direction', ['debit', 'unknown'])
             ->where('s.status', 'new')
             ->orderByDesc('s.sms_at')
-            ->get(['s.id', 's.sender_id', 's.amount', 's.counterparty', 's.counterparty_account', 's.status', 's.sms_at', 'b.name as bank_name'])
+            ->get(['s.id', 's.sender_id', 's.direction', 's.amount', 's.counterparty', 's.counterparty_account',
+                   's.reference', 's.status', 's.sms_at', 'b.name as bank_name'])
             ->map(function ($s) {
                 // Counterparty memory: a saved vendor/expense rule pre-fills the
                 // card ("Looks like: Karachi Feeds") — one tap instead of a search.
@@ -248,7 +327,7 @@ class AssistantWorkspaceController extends Controller
                 // because nothing here auto-posts (Confirm still required).
                 $rule = app(\App\Services\Assistant\SmsCounterpartyMap::class)->forSms($s);
                 $suggestion = null;
-                if ($rule && in_array($rule->entity_type, ['vendor', 'expense'], true)) {
+                if ($rule && in_array($rule->entity_type, ['vendor', 'expense', 'account'], true)) {
                     $suggestion = [
                         'type'      => $rule->entity_type,
                         'entity_id' => $rule->entity_id ? (int) $rule->entity_id : null,
@@ -259,10 +338,25 @@ class AssistantWorkspaceController extends Controller
                     'id'           => $s->id,
                     'bank_name'    => $s->bank_name,                 // null → status 'needs_sender' (teach the sender)
                     'sender_id'    => $s->sender_id,
+                    // The UI splits "recognized" from "needs tagging" and labels
+                    // an unclear direction — both were reading s.direction, which
+                    // this list never actually sent (so the label never showed).
+                    'direction'    => $s->direction,
                     'amount'       => round((float) $s->amount, 0),
                     'counterparty' => $s->counterparty,
+                    // The identity key the map remembers. Present ⇒ this row can
+                    // be tagged to a vendor/expense for good; absent (e.g. an HBL
+                    // debit with no account in the text) ⇒ one-off only, so the
+                    // UI must not offer a "remember" that could never fire.
+                    'account_key'  => $s->counterparty_account,
                     'needs_sender' => $s->status === 'needs_sender',
                     'time'         => $s->sms_at ? substr((string) $s->sms_at, 11, 5) : null,
+                    // ⚠ The DATE is not decoration. Two of Taimur's rows read
+                    // "I.SAEED · Rs 100,000" and differed ONLY by day (Jul-25 vs
+                    // Jul-27); with just a time on the card they looked like one
+                    // duplicate, which is how the same payment gets recorded twice.
+                    'date'         => $s->sms_at ? $this->shortDate((string) $s->sms_at) : null,
+                    'reference'    => $s->reference,
                     'suggestion'   => $suggestion,
                 ];
             })->all();
@@ -330,6 +424,7 @@ class AssistantWorkspaceController extends Controller
                     'sender_id'    => $s->sender_id,
                     'amount'       => round((float) $s->amount, 0),
                     'counterparty' => $s->counterparty,
+                    'date'         => $s->sms_at ? $this->shortDate((string) $s->sms_at) : null,
                     'matched'      => $s->status === 'matched',
                     'needs_sender' => $s->status === 'needs_sender',
                     // 'mapped_customer' / 'proof_pair' → this credit was handled
@@ -362,6 +457,70 @@ class AssistantWorkspaceController extends Controller
                 'counterparty' => $s->counterparty,
                 'time'         => $s->sms_at ? substr((string) $s->sms_at, 11, 5) : null,
             ])->all();
+    }
+
+    /**
+     * What the SWEEPS closed by themselves today, per direction. This is the
+     * accountability surface for automation: an SMS the system decided you did
+     * not need to see must still be findable, say why it closed, and be one tap
+     * from coming back. Without this, "the box got quieter" and "the box started
+     * hiding money" look identical.
+     */
+    private function autoHandledToday(int $userId, string $direction): array
+    {
+        $reasons = $direction === 'out'
+            ? ['already_recorded', 'already_in_ledger']
+            : ['order_approved', 'approved_in_queue', 'already_verified', 'proof_pair', 'mapped_customer'];
+
+        $rows = DB::table('t_ai_bank_sms as s')
+            ->leftJoin('t_fin_ledger as l', 'l.id', '=', 's.linked_ledger_id')
+            ->where('s.user_id', $userId)
+            ->whereIn('s.auto_reason', $reasons)
+            ->whereDate('s.updated_at', now()->toDateString())
+            ->orderByDesc('s.sms_at')
+            ->limit(40)
+            ->get(['s.id', 's.amount', 's.counterparty', 's.sms_at', 's.auto_reason',
+                   's.counterparty_account', 'l.transaction_type', 'l.description']);
+
+        $map = app(\App\Services\Assistant\SmsCounterpartyMap::class);
+
+        return $rows->map(function ($s) use ($map) {
+            // A reconciled VENDOR payment is a teaching moment: we now know this
+            // account paid that vendor, but nobody was ever asked to remember it.
+            $teach = null;
+            if ($s->auto_reason === 'already_recorded'
+                && $s->transaction_type === 'vendor_payment'
+                && $s->counterparty_account
+                && !$map->byAccount($s->counterparty_account)) {
+                $teach = ['account' => $s->counterparty_account];
+            }
+            return [
+                'id'           => $s->id,
+                'amount'       => round((float) $s->amount, 0),
+                'counterparty' => $s->counterparty,
+                'time'         => $s->sms_at ? substr((string) $s->sms_at, 11, 5) : null,
+                'reason'       => $s->auto_reason,
+                'note'         => $this->reasonNote($s->auto_reason, $s->description),
+                'teach'        => $teach,
+            ];
+        })->all();
+    }
+
+    /** Plain-English "why did this close by itself?". */
+    private function reasonNote(?string $reason, ?string $ledgerDescription): string
+    {
+        return match ($reason) {
+            'already_recorded'  => 'Already recorded' . ($ledgerDescription
+                                    ? ' — ' . \Illuminate\Support\Str::limit(trim($ledgerDescription), 60)
+                                    : ' in the ledger'),
+            'already_in_ledger' => 'Already recorded in the ledger',
+            'order_approved'    => 'The matching order was approved',
+            'approved_in_queue' => 'Approved in Online Approvals',
+            'already_verified'  => 'Already verified by the bank email',
+            'proof_pair'        => 'Verified against the customer’s screenshot',
+            'mapped_customer'   => 'Matched to a known customer account',
+            default             => 'Handled automatically',
+        };
     }
 
     /**
@@ -568,6 +727,207 @@ class AssistantWorkspaceController extends Controller
             // Learn the account (ref-certain by construction — we matched on ref).
             $this->maybeLearnAccount($sms, $proof);
         }
+
+        // (c) APPROVED IN THE QUEUE without the assistant. An amount-unique
+        //     attach puts a blue "Bank confirmed" on exactly one approvals order
+        //     and waits for Taimur's chip. But the approver often just approves
+        //     that order in Online Approvals — a human looked at the bank
+        //     confirmation and accepted it, which IS the confirmation the chip
+        //     was asking for. Without this the SMS sat 'new' forever, so the
+        //     inbox kept showing money that was long since dealt with.
+        //     Deliberately NOT taught to the counterparty map: the attach was by
+        //     AMOUNT alone, and an amount coincidence must never mint an
+        //     account→customer rule (the Rs-36 cross-pairing lesson).
+        $attached = DB::table('t_ai_bank_sms as s')
+            ->join('t_fin_payment_signal as p', 'p.id', '=', 's.linked_signal_id')
+            ->join('t_fin_ledger as l', 'l.order_id', '=', 'p.matched_order_id')
+            ->where('s.user_id', $userId)
+            ->where('s.status', 'new')
+            ->where('s.direction', 'credit')
+            ->where('p.source', \App\Models\FIN\PaymentSignal::SOURCE_BANK_SMS)
+            ->where('p.match_reason', 'amount_unique_sms')
+            ->whereNotNull('p.matched_order_id')
+            ->where('l.transaction_type', 'invoice')
+            ->whereIn('l.approval_status', ['pending_l2', 'approved'])
+            ->distinct()
+            ->pluck('s.id');
+
+        if ($attached->isNotEmpty()) {
+            DB::table('t_ai_bank_sms')->whereIn('id', $attached)->update([
+                'status'      => 'matched',
+                'auto_reason' => 'approved_in_queue',
+                'updated_at'  => now(),
+            ]);
+        }
+
+        // (d) THE ORDER WAS APPROVED ANYWAY. A credit that never got attached to
+        //     anything, but whose amount matches EXACTLY ONE recently-approved
+        //     invoice — the payment was accepted (by screenshot, bank email, or
+        //     the approver's own knowledge) and this SMS is the same money
+        //     arriving. Seven such rows sat open for a week in prod.
+        //
+        //     This is the most permissive rule here, so it is fenced hardest:
+        //       • exactly ONE approved invoice matches the amount (±5, ±3 days),
+        //       • and NO OTHER open credit matches that same invoice — otherwise
+        //         two payers of the same amount could both claim one order,
+        //       • it only CLOSES an inbox row: it never marks anything Verified,
+        //         never touches an order, and NEVER teaches the counterparty map
+        //         (an amount coincidence must not mint an account rule — the
+        //         Rs-36 lesson),
+        //       • and it lands in "Handled today" with Restore.
+        // "Never attached to anything" means EITHER no signal at all, OR the
+        // held `bank_credit_unidentified` signal every unmatched credit gets at
+        // ingest (holdOrDrop). Filtering on linked_signal_id IS NULL alone
+        // matched nothing in practice — all 7 real cases carried a held signal.
+        $loose = DB::table('t_ai_bank_sms as s')
+            ->leftJoin('t_fin_payment_signal as p', 'p.id', '=', 's.linked_signal_id')
+            ->where('s.user_id', $userId)
+            ->where('s.status', 'new')
+            ->where('s.direction', 'credit')
+            ->where('s.amount', '>', 0)
+            ->where(function ($q) {
+                $q->whereNull('s.linked_signal_id')
+                  ->orWhere(fn($w) => $w->whereNull('p.matched_order_id')->whereNull('p.paired_signal_id'));
+            })
+            // Same rule as the debit sweep: never re-close what a human restored.
+            ->where(fn($q) => $q->whereNull('s.auto_reason')->orWhere('s.auto_reason', '<>', 'reconcile_rejected'))
+            ->get(['s.id', 's.amount', 's.sms_at', 's.linked_signal_id']);
+
+        foreach ($loose as $sms) {
+            $day = substr((string) $sms->sms_at, 0, 10);
+
+            $orders = DB::table('t_fin_ledger as l')
+                ->join('t_crm_prod_order as o', 'o.id', '=', 'l.order_id')
+                ->where('l.transaction_type', 'invoice')
+                ->whereIn('l.approval_status', ['pending_l2', 'approved'])
+                ->whereRaw('ABS(o.total_price - ?) <= 5', [$sms->amount])
+                ->whereRaw('ABS(DATEDIFF(l.transaction_date, ?)) <= 3', [$day])
+                ->distinct()
+                ->limit(2)
+                ->pluck('o.id');
+
+            if ($orders->count() !== 1) {
+                continue;
+            }
+
+            // A rival open credit of the same size means we cannot tell which
+            // payment settled that order — leave both for the human.
+            $rivals = DB::table('t_ai_bank_sms')
+                ->where('user_id', $userId)
+                ->where('status', 'new')
+                ->where('direction', 'credit')
+                ->where('id', '<>', $sms->id)
+                ->whereRaw('ABS(amount - ?) <= 5', [$sms->amount])
+                ->exists();
+            if ($rivals) {
+                continue;
+            }
+
+            // Retract the orphan held signal, exactly as ignore() does. Leaving
+            // it alive would let a later screenshot pair with a credit we have
+            // already declared settled, quietly verifying the wrong order.
+            if ($sms->linked_signal_id) {
+                $held = \App\Models\FIN\PaymentSignal::find($sms->linked_signal_id);
+                if ($held && $held->source === \App\Models\FIN\PaymentSignal::SOURCE_BANK_SMS
+                    && !$held->paired_signal_id && !$held->matched_order_id) {
+                    DB::table('t_fin_payment_signal_order')->where('signal_id', $held->id)->delete();
+                    $held->delete();
+                }
+            }
+
+            DB::table('t_ai_bank_sms')->where('id', $sms->id)->update([
+                'status'           => 'matched',
+                'auto_reason'      => 'order_approved',
+                'linked_signal_id' => null,
+                'updated_at'       => now(),
+            ]);
+        }
+    }
+
+    /**
+     * MONEY OUT — close a bank debit whose payment is ALREADY in the ledger.
+     *
+     * WHY A SWEEP AND NOT A HOOK: a payment can be recorded from the web vendor
+     * screen, the Requests workflow, mobile, or the assistant. Hooking each of
+     * those means editing four money-critical files and re-opening the leak the
+     * day a fifth appears. This one query catches every path — including entries
+     * made before the feature existed, and by other users. (Proven in prod data:
+     * the Rs 3,706 and Rs 15,000 debits sat unsorted for a week because their
+     * expenses were entered through Requests, which the assistant never sees.)
+     *
+     * SAFETY. Closing an SMS moves NO money — it only clears a to-do. The real
+     * risk is the opposite: hiding a debit that was NEVER recorded, so an
+     * expense silently goes missing. Hence:
+     *   • the paying BANK must match, not just the amount (every online money-out
+     *     row carries receiving_account_id — verified 17/17 on both types),
+     *   • amount within Rs 1 and date within 1 day,
+     *   • rejected / reversed entries don't count as recorded,
+     *   • EXACTLY ONE unclaimed candidate, else nothing happens,
+     *   • the claimed ledger row is REMEMBERED (linked_ledger_id) so it can never
+     *     also close a second look-alike SMS,
+     *   • the closed row stays visible under "Handled today" with Restore.
+     */
+    private function reconcileRecordedDebits(int $userId): void
+    {
+        $open = DB::table('t_ai_bank_sms')
+            ->where('user_id', $userId)
+            ->where('status', 'new')
+            ->whereIn('direction', ['debit', 'unknown'])
+            ->whereNotNull('receiving_account_id')
+            ->where('amount', '>', 0)
+            // A row the human RESTORED after an auto-close is off-limits: the
+            // sweep must not overrule a person who looked at it and said no.
+            ->where(fn($q) => $q->whereNull('auto_reason')->orWhere('auto_reason', '<>', 'reconcile_rejected'))
+            ->get(['id', 'amount', 'receiving_account_id', 'sms_at', 'counterparty_account']);
+
+        if ($open->isEmpty()) {
+            return;
+        }
+
+        // Ledger rows already spoken for: claimed by another SMS directly, or
+        // produced BY the assistant for an SMS (vendor payments post a ledger
+        // row; expenses post a REQUEST which the ledger references).
+        $claimed = DB::table('t_ai_bank_sms')->whereNotNull('linked_ledger_id')
+            ->pluck('linked_ledger_id')->all();
+        $viaDrafts = DB::table('t_ai_drafts as d')
+            ->join('t_ai_bank_sms as s', 's.linked_draft_id', '=', 'd.id')
+            ->whereNotNull('d.result_id')
+            ->get(['d.result_type', 'd.result_id']);
+        $ledgerIds = $viaDrafts->where('result_type', 'ledger')->pluck('result_id')->all();
+        $requestIds = $viaDrafts->where('result_type', 'request')->pluck('result_id')->all();
+        if ($requestIds) {
+            $ledgerIds = array_merge($ledgerIds, DB::table('t_fin_ledger')
+                ->whereIn('request_id', $requestIds)->pluck('id')->all());
+        }
+        $claimed = array_unique(array_merge($claimed, $ledgerIds));
+
+        foreach ($open as $sms) {
+            $day = substr((string) $sms->sms_at, 0, 10);
+
+            $hits = DB::table('t_fin_ledger')
+                ->where('mode', 'online')
+                ->whereIn('transaction_type', ['vendor_payment', 'expense', 'transfer'])
+                ->whereNotIn('approval_status', ['rejected', 'reversed'])
+                ->where('receiving_account_id', $sms->receiving_account_id)
+                ->whereRaw('ABS(amount - ?) <= 1', [$sms->amount])
+                ->whereRaw('ABS(DATEDIFF(transaction_date, ?)) <= 1', [$day])
+                ->when($claimed, fn($q) => $q->whereNotIn('id', $claimed))
+                ->limit(2)
+                ->get(['id', 'transaction_type']);
+
+            if ($hits->count() !== 1) {
+                continue; // zero = genuinely unrecorded; several = ambiguous
+            }
+            $hit = $hits->first();
+
+            DB::table('t_ai_bank_sms')->where('id', $sms->id)->update([
+                'status'           => 'recorded',
+                'auto_reason'      => 'already_recorded',
+                'linked_ledger_id' => $hit->id,
+                'updated_at'       => now(),
+            ]);
+            $claimed[] = $hit->id; // never let the same entry close another SMS
+        }
     }
 
     /**
@@ -620,5 +980,18 @@ class AssistantWorkspaceController extends Controller
     private function allowed($user): bool
     {
         return $user && $user->hasMobilePermission('use_ai_assistant');
+    }
+
+    /** "2026-07-27 02:05:18" → "Jul 27", or "Today" / "Yesterday". */
+    private function shortDate(string $smsAt): ?string
+    {
+        try {
+            $d = \Illuminate\Support\Carbon::parse($smsAt);
+            if ($d->isToday())     return 'Today';
+            if ($d->isYesterday()) return 'Yesterday';
+            return $d->format('M j');
+        } catch (\Throwable) {
+            return null;
+        }
     }
 }

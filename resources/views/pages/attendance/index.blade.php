@@ -2040,7 +2040,7 @@ function leaveBalCell(u, uid, nm) {
   const late = Number(u.leave_late_penalties) || 0;
   const adj = Number(u.leave_manual_adjust) || 0;
   let chips = '';
-  if (ot > 0) chips += `<span style="color:#6d28d9;">+${ot} OT</span> `;
+  if (ot !== 0) chips += `<span style="color:#6d28d9;">${ot > 0 ? '+' : ''}${ot} OT</span> `;
   if (late < 0) chips += `<span style="color:#c2410c;">${late} late</span> `;
   if (adj !== 0) chips += `<span style="color:#6b7280;">${adj > 0 ? '+' : ''}${adj} adj</span> `;
   return `<td class="px-4 py-3" style="text-align:center;">
@@ -2057,6 +2057,7 @@ function leaveBalCell(u, uid, nm) {
 // the dates actually taken. Reuses the date-breakdown modal shell.
 async function showLeaveSummary(uid, name) {
   const u = monthData.find(x => String(x.user_id) === String(uid)) || {};
+  LVADJ = { uid: uid, name: name, kind: 'bonus' }; // default to bonus — the usual correction
   const modal = document.getElementById('dateBreakdownModal');
   document.getElementById('bdTitle').textContent = `🏖 Leave — ${name}`;
   document.getElementById('bdSub').textContent = 'balance · adjustments · dates taken (year cycle)';
@@ -2076,9 +2077,10 @@ async function showLeaveSummary(uid, name) {
   let summary = `<div style="background:#F9FAFB;border:1px solid #F3F4F6;border-radius:8px;padding:10px 12px;margin-bottom:12px;">`;
   summary += `<div style="text-align:center;margin-bottom:6px;"><span style="font-size:26px;font-weight:800;color:${remColor};">${rem}</span><span style="font-size:13px;color:#6B7280;font-weight:600;"> leaves left</span></div>`;
   summary += fRow('Yearly quota', quotaBase);
-  if (ot > 0) summary += fRow('+ Overtime earned', '+' + ot, '#6d28d9');
+  // Bonus can go NEGATIVE now (a correction can outweigh what was earned) — always signed.
+  if (ot !== 0) summary += fRow((ot > 0 ? '+ ' : '− ') + 'Bonus (overtime)', (ot > 0 ? '+' : '') + ot, '#6d28d9');
   if (late < 0) summary += fRow('− Late penalty', late, '#c2410c');
-  if (adj !== 0) summary += fRow((adj > 0 ? '+ ' : '− ') + 'Manual adjustment', (adj > 0 ? '+' : '') + adj, '#6b7280');
+  if (adj !== 0) summary += fRow((adj > 0 ? '+ ' : '− ') + 'Yearly adjustment', (adj > 0 ? '+' : '') + adj, '#6b7280');
   summary += fRow('− Taken', '−' + taken, '#2563eb');
   summary += `<div style="border-top:1px dashed #E5E7EB;margin-top:4px;padding-top:4px;">` + fRow('= Remaining', rem, remColor) + `</div>`;
   summary += `</div>`;
@@ -2101,11 +2103,98 @@ async function showLeaveSummary(uid, name) {
     takenHtml += takens.length
       ? takens.map(t => `<div style="display:flex;justify-content:space-between;gap:10px;padding:6px 4px;border-bottom:1px solid #F3F4F6;"><span style="font-size:12.5px;color:#111827;">${fmtD(t.date)}</span>${t.label ? `<span style="font-size:11px;color:#7C3AED;background:#7C3AED14;border-radius:5px;padding:1px 7px;font-weight:600;">${esc(t.label)}</span>` : ''}</div>`).join('')
       : `<div style="font-size:12px;color:#9CA3AF;padding:4px;">None this cycle.</div>`;
-    bodyEl.innerHTML = summary + adjHtml + takenHtml + '<div id="undoLeaveWrap"></div>';
+    // ± Adjust bar — the manager picks WHICH pool they are changing (bonus vs yearly)
+    // before typing days, so a correction can never land in the wrong bucket.
+    const adjustBar = `<div style="border:1px solid #E5E7EB;border-radius:8px;padding:10px 12px;margin-bottom:12px;background:#FFFFFF;">
+      <div style="font-size:12px;font-weight:700;color:#374151;margin-bottom:6px;">± Adjust leaves</div>
+      <div style="display:flex;gap:6px;margin-bottom:6px;">
+        <button type="button" id="lvKindBonus" onclick="lvAdjSetKind('bonus')">🏅 Bonus (overtime)</button>
+        <button type="button" id="lvKindYearly" onclick="lvAdjSetKind('yearly')">📅 Yearly allowance</button>
+      </div>
+      <div id="lvAdjHint" style="font-size:11px;color:#6B7280;margin-bottom:8px;"></div>
+      <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;">
+        <button type="button" onclick="lvAdjStep(-1)" style="width:30px;height:32px;border:1px solid #D1D5DB;border-radius:6px;background:#fff;font-size:15px;font-weight:700;color:#374151;cursor:pointer;">−</button>
+        <input type="number" id="lvAdjDays" value="-1" step="0.5" style="width:64px;height:32px;text-align:center;border:1px solid #D1D5DB;border-radius:6px;font-size:13px;font-weight:700;">
+        <button type="button" onclick="lvAdjStep(1)" style="width:30px;height:32px;border:1px solid #D1D5DB;border-radius:6px;background:#fff;font-size:15px;font-weight:700;color:#374151;cursor:pointer;">＋</button>
+        <input type="text" id="lvAdjReason" maxlength="200" placeholder="Reason — e.g. added by mistake" style="flex:1;min-width:140px;height:32px;border:1px solid #D1D5DB;border-radius:6px;padding:0 8px;font-size:12.5px;">
+        <button type="button" id="lvAdjSave" onclick="saveLeaveAdjust()" style="height:32px;padding:0 14px;border:none;border-radius:6px;background:#16a34a;color:#fff;font-size:12.5px;font-weight:700;cursor:pointer;">Save</button>
+      </div>
+    </div>`;
+    bodyEl.innerHTML = summary + adjustBar + adjHtml + takenHtml + '<div id="undoLeaveWrap"></div>';
+    lvAdjSetKind(LVADJ.kind); // paint the toggle + hint for the default pool
     // Approved leaves this cycle — each can be UNDONE if approved by mistake (returns the day to the balance).
     loadApprovedLeavesForUndo(uid, name);
   } catch (e) {
     bodyEl.innerHTML = summary + '<div style="color:#DC2626;font-size:12px;padding:8px;">Could not load history.</div>';
+  }
+}
+
+// ── ± Adjust leaves (inside the Leave summary modal) ─────────────────────────
+// Two explicit pools, chosen BEFORE typing days so the manager always knows which
+// one they are changing. 'bonus' writes a signed source='overtime' row (nets against
+// payroll's overtime grants — a −1 cancels a bonus day given by mistake); 'yearly'
+// writes source='manual' (one-off change on top of the yearly quota, the original
+// give-extra-days behaviour). Days are SIGNED: negative removes.
+let LVADJ = { uid: 0, name: '', kind: 'bonus' };
+
+function lvAdjSetKind(kind) {
+  LVADJ.kind = kind;
+  const base = 'font-size:12px;padding:5px 10px;border-radius:6px;cursor:pointer;';
+  const b = document.getElementById('lvKindBonus'), y = document.getElementById('lvKindYearly');
+  if (b) b.style.cssText = base + (kind === 'bonus'
+    ? 'font-weight:700;border:1px solid #6d28d9;background:#6d28d914;color:#6d28d9;'
+    : 'font-weight:600;border:1px solid #E5E7EB;background:#fff;color:#6B7280;');
+  if (y) y.style.cssText = base + (kind === 'yearly'
+    ? 'font-weight:700;border:1px solid #2563eb;background:#2563eb14;color:#2563eb;'
+    : 'font-weight:600;border:1px solid #E5E7EB;background:#fff;color:#6B7280;');
+  const hint = document.getElementById('lvAdjHint');
+  if (hint) hint.textContent = kind === 'bonus'
+    ? 'Changes the overtime-earned bonus pool — e.g. −1 removes a bonus day granted by mistake. The yearly quota is untouched.'
+    : 'One-off extra (or removed) days on top of the yearly quota — shows as "Yearly adjustment".';
+}
+
+function lvAdjStep(d) {
+  const inp = document.getElementById('lvAdjDays');
+  if (!inp) return;
+  let v = (parseFloat(inp.value) || 0) + d;
+  if (v === 0) v = d > 0 ? 1 : -1; // skip 0 — a zero-day adjustment is meaningless
+  inp.value = v;
+}
+
+async function saveLeaveAdjust() {
+  const days = parseFloat((document.getElementById('lvAdjDays') || {}).value);
+  if (!days || isNaN(days)) { alert('Enter the number of days (negative to remove).'); return; }
+  const reason = ((document.getElementById('lvAdjReason') || {}).value || '').trim();
+  const what = LVADJ.kind === 'bonus' ? 'BONUS (overtime)' : 'YEARLY-allowance';
+  if (!confirm((days > 0 ? 'Add ' : 'Remove ') + Math.abs(days) + ' ' + what + ' leave day(s) ' +
+      (days > 0 ? 'to ' : 'from ') + LVADJ.name + '?')) return;
+  const btn = document.getElementById('lvAdjSave');
+  if (btn) { btn.disabled = true; btn.textContent = 'Saving…'; }
+  try {
+    const res = await fetch('/attendance/grant-leave', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').content },
+      body: JSON.stringify({ user_id: LVADJ.uid, days: days, reason: reason, kind: LVADJ.kind })
+    });
+    const j = await res.json();
+    if (!j.success) { alert(j.message || 'Could not save the adjustment.'); return; }
+    // Patch this row from the returned balance so the re-rendered modal is instantly
+    // correct, then re-sync the whole grid in the background.
+    const u = monthData.find(x => String(x.user_id) === String(LVADJ.uid));
+    if (u && j.balance) {
+      u.leave_remaining = j.balance.remaining;
+      u.leave_quota_total = j.balance.quota_total;
+      u.leave_earned_overtime = j.balance.earned_overtime;
+      u.leave_late_penalties = j.balance.late_penalties;
+      u.leave_manual_adjust = j.balance.manual_adjust;
+      u.leaves_taken_year = j.balance.taken_total;
+    }
+    showLeaveSummary(LVADJ.uid, LVADJ.name);
+    loadMonthTab();
+  } catch (e) {
+    alert('Could not save the adjustment.');
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = 'Save'; }
   }
 }
 
@@ -2408,7 +2497,7 @@ async function loadLeaveBalanceChip() {
     const remColor = b.remaining <= 0 ? '#dc2626' : (b.remaining <= 2 ? '#d97706' : '#15803d');
     // Where the extra/missing leaves came from — segregated so a grown quota isn't a mystery.
     let breakdown = '';
-    if (b.earned_overtime > 0) breakdown += `<span style="color:#6d28d9;">+${b.earned_overtime} overtime</span>`;
+    if (b.earned_overtime != 0) breakdown += `<span style="color:#6d28d9;">${b.earned_overtime > 0 ? '+' : ''}${b.earned_overtime} bonus</span>`;
     if (b.late_penalties < 0) breakdown += `<span style="color:#c2410c;">${b.late_penalties} late</span>`;
     if (b.manual_adjust && b.manual_adjust != 0) breakdown += `<span style="color:#6b7280;">${b.manual_adjust > 0 ? '+' : ''}${b.manual_adjust} adj</span>`;
     chip.innerHTML =
@@ -2416,7 +2505,7 @@ async function loadLeaveBalanceChip() {
       `<span style="color:#9ca3af;">· same-day used ${b.sameday_used}/${b.sameday_cap}</span>` +
       breakdown +
       `<button type="button" onclick="toggleLeaveHistory(${uid})" style="background:none;border:none;color:#2563eb;cursor:pointer;text-decoration:underline;font-size:12px;padding:0;">history ›</button>` +
-      `<button type="button" onclick="grantExtraLeave(${uid})" style="background:none;border:none;color:#2563eb;cursor:pointer;text-decoration:underline;font-size:12px;padding:0;">＋ give extra days</button>`;
+      `<button type="button" onclick="grantExtraLeave(${uid})" style="background:none;border:none;color:#2563eb;cursor:pointer;text-decoration:underline;font-size:12px;padding:0;">＋ adjust yearly days</button>`;
   } catch (e) { chip.innerHTML = ''; }
 }
 
@@ -2445,8 +2534,10 @@ async function toggleLeaveHistory(uid) {
   }
 }
 
+// YEARLY-allowance adjustments only (source='manual'). Bonus (overtime) days are
+// adjusted from the Month tab → click the LEAVE (BAL) number → ± Adjust leaves.
 async function grantExtraLeave(uid) {
-  const raw = prompt('How many extra leave days to give? (use a negative number to deduct)');
+  const raw = prompt('How many extra YEARLY-allowance days to give? (use a negative number to deduct)\n\nTip: bonus/overtime days are adjusted from the Month tab leave popup.');
   if (raw === null) return;
   const days = parseFloat(raw);
   if (!days || isNaN(days)) { alert('Enter a number of days.'); return; }
@@ -2455,7 +2546,7 @@ async function grantExtraLeave(uid) {
     const res = await fetch('/attendance/grant-leave', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').content },
-      body: JSON.stringify({ user_id: uid, days: days, reason: reason })
+      body: JSON.stringify({ user_id: uid, days: days, reason: reason, kind: 'yearly' })
     });
     const j = await res.json();
     alert(j.message || (j.success ? 'Done.' : 'Could not save.'));

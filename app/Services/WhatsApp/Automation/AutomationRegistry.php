@@ -71,6 +71,36 @@ class AutomationRegistry
                 'handler'  => \App\Services\WhatsApp\Automation\Handlers\ExistingCustomerOrderReceivedHandler::class,
             ],
             [
+                'key'   => 'order_delivered_storage_tips',
+                'tab'   => 'order_actions',
+                'label' => 'Delivered → storage guidelines (seasonal)',
+                'description' =>
+                    "After an order is marked DELIVERED, automatically WhatsApp the customer your "
+                    . "meat-storage guidelines (built for the monsoon message — pick whichever template "
+                    . "you want, so the same rule carries a summer/winter one later). Fires on EVERY "
+                    . "delivery path: the rider app, the web edit form and bulk CSV status imports. "
+                    . "Variables: {{1}} customer name, {{2}} order number. Sends once per order, and at "
+                    . "most once per customer inside the cooldown below — so a weekly customer isn't sent "
+                    . "the same guidelines on every delivery. Skips SHOP/wholesale customers (they have "
+                    . "their own cold storage), orders with no phone, and orders placed more than 14 days "
+                    . "before delivery (so a bulk back-fill can't message old deliveries). Off by default — "
+                    . "turn it on for the season and off again when it ends.",
+                'trigger_summary' => "When an order is marked delivered",
+                'event'    => 'order.delivered',
+                'editable' => ['enabled', 'template', 'cooldown'],
+                'template' => ['body_vars' => 2, 'header' => 'none', 'default' => 'monsoon'],
+                'available' => true,
+                'handler'  => \App\Services\WhatsApp\Automation\Handlers\DeliveredStorageTipsHandler::class,
+                // Surfaces a daily reminder strip on the Open Orders page while
+                // this rule is live, so a seasonal automation can't be left
+                // running for months after the season ends. See
+                // OrderController::index() + orders/index.blade.php.
+                'orders_banner' => [
+                    'icon'  => '🌧',
+                    'title' => 'Auto-sending storage guidelines after delivery',
+                ],
+            ],
+            [
                 'key'   => 'order_accepted_location',
                 'tab'   => 'order_actions',
                 'label' => 'Order accepted → send location request',
@@ -198,5 +228,19 @@ class AutomationRegistry
     {
         $desc = self::get($key);
         return $desc !== null && !empty($desc['available']);
+    }
+
+    /**
+     * Rules that advertise themselves on the Open Orders page while they're
+     * live (`orders_banner`). Used for SEASONAL automations that must not be
+     * left silently running — the banner is the daily reminder that they're on.
+     * Add `orders_banner` to any future rule to opt it in; nothing else needed.
+     */
+    public static function withOrdersBanner(): array
+    {
+        return array_values(array_filter(
+            self::all(),
+            fn($d) => !empty($d['available']) && !empty($d['orders_banner'])
+        ));
     }
 }

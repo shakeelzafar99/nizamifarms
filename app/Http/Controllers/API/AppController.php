@@ -20,8 +20,8 @@ class AppController extends Controller
         return response()->json([
             'success' => true,
             'version' => [
-                'code' => 1260,                  // Current versionCode (increment this when releasing new version)
-                'name' => '12.6.0',              // Current versionName (user-facing version)
+                'code' => 1280,                  // Current versionCode (increment this when releasing new version)
+                'name' => '12.8.0',              // Current versionName (user-facing version)
                 'download_url' => url('/apk/latest'),  // Serves APK directly with proper headers
                 'release_notes' => 'Bug fixes and improvements.',
                 'force_update' => true,        // Set to true to force users to update
@@ -84,8 +84,8 @@ class AppController extends Controller
         return response()->json([
             'success' => true,
             'version' => [
-                'code' => 1240,                                   // Messages versionCode - bumped by build script
-                'name' => '12.4.0-messages',                      // Messages versionName (suffixed by gradle)
+                'code' => 1280,                                   // Messages versionCode - bumped by build script
+                'name' => '12.8.0-messages',                      // Messages versionName (suffixed by gradle)
                 'download_url' => url('/apk/messages-latest'),    // Serves com.nizamifarmsmobile.messages APK
                 'release_notes' => 'NF Messages updates.',
                 'force_update' => false,                          // Soft prompt - user can postpone

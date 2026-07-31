@@ -771,13 +771,18 @@ class AttendanceController extends Controller
             // Dated, attributed leave adjustments (overtime bonus / late penalty / manual) for
             // the current cycle — the "who/when/why" history. Cycle-scoped inside the service.
             $adj = (new \App\Services\HR\LeavePolicyService())->adjustments($userId);
-            $srcLabels = ['overtime' => 'overtime bonus', 'late_penalty' => 'late penalty', 'manual' => 'manual grant', 'half_day' => 'half day'];
+            $srcLabels = ['overtime' => 'bonus (overtime)', 'late_penalty' => 'late penalty', 'manual' => 'yearly adjustment', 'half_day' => 'half day'];
             $items = [];
             foreach ($adj as $a) {
                 if (empty($a['date'])) { continue; }
                 $days = (float) $a['days'];
                 $num = rtrim(rtrim(number_format(abs($days), 1), '0'), '.');
+                // Show the manager's typed reason, but not payroll's auto-reasons ("Overtime
+                // bonus Jul 2026") — those just repeat the source label.
+                $reason = (string) ($a['reason'] ?? '');
+                $showReason = $reason !== '' && !preg_match('/^(Overtime bonus|Late penalty) /', $reason);
                 $lbl = ($days >= 0 ? '+' : '−') . $num . ' leave · ' . ($srcLabels[$a['source']] ?? $a['source'])
+                    . ($showReason ? ' · “' . $reason . '”' : '')
                     . ($a['by_name'] ? ' · by ' . $a['by_name'] : '');
                 $items[] = ['date' => $a['date'], 'label' => $lbl];
             }
@@ -1757,8 +1762,14 @@ class AttendanceController extends Controller
     }
 
     /**
-     * Grant a rider EXTRA leave days on top of the yearly quota (manager action, audited).
-     * Writes a +days row to the leave ledger (t_hr_leave_grant). Requires the Phase-E SQL.
+     * Grant or deduct EXTRA leave days for a rider (manager action, audited). Writes a signed
+     * row to the leave ledger (t_hr_leave_grant). Requires the Phase-E SQL.
+     *
+     * kind = 'bonus'  → source 'overtime': adjusts the overtime-earned bonus pool, so the
+     *                   "+ Bonus (overtime)" line nets out on every surface (a −1 here cancels
+     *                   a payroll-granted bonus day). No new ENUM value needed.
+     * kind = 'yearly' → source 'manual' (default, the original behaviour): a one-off change
+     *                   on top of the yearly quota, shown as "Manual adjustment".
      */
     public function grantLeave(Request $request)
     {
@@ -1766,6 +1777,7 @@ class AttendanceController extends Controller
             'user_id' => 'required|integer|exists:t_sys_user,id',
             'days' => 'required|numeric|not_in:0|min:-365|max:365',
             'reason' => 'nullable|string|max:200',
+            'kind' => 'nullable|in:yearly,bonus',
         ]);
         if ($validator->fails()) {
             return response()->json(['success' => false, 'message' => $validator->errors()->first()], 422);
@@ -1776,11 +1788,12 @@ class AttendanceController extends Controller
         try {
             $userId = (int) $request->user_id;
             $days = round((float) $request->days, 1);
+            $kind = $request->input('kind') === 'bonus' ? 'bonus' : 'yearly';
             DB::table('t_hr_leave_grant')->insert([
                 'user_id' => $userId,
                 'days' => $days,
                 'reason' => trim((string) $request->input('reason', '')) ?: null,
-                'source' => 'manual',
+                'source' => $kind === 'bonus' ? 'overtime' : 'manual',
                 'effective_date' => now()->toDateString(),
                 'created_by' => auth()->id(),
                 'created_at' => now(),
@@ -1788,9 +1801,10 @@ class AttendanceController extends Controller
             ]);
             $bal = (new \App\Services\HR\LeavePolicyService())->balance($userId);
             $verb = $days > 0 ? 'Granted' : 'Deducted';
+            $what = $kind === 'bonus' ? 'bonus (overtime)' : 'yearly-allowance';
             return response()->json([
                 'success' => true,
-                'message' => "{$verb} " . abs($days) . " leave day(s). Balance is now {$bal['remaining']} of {$bal['effective_quota']}.",
+                'message' => "{$verb} " . abs($days) . " {$what} leave day(s). Balance is now {$bal['remaining']} of {$bal['effective_quota']}.",
                 'balance' => $bal,
             ]);
         } catch (\Throwable $e) {

@@ -49,6 +49,16 @@ class ReadOnlyGuard
             return $next($request);
         }
 
+        // Narrow, per-user carve-out: a view-only account granted
+        // `manage_campaigns` may run campaigns (create / send / end) while every
+        // other write in the app stays blocked. Requested Jul-2026 so the
+        // analyst login can run marketing without being handed the operational
+        // system. Scoped to campaign paths AND to that one permission, so it can
+        // never widen into ledger, orders, customers, etc.
+        if ($this->isPermittedCampaignWrite($request, $user)) {
+            return $next($request);
+        }
+
         $message = 'This account is view-only. You can browse everything, but changes are disabled.';
 
         if ($request->expectsJson() || $request->ajax()) {
@@ -60,6 +70,33 @@ class ReadOnlyGuard
         }
 
         abort(403, $message);
+    }
+
+    /**
+     * Is this a campaign write by a view-only user who is explicitly allowed to
+     * run campaigns?
+     *
+     * Both halves must hold: the path must be under /campaigns, and the user must
+     * carry `manage_campaigns`. The path check is what keeps this from becoming a
+     * general write unlock — granting the permission opens campaigns and nothing
+     * else. The campaign controller enforces the same permission again, so this
+     * middleware is only lifting the blanket read-only block, never granting
+     * access on its own.
+     */
+    private function isPermittedCampaignWrite(Request $request, $user): bool
+    {
+        if (!$request->is('campaigns') && !$request->is('campaigns/*')) {
+            return false;
+        }
+
+        // Same rule the campaign controller enforces (CampaignAccess), so the
+        // middleware and the controller can never disagree about who may send.
+        // Note this asks for the PERMISSION specifically, not canManage() — the
+        // latter falls back to "anyone who can view" before the SQL is seeded,
+        // which is right for normal users but must NOT quietly unlock writes for
+        // a view-only account.
+        return method_exists($user, 'hasMobilePermission')
+            && $user->hasMobilePermission(\App\Services\Campaigns\CampaignAccess::PERM_MANAGE);
     }
 
     /**

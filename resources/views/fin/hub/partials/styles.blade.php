@@ -227,6 +227,7 @@
   .nfhub .day-net.balanced{background:var(--in-soft);color:var(--in)}
   .nfhub .day-net.holding{background:var(--owe-soft);color:var(--owe)}
   .nfhub .day-net.short{background:var(--out-soft);color:var(--out)}
+  .nfhub .day-net.historic{background:var(--surface);color:var(--ink3);font-weight:600;border:1px dashed var(--line)}
 
   /* clickable stat chip */
   .nfhub .stat-chip.tap{cursor:pointer;transition:border-color .12s,background .12s;border:1px solid transparent}
@@ -309,6 +310,123 @@
   .nfhub .stmt-head{display:flex;gap:10px;flex-wrap:wrap;align-items:center;padding:2px 0 12px}
   .nfhub .stmt-tot{display:flex;gap:14px;font-size:12.5px}
   .nfhub .stmt-tot .g{color:var(--in);font-weight:700} .nfhub .stmt-tot .r{color:var(--out);font-weight:700}
+
+  /* one-time setup notice (pre-baseline) — informative, deliberately NOT alarming */
+  .nfhub .setup-banner{display:flex;align-items:center;gap:14px;flex-wrap:wrap;background:var(--surface);
+    border:1px dashed var(--accent-line);border-left:4px solid var(--accent);border-radius:var(--radius);
+    padding:13px 16px;margin-bottom:14px;box-shadow:var(--shadow)}
+  .nfhub .setup-banner .su-ico{font-size:20px;color:var(--accent);flex:0 0 auto}
+  .nfhub .setup-banner .su-text{flex:1;min-width:240px;font-size:12.5px;color:var(--ink2);line-height:1.5}
+  .nfhub .setup-banner .su-text b{color:var(--ink)}
+  .nfhub .ok-chip{display:inline-flex;align-items:center;font-size:10.5px;font-weight:800;letter-spacing:.02em;
+    background:var(--in-soft);color:var(--in);padding:1px 8px;border-radius:99px;margin-left:8px;vertical-align:1px;
+    text-transform:none}
+
+  /* pool split + distribution meter */
+  .nfhub .p-split{display:flex;gap:16px;flex-wrap:wrap;margin-top:6px;font-size:12px;color:var(--ink2)}
+  .nfhub .p-split b{color:var(--ink);font-weight:700;margin-left:5px}
+  .nfhub .p-split .dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:5px;vertical-align:0}
+  .nfhub .p-split .dot.in{background:var(--in)} .nfhub .p-split .dot.owe{background:var(--owe)} .nfhub .p-split .dot.out{background:var(--out)}
+  .nfhub .p-meter{height:6px;border-radius:99px;background:var(--owe-soft);overflow:hidden;margin-top:9px;max-width:420px}
+  .nfhub .p-meter span{display:block;height:100%;background:var(--in);border-radius:99px}
+
+  /* bank pill in the combined feed */
+  .nfhub .bankpill{display:inline-block;padding:2px 9px;border-radius:6px;background:var(--surface2);color:var(--ink2);
+    font-size:11.5px;font-weight:700;white-space:nowrap;text-decoration:none}
+  .nfhub .bankpill:hover{color:var(--accent)}
+  .nfhub .bankpill.none{background:var(--owe-soft);color:var(--owe)}
+
+  /* pre-reset (historic) statement rows — visible, never counted */
+  .nfhub tr.pre-reset td{opacity:.55;background:var(--surface2)}
+  .nfhub tr.reset-row td{background:var(--accent-soft);font-weight:700}
+  .nfhub tr.reset-row .type-chip{background:var(--accent);color:var(--accent-ink)}
+  .nfhub .hist-bar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:9px 16px;background:var(--surface2);
+    border-top:1px solid var(--line2);font-size:12px;color:var(--ink3)}
+
+  /* rebalance wizard */
+  .hubmodal .rb-list{display:flex;flex-direction:column;border:1px solid var(--line);border-radius:9px;overflow:hidden}
+  .hubmodal .rb-row{display:flex;align-items:center;gap:10px;padding:8px 11px;border-bottom:1px solid var(--line2)}
+  .hubmodal .rb-row:last-child{border-bottom:none}
+  .hubmodal .rb-row.off{opacity:.62}
+  .hubmodal .rb-dot{width:9px;height:9px;border-radius:50%;flex:0 0 auto}
+  .hubmodal .rb-name{flex:1;min-width:0;font-size:13px;font-weight:600;color:var(--ink);display:flex;align-items:center;gap:7px;flex-wrap:wrap}
+  .hubmodal .rb-cur{font-size:11px;font-weight:500;color:var(--ink3)}
+  .hubmodal .rb-amt{width:140px;flex:0 0 auto;border:1px solid var(--line);background:var(--surface);color:var(--ink);
+    border-radius:7px;padding:6px 9px;font:inherit;font-size:13px;text-align:right;font-variant-numeric:tabular-nums}
+  .hubmodal .rb-amt:focus{outline:none;border-color:var(--accent)}
+  .hubmodal .rb-foot{display:flex;gap:18px;flex-wrap:wrap;justify-content:flex-end;margin-top:11px;padding:9px 12px;
+    border-radius:8px;font-size:12.5px;color:var(--ink2);background:var(--surface2)}
+  .hubmodal .rb-foot b{color:var(--ink);margin-left:5px}
+  .hubmodal .rb-foot.ok{background:var(--in-soft);color:var(--in)} .hubmodal .rb-foot.ok b{color:var(--in)}
+  .hubmodal .rb-foot.off{background:var(--owe-soft);color:var(--owe)} .hubmodal .rb-foot.off b{color:var(--owe)}
+  /* pinned copy of the summary at the top of the wizard — stays visible while the bank list scrolls */
+  .hubmodal .rb-foot.rb-top{position:sticky;top:-16px;z-index:5;margin:0 0 12px;box-shadow:var(--shadow)}
+
+  /* vendor statement: day-header quick-add buttons + bill-image chip */
+  .nfhub .day-add{display:inline-flex;gap:4px;margin-left:8px}
+  .nfhub .day-add .mini-btn{padding:2px 8px;font-size:11px}
+  .nfhub .bill-chip{border:0;background:none;cursor:pointer;font-size:12px;padding:0 3px;vertical-align:-1px}
+  .nfhub .bill-chip:hover{transform:scale(1.15)}
+
+  /* vendor products manager */
+  .hubmodal .pr-form{background:var(--surface2);border:1px solid var(--line);border-radius:10px;
+    padding:12px 14px 8px;margin-bottom:14px}
+  .hubmodal .pr-row{display:flex;align-items:center;gap:12px;padding:9px 4px;border-bottom:1px solid var(--line)}
+  .hubmodal .pr-row:last-child{border-bottom:0}
+  .hubmodal .pr-row.off{opacity:.55}
+  .hubmodal .pr-name{flex:1;font-size:13px;font-weight:600;color:var(--ink)}
+  .hubmodal .pr-star{color:var(--owe);margin-right:3px}
+  .hubmodal .pr-rate{font-size:12.5px;font-weight:700;color:var(--ink2);white-space:nowrap}
+  .hubmodal .pr-unit{font-weight:500;color:var(--ink3);font-size:11px}
+  .hubmodal .pr-row .row-actions{display:flex;gap:4px;flex-wrap:wrap;justify-content:flex-end}
+
+  /* vendor statement: collapsible month sections wrapping the day groups */
+  .nfhub .month-block{border-top:1px solid var(--line)}
+  .nfhub .month-block:first-of-type{border-top:0}
+  .nfhub .month-head{display:flex;align-items:center;gap:12px;width:100%;padding:11px 16px;background:none;
+    border:0;cursor:pointer;text-align:left;font:inherit;color:var(--ink2);transition:background .12s}
+  .nfhub .month-head:hover{background:var(--surface2)}
+  .nfhub .month-head .m-caret{color:var(--ink3);font-size:11px;transition:transform .15s;flex:0 0 auto}
+  .nfhub .month-block.open > .month-head .m-caret{transform:rotate(90deg)}
+  .nfhub .month-head .m-label{font-size:13.5px;color:var(--ink);font-weight:800}
+  .nfhub .month-head .m-count{font-size:11px;color:var(--ink3);font-weight:600}
+  .nfhub .month-head .m-sums{font-size:11.5px;color:var(--ink3);margin-left:auto}
+  .nfhub .month-head .m-closing{font-size:11px;color:var(--ink3);white-space:nowrap}
+  .nfhub .month-head .m-closing b{font-size:12.5px;margin-left:4px}
+  .nfhub .month-body{display:none}
+  .nfhub .month-block.open > .month-body{display:block}
+  .nfhub .month-loading{padding:14px 16px;font-size:12px;color:var(--ink3)}
+  @media (max-width:760px){
+    .nfhub .month-head{flex-wrap:wrap;gap:6px 10px}
+    .nfhub .month-head .m-sums{margin-left:0;width:100%}
+  }
+
+  /* statement: compact leading Time column (clock when same-day; "↩ <date>" when backdated) */
+  .nfhub .col-time{width:74px;white-space:nowrap}
+  .nfhub .row-time{font-size:10.5px;color:var(--ink3);white-space:nowrap;font-weight:600;
+    font-variant-numeric:tabular-nums}
+  .nfhub .row-time.late{font-style:italic}
+
+  /* drawer: balance before → after for a statement row */
+  .drawer .d-bal{display:flex;align-items:center;gap:12px}
+  .drawer .d-bal > div{flex:1;display:flex;flex-direction:column;gap:2px;background:var(--surface2);
+    border:1px solid var(--line);border-radius:9px;padding:8px 10px}
+  .drawer .d-bal span{font-size:10px;text-transform:uppercase;letter-spacing:.04em;color:var(--ink3);font-weight:700}
+  .drawer .d-bal b{font-size:14px;color:var(--ink);font-weight:800}
+  .drawer .d-bal .d-bal-arrow{flex:0 0 auto;background:none;border:0;padding:0;color:var(--ink3);font-size:14px}
+
+  /* bank-to-bank transfer: before/after preview so the effect is obvious before committing */
+  .hubmodal .bx-preview{background:var(--surface2);border:1px solid var(--line);border-radius:10px;
+    padding:10px 12px;margin:2px 0 12px}
+  .hubmodal .bx-line{display:flex;justify-content:space-between;align-items:center;gap:12px;
+    font-size:12.5px;color:var(--ink2);padding:2px 0}
+  .hubmodal .bx-line b{color:var(--ink);font-weight:700}
+  .hubmodal .bx-line .neg{color:var(--out)}
+  .hubmodal .bx-note{font-size:11px;color:var(--ink3);margin-top:6px;padding-top:6px;border-top:1px dashed var(--line)}
+  .hubmodal .btn.primary:disabled{opacity:.45;cursor:not-allowed;filter:none}
+  .hubmodal .bankchip.unsure{border-style:dashed;color:var(--owe);border-color:color-mix(in srgb,var(--owe) 40%,transparent)}
+  .hubmodal .bankchip.unsure.on{background:var(--owe-soft);border-color:var(--owe);color:var(--owe)}
+  .hubmodal .inactive-tag{font-size:10px;font-weight:700;color:var(--ink3);background:var(--surface2);padding:1px 6px;border-radius:5px}
 
   /* placeholder */
   .nfhub .ph{background:var(--surface);border:1px dashed var(--line);border-radius:var(--radius);

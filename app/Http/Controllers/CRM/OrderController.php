@@ -256,7 +256,60 @@ class OrderController extends Controller
             // non-fatal — ticks just don't show on first paint
         }
 
-        return view('pages.orders.index', compact('orders', 'source', 'tab', 'shopifyCount', 'approvalsCount', 'otherCount', 'openCount', 'canViewShopify', 'canViewAllOrders', 'user', 'paymentProofMap'));
+        // Jul-2026 — "this automation is running" strips for the Open Orders tab.
+        // SEASONAL WhatsApp automations (the monsoon storage guidelines) are easy
+        // to switch on and then forget for months, so every rule that declares
+        // `orders_banner` in the registry announces itself here while it's live.
+        // Rendered server-side (no extra request); dismissing is per-day and
+        // client-side. Non-fatal — on any error the page simply shows no strip.
+        $automationBanners = [];
+        try {
+            $automationBanners = $this->liveAutomationBanners($user);
+        } catch (\Throwable $e) {
+            \Log::warning('Orders page: automation banner lookup failed (non-fatal)', [
+                'error' => $e->getMessage(),
+            ]);
+        }
+
+        return view('pages.orders.index', compact('orders', 'source', 'tab', 'shopifyCount', 'approvalsCount', 'otherCount', 'openCount', 'canViewShopify', 'canViewAllOrders', 'user', 'paymentProofMap', 'automationBanners'));
+    }
+
+    /**
+     * The currently-LIVE automations that want a strip on the Open Orders page.
+     *
+     * "Live" is the fully-resolved state (master switch ON + rule enabled +
+     * rule wired), i.e. exactly the condition under which messages actually go
+     * out — so the strip can never claim something is sending when it isn't.
+     *
+     * `can_manage` decides whether the strip offers a Turn-off button: the
+     * toggle endpoint is gated on manage_wa_auto_reply, so users without it get
+     * the notice and the dismiss only.
+     */
+    protected function liveAutomationBanners($user): array
+    {
+        $rules = \App\Services\WhatsApp\Automation\AutomationRegistry::withOrdersBanner();
+        if (empty($rules)) {
+            return [];
+        }
+
+        $service = app(\App\Services\WhatsApp\Automation\WhatsAppAutomationService::class);
+        $canManage = $user
+            && method_exists($user, 'hasMobilePermission')
+            && $user->hasMobilePermission('manage_wa_auto_reply');
+
+        $out = [];
+        foreach ($rules as $desc) {
+            if (!$service->isRuleLive($desc['key'])) {
+                continue;
+            }
+            $out[] = [
+                'key'        => $desc['key'],
+                'icon'       => $desc['orders_banner']['icon'] ?? '🤖',
+                'title'      => $desc['orders_banner']['title'] ?? $desc['label'],
+                'can_manage' => (bool) $canManage,
+            ];
+        }
+        return $out;
     }
 
     /**
@@ -4400,7 +4453,15 @@ class OrderController extends Controller
 
         $canViewFleet = $canViewBikes;   // name kept: the blade + JS use `fleet`
 
-        return view('pages.riders-map.index', compact('canViewRiderReports', 'canViewFleet', 'bikesOnly'));
+        // The Bikes tab can file a petrol/maintenance claim inline. It posts to the
+        // ordinary request endpoint, which needs the "expense" category id — looked
+        // up here rather than in the view, and null-safe so the button simply does
+        // nothing if that category is ever missing.
+        $expenseCategoryId = \App\Models\Request\RequestCategoryModel::where('category_code', 'expense')
+            ->value('id');
+
+        return view('pages.riders-map.index',
+            compact('canViewRiderReports', 'canViewFleet', 'bikesOnly', 'expenseCategoryId'));
     }
 
     /**

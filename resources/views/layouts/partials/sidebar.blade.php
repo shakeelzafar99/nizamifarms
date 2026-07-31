@@ -167,6 +167,23 @@
                       </a>
                   </div>
                   @endif
+                  {{-- Campaigns in the restricted menu (Jul-2026). The full-menu
+                       Campaigns entry lower down never renders for a restricted
+                       role, so it needs its own row here. Grant with
+                       web_menu_campaigns; the page itself is separately gated on
+                       the view_campaigns / manage_campaigns permissions, so a
+                       view-only owner can be given campaign-RUNNING rights
+                       without unlocking writes anywhere else. --}}
+                  @if($nfWebCan('campaigns'))
+                  <div class="kt-menu-item" data-kt-menu-item-toggle="accordion" data-kt-menu-item-trigger="click">
+                      <a href="/campaigns">
+                          <div class="kt-menu-link flex items-center grow cursor-pointer border border-transparent gap-[10px] ps-[10px] pe-[10px] py-[6px] hover:bg-gray-200 rounded-md transition-colors duration-200 group" tabindex="0">
+                              <span class="kt-menu-icon items-start text-gray-600 group-hover:text-gray-900 w-[20px]"><i class="ki-filled ki-notification-on text-lg"></i></span>
+                              <span class="kt-menu-title text-sm font-medium text-gray-900 group-hover:text-gray-900">Campaigns</span>
+                          </div>
+                      </a>
+                  </div>
+                  @endif
                   @if($nfWebCan('finance_hub'))
                   {{-- Ledger Hub (read-only for view-only owners; write buttons hidden via $canWrite). --}}
                   <div class="kt-menu-item" data-kt-menu-item-toggle="accordion" data-kt-menu-item-trigger="click">
@@ -513,6 +530,15 @@
                                   </div>
                               </a>
                           </div>
+                          {{-- Jul-2026 — NF Ledger, Overall Ledger and Banks were RETIRED FROM THIS MENU
+                               (not from the app): the Ledger Hub now covers all three, and each old page
+                               is still one click away from the tab that mirrors it —
+                                 NF Ledger      → Hub ▸ Accounts ▸ "Old NF ledger ↗"  (/finance/employee)
+                                 Overall Ledger → Hub ▸ Overview ▸ "Old ledger ↗"     (/finance/ledger)
+                                 Banks          → Hub ▸ Banks ▸ "Manage banks ↗"      (/finance/bank-balances)
+                               Routes, permissions and every deep link into them are untouched, so nothing
+                               that already points at these pages breaks. To bring one back, un-comment it.
+
                           <div class="kt-menu-item" data-kt-menu-item-toggle="accordion" data-kt-menu-item-trigger="click">
                               <a href="/finance/employee">
                                   <div class="kt-menu-link flex items-center grow cursor-pointer border border-transparent gap-[10px] ps-[10px] pe-[10px] py-[6px] hover:bg-gray-200 rounded-md transition-colors duration-200 group" tabindex="0">
@@ -537,8 +563,12 @@
                                   </div>
                               </a>
                           </div>
+                          --}}
+                          {{-- Vendors now opens the Hub's Vendors tab. The OLD page keeps its route and is
+                               reached from there via "Old vendors ↗" — so this must NOT become a redirect
+                               on /finance/vendors itself, or that escape hatch would loop back here. --}}
                           <div class="kt-menu-item" data-kt-menu-item-toggle="accordion" data-kt-menu-item-trigger="click">
-                              <a href="/finance/vendors">
+                              <a href="/finance/hub/vendors">
                                   <div class="kt-menu-link flex items-center grow cursor-pointer border border-transparent gap-[10px] ps-[10px] pe-[10px] py-[6px] hover:bg-gray-200 rounded-md transition-colors duration-200 group" tabindex="0">
                                       <span class="kt-menu-icon items-start text-gray-600 group-hover:text-gray-900 w-[20px]"><i class="ki-filled ki-shop text-lg"></i></span>
                                       <span class="kt-menu-title text-sm font-medium text-gray-900 group-hover:text-gray-900">Vendors</span>
@@ -642,6 +672,46 @@
                           </div>
                       </div>
                   </div>
+
+                  {{-- ===== G2 · 🌙 Overnight Storage (mobile-permission gated, same pattern as Khaas) ===== --}}
+                  @php
+                      $hasOvernightAccess = false;
+                      $overnightStoredCount = 0;
+                      if (auth()->check()) {
+                          $overnightUser = auth()->user();
+                          if (!$overnightUser->relationLoaded('roles')) {
+                              $overnightUser->load(['roles.mobilePermissions']);
+                          }
+                          $hasOvernightAccess = $overnightUser->hasMobilePermission('access_overnight_storage');
+                          if ($hasOvernightAccess) {
+                              $overnightStoredCount = \App\Models\CRM\OvernightItemModel::where('status', 'stored')->count();
+                          }
+                      }
+                  @endphp
+                  @if($hasOvernightAccess)
+                  <div class="nf-section" data-nf-sec="overnight" data-nf-default="collapsed">
+                      <div class="kt-menu-item pt-2.25 pb-px">
+                          <button type="button" class="nf-sec-toggle flex items-center gap-1.5 w-full text-left ps-[10px] pe-[10px] py-0 bg-transparent border-0 cursor-pointer group" aria-expanded="true">
+                              <i class="ki-filled ki-down nf-sec-chev text-[10px] text-sky-500 group-hover:text-sky-700 transition-transform"></i>
+                              <span class="kt-menu-heading uppercase text-xs font-medium text-sky-600 group-hover:text-sky-700 transition-colors flex-1">🌙 Overnight</span>
+                              <span class="nf-sec-rollup"></span>
+                          </button>
+                      </div>
+                      <div class="nf-section-body">
+                          <div class="kt-menu-item" data-kt-menu-item-toggle="accordion" data-kt-menu-item-trigger="click">
+                              <a href="{{ route('overnight.index') }}">
+                                  <div class="kt-menu-link flex items-center grow cursor-pointer border border-transparent gap-[10px] ps-[10px] pe-[10px] py-[6px] hover:bg-sky-50 rounded-md transition-colors duration-200 group" tabindex="0">
+                                      <span class="kt-menu-icon items-start text-sky-600 group-hover:text-sky-700 w-[20px]"><i class="ki-filled ki-moon text-lg"></i></span>
+                                      <span class="kt-menu-title text-sm font-medium text-gray-900 group-hover:text-sky-700 flex-1">Chiller / Freezer</span>
+                                      @if($overnightStoredCount > 0)
+                                      <span class="kt-badge kt-badge-sm font-bold" style="background-color:#e0f2fe; color:#0369a1; border-radius:9999px; padding:1px 8px; font-size:11px;">{{ $overnightStoredCount }}</span>
+                                      @endif
+                                  </div>
+                              </a>
+                          </div>
+                      </div>
+                  </div>
+                  @endif
 
                   {{-- ===== H · 🌿 Khaas (permission + business-unit gated) ===== --}}
                   @php

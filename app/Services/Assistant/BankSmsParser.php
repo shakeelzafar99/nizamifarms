@@ -191,12 +191,55 @@ class BankSmsParser
         }
 
         // Transfer debit: "transferred/paid/sent to <ZONE> on/via/ref ..."
-        if (preg_match('/\b(?:transferred|paid|sent|transfer)\s+to\s+(.{2,90}?)(?:\s+on\s+\d|\s+via\b|\s+ref\b|\s+txn\b|$)/is', $body, $m)) {
+        //
+        // The zone must stop where OUR side of the sentence begins, exactly like
+        // the credit branch above. Meezan's RAAST debit reads:
+        //   "PKR 100,000.00 sent to I.SAEED PK26ABPAxx001 as RAAST payment from
+        //    your AC# xxx4237 of AABPARA BR ISD on 27-Jul-2026 at 02:05 TID:..."
+        // Without the "as RAAST" / "from your" terminators the zone ran to the
+        // date and the stored name came out as the whole tail
+        // ("I.SAEED as RAAST payment from your of AABPARA BR ISD") — ugly on the
+        // card and useless as a name_key. The ACCOUNT key is unaffected either
+        // way (it is matched inside the zone), so existing map rules keep working.
+        if (preg_match('/\b(?:transferred|paid|sent|transfer)\s+to\s+(.{2,90}?)(?:\s+as\s+RAAST\b|\s+(?:from|in)\s+your\b|\s+from\s+A\s*\/?\s*C\b|\s+on\s+\d|\s+via\b|\s+ref\b|\s+txn\b|$)/is', $body, $m)) {
             return trim($m[1]);
         }
         // Generic "to <NAME>" fallback (older wording), boundary-limited.
         if (preg_match('/\b(?:beneficiary|payee)\s*[:\-]?\s*(.{2,60}?)(?:\s+on\s+\d|\s+via\b|\s+ref\b|$)/is', $body, $m)) {
             return trim($m[1]);
+        }
+        return null;
+    }
+
+    /**
+     * Normalize a MANUALLY-TYPED account fragment into the same key space the
+     * SMS parser produces — used by the "Known bank accounts" panel's Add form.
+     *
+     * ⚠ Keys must live in the PARSER's space or they will never match: the SMS
+     * shows masked fragments ("PK96UNILxx322", "MBL ACxxx4602"), so a full
+     * 24-char IBAN typed from a bank statement can never equal what an SMS
+     * carries. We therefore run the input through the SAME extraction patterns
+     * first ("MBL ACxxx4602" → MBL*4602), and only fall back to an
+     * uppercased/space-stripped literal when it already looks like one of our
+     * keys (contains a digit, 5+ chars). Anything else → null, refuse to save.
+     */
+    public function normalizeKey(string $raw): ?string
+    {
+        $raw = trim($raw);
+        if ($raw === '') {
+            return null;
+        }
+        $hit = $this->extractAccount($raw);
+        if (!empty($hit['key'])) {
+            return mb_substr($hit['key'], 0, 64);
+        }
+        $flat = strtoupper(preg_replace('/\s+/', '', $raw));
+        // MERCHANT:… labels (debit-card rules) pass through as-is.
+        if (str_starts_with($flat, 'MERCHANT:')) {
+            return mb_substr(strtoupper(trim($raw)), 0, 64);
+        }
+        if (strlen($flat) >= 5 && preg_match('/^[A-Z0-9*:\-]+$/', $flat) && preg_match('/\d/', $flat)) {
+            return mb_substr($flat, 0, 64);
         }
         return null;
     }

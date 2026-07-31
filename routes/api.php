@@ -371,6 +371,9 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('/store/campaigns/preview', [\App\Http\Controllers\API\RiderController::class, 'previewCampaign']);
     Route::get('/store/campaigns/cities', [\App\Http\Controllers\API\RiderController::class, 'getCampaignCities']);
     Route::get('/store/campaigns/qurbani-years', [\App\Http\Controllers\API\RiderController::class, 'getCampaignQurbaniYears']);
+    // Combined per-template results. MUST sit above /{id} or 'template-results'
+    // is captured as a campaign id.
+    Route::get('/store/campaigns/template-results', [\App\Http\Controllers\API\RiderController::class, 'getCampaignTemplateResults']);
     Route::get('/store/campaigns/{id}', [\App\Http\Controllers\API\RiderController::class, 'getCampaignDetail']);
     Route::post('/store/campaigns/{id}/add-customers', [\App\Http\Controllers\API\RiderController::class, 'addCampaignCustomers']);
     Route::post('/store/campaigns/{id}/refresh', [\App\Http\Controllers\API\RiderController::class, 'refreshCampaign']);
@@ -378,6 +381,11 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('/store/campaigns/{id}/end', [\App\Http\Controllers\API\RiderController::class, 'endCampaign']);
     Route::get('/store/campaigns/{id}/stats', [\App\Http\Controllers\API\RiderController::class, 'getCampaignStats']);
     Route::post('/store/campaigns/{id}/send-bulk', [\App\Http\Controllers\API\RiderController::class, 'sendCampaignBulk']);
+    // Send control: allowance + run progress, plus background start/pause so a
+    // long campaign doesn't need the phone awake and on-screen.
+    Route::get('/store/campaigns/{id}/send-status', [\App\Http\Controllers\API\RiderController::class, 'getCampaignSendStatus']);
+    Route::post('/store/campaigns/{id}/send-background', [\App\Http\Controllers\API\RiderController::class, 'startCampaignBackgroundSend']);
+    Route::post('/store/campaigns/{id}/send-pause', [\App\Http\Controllers\API\RiderController::class, 'pauseCampaignSend']);
     Route::post('/store/campaigns/{id}/customers/{customerId}/mark-sent', [\App\Http\Controllers\API\RiderController::class, 'markCampaignCustomerSent']);
     Route::post('/store/campaigns/{id}/customers/{customerId}/mark-skipped', [\App\Http\Controllers\API\RiderController::class, 'markCampaignCustomerSkipped']);
     
@@ -403,6 +411,9 @@ Route::middleware('auth:sanctum')->group(function () {
     // May-2026 — Qurbani Expenses screen summary card data.
     Route::get('/qurbani/expense-summary', [\App\Http\Controllers\API\RiderController::class, 'getQurbaniExpenseSummary']);
     Route::get('/expenses/fund-transfers', [\App\Http\Controllers\API\RiderController::class, 'getFundTransfers']);
+    // Last N movements IN and OUT of the expense account, with date/time/who (see the
+    // controller note — fund-transfers only shows money ADDED this month).
+    Route::get('/expenses/account-activity', [\App\Http\Controllers\API\RiderController::class, 'getAccountActivity']);
     Route::get('/expenses/payment-sources', [\App\Http\Controllers\API\RiderController::class, 'getPaymentSources']);
     Route::post('/expenses/set-default-account', [\App\Http\Controllers\API\RiderController::class, 'setBuDefaultExpenseAccount']); // ⭐ Set default expense account for a BU
     Route::get('/expenses/categories', [\App\Http\Controllers\API\RiderController::class, 'getExpenseCategoriesFromConfig']); // Fetch expense types from config (+ admin "bubbles")
@@ -784,6 +795,21 @@ Route::middleware('auth:sanctum')->group(function () {
     });
 
     // ============================
+    // Overnight Storage (NF store chiller/freezer tracker — standalone, no inventory impact)
+    // Same controller methods are mounted on /overnight/* in routes/web.php.
+    // ============================
+    Route::prefix('overnight')->group(function () {
+        Route::get('/items', [\App\Http\Controllers\CRM\OvernightStorageController::class, 'getItems']);
+        Route::get('/products', [\App\Http\Controllers\CRM\OvernightStorageController::class, 'getProductsMap']);
+        Route::post('/items', [\App\Http\Controllers\CRM\OvernightStorageController::class, 'addItems']);
+        Route::post('/move', [\App\Http\Controllers\CRM\OvernightStorageController::class, 'moveItems']);
+        Route::post('/take-out', [\App\Http\Controllers\CRM\OvernightStorageController::class, 'takeOutItems']);
+        Route::post('/verify', [\App\Http\Controllers\CRM\OvernightStorageController::class, 'verifyItems']);
+        Route::get('/history', [\App\Http\Controllers\CRM\OvernightStorageController::class, 'getHistory']);
+        Route::get('/daily-summary', [\App\Http\Controllers\CRM\OvernightStorageController::class, 'getDailySummary']);
+    });
+
+    // ============================
     // Customers (Mobile Store Mode)
     // ============================
     Route::prefix('customers')->group(function () {
@@ -894,6 +920,7 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('/workspace/inbox', [\App\Http\Controllers\API\AssistantWorkspaceController::class, 'inbox']);
         Route::get('/workspace/vendor-search', [\App\Http\Controllers\API\AssistantWorkspaceController::class, 'vendorSearch']);
         Route::get('/workspace/customer-search', [\App\Http\Controllers\API\AssistantWorkspaceController::class, 'customerSearch']);
+        Route::get('/workspace/account-search', [\App\Http\Controllers\API\AssistantWorkspaceController::class, 'accountSearch']);
 
         // Bank-SMS capture (Phase 4). /ingest is POSTed by the native SMS
         // receiver; the rest are the inbox one-tap actions. Regex parse, no LLM.

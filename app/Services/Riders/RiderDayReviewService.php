@@ -135,13 +135,19 @@ class RiderDayReviewService
         $from   = Carbon::parse($date)->startOfDay()->format('Y-m-d H:i:s');
         $to     = Carbon::parse($date)->addDay()->addHours(3)->format('Y-m-d H:i:s');
         $lateMg = (int) $this->cfg('late_manager_minutes', 15);
-        $atPinM = (int) $this->cfg('at_verified_m', 500);
+
+        // delivery_accuracy_m only exists after the GPS-accuracy hardening SQL; select it
+        // conditionally so the day list keeps working on a DB where that hasn't run yet.
+        $accCol = \Illuminate\Support\Facades\Schema::hasColumn('t_crm_order_status_history', 'delivery_accuracy_m')
+            ? 'h.delivery_accuracy_m'
+            : 'NULL';
 
         $rows = DB::select(
             "SELECT o.assigned_rider_user_id AS uid,
                     o.estimated_delivery_at AS eta,
                     h.changed_at AS delivered_raw,
                     h.delivery_latitude AS pin_lat, h.delivery_longitude AS pin_lng,
+                    {$accCol} AS delivery_accuracy_m,
                     c.latitude AS ver_lat, c.longitude AS ver_lng
                FROM t_crm_prod_order o
                JOIN t_crm_order_status_history h
@@ -178,13 +184,12 @@ class RiderDayReviewService
                 if ($late > $lateMg) $needs = true;
             }
 
-            if ($r->ver_lat !== null && $r->pin_lat !== null) {
-                $d = $this->report->distanceM(
-                    (float) $r->pin_lat, (float) $r->pin_lng,
-                    (float) $r->ver_lat, (float) $r->ver_lng
-                );
-                if ($d > $atPinM) $needs = true;
-            }
+            // Same verdict class the rider's opened day uses (RiderDayReportService), so the
+            // list can't say "needs a look" about a delivery the detail view calls clean.
+            $pin = VerifiedPinRule::judge(
+                $r->pin_lat, $r->pin_lng, $r->ver_lat, $r->ver_lng, $r->delivery_accuracy_m ?? null
+            );
+            if ($pin && !$pin['at_verified']) $needs = true;
 
             if ($needs) $out[$uid]['needs_look']++;
         }

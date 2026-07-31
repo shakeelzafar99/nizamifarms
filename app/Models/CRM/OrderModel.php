@@ -1737,6 +1737,39 @@ class OrderModel extends BaseModel
                 }
             }
 
+            // Jul-2026 — WhatsApp "delivered" automations (e.g. the seasonal
+            // meat-storage guidelines). changeStatus() is the SINGLE choke point
+            // for a delivery — the rider app, the web edit form, bulk CSV status
+            // imports and OrderStatusService all route through here — so this one
+            // seam covers every path. Deferred to app terminating so the WhatsApp
+            // call never holds up the rider's tap, and fully isolated so it can
+            // never affect the committed status change. Dormant unless the
+            // operator has enabled the rule AND the master switch is on; the
+            // handler re-reads the order fresh and applies its own skips
+            // (send-once per order, per-customer cooldown, shop customers,
+            // back-fill guard).
+            if ($result === true && $statusCode === 'delivered') {
+                try {
+                    $deliveredOrder = $this->load(['customer']);
+                    app()->terminating(function () use ($deliveredOrder) {
+                        try {
+                            app(\App\Services\WhatsApp\Automation\WhatsAppAutomationService::class)
+                                ->dispatch('order.delivered', [
+                                    'order'    => $deliveredOrder,
+                                    'order_id' => $deliveredOrder->id,
+                                ]);
+                        } catch (\Throwable $e) {
+                            \Log::warning('WA order.delivered automation failed', [
+                                'order_id' => $deliveredOrder->id ?? null,
+                                'error' => $e->getMessage(),
+                            ]);
+                        }
+                    });
+                } catch (\Throwable $e) {
+                    \Log::warning('WA order.delivered scheduling failed', ['error' => $e->getMessage()]);
+                }
+            }
+
             // Jul-2026 — Shopify fulfillment sync. When an SH- (Shopify-origin)
             // order is DELIVERED, mark the origin order Fulfilled + Paid on
             // Shopify. Runs in app()->terminating() so the caller's response

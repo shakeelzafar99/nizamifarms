@@ -156,6 +156,10 @@ class FleetFuelService
                 'fuel_per_all_km' => ($isCompany === true && $totalKm > 0)
                     ? round($c['fuel_rs'] / $totalKm, 2) : null,
                 'no_meter_days' => $m['no_meter_days'],
+                // The last odometer we have from a FILL, so the new-claim form can
+                // say "that's N km since his last fill" while the manager types —
+                // the same figure the approver later sees on the claim itself.
+                'last_fill_meter' => $this->lastFillMeter($uid),
                 'incl_ride_home_days' => $m['incl_ride_home_days'] ?? 0,
                 'fuel_rs'       => $c['fuel_rs'],
                 'fuel_pending_rs' => $c['fuel_pending_rs'],
@@ -1147,12 +1151,56 @@ class FleetFuelService
     }
 
     /** Browser-usable URL for a request's photo, or null. */
+    /**
+     * Receipt photo for a claim, as an ABSOLUTE url.
+     *
+     * ⚠ It used to return a bare '/public-storage/…' path. A browser resolves that
+     * against the page origin, so the web screens looked fine — but React Native's
+     * <Image source={{uri}}> has no origin to resolve against, so every petrol and
+     * maintenance photo silently failed to load on the phone, in BOTH store and
+     * Khaas/Frozen mode. Same absolute form getMeterPictureUrl() already uses for
+     * the attendance meter pictures, which is why those always worked on mobile.
+     */
+    /**
+     * The most recent odometer this rider recorded ON A FUEL FILL, whatever month
+     * it was in. Used only to show a live "N km since his last fill" while a claim
+     * is being typed — the stored figure on the claim still comes from
+     * kmSinceLastFill(), which chains fills properly and refuses to guess across a
+     * fill that carried no reading.
+     */
+    private function lastFillMeter(int $userId): ?int
+    {
+        try {
+            $v = DB::table('t_req_master')
+                ->where('requester_user_id', $userId)
+                ->where('expense_category', self::CAT_FUEL)
+                ->whereNotNull('meter_at_fill')
+                ->where('meter_at_fill', '>', self::MIN_METER)
+                ->whereNotIn('status', ['cancelled', 'rejected'])
+                ->orderByRaw('COALESCE(expense_date, DATE(created_at)) DESC, id DESC')
+                ->value('meter_at_fill');
+            return $v !== null ? (int) $v : null;
+        } catch (\Throwable $e) {
+            return null;
+        }
+    }
+
     private function attachmentUrl($attachments): ?string
     {
         if (empty($attachments)) return null;
         $paths = is_array($attachments) ? $attachments : json_decode($attachments, true);
         if (!is_array($paths) || !isset($paths[0]) || !$paths[0]) return null;
-        return '/public-storage/' . ltrim((string) $paths[0], '/');
+
+        $path = '/public-storage/' . ltrim((string) $paths[0], '/');
+
+        // Console/queue contexts have no request; fall back to the relative path
+        // rather than building a url against a bogus host.
+        try {
+            $base = request() ? request()->getSchemeAndHttpHost() : null;
+        } catch (\Throwable $e) {
+            $base = null;
+        }
+        return $base ? rtrim($base, '/') . $path : $path;
     }
 
     private function cfg(string $key, $default)

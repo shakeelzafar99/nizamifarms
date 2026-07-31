@@ -102,6 +102,7 @@ Route::middleware(['auth'])->group(function () {
         Route::get('/workspace/inbox', [\App\Http\Controllers\API\AssistantWorkspaceController::class, 'inbox'])->name('inbox');
         Route::get('/workspace/vendor-search', [\App\Http\Controllers\API\AssistantWorkspaceController::class, 'vendorSearch'])->name('vendor-search');
         Route::get('/workspace/customer-search', [\App\Http\Controllers\API\AssistantWorkspaceController::class, 'customerSearch'])->name('customer-search');
+        Route::get('/workspace/account-search', [\App\Http\Controllers\API\AssistantWorkspaceController::class, 'accountSearch'])->name('account-search');
         Route::get('/history', [\App\Http\Controllers\API\AssistantController::class, 'history_endpoint'])->name('history');
         Route::get('/settings', [\App\Http\Controllers\API\AssistantSettingsController::class, 'index'])->name('settings');
 
@@ -704,6 +705,9 @@ Route::middleware(['auth'])->group(function () {
         Route::post('/automations/toggle',      [\App\Http\Controllers\Web\WhatsAppAutomationController::class, 'toggle'])->name('messages.automations.toggle');
         Route::post('/automations/test-phone',  [\App\Http\Controllers\Web\WhatsAppAutomationController::class, 'saveTestPhone'])->name('messages.automations.testPhone');
         Route::post('/automations/rules/{key}', [\App\Http\Controllers\Web\WhatsAppAutomationController::class, 'saveRule'])->name('messages.automations.saveRule');
+        // Enabled-only toggle (does NOT touch template/config) — used by the
+        // Open Orders page banner for seasonal automations. Same gate.
+        Route::post('/automations/rules/{key}/enabled', [\App\Http\Controllers\Web\WhatsAppAutomationController::class, 'setRuleEnabled'])->name('messages.automations.setRuleEnabled');
         Route::get('/automations/log',          [\App\Http\Controllers\Web\WhatsAppAutomationController::class, 'log'])->name('messages.automations.log');
         // Non-gated: lets the Send-Invoice dialogs pre-fill online/cash template by payment method.
         Route::get('/automations/invoice-template-map', [\App\Http\Controllers\Web\WhatsAppAutomationController::class, 'invoiceTemplateMap'])->name('messages.automations.invoiceTemplateMap');
@@ -718,11 +722,26 @@ Route::middleware(['auth'])->group(function () {
         Route::get('/templates', [\App\Http\Controllers\Web\CampaignWebController::class, 'getTemplates']);
         Route::get('/cities', [\App\Http\Controllers\Web\CampaignWebController::class, 'getCities']);
         Route::get('/qurbani-years', [\App\Http\Controllers\Web\CampaignWebController::class, 'getQurbaniYears']);
+        Route::get('/products', [\App\Http\Controllers\Web\CampaignWebController::class, 'getProducts']);
+        Route::get('/quota', [\App\Http\Controllers\Web\CampaignWebController::class, 'quota']);
+        // Landing view: allowance, live sends, per-template results, attention list.
+        Route::get('/overview', [\App\Http\Controllers\Web\CampaignWebController::class, 'overview']);
+        // Results grouped by template (per-campaign + combined unique). MUST stay
+        // above the /{id} route or 'by-template' resolves as a campaign id.
+        Route::get('/by-template', [\App\Http\Controllers\Web\CampaignWebController::class, 'byTemplate']);
         Route::post('/preview', [\App\Http\Controllers\Web\CampaignWebController::class, 'preview']);
         Route::post('/create', [\App\Http\Controllers\Web\CampaignWebController::class, 'create']);
         Route::get('/{id}', [\App\Http\Controllers\Web\CampaignWebController::class, 'detail']);
         Route::post('/{id}/add-customers', [\App\Http\Controllers\Web\CampaignWebController::class, 'addCustomers']);
-        Route::post('/{id}/send-bulk', [\App\Http\Controllers\Web\CampaignWebController::class, 'sendBulk']);
+        // Send: one bounded slice per call. The browser re-calls while the
+        // response says it ran out of time budget.
+        Route::post('/{id}/send', [\App\Http\Controllers\Web\CampaignWebController::class, 'send']);
+        Route::post('/{id}/send-background', [\App\Http\Controllers\Web\CampaignWebController::class, 'sendBackground']);
+        Route::post('/{id}/send-pause', [\App\Http\Controllers\Web\CampaignWebController::class, 'sendPause']);
+        Route::get('/{id}/send-status', [\App\Http\Controllers\Web\CampaignWebController::class, 'sendStatus']);
+        // Legacy alias — the old chunked client posted here. Kept so a stale
+        // browser tab mid-send doesn't 404 after the upload.
+        Route::post('/{id}/send-bulk', [\App\Http\Controllers\Web\CampaignWebController::class, 'send']);
         Route::post('/{id}/refresh-dedup', [\App\Http\Controllers\Web\CampaignWebController::class, 'refreshDedup']);
         Route::post('/{id}/end', [\App\Http\Controllers\Web\CampaignWebController::class, 'end']);
         Route::post('/{id}/customers/{customerId}/skip', [\App\Http\Controllers\Web\CampaignWebController::class, 'skip']);
@@ -996,6 +1015,8 @@ Route::middleware(['auth'])->group(function () {
         Route::get('/sales-report/product/{productId}/daily', [\App\Http\Controllers\KhaasController::class, 'productDailyBreakdown'])->name('sales-report.product-daily');
         Route::get('/products/{productId}/store-log', [\App\Http\Controllers\KhaasController::class, 'getStoreInventoryLog'])->name('products.store-log');
         Route::get('/products/{productId}/warehouse-log', [\App\Http\Controllers\KhaasController::class, 'getWarehouseInventoryLog'])->name('products.warehouse-log');
+        // Last N movements in/out of one of this BU's payment accounts (Operations → Expenses).
+        Route::get('/account-activity/{accountId}', [\App\Http\Controllers\KhaasController::class, 'accountActivity'])->name('account-activity');
 
         // Meat Order & Inventory views
         Route::get('/meat-order', [\App\Http\Controllers\KhaasController::class, 'meatOrder'])->name('meat-order');
@@ -1009,6 +1030,20 @@ Route::middleware(['auth'])->group(function () {
         Route::post('/inventory/recipe/{id}/delete', [\App\Http\Controllers\KhaasController::class, 'deleteRecipe'])->name('inventory.recipe.delete');
         Route::post('/inventory/custom-material', [\App\Http\Controllers\KhaasController::class, 'saveCustomMaterialWeb'])->name('inventory.custom-material.save');
         Route::post('/inventory/storage-config', [\App\Http\Controllers\KhaasController::class, 'updateStorageConfig'])->name('inventory.storage-config');
+    });
+
+    // ⭐ Overnight Storage (NF store chiller/freezer tracker — standalone, no inventory impact)
+    // Same controller methods are mounted on /api/overnight/* for the mobile app.
+    Route::prefix('overnight')->name('overnight.')->group(function () {
+        Route::get('/', [\App\Http\Controllers\CRM\OvernightStorageController::class, 'index'])->name('index');
+        Route::get('/items', [\App\Http\Controllers\CRM\OvernightStorageController::class, 'getItems'])->name('items');
+        Route::get('/products', [\App\Http\Controllers\CRM\OvernightStorageController::class, 'getProductsMap'])->name('products');
+        Route::post('/items', [\App\Http\Controllers\CRM\OvernightStorageController::class, 'addItems'])->name('items.add');
+        Route::post('/move', [\App\Http\Controllers\CRM\OvernightStorageController::class, 'moveItems'])->name('move');
+        Route::post('/take-out', [\App\Http\Controllers\CRM\OvernightStorageController::class, 'takeOutItems'])->name('take-out');
+        Route::post('/verify', [\App\Http\Controllers\CRM\OvernightStorageController::class, 'verifyItems'])->name('verify');
+        Route::get('/history', [\App\Http\Controllers\CRM\OvernightStorageController::class, 'getHistory'])->name('history');
+        Route::get('/daily-summary', [\App\Http\Controllers\CRM\OvernightStorageController::class, 'getDailySummary'])->name('daily-summary');
     });
 
     // Finance & Ledger Routes
@@ -1131,6 +1166,12 @@ Route::middleware(['auth'])->group(function () {
 
         // Ledger Hub (parallel-run modern UI — additive; reads existing data, writes via existing
         // endpoints; every old finance page stays live and untouched until phase-out).
+        // Review the assistant's learned "this bank account belongs to X" rules
+        // from the vendor / customer side (they were only ever writable before).
+        Route::get('/counterparty-accounts', [\App\Http\Controllers\FIN\CounterpartyAccountController::class, 'index'])->name('counterparty-accounts.index');
+        Route::post('/counterparty-accounts', [\App\Http\Controllers\FIN\CounterpartyAccountController::class, 'store'])->name('counterparty-accounts.store');
+        Route::post('/counterparty-accounts/{id}/deactivate', [\App\Http\Controllers\FIN\CounterpartyAccountController::class, 'deactivate'])->name('counterparty-accounts.deactivate');
+
         Route::prefix('hub')->name('hub.')->group(function () {
             Route::get('/', [\App\Http\Controllers\FIN\Hub\HubController::class, 'overview'])->name('overview');
             Route::get('/accounts', [\App\Http\Controllers\FIN\Hub\HubController::class, 'accounts'])->name('accounts');
@@ -1138,9 +1179,17 @@ Route::middleware(['auth'])->group(function () {
             Route::get('/data/transfer-accounts', [\App\Http\Controllers\FIN\Hub\HubController::class, 'transferAccountsData'])->name('transfer-accounts');
             Route::get('/vendors', [\App\Http\Controllers\FIN\Hub\HubController::class, 'vendors'])->name('vendors');
             Route::get('/vendor/{id}', [\App\Http\Controllers\FIN\Hub\HubController::class, 'vendorDetail'])->name('vendor');
+            // One collapsed month's rows, fetched when it is opened (keeps big statements light).
+            Route::get('/vendor/{id}/month/{ym}', [\App\Http\Controllers\FIN\Hub\HubController::class, 'vendorMonth'])->name('vendor-month');
             Route::get('/banks', [\App\Http\Controllers\FIN\Hub\HubController::class, 'banks'])->name('banks');
+            // ⇄ Move money between our own banks: pool unchanged, only the split moves.
+            Route::post('/bank-transfer', [\App\Http\Controllers\FIN\Hub\HubController::class, 'bankTransfer'])->name('bank-transfer');
             Route::get('/bank/{id}', [\App\Http\Controllers\FIN\Hub\HubController::class, 'bankDetail'])->name('bank');
             Route::get('/health', [\App\Http\Controllers\FIN\Hub\HubController::class, 'health'])->name('health');
+            // Taimur-only money corrections (guarded inside the controller, not by middleware, so
+            // they return JSON the Hub modals can show instead of an HTML redirect).
+            Route::post('/external', [\App\Http\Controllers\FIN\Hub\HubController::class, 'externalMove'])->name('external');
+            Route::post('/rebalance', [\App\Http\Controllers\FIN\Hub\HubController::class, 'rebalance'])->name('rebalance');
         });
 
         // Ledger Routes (Overall Ledger & Transfers)

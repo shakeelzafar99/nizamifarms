@@ -4,7 +4,8 @@
 
 @section('content')
 <div class="nfhub">
-    @include('fin.hub.partials.nav', ['active' => 'vendors', 'scope' => $scope, 'canSeeKhaas' => $canSeeKhaas, 'canSeeMulti' => $canSeeMulti])
+    @include('fin.hub.partials.nav', ['active' => 'vendors', 'scope' => $scope, 'canSeeKhaas' => $canSeeKhaas, 'canSeeMulti' => $canSeeMulti,
+        'oldNavUrl' => $oldUrl, 'oldNavLabel' => 'Old vendor page ↗'])
 
     <a class="back-link" href="{{ route('fin.hub.vendors', ['scope' => $scope]) }}">‹ Vendors</a>
 
@@ -22,7 +23,7 @@
         <div class="bal-actions">
             @if($vendor->default_purchase_method === 'by_weight')
                 @if(!auth()->user()?->isReadOnly())<button class="btn primary" type="button" onclick="hubOpenWeighted()">⚖ Purchase</button>@endif
-                <a class="btn" href="/finance/vendors/{{ $vendor->id }}/products" title="Manage this vendor's products">Products ↗</a>
+                <button class="btn" type="button" onclick="hubOpenProducts()" title="Manage this vendor's products">📦 Products</button>
             @else
                 @if(!auth()->user()?->isReadOnly())<button class="btn primary" type="button" onclick="hubOpenPurchase()">＋ Purchase</button>@endif
             @endif
@@ -42,71 +43,50 @@
         </div>
     </form>
 
+    {{-- Which bank accounts the NF Assistant believes belong to this vendor.
+         Populated when a bank-SMS debit is tagged to them; reviewable/removable
+         here so a wrong tag can be caught instead of silently repeating. --}}
+    <div class="card" style="padding:12px 14px">
+        <div id="nfcaVendor"></div>
+    </div>
+    @include('partials.counterparty-accounts')
+    <script>
+      document.addEventListener('DOMContentLoaded', function () {
+        nfCounterpartyAccounts.mount(document.getElementById('nfcaVendor'), 'vendor', {{ (int) $vendor->id }});
+      });
+    </script>
+
     <div class="card">
         <div class="card-head">
             <h3>Purchases &amp; payments</h3>
-            <span class="meta">{{ $hasRange ? 'filtered range' : 'all history' }} · running balance = what NF owes</span>
+            <span class="meta">
+                {{ $hasRange ? 'filtered range' : 'all history' }} ·
+                {{ number_format($rowCount) }} {{ \Illuminate\Support\Str::plural('entry', $rowCount) }} in
+                {{ count($months) }} {{ \Illuminate\Support\Str::plural('month', count($months)) }} ·
+                running balance = what NF owes
+            </span>
         </div>
-        @forelse($groups as $g)
+        @forelse($months as $i => $m)
             @php
-                $net = $g['purchases'] - $g['payments'];
-                if (abs($net) < 0.005) { $netCls = 'balanced'; $netTxt = '✓ Even'; }
-                elseif ($net > 0) { $netCls = 'holding'; $netTxt = 'Owed + Rs. ' . number_format($net, 0); }
-                else { $netCls = 'balanced'; $netTxt = 'Paid Rs. ' . number_format(abs($net), 0); }
+                $mNet = $m['net'];
+                if (abs($mNet) < 0.005) { $mCls = 'balanced'; $mTxt = '✓ Even'; }
+                elseif ($mNet > 0) { $mCls = 'holding'; $mTxt = 'Owed + Rs. ' . number_format($mNet, 0); }
+                else { $mCls = 'balanced'; $mTxt = 'Paid Rs. ' . number_format(abs($mNet), 0); }
+                $isOpen = $m['days'] !== null;
             @endphp
-            <div class="day-group">
-                <div class="day-head">
-                    <b>{{ \Carbon\Carbon::parse($g['date'])->format('D, M d, Y') }}</b>
-                    <span>📦 Rs. {{ number_format($g['purchases'], 0) }} · 💵 Rs. {{ number_format($g['payments'], 0) }}</span>
-                    <span class="day-net {{ $netCls }}">{{ $netTxt }}</span>
-                </div>
-                <div class="table-wrap">
-                    <table>
-                        <thead><tr><th>Time</th><th>Type</th><th>Description</th><th class="r">Purchase</th><th class="r">Payment</th><th class="r">Balance</th><th class="r">Actions</th></tr></thead>
-                        <tbody>
-                        @foreach($g['items'] as $it)
-                            @php
-                                $r = $it['row'];
-                                $isP = $it['is_purchase'];
-                                $desc = trim((string) $r->description);
-                                $d = [
-                                    'id' => $r->id, 'url' => route('fin.ledger.show', $r->id),
-                                    'title' => $isP ? 'Vendor purchase' : 'Vendor payment',
-                                    'sub' => $desc !== '' ? \Illuminate\Support\Str::limit($desc, 90) : '—',
-                                    'amount' => 'Rs. ' . number_format($r->amount, 2), 'dir' => $isP ? 'owe' : 'in',
-                                    'mode' => ucfirst($r->mode ?? 'cash'),
-                                    'from' => optional($r->fromAccount)->account_name ?? '—', 'fromsub' => optional($r->fromAccount)->account_code ?? '',
-                                    'to' => $vendor->vendor_name, 'tosub' => optional($account)->account_code ?? '',
-                                    'status' => 'ok', 'statusLabel' => 'Approved',
-                                    'date' => \Carbon\Carbon::parse($r->transaction_date)->format('M d, Y'),
-                                    'by' => optional($r->createdBy)->name ?? '—', 'pending' => false,
-                                ];
-                            @endphp
-                            <tr class="t-row" data-d='{{ json_encode($d, JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_TAG | JSON_HEX_AMP) }}'>
-                                <td class="cell-date num">{{ $r->created_at ? $r->created_at->format('H:i') : '' }}</td>
-                                <td><span class="type-chip">{{ $isP ? 'Purchase' : 'Payment' }}</span></td>
-                                <td class="desc" title="{{ $desc }}">{{ $desc !== '' ? \Illuminate\Support\Str::limit($desc, 46) : '—' }}</td>
-                                <td class="r">@if($isP)<span class="amt owe num">{{ number_format($r->amount, 2) }}</span>@else <span style="color:var(--ink3)">–</span>@endif</td>
-                                <td class="r">@if(!$isP)<span class="amt in num">{{ number_format($r->amount, 2) }}</span>@else <span style="color:var(--ink3)">–</span>@endif</td>
-                                <td class="r num" style="color:{{ $it['running'] > 0.5 ? 'var(--owe)' : 'var(--ink2)' }}">{{ number_format($it['running'], 2) }}</td>
-                                <td>
-                                    <div class="row-actions" onclick="event.stopPropagation()">
-                                        @if(!auth()->user()?->isReadOnly())
-                                        @if($isP && $vendor->default_purchase_method === 'by_weight')
-                                            <a class="mini-btn" href="{{ $oldUrl }}" title="Edit line items on the full page">Edit ↗</a>
-                                        @else
-                                            <button class="mini-btn" type="button"
-                                                data-edit='{{ json_encode(['id' => $r->id, 'amount' => (float) $r->amount, 'date' => \Carbon\Carbon::parse($r->transaction_date)->format('Y-m-d'), 'desc' => $desc, 'label' => $isP ? 'purchase' : 'payment'], JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_TAG | JSON_HEX_AMP) }}'
-                                                onclick="hubOpenEditTxn(JSON.parse(this.dataset.edit))">Edit</button>
-                                        @endif
-                                        <button class="mini-btn" type="button" onclick="hubDeleteTxn({{ $r->id }})" style="color:var(--out)">Delete</button>
-                                        @endif
-                                    </div>
-                                </td>
-                            </tr>
-                        @endforeach
-                        </tbody>
-                    </table>
+            <div class="month-block {{ $isOpen ? 'open' : '' }}" data-ym="{{ $m['ym'] }}">
+                <button class="month-head" type="button" onclick="hubToggleMonth(this)" aria-expanded="{{ $isOpen ? 'true' : 'false' }}">
+                    <span class="m-caret">▸</span>
+                    <b class="m-label">{{ $m['label'] }}</b>
+                    <span class="m-count">{{ $m['count'] }} {{ \Illuminate\Support\Str::plural('entry', $m['count']) }}</span>
+                    <span class="m-sums">📦 Rs. {{ number_format($m['purchases'], 0) }} · 💵 Rs. {{ number_format($m['payments'], 0) }}</span>
+                    <span class="day-net {{ $mCls }}">{{ $mTxt }}</span>
+                    <span class="m-closing">balance <b class="num" style="color:{{ $m['closing'] > 0.5 ? 'var(--owe)' : 'var(--ink2)' }}">Rs. {{ number_format($m['closing'], 0) }}</b></span>
+                </button>
+                <div class="month-body">
+                    @if($isOpen)
+                        @include('fin.hub.partials.vendor-day-groups', ['days' => $m['days'], 'vendor' => $vendor, 'account' => $account, 'oldUrl' => $oldUrl])
+                    @endif
                 </div>
             </div>
         @empty
@@ -114,7 +94,42 @@
         @endforelse
     </div>
 
+    <script>
+    (function(){
+        // A collapsed month has no rows in the page at all — that is the point, a busy vendor's full
+        // statement is ~1MB of markup. Its rows are fetched once, on first open, from the same
+        // computation that rendered the inline months.
+        var URL_BASE = @json(route('fin.hub.vendor', ['id' => $vendor->id])) + '/month/';
+        var RANGE = @json($hasRange ? ['start_date' => $startDate, 'end_date' => $endDate] : []);
+
+        window.hubToggleMonth = function(btn){
+            var block = btn.closest('.month-block');
+            var body = block.querySelector('.month-body');
+            var open = block.classList.toggle('open');
+            btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+            if (!open || block.dataset.loaded === '1' || body.children.length) return;
+
+            block.dataset.loaded = '1';
+            body.innerHTML = '<div class="month-loading">Loading…</div>';
+            var qs = new URLSearchParams(RANGE).toString();
+            fetch(URL_BASE + block.dataset.ym + (qs ? '?' + qs : ''), {headers:{'X-Requested-With':'XMLHttpRequest'}})
+                .then(function(r){ if(!r.ok) throw new Error(r.status); return r.text(); })
+                .then(function(html){
+                    body.innerHTML = html.trim() || '<div class="month-loading">Nothing in this month.</div>';
+                })
+                .catch(function(){
+                    // Let it be retried rather than leaving a dead month behind.
+                    block.dataset.loaded = '';
+                    body.innerHTML = '<div class="month-loading" style="color:var(--out)">Could not load — click the month again to retry.</div>';
+                });
+        };
+    })();
+    </script>
+
     @include('fin.hub.partials.vendor-op-modals')
+    @if($vendor->default_purchase_method === 'by_weight')
+        @include('fin.hub.partials.vendor-products-modal')
+    @endif
     @include('fin.hub.partials.drawer')
 </div>
 @endsection

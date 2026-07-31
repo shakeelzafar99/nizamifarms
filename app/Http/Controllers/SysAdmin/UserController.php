@@ -300,6 +300,11 @@ class UserController extends Controller
 
             $user->update($updateData);
 
+            // A rename must follow through to his cash ledger account label.
+            // The account is keyed by user_id, so renaming never moves money —
+            // this only refreshes the "Cash - <name>" label on ledger screens.
+            $this->syncEmployeeCashAccountName((int) $id, (string) $request->fullname);
+
             // Update role - only if provided
             UserRoleModel::where('user_id', $id)->delete();
             if ($request->role_id) {
@@ -338,6 +343,23 @@ class UserController extends Controller
             ]);
         } catch (\Throwable $e) {
             \Log::warning('ensureRiderProfile failed (non-fatal)', ['user_id' => $userId, 'error' => $e->getMessage()]);
+        }
+    }
+
+    /**
+     * Keep the employee-cash ledger account label in step with the user's name.
+     * Non-fatal: editing a user must never fail over a ledger label.
+     */
+    private function syncEmployeeCashAccountName(int $userId, string $fullname): void
+    {
+        try {
+            if (!$userId || trim($fullname) === '') { return; }
+            \App\Models\FIN\AccountModel::where('user_id', $userId)
+                ->where('account_category', \App\Models\FIN\AccountModel::CATEGORY_EMPLOYEE_CASH)
+                ->where('account_name', '!=', 'Cash - ' . $fullname)
+                ->update(['account_name' => 'Cash - ' . $fullname]);
+        } catch (\Throwable $e) {
+            \Log::warning('syncEmployeeCashAccountName failed (non-fatal)', ['user_id' => $userId, 'error' => $e->getMessage()]);
         }
     }
 
