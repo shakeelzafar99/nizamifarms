@@ -110,7 +110,7 @@
         order.forEach(function(g){
             html += '<optgroup label="'+g+'">';
             byGroup[g].forEach(function(a){
-                html += '<option value="'+a.id+'" data-cat="'+a.category+'" data-bal="'+a.balance+'">'+a.name+' ('+fmt(a.balance)+')</option>';
+                html += '<option value="'+a.id+'" data-cat="'+a.category+'" data-code="'+(a.code||'')+'" data-bal="'+a.balance+'">'+a.name+' ('+fmt(a.balance)+')</option>';
             });
             html += '</optgroup>';
         });
@@ -138,9 +138,23 @@
         if(external){
             $('hubTxExtTitle').textContent = fromExt ? 'Money from outside the business.' : 'Money leaving the business.';
             $('hubTxExtBody').textContent = fromExt
-                ? 'This raises the real total — it is not a move between two of our accounts.'
+                ? 'This raises the real total — it is not a move between two of our accounts. Outside money lands in NF Cash or Online Bank only; move it onward with a normal transfer.'
                 : 'This lowers the real total — it is not a move between two of our accounts.';
             $('hubTxExtWhoLabel').textContent = fromExt ? 'Who from (optional)' : 'Who to (optional)';
+        }
+
+        // Owner rule (Jul-31): outside money has exactly two doors in — NF Cash and Online Bank.
+        // Grey the rest out so the rule is visible at pick time; the server enforces it too.
+        var IN_DOORS = {NF_CASH: 1, ONLINE: 1};
+        for (var i = 0; i < to.options.length; i++) {
+            var o = to.options[i];
+            if (!o.value || o.value === EXT) continue;
+            o.disabled = fromExt && !IN_DOORS[o.dataset.code];
+        }
+        if (fromExt && too && too.value && too.value !== EXT && !IN_DOORS[too.dataset.code]) {
+            to.value = ''; // the previously chosen destination is not a door for outside money
+            $('hubTxToBal').textContent = '';
+            too = to.selectedOptions[0]; // keep the bank-picker logic below in step with the reset
         }
 
         // The bank picker is about the COMPANY side only — "Outside" has no bank of ours.

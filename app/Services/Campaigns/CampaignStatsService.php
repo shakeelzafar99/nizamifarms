@@ -30,8 +30,37 @@ use Illuminate\Support\Facades\Schema;
  */
 class CampaignStatsService
 {
-    /** Order statuses that count as a real, money-in-the-door order. */
-    private const CONVERTING_STATUSES = ['delivered', 'completed'];
+    /**
+     * Statuses that DISQUALIFY an order from counting as a campaign conversion.
+     *
+     * Owner ruling Aug-2026: a campaign's job ends when the customer places an
+     * order — everything after that is fulfilment. The rule used to be an
+     * inclusion list ('delivered','completed'), which meant a fresh order sat
+     * uncounted until it was delivered, so a working campaign showed "0 ordered"
+     * for days. Real case: a customer read the app-launch message and ordered
+     * from the app within the hour (SH-21640, iOS) — the exact win the campaign
+     * existed to produce — and the screen reported 0% because the order was
+     * still `on_hold`.
+     *
+     * So it is now an EXCLUSION list: every status counts except the ones that
+     * mean the sale did not stand.
+     *   cancelled — the order was called off; never a win.
+     *   refunded  — the money went back; counting it would overstate results.
+     *               (Zero rows today, so this changes nothing now; it is here so
+     *               the rule stays correct when refunds do appear.)
+     *
+     * CONSEQUENCE, deliberate: campaign revenue now includes orders that have
+     * not been delivered yet, so it will run AHEAD of the HQ/report revenue
+     * figures, which stay delivered-only. That is the intended trade — the
+     * campaign screen answers "did this message produce orders?", not "how much
+     * cash has landed?". The funnel labels say so out loud.
+     *
+     * NOTE this does NOT govern customer lifetime spend used by the targeting
+     * filters and the spend sort — that stays delivered-only in
+     * CampaignFilterService::orderStatsSubquerySql(), because "has spent 50k
+     * with us" must mean money actually received.
+     */
+    private const NON_CONVERTING_STATUSES = ['cancelled', 'refunded'];
 
     /** Shopify source_name values that mean "placed in the customer app". */
     private const APP_CHANNELS = ['ios_app', 'android_app'];
@@ -165,7 +194,7 @@ class CampaignStatsService
             }
         }
 
-        $statusList = "'" . implode("','", self::CONVERTING_STATUSES) . "'";
+        $statusList = "'" . implode("','", self::NON_CONVERTING_STATUSES) . "'";
         $appList    = "'" . implode("','", self::APP_CHANNELS) . "'";
 
         // Bindings order: window (derived table has none), campaigns, then
@@ -190,7 +219,7 @@ class CampaignStatsService
               ON o.customer_id = l.customer_id
              AND o.order_date  > l.sent_at
              AND o.order_date <= DATE_ADD(l.sent_at, INTERVAL ? DAY)
-             AND o.order_status IN ({$statusList})
+             AND COALESCE(o.order_status, '') NOT IN ({$statusList})
              {$extra}
         ";
 
@@ -234,7 +263,7 @@ class CampaignStatsService
 
         $ph  = implode(',', array_fill(0, count($campaignIds), '?'));
         $pph = implode(',', array_fill(0, count($productIds), '?'));
-        $statusList = "'" . implode("','", self::CONVERTING_STATUSES) . "'";
+        $statusList = "'" . implode("','", self::NON_CONVERTING_STATUSES) . "'";
 
         $bindings = array_merge($campaignIds, [$windowDays], $productIds);
 
@@ -253,7 +282,7 @@ class CampaignStatsService
               ON o.customer_id = l.customer_id
              AND o.order_date  > l.sent_at
              AND o.order_date <= DATE_ADD(l.sent_at, INTERVAL ? DAY)
-             AND o.order_status IN ({$statusList})
+             AND COALESCE(o.order_status, '') NOT IN ({$statusList})
             JOIN t_crm_prod_order_line_item li ON li.order_id = o.id
             JOIN t_crm_prod_product p ON p.id = li.product_id
             WHERE li.product_id IN ({$pph})
@@ -273,8 +302,20 @@ class CampaignStatsService
      * Per-recipient rows for the campaign detail list — paginated, and with the
      * conversion + delivery facts resolved in TWO queries for the whole page
      * rather than two per person.
+     *
+     * $sortBy / $sortDir override the campaign's stored send order for THIS
+     * view. This is what lets the operator re-prioritise inside a campaign
+     * ("show me highest spenders first, I'll send to the top 100") without
+     * recreating it — the creation-time sort was frozen into filters_json and
+     * there was no way to change perspective afterwards.
+     *
+     * Every row also carries the customer's LIVE lifetime spend and order count
+     * (same definition as the campaign filters and the Customers page — the
+     * stored total_spent/total_orders columns are stale for thousands of
+     * customers). Without these on the row, sorting by spend would show a
+     * ranking the operator can't see or verify.
      */
-    public function customerRows(int $campaignId, string $statusFilter = 'pending', int $page = 1, int $perPage = 100): array
+    public function customerRows(int $campaignId, string $statusFilter = 'pending', int $page = 1, int $perPage = 100, ?string $sortBy = null, ?string $sortDir = null): array
     {
         $campaign = DB::table('t_crm_campaigns')->where('id', $campaignId)->first();
         if (!$campaign) return ['customers' => [], 'total' => 0, 'page' => 1, 'per_page' => $perPage, 'pages' => 0];
@@ -297,19 +338,81 @@ class CampaignStatsService
             'c.first_name', 'c.last_name', 'c.phone', 'c.phone_normalized',
             'c.city', 'c.last_order_date', 'c.is_on_mobile_app'
         );
-        $q->selectRaw('(' . $filterSvc->shopifyExistsExpr('c') . ') as is_shopify');
+        // NOTE: is_shopify is deliberately NOT selected here. With the FIELD()
+        // status ordering the sort is a filesort, and MariaDB evaluates select
+        // expressions for EVERY candidate row before sorting — so an EXISTS in
+        // this select ran ~5,600 times on the big campaign (~120ms/page) to
+        // label the 100 rows that survive. It's attached after pagination
+        // below, per page, using the same shared expression.
 
-        // MUST go through applySort(): the sort key may be 'spent' / 'orders',
-        // which are computed live and need a join — `ORDER BY c.spent` would be
-        // an unknown column. (This threw a 500 on any campaign saved with the
-        // legacy sort_by='total_spent', which normalizeSort maps to 'spent'.)
+        // Sort: explicit override wins, else the campaign's stored send order.
+        // Both pass through normalizeSort so legacy keys ('total_spent') and
+        // junk input collapse to safe columns — `ORDER BY c.spent` on a raw
+        // key was a 500 once already.
         $filters = json_decode($campaign->filters_json ?? '{}', true) ?: [];
-        [$sortBy, $sortDir] = $filterSvc->normalizeSort($filters);
+        [$defBy, $defDir] = $filterSvc->normalizeSort($filters);
+        [$sortBy, $sortDir] = $filterSvc->normalizeSort([
+            'sort_by'  => $sortBy ?: $defBy,
+            'sort_dir' => $sortDir ?: $defDir,
+        ]);
+
+        // Lifetime spend/orders strategy — two paths on purpose:
+        //  - RANKING by spend/orders needs the aggregate across the WHOLE
+        //    campaign before pagination, so the full derived table is joined.
+        //    Costs ~0.5s on a 5,000-recipient campaign; acceptable for an
+        //    explicit "rank by revenue" request.
+        //  - Every other sort (the default on every open and tab switch) skips
+        //    that join entirely; the page's ~100 rows get their lifetime stats
+        //    from a second query SCOPED to just those ids (milliseconds).
+        //    Joining the full aggregate unconditionally measured 300-700ms per
+        //    load — the exact sluggishness this page was just cured of.
+        $statsOrdering = in_array($sortBy, ['spent', 'orders'], true);
+
         $q->orderByRaw("FIELD(cc.status, 'pending', 'sending', 'failed', 'sent', 'skipped')");
-        $filterSvc->applySort($q, $sortBy, $sortDir, 'c');
+        if ($statsOrdering) {
+            $q->leftJoin(
+                DB::raw('(' . $filterSvc->orderStatsSubquerySql() . ') as ls'),
+                'ls.customer_id', '=', 'c.id'
+            );
+            $q->selectRaw('COALESCE(ls.spent_total, 0) as lifetime_spent, COALESCE(ls.orders_count, 0) as lifetime_orders');
+            $col = $sortBy === 'spent' ? 'ls.spent_total' : 'ls.orders_count';
+            $q->orderByRaw('COALESCE(' . $col . ', 0) ' . ($sortDir === 'asc' ? 'asc' : 'desc'));
+        } else {
+            $q->orderBy('c.' . $sortBy, $sortDir);
+        }
 
         $page = max(1, $page);
         $rows = $q->forPage($page, $perPage)->get();
+
+        // Shopify badge, page-scoped (see the note at the select above). One
+        // query over exactly these ids, reusing shopifyExistsExpr so the
+        // definition stays in its one place.
+        if ($rows->isNotEmpty()) {
+            $pageIds = implode(',', $rows->pluck('customer_id')->map(fn($v) => (int) $v)->all());
+            $flagRows = DB::select(
+                'SELECT c.id, (' . $filterSvc->shopifyExistsExpr('c') . ') AS is_shopify '
+                . 'FROM t_crm_prod_customer c WHERE c.id IN (' . $pageIds . ')'
+            );
+            $shopifyById = [];
+            foreach ($flagRows as $fr) $shopifyById[(int) $fr->id] = (int) $fr->is_shopify;
+            foreach ($rows as $r) $r->is_shopify = $shopifyById[(int) $r->customer_id] ?? 0;
+        }
+
+        // Fast path: attach the page's lifetime stats via a query scoped to
+        // exactly these ids (see the strategy note above).
+        if (!$statsOrdering && $rows->isNotEmpty()) {
+            $ids = $rows->pluck('customer_id')->map(fn($v) => (int) $v)->all();
+            $statRows = DB::select('SELECT * FROM (' . $filterSvc->orderStatsSubquerySql($ids) . ') s');
+            $byId = [];
+            foreach ($statRows as $s) {
+                $byId[(int) $s->customer_id] = $s;
+            }
+            foreach ($rows as $r) {
+                $s = $byId[(int) $r->customer_id] ?? null;
+                $r->lifetime_spent  = $s ? (float) $s->spent_total : 0.0;
+                $r->lifetime_orders = $s ? (int) $s->orders_count : 0;
+            }
+        }
 
         // Resolve "did this person order after we messaged them" for the whole
         // page in one query.
@@ -336,6 +439,9 @@ class CampaignStatsService
             'page'      => $page,
             'per_page'  => $perPage,
             'pages'     => (int) ceil($total / max(1, $perPage)),
+            // The sort actually applied, so the UI can reflect it truthfully.
+            'sort_by'   => $sortBy,
+            'sort_dir'  => $sortDir,
         ];
     }
 
@@ -345,7 +451,7 @@ class CampaignStatsService
         if (empty($customerIds)) return [];
 
         $cph = implode(',', array_fill(0, count($customerIds), '?'));
-        $statusList = "'" . implode("','", self::CONVERTING_STATUSES) . "'";
+        $statusList = "'" . implode("','", self::NON_CONVERTING_STATUSES) . "'";
 
         $trackingType = $campaign->tracking_type ?? 'general';
         $extra = '';
@@ -370,7 +476,7 @@ class CampaignStatsService
               ON o.customer_id = cc.customer_id
              AND o.order_date  > cc.sent_at
              AND o.order_date <= DATE_ADD(cc.sent_at, INTERVAL ? DAY)
-             AND o.order_status IN ({$statusList})
+             AND COALESCE(o.order_status, '') NOT IN ({$statusList})
              {$extra}
             WHERE cc.campaign_id = ?
               AND cc.status = 'sent'
@@ -452,6 +558,190 @@ class CampaignStatsService
     }
 
     /**
+     * Everyone who has received a template, however it was sent — one row per
+     * customer, with their most recent send.
+     *
+     * WHY this is not just the campaign rows: the same template also goes out by
+     * hand from the chat window ("you just ordered, here's the app"). Those sends
+     * are real reach and real conversions, but they live only in t_wa_messages.
+     * Judged on campaign rows alone, `eid_bookings` showed 716 people when ~1,205
+     * messages had actually gone out — the template looked far less used than it
+     * was.
+     *
+     * Manual sends TO SOMEONE IN A CAMPAIGN are adopted onto the campaign row at
+     * send time (WhatsAppService::adoptManualSendIntoCampaigns), so they arrive
+     * here through the campaign side. This union is what catches the rest: people
+     * who were never in a campaign for this template at all.
+     *
+     * Double-counting is structurally impossible because the outer query groups
+     * by customer_id — a person present in both halves still counts once, and
+     * MAX() keeps the most recent send plus the best-known delivery state. That
+     * matters because pre-Jul-2026 campaign rows have no wa_message_id, so they
+     * cannot be matched to their message rows by id.
+     *
+     * Returns SQL for a derived table with:
+     *   customer_id, sent_at, delivered, rd, replied, undelivered, tracked
+     * Bindings required, in order: templateName, templateName.
+     */
+    protected function templateRecipientsSql(): string
+    {
+        return "
+            SELECT u.customer_id,
+                   MAX(u.sent_at)     AS sent_at,
+                   MAX(u.delivered)   AS delivered,
+                   MAX(u.rd)          AS rd,
+                   MAX(u.replied)     AS replied,
+                   MAX(u.undelivered) AS undelivered,
+                   MAX(u.tracked)     AS tracked,
+                   MAX(u.from_campaign) AS from_campaign
+            FROM (
+                -- (a) campaign recipients
+                SELECT cc.customer_id,
+                       cc.sent_at,
+                       CASE WHEN cc.delivered_at IS NOT NULL OR cc.read_at IS NOT NULL THEN 1 ELSE 0 END AS delivered,
+                       CASE WHEN cc.read_at        IS NOT NULL THEN 1 ELSE 0 END AS rd,
+                       CASE WHEN cc.replied_at     IS NOT NULL THEN 1 ELSE 0 END AS replied,
+                       CASE WHEN cc.undelivered_at IS NOT NULL THEN 1 ELSE 0 END AS undelivered,
+                       CASE WHEN cc.wa_message_id  IS NOT NULL THEN 1 ELSE 0 END AS tracked,
+                       1 AS from_campaign
+                FROM t_crm_campaign_customers cc
+                JOIN t_crm_campaigns c ON c.id = cc.campaign_id
+                WHERE c.wa_template_name = ?
+                  AND cc.status  = 'sent'
+                  AND cc.sent_at IS NOT NULL
+
+                UNION ALL
+
+                -- (b) sends that exist only as chat messages. Delivery state comes
+                -- from the message's own Meta status; 'replied' is any inbound
+                -- message from that conversation after the send, which is the same
+                -- thing the campaign webhook stamps as replied_at.
+                SELECT conv.customer_id,
+                       m.created_at,
+                       CASE WHEN m.status IN ('delivered','read') THEN 1 ELSE 0 END,
+                       CASE WHEN m.status = 'read'   THEN 1 ELSE 0 END,
+                       CASE WHEN EXISTS (
+                            SELECT 1 FROM t_wa_messages r
+                            WHERE r.conversation_id = m.conversation_id
+                              AND r.direction = 'inbound'
+                              AND r.created_at > m.created_at
+                       ) THEN 1 ELSE 0 END,
+                       CASE WHEN m.status = 'failed' THEN 1 ELSE 0 END,
+                       1,
+                       0
+                FROM t_wa_messages m
+                JOIN t_wa_conversations conv ON conv.id = m.conversation_id
+                WHERE m.direction = 'outbound'
+                  AND m.template_name = ?
+                  AND conv.customer_id IS NOT NULL
+            ) u
+            GROUP BY u.customer_id
+        ";
+    }
+
+    /**
+     * Reach + engagement for a template across BOTH send paths.
+     * `sends` counts messages (from t_wa_messages, the authoritative log);
+     * `customers` counts distinct people.
+     */
+    protected function templateDeliveryFunnel(string $templateName): array
+    {
+        $rows = DB::select(
+            'SELECT COUNT(*) AS customers,
+                    SUM(delivered)   AS delivered,
+                    SUM(rd)          AS rd,
+                    SUM(replied)     AS replied,
+                    SUM(undelivered) AS undelivered,
+                    SUM(tracked)     AS receipts_tracked,
+                    SUM(from_campaign) AS from_campaign
+             FROM (' . $this->templateRecipientsSql() . ') t',
+            [$templateName, $templateName]
+        );
+        $r = $rows[0] ?? null;
+
+        // Total messages sent, straight from the message log — more accurate than
+        // counting campaign rows, which miss manual sends and (pre-Jul-2026)
+        // cannot be matched to their messages.
+        $sends = (int) DB::table('t_wa_messages')
+            ->where('direction', 'outbound')
+            ->where('template_name', $templateName)
+            ->count();
+
+        $customers = (int) ($r->customers ?? 0);
+
+        return [
+            'sends'            => max($sends, $customers),
+            'customers'        => $customers,
+            'delivered'        => (int) ($r->delivered ?? 0),
+            'read'             => (int) ($r->rd ?? 0),
+            'replied'          => (int) ($r->replied ?? 0),
+            'undelivered'      => (int) ($r->undelivered ?? 0),
+            'receipts_tracked' => (int) ($r->receipts_tracked ?? 0),
+            'from_campaign'    => (int) ($r->from_campaign ?? 0),
+        ];
+    }
+
+    /**
+     * Orders attributed to a template across both send paths, using each
+     * customer's most recent send of it. Same conversion rules as a campaign.
+     */
+    protected function templateConversions(string $templateName, int $windowDays, $rulesCampaign): array
+    {
+        $trackingType = $rulesCampaign->tracking_type ?? 'general';
+
+        $extra = '';
+        $productIds = [];
+        if ($trackingType === 'app_orders') {
+            $appList = "'" . implode("','", self::APP_CHANNELS) . "'";
+            $extra = " AND o.order_source_channel IN ({$appList}) ";
+        } elseif ($trackingType === 'products') {
+            $productIds = $this->trackedProductIds($rulesCampaign);
+            if (!empty($productIds)) {
+                $pph = implode(',', array_fill(0, count($productIds), '?'));
+                $extra = " AND EXISTS (SELECT 1 FROM t_crm_prod_order_line_item li WHERE li.order_id = o.id AND li.product_id IN ({$pph})) ";
+            }
+        }
+
+        $statusList = "'" . implode("','", self::NON_CONVERTING_STATUSES) . "'";
+        $appList    = "'" . implode("','", self::APP_CHANNELS) . "'";
+
+        // Bindings follow placeholder order: template, template (inside the
+        // derived table), then the window, then any product ids in {$extra}.
+        $bindings = [$templateName, $templateName, $windowDays];
+        foreach ($productIds as $pid) $bindings[] = $pid;
+
+        $rows = DB::select("
+            SELECT COUNT(DISTINCT l.customer_id) AS converters,
+                   COUNT(DISTINCT o.id)          AS orders,
+                   COALESCE(SUM(o.total_price), 0) AS revenue,
+                   COUNT(DISTINCT CASE WHEN o.order_source_channel IN ({$appList}) THEN o.id END) AS app_orders,
+                   COUNT(DISTINCT CASE WHEN (o.order_source_channel IS NULL OR o.order_source_channel NOT IN ({$appList}))
+                                        AND (o.order_number LIKE 'SH-%' OR o.order_source_channel = 'web') THEN o.id END) AS web_orders
+            FROM (" . $this->templateRecipientsSql() . ") l
+            JOIN t_crm_prod_order o
+              ON o.customer_id = l.customer_id
+             AND o.order_date  > l.sent_at
+             AND o.order_date <= DATE_ADD(l.sent_at, INTERVAL ? DAY)
+             AND COALESCE(o.order_status, '') NOT IN ({$statusList})
+             {$extra}
+        ", $bindings);
+
+        $r = $rows[0] ?? null;
+        if (!$r) return ['converters' => 0, 'orders' => 0, 'revenue' => 0.0, 'source_split' => ['app' => 0, 'web' => 0, 'manual' => 0]];
+
+        $orders = (int) $r->orders;
+        $app = (int) $r->app_orders;
+        $web = (int) $r->web_orders;
+
+        return [
+            'converters'   => (int) $r->converters,
+            'orders'       => $orders,
+            'revenue'      => round((float) $r->revenue, 2),
+            'source_split' => ['app' => $app, 'web' => $web, 'manual' => max(0, $orders - $app - $web)],
+        ];
+    }
+
+    /**
      * The combined (deduplicated) block for a set of campaigns.
      *
      * Extracted so the drill-down and the overview list compute it through the
@@ -474,12 +764,25 @@ class CampaignStatsService
         $windows = $campaigns->pluck('tracking_window_days')->map(fn($v) => (int) ($v ?: 30))->unique()->values()->all();
         $window  = max($windows);
         $newest  = $campaigns->first();
+        $templateName = (string) ($newest->wa_template_name ?? '');
 
-        $cd = $this->deliveryFunnel($ids, true);
-        $cv = $this->conversions($ids, $window, $newest);
+        // Template-wide: campaign sends PLUS sends made by hand from the chat
+        // window. Falls back to campaign-only if the template name is somehow
+        // missing, so this can never return less than it used to.
+        if ($templateName !== '') {
+            $cd = $this->templateDeliveryFunnel($templateName);
+            $cv = $this->templateConversions($templateName, $window, $newest);
+        } else {
+            $cd = $this->deliveryFunnel($ids, true);
+            $cv = $this->conversions($ids, $window, $newest);
+        }
 
         $combined = $this->assembleFunnel($cd, $cv);
         $combined['duplicate_sends'] = max(0, $cd['sends'] - $cd['customers']);
+        // How much of the reach the campaign machinery itself produced, vs
+        // templates sent by hand. Lets the UI say "716 of 1,190 via campaigns".
+        $combined['from_campaign'] = $cd['from_campaign'] ?? $cd['customers'];
+        $combined['outside_campaigns'] = max(0, $cd['customers'] - ($cd['from_campaign'] ?? $cd['customers']));
 
         return [
             'combined'     => $combined,

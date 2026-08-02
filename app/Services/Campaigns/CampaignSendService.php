@@ -394,6 +394,31 @@ class CampaignSendService
             ]);
 
             $whatsapp = app(WhatsAppService::class);
+
+            // Pre-flight: a template with a media header cannot send at all if
+            // its image is missing or won't upload — every recipient would fail
+            // identically with 132012. Happened on the first prod run (the PNG
+            // wasn't uploaded with the code): 1 recipient burned as Failed; at
+            // batch size it would have been the whole batch. Abort BEFORE
+            // claiming anyone instead — everybody stays Pending, and the
+            // message names the missing file.
+            $requiredMediaPath = null;
+            if (Schema::hasColumn('t_wa_templates', 'header_media_path')) {
+                $requiredMediaPath = DB::table('t_wa_templates')
+                    ->where('name', $templateName)->value('header_media_path');
+            }
+            if (!empty($requiredMediaPath) && empty($whatsapp->headerParamsForTemplate($templateName))) {
+                if ($runId) $this->finishRun((int) $runId, 'media_missing');
+                $result['stop_reason'] = 'media_missing';
+                return $result + [
+                    'ok' => true,
+                    'remaining' => $this->eligibleCount($campaignId, $includeFailed),
+                    'message' => 'Nothing was sent. This template needs its header image, but the server could not load it '
+                        . '(storage/app/' . $requiredMediaPath . ' — missing file or upload to WhatsApp failed). '
+                        . 'Upload the image, then send again; everyone is still Pending.',
+                ];
+            }
+
             $expectedVarCount = $this->templateVariableCount($templateName);
             $language = $campaign->wa_template_language ?: 'en';
             $pace = $this->paceMicros();
@@ -634,22 +659,31 @@ class CampaignSendService
             if ($response['success'] ?? false) {
                 $waMessageId = $response['messages'][0]['id'] ?? null;
 
+                $update = [
+                    'status'        => 'sent',
+                    'sent_at'       => now(),
+                    'sent_by'       => $userId,
+                    'error_message' => null,
+                    'claimed_at'    => null,
+                    'wa_message_id' => $waMessageId,
+                    // A retry of a previously-undelivered send starts a
+                    // fresh delivery story.
+                    'delivered_at'   => null,
+                    'read_at'        => null,
+                    'undelivered_at' => null,
+                ];
+                // Provenance, so campaign-driven reach can be told apart from a
+                // template someone sent by hand (see WhatsAppService::
+                // adoptManualSendIntoCampaigns). Column is optional — guarded so
+                // the code works before the SQL is run.
+                if (Schema::hasColumn('t_crm_campaign_customers', 'sent_via')) {
+                    $update['sent_via'] = 'campaign';
+                }
+
                 DB::table('t_crm_campaign_customers')
                     ->where('campaign_id', $campaignId)
                     ->where('customer_id', $customer->customer_id)
-                    ->update([
-                        'status'        => 'sent',
-                        'sent_at'       => now(),
-                        'sent_by'       => $userId,
-                        'error_message' => null,
-                        'claimed_at'    => null,
-                        'wa_message_id' => $waMessageId,
-                        // A retry of a previously-undelivered send starts a
-                        // fresh delivery story.
-                        'delivered_at'   => null,
-                        'read_at'        => null,
-                        'undelivered_at' => null,
-                    ]);
+                    ->update($update);
 
                 $conversation = $whatsapp->findOrCreateConversation($formattedPhone);
                 if (!$conversation->customer_id) {
@@ -738,6 +772,7 @@ class CampaignSendService
             'target_reached'    => "{$base}. This session's batch is done.",
             'completed'         => "{$base}. Everyone in this campaign has now been messaged.",
             'no_eligible'       => 'No one left to send to.',
+            'media_missing'     => 'Stopped before sending: the template\'s header image could not be loaded on the server. Everyone is still Pending.',
             'all_excluded'      => 'Everyone in this batch had already received the template recently — moved to Excluded, nothing sent.',
             default             => $base . '.',
         };

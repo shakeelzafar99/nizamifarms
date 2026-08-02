@@ -542,6 +542,16 @@
                 <button type="button" data-proof="verified" class="proof-chip px-3 py-2 text-sm font-medium bg-white text-gray-700 border-l border-gray-300 hover:bg-gray-50" onclick="selectProofFilter('verified')">✅ Verified</button>
                 <button type="button" data-proof="mismatch" class="proof-chip px-3 py-2 text-sm font-medium bg-white text-gray-700 border-l border-gray-300 hover:bg-gray-50" onclick="selectProofFilter('mismatch')">⚠️ Mismatch</button>
             </div>
+
+            <!-- Aug-2026 — Bank filter. Deliberately shares this row with the proof
+                 chips: it must never push the invoice list further down the page.
+                 Chips are built client-side from the rows already loaded, so this
+                 costs no extra query. Hidden on the Shop tab (see buildBankFilter). -->
+            <div id="bankFilterWrap" style="display: none; align-items: center; gap: 8px; flex-wrap: wrap;">
+                <span style="width: 1px; height: 22px; background: #E5E7EB; margin: 0 2px;"></span>
+                <label class="text-sm font-medium text-gray-600">🏦 Bank:</label>
+                <span id="bankFilterChips" style="display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap;"></span>
+            </div>
         </div>
     </div>
 
@@ -803,8 +813,20 @@
 let currentTab = 'l1';
 let currentProof = 'all'; // 'all', 'pending', 'received', 'verified', 'mismatch'
 let selectedItems = new Set();
+// allItems / groupedItems are the VISIBLE rows (after the bank filter). Every
+// downstream consumer — header totals, Select all, group approve, the bulk bar —
+// reads these two, which is what makes the whole page follow the bank filter.
 let allItems = [];
 let groupedItems = [];
+// Aug-2026 — bank filter. rawItems/rawGroups keep the server response untouched
+// so the chip totals always describe the WHOLE queue, not the filtered slice.
+const BANK_NONE = '__none__';
+let currentBank = 'all';   // 'all' | short_code | BANK_NONE
+let bankFilterList = [];   // [{key, color, count, amount}] — chip order; index = onclick arg
+let rawItems = [];
+let rawGroups = [];
+let serverCount = 0;       // header totals to restore when no bank filter is active
+let serverAmount = 0;
 // Shop-tab multi-select — kept SEPARATE from selectedItems so the L1/L2
 // bulk-approve flow is completely untouched. Selection is confined to ONE shop
 // customer at a time (one bank transfer has one payer).
@@ -832,6 +854,8 @@ document.addEventListener('DOMContentLoaded', function() {
 function selectTab(tab) {
     currentTab = tab;
     selectedItems.clear();
+    // Each queue has its own mix of banks — never carry a chip across tabs.
+    currentBank = 'all';
     updateSelectionBar();
     // Reset the shop multi-select whenever the tab changes so a stale
     // selection can't carry over into another tab.
@@ -878,6 +902,163 @@ function selectProofFilter(proof) {
     loadData();
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Aug-2026 — Bank filter (client-side, for reconciling against a bank statement)
+//
+// Attribution per row, in priority order:
+//   1. the CONFIRMED receiving bank tagged on the ledger (receiving_account_short)
+//   2. else the bank auto-detected from the customer's proof (the dashed
+//      "· detected" badge) — suggested_receiving_account_short
+//   3. else "No bank" — the pile that can't be matched to any statement yet, and
+//      the exact set the "🏦 Assign bank" bulk action exists for.
+//
+// Filtering is client-side on purpose: (2) is attached AFTER the query by
+// ApprovalController::attachProofStatus(), and the full tab is already in the
+// browser, so a round-trip would buy nothing.
+// ─────────────────────────────────────────────────────────────────────────────
+function bankKeyForItem(item) {
+    if (item && item.receiving_account_short) return item.receiving_account_short;
+    const p = item && item.payment_proof;
+    if (p && p.suggested_receiving_account_short) return p.suggested_receiving_account_short;
+    return BANK_NONE;
+}
+
+function bankColorForItem(item) {
+    if (item && item.receiving_account_short) return item.receiving_account_color || '#3B82F6';
+    const p = item && item.payment_proof;
+    if (p && p.suggested_receiving_account_short) return p.suggested_receiving_account_color || '#3B82F6';
+    return '#6B7280';
+}
+
+// Rebuild the chip row from rawItems and normalise currentBank. Call this BEFORE
+// filtering — it can reset currentBank back to 'all'.
+function buildBankFilter() {
+    const wrap = document.getElementById('bankFilterWrap');
+    const chipBox = document.getElementById('bankFilterChips');
+    if (!wrap || !chipBox) return;
+
+    // Shop tab is order-based: the bank lives on the PAYMENT, not the order, so
+    // any attribution here would be a guess. No chips, no filtering.
+    if (currentTab === 'shop') {
+        currentBank = 'all';
+        bankFilterList = [];
+        wrap.style.display = 'none';
+        chipBox.innerHTML = '';
+        return;
+    }
+
+    const map = {};
+    let grandTotal = 0;
+    rawItems.forEach(item => {
+        const key = bankKeyForItem(item);
+        if (!map[key]) map[key] = { key: key, color: bankColorForItem(item), count: 0, amount: 0 };
+        const amt = parseFloat(item.amount) || 0;
+        map[key].count++;
+        map[key].amount += amt;
+        grandTotal += amt;
+    });
+
+    // Keep the active chip on screen even after its last invoice is approved.
+    // Silently falling back to "all" would leave the list looking filtered while
+    // actually showing every bank — the one way this could cause a wrong approval.
+    if (currentBank !== 'all' && !map[currentBank]) {
+        map[currentBank] = { key: currentBank, color: '#9CA3AF', count: 0, amount: 0 };
+    }
+
+    // Alphabetical so chips don't jump around as you work through them;
+    // "No bank" always parked at the end.
+    const none = map[BANK_NONE];
+    delete map[BANK_NONE];
+    bankFilterList = Object.values(map).sort((a, b) => a.key.localeCompare(b.key));
+    if (none) bankFilterList.push(none);
+
+    // One bank (or none) = nothing to choose between. Don't spend the row on it.
+    if (bankFilterList.length < 2) {
+        currentBank = 'all';
+        bankFilterList = [];
+        wrap.style.display = 'none';
+        chipBox.innerHTML = '';
+        return;
+    }
+
+    let html = '';
+    bankFilterList.forEach((b, idx) => {
+        const active = currentBank === b.key;
+        const isNone = b.key === BANK_NONE;
+        const label = isNone ? 'No bank' : b.key;
+        const c = b.color || '#6B7280';
+        const border = isNone
+            ? `1px dashed ${active ? c : '#9CA3AF'}`
+            : `1px solid ${c}${active ? '' : '80'}`;
+        const title = isNone
+            ? 'Invoices with no confirmed or detected bank — use “🏦 Assign bank” after selecting them'
+            : `Show only invoices received in ${b.key}`;
+        html += `<button type="button" onclick="selectBankFilter(${idx})" title="${escapeHtml(title)}"
+            style="padding:4px 12px; border-radius:16px; border:${border}; background:${active ? c : '#fff'}; color:${active ? '#fff' : c}; font-size:12px; font-weight:600; cursor:pointer; white-space:nowrap;">
+            ${escapeHtml(label)} · Rs. ${numberFormat(b.amount)} <span style="font-weight:500; opacity:.75;">(${b.count})</span></button>`;
+    });
+    if (currentBank !== 'all') {
+        html += `<button type="button" onclick="selectBankFilter(-1)" title="Show every bank again"
+            style="padding:4px 8px; border:none; background:none; color:#2563EB; font-size:12px; font-weight:600; cursor:pointer;">✕ Clear</button>`;
+    } else {
+        html += `<span style="font-size:11px; color:#9CA3AF;">of Rs. ${numberFormat(grandTotal)}</span>`;
+    }
+
+    chipBox.innerHTML = html;
+    wrap.style.display = 'flex';
+}
+
+// idx = position in bankFilterList, or -1 to clear. Passing the index (not the
+// short code) keeps arbitrary bank names out of the inline onclick.
+function selectBankFilter(idx) {
+    const next = idx < 0 ? 'all' : ((bankFilterList[idx] || {}).key || 'all');
+    currentBank = (next === currentBank) ? 'all' : next;  // second click = toggle off
+
+    // A row you can't see must never stay selected — same rule the proof filter
+    // follows, and what stops a hidden bank's invoice riding along on a bulk approve.
+    selectedItems.clear();
+    window.bulkAssignBank = '';
+    if (typeof updateBulkAssignBankBtn === 'function') updateBulkAssignBankBtn();
+
+    applyBankFilter();
+}
+
+// Derive the visible rows from the raw server response, refresh the header
+// totals, and repaint. No server round-trip.
+function applyBankFilter() {
+    buildBankFilter();   // may reset currentBank, so it has to run first
+
+    if (currentBank === 'all') {
+        allItems = rawItems;
+        groupedItems = rawGroups;
+    } else {
+        allItems = rawItems.filter(i => bankKeyForItem(i) === currentBank);
+        groupedItems = rawGroups
+            .map(g => {
+                const items = (g.items || []).filter(i => bankKeyForItem(i) === currentBank);
+                return Object.assign({}, g, {
+                    items: items,
+                    total_amount: items.reduce((s, i) => s + (parseFloat(i.amount) || 0), 0),
+                });
+            })
+            .filter(g => g.items.length > 0);
+    }
+
+    const countEl = document.getElementById('totalCount');
+    const amountEl = document.getElementById('totalAmount');
+    if (currentBank === 'all') {
+        if (countEl) countEl.textContent = serverCount;
+        if (amountEl) amountEl.textContent = numberFormat(serverAmount);
+    } else {
+        if (countEl) countEl.textContent = allItems.length;
+        if (amountEl) amountEl.textContent = numberFormat(
+            allItems.reduce((s, i) => s + (parseFloat(i.amount) || 0), 0));
+    }
+
+    renderItems(groupedItems);
+    updateSelectionBar();
+}
+
 // Select every currently-listed (filtered) pending item for one-tap bulk approve.
 function selectAllFiltered() {
     if (currentTab === 'approved') return;
@@ -914,12 +1095,14 @@ async function loadData() {
         const data = await response.json();
         
         if (data.success) {
-            allItems = data.items;
-            groupedItems = data.grouped;
-            renderItems(data.grouped);
+            rawItems = data.items || [];
+            rawGroups = data.grouped || [];
+            serverCount = data.count;
+            serverAmount = data.total_amount;
+            // Rebuilds the bank chips, derives allItems/groupedItems, sets the
+            // header totals and renders.
+            applyBankFilter();
             updateShopSelectionBar(); // keep the shop floating bar in sync after a reload
-            document.getElementById('totalCount').textContent = data.count;
-            document.getElementById('totalAmount').textContent = numberFormat(data.total_amount);
 
             // Keep the Shop tab badge in sync (outstanding count + balance).
             if (currentTab === 'shop') {
@@ -1000,55 +1183,29 @@ function renderItems(groups) {
     const container = document.getElementById('itemsContainer');
     
     if (!groups || groups.length === 0) {
+        // Say WHICH filter emptied the list, so a bank chip left active after the
+        // last invoice cleared never reads as "the whole queue is empty".
+        const bankNote = currentBank === 'all' ? '' : (currentBank === BANK_NONE
+            ? 'Nothing left without a bank. <a href="javascript:void(0)" onclick="selectBankFilter(-1)" style="color:#2563EB; font-weight:600;">Show all banks</a>'
+            : `Nothing left for <b>${escapeHtml(currentBank)}</b>. <a href="javascript:void(0)" onclick="selectBankFilter(-1)" style="color:#2563EB; font-weight:600;">Show all banks</a>`);
         container.innerHTML = `
             <div class="empty-state">
                 <div class="empty-state-icon">✅</div>
                 <div class="empty-state-title">No items found</div>
-                <div class="empty-state-text">${currentTab === 'approved' ? 'No approved invoices in the selected date range' : 'All caught up! No pending approvals.'}</div>
+                <div class="empty-state-text">${bankNote || (currentTab === 'approved' ? 'No approved invoices in the selected date range' : 'All caught up! No pending approvals.')}</div>
             </div>
         `;
         return;
     }
     
     let html = '';
-    
-    // ⭐ Bank-wise summary bar for approved tab
-    if (currentTab === 'approved' && allItems.length > 0) {
-        const bankMap = {};
-        let untaggedCount = 0, untaggedAmount = 0;
-        allItems.forEach(item => {
-            if (item.receiving_account_short) {
-                const key = item.receiving_account_short;
-                if (!bankMap[key]) bankMap[key] = {count: 0, amount: 0, color: item.receiving_account_color || '#6B7280'};
-                bankMap[key].count++;
-                bankMap[key].amount += parseFloat(item.amount) || 0;
-            } else {
-                untaggedCount++;
-                untaggedAmount += parseFloat(item.amount) || 0;
-            }
-        });
-        const bankEntries = Object.entries(bankMap);
-        if (bankEntries.length > 0 || untaggedCount > 0) {
-            html += '<div style="display: flex; flex-wrap: wrap; gap: 8px; padding: 12px 16px; background: #F0F9FF; border-bottom: 1px solid #BAE6FD;">';
-            html += '<span style="font-size: 13px; font-weight: 600; color: #0369A1; align-self: center; margin-right: 4px;">🏦 Bank-wise:</span>';
-            bankEntries.forEach(([bank, data]) => {
-                html += `<span style="display: inline-flex; align-items: center; gap: 4px; padding: 4px 10px; border-radius: 8px; background: white; border: 1px solid ${data.color}40; font-size: 12px;">
-                    <span style="font-weight: 700; color: ${data.color};">${escapeHtml(bank)}</span>
-                    <span style="font-weight: 700; color: #111827;">Rs. ${numberFormat(data.amount)}</span>
-                    <span style="color: #6B7280; font-size: 11px;">(${data.count})</span>
-                </span>`;
-            });
-            if (untaggedCount > 0) {
-                html += `<span style="display: inline-flex; align-items: center; gap: 4px; padding: 4px 10px; border-radius: 8px; background: white; border: 1px solid #D1D5DB; font-size: 12px;">
-                    <span style="font-weight: 700; color: #6B7280;">Untagged</span>
-                    <span style="font-weight: 700; color: #111827;">Rs. ${numberFormat(untaggedAmount)}</span>
-                    <span style="color: #6B7280; font-size: 11px;">(${untaggedCount})</span>
-                </span>`;
-            }
-            html += '</div>';
-        }
-    }
-    
+
+    // NOTE (Aug-2026): the old "🏦 Bank-wise:" summary bar that used to render
+    // here for the Approved tab has moved into the filter row as the bank chips
+    // (buildBankFilter). Same numbers, now clickable, and it no longer pushes the
+    // list down. Keeping both would also have gone inconsistent — this bar read
+    // allItems, which is now the FILTERED slice.
+
     const isShopTab = currentTab === 'shop';
 
     groups.forEach((group, index) => {

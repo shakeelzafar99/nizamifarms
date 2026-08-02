@@ -289,6 +289,38 @@ class PaymentProofStatusService
                 $payload['combined_count'] = (int) $groupCounts[$combinedSig->id];
             }
 
+            // ── Amount + time behind the proof (Aug-2026, for the RIDER banner:
+            // he needs to sanity-check the figure against the order in his hand).
+            //
+            // The amount is published ONLY for a plain one-signal / one-invoice
+            // match. A combined payment's figure covers SEVERAL invoices, so
+            // showing it beside this order's total would read as a shortfall that
+            // isn't there — the badge already says "combined of N" for that case.
+            // Non-fatal: any surprise here must not cost the caller its badge.
+            try {
+                if (empty($payload['is_combined'])) {
+                    $amtSig = $sigs->first(fn ($s) => $s->status === PaymentSignal::STATUS_MATCHED
+                        && $s->extracted_amount !== null);
+                    if ($amtSig) {
+                        $payload['proof_amount'] = (float) $amtSig->extracted_amount;
+                    }
+                }
+
+                // Newest contributing signal wins (id is monotonic and never
+                // null; created_at can be). Emitted as a plain wall-clock string
+                // — NOT ISO/UTC — because the app formats it verbatim, and a
+                // UTC round-trip is what renders these a day early.
+                $newest = $sigs->sortByDesc('id')->first();
+                if ($newest) {
+                    $ts = $newest->email_received_at ?: $newest->created_at;
+                    if ($ts) {
+                        $payload['proof_at'] = \Illuminate\Support\Carbon::parse($ts)->format('Y-m-d H:i:s');
+                    }
+                }
+            } catch (\Throwable $e) {
+                // Decoration only — leave the keys off and keep the badge.
+            }
+
             // "Discount needed" marker for the list badge.
             $needSig = $sigs->first(fn ($s) => isset($discountNeededBySignal[(int) $s->id]));
             if ($needSig) {

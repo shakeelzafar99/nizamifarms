@@ -26,10 +26,11 @@
 
 {{-- ===== Weighted purchase (line items) ===== --}}
 <div class="hubmodal" id="hubWeighted" onclick="if(event.target===this)hubClose('hubWeighted')">
-  <div class="hubmodal-box wide">
-    <div class="hubmodal-head"><div><h3>Purchase by weight</h3><div class="hm-sub">{{ $vendor->vendor_name }} · line items</div></div><button class="hubmodal-x" type="button" onclick="hubClose('hubWeighted')">✕</button></div>
+  <div class="hubmodal-box xwide">
+    <div class="hubmodal-head"><div><h3 id="hubWtTitle">Purchase by weight</h3><div class="hm-sub" id="hubWtSub">{{ $vendor->vendor_name }} · line items</div></div><button class="hubmodal-x" type="button" onclick="hubClose('hubWeighted')">✕</button></div>
     <div class="hubmodal-body">
       <div class="m-err" id="hubWtErr"></div>
+      <div class="wt-head"><span>Product</span><span>Qty</span><span>Rate</span><span>Line total</span><span></span></div>
       <div id="hubWtLines"></div>
       <button class="mini-btn" type="button" onclick="hubWtAddLine()" style="margin:6px 0 12px">＋ Add line</button>
       <div class="fld-row">
@@ -37,7 +38,7 @@
         <div class="fld"><label>Date</label><input type="date" id="hubWtDate" value="{{ now()->format('Y-m-d') }}"></div>
       </div>
       <div class="fld"><label>Description</label><input type="text" id="hubWtDesc" placeholder="Entry by {{ auth()->user()->fullname ?? '' }}" value="Entry by {{ auth()->user()->fullname ?? '' }}"></div>
-      <div class="fld"><label>Bill image (optional)</label><input type="file" id="hubWtBill" accept="image/*"></div>
+      <div class="fld"><label id="hubWtBillLabel">Bill image (optional) <a href="#" id="hubWtBillView" style="display:none;font-weight:600;text-transform:none;letter-spacing:0" onclick="event.preventDefault();hubViewBill(this.dataset.bill)">📎 view current</a></label><input type="file" id="hubWtBill" accept="image/*"></div>
       <div class="inv-total"><span>Grand total</span><span class="num" id="hubWtGrand">Rs. 0.00</span></div>
     </div>
     <div class="hubmodal-foot"><button class="btn" type="button" onclick="hubClose('hubWeighted')">Cancel</button><button class="btn primary" type="button" id="hubWtSubmit" onclick="hubSubmitWeighted()" disabled>Record purchase</button></div>
@@ -114,6 +115,11 @@
           <div class="fld"><label>Date</label><input type="date" id="hubEtDate"></div>
         </div>
         <div class="fld"><label>Description</label><textarea id="hubEtDesc" rows="2"></textarea></div>
+        <div class="fld">
+          <label>Replace bill image (optional) <a href="#" id="hubEtBillView" style="display:none;font-weight:600;text-transform:none;letter-spacing:0" onclick="event.preventDefault();hubViewBill(this.dataset.bill)">📎 view current</a></label>
+          <input type="file" id="hubEtBill" accept="image/*">
+          <span class="hint">Leave empty to keep the existing image.</span>
+        </div>
       </form>
     </div>
     <div class="hubmodal-foot"><button class="btn" type="button" onclick="hubClose('hubEditTxn')">Cancel</button><button class="btn primary" type="button" onclick="hubSubmitEditTxn()">Save changes</button></div>
@@ -142,9 +148,11 @@
     }
     function done(msg){ hubToast(msg); setTimeout(function(){ location.reload(); }, 800); }
 
-    // View a row's bill/receipt image. /storage first (symlink — fast), /public-storage as the
-    // fallback for hosts where the symlink is missing (same pattern the attendance pages use).
+    // View a row's bill/receipt image. Accepts a relative storage path (tries /storage first —
+    // symlink, fast — then /public-storage for hosts where the symlink is missing, the attendance
+    // pattern) or an already-full URL (the transaction-details payload returns one).
     window.hubViewBill = function(p){
+        if(/^https?:\/\//.test(p)){ window.open(p,'_blank'); return; }
         var u='/storage/'+p, f='/public-storage/'+p, probe=new Image();
         probe.onload=function(){ window.open(u,'_blank'); };
         probe.onerror=function(){ window.open(f,'_blank'); };
@@ -172,32 +180,111 @@
     };
 
     // ---------- Weighted purchase ----------
+    var wtEditId = null; // null = recording a new purchase; an id = editing that one
+
+    async function wtLoadProducts(){
+        if(products!==null) return;
+        try{ var r=await fetch('/finance/vendors/'+VID+'/products/list',{headers:{'Accept':'application/json'}}); var j=await r.json(); products=(j.products||[]); }
+        catch(e){ products=[]; }
+    }
+    function wtSetMode(editing){
+        wtEditId = editing || null;
+        document.getElementById('hubWtTitle').textContent = editing ? 'Edit purchase' : 'Purchase by weight';
+        document.getElementById('hubWtSub').textContent = VNAME + (editing ? ' · editing line items' : ' · line items');
+        document.getElementById('hubWtSubmit').textContent = editing ? 'Save changes' : 'Record purchase';
+        // Replacing the bill on an edit is optional; the existing image stays if nothing is picked.
+        // firstChild: the label's TEXT node only — the "view current" link stays intact beside it.
+        document.getElementById('hubWtBillLabel').firstChild.textContent = (editing ? 'Replace bill image (optional) ' : 'Bill image (optional) ');
+        document.getElementById('hubWtBillView').style.display = 'none';
+    }
+
     window.hubOpenWeighted = async function(date){
         errHide('hubWtErr'); document.getElementById('hubWtLines').innerHTML=''; document.getElementById('hubWtAdj').value='0';
+        document.getElementById('hubWtDesc').value = 'Entry by ' + @json(auth()->user()->fullname ?? '');
+        document.getElementById('hubWtBill').value = '';
         document.getElementById('hubWtDate').value = date || @json(now()->format('Y-m-d'));
+        wtSetMode(null);
         open('hubWeighted');
-        if(products===null){
-            try{ var r=await fetch('/finance/vendors/'+VID+'/products/list',{headers:{'Accept':'application/json'}}); var j=await r.json(); products=(j.products||[]); }
-            catch(e){ products=[]; }
-        }
-        if(!products.length){ errShow('hubWtErr','No products for this vendor yet. Add products first (Manage products).'); }
+        await wtLoadProducts();
+        if(!products.length){ errShow('hubWtErr','No products for this vendor yet. Add products first (Products).'); }
         hubWtAddLine();
     };
-    function prodOptions(){
-        return '<option value="">— product —</option>' + products.map(function(p){
-            return '<option value="'+p.id+'" data-rate="'+p.rate_per_unit+'" data-unit="'+p.unit+'" data-name="'+String(p.product_name).replace(/"/g,'&quot;')+'" '+(p.is_default?'selected':'')+'>'+p.product_name+' ('+p.unit+' @ '+p.rate_per_unit+')</option>';
+
+    // Edit an existing weighted purchase IN the Hub (this used to bounce to the old page).
+    // Reuses the existing /finance/ledger/transaction/{id} payload — no new endpoint.
+    window.hubOpenWeightedEdit = async function(id){
+        errHide('hubWtErr');
+        document.getElementById('hubWtLines').innerHTML='';
+        document.getElementById('hubWtBill').value = '';
+        wtSetMode(id);
+        open('hubWeighted');
+        await wtLoadProducts();
+        var t;
+        try{
+            var r = await fetch('/finance/ledger/transaction/'+id, {headers:{'Accept':'application/json'}});
+            var j = await r.json();
+            if(!j.success) throw new Error(j.message||'Could not load');
+            t = j.transaction;
+        }catch(e){
+            errShow('hubWtErr','Could not load this purchase. Try again.');
+            return;
+        }
+
+        var lines = t.line_items || [];
+        if(!lines.length){
+            // A by-weight vendor can still have a plain (no line items) purchase — editing THAT as a
+            // line-item grid would wipe its amount. Hand it to the simple editor instead.
+            hubClose('hubWeighted');
+            hubOpenEditTxn({id:t.id, amount:t.amount, date:t.transaction_date, desc:t.description, label:'purchase', bill:t.bill_image||null});
+            return;
+        }
+
+        document.getElementById('hubWtDate').value = t.transaction_date;
+        document.getElementById('hubWtDesc').value = t.description || '';
+        document.getElementById('hubWtAdj').value = t.adjustment_amount || 0;
+        if(t.bill_image){
+            var bv = document.getElementById('hubWtBillView');
+            bv.dataset.bill = t.bill_image; bv.style.display = '';
+        }
+        lines.forEach(function(li){ hubWtAddLine(li); });
+        hubWtTotal();
+    };
+    // $preset (an existing line being edited) may point at a product that has since been switched
+    // off — it is no longer in the active list. Re-add it so editing an old purchase can never
+    // silently drop or re-point a line; the row still exists in the DB so the id validates.
+    function prodOptions(preset){
+        var list = products.slice();
+        var known = preset && preset.vendor_product_id
+            && !list.some(function(p){ return String(p.id) === String(preset.vendor_product_id); });
+        if(known){
+            list.push({id: preset.vendor_product_id, product_name: preset.product_name + ' (inactive)',
+                       unit: preset.unit, rate_per_unit: preset.rate_per_unit});
+        }
+        var selId = preset ? String(preset.vendor_product_id || '') : null;
+        return '<option value="">— product —</option>' + list.map(function(p){
+            var sel = selId !== null ? (String(p.id) === selId) : !!p.is_default;
+            return '<option value="'+p.id+'" data-rate="'+p.rate_per_unit+'" data-unit="'+p.unit+'" data-name="'+String(p.product_name).replace(/"/g,'&quot;')+'" '+(sel?'selected':'')+'>'+p.product_name+' ('+p.unit+' @ '+p.rate_per_unit+')</option>';
         }).join('');
     }
-    window.hubWtAddLine = function(){
-        var row = document.createElement('div'); row.className='wt-line'; row.style.cssText='display:flex;gap:6px;align-items:center;margin-bottom:6px';
+    window.hubWtAddLine = function(preset){
+        // Layout lives in styles.blade.php (.wt-line grid) — inline flex used to overflow the modal.
+        var row = document.createElement('div'); row.className='wt-line';
         row.innerHTML =
-            '<select class="wt-prod" style="flex:2;border:1px solid var(--line);border-radius:8px;padding:7px 8px;background:var(--surface);color:var(--ink);font-size:12.5px" onchange="hubWtProd(this)">'+prodOptions()+'</select>'+
-            '<input class="wt-qty" type="number" step="0.001" min="0.001" placeholder="qty" style="flex:1;border:1px solid var(--line);border-radius:8px;padding:7px 8px;background:var(--surface);color:var(--ink);font-size:12.5px" oninput="hubWtTotal()">'+
-            '<input class="wt-rate" type="number" step="0.01" placeholder="rate" style="flex:1;border:1px solid var(--line);border-radius:8px;padding:7px 8px;background:var(--surface);color:var(--ink);font-size:12.5px" oninput="hubWtTotal()">'+
-            '<span class="wt-lt num" style="flex:1;text-align:right;font-weight:600;font-size:12.5px">0.00</span>'+
-            '<button class="hubmodal-x" type="button" onclick="this.parentNode.remove();hubWtTotal()" style="font-size:15px">✕</button>';
+            '<select class="wt-prod" onchange="hubWtProd(this)">'+prodOptions(preset)+'</select>'+
+            '<input class="wt-qty" type="number" step="0.001" min="0.001" placeholder="qty" oninput="hubWtTotal()">'+
+            '<input class="wt-rate" type="number" step="0.01" placeholder="rate" oninput="hubWtTotal()">'+
+            '<span class="wt-lt num">0.00</span>'+
+            '<button class="hubmodal-x" type="button" title="Remove this line" onclick="this.parentNode.remove();hubWtTotal()" style="font-size:15px;margin:0;padding:2px 4px">✕</button>';
         document.getElementById('hubWtLines').appendChild(row);
-        var sel = row.querySelector('.wt-prod'); if(sel.value) hubWtProd(sel);
+        var sel = row.querySelector('.wt-prod');
+        if(preset){
+            // The saved qty/rate win over the product's current default rate — an old purchase must
+            // keep the price it was actually bought at.
+            row.querySelector('.wt-qty').value = preset.quantity;
+            row.querySelector('.wt-rate').value = preset.rate_per_unit;
+        } else if(sel.value){
+            hubWtProd(sel);
+        }
         hubWtTotal();
     };
     window.hubWtProd = function(sel){
@@ -236,12 +323,18 @@
             }
         });
         if(!ok) return errShow('hubWtErr','Add at least one product line with qty and rate.');
+        // Editing posts to the SAME endpoint the old page used (updateTransaction): it swaps the
+        // line items, recomputes amount = lines + adjustment, and moves balances by the difference
+        // only when the row's money is actually applied.
+        var url = wtEditId
+            ? '/finance/vendors/transaction/'+wtEditId+'/update'
+            : '/finance/vendors/'+VID+'/weighted-purchase';
         try{
-            var r=await post('/finance/vendors/'+VID+'/weighted-purchase', fd, true);
+            var r=await post(url, fd, true);
             if(r.status===422){ var j=await r.json(); return errShow('hubWtErr', Object.values(j.errors||{}).flat()[0]||'Check the lines.'); }
             var j2=await r.json().catch(function(){return{success:r.ok};});
-            if(j2.success) return done('Weighted purchase recorded');
-            errShow('hubWtErr', j2.message||'Could not record.');
+            if(j2.success) return done(wtEditId ? 'Purchase updated' : 'Weighted purchase recorded');
+            errShow('hubWtErr', j2.message||'Could not save.');
         }catch(e){ errShow('hubWtErr','Network error.'); }
     };
 
@@ -339,6 +432,10 @@
         document.getElementById('hubEtDate').value=t.date;
         document.getElementById('hubEtDesc').value=t.desc||'';
         document.getElementById('hubEtTitle').textContent='Edit '+t.label;
+        document.getElementById('hubEtBill').value='';
+        // Existing bill image — viewable while editing, kept unless a new file is picked.
+        var v=document.getElementById('hubEtBillView');
+        if(t.bill){ v.dataset.bill=t.bill; v.style.display=''; } else { v.style.display='none'; }
         open('hubEditTxn');
     };
     window.hubSubmitEditTxn = async function(){
@@ -347,6 +444,8 @@
         fd.append('transaction_date', document.getElementById('hubEtDate').value);
         fd.append('amount', document.getElementById('hubEtAmount').value);
         fd.append('description', document.getElementById('hubEtDesc').value);
+        // Optional replacement — updateTransaction deletes the old file and stores the new one.
+        var etBill=document.getElementById('hubEtBill').files[0]; if(etBill) fd.append('bill_image', etBill);
         try{
             var r=await post('/finance/vendors/transaction/'+document.getElementById('hubEtId').value+'/update', fd, true);
             if(r.status===422){ var j=await r.json(); return errShow('hubEtErr', Object.values(j.errors||{}).flat()[0]||'Check the form.'); }

@@ -187,6 +187,11 @@ class CampaignSendProcess extends Command
                 $this->pause($campaignId, 'Stopped after repeated failures — check the Failed list, then press Resume.', true);
                 break;
 
+            case 'media_missing':
+                $service->finishRun($runId, 'media_missing');
+                $this->pause($campaignId, "The template's header image is missing on the server — upload it, then press Resume. Nobody was messaged.", true);
+                break;
+
             case 'completed':
             case 'no_eligible':
                 $service->finishRun($runId, $reason);

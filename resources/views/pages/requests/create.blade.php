@@ -191,6 +191,35 @@
                         <input type="number" name="amount" class="kt-input" placeholder="0.00" step="0.01" min="0">
                     </div>
 
+                    <!-- 💳 Paid from — money categories only. The select is DISABLED
+                         while hidden so FormData omits it entirely: a leave request
+                         must never carry a payment source. -->
+                    <div id="pay-from-field" style="display: none;" class="mb-6">
+                        <label class="kt-label">💳 Paid from</label>
+                        <select name="payment_source_account_id" id="payment_source_account_id" class="kt-select" disabled onchange="handlePaySourceChange()">
+                            @foreach($paySources ?? [] as $src)
+                                <option value="{{ $src['id'] }}"
+                                        data-online="{{ $src['is_online'] ? '1' : '0' }}"
+                                        {{ $src['is_default'] ? 'selected' : '' }}>
+                                    {{ $src['display_name'] ?: $src['name'] }}
+                                </option>
+                            @endforeach
+                        </select>
+                        <p class="text-xs text-gray-500 mt-1" id="pay-from-hint">The account this money actually left.</p>
+                    </div>
+
+                    <!-- Which of OUR banks an online payment came from. Mandatory for a
+                         bank source, or the per-bank balances drift. -->
+                    <div id="pay-bank-field" style="display: none;" class="mb-6">
+                        <label class="kt-label required">🏦 From which bank</label>
+                        <select name="receiving_account_id" id="receiving_account_id" class="kt-select" disabled>
+                            <option value="">Select the bank…</option>
+                            @foreach($payBanks ?? [] as $bank)
+                                <option value="{{ $bank['id'] }}">{{ $bank['name'] }}</option>
+                            @endforeach
+                        </select>
+                    </div>
+
                     <!-- Description - Optional for leave requests -->
                     <div class="mb-6">
                         <label class="kt-label" id="description-label">Description</label>
@@ -224,6 +253,53 @@
 </div>
 
 <script>
+/**
+ * Show "Paid from" only where money actually moves. Same category set the
+ * server treats as money-moving in RequestController::store() — keep them in
+ * step, or the form will ask for a bank the server does not want (or skip one
+ * it demands).
+ *
+ * Hidden fields are DISABLED, not just display:none — a disabled control is
+ * left out of FormData, which is what stops a leave request from carrying a
+ * payment source.
+ */
+function updatePayFromFields(categoryCode) {
+    const payField = document.getElementById('pay-from-field');
+    const paySelect = document.getElementById('payment_source_account_id');
+    if (!payField || !paySelect) return;
+
+    const isMoney = ['expense', 'khaas_expense', 'advance', 'salary_advance'].includes(categoryCode);
+    const hasOptions = paySelect.options.length > 0;
+
+    payField.style.display = (isMoney && hasOptions) ? 'block' : 'none';
+    paySelect.disabled = !(isMoney && hasOptions);
+    // One allowed account is still worth showing — "it came out of the fund" is
+    // information the filer wants confirmed — but there is nothing to choose.
+    document.getElementById('pay-from-hint').textContent = paySelect.options.length === 1
+        ? 'This is the only account you can spend from.'
+        : 'The account this money actually left.';
+
+    handlePaySourceChange();
+}
+
+/** A bank source must name the bank; a cash source must never carry one. */
+function handlePaySourceChange() {
+    const paySelect = document.getElementById('payment_source_account_id');
+    const bankField = document.getElementById('pay-bank-field');
+    const bankSelect = document.getElementById('receiving_account_id');
+    if (!paySelect || !bankField || !bankSelect) return;
+
+    const opt = paySelect.options[paySelect.selectedIndex];
+    const needsBank = !paySelect.disabled
+        && !!(opt && opt.dataset.online === '1')
+        && bankSelect.options.length > 1;
+
+    bankField.style.display = needsBank ? 'block' : 'none';
+    bankSelect.disabled = !needsBank;
+    bankSelect.required = needsBank;
+    if (!needsBank) bankSelect.value = '';
+}
+
 function handleCategoryChange() {
     const select = document.getElementById('category_id');
     const selectedOption = select.options[select.selectedIndex];
@@ -308,6 +384,9 @@ function handleCategoryChange() {
     // 🔧 Keep the bike-service fields in step with the expense group — switching
     // away from Expense must hide AND clear them (stale service_type guard).
     updateBikeServiceFields();
+
+    // 💳 And the pay-from group, on the same principle.
+    updatePayFromFields(categoryCode);
 
     // Show approval info
     const approvalInfo = document.getElementById('approval-info');

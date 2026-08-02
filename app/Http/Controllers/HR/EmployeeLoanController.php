@@ -332,7 +332,7 @@ class EmployeeLoanController extends Controller
                         ->where('account_category', 'employee_cash')
                         ->first();
                     
-                    DB::table('t_fin_ledger')->insert([
+                    $refundLedgerId = DB::table('t_fin_ledger')->insertGetId([
                         'transaction_date' => now()->toDateString(),
                         'transaction_type' => 'loan_cancellation_refund',
                         'description' => 'Loan cancelled - Refund remaining balance - ' . $loan->loan_number,
@@ -349,13 +349,17 @@ class EmployeeLoanController extends Controller
                         'created_at' => now(),
                         'created_by' => auth()->id()
                     ]);
-                    
-                    // Refund to source account
-                    DB::table('t_fin_accounts')
-                        ->where('id', $sourceAccount->id)
-                        ->increment('current_balance', $refundAmount);
-                    
-                    // Decrease loans receivable
+
+                    // Apply via the canonical engine (source +; stamps balance_updated). The
+                    // employee-cash leg is skipped by the engine's employee-skip list — same net
+                    // effect as the old inline code, which never touched it either.
+                    $refundRow = \App\Models\FIN\LedgerModel::find($refundLedgerId);
+                    if ($refundRow) {
+                        (new \App\Services\FIN\BalancePostingService())->apply($refundRow);
+                    }
+
+                    // Decrease loans receivable — third account, outside the two-sided row (see
+                    // the disbursement note).
                     if ($loansReceivableAccount) {
                         DB::table('t_fin_accounts')
                             ->where('id', $loansReceivableAccount->id)
@@ -460,21 +464,18 @@ class EmployeeLoanController extends Controller
                 'created_by' => auth()->id()
             ]);
 
-            // Update account balances
-            // Source account decreases
-            DB::table('t_fin_accounts')
-                ->where('id', $sourceAccount->id)
-                ->decrement('current_balance', $loan->principal_amount);
+            // Apply the row via the canonical engine (source −; stamps balance_updated). The
+            // employee-cash leg is AUTOMATICALLY skipped — loan_disbursement is on the engine's
+            // employee-skip list, enforcing the charter that loans are personal money TO the
+            // employee, not company cash they hold (same net effect as the old inline code).
+            $ledgerRow = \App\Models\FIN\LedgerModel::find($ledgerId);
+            if ($ledgerRow) {
+                (new \App\Services\FIN\BalancePostingService())->apply($ledgerRow);
+            }
 
-            // IMPORTANT: DO NOT update employee cash balance for loan disbursements
-            // Loans are personal payments TO the employee, not company cash they're holding
-            // Employee balance should only track: invoices, expenses, deposits (company money)
-            // DB::table('t_fin_accounts')
-            //     ->where('id', $employeeCashAccount->id)
-            //     ->increment('current_balance', $loan->principal_amount);
-            // REMOVED - see explanation above
-
-            // Loans receivable increases (asset)
+            // Loans receivable increases (asset). This is a THIRD account the two-sided ledger row
+            // cannot carry, so it stays a manual bump — receivable is an asset-register figure, not
+            // part of the cash/bank reconciliation the balance_updated flag guards.
             DB::table('t_fin_accounts')
                 ->where('id', $loansReceivableAccount->id)
                 ->increment('current_balance', $loan->principal_amount);

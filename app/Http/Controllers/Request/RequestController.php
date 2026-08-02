@@ -160,7 +160,17 @@ class RequestController extends Controller
     public function create()
     {
         $categories = RequestCategoryModel::getActiveCategories();
-        return view('pages.requests.create', compact('categories'));
+
+        // 💳 "Paid from". This form used to send nothing, so every expense filed
+        // here landed on the Expense Fund at posting time regardless of where the
+        // money really came from. Options come from PaymentSourceService, which
+        // encodes the SAME rules store() enforces below — so the picker can never
+        // offer an account this user's own submit would 403.
+        $paySvc    = app(\App\Services\FIN\PaymentSourceService::class);
+        $paySources = $paySvc->sourcesFor(auth()->user());
+        $payBanks   = $paySvc->banks();
+
+        return view('pages.requests.create', compact('categories', 'paySources', 'payBanks'));
     }
 
     /**

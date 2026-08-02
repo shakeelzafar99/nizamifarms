@@ -66,10 +66,14 @@
                             <div class="row-actions" onclick="event.stopPropagation()">
                                 @if(!$readOnly)
                                     @if($isP && $vendor->default_purchase_method === 'by_weight')
-                                        <a class="mini-btn" href="{{ $oldUrl }}" title="Edit line items on the full page">Edit ↗</a>
+                                        {{-- Line items are editable IN the Hub now (this used to
+                                             bounce to the old page). A by-weight vendor can still
+                                             have a plain purchase — the handler detects that and
+                                             opens the simple editor instead. --}}
+                                        <button class="mini-btn" type="button" onclick="hubOpenWeightedEdit({{ $r->id }})">Edit</button>
                                     @else
                                         <button class="mini-btn" type="button"
-                                            data-edit='{{ json_encode(['id' => $r->id, 'amount' => (float) $r->amount, 'date' => \Carbon\Carbon::parse($r->transaction_date)->format('Y-m-d'), 'desc' => $desc, 'label' => $isP ? 'purchase' : 'payment'], JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_TAG | JSON_HEX_AMP) }}'
+                                            data-edit='{{ json_encode(['id' => $r->id, 'amount' => (float) $r->amount, 'date' => \Carbon\Carbon::parse($r->transaction_date)->format('Y-m-d'), 'desc' => $desc, 'label' => $isP ? 'purchase' : 'payment', 'bill' => $r->bill_image ?: null], JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_TAG | JSON_HEX_AMP) }}'
                                             onclick="hubOpenEditTxn(JSON.parse(this.dataset.edit))">Edit</button>
                                     @endif
                                     <button class="mini-btn" type="button" onclick="hubDeleteTxn({{ $r->id }})" style="color:var(--out)">Delete</button>

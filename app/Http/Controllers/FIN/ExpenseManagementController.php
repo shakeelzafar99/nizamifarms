@@ -917,7 +917,20 @@ class ExpenseManagementController extends Controller
             
             $expenseRequest = RequestModel::with(['paymentSourceAccount', 'category'])
                 ->findOrFail($id);
-            
+
+            // ⛔ SALARY ADVANCES ARE NOT DELETABLE HERE. This endpoint is category-blind and
+            // blindly reverses `settlement_transaction_id` — which on a payroll-settled advance
+            // points at the WHOLE MONTH'S salary_payment ledger row (shared by every advance
+            // that pay recovered). Deleting one advance would un-post an entire salary while
+            // t_hr_payroll_payment still reads "paid". Advances are voided from Payroll only
+            // (owner-gated PayrollService::voidAdvance, which refuses settled ones outright).
+            if ($expenseRequest->category && $expenseRequest->category->category_code === 'salary_advance') {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Salary advances cannot be deleted here — void it from the Payroll page instead.'
+                ], 403);
+            }
+
             // Check if expense is approved
             if ($expenseRequest->status !== RequestModel::STATUS_APPROVED) {
                 return response()->json([

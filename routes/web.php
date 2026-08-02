@@ -232,6 +232,8 @@ Route::middleware(['auth'])->group(function () {
     Route::get('/orders/open-status-counts', [OrderController::class, 'getOpenOrdersStatusCounts'])->name('orders.open-status-counts');
     Route::get('/orders/rider-counts', [OrderController::class, 'getRiderOrdersCounts'])->name('orders.rider-counts');
     Route::get('/orders/new-since', [OrderController::class, 'newOrdersSince'])->name('orders.new-since'); // "N new orders" pill probe (must be before {id})
+    // Aug-2026 — riders waiting on a locked verified pin (30s banner poll; must be before {id}).
+    Route::get('/orders/pin-unlock-requests', [OrderController::class, 'pinUnlockRequests'])->name('orders.pin-unlock-requests');
 
     // ⭐ RIDERS MAP: Standalone page
     Route::get('/riders-map', [OrderController::class, 'ridersMap'])->name('riders-map');
@@ -742,6 +744,10 @@ Route::middleware(['auth'])->group(function () {
         // Legacy alias — the old chunked client posted here. Kept so a stale
         // browser tab mid-send doesn't 404 after the upload.
         Route::post('/{id}/send-bulk', [\App\Http\Controllers\Web\CampaignWebController::class, 'send']);
+        // Change the campaign's SEND ORDER (also re-orders the list). This is
+        // what "send to the top 100 by spend" rides on — the sender reads the
+        // stored sort.
+        Route::post('/{id}/sort', [\App\Http\Controllers\Web\CampaignWebController::class, 'setSort']);
         Route::post('/{id}/refresh-dedup', [\App\Http\Controllers\Web\CampaignWebController::class, 'refreshDedup']);
         Route::post('/{id}/end', [\App\Http\Controllers\Web\CampaignWebController::class, 'end']);
         Route::post('/{id}/customers/{customerId}/skip', [\App\Http\Controllers\Web\CampaignWebController::class, 'skip']);
@@ -771,6 +777,8 @@ Route::middleware(['auth'])->group(function () {
         // Verified-pin lock: grant / cancel a rider unlock window (Jul-2026)
         Route::post('/{id}/unlock-verified-pin', [\App\Http\Controllers\CRM\CustomerController::class, 'unlockVerifiedPin'])->name('customers.unlockVerifiedPin');
         Route::post('/{id}/relock-verified-pin', [\App\Http\Controllers\CRM\CustomerController::class, 'relockVerifiedPin'])->name('customers.relockVerifiedPin');
+        // Aug-2026 — clear a rider's unlock request WITHOUT unlocking (banner ✕).
+        Route::post('/{id}/dismiss-pin-unlock-request', [\App\Http\Controllers\CRM\CustomerController::class, 'dismissPinUnlockRequest'])->name('customers.dismissPinUnlockRequest');
         Route::post('/{id}/geocode', [\App\Http\Controllers\CRM\CustomerController::class, 'geocode'])->name('customers.geocode');
         Route::post('/{id}/geocode-single', [\App\Http\Controllers\CRM\CustomerController::class, 'geocodeSingle'])->name('customers.geocode-single');
         Route::delete('/{id}', [\App\Http\Controllers\CRM\CustomerController::class, 'destroy'])->name('customers.destroy');
@@ -1286,6 +1294,12 @@ Route::middleware(['auth'])->group(function () {
             Route::get('/data', [\App\Http\Controllers\HR\PayrollController::class, 'data'])->name('data');
             Route::post('/set-salary', [\App\Http\Controllers\HR\PayrollController::class, 'setSalary'])->name('set-salary');
             Route::post('/give-advance', [\App\Http\Controllers\HR\PayrollController::class, 'giveAdvance'])->name('give-advance');
+            // Owner-only (`void_salary_advance`): undo a wrongly-given advance.
+            Route::post('/void-advance', [\App\Http\Controllers\HR\PayrollController::class, 'voidAdvance'])->name('void-advance');
+            // Employee-raised advance requests: review queue + decide (approve pays immediately).
+            Route::get('/pending-requests', [\App\Http\Controllers\HR\PayrollController::class, 'pendingRequests'])->name('pending-requests');
+            Route::post('/approve-request', [\App\Http\Controllers\HR\PayrollController::class, 'approveRequest'])->name('approve-request');
+            Route::post('/reject-request', [\App\Http\Controllers\HR\PayrollController::class, 'rejectRequest'])->name('reject-request');
             Route::post('/pay', [\App\Http\Controllers\HR\PayrollController::class, 'pay'])->name('pay');
             // Custom-schedule employees (date-range / weekly salaries)
             Route::get('/custom-data', [\App\Http\Controllers\HR\PayrollController::class, 'customData'])->name('custom-data');

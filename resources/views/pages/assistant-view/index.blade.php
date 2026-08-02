@@ -58,6 +58,11 @@
   .nfa button.b.acct{background:#F0F9FF;border-color:#bae6fd;color:#0369a1}
   .nfa button.b.more{color:var(--ink3)}
   .nfa .flag{color:var(--amber);font-weight:700}
+  /* a credit the proof flow already identified — reported, not asked about */
+  .nfa .row.settled{background:var(--brand-wash);border-radius:8px;padding-left:8px;padding-right:8px}
+  .nfa .row.settled .proof{font-size:11px;font-weight:800}
+  .nfa .settled-next{font-style:italic;opacity:.85}
+  .nfa .hint{color:#0369a1;background:#F0F9FF;border-radius:6px;padding:3px 8px;margin-top:3px;display:inline-block}
   /* repeat debits from ONE account, clubbed so a double payment is obvious */
   .nfa .club{border:1px solid var(--amber-line);background:var(--amber-wash);border-radius:10px;padding:2px 10px 8px;margin-top:8px}
   .nfa .club-h{display:flex;align-items:center;gap:8px;padding:8px 0 2px;font-size:12.5px;font-weight:800;color:var(--amber)}
@@ -250,6 +255,14 @@
     const inCards  = cards.filter(c=>!isOut(c.type));   // payment_proof | shop_payment
     const outDone  = done.filter(x=>isOut(x.type));
     const inDone   = done.filter(x=>!isOut(x.type));
+    // Three states, not two. `settled` = the proof pipeline already identified
+    // this money (screenshot / bank email verified its order) and it clears
+    // itself on approval — so it is reported, never asked about.
+    // A row with no `state` (older payload, cached response) must FALL BACK to
+    // "needs action" — never be filtered out. A credit that silently vanishes
+    // from the box is money nobody is looking at.
+    const creditsSettled = credits.filter(m=>m.state === 'settled');
+    const creditsAction  = credits.filter(m=>!m.matched && m.state !== 'settled');
     const creditsOpen = credits.filter(m=>!m.matched);
     // A matched credit appears in BOTH `matched` and `auto_in` (verified: 100%
     // overlap on live data — matchedList and autoHandledToday select the same
@@ -263,7 +276,9 @@
     const outUnknown = toSort.filter(s=>!s.suggestion);
 
     const outWaiting = toSort.length + outCards.length;
-    const inWaiting  = creditsOpen.length + inCards.length;
+    // The pill counts what actually needs him — settled credits are excluded,
+    // otherwise the number contradicts the list right under it.
+    const inWaiting  = creditsAction.length + inCards.length;
 
     const parts = [];
     const showOut = focus === 'out' || focus === 'all';
@@ -305,7 +320,10 @@
     parts.push(groupHead('💸 Money out', outWaiting));
     if(outCards.length){ parts.push(sub('Waiting for your confirm')); outCards.forEach(c=>parts.push(cardRow(c))); }
     if(outKnown.length){ parts.push(sub('Recognised — one tap')); parts.push(clubbed(outKnown)); }
-    if(outUnknown.length){ parts.push(sub('Needs tagging — what was it?')); parts.push(clubbed(outUnknown)); }
+    if(outUnknown.length){
+      parts.push(sub('Needs tagging — what was it?'));
+      parts.push(ageSplit(outUnknown, s=>clubbed([s]), 'outun'));
+    }
     if(!outWaiting) parts.push('<div class="empty">Nothing waiting — every bank debit is sorted.</div>');
     parts.push(doneStrip('out', outDone.length + autoIg.length + autoOut.length,
       () => outDone.map(doneRow).join('') + autoOut.map(autoRow).join('') + autoIg.map(autoIgnoredRow).join('')));
@@ -316,8 +334,20 @@
     if(showIn){
     parts.push(groupHead('💰 Money in', inWaiting));
     if(inCards.length){ parts.push(sub('Waiting for your confirm')); inCards.forEach(c=>parts.push(cardRow(c))); }
-    if(creditsOpen.length){ parts.push(sub('Customer payments — who paid?')); creditsOpen.forEach(m=>parts.push(creditRow(m))); }
-    if(!inWaiting) parts.push('<div class="empty">Nothing waiting — every credit is matched.</div>');
+    if(creditsAction.length){
+      parts.push(sub('Customer payments — who paid?'));
+      parts.push(ageSplit(creditsAction, creditRow, 'inact'));
+    }
+    if(!creditsAction.length && !inCards.length){
+      parts.push('<div class="empty">Nothing waiting — every credit is identified.</div>');
+    }
+    // Already identified by the proof flow: shown so the money is visible and
+    // auditable, folded away so it never competes with the rows that need him.
+    if(creditsSettled.length){
+      parts.push(foldStrip('insettled',
+        '✓ Matched — clears on approval (' + creditsSettled.length + ')',
+        () => creditsSettled.map(settledRow).join('')));
+    }
     parts.push(doneStrip('in', creditsDone.length + inDone.length + autoIn.length,
       () => creditsDone.map(creditRow).join('') + autoIn.map(autoRow).join('') + inDone.map(doneRow).join('')));
     parts.push('</div>');
@@ -332,6 +362,50 @@
       +(n>0?'<span class="pill amber">'+n+' to action</span>':'<span class="grp-clear">all clear</span>')+'</div>';
   }
   function sub(t){return '<div class="sub-h">'+esc(t)+'</div>';}
+
+  // A generic collapsed strip (used for settled credits + stale rows). Built
+  // lazily so a closed strip costs nothing.
+  function foldStrip(key, label, build){
+    const open = !!doneOpen[key];
+    return '<div class="donebar" data-act="toggle-done" data-key="'+key+'">'+esc(label)+' '+(open?'▾':'▸')+'</div>'
+      + (open ? '<div class="donewrap">'+build()+'</div>' : '');
+  }
+
+  // Rows older than a week fold away. They are never deleted — unexplained
+  // money must keep nagging — but a 10-day-old row must not crowd out today's.
+  const STALE_DAYS = 7;
+  function ageSplit(rows, render, key){
+    const fresh = rows.filter(r => (r.age_days||0) <= STALE_DAYS);
+    const old   = rows.filter(r => (r.age_days||0) >  STALE_DAYS);
+    let out = fresh.map(render).join('');
+    if(old.length){
+      out += foldStrip(key+'old', 'Older than a week ('+old.length+')', () => old.map(render).join(''));
+    }
+    return out;
+  }
+
+  /**
+   * A credit the proof pipeline has ALREADY identified. This is a statement,
+   * not a question: it shows BOTH sides — the credit and the invoice it matches
+   * — plus how it was proven, and says what happens next. No action buttons,
+   * because the only correct action (approve the order) lives in Online
+   * Approvals and closes this row automatically.
+   */
+  function settledRow(m){
+    const w = m.settled_with || {};
+    return '<div class="row settled"><div class="body">'
+      + '<div class="t">'+esc(m.counterparty || 'Credit')
+      +   ' <span class="proof" style="color:'+esc(w.proof_color||'#16A34A')+'">'+esc(w.proof_label||'Matched')+'</span></div>'
+      + '<div class="s">'+esc(w.order_number||'')+' · '+esc(w.customer_name||'')
+      +   (w.order_total ? ' · invoice '+money(w.order_total) : '')+'</div>'
+      // An amount-based match is honest about itself: the payer is confirmed by
+      // the APPROVER (the blue chip on Online Approvals), not by a proof.
+      + (w.basis==='amount'
+          ? '<div class="s settled-next">Matched by amount — the approver confirms the payer; clears on approval.</div>'
+          : '<div class="s settled-next">Clears itself when this order is approved.</div>')
+      + '<div class="btns"><button class="b" data-act="pick-customer" data-id="'+m.id+'">Not this one…</button></div>'
+      + '</div><div class="amt in">+ '+money(m.amount)+'</div>'+pickerPanel(m.id)+'</div>';
+  }
 
   /**
    * Club debits that came from the SAME account under one heading.
@@ -386,8 +460,17 @@
       btns+='<button class="b warn" data-act="ignore-credit" data-id="'+m.id+'" data-cp="'+esc(m.counterparty||'')+'">Ignore</button>';
     }
     const when = [m.date, m.time].filter(Boolean).map(esc).join(' · ');
+    // Lead-less row context: the name resolved to one customer with nothing
+    // pending — say so, with their last approved order, as information only.
+    let hint = '';
+    if(!m.matched && m.name_hint){
+      const h = m.name_hint, lo = h.last_order;
+      hint = '<div class="s hint">Name matches '+esc(h.customer_name)+' — nothing pending for them.'
+        + (lo ? ' Last approved: '+esc(lo.order_number)+' · '+money(lo.amount)+' · '+esc(lo.approved_on)+'.' : '')
+        + '</div>';
+    }
     return '<div class="row"><div class="body"><div class="t">'+esc(m.counterparty||'Credit')+' '+autoTag(m.auto)+'</div>'
-      +'<div class="s">'+(m.matched?'✓ matched':'Received'+(when?' · '+when:''))+'</div>'
+      +'<div class="s">'+(m.matched?'✓ matched':'Received'+(when?' · '+when:''))+'</div>'+hint
       +(btns?'<div class="btns">'+btns+'</div>':'')+'</div><div class="amt in">+ '+money(m.amount)+'</div>'
       +pickerPanel(m.id)+'</div>';
   }

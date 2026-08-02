@@ -192,6 +192,10 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::post('/customers/{customerId}/set-verified-location', [\App\Http\Controllers\API\RiderController::class, 'setCustomerVerifiedLocation']);
         // Verified-pin lock: store/web grants a rider a time-boxed unlock window.
         Route::post('/customers/{customerId}/unlock-verified-pin', [\App\Http\Controllers\API\RiderController::class, 'unlockCustomerVerifiedPin']);
+        // Aug-2026 — the rider ASKS for a locked pin to be unlocked (one tap on his order screen).
+        Route::post('/customers/{customerId}/request-pin-unlock', [\App\Http\Controllers\API\RiderController::class, 'requestCustomerPinUnlock']);
+        // Aug-2026 — store banner ✕: clear a rider's unlock request without unlocking.
+        Route::post('/customers/{customerId}/dismiss-pin-unlock-request', [\App\Http\Controllers\API\RiderController::class, 'dismissCustomerPinUnlockRequest']);
         // Generic per-order live flags the rider app polls while an order is open
         // (verified-pin lock now; scan/dispatch-lock later — shared mechanism).
         Route::get('/orders/{orderId}/live-flags', [\App\Http\Controllers\API\RiderController::class, 'getOrderLiveFlags']);

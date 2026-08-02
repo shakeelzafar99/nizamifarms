@@ -1232,8 +1232,16 @@ class EmployeeCashController extends Controller
 
                 if ($shortOverAccount) {
                     $absAmount = abs($request->short_over);
-                    
-                    LedgerModel::create([
+
+                    // Pre-existing latent fatal: this block used a $nfCash variable that was never
+                    // defined in this method (harmless only because EXP_CASH_SHORT / REV_CASH_OVER
+                    // don't exist in the chart, so the block never ran). Defined properly now.
+                    $nfCash = ConfigModel::getNFCashAccount();
+                    if (!$nfCash) {
+                        throw new \Exception('NF Cash account not found for the short/over adjustment.');
+                    }
+
+                    $shortOverLedger = LedgerModel::create([
                         'transaction_date' => $request->transaction_date,
                         'transaction_type' => LedgerModel::TYPE_EXPENSE,
                         'description' => "Cash " . ($request->short_over < 0 ? 'short' : 'over') . " adjustment",
@@ -1245,19 +1253,13 @@ class EmployeeCashController extends Controller
                         'created_by' => auth()->id()
                     ]);
 
-                    // Update balances
-                    if ($request->short_over < 0) {
-                        // Short: Expense increases, Cash increases
-                        $shortOverAccount->current_balance += $absAmount;
-                        $nfCash->current_balance += $absAmount;
-                    } else {
-                        // Over: Cash decreases, Income increases
-                        $nfCash->current_balance -= $absAmount;
-                        $shortOverAccount->current_balance -= $absAmount;
-                    }
-                    
-                    $shortOverAccount->save();
-                    $nfCash->save();
+                    // Apply via the canonical engine (row-locked, stamps balance_updated). The NF
+                    // Cash leg is IDENTICAL to the old inline code (short ⇒ +, over ⇒ −); only the
+                    // EXP_CASH_SHORT / REV_CASH_OVER counter-leg changes direction — those are
+                    // bookkeeping category accounts no screen reads (P&L comes from ledger rows,
+                    // not stored category balances), and the old "+both sides" arithmetic violated
+                    // double-entry anyway.
+                    (new \App\Services\FIN\BalancePostingService())->apply($shortOverLedger);
                 }
             }
 
@@ -3158,7 +3160,7 @@ class EmployeeCashController extends Controller
             }
 
             // Create ledger entry
-            LedgerModel::create([
+            $ledger = LedgerModel::create([
                 'transaction_date' => $request->transaction_date,
                 'transaction_type' => 'adjustment',
                 'description' => "Manual adjustment: " . $request->reason,
@@ -3171,17 +3173,11 @@ class EmployeeCashController extends Controller
                 'created_by' => auth()->id()
             ]);
 
-            // Update balances
-            if ($request->type === 'increase') {
-                $employeeAccount->current_balance += $amount;
-                $equityAccount->current_balance -= $amount;
-            } else {
-                $employeeAccount->current_balance -= $amount;
-                $equityAccount->current_balance += $amount;
-            }
-
-            $employeeAccount->save();
-            $equityAccount->save();
+            // Apply via the canonical engine (row-locked, stamps balance_updated). Employee leg
+            // identical to the old inline code ('adjustment' is not an excluded employee-cash
+            // type, so it moves — increase ⇒ +, decrease ⇒ −). Equity counter-leg now moves the
+            // engine's direction (owner ruling Jul-31); it feeds no operational number.
+            (new \App\Services\FIN\BalancePostingService())->apply($ledger);
 
             DB::commit();
 
@@ -3333,15 +3329,25 @@ class EmployeeCashController extends Controller
             // Determine source
             $fromAccountId = $request->from_account_id;
             $description = $request->description;
-            
+
             // If no internal account specified, use Opening Equity for external receipts
             if (!$fromAccountId) {
+                // ⭐ [Funnel, Aug-2026] OUTSIDE money has exactly two doors in: NF Cash and Online.
+                // Owner ruling after capital was parked in the Expense Fund — external cash lands in
+                // a main account first and moves onward by ordinary (engine-posted) transfers.
+                if (!in_array($companyAccount->account_code, ['NF_CASH', 'ONLINE'], true)) {
+                    throw new \Exception(
+                        'Outside money can only be received into NF Cash or Online Bank. '
+                        . 'Receive it there first, then transfer to ' . $companyAccount->account_name . '.'
+                    );
+                }
+
                 $openingEquityAccount = ConfigModel::getOpeningEquityAccount();
                 if (!$openingEquityAccount) {
                     throw new \Exception("Opening Equity account not found. Please configure it in system settings.");
                 }
                 $fromAccountId = $openingEquityAccount->id;
-                
+
                 if ($request->from_external) {
                     $description = "Receipt from: {$request->from_external} - {$description}";
                 }
@@ -3363,15 +3369,14 @@ class EmployeeCashController extends Controller
                 'comments' => $approvalStatus === LedgerModel::STATUS_PENDING ? "Awaiting approval" : "Auto-approved"
             ]);
 
-            // If approved, update balances immediately
+            // If approved, apply via the canonical engine (row-locked, stamps balance_updated so the
+            // Hub sees it and reject/reverse works). Company leg identical to the old inline code
+            // (receiving account +). For EXTERNAL receipts the equity counter-leg now moves the
+            // engine's (accounting-correct) direction — capital in ⇒ Opening Equity UP — where the
+            // old inline code decremented it. Owner ruled Jul-31: engine direction everywhere.
+            // Equity feeds no operational number, so no visible balance changes.
             if ($approvalStatus === LedgerModel::STATUS_APPROVED) {
-                if ($fromAccountId) {
-                    $fromAccount = AccountModel::find($fromAccountId);
-                    if ($fromAccount) {
-                        $fromAccount->decrement('current_balance', $request->amount);
-                    }
-                }
-                $companyAccount->increment('current_balance', $request->amount);
+                (new \App\Services\FIN\BalancePostingService())->apply($ledger);
             }
 
             DB::commit();
@@ -3456,29 +3461,15 @@ class EmployeeCashController extends Controller
                 'comments' => $approvalStatus === LedgerModel::STATUS_PENDING ? "Awaiting approval" : "Auto-approved"
             ]);
 
-            // If approved, update balances immediately.
-            //
-            // ⚠️ NOT yet routed through BalancePostingService, deliberately — this is the one
-            // remaining unstamped writer and it needs an owner ruling first.
-            // Reason: an EXTERNAL payment posts the counter-leg to EQUITY_OPENING, which is
-            // account_type = 'equity' (credit-arithmetic). The code below increments it
-            // unconditionally, whereas the canonical convention would DECREMENT it — so
-            // switching would change the direction of that leg for external payments. Every
-            // existing approved row happens to be asset→asset (where the two agree), so
-            // nothing is wrong today, but the two rules genuinely disagree for the
-            // Opening-Equity case and that is a business decision, not a refactor.
-            // Consequence of leaving it: rows created here stay unstamped (balance_updated=0),
-            // so they remain invisible to the Finance Hub and cannot be auto-reversed.
-            // See LEDGER-SOLIDITY-PLAN — "company_payment ruling".
+            // If approved, apply via the canonical engine — the owner ruling this writer was
+            // waiting for landed Jul-31: engine direction everywhere. Company leg identical to
+            // the old inline code (paying account −); internal destinations identical (+). For
+            // EXTERNAL payments the equity counter-leg now moves the engine's direction — money
+            // handed outside ⇒ Opening Equity DOWN — where the old code incremented it. Equity
+            // feeds no operational number, so no visible balance changes. Row-locked; stamps
+            // balance_updated, making these rows Hub-visible and reversible at last.
             if ($approvalStatus === LedgerModel::STATUS_APPROVED) {
-                $companyAccount->decrement('current_balance', $request->amount);
-
-                if ($toAccountId) {
-                    $toAccount = AccountModel::find($toAccountId);
-                    if ($toAccount) {
-                        $toAccount->increment('current_balance', $request->amount);
-                    }
-                }
+                (new \App\Services\FIN\BalancePostingService())->apply($ledger);
             }
 
             DB::commit();

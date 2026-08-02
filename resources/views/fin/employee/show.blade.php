@@ -1698,29 +1698,39 @@
             <form id="companyReceiveForm" method="POST" action="{{ route('fin.employee.company-receive', $account->id) }}">
                 @csrf
                 
-                <!-- Source Type Selection -->
+                <!-- Source Type Selection.
+                     Owner rule (Jul-31): OUTSIDE money has exactly two doors in — NF Cash and
+                     Online Bank. On any other account the External option is hidden (and the
+                     server rejects it regardless); money arrives via a main account, then moves
+                     here by an ordinary transfer. -->
+                @php $canReceiveExternal = in_array($account->account_code, ['NF_CASH', 'ONLINE'], true); @endphp
                 <div class="mb-4">
                     <label class="block text-sm font-medium text-gray-700 mb-2">Receipt Source</label>
                     <div class="flex gap-4">
+                        @if($canReceiveExternal)
                         <label class="flex items-center">
                             <input type="radio" name="receipt_source_type" value="external" checked onclick="toggleReceiptSource()" class="mr-2">
                             <span class="text-sm">External (Customer/Vendor)</span>
                         </label>
+                        @endif
                         <label class="flex items-center">
-                            <input type="radio" name="receipt_source_type" value="internal" onclick="toggleReceiptSource()" class="mr-2">
+                            <input type="radio" name="receipt_source_type" value="internal" {{ $canReceiveExternal ? '' : 'checked' }} onclick="toggleReceiptSource()" class="mr-2">
                             <span class="text-sm">Internal Account</span>
                         </label>
                     </div>
+                    @unless($canReceiveExternal)
+                        <p class="text-xs text-gray-500 mt-1">Outside money is received into NF Cash or Online Bank first, then transferred here.</p>
+                    @endunless
                 </div>
 
                 <!-- External Source Section -->
-                <div id="receipt_external_section" class="mb-4">
+                <div id="receipt_external_section" class="mb-4" @unless($canReceiveExternal) style="display: none;" @endunless>
                     <label for="receipt_from_external" class="block text-sm font-medium text-gray-700">From (Name/Description)</label>
                     <input type="text" id="receipt_from_external" name="from_external" class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md" placeholder="e.g., Customer Payment, Sale, etc.">
                 </div>
 
                 <!-- Internal Account Section -->
-                <div id="receipt_account_section" class="mb-4" style="display: none;">
+                <div id="receipt_account_section" class="mb-4" @if($canReceiveExternal) style="display: none;" @endif>
                     <label for="receipt_from_account" class="block text-sm font-medium text-gray-700">From Account</label>
                     <select id="receipt_from_account" name="from_account_id" class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md">
                         <option value="">Select account...</option>

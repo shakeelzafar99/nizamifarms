@@ -1359,6 +1359,17 @@ button[onclick*="switchToShopifyApprovals"] { display: none !important; }
          Placed OUTSIDE the sticky header on purpose: the header's contents are
          re-parented into #nfTopFlex at DOMContentLoaded, and anything sitting
          next to the status cards gets moved with them. --}}
+    {{-- NF (Aug-2026): a rider is standing at a customer's door and the verified
+         pin is LOCKED, so he cannot correct it. Pressing "verify" on his phone
+         raised this; one click here unlocks and his app picks it up within ~20s.
+
+         Rendered EMPTY and filled by a 30s poll — never server-rendered — so it
+         cannot show a request that has already been answered. The feed itself
+         only returns requests that are still unanswered AND still locked, so the
+         banner disappears the moment anyone acts, on this screen or any other.
+         Deliberately NOT tab-gated: this is rare and someone is waiting. --}}
+    <div id="nfPinUnlockBanners" class="px-4 lg:px-6 pt-2 min-w-0" style="display:none;"></div>
+
     @if(!empty($automationBanners))
     <div id="nfAutomationBanners" class="px-4 lg:px-6 pt-2 min-w-0"
          style="display: {{ ($source === 'other' && ($tab ?? 'all') === 'open') ? 'block' : 'none' }};">
@@ -1984,6 +1995,124 @@ button[onclick*="switchToShopifyApprovals"] { display: none !important; }
   function start(){ reseed(); if(timer) clearInterval(timer); timer = setInterval(poll, 30000); }
   if(document.readyState === 'loading'){ document.addEventListener('DOMContentLoaded', start); }
   else { start(); }
+})();
+</script>
+
+<script>
+// NF (Aug-2026) — "a rider is waiting on a locked pin" banner.
+//
+// Riders used to have to PHONE a manager to get a verified pin unlocked. Now the
+// refusal on his phone raises a request and this strip offers the unlock.
+//
+// The one rule that matters here: THE BANNER IS NEVER STATE WE HOLD. Every 30s we
+// re-ask the server for the open requests and repaint from that answer, so a
+// request answered anywhere — this page, another manager's browser, store mode on
+// a phone, or by the rider saving the pin — is gone from here within one poll. A
+// dead banner would need the server to keep returning something it no longer does.
+(function(){
+  var box = document.getElementById('nfPinUnlockBanners');
+  if(!box) return;
+  var timer = null;
+  var busy = false;   // a click is in flight — don't let a poll repaint under it
+
+  function csrfToken(){
+    var m = document.querySelector('meta[name="csrf-token"]');
+    return m ? (m.getAttribute('content') || '') : '';
+  }
+  function esc(s){
+    return String(s == null ? '' : s).replace(/[&<>"']/g, function(c){
+      return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];
+    });
+  }
+  // Server sends 'YYYY-MM-DD HH:MM:SS' PKT wall-clock. Read the parts as LOCAL so
+  // the shown time matches the server (the UTC round-trip renders it hours off).
+  function shortTime(s){
+    if(!s) return '';
+    var m = String(s).replace('T',' ').match(/^(\d{4})-(\d{2})-(\d{2})[ ](\d{2}):(\d{2})/);
+    if(!m) return '';
+    var d = new Date(+m[1], +m[2]-1, +m[3], +m[4], +m[5]);
+    if(isNaN(d.getTime())) return '';
+    return d.toLocaleTimeString([], {hour:'numeric', minute:'2-digit'});
+  }
+
+  function render(list){
+    if(!list || !list.length){ box.style.display = 'none'; box.innerHTML = ''; return; }
+    var html = '';
+    for(var i=0; i<list.length; i++){
+      var r = list[i];
+      var at = shortTime(r.requested_at);
+      html += '<div style="display:flex;align-items:center;gap:10px;padding:8px 12px;margin-bottom:6px;'
+           +  'background:#fffbeb;border:1px solid #fcd34d;border-left:3px solid #f59e0b;border-radius:8px;'
+           +  'font-size:12.5px;color:#78350f;">'
+           +  '<span style="font-size:14px;line-height:1;">🔒</span>'
+           +  '<span><strong>' + esc(r.rider_name) + '</strong> is at <strong>' + esc(r.customer_name) + '</strong>'
+           +  (r.order_number ? ' (' + esc(r.order_number) + ')' : '')
+           +  ' and needs the verified location unlocked'
+           +  (at ? ' — asked at ' + esc(at) : '') + '.</span>'
+           +  '<span style="margin-left:auto;display:flex;align-items:center;gap:6px;">'
+           +  '<button type="button" data-unlock="' + r.customer_id + '" '
+           +  'style="background:#f59e0b;border:1px solid #d97706;color:#fff;padding:3px 12px;border-radius:6px;'
+           +  'font-size:11.5px;font-weight:700;cursor:pointer;">Unlock</button>'
+           +  '<button type="button" data-dismiss="' + r.customer_id + '" title="Dismiss without unlocking" '
+           +  'style="background:none;border:none;color:#b45309;font-size:14px;line-height:1;cursor:pointer;padding:0 2px;">✕</button>'
+           +  '</span></div>';
+    }
+    box.innerHTML = html;
+    box.style.display = 'block';
+  }
+
+  function poll(){
+    if(document.hidden || busy) return;
+    fetch('{{ route('orders.pin-unlock-requests') }}', {
+      headers: {'X-Requested-With':'XMLHttpRequest','Accept':'application/json'},
+      credentials: 'same-origin'
+    })
+      .then(function(r){ return r.json(); })
+      .then(function(d){ if(d && d.success) render(d.requests || []); })
+      .catch(function(){});   // a failed poll leaves the last answer on screen
+  }
+
+  function act(url, btn, failMsg){
+    busy = true;
+    if(btn){ btn.disabled = true; btn.style.opacity = '0.6'; }
+    return fetch(url, {
+      method: 'POST',
+      headers: {'Content-Type':'application/json','X-CSRF-TOKEN':csrfToken(),'Accept':'application/json'},
+      credentials: 'same-origin'
+    })
+      .then(function(r){ return r.json(); })
+      .then(function(d){
+        busy = false;
+        if(!d || !d.success){ alert(failMsg + (d && d.message ? ': ' + d.message : '')); }
+        poll();   // repaint from the server, never from an assumption
+      })
+      .catch(function(){
+        busy = false;
+        if(btn){ btn.disabled = false; btn.style.opacity = '1'; }
+        alert(failMsg + ' — please try again.');
+      });
+  }
+
+  box.addEventListener('click', function(ev){
+    var el = ev.target.closest('button[data-unlock], button[data-dismiss]');
+    if(!el) return;
+    var unlockId = el.getAttribute('data-unlock');
+    if(unlockId){
+      act('/customers/' + unlockId + '/unlock-verified-pin', el, 'Could not unlock');
+      return;
+    }
+    var dismissId = el.getAttribute('data-dismiss');
+    if(dismissId && confirm('Dismiss this request without unlocking? The pin stays locked.')){
+      act('/customers/' + dismissId + '/dismiss-pin-unlock-request', el, 'Could not dismiss');
+    }
+  });
+
+  function start(){ poll(); if(timer) clearInterval(timer); timer = setInterval(poll, 30000); }
+  if(document.readyState === 'loading'){ document.addEventListener('DOMContentLoaded', start); }
+  else { start(); }
+  // Coming back to the tab is exactly when a manager wants the truth, and the
+  // poll skips hidden tabs — so re-ask immediately rather than waiting up to 30s.
+  document.addEventListener('visibilitychange', function(){ if(!document.hidden) poll(); });
 })();
 </script>
 

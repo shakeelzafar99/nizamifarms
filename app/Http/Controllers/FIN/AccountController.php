@@ -341,7 +341,7 @@ class AccountController extends Controller
             }
 
             // Create ledger entry
-            LedgerModel::create([
+            $ledger = LedgerModel::create([
                 'transaction_date' => $request->transaction_date,
                 'transaction_type' => LedgerModel::TYPE_ADJUSTMENT,
                 'description' => $description,
@@ -356,21 +356,11 @@ class AccountController extends Controller
                 'comments' => $request->reason
             ]);
 
-            // Update balances
-            if ($request->adjustment_type === 'increase') {
-                $account->current_balance += $amount;
-            } else {
-                $account->current_balance -= $amount;
-            }
-            $account->save();
-
-            // Update equity account (opposite direction)
-            if ($request->adjustment_type === 'increase') {
-                $equityAccount->current_balance -= $amount;
-            } else {
-                $equityAccount->current_balance += $amount;
-            }
-            $equityAccount->save();
+            // Apply via the canonical engine (row-locked, stamps balance_updated). The adjusted
+            // account's leg is IDENTICAL to the old inline code (increase ⇒ +, decrease ⇒ −);
+            // only the Opening-Equity counter-leg now moves the engine's direction (owner ruling
+            // Jul-31) — it feeds no operational number.
+            (new \App\Services\FIN\BalancePostingService())->apply($ledger);
 
             DB::commit();
 

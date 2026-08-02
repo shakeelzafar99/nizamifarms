@@ -873,6 +873,11 @@ let campaignSessionLimit = 100;
 let campaignEligible = 0;
 let sendRunHistory = [];
 let detailPagination = { page: 1, per_page: 100, total: 0, pages: 0 };
+// The list's current sort. null = the campaign's stored send order; the server
+// echoes back what it actually applied. Changing it also PERSISTS as the
+// campaign's send order (for managers), so "send the first 100" always means
+// the first 100 of the order on screen.
+let detailSort = null;   // {by, dir}
 let sendPollTimer = null;
 // Pending choices in the send dialog.
 let sendDialog = { open: false, mode: 'foreground', limit: 100, includeFailed: false, useSelection: false };
@@ -886,6 +891,10 @@ let productOptions = [];
 // anything sending right now, per-template results, and a needs-attention list.
 let overviewData = null;
 let campaignSearch = '';
+// Finished campaigns collapse behind one row in the list — they cannot send and
+// need no decision, so showing them full-size made the list read as a pile of
+// pending work. Session-only; every visit starts focused on live campaigns.
+let showEndedCampaigns = false;
 let staleDays = 60;
 let overviewPollTimer = null;
 
@@ -1107,6 +1116,9 @@ async function loadCampaignDetail(id, statusFilter, page) {
         detailSourceFilter = 'any';
         detailPagination.page = 1;
     }
+    // Switching campaigns drops back to that campaign's own stored sort;
+    // switching tabs within one campaign keeps the chosen sort.
+    if (!sameCampaign) detailSort = null;
     if (page) detailPagination.page = page;
 
     // Paint immediately so the click feels answered. Only when the user is
@@ -1118,7 +1130,8 @@ async function loadCampaignDetail(id, statusFilter, page) {
         renderDetailSkeleton(id);
     }
 
-    const qs = `status=${encodeURIComponent(customerStatusFilter)}&page=${detailPagination.page}&per_page=${detailPagination.per_page}`;
+    let qs = `status=${encodeURIComponent(customerStatusFilter)}&page=${detailPagination.page}&per_page=${detailPagination.per_page}`;
+    if (detailSort) qs += `&sort_by=${encodeURIComponent(detailSort.by)}&sort_dir=${encodeURIComponent(detailSort.dir)}`;
     let data;
     try {
         data = await apiFetch(`/campaigns/${id}?${qs}`);
@@ -1140,6 +1153,7 @@ async function loadCampaignDetail(id, statusFilter, page) {
     campaignCustomers = data.customers || [];
     campaignCounts = data.counts;
     if (data.pagination) detailPagination = { ...detailPagination, ...data.pagination };
+    if (data.sort) detailSort = { by: data.sort.by, dir: data.sort.dir };
     if (data.quota) waQuota = data.quota;
     sendRun = data.run || null;
     sendState = data.campaign.send_state || 'idle';
@@ -1270,7 +1284,22 @@ function renderCampaignList() {
         </div>
     </div>`;
 
-    list.forEach(c => {
+    // Live work first; finished campaigns collapse behind one row.
+    //
+    // Why: an ended campaign is history — it cannot send and needs no decision —
+    // but listed at full size it looks identical to something that still needs
+    // attention. With most campaigns ended, the list read as a wall of things to
+    // do. They stay one click away, never hidden.
+    //
+    // Two cases force them open regardless, or the UI would appear to be lying:
+    // a search that matches one, and having an ended campaign currently open.
+    const activeList = list.filter(c => c.status !== 'ended');
+    const endedList  = list.filter(c => c.status === 'ended');
+    const searching  = q !== '';
+    const viewingEnded = endedList.some(c => activeCampaignId == c.id);
+    const endedOpen  = showEndedCampaigns || searching || viewingEnded;
+
+    const renderCard = c => {
         const isActive = activeCampaignId == c.id;
         const total = parseInt(c.total_customers || 0);
         const sent = parseInt(c.sent_count || 0);
@@ -1289,7 +1318,7 @@ function renderCampaignList() {
         const created = relDate(c.created_at);
         const tplLabel = c.template_display_name || c.wa_template_name;
 
-        html += `
+        return `
         <div class="camp-card${isActive ? ' active' : ''}" onclick="loadCampaignDetail(${c.id})" style="${dim}">
             <div class="camp-card-name">
                 ${esc(c.name)}
@@ -1312,8 +1341,45 @@ function renderCampaignList() {
                 ${created ? `<span title="Campaign created">Created ${created}</span>` : ''}
             </div>
         </div>`;
-    });
+    };
+
+    html += activeList.map(renderCard).join('');
+
+    if (activeList.length === 0 && endedList.length > 0 && !searching) {
+        html += `<div style="padding:16px 14px;color:#94a3b8;font-size:12px;text-align:center;">
+            No active campaigns. ${endedList.length} finished one${endedList.length === 1 ? '' : 's'} below.
+        </div>`;
+    }
+
+    if (endedList.length > 0) {
+        const totalSent = endedList.reduce((n, c) => n + parseInt(c.sent_count || 0), 0);
+        html += `
+        <div onclick="toggleEndedCampaigns()" title="${endedOpen ? 'Hide' : 'Show'} finished campaigns"
+             style="display:flex;align-items:center;gap:8px;padding:10px 14px;cursor:pointer;
+                    background:#f8fafc;border-top:1px solid #e2e8f0;${endedOpen ? 'border-bottom:1px solid #e2e8f0;' : ''}
+                    font-size:12px;color:#64748b;user-select:none;">
+            <span style="font-size:10px;display:inline-block;width:10px;transition:transform .15s;transform:rotate(${endedOpen ? '90' : '0'}deg);">▶</span>
+            <span style="font-weight:600;">Finished campaigns (${endedList.length})</span>
+            <span style="margin-left:auto;color:#94a3b8;">${totalSent.toLocaleString()} sent</span>
+        </div>`;
+
+        if (endedOpen) {
+            if (searching && !showEndedCampaigns) {
+                html += `<div style="padding:6px 14px;font-size:11px;color:#94a3b8;background:#f8fafc;">Shown because they match your search.</div>`;
+            }
+            html += endedList.map(renderCard).join('');
+        }
+    }
+
     el.innerHTML = html;
+}
+
+// Finished campaigns are collapsed by default (see renderCampaignList). The
+// choice is per-session only — deliberately not persisted, since the useful
+// default on every visit is "show me what still needs work".
+function toggleEndedCampaigns() {
+    showEndedCampaigns = !showEndedCampaigns;
+    renderCampaignList();
 }
 
 // Always-visible WhatsApp allowance in the list footer.
@@ -1532,9 +1598,7 @@ function renderOverviewTemplates(templates) {
                 ${overviewStat('Ordered', f.ordered, '#16a34a')}
                 ${overviewStat('Revenue', 'PKR ' + Number(f.revenue || 0).toLocaleString(), '#d97706')}
             </div>
-            ${f.duplicate_sends > 0 ? `<div style="font-size:11px;color:#92400e;margin-top:8px;">
-                ${Number(f.sends).toLocaleString()} messages went to ${Number(f.sent).toLocaleString()} people — ${f.duplicate_sends} got it more than once.
-            </div>` : ''}
+            ${renderTemplateReachNote(f)}
             ${f.undelivered > 0 ? `<div style="font-size:11px;color:#991b1b;margin-top:4px;">
                 ${f.undelivered} could not be delivered (${f.rates.undelivered}%).
             </div>` : ''}
@@ -1544,11 +1608,89 @@ function renderOverviewTemplates(templates) {
     return html;
 }
 
+// Explains where a template's reach came from. The headline counts EVERY send of
+// the template — campaign sends plus ones typed by hand in the chat window — so
+// the split has to be visible, otherwise "reached 1,176" looks like the campaign
+// did more than it did.
+function renderTemplateReachNote(f) {
+    const byHand = Number(f.outside_campaigns || 0);
+    const viaCampaign = Number(f.from_campaign || 0);
+    const bits = [];
+
+    if (byHand > 0) {
+        bits.push(`<div style="font-size:11px;color:#5b21b6;margin-top:8px;">
+            <b>${Number(f.sent).toLocaleString()}</b> people reached —
+            ${viaCampaign.toLocaleString()} through campaigns,
+            <b>${byHand.toLocaleString()}</b> sent by hand from Messages.
+        </div>`);
+    }
+    if (f.duplicate_sends > 0) {
+        bits.push(`<div style="font-size:11px;color:#92400e;margin-top:${byHand > 0 ? '4' : '8'}px;">
+            ${Number(f.sends).toLocaleString()} messages went to ${Number(f.sent).toLocaleString()} people — ${f.duplicate_sends} got it more than once.
+        </div>`);
+    }
+    return bits.join('');
+}
+
 function overviewStat(label, value, colour) {
     return `<div style="flex:1;min-width:78px;padding:6px 8px;background:#f8fafc;border-radius:6px;">
         <div style="font-size:13px;font-weight:700;color:${colour};line-height:1.2;">${value}</div>
         <div style="font-size:10px;color:#64748b;margin-top:1px;">${label}</div>
     </div>`;
+}
+
+// ==========================================================================
+// LIST SORT (the "top 100 by revenue" control)
+//
+// Options are key:direction pairs understood by the server. Spend and order
+// counts are computed LIVE (the stored columns are stale), so "highest spend"
+// really is the highest.
+// ==========================================================================
+
+const CAMP_SORT_OPTIONS = [
+    { v: 'last_order_date:desc', l: 'Recent buyers first' },
+    { v: 'last_order_date:asc',  l: 'Longest-quiet first (win-back)' },
+    { v: 'spent:desc',           l: 'Highest spend first' },
+    { v: 'orders:desc',          l: 'Most orders first' },
+    { v: 'first_order_date:desc',l: 'Newest customers first' },
+    { v: 'created_at:desc',      l: 'Recently added first' },
+];
+
+function sortLabel(by, dir) {
+    const hit = CAMP_SORT_OPTIONS.find(o => o.v === `${by}:${dir}`);
+    return hit ? hit.l : (by + ' ' + dir);
+}
+
+function renderSortSelect() {
+    const cur = detailSort ? `${detailSort.by}:${detailSort.dir}` : '';
+    // A stored sort that isn't one of the presets (e.g. spent:asc) still shows
+    // truthfully rather than pretending to be something else.
+    const known = CAMP_SORT_OPTIONS.some(o => o.v === cur);
+    return `
+    <select onchange="changeCampaignSort(this.value)" title="Order of this list AND of sending — 'send the first 100' follows this."
+            style="padding:6px 8px;border:1px solid #e2e8f0;border-radius:6px;font-size:12px;background:#fff;max-width:210px;">
+        ${!known && cur ? `<option value="${esc(cur)}" selected>${esc(sortLabel(detailSort.by, detailSort.dir))}</option>` : ''}
+        ${CAMP_SORT_OPTIONS.map(o => `<option value="${o.v}" ${o.v === cur ? 'selected' : ''}>${o.l}</option>`).join('')}
+    </select>`;
+}
+
+async function changeCampaignSort(value) {
+    const [by, dir] = String(value).split(':');
+    if (!by) return;
+    detailSort = { by, dir: dir || 'desc' };
+
+    // Persist as the campaign's SEND order so "first N" sends and the
+    // background worker follow what's on screen. A viewer without manage
+    // rights gets a 403 here — that's fine, their VIEW still re-sorts via the
+    // detail request; only the stored send order stays put.
+    try {
+        await apiFetch(`/campaigns/${activeCampaignId}/sort`, {
+            method: 'POST',
+            body: JSON.stringify({ sort_by: by, sort_dir: dir }),
+        });
+    } catch (e) { /* view-only sorting still works below */ }
+
+    loadCampaignDetail(activeCampaignId, customerStatusFilter, 1);
 }
 
 // Per-person delivery state. Deliberately only rendered for rows we actually
@@ -1825,6 +1967,7 @@ function renderCampaignDetail() {
                 ${chip('shopify', '🛍 Shopify')}
                 ${chip('non_shopify', 'Non-Shopify')}
             </div>
+            ${renderSortSelect()}
             ${hasAnyDetailFilter ? `
                 <span style="font-size:11px;color:#64748b;">Showing <b>${filteredCustomers.length}</b> / ${campaignCustomers.length}</span>
                 <button type="button" class="camp-btn camp-btn-secondary" style="padding:3px 8px;font-size:11px;" onclick="clearDetailFilters()">Clear</button>
@@ -1882,7 +2025,8 @@ function renderCampaignDetail() {
                     <div class="camp-customer-details">
                         ${cu.city ? `<span>${esc(cu.city)}</span>` : ''}
                         ${cu.last_order_date ? `<span title="Last order">Last: ${esc(String(cu.last_order_date).substring(0,10))}</span>` : '<span style="color:#94a3b8;">Never ordered</span>'}
-                        ${cu.order_count > 0 ? `<span style="color:#16a34a;font-weight:600;" title="Orders placed after this campaign message, inside the tracking window">${cu.order_count} order${cu.order_count === 1 ? '' : 's'} after${cu.order_revenue ? ' · PKR ' + parseFloat(cu.order_revenue).toLocaleString() : ''}</span>` : ''}
+                        ${Number(cu.lifetime_orders) > 0 ? `<span title="Lifetime, computed live from delivered orders — this is what the spend/orders sort ranks by">${Number(cu.lifetime_orders)} order${Number(cu.lifetime_orders) === 1 ? '' : 's'} · PKR ${Number(cu.lifetime_spent || 0).toLocaleString()}</span>` : ''}
+                        ${cu.order_count > 0 ? `<span style="color:#16a34a;font-weight:600;" title="Orders placed after this campaign message, inside the tracking window">${cu.order_count} after${cu.order_revenue ? ' · PKR ' + parseFloat(cu.order_revenue).toLocaleString() : ''}</span>` : ''}
                     </div>
                     ${tagsHtml}
                     ${(() => {
@@ -2106,6 +2250,7 @@ function renderSendDialog() {
         <div style="padding:10px 12px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:6px;margin-bottom:16px;font-size:12px;color:#475569;line-height:1.6;">
             Template <b>${esc(tpl)}</b> → <b>${pool}</b> ${d.useSelection ? 'selected' : (d.includeFailed ? 'failed' : 'waiting')} customer${pool === 1 ? '' : 's'}
             ${d.useSelection ? '<div style="margin-top:2px;color:#7c3aed;">Only your current selection will be messaged.</div>' : ''}
+            ${(!d.useSelection && detailSort) ? `<div style="margin-top:2px;color:#7c3aed;">Send order: <b>${esc(sortLabel(detailSort.by, detailSort.dir))}</b> — "the first ${Math.min(d.limit, pool)}" means the top of that list.</div>` : ''}
         </div>
 
         <div class="camp-form-group">
@@ -2460,7 +2605,7 @@ function renderFunnelBlock(f, windowDays, trackingType) {
         ['Delivered',   f.delivered,   f.rates.delivered,   'Confirmed as reaching the phone.', '#0891b2'],
         ['Read',        f.read,        f.rates.read,        'Opened by the customer. A minimum only — people who turn read receipts off never report a read.', '#7c3aed'],
         ['Replied',     f.replied,     f.rates.replied,     'Wrote back to us on WhatsApp.', '#2563eb'],
-        ['Ordered',     f.ordered,     f.rates.ordered,     `Placed a qualifying order within ${windowDays} days of the message.`, '#16a34a'],
+        ['Ordered',     f.ordered,     f.rates.ordered,     `Placed an order within ${windowDays} days of the message. Counted as soon as the order exists — cancelled orders are excluded.`, '#16a34a'],
     ];
 
     const typeNote = trackingType === 'app_orders'
@@ -2502,10 +2647,12 @@ function renderFunnelBlock(f, windowDays, trackingType) {
     html += `
     <div class="camp-stats-grid" style="margin-bottom:6px;">
         <div class="camp-stats-card"><div class="value">${f.orders}</div><div class="label">Orders placed</div></div>
-        <div class="camp-stats-card"><div class="value">PKR ${parseFloat(f.revenue || 0).toLocaleString()}</div><div class="label">Revenue in window</div></div>
+        <div class="camp-stats-card"><div class="value">PKR ${parseFloat(f.revenue || 0).toLocaleString()}</div><div class="label">Order value in window</div></div>
     </div>
     <div style="font-size:10px;color:#94a3b8;margin-bottom:16px;line-height:1.5;">
         ${typeNote} These are orders that happened <b>after</b> the message within ${windowDays} days — timing, not proof the message caused them.
+        Counted as soon as the order is placed (cancelled and refunded excluded), so this value <b>includes orders not yet delivered</b>
+        and will read higher than the delivered-only revenue on HQ and Reports.
     </div>`;
 
     return html;
@@ -2549,6 +2696,7 @@ function renderRunHistoryBlock() {
         too_many_failures: 'Stopped — too many failures',
         operator_paused: 'Paused by user',
         no_eligible: 'Nobody left to send to',
+        media_missing: 'Stopped — template image missing on server',
         all_excluded: 'All had the template recently',
         campaign_ended: 'Campaign ended',
         time_budget: 'In progress',
@@ -2630,14 +2778,20 @@ function renderTemplateResults() {
     <div style="padding:12px;background:#faf5ff;border:1px solid #e9d5ff;border-radius:8px;margin-bottom:8px;">
         <div style="font-size:13px;font-weight:700;color:#5b21b6;margin-bottom:2px;">Combined — how this template performs</div>
         <div style="font-size:11px;color:#7c3aed;margin-bottom:10px;">
-            Every customer counted <b>once</b> across all ${r.campaign_count} campaigns${r.window_mixed ? `, using the widest tracking window (${r.tracking_window_days}d)` : ''}.
+            Every customer counted <b>once</b> — across all ${r.campaign_count} campaigns
+            <b>and</b> any time this template was sent by hand from Messages${r.window_mixed ? `, using the widest tracking window (${r.tracking_window_days}d)` : ''}.
         </div>
         <div class="camp-stats-grid" style="margin-bottom:8px;">
-            <div class="camp-stats-card"><div class="value">${cb.sent}</div><div class="label">People reached</div></div>
-            <div class="camp-stats-card"><div class="value" style="color:#2563eb;">${cb.replied}</div><div class="label">Replied (${cb.rates.replied}%)</div></div>
-            <div class="camp-stats-card"><div class="value" style="color:#16a34a;">${cb.ordered}</div><div class="label">Ordered (${cb.rates.ordered}%)</div></div>
+            <div class="camp-stats-card"><div class="value">${Number(cb.sent).toLocaleString()}</div><div class="label">People reached</div></div>
+            <div class="camp-stats-card"><div class="value" style="color:#2563eb;">${Number(cb.replied).toLocaleString()}</div><div class="label">Replied (${cb.rates.replied}%)</div></div>
+            <div class="camp-stats-card"><div class="value" style="color:#16a34a;">${Number(cb.ordered).toLocaleString()}</div><div class="label">Ordered (${cb.rates.ordered}%)</div></div>
             <div class="camp-stats-card"><div class="value">PKR ${parseFloat(cb.revenue || 0).toLocaleString()}</div><div class="label">Revenue</div></div>
         </div>
+        ${Number(cb.outside_campaigns || 0) > 0 ? `<div style="font-size:11px;color:#5b21b6;background:#f5f3ff;border:1px solid #ddd6fe;border-radius:6px;padding:8px;margin-bottom:6px;">
+            <b>${Number(cb.from_campaign).toLocaleString()}</b> of these were reached by the campaigns below;
+            <b>${Number(cb.outside_campaigns).toLocaleString()}</b> got the template sent by hand from Messages
+            (those are counted here but belong to no campaign, so the per-campaign rows below will not add up to this total).
+        </div>` : ''}
         ${cb.duplicate_sends > 0 ? `<div style="font-size:11px;color:#92400e;background:#fffbeb;border:1px solid #fde68a;border-radius:6px;padding:8px;">
             <b>${cb.sends} messages went to ${cb.sent} people</b> — ${cb.duplicate_sends} customer${cb.duplicate_sends === 1 ? '' : 's'} received this template more than once. Worth watching for message fatigue.
         </div>` : `<div style="font-size:11px;color:#166534;">No one received this template twice.</div>`}

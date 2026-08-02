@@ -53,7 +53,15 @@ class FleetFuelService
         $meters   = $this->meterAggregates($from, $to);
         $claims   = $this->claimAggregates($from, $to);
 
-        $ids = array_unique(array_merge(array_keys($meters), array_keys($claims)));
+        // ⭐ The ACTIVE ROSTER is always in the list, activity or not. The ids used
+        //    to come only from the month's meters + claims, so a fresh month (or
+        //    one where a rider hadn't ridden yet) returned an empty table — and
+        //    the "new petrol / maintenance" modal builds its rider list from
+        //    these rows, so on the 1st of a month a manager had nobody to file
+        //    for, on web and mobile alike. A delivery rider exists regardless of
+        //    whether this month has data on him yet.
+        $rosterIds = array_keys(array_filter($profiles, fn ($p) => (int) $p->active === 1));
+        $ids = array_unique(array_merge($rosterIds, array_keys($meters), array_keys($claims)));
         if (!$ids) {
             return ['month' => $month, 'riders' => [], 'totals' => $this->emptyTotals()];
         }
@@ -96,9 +104,14 @@ class FleetFuelService
             // "what does one delivered kilometre cost me under each model?"
             $basisKm = $m['work_km'];
 
-            // Nothing at all this month (no money, no distance) — not a fleet row.
-            if ($basisKm <= 0 && $c['fuel_rs'] <= 0 && $c['maint_rs'] <= 0
-                && $c['fuel_pending_rs'] <= 0 && $c['maint_pending_rs'] <= 0) {
+            // Nothing at all this month (no money, no distance). An OFF-roster
+            // user with an empty month is noise and is dropped — but an ACTIVE
+            // delivery rider keeps his row with zeros: the roster is who the
+            // screen is ABOUT, and the new-claim modal needs him listed even on
+            // the 1st of the month before anything has happened.
+            $emptyMonth = $basisKm <= 0 && $c['fuel_rs'] <= 0 && $c['maint_rs'] <= 0
+                && $c['fuel_pending_rs'] <= 0 && $c['maint_pending_rs'] <= 0;
+            if ($emptyMonth && (!$p || (int) $p->active !== 1)) {
                 continue;
             }
 

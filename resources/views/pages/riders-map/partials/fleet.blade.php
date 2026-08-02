@@ -226,6 +226,27 @@
         </div>
       </div>
 
+      {{-- 💳 Where the money actually comes from. Until Aug-2026 this form sent
+           nothing, so every claim silently defaulted to the Expense Fund at
+           posting time even when a manager had paid cash out of his own till.
+           Options come from PaymentSourceService — the same rules the submit
+           endpoint enforces, so nothing offered here can be rejected. --}}
+      <div id="flNewPayWrap" style="display:none;">
+        <label style="display:block;font-size:11.5px;font-weight:700;color:#374151;margin-bottom:4px;">💳 Paid from</label>
+        <select id="flNewPaySource" onchange="flNewPayChanged()"
+                style="width:100%;border:1px solid #d1d5db;border-radius:8px;padding:8px 10px;font-size:13px;"></select>
+        <div id="flNewPayHint" style="font-size:11px;color:#6b7280;margin-top:4px;"></div>
+      </div>
+
+      {{-- Only for a bank source: which of OUR banks the money left, so the
+           per-bank balances stay right. Mandatory server-side. --}}
+      <div id="flNewBankWrap" style="display:none;">
+        <label style="display:block;font-size:11.5px;font-weight:700;color:#374151;margin-bottom:4px;">
+          🏦 From which bank <span style="font-weight:500;color:#b45309;">(required)</span>
+        </label>
+        <div id="flNewBankChips" style="display:flex;flex-wrap:wrap;gap:6px;"></div>
+      </div>
+
       <div id="flNewMeterWrap">
         <label style="display:block;font-size:11.5px;font-weight:700;color:#374151;margin-bottom:4px;">
           Bike meter reading <span id="flNewMeterReq" style="font-weight:500;color:#b45309;"></span>
@@ -907,11 +928,82 @@ function flOpenNew(cat) {
     document.getElementById('flNewAmount').value = '';
     document.getElementById('flNewMeter').value = '';
     document.getElementById('flNewNote').value = '';
-    document.getElementById('flNewDate').value = new Date().toISOString().split('T')[0];
-    document.getElementById('flNewDate').max = new Date().toISOString().split('T')[0];
+    // LOCAL date, not toISOString() — that is UTC, which on PKT reads as
+    // YESTERDAY between midnight and 5am, and as `max` it would even block
+    // choosing today. (Same trap as the date-cast Carbon issue elsewhere.)
+    const d = new Date();
+    const todayYmd = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0')
+                   + '-' + String(d.getDate()).padStart(2, '0');
+    document.getElementById('flNewDate').value = todayYmd;
+    document.getElementById('flNewDate').max = todayYmd;
     flNewError('');
+    flNewFillPaySources();
     flNewRiderChanged();
     document.getElementById('flNewModal').style.display = 'flex';
+}
+
+/**
+ * Build the "Paid from" list. A user without `expense_all_payment_sources`
+ * legitimately gets a single option (the Expense Fund) — the row is still
+ * SHOWN, greyed, because "it came out of the fund" is information the person
+ * filing wants confirmed, not hidden. The whole block only disappears when the
+ * server sent no accounts at all (misconfiguration), and then we submit
+ * nothing and the old default applies.
+ */
+let flNewBankId = null;
+
+function flNewFillPaySources() {
+    const wrap = document.getElementById('flNewPayWrap');
+    const sel  = document.getElementById('flNewPaySource');
+    const list = (flData && flData.pay_sources) ? flData.pay_sources : [];
+
+    flNewBankId = null;
+    if (!list.length) { wrap.style.display = 'none'; sel.innerHTML = ''; flNewPayChanged(); return; }
+
+    sel.innerHTML = list.map(a =>
+        '<option value="' + a.id + '"' + (a.is_default ? ' selected' : '') +
+        ' data-online="' + (a.is_online ? '1' : '0') + '">' +
+        flEsc(a.display_name || a.name) + '</option>').join('');
+    sel.disabled = (list.length === 1);
+    sel.style.background = (list.length === 1) ? '#f9fafb' : '#fff';
+    wrap.style.display = 'block';
+    flNewPayChanged();
+}
+
+/** Bank sources need the specific bank; cash sources must never carry one. */
+function flNewPayChanged() {
+    const sel  = document.getElementById('flNewPaySource');
+    const opt  = sel.options[sel.selectedIndex];
+    const isOnline = !!(opt && opt.dataset && opt.dataset.online === '1');
+    const bankWrap = document.getElementById('flNewBankWrap');
+
+    document.getElementById('flNewPayHint').textContent = !opt ? ''
+        : (sel.disabled ? 'This is the only account you can spend from.'
+                        : 'The account this money actually left.');
+
+    if (!isOnline) {
+        bankWrap.style.display = 'none';
+        flNewBankId = null;
+        return;
+    }
+
+    const banks = (flData && flData.pay_banks) ? flData.pay_banks : [];
+    if (!banks.length) { bankWrap.style.display = 'none'; flNewBankId = null; return; }
+    if (!banks.some(b => b.id === flNewBankId)) flNewBankId = null;
+
+    document.getElementById('flNewBankChips').innerHTML = banks.map(b =>
+        '<button type="button" onclick="flNewPickBank(' + b.id + ')" ' +
+        'style="border:1px solid ' + (b.id === flNewBankId ? '#f59e0b' : '#d1d5db') + ';' +
+        'background:' + (b.id === flNewBankId ? '#fffbeb' : '#fff') + ';border-radius:999px;' +
+        'padding:5px 11px;font-size:12px;font-weight:700;cursor:pointer;' +
+        'color:' + (b.id === flNewBankId ? '#92400e' : '#374151') + ';">' +
+        flEsc(b.short_code || b.name) + '</button>').join('');
+    bankWrap.style.display = 'block';
+}
+
+function flNewPickBank(id) {
+    flNewBankId = id;
+    flNewPayChanged();
 }
 
 function flCloseNew() { document.getElementById('flNewModal').style.display = 'none'; }
@@ -985,9 +1077,17 @@ function flSubmitNew() {
     const svc    = document.getElementById('flNewServiceType').value;
     const note   = document.getElementById('flNewNote').value;
 
+    const paySel  = document.getElementById('flNewPaySource');
+    const payId   = (paySel && paySel.value) ? parseInt(paySel.value, 10) : null;
+    const payOpt  = paySel ? paySel.options[paySel.selectedIndex] : null;
+    const payIsOnline = !!(payOpt && payOpt.dataset && payOpt.dataset.online === '1');
+
     if (!uid) { flNewError('Choose which rider this is for.'); return; }
     if (!amount || amount <= 0) { flNewError('Enter the amount.'); return; }
     if (!date) { flNewError('Choose the date.'); return; }
+    // Caught here as well as server-side so the manager fixes it in place
+    // instead of losing the form to a 422.
+    if (payIsOnline && !flNewBankId) { flNewError('Choose which bank this online payment came from.'); return; }
 
     const btn = document.getElementById('flNewSubmit');
     btn.disabled = true; btn.textContent = 'Creating…';
@@ -1004,6 +1104,10 @@ function flSubmitNew() {
     };
     if (meter !== '') body.meter_at_fill = parseInt(meter, 10);
     if (flNewCat === 'Maintenance' && svc) body.service_type = svc;
+    if (payId) body.payment_source_account_id = payId;
+    // Only ever sent with a bank source — the server drops it otherwise, but a
+    // cash claim should not carry a bank id in the first place.
+    if (payId && payIsOnline && flNewBankId) body.receiving_account_id = flNewBankId;
 
     fetch('/requests', {
         method: 'POST',

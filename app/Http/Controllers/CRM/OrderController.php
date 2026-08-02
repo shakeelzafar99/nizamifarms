@@ -399,6 +399,27 @@ class OrderController extends Controller
         return response()->json(['count' => $count]);
     }
 
+    /**
+     * Aug-2026 — riders waiting on a locked verified pin (30s poll).
+     *
+     * Powers the orders-page banner. Its whole job is to be a LIVE answer: the
+     * request disappears from this list the moment anyone unlocks, saves the
+     * pin, re-locks or dismisses it, so the banner can never sit there asking
+     * for something already done. See PinUnlockRequestService for why that is
+     * true by construction rather than by remembering to clear an alert.
+     */
+    public function pinUnlockRequests(Request $request)
+    {
+        if (!auth()->check()) {
+            return response()->json(['success' => true, 'requests' => []]);
+        }
+
+        return response()->json([
+            'success'  => true,
+            'requests' => \App\Services\Location\PinUnlockRequestService::live(),
+        ]);
+    }
+
     public function show($id)
     {
         try {
@@ -3995,8 +4016,38 @@ class OrderController extends Controller
                 $invoiceSentMap = [];
             }
 
+            // Aug-2026 — payment-proof status for the RIDER's order list, so a
+            // customer who paid by WhatsApp transfer is visible on the card
+            // before he knocks (and, on a CASH order, before he asks for money
+            // that has already been sent).
+            //
+            // Mobile only, deliberately: the web orders page builds its own map
+            // in index() with the default suppressSettled, and quietly changing
+            // the shape of its refetch is not this feature's business. The rider
+            // is a RECORD surface — an approved payment must still read as
+            // received — hence suppressSettled:false, matching getOrderDetails.
+            // Bulk (the query is capped at 100 rows above); non-fatal.
+            // NEVER for source=shopify: those rows come from t_crm_shopify_order,
+            // whose auto-increment ids overlap t_crm_prod_order's, and payment
+            // signals key on PRODUCTION order ids. Looking one up by a staging id
+            // would decorate a Shopify approval with an unrelated live order's
+            // payment — the id-collision trap this codebase has been bitten by
+            // before. Staging orders have no payments yet anyway.
+            $riderProofMap = [];
+            try {
+                if ($source !== 'shopify' && $request->is('api/rider/*') && config('payment_signals.enabled')) {
+                    $proofOrderIds = $orders->pluck('id')->filter()->values()->all();
+                    if (!empty($proofOrderIds)) {
+                        $riderProofMap = app(\App\Services\Payments\Signals\PaymentProofStatusService::class)
+                            ->forOrders($proofOrderIds, suppressSettled: false);
+                    }
+                }
+            } catch (\Throwable $e) {
+                $riderProofMap = [];
+            }
+
             // Add customer order count and region info to each order
-            $orders->transform(function($order) use ($customerOrderCounts, $regionMap, $dispatcherNames, $customerReplyMap, $orderReplyMap, $invoiceSentMap) {
+            $orders->transform(function($order) use ($customerOrderCounts, $regionMap, $dispatcherNames, $customerReplyMap, $orderReplyMap, $invoiceSentMap, $riderProofMap) {
                 $orderCount = $customerOrderCounts[$order->customer_id] ?? 0;
                 $isNewCustomer = $orderCount <= 1;
 
@@ -4022,6 +4073,9 @@ class OrderController extends Controller
                 $order->invoice_sent_at = $invSt['sent_at'] ?? null;
                 $order->invoice_send_failed = (bool) ($invSt['failed'] ?? false);
                 $order->invoice_send_error = $invSt['error'] ?? null;
+
+                // Payment-proof badge for the rider's card (empty map on web).
+                $order->payment_proof = $riderProofMap[$order->id] ?? null;
 
                 return $order;
             });

@@ -542,9 +542,25 @@ class CustomerAppController extends Controller
 
             // Snapshot the pre-write pin so the change is auditable (the old
             // coordinates are otherwise silently overwritten). null for a
-            // just-created customer → logged as "first pin set".
+            // just-created customer → logged as "first pin set". The unlock-grant
+            // columns ride along so the grace window below can honour a longer
+            // grant that is already live.
             $existingPin = DB::table('t_crm_prod_customer')->where('id', $customerId)
-                ->first(['first_name', 'last_name', 'latitude', 'longitude']);
+                ->first([
+                    'first_name', 'last_name', 'latitude', 'longitude',
+                    'verified_pin_unlocked_until', 'verified_pin_unlocked_by',
+                ]);
+
+            // A customer's own pin opens the same 24h grace window a staff save
+            // does (owner ruling, Aug-2026): the rider standing at the door is
+            // the ground truth for a pin the customer dropped from their sofa,
+            // so he may correct it once without phoning the office. His save then
+            // consumes the grant and the pin re-locks.
+            $update = array_merge($update, CustomerModel::pinGrantGrace(
+                $existingPin->verified_pin_unlocked_until ?? null,
+                $existingPin->verified_pin_unlocked_by ?? null,
+                self::CUSTOMER_PIN_SAVED_BY
+            ));
 
             DB::table('t_crm_prod_customer')->where('id', $customerId)->update($update);
 

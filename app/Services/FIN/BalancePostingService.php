@@ -35,6 +35,17 @@ class BalancePostingService
     private const DEBIT_ARITHMETIC = ['asset', 'expense', 'income'];
 
     /**
+     * Loan money is PERSONAL money to the employee, never company cash they hold — same charter as
+     * the salary/advance exclusions, so the engine must skip the employee-cash leg of loan rows too
+     * (the old inline writer never touched it either).
+     *
+     * Deliberately NOT added to AccountModel::EXCLUDED_EMPLOYEE_CASH_TYPES: that constant ALSO
+     * drives getCalculatedBalance() — the rider balances shown everywhere — and widening it would
+     * silently change those numbers. This list is engine-only.
+     */
+    private const ENGINE_ONLY_EMPLOYEE_SKIP = ['loan_disbursement', 'loan_cancellation_refund'];
+
+    /**
      * Row types written with from/to REVERSED vs the economic value flow (legacy writers).
      * vendor_purchase is stored as from=expense → to=vendor (VendorController), i.e. the
      * economic flow vendor→expense written backwards. Verified against production data:
@@ -99,7 +110,8 @@ class BalancePostingService
 
             // Employee-cash rule: excluded types never move a company-cash balance.
             if ($acc->account_category === AccountModel::CATEGORY_EMPLOYEE_CASH
-                && in_array($row->transaction_type, AccountModel::EXCLUDED_EMPLOYEE_CASH_TYPES, true)) {
+                && (in_array($row->transaction_type, AccountModel::EXCLUDED_EMPLOYEE_CASH_TYPES, true)
+                    || in_array($row->transaction_type, self::ENGINE_ONLY_EMPLOYEE_SKIP, true))) {
                 continue;
             }
 

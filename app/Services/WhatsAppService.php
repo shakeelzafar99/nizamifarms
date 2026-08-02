@@ -1296,9 +1296,105 @@ class WhatsAppService
             } catch (\Exception $e) {
                 Log::debug('WhatsApp: Qurbani re-classify on outbound failed (non-fatal)', ['error' => $e->getMessage()]);
             }
+
+            // A template sent BY HAND counts as that campaign's message too.
+            $this->adoptManualSendIntoCampaigns($conversationId, $templateName, $waMessageId, $sentBy);
         }
 
         return $message;
+    }
+
+    /**
+     * When a campaign's template is sent outside the campaign sender, credit the
+     * campaign with it.
+     *
+     * Placed on saveOutboundMessage() because that is the single choke point
+     * every outbound message passes through — chat window (web and mobile),
+     * automations, the campaign sender itself. Hooking the chat controller alone
+     * would have missed the other paths.
+     *
+     * The gap this closes: you open a customer's chat and send them the app-launch
+     * template by hand. They are also sitting in "app launch wave 1" as Pending.
+     * Before this, they stayed Pending — and the next campaign send moved them to
+     * Excluded, because the dedup guard could see the manual send. So a person who
+     * genuinely received the message counted as neither reached nor converted, and
+     * the campaign under-reported itself.
+     *
+     * Now the row is marked sent with the REAL wamid, so the Meta delivery/read
+     * receipts for that manual message flow into the campaign funnel exactly as
+     * they would for a campaign send, and any order they place attributes normally.
+     *
+     * Deliberate boundaries:
+     *  - Only PENDING/SENDING rows are touched. A row already 'sent' is left alone
+     *    (this is what makes the campaign sender's own call a no-op), and rows the
+     *    operator skipped or that dedup excluded are NOT resurrected — changing a
+     *    deliberate exclusion behind the operator's back would be worse than the
+     *    under-count.
+     *  - Only ACTIVE campaigns. An ended campaign's numbers stay frozen.
+     *  - Every campaign using that template is credited, since the customer did
+     *    receive it.
+     *
+     * Non-fatal throughout: campaign bookkeeping must never break a send.
+     */
+    protected function adoptManualSendIntoCampaigns(int $conversationId, string $templateName, ?string $waMessageId, ?int $sentBy): void
+    {
+        try {
+            $customerId = ConversationModel::where('id', $conversationId)->value('customer_id');
+            if (!$customerId) return;   // unlinked chat — nothing to credit
+
+            $rows = \DB::table('t_crm_campaign_customers as cc')
+                ->join('t_crm_campaigns as c', 'c.id', '=', 'cc.campaign_id')
+                ->where('cc.customer_id', $customerId)
+                ->whereIn('cc.status', ['pending', 'sending'])
+                ->where('c.status', 'active')
+                ->where('c.wa_template_name', $templateName)
+                ->select('cc.id', 'cc.campaign_id')
+                ->get();
+
+            if ($rows->isEmpty()) return;
+
+            $payload = [
+                'status'         => 'sent',
+                'sent_at'        => now(),
+                'sent_by'        => $sentBy,
+                'wa_message_id'  => $waMessageId,
+                'claimed_at'     => null,
+                'error_message'  => null,
+                // A fresh send starts a fresh delivery story.
+                'delivered_at'   => null,
+                'read_at'        => null,
+                'undelivered_at' => null,
+            ];
+            if (\Illuminate\Support\Facades\Schema::hasColumn('t_crm_campaign_customers', 'sent_via')) {
+                $payload['sent_via'] = 'manual';
+            }
+
+            \DB::table('t_crm_campaign_customers')
+                ->whereIn('id', $rows->pluck('id')->all())
+                ->update($payload);
+
+            // Keep the denormalised counter honest, the same way the campaign
+            // sender does — recomputed, not incremented, so it cannot drift.
+            foreach ($rows->pluck('campaign_id')->unique() as $campaignId) {
+                \DB::table('t_crm_campaigns')->where('id', $campaignId)->update([
+                    'sent_count' => \DB::raw('(SELECT COUNT(*) FROM t_crm_campaign_customers WHERE campaign_id = ' . (int) $campaignId . " AND status = 'sent')"),
+                    'updated_at' => now(),
+                ]);
+            }
+
+            Log::info('Campaign: manual template send adopted', [
+                'customer_id' => $customerId,
+                'template'    => $templateName,
+                'campaigns'   => $rows->pluck('campaign_id')->unique()->values()->all(),
+                'rows'        => $rows->count(),
+            ]);
+
+        } catch (\Throwable $e) {
+            Log::debug('Campaign: manual-send adoption failed (non-fatal)', [
+                'template' => $templateName,
+                'error'    => $e->getMessage(),
+            ]);
+        }
     }
 
     /**

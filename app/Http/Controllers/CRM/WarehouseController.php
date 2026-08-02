@@ -102,23 +102,50 @@ class WarehouseController extends Controller
                 }
             }
             
-            // ⭐ 3-day sales data: Get order quantities per product for today, yesterday, day-before
-            // Uses order_date (not delivery_date) since stock is reduced when order is placed
+            // ⭐ 7-day sales data: per-product order quantities for today + the previous 6 days.
+            //
+            // Bucketed by o.order_date — the date the order was PLACED. Two things that are NOT
+            // true and have been mis-stated before:
+            //   • It is NOT the delivery date. (`delivery_date` is an Eloquent accessor derived
+            //     from t_crm_order_status_history, so it cannot be grouped on in SQL at all.)
+            //   • It is NOT when stock moved. Store stock is deducted at mark-prepared /
+            //     out-for-delivery via OrderLineItemModel::deductInventory(), not at placement.
+            // Read these as "demand booked that day".
+            //
+            // Same definition as the Khaas sales report's `total_qty` (delivered + open, cancelled
+            // excluded), so the two reconcile — except the report can optionally drop free lines
+            // and this never does.
+            $salesWindowDays = 7;
+
+            // Fixed newest→oldest day skeleton, reused for every product so the client always
+            // gets the same slots (a product with zero sales still renders a full week).
+            $salesWindow = [];
+            $dayIndexByDate = [];
+            $windowAnchor = now()->startOfDay();
+            for ($i = 0; $i < $salesWindowDays; $i++) {
+                $day = $windowAnchor->copy()->subDays($i);
+                $dayIndexByDate[$day->toDateString()] = $i;
+                $salesWindow[] = [
+                    'date' => $day->toDateString(),
+                    // In a 7-day window each weekday occurs exactly once, so the short day name
+                    // is unambiguous — and far more readable than "d-4".
+                    'label' => $i === 0 ? 'TODAY' : $day->format('D'),
+                    'is_today' => $i === 0,
+                    'qty' => 0,
+                ];
+            }
+
             $salesByProduct = [];
             try {
-                $today = now()->startOfDay();
-                $threeDaysAgo = $today->copy()->subDays(2); // day-before-yesterday start
-                
-                // Get all product IDs for this BU
                 $buProductIds = ProductModel::where('business_unit_id', $businessUnitId)->pluck('id')->toArray();
-                
+
                 if (!empty($buProductIds)) {
                     $salesRows = \App\Models\CRM\OrderLineItemModel::whereIn('product_id', $buProductIds)
-                        ->whereHas('order', function($q) use ($threeDaysAgo) {
-                            $q->whereNotIn('order_status', ['cancelled'])
-                              ->where('order_date', '>=', $threeDaysAgo->toDateString());
-                        })
                         ->join('t_crm_prod_order as o', 'o.id', '=', 't_crm_prod_order_line_item.order_id')
+                        ->whereNotIn('o.order_status', ['cancelled'])
+                        // Compared against the raw column, NOT DATE(o.order_date), so an index on
+                        // order_date is still usable. The bound is midnight, so it is equivalent.
+                        ->where('o.order_date', '>=', $windowAnchor->copy()->subDays($salesWindowDays - 1)->toDateString())
                         ->select(
                             't_crm_prod_order_line_item.product_id',
                             DB::raw('DATE(o.order_date) as sale_date'),
@@ -126,35 +153,54 @@ class WarehouseController extends Controller
                         )
                         ->groupBy('t_crm_prod_order_line_item.product_id', DB::raw('DATE(o.order_date)'))
                         ->get();
-                    
-                    $todayStr = now()->toDateString();
-                    $yesterdayStr = now()->subDay()->toDateString();
-                    $dayBeforeStr = now()->subDays(2)->toDateString();
-                    
+
                     foreach ($salesRows as $row) {
-                        $pid = (string)$row->product_id;
-                        if (!isset($salesByProduct[$pid])) {
-                            $salesByProduct[$pid] = ['today' => 0, 'yesterday' => 0, 'day_before' => 0];
+                        $idx = $dayIndexByDate[$row->sale_date] ?? null;
+                        if ($idx === null) {
+                            continue; // outside the window (clock skew / stray date)
                         }
-                        $dateStr = $row->sale_date;
-                        if ($dateStr === $todayStr) {
-                            $salesByProduct[$pid]['today'] += (int)$row->total_qty;
-                        } elseif ($dateStr === $yesterdayStr) {
-                            $salesByProduct[$pid]['yesterday'] += (int)$row->total_qty;
-                        } elseif ($dateStr === $dayBeforeStr) {
-                            $salesByProduct[$pid]['day_before'] += (int)$row->total_qty;
+
+                        $pid = (string) $row->product_id;
+                        if (!isset($salesByProduct[$pid])) {
+                            $salesByProduct[$pid] = [
+                                'days' => $salesWindow,
+                                'total' => 0,
+                                // ⭐ Legacy keys. APKs older than the 7-day build read these three
+                                // directly and know nothing about `days`. The web side deploys
+                                // before the APK does, so dropping them would blank the badges on
+                                // every phone in the field until everyone updates. Keep them.
+                                'today' => 0,
+                                'yesterday' => 0,
+                                'day_before' => 0,
+                            ];
+                        }
+
+                        $qty = (int) $row->total_qty;
+                        $salesByProduct[$pid]['days'][$idx]['qty'] += $qty;
+                        $salesByProduct[$pid]['total'] += $qty;
+
+                        if ($idx === 0) {
+                            $salesByProduct[$pid]['today'] += $qty;
+                        } elseif ($idx === 1) {
+                            $salesByProduct[$pid]['yesterday'] += $qty;
+                        } elseif ($idx === 2) {
+                            $salesByProduct[$pid]['day_before'] += $qty;
                         }
                     }
                 }
             } catch (\Exception $e) {
-                \Log::warning('Failed to fetch 3-day sales data', ['error' => $e->getMessage()]);
+                \Log::warning('Failed to fetch 7-day sales data', ['error' => $e->getMessage()]);
                 // Non-critical, continue without sales data
             }
-            
+
             return response()->json([
                 'success' => true,
                 'warehouse_inventory' => $result,
                 'product_sales' => $salesByProduct,
+                // Empty skeleton for products with no sales at all, so the client renders the
+                // same labelled week rather than inventing its own day names.
+                'sales_window' => $salesWindow,
+                'sales_window_days' => $salesWindowDays,
             ]);
             
         } catch (\Exception $e) {

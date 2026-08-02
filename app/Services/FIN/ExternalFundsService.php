@@ -85,6 +85,19 @@ class ExternalFundsService
             throw new \InvalidArgumentException('Add a short description so this is explainable later.');
         }
 
+        // ⭐ [Funnel, Aug-2026] OUTSIDE money has exactly two doors IN: NF Cash and Online. Owner
+        // ruling after capital was parked in the Expense Fund — external cash lands in a main
+        // account first and moves onward by ordinary (engine-posted) transfers, so every till's
+        // history shows where its money actually came from. Money OUT is deliberately not
+        // restricted here. This service is the single choke point for all Hub external-money UIs.
+        if ($direction === self::DIR_IN
+            && !in_array($account->account_code, ['NF_CASH', 'ONLINE'], true)) {
+            throw new \InvalidArgumentException(
+                'Outside money can only be received into NF Cash or Online Bank. '
+                . 'Receive it there first, then transfer to ' . $account->account_name . '.'
+            );
+        }
+
         $equity = ConfigModel::getOpeningEquityAccount();
         if (!$equity) {
             throw new \InvalidArgumentException(

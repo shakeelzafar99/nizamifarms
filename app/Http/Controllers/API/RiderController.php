@@ -473,6 +473,8 @@ class RiderController extends Controller
                             'pin_locked' => $order->customer->isVerifiedPinLocked(),
                             'pin_unlock_until' => $order->customer->verifiedPinUnlockActive()
                                 ? $order->customer->verified_pin_unlocked_until->toIso8601String() : null,
+                            // Seeds the "Store notified" state before the first poll lands.
+                            'pin_unlock_requested' => $order->customer->verifiedPinUnlockRequestActive(),
                         ] : null,
                     ],
                     'amounts' => [
@@ -665,24 +667,43 @@ class RiderController extends Controller
             // a store/web user has granted a live unlock window. Store/web users
             // are never bound (they ARE the unlockers); a first-ever pin is never
             // locked. See DISPATCH-F1-F2-F3-COORDINATION-JUL2026.md.
-            if ($this->riderPinBindApplies(Auth::user()) && $customer->isVerifiedPinLocked()) {
+            $isBoundRider = $this->riderPinBindApplies(Auth::user());
+            if ($isBoundRider && $customer->isVerifiedPinLocked()) {
+                // The refusal itself raises the request, so the store sees a
+                // banner without the rider phoning anyone — and it works even on
+                // an APK too old to know about this feature.
+                $requested = \App\Services\Location\PinUnlockRequestService::raise(
+                    $customer,
+                    Auth::id(),
+                    $request->input('order_id')
+                );
+
                 return response()->json([
                     'success' => false,
-                    'message' => "This customer's location is locked. Ask the store to unlock it before changing the pin.",
+                    'message' => $requested
+                        ? "This customer's location is locked. The store has been asked to unlock it — you'll be able to save as soon as they do."
+                        : "This customer's location is locked. Ask the store to unlock it before changing the pin.",
                     'pin_locked' => true,
+                    'unlock_requested' => $requested,
                 ], 423);
             }
 
-            // Prepare update data. Every successful save CONSUMES any unlock grant
-            // (clears it) — so the pin re-locks immediately for next time, and a
-            // granted-but-unused window never lingers past the one edit it was for.
-            $updateData = [
+            // Prepare update data. A RIDER's save CONSUMES any unlock grant, so
+            // the pin re-locks immediately and a granted-but-unused window never
+            // lingers past the one edit it was for. A STORE/WEB save instead
+            // leaves the 24h grace window open, so the rider who reaches the
+            // door can correct a temporary pin without phoning for an unlock.
+            $updateData = array_merge([
                 'updated_by' => Auth::id(),
                 'verified_location_saved_by' => Auth::id(),
                 'verified_location_saved_at' => now(),
-                'verified_pin_unlocked_until' => null,
-                'verified_pin_unlocked_by' => null,
-            ];
+            ], $isBoundRider
+                ? \App\Models\CRM\CustomerModel::pinGrantConsumed()
+                : \App\Models\CRM\CustomerModel::pinGrantGrace(
+                    $customer->verified_pin_unlocked_until,
+                    $customer->verified_pin_unlocked_by,
+                    Auth::id()
+                ));
             
             // Track where the pin's coordinates came from, so the response can
             // warn when they're approximate (geocoded) or missing entirely.
@@ -2613,26 +2634,47 @@ class RiderController extends Controller
             // Verified-pin lock (same rule as setCustomerVerifiedLocation): a
             // rider may not override an existing verified pin without a store/web
             // unlock grant. First-ever pin is never locked.
-            if ($this->riderPinBindApplies(Auth::user()) && $customer->isVerifiedPinLocked()) {
+            $isBoundRider = $this->riderPinBindApplies(Auth::user());
+            if ($isBoundRider && $customer->isVerifiedPinLocked()) {
+                // Same as the sibling method: refusing a rider also asks the
+                // store, so he never has to make the phone call. This path knows
+                // the order, so the banner can name it.
+                $requested = \App\Services\Location\PinUnlockRequestService::raise(
+                    $customer,
+                    Auth::id(),
+                    $orderId
+                );
+
                 return response()->json([
                     'success' => false,
-                    'message' => "This customer's location is locked. Ask the store to unlock it before changing the pin.",
+                    'message' => $requested
+                        ? "This customer's location is locked. The store has been asked to unlock it — you'll be able to save as soon as they do."
+                        : "This customer's location is locked. Ask the store to unlock it before changing the pin.",
                     'pin_locked' => true,
+                    'unlock_requested' => $requested,
                 ], 423);
             }
 
             // Create Google Maps search URL from address
             $googleMapsUrl = 'https://www.google.com/maps/search/?api=1&query=' . urlencode($validated['address']);
 
-            // Prepare update data (consume any unlock grant — see the sibling method).
-            $updateData = [
+            // Prepare update data (grant handling — see the sibling method). This
+            // button is THE temporary-pin case: the store places an approximate,
+            // address-derived pin so dispatch can time the stop, and the rider is
+            // expected to replace it with the real one on arrival. So a store save
+            // here deliberately leaves the 24h grace window open.
+            $updateData = array_merge([
                 'updated_by' => Auth::id(),
                 'verified_location_saved_by' => Auth::id(),
                 'verified_location_saved_at' => now(),
                 'verified_location_url' => $googleMapsUrl,
-                'verified_pin_unlocked_until' => null,
-                'verified_pin_unlocked_by' => null,
-            ];
+            ], $isBoundRider
+                ? \App\Models\CRM\CustomerModel::pinGrantConsumed()
+                : \App\Models\CRM\CustomerModel::pinGrantGrace(
+                    $customer->verified_pin_unlocked_until,
+                    $customer->verified_pin_unlocked_by,
+                    Auth::id()
+                ));
 
             // NOTE: whether any of the above is actually written is decided below.
             // Until Jul-28-2026 this update ran unconditionally, so a failed
@@ -2772,10 +2814,13 @@ class RiderController extends Controller
             }
 
             $until = now()->addMinutes(\App\Models\CRM\CustomerModel::VERIFIED_PIN_UNLOCK_MINUTES);
-            $customer->update([
+            // Granting the unlock ANSWERS any standing rider request, so it is
+            // cleared here — that is what takes the banner off the store and web
+            // screens the moment the job is done.
+            $customer->update(array_merge([
                 'verified_pin_unlocked_until' => $until,
                 'verified_pin_unlocked_by'    => $user->id,
-            ]);
+            ], \App\Models\CRM\CustomerModel::pinUnlockRequestCleared()));
 
             \Log::info('Verified pin unlocked for rider edit', [
                 'customer_id' => $customer->id,
@@ -2794,6 +2839,90 @@ class RiderController extends Controller
                 'error'       => $e->getMessage(),
             ]);
             return response()->json(['success' => false, 'message' => 'Failed to unlock location'], 500);
+        }
+    }
+
+    /**
+     * A rider ASKS for a locked pin to be unlocked (the button on his order
+     * screen). The 423 refusal raises the same request, but only if he first
+     * does the pointless work of dropping a pin that will be rejected — this is
+     * the direct route: he sees "Locked", taps once, the store is asked.
+     */
+    public function requestCustomerPinUnlock(Request $request, $customerId)
+    {
+        try {
+            $customer = \App\Models\CRM\CustomerModel::find($customerId);
+            if (!$customer) {
+                return response()->json(['success' => false, 'message' => 'Customer not found'], 404);
+            }
+
+            // Nothing to ask for if it is already open — tell the client so it
+            // can just refresh rather than leaving a request nobody needs.
+            if (!$customer->isVerifiedPinLocked()) {
+                return response()->json([
+                    'success'         => true,
+                    'already_unlocked' => true,
+                    'message'         => 'This location is already unlocked — you can update the pin now.',
+                ]);
+            }
+
+            $raised = \App\Services\Location\PinUnlockRequestService::raise(
+                $customer,
+                Auth::id(),
+                $request->input('order_id')
+            );
+
+            return response()->json([
+                'success' => $raised,
+                'message' => $raised
+                    ? 'The store has been asked to unlock this location.'
+                    : 'Could not send the request — please try again.',
+                'unlock_requested' => $raised,
+            ], $raised ? 200 : 500);
+        } catch (\Throwable $e) {
+            \Log::error('Failed to raise a pin unlock request', [
+                'customer_id' => $customerId,
+                'error'       => $e->getMessage(),
+            ]);
+            return response()->json(['success' => false, 'message' => 'Could not send the request'], 500);
+        }
+    }
+
+    /**
+     * Dismiss a rider's pin-unlock request from store mode WITHOUT unlocking —
+     * the store banner's ✕. Same store-only bind as the unlock itself: a rider
+     * must not be able to clear his own request (nor anyone else's).
+     */
+    public function dismissCustomerPinUnlockRequest(Request $request, $customerId)
+    {
+        try {
+            $user = Auth::user();
+            if ($this->riderPinBindApplies($user)) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Only store staff can dismiss an unlock request.',
+                ], 403);
+            }
+
+            $customer = \App\Models\CRM\CustomerModel::find($customerId);
+            if (!$customer) {
+                return response()->json(['success' => false, 'message' => 'Customer not found'], 404);
+            }
+
+            \App\Services\Location\PinUnlockRequestService::dismiss($customer);
+
+            \Log::info('Verified-pin unlock request dismissed (store mode)', [
+                'customer_id' => $customer->id,
+                'by'          => $user->fullname ?? $user->id,
+            ]);
+
+            return response()->json(['success' => true, 'message' => 'Request dismissed.']);
+        } catch (\Throwable $e) {
+            \Log::error('Failed to dismiss pin unlock request (store mode)', [
+                'customer_id' => $customerId,
+                'error'       => $e->getMessage(),
+            ]);
+            return response()->json(['success' => false, 'message' => 'Failed to dismiss request'], 500);
         }
     }
 
@@ -2823,19 +2952,41 @@ class RiderController extends Controller
             $unlockUntil = ($customer && $customer->verifiedPinUnlockActive())
                 ? $customer->verified_pin_unlocked_until->toIso8601String()
                 : null;
+            // Whether HIS ask is already standing, so the button reads "Store
+            // notified" instead of inviting him to ask again — and still does
+            // after he backs out and reopens the order.
+            $unlockRequested = $customer ? $customer->verifiedPinUnlockRequestActive() : false;
 
             // Delivery-scan rules ride along (same shape as /delivery-scan-config)
             // so a bypass/require change made mid-delivery reaches the rider
             // WITHOUT reopening the order — the owner-requested refresh fix.
             $cfg = \DB::table('t_sys_config')->where('id', 1)->first();
 
+            // Payment proof rides along too (Aug-2026): a customer who transfers
+            // the money WHILE the rider is at the door must show up on his screen
+            // without him reopening the order. suppressSettled:false — this is a
+            // record surface, so an already-approved payment still reads as
+            // received. Non-fatal: the flags this poll exists for must survive a
+            // proof-lookup failure.
+            $paymentProof = null;
+            try {
+                if (config('payment_signals.enabled')) {
+                    $paymentProof = app(\App\Services\Payments\Signals\PaymentProofStatusService::class)
+                        ->forOrder((int) $order->id, suppressSettled: false);
+                }
+            } catch (\Throwable $ppErr) {
+                $paymentProof = null;
+            }
+
             return response()->json([
                 'success' => true,
                 'flags'   => [
-                    'verified_pin_locked'        => $pinLocked,
-                    'verified_pin_unlock_until'  => $unlockUntil,
+                    'verified_pin_locked'          => $pinLocked,
+                    'verified_pin_unlock_until'    => $unlockUntil,
+                    'verified_pin_unlock_requested' => $unlockRequested,
                     'require_delivery_scan'      => $cfg ? (int) ($cfg->require_delivery_scan ?? 0) : 0,
                     'allow_delivery_scan_bypass' => $cfg ? (int) ($cfg->allow_delivery_scan_bypass ?? 0) : 0,
+                    'payment_proof'              => $paymentProof,
                 ],
             ]);
         } catch (\Throwable $e) {
@@ -13070,6 +13221,12 @@ class RiderController extends Controller
                 $response['no_pin_dispatch_orders'] = [];
                 \Log::warning('no_pin_dispatch watch failed (non-fatal)', ['error' => $e->getMessage()]);
             }
+
+            // ⭐ Riders stuck at a door on a LOCKED verified pin. Pressing
+            //    "verify" raised this; the store banner offers the unlock so no
+            //    phone call is needed. Clears itself the moment it is answered
+            //    (unlock / save / relock / dismiss) — see PinUnlockRequestService.
+            $response['pin_unlock_requests'] = \App\Services\Location\PinUnlockRequestService::live();
             
             // Single rider summary (backward compatible)
             if ($riderSummary) {
@@ -16453,13 +16610,20 @@ class RiderController extends Controller
      * Returns sources based on user's Business Unit access and expense_all_payment_sources permission
      * - Without permission: Only EXP_FUND
      * - With permission: All company accounts (cash, bank) filtered by user's BU access
+     *
+     * ⭐ Aug-2026: the ~130 lines of rules that used to live here now live in
+     * PaymentSourceService, unchanged — the JSON this returns is byte-identical.
+     * They moved because the Bikes screens (web + mobile) needed the same list
+     * and could not call this endpoint (it is gated on `view_expenses`, which a
+     * Bikes-only user need not hold). Any rule change belongs in the service, so
+     * every picker keeps agreeing with what the submit endpoints enforce.
      */
     public function getPaymentSources(Request $request)
     {
         try {
             $user = Auth::user();
             $businessUnitId = $request->input('business_unit_id');
-            
+
             // Check permission to view expenses
             if (!$user->hasMobilePermission('view_expenses')) {
                 return response()->json([
@@ -16467,148 +16631,12 @@ class RiderController extends Controller
                     'message' => 'You do not have permission to view expenses'
                 ], 403);
             }
-            
-            // Check if user can see ALL payment sources
-            // In Khaas mode (non-NF BU): also grant this if user has approve_khaas_transfer (admin)
-            $isNonNfBU = $businessUnitId && (int) $businessUnitId !== 1;
-            $hasAllPaymentSourcesPermission = $user->hasMobilePermission('expense_all_payment_sources')
-                || ($isNonNfBU && $user->hasMobilePermission('approve_khaas_transfer'));
-            
-            $paymentSources = [];
-            
-            // Get EXP_FUND account
-            $expenseFund = \App\Models\FIN\ConfigModel::getExpenseFundingAccount() 
-                ?? \App\Models\FIN\AccountModel::where('account_code', 'EXP_FUND')->first();
-            
-            // Company account categories that can be payment sources
-            $companyCategories = [
-                \App\Models\FIN\AccountModel::CATEGORY_CASH,
-                \App\Models\FIN\AccountModel::CATEGORY_BANK,
-            ];
-            
-            // ⭐ Determine if this is a non-NF business unit (Khaas etc.)
-            // BU 1 = Nizami Farms main → should use standard EXP_FUND logic
-            // Other BUs (Khaas etc.) → use BU-specific account logic
-            $isNonNfBusinessUnit = $businessUnitId && (int) $businessUnitId !== 1;
-            
-            if ($isNonNfBusinessUnit) {
-                // ⭐ BU-specific mode (Khaas etc — NOT NF main)
-                // Admin/Taimur (expense_all_payment_sources): show ALL BU accounts
-                // Regular user: show only the configured default account (e.g., NF Food)
-                
-                // Get the configured default account for this BU
-                $defaultBuAccount = \App\Models\FIN\ConfigModel::getBuDefaultExpenseAccount((int) $businessUnitId);
-                $defaultAccountId = $defaultBuAccount ? $defaultBuAccount->id : null;
-                
-                if ($hasAllPaymentSourcesPermission) {
-                    // Admin: show all BU accounts (excluding private for non-Taimur)
-                    $buAccounts = \App\Models\FIN\AccountModel::where('is_active', 1)
-                        ->where('business_unit_id', $businessUnitId)
-                        ->visibleTo($user)
-                        ->whereNotIn('account_category', [
-                            \App\Models\FIN\AccountModel::CATEGORY_EMPLOYEE_CASH,
-                            \App\Models\FIN\AccountModel::CATEGORY_VENDOR_PAYABLE,
-                        ])
-                        ->orderBy('account_name')
-                        ->get();
-                } else {
-                    // Regular user: only the configured default account
-                    $buAccounts = $defaultBuAccount ? collect([$defaultBuAccount]) : collect();
-                }
-                
-                foreach ($buAccounts as $account) {
-                    $paymentSources[] = [
-                        'id' => $account->id,
-                        'code' => $account->account_code,
-                        'name' => $account->account_name,
-                        'display_name' => $account->account_name,
-                        'balance' => (float) $account->current_balance,
-                        'business_unit_id' => $account->business_unit_id,
-                        'is_default' => ($account->id === $defaultAccountId)
-                    ];
-                }
-            } else {
-                // ⭐ Standard NF mode (BU 1 or no BU specified)
-                // Default: EXP_FUND — but for Taimur role, default to ONLINE
-                $isTaimurRole = $user->roles()
-                    ->whereRaw('LOWER(urole_name) = ?', ['taimur'])
-                    ->exists();
-                
-                // Fetch ONLINE account for Taimur default
-                $onlineAccount = null;
-                if ($isTaimurRole) {
-                    $onlineAccount = \App\Models\FIN\AccountModel::where('account_code', 'ONLINE')
-                        ->where('is_active', 1)
-                        ->first();
-                }
-                
-                // Determine which account is the default
-                $defaultAccountId = ($isTaimurRole && $onlineAccount) ? $onlineAccount->id : ($expenseFund ? $expenseFund->id : null);
-                
-                if ($expenseFund) {
-                    $paymentSources[] = [
-                        'id' => $expenseFund->id,
-                        'code' => $expenseFund->account_code,
-                        'name' => $expenseFund->account_name,
-                        'display_name' => 'Exp Fund',
-                        'balance' => (float) $expenseFund->current_balance,
-                        'business_unit_id' => $expenseFund->business_unit_id,
-                        'is_default' => ($expenseFund->id === $defaultAccountId)
-                    ];
-                }
-                
-                // Only add other sources if user has permission
-                if ($hasAllPaymentSourcesPermission) {
-                    $accessibleAccounts = \App\Models\FIN\AccountModel::getAccessibleCompanyAccounts();
-                    
-                    foreach ($accessibleAccounts as $account) {
-                        // Skip EXP_FUND since we already added it above
-                        if ($expenseFund && $account->id === $expenseFund->id) {
-                            continue;
-                        }
-                        // Skip private accounts for non-Taimur
-                        if ($account->is_private && !$isTaimurRole) {
-                            continue;
-                        }
-                        
-                        $paymentSources[] = [
-                            'id' => $account->id,
-                            'code' => $account->account_code,
-                            'name' => $account->account_name,
-                            'display_name' => $account->account_name,
-                            'balance' => (float) $account->current_balance,
-                            'business_unit_id' => $account->business_unit_id,
-                            'is_default' => ($account->id === $defaultAccountId)
-                        ];
-                    }
-                }
-            }
-            
-            // Flag ONLINE bank sources so the expense form knows to show the
-            // receiving-bank picker (bank-category sources require a bank pick).
-            if (!empty($paymentSources)) {
-                $bankAccountIds = \App\Models\FIN\AccountModel::whereIn('id', array_column($paymentSources, 'id'))
-                    ->where('account_category', \App\Models\FIN\AccountModel::CATEGORY_BANK)
-                    ->pluck('id')->map(fn ($v) => (int) $v)->flip();
-                foreach ($paymentSources as &$ps) {
-                    $ps['is_online'] = isset($bankAccountIds[(int) $ps['id']]);
-                }
-                unset($ps);
-            }
 
-            // The banks an online expense can be attributed to (for the chip
-            // picker), each with its computed current balance so the user sees
-            // how much sits in the bank they're paying from.
-            $bankBalances = app(\App\Services\FIN\BankBalanceService::class)->balancesByBank();
-            $receivingAccounts = \App\Models\FIN\OnlineReceivingAccountModel::active()->ordered()
-                ->get(['id', 'name', 'short_code', 'color_hex', 'opening_balance'])
-                ->map(fn ($acc) => [
-                    'id' => $acc->id,
-                    'name' => $acc->name,
-                    'short_code' => $acc->short_code,
-                    'color_hex' => $acc->color_hex,
-                    'balance' => $bankBalances[(int) $acc->id]['balance'] ?? (float) $acc->opening_balance,
-                ]);
+            $svc = app(\App\Services\FIN\PaymentSourceService::class);
+
+            $hasAllPaymentSourcesPermission = $svc->canUseAllSources($user, $businessUnitId ? (int) $businessUnitId : null);
+            $paymentSources    = $svc->sourcesFor($user, $businessUnitId ? (int) $businessUnitId : null);
+            $receivingAccounts = $svc->banks();
 
             \Log::info('Payment sources returned', [
                 'user_id' => Auth::id(),
@@ -16901,7 +16929,19 @@ class RiderController extends Controller
             
             $expenseRequest = \App\Models\Request\RequestModel::with(['paymentSourceAccount', 'category'])
                 ->findOrFail($id);
-            
+
+            // ⛔ SALARY ADVANCES ARE NOT DELETABLE HERE (mirrors the web guard in
+            // FIN\ExpenseManagementController::destroy). This endpoint is category-blind and
+            // blindly reverses `settlement_transaction_id`, which on a payroll-settled advance
+            // points at the WHOLE MONTH'S salary_payment row — deleting one advance would
+            // un-post an entire salary. Advances are voided from the web Payroll page only.
+            if ($expenseRequest->category && $expenseRequest->category->category_code === 'salary_advance') {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Salary advances cannot be deleted here — void it from the Payroll page on the web app.'
+                ], 403);
+            }
+
             // Check if expense is approved
             if ($expenseRequest->status !== 'approved') {
                 return response()->json([
@@ -21016,8 +21056,15 @@ class RiderController extends Controller
 
             $customersQuery->orderByRaw("FIELD(cc.status, 'pending', 'sending', 'failed', 'sent', 'skipped')");
 
+            // Request params can override the stored send order (same contract
+            // as the web detail endpoint) — lets a future APK offer "sort by
+            // spend / orders" without another backend change. Absent params
+            // fall back to the campaign's stored sort exactly as before.
             $filters = json_decode($campaign->filters_json ?? '{}', true) ?: [];
-            [$sortBy, $sortDir] = $filterService->normalizeSort($filters);
+            [$sortBy, $sortDir] = $filterService->normalizeSort([
+                'sort_by'  => $request->get('sort_by') ?: ($filters['sort_by'] ?? null),
+                'sort_dir' => $request->get('sort_dir') ?: ($filters['sort_dir'] ?? null),
+            ]);
             $filterService->applySort($customersQuery, $sortBy, $sortDir, 'c');
 
             $customers = $customersQuery->forPage($page, $perPage)->get();
@@ -23392,9 +23439,13 @@ class RiderController extends Controller
                             'status' => 'completed',
                         ]);
 
-                        // Update account balances
-                        $paymentSource->decrement('current_balance', $slip->net_salary);
-                        $employeeCashAccount->increment('current_balance', $slip->net_salary);
+                        // Apply via the canonical engine — mirrors SalarySlipController's web path
+                        // exactly. Payment source −; the employee-cash leg is AUTOMATICALLY skipped
+                        // ('salary_payment' is an excluded employee-cash type): salary is personal
+                        // money TO the employee, not company cash they hold. The old inline
+                        // increment of the employee account violated that charter — this brings
+                        // mobile in line with web. Row-locked; stamps balance_updated.
+                        (new \App\Services\FIN\BalancePostingService())->apply($ledger);
 
                         // Mark slip as paid
                         $slip->markAsPaid($ledger->id, 'cash');
@@ -25682,7 +25733,7 @@ class RiderController extends Controller
                 // cash) so per-bank balances reconcile against the ONLINE account.
                 'receiving_account_id' => $receivingAccountId,
                 'approval_status' => $approvalStatus,
-                'balance_updated' => $applyBalanceNow ? 1 : 0,
+                'balance_updated' => 0, // engine applies below (when it should) and sets this
                 'settlement_status' => $settlementStatus,
                 'settled_amount' => $settlementStatus === 'settled' ? $amount : 0,
                 'settled_at' => $settlementStatus === 'settled' ? now() : null,
@@ -25692,11 +25743,12 @@ class RiderController extends Controller
                 'created_by' => $user->id,
             ]);
 
+            // Apply via the canonical engine — same net move as the old inline code (income is
+            // debit-arithmetic in this system: sales −, receiving account +), now row-locked and
+            // stamped. When $applyBalanceNow is false the row stays flag=0 and the approval flow
+            // applies it later, exactly as before.
             if ($applyBalanceNow) {
-                $salesAccount->current_balance -= $amount;
-                $salesAccount->save();
-                $toAccount->current_balance += $amount;
-                $toAccount->save();
+                (new \App\Services\FIN\BalancePostingService())->apply($ledger);
             }
 
             // Link ledger to payment

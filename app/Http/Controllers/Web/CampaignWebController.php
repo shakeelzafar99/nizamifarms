@@ -562,7 +562,14 @@ class CampaignWebController extends Controller
 
         // Paginated: the old endpoint returned EVERY row, so opening a
         // 5,700-recipient campaign shipped the whole list to the browser.
-        $rows = $this->statsService->customerRows((int) $id, $statusFilter, $page, $perPage);
+        // sort_by/sort_dir let the operator re-order the list (highest spend /
+        // most orders / recency) without recreating the campaign; absent, the
+        // campaign's stored send order applies. Junk values are normalised
+        // inside customerRows, so passing them straight through is safe.
+        $rows = $this->statsService->customerRows(
+            (int) $id, $statusFilter, $page, $perPage,
+            $request->get('sort_by'), $request->get('sort_dir')
+        );
 
         return response()->json([
             'success'      => true,
@@ -572,12 +579,56 @@ class CampaignWebController extends Controller
                 'page' => $rows['page'], 'per_page' => $rows['per_page'],
                 'total' => $rows['total'], 'pages' => $rows['pages'],
             ],
+            'sort'         => ['by' => $rows['sort_by'], 'dir' => $rows['sort_dir']],
             'counts'       => $this->statsService->counts((int) $id),
             'eligible'     => $this->sendService->eligibleCount((int) $id),
             'quota'        => $this->quotaPayload(),
             'session_limit'=> (int) ($campaign->session_limit ?: $this->sendService->defaultSessionLimit()),
             'run'          => $campaign->active_run_id ? $this->sendService->runProgress((int) $campaign->active_run_id) : null,
             'runs'         => $this->statsService->runHistory((int) $id, 10),
+        ]);
+    }
+
+    /**
+     * Persist a new send order for this campaign.
+     *
+     * The sort chosen at creation was frozen into filters_json with no way to
+     * change it afterwards. This updates it, which matters far beyond the list
+     * view: `CampaignSendService::pickCandidates()` and the background worker
+     * both read the STORED sort — so after this, "Send Messages → first 100"
+     * genuinely means the top 100 by the chosen order (e.g. highest lifetime
+     * spend), not the top 100 of an order picked weeks ago.
+     *
+     * Write-gated: changing who gets messaged first is a campaign mutation.
+     * Viewers without manage rights can still pass sort params to detail() for
+     * a re-ordered VIEW — that changes nothing.
+     */
+    public function setSort(Request $request, $id)
+    {
+        if ($deny = $this->denyIfCannotManage()) return $deny;
+
+        $campaign = DB::table('t_crm_campaigns')->where('id', $id)->first();
+        if (!$campaign) {
+            return response()->json(['success' => false, 'message' => 'Campaign not found'], 404);
+        }
+
+        [$sortBy, $sortDir] = $this->filterService->normalizeSort([
+            'sort_by'  => (string) $request->input('sort_by'),
+            'sort_dir' => (string) $request->input('sort_dir'),
+        ]);
+
+        $filters = json_decode($campaign->filters_json ?? '{}', true) ?: [];
+        $filters['sort_by']  = $sortBy;
+        $filters['sort_dir'] = $sortDir;
+
+        DB::table('t_crm_campaigns')->where('id', $id)->update([
+            'filters_json' => json_encode($filters),
+            'updated_at'   => now(),
+        ]);
+
+        return response()->json([
+            'success' => true,
+            'sort'    => ['by' => $sortBy, 'dir' => $sortDir],
         ]);
     }
 

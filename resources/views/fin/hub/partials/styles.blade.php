@@ -244,6 +244,31 @@
   .hubmodal-box{background:var(--surface);color:var(--ink);border-radius:14px;box-shadow:var(--shadow-lg);
     max-width:560px;width:100%;max-height:88vh;display:flex;flex-direction:column;overflow:hidden;border:1px solid var(--line)}
   .hubmodal-box.wide{max-width:640px}
+  /* Line-item entry (weighted purchase) needs real width — it is a small spreadsheet. */
+  .hubmodal-box.xwide{max-width:900px}
+
+  /* Weighted-purchase line grid. GRID, not flex: flex children default to min-width:auto, so a
+     long product name forced the row wider than the modal and the whole box scrolled sideways.
+     minmax(0,…) lets every column shrink instead. */
+  .hubmodal .wt-head,
+  .hubmodal .wt-line{display:grid;gap:8px;align-items:center;
+    grid-template-columns:minmax(0,2.4fr) minmax(0,1fr) minmax(0,1fr) minmax(0,1.2fr) 26px}
+  .hubmodal .wt-head{font-size:10px;text-transform:uppercase;letter-spacing:.04em;
+    color:var(--ink3);font-weight:700;padding:2px 0 5px}
+  .hubmodal .wt-head span:not(:first-child){text-align:right}
+  .hubmodal .wt-line{margin-bottom:6px}
+  .hubmodal .wt-line select,
+  .hubmodal .wt-line input{min-width:0;width:100%;border:1px solid var(--line);border-radius:8px;
+    padding:7px 8px;background:var(--surface);color:var(--ink);font-size:12.5px}
+  .hubmodal .wt-line .wt-qty,
+  .hubmodal .wt-line .wt-rate{text-align:right}
+  .hubmodal .wt-line .wt-lt{text-align:right;font-weight:700;font-size:12.5px;white-space:nowrap}
+  @media (max-width:720px){
+    .hubmodal .wt-head{display:none}
+    .hubmodal .wt-line{grid-template-columns:minmax(0,1fr) minmax(0,1fr) 26px}
+    .hubmodal .wt-line .wt-prod{grid-column:1 / -1}
+    .hubmodal .wt-line .wt-lt{grid-column:1 / span 2}
+  }
   .hubmodal-head{padding:16px 20px;border-bottom:1px solid var(--line2);display:flex;align-items:flex-start;gap:10px}
   .hubmodal-head h3{margin:0;font-size:16px;font-weight:700}
   .hubmodal-head .hm-sub{font-size:12px;color:var(--ink3);margin-top:1px}

@@ -49,7 +49,15 @@ class FleetFuelController extends Controller
                 $data = Cache::remember($key, self::CACHE_SECS, fn () => $svc->monthSummary($month));
             }
 
-            return response()->json(array_merge(['success' => true], $data));
+            // ⚠ Merged OUTSIDE the cache on purpose: the cache key is the month
+            // alone, with no user in it, while the pay-from list is per user
+            // (permission + business unit). Caching it would serve one manager's
+            // accounts to another.
+            return response()->json(array_merge(
+                ['success' => true],
+                $data,
+                $this->paySourceContext()
+            ));
         } catch (\Throwable $e) {
             \Log::error('FleetFuel month failed', ['error' => $e->getMessage(), 'month' => $request->query('month')]);
             return response()->json(['success' => false, 'message' => 'Failed to load the month'], 500);
@@ -390,6 +398,40 @@ class FleetFuelController extends Controller
             'read_only'   => (bool) $readOnly,
             'accounts'    => $accounts,
         ];
+    }
+
+    /**
+     * The pay-from list for the inline "new petrol / new maintenance" form.
+     *
+     * Deliberately served from the Bikes endpoint rather than the mobile
+     * expense endpoint (`/rider/expenses/payment-sources`): that one is gated on
+     * `view_expenses`, which a Bikes-only user (Khaas running costs, rider-ops)
+     * does not necessarily hold — they would have got a 403 and no picker at
+     * all. Anyone who can reach Bikes can already file the claim, so the list
+     * rides along with the data they already have.
+     *
+     * The rules themselves come from PaymentSourceService, which is the same
+     * source of truth the submit-side check uses — so the form can never offer
+     * an account the server will reject.
+     */
+    private function paySourceContext(): array
+    {
+        try {
+            $svc = app(\App\Services\FIN\PaymentSourceService::class);
+            $u   = auth()->user();
+
+            return [
+                'pay_sources'  => $svc->sourcesFor($u),
+                'pay_banks'    => $svc->banks(),
+                // Read-only users see the numbers but must not file claims.
+                'can_pay_from' => !($u && method_exists($u, 'isReadOnly') && $u->isReadOnly()),
+            ];
+        } catch (\Throwable $e) {
+            // Bikes is primarily a reporting screen — never fail the whole month
+            // because the account list could not be built.
+            \Log::warning('FleetFuel pay sources failed', ['error' => $e->getMessage()]);
+            return ['pay_sources' => [], 'pay_banks' => [], 'can_pay_from' => false];
+        }
     }
 
     // ---- helpers ------------------------------------------------------

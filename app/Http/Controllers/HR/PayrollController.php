@@ -29,6 +29,19 @@ class PayrollController extends Controller
         return view('pages.payroll.index');
     }
 
+    /**
+     * Whether this user may VOID a salary advance (owner-level correction).
+     *
+     * Separate from `manage_payroll` on purpose: every payroll manager gives advances, but
+     * un-doing one moves money back out of the books, so it is granted to the owner's role
+     * only. Role-based — anyone later assigned that role inherits it automatically.
+     */
+    private function canVoidAdvance(): bool
+    {
+        $u = auth()->user();
+        return $u && $u->hasPermission('void_salary_advance');
+    }
+
     /** Whether this manager may see/tag the Khaas business unit (gates the BU toggle). */
     private function canViewKhaas(): bool
     {
@@ -68,6 +81,7 @@ class PayrollController extends Controller
             'schedule_available' => $svc->scheduleTaggingAvailable(),
             'khaas_available' => $svc->khaasTaggingAvailable() && $this->canViewKhaas(),
             'khaas_bu_id' => $svc->khaasBuIdValue(),
+            'can_void_advance' => $this->canVoidAdvance(),
         ]);
     }
 
@@ -96,6 +110,7 @@ class PayrollController extends Controller
             'schedule_available' => $svc->scheduleTaggingAvailable(),
             'khaas_available' => $svc->khaasTaggingAvailable() && $this->canViewKhaas(),
             'khaas_bu_id' => $svc->khaasBuIdValue(),
+            'can_void_advance' => $this->canVoidAdvance(),
         ]);
     }
 
@@ -254,6 +269,84 @@ class PayrollController extends Controller
         $res = (new PayrollService())->giveAdvance(
             (int) $request->user_id, (float) $request->amount, $request->funding,
             $request->bank_id ? (int) $request->bank_id : null, $request->note, (int) auth()->id()
+        );
+        return response()->json($res, !empty($res['success']) ? 200 : 422);
+    }
+
+    /** Advance requests from employees still awaiting a decision (the top card). */
+    public function pendingRequests(Request $request)
+    {
+        if ($deny = $this->denyIfNotAllowed()) return $deny;
+        $svc = new PayrollService();
+        $rows = $svc->pendingAdvanceRequests();
+        return response()->json([
+            'success' => true,
+            'requests' => $rows,
+            'count' => count($rows),
+            'total' => round(array_sum(array_column($rows, 'amount')), 2),
+            'funding' => $svc->fundingOptions(),
+        ]);
+    }
+
+    /**
+     * APPROVE an employee's advance request AND pay it now. Same money authority as
+     * "+ advance" (both are gated by `manage_payroll`), so the funding account is chosen
+     * here at approval time.
+     */
+    public function approveRequest(Request $request)
+    {
+        if ($deny = $this->denyIfNotAllowed()) return $deny;
+        $v = Validator::make($request->all(), [
+            'request_id' => 'required|integer',
+            'funding'    => 'required|in:cash,online',
+            'bank_id'    => 'nullable|integer',
+        ]);
+        if ($v->fails()) {
+            return response()->json(['success' => false, 'message' => $v->errors()->first()], 422);
+        }
+        $res = (new PayrollService())->approveAdvanceRequest(
+            (int) $request->request_id, $request->funding,
+            $request->bank_id ? (int) $request->bank_id : null, (int) auth()->id()
+        );
+        return response()->json($res, !empty($res['success']) ? 200 : 422);
+    }
+
+    /** REJECT an employee's advance request (no money involved). */
+    public function rejectRequest(Request $request)
+    {
+        if ($deny = $this->denyIfNotAllowed()) return $deny;
+        $v = Validator::make($request->all(), [
+            'request_id' => 'required|integer',
+            'reason'     => 'required|string|min:3|max:200',
+        ]);
+        if ($v->fails()) {
+            return response()->json(['success' => false, 'message' => $v->errors()->first()], 422);
+        }
+        $res = (new PayrollService())->rejectAdvanceRequest(
+            (int) $request->request_id, (string) $request->reason, (int) auth()->id()
+        );
+        return response()->json($res, !empty($res['success']) ? 200 : 422);
+    }
+
+    /**
+     * VOID a wrongly-given advance: reverses its ledger entry through the balance engine and
+     * cancels the request. Owner-only (`void_salary_advance`), on top of payroll access.
+     */
+    public function voidAdvance(Request $request)
+    {
+        if ($deny = $this->denyIfNotAllowed()) return $deny;
+        if (!$this->canVoidAdvance()) {
+            return response()->json(['success' => false, 'message' => 'Only the owner can void a salary advance.'], 403);
+        }
+        $v = Validator::make($request->all(), [
+            'request_id' => 'required|integer',
+            'reason'     => 'required|string|min:3|max:200',
+        ]);
+        if ($v->fails()) {
+            return response()->json(['success' => false, 'message' => $v->errors()->first()], 422);
+        }
+        $res = (new PayrollService())->voidAdvance(
+            (int) $request->request_id, (string) $request->reason, (int) auth()->id()
         );
         return response()->json($res, !empty($res['success']) ? 200 : 422);
     }

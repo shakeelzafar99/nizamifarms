@@ -249,7 +249,7 @@
 {{-- give-advance modal --}}
 <div class="pr-modal-back" id="prAdvModal">
   <div class="pr-modal">
-    <div class="pr-modal-h">Give advance</div>
+    <div class="pr-modal-h" id="prAdvModalTitle">Give advance</div>
     <div class="pr-modal-b">
       <div style="font-size:13px;color:#374151;margin-bottom:10px;" id="prAdvWho"></div>
       <div style="font-size:12px;color:#6b7280;margin-bottom:4px;">Amount</div>
@@ -369,6 +369,8 @@
   let SCHEDULE_AVAILABLE = false; // schema applied → schedule gear + Custom tab usable
   let KHAAS_AVAILABLE = false;    // manager may tag/see Khaas
   let KHAAS_BU_ID = null;         // the Khaas business-unit id (to post)
+  let CAN_VOID = false;           // owner-only: may void a wrongly-given advance
+  let ADV_SHEET = { row: null, mode: null }; // the advance list currently open in the sheet
   let TAB = 'monthly';
   let CUST_ROWS = [];             // custom-schedule rows
   let CUST_LOADED_MONTH = '';     // month the custom list was last loaded for
@@ -402,6 +404,7 @@
       SCHEDULE_AVAILABLE = !!j.schedule_available;
       KHAAS_AVAILABLE = !!j.khaas_available;
       KHAAS_BU_ID = j.khaas_bu_id || null;
+      CAN_VOID = !!j.can_void_advance;
       ROWS = (j.rows || []).map(r => ({ ...r, _selected: false, _lateOverride: null, _netOverride: null, _skipOvertime: false, _skipLateLeave: false }));
       renderStrip();
       renderRows();
@@ -430,13 +433,28 @@
     const configured = ROWS.filter(r => r.configured);
     const totalNet = ROWS.reduce((s, r) => s + effNet(r), 0);
     const missing = ROWS.filter(r => !r.configured).length;
+    // Requests waiting on a decision. Derived from the rows themselves so the card and the
+    // per-row chips can never disagree; the sheet re-fetches the live list when opened.
+    const reqCount = ROWS.reduce((s, r) => s + ((r.pending_requests || []).length), 0);
+    const reqTotal = ROWS.reduce((s, r) => s + Number(r.pending_request_total || 0), 0);
     el('prStrip').innerHTML =
       card('Employees', ROWS.length) +
       card('With salary set', configured.length) +
       card('Total net (month)', fmt(totalNet)) +
-      (missing > 0 ? card('Need salary', missing) : '');
+      (missing > 0 ? card('Need salary', missing) : '') +
+      (reqCount > 0 ? requestCard(reqCount, reqTotal) : '');
+    const rc = document.getElementById('prReqCard');
+    if (rc) rc.onclick = () => openRequestSheet();
   }
   function card(k, v) { return '<div class="pr-card"><div class="k">' + k + '</div><div class="v">' + v + '</div></div>'; }
+
+  // Amber, clickable — money NOT yet given, waiting on the manager.
+  function requestCard(n, total) {
+    return '<div class="pr-card" id="prReqCard" style="cursor:pointer;border-color:#fcd34d;background:#fffbeb;">' +
+      '<div class="k" style="color:#92400e;">Advance requests</div>' +
+      '<div class="v" style="color:#b45309;">' + n + ' <span style="font-size:12px;font-weight:600;">· ' + fmt(total) + '</span></div>' +
+      '<div style="font-size:10.5px;color:#a16207;margin-top:2px;">not given yet · click to review</div></div>';
+  }
 
   function renderRows() {
     if (!ROWS.length) {
@@ -496,9 +514,21 @@
       : '<span class="pr-chip muted">—</span>';
 
     // advances (+ always offer "give advance")
+    // The amber "requested" chip is money NOT given: it is deliberately rendered BELOW the real
+    // total, in a different colour, with its own wording — it never joins advance_total, the
+    // deductions breakdown or net pay.
+    const pendReq = (r.pending_requests || []).length;
+    const reqChip = pendReq > 0
+      ? '<div><span data-reqrow="' + i + '" title="Employee asked for an advance — not given yet. Click to decide."' +
+        ' style="display:inline-block;margin-top:3px;font-size:10.5px;font-weight:700;color:#b45309;background:#fef3c7;' +
+        'border:1px solid #fcd34d;border-radius:5px;padding:1px 6px;cursor:pointer;white-space:nowrap;">⏳ ' +
+        pendReq + ' requested · ' + fmt(r.pending_request_total) + '</span>' +
+        '<div style="font-size:9.5px;color:#a16207;line-height:1.2;">not given yet</div></div>'
+      : '';
     const adv = (r.advance_total > 0
         ? '<span class="pr-adv" data-adv="' + i + '">' + fmt(r.advance_total) + '</span>'
         : '<span class="pr-adv zero">—</span>') +
+      reqChip +
       '<div><span class="pr-give" data-give="' + i + '">＋ advance</span></div>';
 
     const totalDed = Number(r.absent_deduction || 0) + lateDed(r) + Number(r.advance_total || 0);
@@ -569,6 +599,9 @@
     // give advance
     const give = document.querySelector('[data-give="' + i + '"]');
     if (give) give.onclick = () => openAdvance(r);
+    // pending-request chip → the same review sheet, filtered to this employee
+    const rq = document.querySelector('[data-reqrow="' + i + '"]');
+    if (rq) rq.onclick = () => openRequestSheet(r.user_id);
     // deductions breakdown
     const ded = document.querySelector('[data-dedrow="' + i + '"]');
     if (ded) ded.onclick = () => showDeductions(r);
@@ -725,16 +758,176 @@
   // mode 'custom' = the recovery rule differs: a custom period only recovers what
   // that period's pay can absorb, so the note must not promise full settlement.
   function showAdvances(r, mode) {
+    ADV_SHEET = { row: r, mode: mode };
     openSheet('Advances — ' + r.fullname, '');
+    renderAdvanceSheet();
+  }
+
+  // Each open advance shows WHERE the money came from, WHO gave it and the note, so two
+  // same-amount advances can be told apart before acting. 🗑 Void appears only for the owner
+  // (server flag CAN_VOID, re-checked server-side on every call).
+  function renderAdvanceSheet() {
+    const r = ADV_SHEET.row;
+    if (!r) return;
     if (!r.advances || !r.advances.length) { el('prSheetBody').innerHTML = '<div class="pr-empty">No open advances.</div>'; return; }
-    const note = mode === 'custom'
+    const note = ADV_SHEET.mode === 'custom'
       ? 'Open advances are recovered from the next period you pay — oldest first, and only as much as that pay can cover. An advance bigger than the pay stays open for a later period.'
       : 'Open advances are deducted from this pay and marked settled when you pay.';
-    el('prSheetBody').innerHTML = r.advances.map(a =>
-      '<div class="pr-daterow"><span class="dt">' + fmt(a.amount) + '</span><span class="lb">' + (a.date || '') + (a.request_number ? ' · ' + esc(a.request_number) : '') + '</span></div>'
-    ).join('')
+    el('prSheetBody').innerHTML = r.advances.map((a, ai) => {
+      const meta = [a.date || '', a.request_number ? esc(a.request_number) : '', a.source ? esc(a.source) : '']
+        .filter(Boolean).join(' · ');
+      const by = a.given_by ? '<div class="lb" style="color:#9ca3af;">given by ' + esc(a.given_by) + '</div>' : '';
+      const nt = a.note ? '<div class="lb" style="color:#9ca3af;font-style:italic;">“' + esc(a.note) + '”</div>' : '';
+      const voidBtn = (CAN_VOID && a.voidable)
+        ? '<button type="button" data-voidadv="' + ai + '" title="Void this advance and return the money"' +
+          ' style="margin-left:10px;font-size:11px;font-weight:700;color:#b91c1c;background:#fee2e2;border:1px solid #fecaca;border-radius:6px;padding:4px 9px;cursor:pointer;white-space:nowrap;">🗑 Void</button>'
+        : '';
+      return '<div class="pr-daterow" style="align-items:flex-start;">' +
+        '<div><div class="dt">' + fmt(a.amount) + '</div><div class="lb">' + meta + '</div>' + by + nt + '</div>' +
+        '<div style="display:flex;align-items:center;">' + voidBtn + '</div></div>';
+    }).join('')
       + '<div class="pr-daterow" style="font-weight:700;border-top:2px solid #eef0f2;"><span class="dt">Total open</span><span class="dt">' + fmt(r.advance_total) + '</span></div>'
       + '<div style="padding:12px 14px;font-size:11.5px;color:#9ca3af;">' + note + '</div>';
+
+    (r.advances || []).forEach((a, ai) => {
+      const b = document.querySelector('[data-voidadv="' + ai + '"]');
+      if (b) b.onclick = () => voidAdvance(r, a);
+    });
+  }
+
+  // ── Employee advance REQUESTS (asked, not given) ────────────────────────────
+  // One review sheet, opened either from the amber top card (everyone) or from a row's
+  // ⏳ chip (that employee only). Approving PAYS immediately — the funding account is
+  // chosen in the same modal "+ advance" uses, so cash/online/bank behave identically.
+  let REQ_LIST = [];
+
+  async function openRequestSheet(userId) {
+    openSheet('Advance requests', 'Loading…');
+    try {
+      const res = await fetch('/hr/payroll/pending-requests', { headers: { 'Accept': 'application/json' } });
+      const j = await res.json();
+      if (!j.success) throw new Error(j.message || 'Failed');
+      REQ_LIST = j.requests || [];
+      if (j.funding) FUND = j.funding;
+      renderRequestSheet(userId ? Number(userId) : null);
+    } catch (e) {
+      el('prSheetBody').innerHTML = '<div class="pr-empty">Could not load requests: ' + (e.message || e) + '</div>';
+    }
+  }
+
+  function renderRequestSheet(userId) {
+    const list = userId ? REQ_LIST.filter(x => Number(x.user_id) === userId) : REQ_LIST;
+    el('prSheetTitle').textContent = userId && list.length
+      ? 'Advance requests — ' + list[0].fullname
+      : 'Advance requests';
+    if (!list.length) {
+      el('prSheetBody').innerHTML = '<div class="pr-empty">No requests waiting.</div>';
+      return;
+    }
+    const total = list.reduce((s, x) => s + Number(x.amount || 0), 0);
+    let html = '<div style="padding:10px 14px;background:#fffbeb;border-bottom:1px solid #fde68a;font-size:11.5px;color:#92400e;">' +
+      '<b>Nothing here has been paid yet.</b> Approving pays the money immediately from the account you pick, ' +
+      'and it is then deducted from that person\'s next salary.</div>';
+    html += list.map((q) => {
+      const who = q.self_requested
+        ? '<span style="color:#2563eb;">asked by ' + esc(q.fullname) + '</span>'
+        : 'entered by ' + esc(q.raised_by || 'a manager');
+      const age = q.age_days > 60
+        ? '<span style="color:#b91c1c;font-weight:700;"> · ' + q.age_days + ' days old</span>'
+        : (q.age_days > 0 ? '<span style="color:#9ca3af;"> · ' + q.age_days + 'd ago</span>' : '');
+      return '<div class="pr-daterow" style="align-items:flex-start;">' +
+        '<div style="min-width:0;">' +
+          '<div class="dt">' + fmt(q.amount) + ' <span style="font-weight:600;color:#374151;font-size:12px;">· ' + esc(q.fullname) + '</span></div>' +
+          '<div class="lb">' + (q.date || '') + ' · ' + esc(q.request_number) + age + '</div>' +
+          '<div class="lb" style="color:#9ca3af;">' + who + '</div>' +
+          (q.note ? '<div class="lb" style="color:#9ca3af;font-style:italic;">“' + esc(q.note) + '”</div>' : '') +
+        '</div>' +
+        '<div style="display:flex;gap:6px;flex-shrink:0;">' +
+          '<button type="button" data-reqok="' + q.request_id + '" style="font-size:11px;font-weight:700;color:#166534;background:#dcfce7;border:1px solid #bbf7d0;border-radius:6px;padding:5px 10px;cursor:pointer;white-space:nowrap;">✓ Approve &amp; pay</button>' +
+          '<button type="button" data-reqno="' + q.request_id + '" style="font-size:11px;font-weight:700;color:#b91c1c;background:#fee2e2;border:1px solid #fecaca;border-radius:6px;padding:5px 10px;cursor:pointer;white-space:nowrap;">✕ Reject</button>' +
+        '</div></div>';
+    }).join('');
+    html += '<div class="pr-daterow" style="font-weight:700;border-top:2px solid #eef0f2;"><span class="dt">Total requested</span><span class="dt">' + fmt(total) + '</span></div>';
+    el('prSheetBody').innerHTML = html;
+
+    list.forEach((q) => {
+      const okBtn = document.querySelector('[data-reqok="' + q.request_id + '"]');
+      if (okBtn) okBtn.onclick = () => openApproveRequest(q);
+      const noBtn = document.querySelector('[data-reqno="' + q.request_id + '"]');
+      if (noBtn) noBtn.onclick = () => rejectRequest(q, userId);
+    });
+  }
+
+  // Reuse the give-advance modal in APPROVE mode: amount is fixed by the request, the
+  // manager only picks where the money comes from.
+  function openApproveRequest(q) {
+    ADV_MODE = 'approve';
+    ADV_REQ = q;
+    ADV_ROW = null;
+    el('prAdvModalTitle').textContent = 'Approve & pay advance';
+    el('prAdvWho').innerHTML = 'To <b>' + esc(q.fullname) + '</b> · ' + esc(q.request_number) +
+      '<div style="font-size:11.5px;color:#92400e;background:#fffbeb;border:1px solid #fde68a;border-radius:6px;padding:6px 8px;margin-top:6px;">' +
+      'This pays <b>' + fmt(q.amount) + '</b> now and deducts it from the next salary.</div>';
+    el('prAdvAmount').value = q.amount;
+    el('prAdvAmount').readOnly = true;
+    el('prAdvAmount').style.background = '#f3f4f6';
+    el('prAdvNote').style.display = 'none';
+    el('prAdvConfirm').textContent = 'Approve & pay';
+    resetAdvFunding();
+    el('prAdvModal').classList.add('show');
+  }
+
+  async function rejectRequest(q, filterUid) {
+    const reason = prompt('Reject this request?\n\n' + fmt(q.amount) + ' for ' + q.fullname +
+      (q.date ? ' (asked ' + q.date + ')' : '') +
+      '\nNo money has been paid, so nothing is reversed.\n\nType the reason (required):', '');
+    if (reason === null) return;
+    if (!reason.trim() || reason.trim().length < 3) { alert('Please type a reason.'); return; }
+    try {
+      const res = await fetch('/hr/payroll/reject-request', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': csrf },
+        body: JSON.stringify({ request_id: q.request_id, reason: reason.trim() })
+      });
+      const j = await res.json();
+      alert(j.message || (j.success ? 'Rejected.' : 'Could not reject.'));
+      if (j.success) {
+        REQ_LIST = REQ_LIST.filter(x => x.request_id !== q.request_id);
+        renderRequestSheet(filterUid || null);
+        reloadActive();
+      }
+    } catch (e) { alert('Could not reject the request.'); }
+  }
+
+  // Void = un-do a wrongly-given advance: the money goes back to the account it came from
+  // (same engine that posted it) and the advance disappears from payroll everywhere.
+  async function voidAdvance(r, a) {
+    const back = a.source || 'the funding account';
+    const reason = prompt('Void this advance?\n\n' + fmt(a.amount) + ' given to ' + r.fullname +
+      (a.date ? ' on ' + a.date : '') + (a.request_number ? ' (' + a.request_number + ')' : '') +
+      '\n' + fmt(a.amount) + ' goes back to ' + back + '.' +
+      '\n\nType the reason (required):', '');
+    if (reason === null) return;
+    if (!reason.trim() || reason.trim().length < 3) { alert('Please type why this advance is being voided.'); return; }
+    try {
+      const res = await fetch('/hr/payroll/void-advance', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': csrf },
+        body: JSON.stringify({ request_id: a.request_id, reason: reason.trim() })
+      });
+      const j = await res.json();
+      alert(j.message || (j.success ? 'Advance voided.' : 'Could not void this advance.'));
+      if (j.success) {
+        // Drop it locally so the open sheet is instantly correct, then reload the grid
+        // (net pay + deductions all move with it).
+        r.advances = (r.advances || []).filter(x => x.request_id !== a.request_id);
+        r.advance_total = Math.round((r.advances.reduce((s, x) => s + Number(x.amount || 0), 0)) * 100) / 100;
+        renderAdvanceSheet();
+        if (ADV_SHEET.mode === 'custom') { customLoad(); } else { load(); }
+      }
+    } catch (e) {
+      alert('Could not void this advance.');
+    }
   }
 
   // ---- deductions breakdown ----
@@ -820,16 +1013,31 @@
 
   // ---- give advance ----
   let ADV_ROW = null;
-  function openAdvance(r) {
-    ADV_ROW = r;
-    el('prAdvWho').innerHTML = 'To <b>' + esc(r.fullname) + '</b>' + (r.advance_total > 0 ? ' · open advances ' + fmt(r.advance_total) : '');
-    el('prAdvAmount').value = '';
-    el('prAdvNote').value = '';
-    // reset funding to cash
+  let ADV_MODE = 'give';   // 'give' = new advance, 'approve' = pay an employee's request
+  let ADV_REQ = null;      // the request being approved (approve mode only)
+  // Funding picker reset — shared by "give" and "approve & pay" so both post money the
+  // same way (NF Cash, or the single ONLINE account tagged with the chosen bank).
+  function resetAdvFunding() {
     document.querySelectorAll('[data-advfund]').forEach(x => x.classList.remove('active'));
     document.querySelector('[data-advfund="cash"]').classList.add('active');
     document.querySelector('input[name=prAdvFund][value=cash]').checked = true;
     el('prAdvBankSel').disabled = true;
+    el('prAdvConfirm').disabled = false;
+  }
+
+  function openAdvance(r) {
+    ADV_MODE = 'give';
+    ADV_REQ = null;
+    ADV_ROW = r;
+    el('prAdvModalTitle').textContent = 'Give advance';
+    el('prAdvWho').innerHTML = 'To <b>' + esc(r.fullname) + '</b>' + (r.advance_total > 0 ? ' · open advances ' + fmt(r.advance_total) : '');
+    el('prAdvAmount').value = '';
+    el('prAdvAmount').readOnly = false;
+    el('prAdvAmount').style.background = '';
+    el('prAdvNote').value = '';
+    el('prAdvNote').style.display = '';
+    el('prAdvConfirm').textContent = 'Give advance';
+    resetAdvFunding();
     el('prAdvModal').classList.add('show');
     setTimeout(() => el('prAdvAmount').focus(), 50);
   }
@@ -846,22 +1054,34 @@
   el('prAdvCancel').onclick = () => el('prAdvModal').classList.remove('show');
   el('prAdvModal').onclick = (ev) => { if (ev.target === el('prAdvModal')) el('prAdvModal').classList.remove('show'); };
   el('prAdvConfirm').onclick = async () => {
-    if (!ADV_ROW) return;
+    const isApprove = ADV_MODE === 'approve';
+    if (!isApprove && !ADV_ROW) return;
+    if (isApprove && !ADV_REQ) return;
     const amount = Number(el('prAdvAmount').value);
     if (!amount || amount < 1) { alert('Enter an amount.'); return; }
     const fundType = document.querySelector('input[name=prAdvFund]:checked').value;
     const bankId = el('prAdvBankSel').value;
     if (fundType === 'online' && !bankId) { alert('Choose the bank.'); return; }
-    el('prAdvConfirm').disabled = true; el('prAdvConfirm').textContent = 'Giving…';
+    el('prAdvConfirm').disabled = true;
+    el('prAdvConfirm').textContent = isApprove ? 'Paying…' : 'Giving…';
     try {
-      const res = await fetch('/hr/payroll/give-advance', {
+      const url = isApprove ? '/hr/payroll/approve-request' : '/hr/payroll/give-advance';
+      const body = isApprove
+        ? { request_id: ADV_REQ.request_id, funding: fundType, bank_id: fundType === 'online' ? Number(bankId) : null }
+        : { user_id: ADV_ROW.user_id, amount, funding: fundType, bank_id: fundType === 'online' ? Number(bankId) : null, note: el('prAdvNote').value || null };
+      const res = await fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': csrf },
-        body: JSON.stringify({ user_id: ADV_ROW.user_id, amount, funding: fundType, bank_id: fundType === 'online' ? Number(bankId) : null, note: el('prAdvNote').value || null })
+        body: JSON.stringify(body)
       });
       const j = await res.json();
       if (!j.success) throw new Error(j.message || 'Failed');
       el('prAdvModal').classList.remove('show');
+      if (isApprove) {
+        REQ_LIST = REQ_LIST.filter(x => x.request_id !== ADV_REQ.request_id);
+        el('prSheet').classList.remove('show');
+        alert(j.message || 'Approved.');
+      }
       await reloadActive();
     } catch (e) {
       alert('Could not give advance: ' + (e.message || e));
@@ -954,6 +1174,7 @@
       SCHEDULE_AVAILABLE = !!j.schedule_available;
       KHAAS_AVAILABLE = !!j.khaas_available;
       KHAAS_BU_ID = j.khaas_bu_id || null;
+      CAN_VOID = !!j.can_void_advance;
       CUST_ROWS = j.rows || [];
       CUST_LOADED_MONTH = month;
       buildFundModal();

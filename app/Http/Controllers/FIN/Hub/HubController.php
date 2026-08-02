@@ -828,7 +828,10 @@ class HubController extends Controller
                 'bu' => $v->business_unit_id,
                 'deletable' => abs($bal) < 0.005,
             ];
-        })->sortByDesc('payable')->values();
+        // Alphabetical (owner's preference): the list is used to FIND a vendor, and a name is what
+        // you scan for. Case-insensitive + natural so "LaCarne" sits with the L's and any numbered
+        // name sorts 2 before 10. The "total owed" tile above still carries the money headline.
+        })->sortBy('name', SORT_NATURAL | SORT_FLAG_CASE)->values();
 
         $totals = [
             'owed' => (float) $rows->sum('payable'),

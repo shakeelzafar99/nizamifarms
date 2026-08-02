@@ -225,6 +225,12 @@ class PayrollService
         $advances = $this->openAdvances($userId);
         $advanceTotal = round(array_sum(array_column($advances, 'amount')), 2);
 
+        // ── Advance REQUESTS still awaiting a decision. NOT money: no ledger row exists, so these
+        // are deliberately kept OUT of $advanceTotal, deductions and net pay. They are surfaced
+        // only as an "asked for, not given" chip so a manager doesn't pay twice by accident.
+        $pendingRequests = $this->pendingAdvanceRequests($userId);
+        $pendingRequestTotal = round(array_sum(array_column($pendingRequests, 'amount')), 2);
+
         // ── Manual add-ons.
         $bonuses = round((float) ($overrides['bonuses'] ?? 0), 2);
         $allowances = round((float) ($overrides['allowances'] ?? 0), 2);
@@ -263,6 +269,8 @@ class PayrollService
             'bonus_leaves'      => $bonusLeaves,            // leaves granted (ledger) on approve
             'advances'          => $advances,
             'advance_total'     => $advanceTotal,
+            'pending_requests'      => $pendingRequests,      // asked for, NOT given (no money)
+            'pending_request_total' => $pendingRequestTotal,  // never part of deductions/net
             'bonuses'           => $bonuses,
             'allowances'        => $allowances,
             'other'             => $other,
@@ -552,11 +560,26 @@ class PayrollService
 
                 // Settle the advances that were deducted from this net. On a MANUAL override the
                 // amount is exactly what's paid (advances weren't deducted), so leave them open.
+                //
+                // The update is GUARDED on the advance still being approved-and-unsettled, and we
+                // insist on exactly one affected row. The advance list was computed before this
+                // transaction, so between then and now it could have been voided (owner) or
+                // settled (another manager on a stale grid). Either way the net we just paid is
+                // wrong, so we abort the whole payment rather than settle a cancelled advance or
+                // double-deduct one.
                 $settledIds = [];
                 if ($manualNet === null) {
                     foreach ($row['advances'] as $a) {
-                        if (!empty($a['request_id'])) {
-                            DB::table('t_req_master')->where('id', $a['request_id'])->update([
+                        if (empty($a['request_id'])) {
+                            continue;
+                        }
+                        $affected = DB::table('t_req_master')
+                            ->where('id', $a['request_id'])
+                            ->where('status', 'approved')
+                            ->where(function ($q) {
+                                $q->whereNull('settlement_status')->orWhere('settlement_status', '!=', 'settled');
+                            })
+                            ->update([
                                 'settlement_status' => 'settled',
                                 'settled_at'        => now(),
                                 'settled_by'        => $actorId,
@@ -564,8 +587,10 @@ class PayrollService
                                 'settlement_transaction_id' => $ledgerId,
                                 'updated_at'        => now(),
                             ]);
-                            $settledIds[] = $a['request_id'];
+                        if ($affected !== 1) {
+                            throw new \RuntimeException('the advances changed while this page was open — refresh payroll and pay again');
                         }
+                        $settledIds[] = $a['request_id'];
                     }
                 }
 
@@ -732,26 +757,345 @@ class PayrollService
         ]);
     }
 
-    /** Unsettled approved salary advances for a user (oldest first). */
+    /**
+     * Unsettled approved salary advances for a user (oldest first).
+     *
+     * Carries the PROVENANCE of each advance (funding account, who gave it, the note) so the
+     * drill-down can show WHICH advance is which — a manager voiding a wrong one must be able
+     * to tell two same-amount advances apart before acting. Two extra lookups, not N+1.
+     */
     private function openAdvances(int $userId): array
     {
         try {
-            return RequestModel::where('requester_user_id', $userId)
+            $rows = RequestModel::where('requester_user_id', $userId)
                 ->whereHas('category', fn ($q) => $q->where('category_code', 'salary_advance'))
                 ->where('status', 'approved')
                 ->where(function ($q) {
                     $q->whereNull('settlement_status')->orWhere('settlement_status', '!=', 'settled');
                 })
                 ->orderBy('created_at', 'asc')
-                ->get(['id', 'amount', 'request_number', 'created_at'])
-                ->map(fn ($r) => [
-                    'request_id' => $r->id,
-                    'request_number' => $r->request_number,
-                    'amount' => (float) ($r->amount ?? 0),
-                    'date' => $r->created_at ? substr((string) $r->created_at, 0, 10) : null,
-                ])->toArray();
+                ->get(['id', 'amount', 'request_number', 'created_at', 'description',
+                       'payment_source_account_id', 'created_by', 'ledger_transaction_id']);
+            if ($rows->isEmpty()) {
+                return [];
+            }
+
+            $acctNames = [];
+            $ids = $rows->pluck('payment_source_account_id')->filter()->unique()->all();
+            if ($ids) {
+                $acctNames = DB::table('t_fin_accounts')->whereIn('id', $ids)
+                    ->pluck('account_name', 'id')->toArray();
+            }
+            $userNames = [];
+            $uids = $rows->pluck('created_by')->filter()->unique()->all();
+            if ($uids) {
+                $userNames = DB::table('t_sys_user')->whereIn('id', $uids)
+                    ->pluck('fullname', 'id')->toArray();
+            }
+
+            return $rows->map(fn ($r) => [
+                'request_id' => $r->id,
+                'request_number' => $r->request_number,
+                'amount' => (float) ($r->amount ?? 0),
+                'date' => $r->created_at ? substr((string) $r->created_at, 0, 10) : null,
+                'source' => $r->payment_source_account_id
+                    ? ($acctNames[$r->payment_source_account_id] ?? null) : null,
+                'given_by' => $r->created_by ? ($userNames[$r->created_by] ?? null) : null,
+                'note' => $r->description ?: null,
+                // Only a POSTED advance can be voided (the void restores its ledger row).
+                'voidable' => (bool) $r->ledger_transaction_id,
+            ])->toArray();
         } catch (\Throwable $e) {
             return [];
+        }
+    }
+
+    /**
+     * Salary-advance requests still WAITING for a decision — the ones an employee raised from the
+     * mobile app (or a manager entered) that were never approved, so NO money has moved and no
+     * ledger row exists. These are NOT advances yet; they are asks.
+     *
+     * Deliberately requires ledger_transaction_id IS NULL: a request that somehow reached
+     * 'pending' with money already posted is not something this queue should offer to pay again.
+     *
+     * @return array one entry per open request, oldest first
+     */
+    public function pendingAdvanceRequests(?int $userId = null): array
+    {
+        try {
+            $q = RequestModel::whereHas('category', fn ($c) => $c->where('category_code', 'salary_advance'))
+                ->where('status', RequestModel::STATUS_PENDING)
+                ->whereNull('ledger_transaction_id');
+            if ($userId) {
+                $q->where('requester_user_id', $userId);
+            }
+            $rows = $q->orderBy('created_at', 'asc')
+                ->get(['id', 'request_number', 'amount', 'created_at', 'description',
+                       'requester_user_id', 'created_by']);
+            if ($rows->isEmpty()) {
+                return [];
+            }
+
+            $ids = $rows->pluck('requester_user_id')->merge($rows->pluck('created_by'))
+                ->filter()->unique()->all();
+            $names = $ids ? DB::table('t_sys_user')->whereIn('id', $ids)->pluck('fullname', 'id')->toArray() : [];
+            $today = time();
+
+            return $rows->map(function ($r) use ($names, $today) {
+                $date = $r->created_at ? substr((string) $r->created_at, 0, 10) : null;
+                $age = $date ? (int) floor(($today - strtotime($date)) / 86400) : 0;
+                return [
+                    'request_id'     => $r->id,
+                    'request_number' => $r->request_number,
+                    'user_id'        => (int) $r->requester_user_id,
+                    'fullname'       => $names[$r->requester_user_id] ?? 'Employee',
+                    'amount'         => (float) ($r->amount ?? 0),
+                    'date'           => $date,
+                    'age_days'       => $age,
+                    'note'           => $r->description ?: null,
+                    // Who typed it: the employee themselves (mobile self-request) or a manager.
+                    'self_requested' => (int) $r->created_by === (int) $r->requester_user_id,
+                    'raised_by'      => $names[$r->created_by] ?? null,
+                ];
+            })->toArray();
+        } catch (\Throwable $e) {
+            return [];
+        }
+    }
+
+    /**
+     * APPROVE a pending advance request and pay it in one step — the money leaves the chosen
+     * account immediately, exactly as if it had been given via "+ advance".
+     *
+     * The funding choice (cash / which bank) is made HERE at approval time, not when the employee
+     * asked, because the employee has no business choosing which company account pays them. We
+     * stamp payment_source_account_id + receiving_account_id BEFORE posting so the ledger row and
+     * the per-bank tag are correct, then post through the same LedgerPostingService every other
+     * advance uses.
+     */
+    public function approveAdvanceRequest(int $requestId, string $funding, ?int $bankId, int $actorId): array
+    {
+        if ($funding === 'online' && !$bankId) {
+            return ['success' => false, 'message' => 'Choose the bank you are paying from.'];
+        }
+        try {
+            return DB::transaction(function () use ($requestId, $funding, $bankId, $actorId) {
+                $req = RequestModel::with('category')->lockForUpdate()->find($requestId);
+                if (!$req) {
+                    return ['success' => false, 'message' => 'Request not found.'];
+                }
+                if (!$req->category || $req->category->category_code !== 'salary_advance') {
+                    return ['success' => false, 'message' => 'That request is not a salary advance.'];
+                }
+                if ($req->status !== RequestModel::STATUS_PENDING) {
+                    return ['success' => false, 'message' => 'This request is already ' . $req->status . '.'];
+                }
+                if (!empty($req->ledger_transaction_id)) {
+                    return ['success' => false, 'message' => 'This request already has a ledger entry — it has been paid.'];
+                }
+                if ((float) $req->amount <= 0) {
+                    return ['success' => false, 'message' => 'This request has no amount — reject it instead.'];
+                }
+
+                $fundingAcct = $funding === 'online'
+                    ? \App\Models\FIN\ConfigModel::getOnlineBankAccount()
+                    : \App\Models\FIN\ConfigModel::getNFCashAccount();
+                if (!$fundingAcct) {
+                    return ['success' => false, 'message' => 'Funding account not found.'];
+                }
+
+                // Business unit follows the EMPLOYEE (same rule as giveAdvance) so a Khaas
+                // employee's advance lands in the Khaas expense bucket.
+                $empBuId = null;
+                try {
+                    if ($this->profileHasScheduleCols()) {
+                        $empBuId = DB::table('t_hr_employee_profile')->where('user_id', $req->requester_user_id)
+                            ->value('business_unit_id');
+                        $empBuId = $empBuId ? (int) $empBuId : null;
+                    }
+                } catch (\Throwable $e) { /* no tag → NF */ }
+
+                $req->payment_source_account_id = $fundingAcct->id;
+                $req->receiving_account_id = $funding === 'online' ? $bankId : null;
+                $req->business_unit_id = $empBuId;
+                // Payroll approval is a single owner-level act, exactly like "+ advance" (which
+                // creates advances with no approval levels at all). Mark both levels satisfied so
+                // the row's shape matches a payroll-given advance and it can't re-enter any queue.
+                $req->requires_level_1 = false;
+                $req->requires_level_2 = false;
+                $req->level_1_status = RequestModel::APPROVAL_STATUS_APPROVED;
+                $req->level_2_status = RequestModel::APPROVAL_STATUS_APPROVED;
+                $req->status = RequestModel::STATUS_APPROVED;
+                $req->settlement_status = 'pending';   // recovered from the next salary
+                $req->completed_at = now();
+                // postSalaryAdvanceFromRequest copies updated_by into ledger.approved_by.
+                $req->updated_by = $actorId;
+                $req->save();
+
+                $post = (new \App\Services\FIN\LedgerPostingService())->postSalaryAdvanceFromRequest($req);
+                if (empty($post['success'])) {
+                    throw new \RuntimeException($post['message'] ?? 'Ledger posting failed');
+                }
+
+                \Log::info('Payroll approved advance request', [
+                    'request_id' => $req->id, 'request_number' => $req->request_number,
+                    'user_id' => $req->requester_user_id, 'amount' => $req->amount,
+                    'funding' => $funding, 'bank_id' => $bankId, 'by' => $actorId,
+                ]);
+
+                return [
+                    'success' => true,
+                    'message' => 'Approved — Rs ' . number_format((float) $req->amount)
+                        . ' paid from ' . $fundingAcct->account_name
+                        . '. It will be deducted from the next salary.',
+                ];
+            });
+        } catch (\Throwable $e) {
+            \Log::error('approveAdvanceRequest failed', ['request_id' => $requestId, 'error' => $e->getMessage()]);
+            return ['success' => false, 'message' => 'Could not approve: ' . $e->getMessage()];
+        }
+    }
+
+    /** REJECT a pending advance request. No money has moved, so this only closes the request. */
+    public function rejectAdvanceRequest(int $requestId, string $reason, int $actorId): array
+    {
+        $reason = trim($reason);
+        if ($reason === '') {
+            return ['success' => false, 'message' => 'Please type a reason.'];
+        }
+        try {
+            return DB::transaction(function () use ($requestId, $reason, $actorId) {
+                $req = RequestModel::with('category')->lockForUpdate()->find($requestId);
+                if (!$req) {
+                    return ['success' => false, 'message' => 'Request not found.'];
+                }
+                if (!$req->category || $req->category->category_code !== 'salary_advance') {
+                    return ['success' => false, 'message' => 'That request is not a salary advance.'];
+                }
+                if ($req->status !== RequestModel::STATUS_PENDING) {
+                    return ['success' => false, 'message' => 'This request is already ' . $req->status . '.'];
+                }
+                // Guard: never "reject" something that already moved money.
+                if (!empty($req->ledger_transaction_id)) {
+                    return ['success' => false, 'message' => 'This request already has a ledger entry — void it instead.'];
+                }
+
+                $actorName = DB::table('t_sys_user')->where('id', $actorId)->value('fullname') ?: ('User ' . $actorId);
+                $req->status = RequestModel::STATUS_REJECTED;
+                $req->level_1_status = RequestModel::APPROVAL_STATUS_REJECTED;
+                $req->level_2_status = RequestModel::APPROVAL_STATUS_REJECTED;
+                $req->settlement_status = 'not_required';
+                $req->rejection_reason = 'Rejected by ' . $actorName . ' on ' . now()->format('Y-m-d H:i:s') . ' — ' . $reason;
+                $req->completed_at = now();
+                $req->updated_by = $actorId;
+                $req->save();
+
+                \Log::info('Payroll rejected advance request', [
+                    'request_id' => $req->id, 'user_id' => $req->requester_user_id,
+                    'amount' => $req->amount, 'by' => $actorId, 'reason' => $reason,
+                ]);
+                return ['success' => true, 'message' => 'Request rejected. No money was moved.'];
+            });
+        } catch (\Throwable $e) {
+            \Log::error('rejectAdvanceRequest failed', ['request_id' => $requestId, 'error' => $e->getMessage()]);
+            return ['success' => false, 'message' => 'Could not reject: ' . $e->getMessage()];
+        }
+    }
+
+    /**
+     * VOID a wrongly-given salary advance (owner action — permission-gated in the controller).
+     *
+     * Restores the money through the SAME engine that posted it (BalancePostingService::reverse,
+     * idempotent, locks the accounts). Only the FUNDING account moves: 'salary_advance' is an
+     * EXCLUDED employee-cash type, so no employee's cash balance shifts in either direction —
+     * posting and voiding are exact mirrors.
+     *
+     * The ledger row is KEPT and marked REVERSED (audit trail), mirroring the expense-delete
+     * convention; the request becomes 'cancelled', which removes it from every payroll and
+     * expense surface on web AND mobile — they all filter status='approved', so no client
+     * change is needed anywhere.
+     *
+     * ⛔ A SETTLED advance is NEVER voidable. Its money story is already closed by the salary
+     * that recovered it (or a manual store settle), and `settlement_transaction_id` on a
+     * payroll-settled advance points at the WHOLE MONTH'S salary_payment row — reversing that
+     * would un-post an entire salary. This method never reads or touches that column; the
+     * guards below refuse before it could ever matter.
+     */
+    public function voidAdvance(int $requestId, string $reason, int $actorId): array
+    {
+        $reason = trim($reason);
+        if ($reason === '') {
+            return ['success' => false, 'message' => 'Please type why this advance is being voided.'];
+        }
+        try {
+            return DB::transaction(function () use ($requestId, $reason, $actorId) {
+                $req = RequestModel::with('category')->lockForUpdate()->find($requestId);
+                if (!$req) {
+                    return ['success' => false, 'message' => 'Advance not found.'];
+                }
+                if (!$req->category || $req->category->category_code !== 'salary_advance') {
+                    return ['success' => false, 'message' => 'That request is not a salary advance.'];
+                }
+                if ($req->status !== RequestModel::STATUS_APPROVED) {
+                    return ['success' => false, 'message' => 'Only an active advance can be voided — this one is already ' . $req->status . '.'];
+                }
+                if ((string) $req->settlement_status === 'settled') {
+                    return ['success' => false, 'message' => 'This advance was already settled ('
+                        . ($req->settlement_notes ?: 'recovered from salary') . ') — it can no longer be voided.'];
+                }
+                // Defensive: a settlement row exists even though the flag doesn't say 'settled'.
+                // Never unwind that here (it may be a shared salary row) — refuse and let a human look.
+                if (!empty($req->settlement_transaction_id)) {
+                    return ['success' => false, 'message' => 'This advance already has a settlement transaction — it cannot be voided automatically.'];
+                }
+                if (empty($req->ledger_transaction_id)) {
+                    return ['success' => false, 'message' => 'This advance has no ledger entry linked, so there is nothing to restore. Please check it before changing anything.'];
+                }
+
+                $ledger = \App\Models\FIN\LedgerModel::lockForUpdate()->find($req->ledger_transaction_id);
+                if (!$ledger) {
+                    return ['success' => false, 'message' => 'The ledger entry for this advance is missing — please check it before changing anything.'];
+                }
+                if ($ledger->approval_status !== \App\Models\FIN\LedgerModel::STATUS_APPROVED) {
+                    return ['success' => false, 'message' => 'The ledger entry for this advance is already ' . $ledger->approval_status . ' — nothing to restore.'];
+                }
+
+                $actorName = DB::table('t_sys_user')->where('id', $actorId)->value('fullname') ?: ('User ' . $actorId);
+                $stamp = 'VOIDED by ' . $actorName . ' on ' . now()->format('Y-m-d H:i:s') . ' — Reason: ' . $reason;
+                $restoredTo = \App\Models\FIN\AccountModel::find($ledger->from_account_id)?->account_name;
+                $amount = (float) $ledger->amount;
+
+                // 1. Money back, through the canonical engine.
+                (new \App\Services\FIN\BalancePostingService())->reverse($ledger);
+
+                // 2. Keep the row, mark it reversed (audit).
+                $ledger->approval_status = \App\Models\FIN\LedgerModel::STATUS_REVERSED;
+                $ledger->comments = ($ledger->comments ? $ledger->comments . "\n" : '') . $stamp;
+                $ledger->save();
+
+                // 3. Retire the request. 'not_required' keeps a voided advance out of every
+                //    unsettled/settlement queue (it will never be recovered from a salary).
+                $req->status = RequestModel::STATUS_CANCELLED;
+                $req->settlement_status = 'not_required';
+                $req->rejection_reason = $stamp;
+                $req->updated_by = $actorId;
+                $req->save();
+
+                \Log::info('Salary advance voided', [
+                    'request_id' => $req->id, 'request_number' => $req->request_number,
+                    'amount' => $amount, 'ledger_id' => $ledger->id,
+                    'user_id' => $req->requester_user_id, 'by' => $actorId, 'reason' => $reason,
+                ]);
+
+                return [
+                    'success' => true,
+                    'message' => 'Advance ' . $req->request_number . ' voided — Rs ' . number_format($amount)
+                        . ' returned to ' . ($restoredTo ?: 'the funding account') . '.',
+                ];
+            });
+        } catch (\Throwable $e) {
+            \Log::error('voidAdvance failed', ['request_id' => $requestId, 'error' => $e->getMessage()]);
+            return ['success' => false, 'message' => 'Could not void this advance: ' . $e->getMessage()];
         }
     }
 
@@ -1174,11 +1518,21 @@ class PayrollService
                 }
                 $ledgerId = $ledger ? $ledger->id : null;
 
-                // Settle the advances deducted from this net.
+                // Settle the advances deducted from this net. Same guard as the monthly path: the
+                // advance must still be approved-and-unsettled or the whole payment aborts (it
+                // could have been voided by the owner since this page loaded).
                 $settledIds = [];
                 foreach ($row['advances'] as $a) {
-                    if (!empty($a['request_id'])) {
-                        DB::table('t_req_master')->where('id', $a['request_id'])->update([
+                    if (empty($a['request_id'])) {
+                        continue;
+                    }
+                    $affected = DB::table('t_req_master')
+                        ->where('id', $a['request_id'])
+                        ->where('status', 'approved')
+                        ->where(function ($q) {
+                            $q->whereNull('settlement_status')->orWhere('settlement_status', '!=', 'settled');
+                        })
+                        ->update([
                             'settlement_status' => 'settled',
                             'settled_at'        => now(),
                             'settled_by'        => $actorId,
@@ -1186,8 +1540,10 @@ class PayrollService
                             'settlement_transaction_id' => $ledgerId,
                             'updated_at'        => now(),
                         ]);
-                        $settledIds[] = $a['request_id'];
+                    if ($affected !== 1) {
+                        throw new \RuntimeException('the advances changed while this page was open — refresh payroll and pay again');
                     }
+                    $settledIds[] = $a['request_id'];
                 }
 
                 // Record the payment. pay_month = the END month; period_key blocks an

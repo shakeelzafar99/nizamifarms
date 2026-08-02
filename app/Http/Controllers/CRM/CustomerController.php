@@ -1694,22 +1694,39 @@ class CustomerController extends Controller
                 && method_exists($authUser, 'hasMobilePermission')
                 && !$authUser->hasMobilePermission('access_store_mode');
             if ($isBoundRider && $customer->isVerifiedPinLocked()) {
+                // Refusing a rider also raises the unlock request behind the
+                // store / web banners (same as the two RiderController guards).
+                $requested = \App\Services\Location\PinUnlockRequestService::raise(
+                    $customer,
+                    auth()->id(),
+                    $request->input('order_id')
+                );
+
                 return response()->json([
                     'success' => false,
-                    'message' => "This customer's location is locked. Ask the store to unlock it before changing the pin.",
+                    'message' => $requested
+                        ? "This customer's location is locked. The store has been asked to unlock it — you'll be able to save as soon as they do."
+                        : "This customer's location is locked. Ask the store to unlock it before changing the pin.",
                     'pin_locked' => true,
+                    'unlock_requested' => $requested,
                 ], 423);
             }
 
-            // Prepare update data. Every successful save consumes any unlock
-            // grant so the pin re-locks immediately for next time.
-            $updateData = [
+            // Prepare update data. A RIDER's save consumes any unlock grant so
+            // the pin re-locks immediately for next time; a STORE/WEB save leaves
+            // the 24h grace window open so the rider at the door can correct a
+            // pin the office just set (see CustomerModel::pinGrantGrace).
+            $updateData = array_merge([
                 'updated_by' => auth()->id(),
                 'verified_location_saved_by' => auth()->id(),
                 'verified_location_saved_at' => now(),
-                'verified_pin_unlocked_until' => null,
-                'verified_pin_unlocked_by' => null,
-            ];
+            ], $isBoundRider
+                ? CustomerModel::pinGrantConsumed()
+                : CustomerModel::pinGrantGrace(
+                    $customer->verified_pin_unlocked_until,
+                    $customer->verified_pin_unlocked_by,
+                    auth()->id()
+                ));
 
             // Track where the coords came from so the response can warn when they
             // are approximate (geocoded) or missing (link had none, geocode failed).
@@ -1850,10 +1867,11 @@ class CustomerController extends Controller
         try {
             $customer = CustomerModel::findOrFail($id);
             $until = now()->addMinutes(CustomerModel::VERIFIED_PIN_UNLOCK_MINUTES);
-            $customer->update([
+            // Answers any standing rider request → its banner leaves every screen.
+            $customer->update(array_merge([
                 'verified_pin_unlocked_until' => $until,
                 'verified_pin_unlocked_by'    => auth()->id(),
-            ]);
+            ], CustomerModel::pinUnlockRequestCleared()));
             \Log::info('Verified pin unlocked for rider edit (webapp)', [
                 'customer_id' => $customer->id,
                 'unlocked_by' => auth()->user()->fullname ?? auth()->id(),
@@ -1878,10 +1896,13 @@ class CustomerController extends Controller
     {
         try {
             $customer = CustomerModel::findOrFail($id);
-            $customer->update([
+            // Re-locking also settles a standing request — deciding NOT to
+            // unlock is still a decision, and leaving the banner up would keep
+            // asking for something already answered.
+            $customer->update(array_merge([
                 'verified_pin_unlocked_until' => null,
                 'verified_pin_unlocked_by'    => null,
-            ]);
+            ], CustomerModel::pinUnlockRequestCleared()));
             \Log::info('Verified pin unlock cancelled (webapp)', [
                 'customer_id' => $customer->id,
                 'by'          => auth()->user()->fullname ?? auth()->id(),
@@ -1890,6 +1911,29 @@ class CustomerController extends Controller
         } catch (\Exception $e) {
             \Log::error('Failed to re-lock verified pin (webapp)', ['customer_id' => $id, 'error' => $e->getMessage()]);
             return response()->json(['success' => false, 'message' => 'Failed to re-lock location'], 500);
+        }
+    }
+
+    /**
+     * Aug-2026 — dismiss a rider's unlock request WITHOUT unlocking.
+     *
+     * The banner's ✕: "seen it, handled another way" (or the rider asked by
+     * mistake). The pin stays locked; only the request goes. Without this the
+     * only way to clear a request you don't want to grant would be to grant it.
+     */
+    public function dismissPinUnlockRequest(Request $request, $id)
+    {
+        try {
+            $customer = CustomerModel::findOrFail($id);
+            \App\Services\Location\PinUnlockRequestService::dismiss($customer);
+            \Log::info('Verified-pin unlock request dismissed (webapp)', [
+                'customer_id' => $customer->id,
+                'by'          => auth()->user()->fullname ?? auth()->id(),
+            ]);
+            return response()->json(['success' => true, 'message' => 'Request dismissed.']);
+        } catch (\Exception $e) {
+            \Log::error('Failed to dismiss pin unlock request', ['customer_id' => $id, 'error' => $e->getMessage()]);
+            return response()->json(['success' => false, 'message' => 'Failed to dismiss request'], 500);
         }
     }
 

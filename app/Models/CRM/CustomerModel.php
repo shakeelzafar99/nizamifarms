@@ -52,6 +52,11 @@ class CustomerModel extends BaseModel
         // RIDER edits; a store/web user grants a time-boxed unlock window.
         'verified_pin_unlocked_until',
         'verified_pin_unlocked_by',
+        // Aug-2026: the rider's "please unlock this" request behind the store /
+        // web banners. Cleared by every action that resolves the lock.
+        'verified_pin_unlock_requested_at',
+        'verified_pin_unlock_requested_by',
+        'verified_pin_unlock_request_order_id',
         // Geocoded address coordinates (auto-generated from address)
         'geocoded_latitude',
         'geocoded_longitude',
@@ -83,6 +88,7 @@ class CustomerModel extends BaseModel
         'geocoded_longitude' => 'decimal:7',
         'geocoded_at' => 'datetime',
         'verified_pin_unlocked_until' => 'datetime',
+        'verified_pin_unlock_requested_at' => 'datetime',
         'first_delivery_date' => 'datetime',
         'last_delivery_date' => 'datetime',
         'is_active' => 'boolean',
@@ -110,11 +116,126 @@ class CustomerModel extends BaseModel
     // "unlocked but the rider never saved" — it just expires.
     public const VERIFIED_PIN_UNLOCK_MINUTES = 360; // 6h grant window
 
+    /**
+     * Aug-2026 — the GRACE window a staff pin-save leaves open behind it.
+     *
+     * The lock's first version re-locked the instant anyone saved, including
+     * the manager. That broke the commonest real workflow: a manager drops a
+     * TEMPORARY pin so dispatch timings and ETAs keep working, and the rider
+     * who then reaches the door — the only person who actually knows where the
+     * customer lives — found it locked and had to phone for an unlock.
+     *
+     * So a save BY STAFF (or by the customer from the customer app) now leaves
+     * the pin open for 24h: whoever arrives next may correct it once. That
+     * rider's own save consumes the grant (see pinGrantConsumed) and the pin
+     * re-locks immediately, so the NF-18834 hole — a rider silently re-pinning
+     * a customer days after delivery, which re-judges every past delivery
+     * report against the new spot — stays closed.
+     */
+    public const VERIFIED_PIN_STAFF_GRACE_MINUTES = 1440; // 24h
+
+    /**
+     * Aug-2026 — how long a rider's unlock REQUEST stays on the banners.
+     *
+     * The request is normally cleared the moment someone acts on it, so this is
+     * only the backstop for one nobody ever answered: it must not still be
+     * shouting at the store tomorrow morning. One shift is the natural life of
+     * "a rider is standing at a door right now".
+     */
+    public const VERIFIED_PIN_UNLOCK_REQUEST_TTL_MINUTES = 720; // 12h
+
     /** True while an unlock grant is live (rider may save the pin right now). */
     public function verifiedPinUnlockActive(): bool
     {
         return $this->verified_pin_unlocked_until !== null
             && $this->verified_pin_unlocked_until->isFuture();
+    }
+
+    /**
+     * True while a rider's unlock request is still worth showing: raised, inside
+     * the TTL, and the pin is STILL locked. The last clause is the safety net —
+     * even if some future writer forgets to clear the request, granting the
+     * unlock makes the banner disappear anyway.
+     */
+    public function verifiedPinUnlockRequestActive(): bool
+    {
+        return $this->verified_pin_unlock_requested_at !== null
+            && $this->verified_pin_unlock_requested_at->isAfter(
+                now()->subMinutes(self::VERIFIED_PIN_UNLOCK_REQUEST_TTL_MINUTES)
+            )
+            && $this->isVerifiedPinLocked();
+    }
+
+    /**
+     * Columns that CLEAR a pending rider unlock request.
+     *
+     * ⭐ Every action that resolves the lock one way or the other merges this
+     * in — unlock granted, pin saved, relocked, dismissed. That single habit is
+     * what stops the store and web banners outliving the thing they ask for:
+     * there is no separate "dismiss the alert" step that someone can forget.
+     *
+     * It matters most on the RIDER's own save: that consumes the grant and
+     * re-locks the pin, so a request left standing would make the banner pop
+     * straight back up for a job that is already done.
+     */
+    public static function pinUnlockRequestCleared(): array
+    {
+        return [
+            'verified_pin_unlock_requested_at'     => null,
+            'verified_pin_unlock_requested_by'     => null,
+            'verified_pin_unlock_request_order_id' => null,
+        ];
+    }
+
+    /**
+     * Grant columns to write when a RIDER saves the pin: consume the grant, so
+     * he gets exactly the one edit it was opened for.
+     */
+    public static function pinGrantConsumed(): array
+    {
+        return array_merge([
+            'verified_pin_unlocked_until' => null,
+            'verified_pin_unlocked_by'    => null,
+        ], self::pinUnlockRequestCleared());
+    }
+
+    /**
+     * Grant columns to write when STAFF (or the customer) saves the pin: open
+     * the 24h grace window described on VERIFIED_PIN_STAFF_GRACE_MINUTES.
+     *
+     * Takes the CURRENT stored values rather than a model instance so the raw
+     * DB::table() writers (the customer app) can use the identical rule. Never
+     * SHORTENS a grant that already runs longer than the new window — otherwise
+     * a staff save moments after a manual unlock could cut that unlock short.
+     * Parsing is defensive: an unreadable stored value simply falls through to
+     * a fresh window rather than throwing inside a save.
+     *
+     * @param  mixed     $currentUntil  stored verified_pin_unlocked_until (Carbon|string|null)
+     * @param  mixed     $currentBy     stored verified_pin_unlocked_by
+     * @param  int|null  $grantedBy     user id to credit for the new window
+     */
+    public static function pinGrantGrace($currentUntil, $currentBy, ?int $grantedBy): array
+    {
+        $until = now()->addMinutes(self::VERIFIED_PIN_STAFF_GRACE_MINUTES);
+
+        try {
+            if (!empty($currentUntil)) {
+                $existing = \Illuminate\Support\Carbon::parse($currentUntil);
+                if ($existing->greaterThan($until)) {
+                    return array_merge([
+                        'verified_pin_unlocked_until' => $existing,
+                        'verified_pin_unlocked_by'    => $currentBy,
+                    ], self::pinUnlockRequestCleared());
+                }
+            }
+        } catch (\Throwable $e) {
+            // Unparseable stored value — fall through to a fresh window.
+        }
+
+        return array_merge([
+            'verified_pin_unlocked_until' => $until,
+            'verified_pin_unlocked_by'    => $grantedBy,
+        ], self::pinUnlockRequestCleared());
     }
 
     /**

@@ -97,13 +97,24 @@ class CampaignFilterService
      *
      * Static SQL, no bindings — safe to interpolate into a join.
      */
-    public function orderStatsSubquerySql(): string
+    public function orderStatsSubquerySql(?array $scopeCustomerIds = null): string
     {
         $hasHistory = Schema::hasTable('t_crm_history_order');
 
+        // Optional scoping, inlined INSIDE both branches so the index prunes
+        // rows before aggregation. Wrapping the finished aggregate in a WHERE
+        // does not help — MariaDB materialises the full derived table first
+        // (measured: scoped-outside was SLOWER than unscoped). Ints only, so
+        // inlining is injection-safe and keeps this interpolatable.
+        $scope = '';
+        if ($scopeCustomerIds !== null) {
+            $ids = implode(',', array_map('intval', $scopeCustomerIds));
+            $scope = ' AND customer_id IN (' . ($ids !== '' ? $ids : '0') . ') ';
+        }
+
         $prod = "SELECT customer_id, COUNT(*) AS cnt, COALESCE(SUM(total_price),0) AS spent
                  FROM t_crm_prod_order
-                 WHERE customer_id IS NOT NULL
+                 WHERE customer_id IS NOT NULL {$scope}
                    AND (external_source <> 'shopify' OR external_source IS NULL)
                    AND order_status IN ('delivered','completed')
                  GROUP BY customer_id";
@@ -115,7 +126,7 @@ class CampaignFilterService
 
         $hist = "SELECT customer_id, COUNT(*) AS cnt, COALESCE(SUM(total_price),0) AS spent
                  FROM t_crm_history_order
-                 WHERE customer_id IS NOT NULL
+                 WHERE customer_id IS NOT NULL {$scope}
                    AND order_status = 'delivered'
                  GROUP BY customer_id";
 
