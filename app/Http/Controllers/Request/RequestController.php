@@ -166,9 +166,19 @@ class RequestController extends Controller
         // money really came from. Options come from PaymentSourceService, which
         // encodes the SAME rules store() enforces below — so the picker can never
         // offer an account this user's own submit would 403.
-        $paySvc    = app(\App\Services\FIN\PaymentSourceService::class);
-        $paySources = $paySvc->sourcesFor(auth()->user());
-        $payBanks   = $paySvc->banks();
+        //
+        // Both books are rendered and the view filters by the chosen category's
+        // business unit (see its data-bu), so picking "Khaas Expense" swaps the
+        // accounts without a round trip. Only units this user can actually reach
+        // are included — sourcesFor() returns nothing for the others.
+        $paySvc     = app(\App\Services\FIN\PaymentSourceService::class);
+        $paySources = [];
+        foreach (\App\Models\FIN\BusinessUnitModel::where('is_active', 1)->pluck('id') as $buId) {
+            foreach ($paySvc->sourcesFor(auth()->user(), (int) $buId) as $row) {
+                $paySources[] = $row;
+            }
+        }
+        $payBanks = $paySvc->banks();
 
         return view('pages.requests.create', compact('categories', 'paySources', 'payBanks'));
     }
@@ -191,6 +201,9 @@ class RequestController extends Controller
             // never reset the bike's service clock on approval. Whitelisted to the two
             // values the mobile picker offers; blank = not bike-related (unchanged).
             'service_type' => 'nullable|in:oil_change,repair',
+            // The named type. When present the server derives service_type from its
+            // bucket and ignores whatever the client sent for it.
+            'maintenance_type_id' => 'nullable|integer',
             'meter_at_fill' => 'nullable|integer|min:0|max:9999999',
             'payment_source_account_id' => 'nullable|exists:t_fin_accounts,id', // Payment source selection
             'receiving_account_id' => 'nullable|integer|exists:t_fin_online_receiving_accounts,id', // Which bank an ONLINE expense is paid from
@@ -242,21 +255,19 @@ class RequestController extends Controller
             }
         }
 
-        // Server-side payment source validation: non-EXP_FUND requires permission
+        // Server-side payment source validation.
+        // ⭐ Aug-2026: the account allow-list (t_fin_account_users) decides this now,
+        // via PaymentSourceService — the SAME call that built the picker, so the form
+        // can never offer something the submit rejects, and a crafted request cannot
+        // reach an account the picker would not have shown. It also enforces the
+        // business unit implicitly: candidates are scoped to the request's BU, so a
+        // Khaas account can no longer fund an NF expense (that mis-book was possible
+        // until today). Private accounts are excluded by `visibleTo` inside the
+        // service; the explicit check below is only kept for its clearer message.
         if ($request->filled('payment_source_account_id')) {
             $loggedInUserForSource = auth()->user();
             $sourceAccount = \App\Models\FIN\AccountModel::find($validated['payment_source_account_id']);
-            if ($sourceAccount && $sourceAccount->account_code !== 'EXP_FUND') {
-                $buId = $validated['business_unit_id'] ?? null;
-                $canUseAllSources = $loggedInUserForSource->hasMobilePermission('expense_all_payment_sources')
-                    || ($buId && $loggedInUserForSource->hasMobilePermission('approve_khaas_transfer'));
-                if (!$canUseAllSources) {
-                    return response()->json([
-                        'success' => false,
-                        'message' => 'You do not have permission to create expenses from this payment source. Only Expense Fund is allowed.'
-                    ], 403);
-                }
-            }
+
             if ($sourceAccount && $sourceAccount->is_private) {
                 $isTaimurRole = $loggedInUserForSource->roles()->whereRaw('LOWER(urole_name) = ?', ['taimur'])->exists();
                 if (!$isTaimurRole) {
@@ -265,6 +276,31 @@ class RequestController extends Controller
                         'message' => 'This payment source is not available.'
                     ], 403);
                 }
+            }
+
+            $catForSource = RequestCategoryModel::find($validated['category_id']);
+            $sourcePurpose = ($catForSource && $catForSource->category_code === 'salary_advance')
+                ? \App\Services\FIN\PaymentSourceService::PURPOSE_ADVANCE
+                : \App\Services\FIN\PaymentSourceService::PURPOSE_EXPENSE;
+
+            // A LEAVE request carries no money. The web form used to submit its
+            // hidden pay-from select for leaves too; blocking those would be a
+            // regression, so only money-moving categories are gated.
+            $sourceIsMoneyCategory = $catForSource && (
+                in_array($catForSource->category_code, ['expense', 'khaas_expense', 'salary_advance', 'qurbani'], true)
+                || in_array($catForSource->form_type ?? null, ['expense', 'salary'], true)
+            );
+
+            if ($sourceIsMoneyCategory && !app(\App\Services\FIN\PaymentSourceService::class)->allows(
+                    $loggedInUserForSource,
+                    $validated['payment_source_account_id'],
+                    $validated['business_unit_id'] ?? null,
+                    $sourcePurpose
+            )) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'You are not set up to pay from this account. Ask Taimur or Shabib to add you to it (Ledger Hub → the account → "Who uses this account").'
+                ], 403);
             }
             // When an EXPENSE or SALARY ADVANCE is paid from an ONLINE bank
             // account, the specific receiving bank is mandatory so per-bank
@@ -417,6 +453,15 @@ class RequestController extends Controller
                 $createdByNote = "\n\n[Created by {$loggedInUser->fullname} on behalf of employee]";
             }
 
+            // ⭐ Resolve the named maintenance type into the machine flag BEFORE the
+            //    rules run — the meter requirement keys off service_type, so the
+            //    rules must judge the type actually being stored, not whatever the
+            //    client happened to send alongside it.
+            $svcResolved = app(\App\Services\Riders\MaintenanceTypeService::class)->resolve(
+                $validated['maintenance_type_id'] ?? null,
+                $validated['service_type'] ?? null
+            );
+
             // ⭐ FUEL / MAINTENANCE RULES — the SAME service the rider's own app calls
             //    (API\RiderController::createRequest). This path used to enforce none
             //    of them, so a manager filing for a rider bypassed the company-bike
@@ -430,7 +475,7 @@ class RequestController extends Controller
                     'amount'        => $validated['amount'] ?? null,
                     'expense_date'  => $validated['expense_date'] ?? null,
                     'meter_at_fill' => $validated['meter_at_fill'] ?? null,
-                    'service_type'  => $validated['service_type'] ?? null,
+                    'service_type'  => $svcResolved[0],
                     // This path never creates the self-auditing metered petrol row
                     // (that comes from the rider's attendance screen), so there is
                     // no attendance_id to pass — every claim here is the flat kind.
@@ -561,8 +606,14 @@ class RequestController extends Controller
                 'expense_date' => $validated['expense_date'] ?? now()->toDateString(),
                 // 🔧 Only meaningful on a Maintenance row — never stamp a service type
                 // onto an unrelated expense if a stale form submits the hidden fields.
+                // ⭐ Aug-2026: when a named type is chosen, the SERVER derives
+                // service_type from that type's bucket (see $svcResolved above) —
+                // a stale or hand-made payload cannot pair "Oil Change" with
+                // `repair` and dodge the meter requirement.
                 'service_type' => (($validated['expense_category'] ?? null) === 'Maintenance')
-                    ? ($validated['service_type'] ?? null) : null,
+                    ? $svcResolved[0] : null,
+                'maintenance_type_id' => (($validated['expense_category'] ?? null) === 'Maintenance')
+                    ? $svcResolved[1] : null,
                 // ⚠ This used to be stored for Maintenance ONLY, which silently threw
                 // away the odometer on every PETROL claim filed here — so a
                 // manager-filed company-bike fill was invisible to km-since-last-fill
@@ -594,6 +645,15 @@ class RequestController extends Controller
                 'submitted_at' => now(),
                 'created_by' => $loggedInUser->id,
             ]);
+
+            // 🏍️ Record which machine this claim was for (Aug-2026). Keyed to the
+            // REQUESTER, never the manager filing it — same rule FuelClaimRules
+            // follows. Non-fatal and guarded; no-ops entirely before batch 13.
+            (new \App\Services\Riders\VehicleResolver())->stampClaim(
+                $requestModel->id, (int) $requesterId,
+                $validated['expense_category'] ?? null,
+                $validated['expense_date'] ?? null
+            );
 
             // If auto-approved and it's an expense-type request, post to ledger.
             // Uses RequestModel::isExpenseTypeCategory() so any category with form_type='expense'

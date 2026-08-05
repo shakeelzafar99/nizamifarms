@@ -46,6 +46,8 @@
                             'sub' => $desc !== '' ? \Illuminate\Support\Str::limit($desc, 90) : '—',
                             'amount' => 'Rs. ' . number_format($r->amount, 2), 'dir' => $isP ? 'owe' : 'in',
                             'mode' => ucfirst($r->mode ?? 'cash'),
+                            // Which of OUR banks — only set when the payment went through one.
+                            'bank' => optional($r->receivingAccount)->short_code ?: optional($r->receivingAccount)->name,
                             'from' => optional($r->fromAccount)->account_name ?? '—', 'fromsub' => optional($r->fromAccount)->account_code ?? '',
                             'to' => $vendor->vendor_name, 'tosub' => optional($account)->account_code ?? '',
                             'status' => 'ok', 'statusLabel' => 'Approved',

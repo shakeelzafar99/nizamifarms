@@ -36,6 +36,12 @@
                 <div class="t-value num" style="color:{{ $neg ? 'var(--out)' : 'var(--ink)' }}">{{ $money0($acc->current_balance) }}</div>
                 <div class="t-sub">
                     <div class="row"><span class="t-cat">{{ $acc->account_category }}</span><span style="color:var(--accent);font-weight:700">{{ $toBanks ? 'Banks →' : 'Ledger →' }}</span></div>
+                    {{-- ⏳ Money held out of this balance by an unapproved ledger row. Surfaced on
+                         the list so it is visible without opening every account in turn. --}}
+                    @php $pc = $pendingCounts[$acc->id] ?? 0; @endphp
+                    @if($pc > 0)
+                        <div class="row"><span class="o">⏳ {{ $pc }} waiting for approval</span></div>
+                    @endif
                 </div>
             </a>
         @endforeach

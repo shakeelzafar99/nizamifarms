@@ -33,4 +33,23 @@ return [
 
     // Auto-save resolved pins to the customer (keeping a visible audit via timestamps).
     'auto_save_on_reply' => env('OPEN_ORDER_LOC_AUTOSAVE', true),
+
+    // ── Re-request replacement (Aug-2026, owner ruling) ──────────────────────
+    // A customer who ALREADY has a pin normally cannot have it overwritten by a
+    // WhatsApp reply. The ONE exception: a person on the team manually sent them
+    // the location template — that is a human saying "this pin is wrong, ask
+    // again" — and the customer answered within this window. Then the reply is
+    // the requested replacement and saves itself.
+    //
+    // Only MANUAL sends count (t_wa_messages.sent_by is a real user). The bulk
+    // "Get Customer Locations" tool and the auto-drain both send with sent_by
+    // NULL and only ever target pin-less customers, so the automation can never
+    // mass-overwrite pins through this door.
+    'rerequest_window_hours' => (int) env('OPEN_ORDER_LOC_REREQUEST_HOURS', 24),
+
+    // Sanity brake on that replacement. A reply this far from the saved pin is
+    // almost always someone sharing where they are RIGHT NOW (another city, at
+    // work) rather than correcting their delivery address, so it is held for a
+    // human instead of silently relocating the customer.
+    'rerequest_max_jump_km' => (float) env('OPEN_ORDER_LOC_REREQUEST_MAX_KM', 50),
 ];

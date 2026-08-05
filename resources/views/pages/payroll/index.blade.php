@@ -544,7 +544,8 @@
     const selectable = r.configured && !r.paid;
     const statusCell = r.paid
       ? '<span class="pr-chip paid" data-paydetail="' + i + '" style="cursor:pointer;" title="View payment details">✓ Paid ' + fmt(r.paid_net != null ? r.paid_net : n) + '</span>' +
-        '<div class="pr-formula"><span data-paydetail="' + i + '" style="cursor:pointer;text-decoration:underline dotted;">details</span>' + (r.paid_at ? ' · ' + String(r.paid_at).slice(0, 10) : '') + '</div>'
+        '<div class="pr-formula"><span data-paydetail="' + i + '" style="cursor:pointer;text-decoration:underline dotted;">details</span>' + (r.paid_at ? ' · ' + String(r.paid_at).slice(0, 10) : '') + '</div>' +
+        (paidFromLabel(r.paid_detail) ? '<div class="pr-formula">' + paidFromLabel(r.paid_detail) + '</div>' : '')
       : '<span class="pr-chip unpaid">Unpaid</span>';
 
     return '<tr data-row="' + i + '"' + (r.paid ? ' style="opacity:.72;"' : '') + '>' +
@@ -763,6 +764,23 @@
     renderAdvanceSheet();
   }
 
+  // "Paid from" in ONE shape everywhere it appears (the grid row's sub-line and both frozen
+  // receipts): an online salary names the BANK, because "Online" alone can't be reconciled
+  // against a bank statement. Takes a paid_detail / paid_period object.
+  function paidFromLabel(d) {
+    if (!d || !d.funding) return '';
+    return d.funding === 'online' ? '🏦 ' + esc(d.bank_label || 'Online') : '💵 NF Cash';
+  }
+
+  // Where the money actually came from. "Online Bank" is one chart account shared by every bank,
+  // so for online advances the BANK is the useful fact — that's the balance a void moves back.
+  // An online advance with no bank tag is legacy (pre per-bank tracking); say so rather than
+  // implying it came from nowhere.
+  function fundLabel(a) {
+    if (!a.is_online) return a.source ? '💵 ' + esc(a.source) : '';
+    return a.bank ? '🏦 ' + esc(a.bank) : '🏦 Online · bank not recorded';
+  }
+
   // Each open advance shows WHERE the money came from, WHO gave it and the note, so two
   // same-amount advances can be told apart before acting. 🗑 Void appears only for the owner
   // (server flag CAN_VOID, re-checked server-side on every call).
@@ -774,7 +792,7 @@
       ? 'Open advances are recovered from the next period you pay — oldest first, and only as much as that pay can cover. An advance bigger than the pay stays open for a later period.'
       : 'Open advances are deducted from this pay and marked settled when you pay.';
     el('prSheetBody').innerHTML = r.advances.map((a, ai) => {
-      const meta = [a.date || '', a.request_number ? esc(a.request_number) : '', a.source ? esc(a.source) : '']
+      const meta = [a.date || '', a.request_number ? esc(a.request_number) : '', fundLabel(a)]
         .filter(Boolean).join(' · ');
       const by = a.given_by ? '<div class="lb" style="color:#9ca3af;">given by ' + esc(a.given_by) + '</div>' : '';
       const nt = a.note ? '<div class="lb" style="color:#9ca3af;font-style:italic;">“' + esc(a.note) + '”</div>' : '';
@@ -902,7 +920,9 @@
   // Void = un-do a wrongly-given advance: the money goes back to the account it came from
   // (same engine that posted it) and the advance disappears from payroll everywhere.
   async function voidAdvance(r, a) {
-    const back = a.source || 'the funding account';
+    // Name the BANK, not the shared 'Online Bank' chart account — that's the balance the
+    // reviewer will see move (plain text here, not HTML: no esc()).
+    const back = (a.is_online ? (a.bank || 'Online Bank') : a.source) || 'the funding account';
     const reason = prompt('Void this advance?\n\n' + fmt(a.amount) + ' given to ' + r.fullname +
       (a.date ? ' on ' + a.date : '') + (a.request_number ? ' (' + a.request_number + ')' : '') +
       '\n' + fmt(a.amount) + ' goes back to ' + back + '.' +
@@ -968,7 +988,7 @@
     let html = '';
     html += line('Paid on', d.paid_at ? String(d.paid_at).slice(0, 16) : '—');
     if (d.paid_by_name) html += line('Paid by', esc(d.paid_by_name));
-    html += line('Paid from', d.funding === 'online' ? ('🏦 ' + esc(d.bank_label || 'Online')) : '💵 NF Cash');
+    html += line('Paid from', paidFromLabel(d));
     html += '<div style="height:8px;"></div>';
     html += line('Base salary', fmt(d.base));
     html += line('Attendance', d.present_days + ' present · ' + d.absent_days + ' absent' + (d.leave_days > 0 ? ' · ' + d.leave_days + ' leave' : ''));
@@ -1207,7 +1227,8 @@
       : '';
 
     let cover = (r.paid_periods || []).map((p, pi) =>
-      '<span class="pr-cover-chip paid" data-period="' + i + '_' + pi + '" title="Paid ' + esc(String(p.paid_at).slice(0, 10)) + '">✓ ' + esc(p.label) + ' · ' + fmt(p.net) + '</span>'
+      '<span class="pr-cover-chip paid" data-period="' + i + '_' + pi + '" title="Paid ' + esc(String(p.paid_at).slice(0, 10)) +
+        (paidFromLabel(p) ? ' from ' + paidFromLabel(p) : '') + '">✓ ' + esc(p.label) + ' · ' + fmt(p.net) + '</span>'
     ).join('');
     if (!r.paid_periods || !r.paid_periods.length) {
       cover += '<span class="pr-cover-chip none">Nothing paid in this month yet</span>';
@@ -1287,7 +1308,7 @@
     html += line('Period', esc(p.label));
     html += line('Paid on', p.paid_at ? esc(String(p.paid_at).slice(0, 16)) : '—');
     if (p.paid_by_name) html += line('Paid by', esc(p.paid_by_name));
-    html += line('Paid from', p.funding === 'online' ? ('🏦 ' + esc(p.bank_label || 'Online')) : '💵 NF Cash');
+    html += line('Paid from', paidFromLabel(p));
     html += '<div style="height:8px;"></div>';
     if (p.days_paid) html += line('Days paid', p.days_paid + ' day' + (p.days_paid === 1 ? '' : 's'));
     html += line('Amount for the period', fmt(gross));

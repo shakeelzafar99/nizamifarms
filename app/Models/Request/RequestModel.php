@@ -33,6 +33,10 @@ class RequestModel extends BaseModel
         'meter_at_fill',
         'litres',
         'service_type',
+        // The named maintenance type chosen on the form. `service_type` above stays
+        // the machine flag and is DERIVED from this type's bucket — see
+        // MaintenanceTypeService::resolve(). NULL on every pre-Aug-2026 row.
+        'maintenance_type_id',
         'attendance_id',
         'payment_source_account_id',
         'receiving_account_id', // Which of OUR banks an ONLINE expense is paid from

@@ -607,6 +607,13 @@
     <div class="main-content">
         <!-- ========== RIDERS LIST VIEW ========== -->
         <div id="ridersListView">
+            {{-- 🚚 Van panel — above the riders grid, because when a van IS out it
+                 is the thing the store is waiting on. Renders nothing on a day
+                 without the van, so this view is unchanged the rest of the time.
+                 Only the CONTAINER is here; its modal + script are included at
+                 page level (see the note in the partial). --}}
+            <div id="vanPanel" class="vp-wrap" style="display:none;"></div>
+
             <div id="ridersContainer" class="riders-grid">
                 <div class="empty-state">
                     <svg class="loading-spinner" style="width: 32px; height: 32px; margin: 0 auto 12px;" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
@@ -712,6 +719,12 @@
     </div>
 </div>
 
+{{-- 🚚 Van panel logic + the meet-up points modal. At PAGE level on purpose: the
+     modal must never sit inside a hidden view (a fixed child of a display:none
+     parent does not render), because "📍 Meet-up points" is also reachable from
+     the Bikes tab while the live view is hidden. --}}
+@include('pages.riders-map.partials.van-panel')
+
 <!-- Verified-vs-pressed map modal -->
 <div id="rrMapModal" style="display:none; position:fixed; inset:0; z-index:3000; background:rgba(0,0,0,.55); align-items:center; justify-content:center;">
     <div style="background:#fff; border-radius:10px; width:min(94vw,660px); overflow:hidden; box-shadow:0 12px 44px rgba(0,0,0,.35);">
@@ -805,6 +818,10 @@ document.addEventListener('DOMContentLoaded', function() {
 
     loadRiders();
     startAutoRefresh();
+    // 🚚 The default landing view does NOT go through switchView(), so the van
+    //    panel has to be started here too — hooking only switchView left it dead
+    //    on the very screen it belongs to (caught in browser verification).
+    if (typeof vpStart === 'function') vpStart();
 });
 
 // =============================================
@@ -855,6 +872,10 @@ function switchView(view) {
         setActive('liveLayerOrders', view === 'orders');
     }
 
+    // 🚚 The van panel belongs to the LIVE riders layer only. Stopping its poll
+    //    everywhere else keeps every other tab exactly as cheap as it was.
+    if (typeof vpStop === 'function') vpStop();
+
     if (view === 'riders') {
         document.getElementById('datePicker').style.display = 'flex';
         document.getElementById('ridersListView').style.display = 'block';
@@ -862,6 +883,9 @@ function switchView(view) {
         document.getElementById('liveLayerHint').textContent = currentDate ? '' : 'Live positions, refreshing automatically';
         loadRiders();
         startAutoRefresh();
+        // Live only — a past date is history, and there is no van out in history.
+        if (!currentDate && typeof vpStart === 'function') vpStart();
+        else { var vpEl = document.getElementById('vanPanel'); if (vpEl) vpEl.style.display = 'none'; }
     } else if (view === 'orders') {
         document.getElementById('datePicker').style.display = 'none';
         document.getElementById('filtersSection').style.display = 'flex';

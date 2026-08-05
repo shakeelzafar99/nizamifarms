@@ -644,6 +644,11 @@ class RiderController extends Controller
                 'latitude' => 'nullable|numeric|between:-90,90',
                 'longitude' => 'nullable|numeric|between:-180,180',
                 'url' => 'nullable|string|max:500',
+                // Aug-2026 — where in the app this save was made from, so the pin
+                // history reads "saved from the customer's chat pin" instead of a
+                // flat "store app". Descriptive only; never changes what is saved
+                // and never affects the pin lock.
+                'context' => 'nullable|string|max:30',
             ]);
 
             // Must provide either coordinates OR URL
@@ -823,7 +828,18 @@ class RiderController extends Controller
                 trim(($customer->first_name ?? '') . ' ' . ($customer->last_name ?? '')),
                 $oldPinLat, $oldPinLng,
                 $customer->latitude, $customer->longitude,
-                'Verified pin (mobile)'
+                // Name WHICH mobile hand did this. Both surfaces are 'mobile' to
+                // detectSource(), but "the rider standing at the door", "the store
+                // correcting it from the office" and "someone took the pin the
+                // customer sent in chat" are different claims about how
+                // trustworthy the pin is.
+                match ((string) ($validated['context'] ?? '')) {
+                    'chat_pin'  => "Saved from the customer's pin in the chat",
+                    'chat_link' => "Saved from the customer's map link in the chat",
+                    default     => $isBoundRider
+                        ? 'Verified pin dropped by the rider at the door'
+                        : 'Verified pin dropped in the store app',
+                }
             );
 
             // Warn when the pin's coordinates are approximate (geocoded from the
@@ -1821,6 +1837,59 @@ class RiderController extends Controller
      *               note: string, fix: ?object, distance_from_store_m: ?int,
      *               is_mid_run: bool}
      */
+    /**
+     * Is this rider dispatching from a van meet point rather than the office?
+     *
+     * Answers the question for BOTH sides of a handover:
+     *   • the RECEIVING rider — he has an order he collected off the van within
+     *     the window (`handover_at`), so he is standing wherever the van was;
+     *   • the VAN DRIVER — he has departed on a trip that has not ended. He never
+     *     scans a handover, so nothing else would place him on the road.
+     *
+     * Cheap and fail-safe: two indexed reads, and any error (or a server where
+     * batch 14 has not run) returns false = today's behaviour exactly.
+     */
+    private function riderIsAtVanMeetPoint(int $riderId): bool
+    {
+        static $memo = [];
+        if (array_key_exists($riderId, $memo)) return $memo[$riderId];
+
+        $windowMinutes = 45;
+        try {
+            if (!\Schema::hasColumn('t_crm_prod_order', 'handover_at')) {
+                return $memo[$riderId] = false;
+            }
+
+            // Receiving side: collected something off the van very recently.
+            $justCollected = \DB::table('t_crm_prod_order')
+                ->where('assigned_rider_user_id', $riderId)
+                ->where('order_status', 'out_for_delivery')
+                ->whereNotNull('handover_at')
+                ->where('handover_at', '>=', now()->subMinutes($windowMinutes))
+                ->exists();
+            if ($justCollected) return $memo[$riderId] = true;
+
+            // Driving side: out on a trip that has not been closed.
+            // ⚠ TIME-BOUNDED: a trip the driver forgot to close must not make him
+            //   count as "on the road" forever — that would permanently bypass the
+            //   phantom-GPS office anchoring on every future first dispatch. 14h
+            //   covers any real shift including a past-midnight run.
+            if (!\Schema::hasTable('t_ops_van_trip')) {
+                return $memo[$riderId] = false;
+            }
+            $onTheRoad = \DB::table('t_ops_van_trip')
+                ->where('van_user_id', $riderId)
+                ->whereNull('ended_at')
+                ->whereNotNull('departed_at')
+                ->where('departed_at', '>=', now()->subHours(14))
+                ->exists();
+
+            return $memo[$riderId] = $onTheRoad;
+        } catch (\Throwable $e) {
+            return $memo[$riderId] = false;
+        }
+    }
+
     private function selectDispatchOrigin(int $riderId): array
     {
         // Tunables — kept inline so this stays a single-file, cache-free deploy.
@@ -1829,7 +1898,19 @@ class RiderController extends Controller
         $clusterRadiusM = 1500.0;   // a fix within this of the consensus is trusted
         $farBackstopM   = 5000.0;   // even anchored, beyond this ⇒ persistent phantom
 
-        $isMidRun = $this->riderIsMidRun($riderId);
+        // ⭐ Aug-2026 — a rider dispatching AT A VAN MEET POINT is out on the road,
+        //   even on his first dispatch of the day. Without this, the first-dispatch
+        //   branch below sees a position >5 km from the office, calls it a phantom
+        //   fix, and snaps the origin BACK to the office — so every ETA in that
+        //   wave is computed from a place he is nowhere near.
+        //
+        //   Two ways to be at a meet point, and BOTH are needed:
+        //     • the receiving rider — he just scanned orders off the van;
+        //     • the VAN DRIVER himself — who never scans a handover (the riders
+        //       do), so the scan-based test alone would miss him entirely. He is
+        //       covered by his own live van leg.
+        $isMidRun = $this->riderIsMidRun($riderId)
+                 || $this->riderIsAtVanMeetPoint($riderId);
 
         // Deliveries ALWAYS start from the primary office — that's the real
         // dispatch origin for every rider. The rider's *assigned* location is
@@ -2731,8 +2812,25 @@ class RiderController extends Controller
             $updateData['latitude']  = $geo['latitude'];
             $updateData['longitude'] = $geo['longitude'];
 
+            // Capture the pre-write pin so the change is auditable (same as the
+            // two dropped-pin endpoints). This path was the last pin writer with
+            // no audit row, which made an address-derived pin indistinguishable
+            // from a precise one after the fact — the exact distinction staff
+            // need when a delivery lands on the wrong street.
+            $oldPinLat = $customer->latitude;
+            $oldPinLng = $customer->longitude;
+
             // Update customer
             $customer->update($updateData);
+
+            \App\Services\AuditLogger::logCustomerPinChange(
+                $customer->id,
+                trim(($customer->first_name ?? '') . ' ' . ($customer->last_name ?? '')),
+                $oldPinLat, $oldPinLng,
+                $customer->latitude, $customer->longitude,
+                'Pin from address — geocoded by Google, approximate'
+                    . ($precision ? ' (' . $precision . ' match)' : '')
+            );
 
             \Log::info('Quick verified location from address', [
                 'order_id' => $orderId,
@@ -3031,6 +3129,15 @@ class RiderController extends Controller
                     'success' => false,
                     'message' => 'This order is already marked as delivered',
                 ], 400);
+            }
+
+            // 🚚 Still ON THE VAN (Aug-2026): it cannot be delivered before it is
+            // collected. This endpoint historically never checked the current
+            // status, so without this a rider could "deliver" a box that is
+            // physically riding in the van. The handover scan is the door.
+            $vanBlock = \App\Services\Riders\VanService::manualChangeBlock($order, 'delivered');
+            if ($vanBlock !== null) {
+                return response()->json(['success' => false, 'message' => $vanBlock], 422);
             }
 
             // Get notes, GPS coordinates, and packet count from request (optional)
@@ -4918,12 +5025,19 @@ class RiderController extends Controller
         }
     }
 
-    /** Is this rider on a company-owned bike (company pays the actual fuel)? */
-    private function ridesCompanyBike(int $userId): bool
+    /**
+     * Is this rider on a company-owned bike (company pays the actual fuel)?
+     *
+     * ⭐ PHASE C: delegates to FuelClaimRules, which asks the vehicle REGISTRY for
+     *    the given date and falls back to the profile checkbox when no vehicle
+     *    answers (or while VEHICLE_RULES is off). This used to be a second,
+     *    independent read of the same column — exactly the kind of copy that
+     *    lets two screens disagree about one rider.
+     */
+    private function ridesCompanyBike(int $userId, ?string $date = null): bool
     {
         try {
-            return (int) DB::table('t_ops_rider_profile')
-                ->where('user_id', $userId)->value('company_bike') === 1;
+            return (new \App\Services\Riders\FuelClaimRules())->ridesCompanyBike($userId, $date);
         } catch (\Throwable $e) {
             return false;
         }
@@ -11216,6 +11330,12 @@ class RiderController extends Controller
                 // option even though they don't ride company bikes.
                 'can_self_file_petrol' => (new \App\Services\Riders\FuelClaimRules())
                     ->canSelfFilePetrol((int) $user->id),
+                // 🔧 The manager's maintenance categories. Riders pick from the same
+                // list managers do (owner ruling, Aug-3), so it rides along with the
+                // categories the form already fetches rather than needing its own
+                // endpoint. Empty array = types not configured; the app then keeps
+                // its built-in Regular/Repair pair.
+                'maintenance_types' => app(\App\Services\Riders\MaintenanceTypeService::class)->options(),
             ]);
         } catch (\Exception $e) {
             \Log::error('Failed to get request categories', [
@@ -11377,6 +11497,8 @@ class RiderController extends Controller
                 'meter_at_fill' => 'nullable|integer|min:0|max:9999999',
                 'litres' => 'nullable|numeric|min:0|max:99',
                 'service_type' => 'nullable|string|max:30',
+                // Named maintenance type; when present the server derives service_type from it.
+                'maintenance_type_id' => 'nullable|integer',
                 'attendance_id' => 'nullable|integer',
                 'leave_start_date' => 'nullable|date',
                 'leave_end_date' => 'nullable|date|after_or_equal:leave_start_date',
@@ -11435,6 +11557,17 @@ class RiderController extends Controller
             //    rider skipped every one of them. Behaviour is unchanged; the
             //    rules simply moved into FuelClaimRules so both callers agree.
             $isFlatPetrol = ($request->input("expense_category") === "Petrol") && !$request->filled("attendance_id");
+
+            // ⭐ Resolve the named maintenance type into the machine flag BEFORE the
+            //    rules run — the meter requirement keys off service_type. Mirrors
+            //    Request\RequestController::store() exactly. An APK that sends only
+            //    service_type (every build in the field today) falls through
+            //    unchanged.
+            $svcResolved = app(\App\Services\Riders\MaintenanceTypeService::class)->resolve(
+                $request->input('maintenance_type_id'),
+                $request->input('service_type')
+            );
+
             $fuelRules = (new \App\Services\Riders\FuelClaimRules())->check(
                 (int) $user->id,
                 $request->input("expense_category"),
@@ -11442,7 +11575,7 @@ class RiderController extends Controller
                     "amount"        => $request->input("amount"),
                     "expense_date"  => $request->input("expense_date"),
                     "meter_at_fill" => $request->input("meter_at_fill"),
-                    "service_type"  => $request->input("service_type"),
+                    "service_type"  => $svcResolved[0],
                     "attendance_id" => $request->input("attendance_id"),
                 ],
                 // This endpoint IS the rider's own app — he is always filing for
@@ -11560,22 +11693,16 @@ class RiderController extends Controller
                 $leaveDays = $end->diffInDays($start) + 1;
             }
 
-            // Server-side payment source validation: non-EXP_FUND requires permission
+            // Server-side payment source validation.
+            // ⭐ Aug-2026: mirrors Request\RequestController::store() exactly — the
+            // account allow-list (t_fin_account_users) decides, through the SAME
+            // PaymentSourceService call that built the picker. Business unit is
+            // enforced implicitly (candidates are scoped to the request's BU), so a
+            // Khaas account can no longer fund an NF expense.
             $paymentSourceAccountId = $request->input('payment_source_account_id');
             $expenseBankId = null; // which of OUR banks an online expense is paid from
             if ($paymentSourceAccountId) {
                 $sourceAccount = \App\Models\FIN\AccountModel::find($paymentSourceAccountId);
-                if ($sourceAccount && $sourceAccount->account_code !== 'EXP_FUND') {
-                    $buId = $request->input('business_unit_id');
-                    $canUseAllSources = $user->hasMobilePermission('expense_all_payment_sources')
-                        || ($buId && $user->hasMobilePermission('approve_khaas_transfer'));
-                    if (!$canUseAllSources) {
-                        return response()->json([
-                            'success' => false,
-                            'message' => 'You do not have permission to create expenses from this payment source. Only Expense Fund is allowed.'
-                        ], 403);
-                    }
-                }
                 // Block private accounts for non-Taimur
                 if ($sourceAccount && $sourceAccount->is_private) {
                     $isTaimurRole = $user->roles()->whereRaw('LOWER(urole_name) = ?', ['taimur'])->exists();
@@ -11590,8 +11717,23 @@ class RiderController extends Controller
                 // specific receiving bank is mandatory, so the outflow
                 // attributes to the right per-bank balance. Leave requests move
                 // no money and are never blocked by this rule.
-                $isMoneyCategory = in_array($category->category_code, ['expense', 'khaas_expense', 'salary_advance'], true)
+                $isMoneyCategory = in_array($category->category_code, ['expense', 'khaas_expense', 'salary_advance', 'qurbani'], true)
                     || in_array($category->form_type ?? null, ['expense', 'salary'], true);
+
+                if ($isMoneyCategory) {
+                    $sourcePurpose = $category->category_code === 'salary_advance'
+                        ? \App\Services\FIN\PaymentSourceService::PURPOSE_ADVANCE
+                        : \App\Services\FIN\PaymentSourceService::PURPOSE_EXPENSE;
+                    $buForSource = $request->input('business_unit_id');
+                    if (!app(\App\Services\FIN\PaymentSourceService::class)->allows(
+                            $user, $paymentSourceAccountId, $buForSource ? (int) $buForSource : null, $sourcePurpose)) {
+                        return response()->json([
+                            'success' => false,
+                            'message' => 'You are not set up to pay from this account. Ask Taimur or Shabib to add you to it.'
+                        ], 403);
+                    }
+                }
+
                 if ($sourceAccount && $isMoneyCategory
                     && $sourceAccount->account_category === \App\Models\FIN\AccountModel::CATEGORY_BANK) {
                     $rid = $request->input('receiving_account_id');
@@ -11638,7 +11780,9 @@ class RiderController extends Controller
                 'petrol_rate' => $validated['petrol_rate'] ?? null,
                 'meter_at_fill' => $validated['meter_at_fill'] ?? null,
                 'litres' => $validated['litres'] ?? null,
-                'service_type' => $validated['service_type'] ?? null,
+                // ⭐ Derived from the chosen type's bucket when one was picked.
+                'service_type' => $svcResolved[0],
+                'maintenance_type_id' => $svcResolved[1],
                 'attendance_id' => $validated['attendance_id'] ?? null,
                 'payment_source_account_id' => $paymentSourceAccountId,
                 'receiving_account_id' => $expenseBankId,
@@ -11658,6 +11802,15 @@ class RiderController extends Controller
                 'submitted_at' => now(),
                 'created_by' => $user->id,
             ]);
+
+            // 🏍️ Record which machine this claim was for (Aug-2026). Non-fatal and
+            // guarded — a claim that saved is never failed because the vehicle
+            // could not be resolved, and it no-ops entirely before batch 13.
+            (new \App\Services\Riders\VehicleResolver())->stampClaim(
+                $newRequest->id, (int) $user->id,
+                $validated['expense_category'] ?? null,
+                $validated['expense_date'] ?? null
+            );
 
             DB::commit();
 
@@ -12917,8 +13070,20 @@ class RiderController extends Controller
                     ->toArray();
             }
 
+            // ⭐ Aug-2026 — customers on this board sitting on a location pin we
+            //    received but did not save. ONE batched, indexed lookup for the
+            //    whole board (never per row), same shape as the maps above. Empty
+            //    if the audit table isn't on this environment yet.
+            $pinPendingByCustomer = [];
+            try {
+                $pinPendingByCustomer = app(\App\Services\Location\PinHistoryService::class)
+                    ->pendingReplies($orders->pluck('customer_id')->filter()->unique()->values()->all());
+            } catch (\Throwable $e) {
+                \Log::debug('store open-orders: pin-pending map skipped', ['error' => $e->getMessage()]);
+            }
+
             // Format for mobile (lightweight)
-            $formattedOrders = $orders->map(function($order) use ($prepSummaries, $khaasOrderIds, $regionMap, $unreadCustomerIds, $hasWaAccess, $paymentProofMap, $dispatchActorMap, $skuCzerlop, $skuWeightFactor) {
+            $formattedOrders = $orders->map(function($order) use ($prepSummaries, $khaasOrderIds, $regionMap, $unreadCustomerIds, $hasWaAccess, $paymentProofMap, $dispatchActorMap, $skuCzerlop, $skuWeightFactor, $pinPendingByCustomer) {
                 // Build customer name
                 $customerName = $order->name ?? 'N/A';
                 if (!$order->name && ($order->address_first_name || $order->address_last_name)) {
@@ -13022,6 +13187,12 @@ class RiderController extends Controller
                     'dispatch_scanned_count' => $order->dispatch_scanned_packets ? count((array) json_decode($order->dispatch_scanned_packets, true)) : 0,
                     'dispatch_scanned_at' => $order->dispatch_scanned_at,
                     'dispatch_scanned_by_name' => $order->dispatch_scanned_by ? ($dispatchActorMap[$order->dispatch_scanned_by] ?? null) : null,
+                    // 🚚 Van load-scan (Aug-2026): "On Van" status = the PLAN, these
+                    // stamps = the box physically scanned aboard. The store's Load-van
+                    // button shows on tagged rows until van_loaded_at lands. NULL on
+                    // servers without batch 14 — the button just never appears.
+                    'van_loaded_count' => $order->van_loaded_packets ? count((array) json_decode($order->van_loaded_packets, true)) : 0,
+                    'van_loaded_at' => $order->van_loaded_at,
                     'payment_method' => $order->payment_method,     // ⭐ Payment method (cash/online)
                     'payment_proof' => $paymentProofMap[$order->id] ?? null, // Jun-2026: WhatsApp/email proof status
                     'customer_id' => $order->customer_id, // Added for verified location functionality
@@ -13053,6 +13224,12 @@ class RiderController extends Controller
                     'verified_location' => $verifiedLocation,
                     'has_khaas_item' => $khaasOrderIds->contains($order->id), // ❄️ Khaas product indicator
                     'has_unread_message' => isset($unreadCustomerIds[(int) $order->customer_id]),
+                    // ⭐ Aug-2026 — this customer sent a location pin we did NOT
+                    //    save, and nobody has dealt with it. Fires precisely when
+                    //    a verified pin already exists, so the row chip must NOT
+                    //    go through locationChip() (which shows nothing once a
+                    //    customer is verified, by design).
+                    'pin_reply_pending' => $pinPendingByCustomer[(int) $order->customer_id] ?? null,
                     'has_wa_access' => $hasWaAccess,
                     // ⭐ Customer location data for route map + the location-confidence
                     //    chip. The client derives the tier from these four fields, so
@@ -13227,6 +13404,26 @@ class RiderController extends Controller
             //    phone call is needed. Clears itself the moment it is answered
             //    (unlock / save / relock / dismiss) — see PinUnlockRequestService.
             $response['pin_unlock_requests'] = \App\Services\Location\PinUnlockRequestService::live();
+
+            // ⭐ Aug-2026 — customers on THIS board who sent us a location pin we
+            //    did not save. Same self-clearing contract as the unlock banner:
+            //    the flag lives only while the refusal is still the customer's
+            //    latest pin event, so saving a pin (from anywhere — web, store,
+            //    rider, or the customer's own next reply) makes the banner go by
+            //    itself on the next poll. Nothing to dismiss by hand.
+            $response['pin_reply_pending_orders'] = collect($formattedOrders)
+                ->filter(fn ($o) => !empty($o['pin_reply_pending']))
+                ->map(fn ($o) => [
+                    'order_id'      => (int) $o['id'],
+                    'order_number'  => $o['order_number'] ?? null,
+                    'customer_id'   => (int) $o['customer_id'],
+                    'customer_name' => $o['customer_name'] ?? 'Customer',
+                    'away_text'     => $o['pin_reply_pending']['away_text'] ?? null,
+                    'at_human'      => $o['pin_reply_pending']['at_human'] ?? null,
+                    'offered'       => $o['pin_reply_pending']['offered'] ?? null,
+                ])
+                ->values()
+                ->all();
             
             // Single rider summary (backward compatible)
             if ($riderSummary) {
@@ -14324,7 +14521,16 @@ class RiderController extends Controller
             
             $order = OrderModel::findOrFail($validated['order_id']);
             $oldStatus = $order->order_status;
-            
+
+            // 🚚 An order ON THE VAN is not moved from a status picker (owner
+            // ruling Aug-4) — the handover scan is what proves who took it and
+            // where. Cancel/refund/hold stay allowed; everything else is steered
+            // to the van doors.
+            $vanBlock = \App\Services\Riders\VanService::manualChangeBlock($order, $validated['status']);
+            if ($vanBlock !== null) {
+                return response()->json(['success' => false, 'message' => $vanBlock], 422);
+            }
+
             // Use the same method as webapp (OrderModel::changeStatus)
             $success = $order->changeStatus(
                 $validated['status'],
@@ -17425,8 +17631,14 @@ class RiderController extends Controller
                 $uids = $uids ?? $query->pluck('user_id')->filter()->values()->all();
                 if (!empty($uids) && \Illuminate\Support\Facades\Schema::hasColumn('t_ops_attendance', 'work_expected_by')) {
                     $wjSvc = new \App\Services\Riders\WorkJourneyService();
+                    // ⭐ Phase C: company-machine cohort for the day being listed.
+                    $wjCompanySet = array_flip(
+                        (new \App\Services\Riders\VehicleResolver())->companyRiderIdsFor($selectedDate)
+                    );
                     $bikeUids = DB::table('t_ops_rider_profile')->whereIn('user_id', $uids)
-                        ->where('company_bike', 1)->whereNotNull('home_latitude')->pluck('user_id')->all();
+                        ->whereNotNull('home_latitude')->pluck('user_id')
+                        ->filter(fn ($uid) => isset($wjCompanySet[(int) $uid]))
+                        ->values()->all();
                     $bikeUidSet = array_flip($bikeUids);
                     if (!empty($bikeUids)) {
                         $wCols = ['id', 'user_id', 'attendance_date', 'login_time', 'meter_start', 'meter_start_source',
@@ -18662,9 +18874,17 @@ class RiderController extends Controller
                 ], 422);
             }
 
-            // Determine approval status
-            // Online transfers require approval
-            $approvalStatus = $request->mode === 'online'
+            // Determine approval status.
+            // Mirrors LedgerController::storeTransfer EXACTLY — an online transfer skips the queue
+            // when its creator already holds every approval level `account_transfer` requires.
+            // Both paths must agree: the same person entering the same transfer on the phone and
+            // on the web has to get the same answer, or the mobile app becomes the way to create
+            // rows that only the web can clear. (See SelfApprovalPolicy for the rule.)
+            $selfApproved = $request->mode === 'online'
+                && app(\App\Services\FIN\SelfApprovalPolicy::class)
+                    ->canSelfApprove(\App\Models\FIN\LedgerModel::TYPE_TRANSFER, $user->id);
+
+            $approvalStatus = ($request->mode === 'online' && !$selfApproved)
                 ? \App\Models\FIN\LedgerModel::STATUS_PENDING
                 : \App\Models\FIN\LedgerModel::STATUS_APPROVED;
 
@@ -18677,7 +18897,7 @@ class RiderController extends Controller
                 }
             }
 
-            // Create ledger entry
+            // Create ledger entry (self-approved rows are stamped — see the web path).
             $ledger = \App\Models\FIN\LedgerModel::create([
                 'transaction_date' => $request->transaction_date,
                 'transaction_type' => \App\Models\FIN\LedgerModel::TYPE_TRANSFER,
@@ -18688,6 +18908,12 @@ class RiderController extends Controller
                 'mode' => $request->mode,
                 'receiving_account_id' => $transferBankId,
                 'approval_status' => $approvalStatus,
+                'approval_date' => $selfApproved ? now()->toDateString() : null,
+                'approved_by' => $selfApproved ? $user->id : null,
+                'comments' => $selfApproved
+                    ? app(\App\Services\FIN\SelfApprovalPolicy::class)
+                        ->auditNote(\App\Models\FIN\LedgerModel::TYPE_TRANSFER, $user->id)
+                    : null,
                 'created_by' => $user->id
             ]);
             
@@ -18704,8 +18930,10 @@ class RiderController extends Controller
             
             $message = $approvalStatus === \App\Models\FIN\LedgerModel::STATUS_PENDING
                 ? 'Transfer created and pending approval!'
-                : 'Transfer completed successfully!';
-            
+                : ($selfApproved
+                    ? 'Transfer completed and posted — no approval needed, you hold the rights for it.'
+                    : 'Transfer completed successfully!');
+
             return response()->json([
                 'success' => true,
                 'message' => $message,
@@ -18806,13 +19034,14 @@ class RiderController extends Controller
                 }
             }
             
-            // Get transactions for the window
+            // Transactions for the window, OLDEST FIRST so the running balance can be walked
+            // forward from a known anchor (below). Flipped to newest-first for display after.
             $transactions = $ledgerQuery
-                ->with(['fromAccount', 'toAccount'])
-                ->orderBy('transaction_date', 'desc')
-                ->orderBy('id', 'desc')
+                ->with(['fromAccount', 'toAccount', 'createdBy:id,fullname'])
+                ->orderBy('transaction_date', 'asc')
+                ->orderBy('id', 'asc')
                 ->get();
-            
+
             // Check if older records exist (for "Load Earlier" button)
             $hasMore = false;
             $nextDateEnd = null;
@@ -18824,70 +19053,137 @@ class RiderController extends Controller
                     $nextDateEnd = \Carbon\Carbon::parse($windowStart)->subDay()->format('Y-m-d');
                 }
             }
-            
-            // Group transactions by date and calculate running balance
-            $groupedTransactions = [];
-            $currentBalance = $account->current_balance;
-            $currentDate = null;
-            $dateGroup = null;
-            
+
+            // ⭐ Running balance per row — mirrors the web Ledger Hub
+            // (HubController::buildAccountLedger) on purpose, so the same row can never print a
+            // different balance on phone and on web. This endpoint previously computed NOTHING:
+            // it assigned $currentBalance = $account->current_balance and then never used it,
+            // so the mobile screen had no balance column at all.
+            //
+            // Walked FORWARD from opening_balance + everything that posted before this window —
+            // NOT backward from current_balance. The stored balance is known to have drifted on
+            // employee-cash accounts, and seeding a walk from a drifted anchor bends every row
+            // above it. Only rows with balance_updated = 1 move it: that flag is the
+            // posting/reversal guard, so a reversed or not-yet-posted row correctly carries the
+            // balance forward unchanged.
+            //
+            // Employee-cash accounts get NO running balance, exactly as on the web, because
+            // their true balance is a computed figure rather than this walk.
+            $isEmployeeAcct = $account->account_category === \App\Models\FIN\AccountModel::CATEGORY_EMPLOYEE_CASH;
+            $showRunning = !$isEmployeeAcct
+                && $account->account_type === \App\Models\FIN\AccountModel::TYPE_ASSET;
+
+            $seedBefore = null;
+            if ($useDateWindow) {
+                $seedBefore = $windowStart;
+            } elseif ($period === 'today') {
+                $seedBefore = today()->format('Y-m-d');
+            } elseif ($period === 'this_week') {
+                $seedBefore = now()->startOfWeek()->format('Y-m-d');
+            } elseif ($period === 'this_month') {
+                $seedBefore = now()->startOfMonth()->format('Y-m-d');
+            }
+
+            $running = null;
+            if ($showRunning) {
+                $preIn = 0.0;
+                $preOut = 0.0;
+                if ($seedBefore !== null) {
+                    $preIn = (float) \App\Models\FIN\LedgerModel::where('to_account_id', $accountId)
+                        ->where('balance_updated', 1)
+                        ->where('transaction_date', '<', $seedBefore)->sum('amount');
+                    $preOut = (float) \App\Models\FIN\LedgerModel::where('from_account_id', $accountId)
+                        ->where('balance_updated', 1)
+                        ->where('transaction_date', '<', $seedBefore)->sum('amount');
+                }
+                $running = (float) $account->opening_balance + $preIn - $preOut;
+            }
+
+            $ordered = [];
             foreach ($transactions as $txn) {
-                $txnDate = \Carbon\Carbon::parse($txn->transaction_date)->format('Y-m-d');
                 $isDebit = $txn->from_account_id == $accountId;
-                
-                // Create new date group if date changed
-                if ($txnDate !== $currentDate) {
-                    // Save previous group if exists
-                    if ($dateGroup !== null) {
-                        $groupedTransactions[] = $dateGroup;
-                    }
-                    
-                    // Start new group
-                    $currentDate = $txnDate;
-                    $dateGroup = [
+                if ($running !== null && $txn->balance_updated) {
+                    $running += $isDebit ? -(float) $txn->amount : (float) $txn->amount;
+                }
+                $ordered[] = ['txn' => $txn, 'is_debit' => $isDebit, 'balance_after' => $running];
+            }
+
+            // "Awaiting" = approval is still the thing standing between this money and the
+            // balance. pending_l2 is NOT awaiting in that sense (L1 already posted the balance,
+            // L2 only verifies), and balance_updated is consulted as a second opinion so a row
+            // posted by some other route is never mis-filed. Same rule as the web.
+            //
+            // ⚠ This endpoint used to count ONLY 'approved' into the day totals, which meant
+            // pending_l2 money that HAD moved the balance was missing from In/Out while sitting
+            // inside the balance printed above it.
+            $awaitingStatuses = [
+                \App\Models\FIN\LedgerModel::STATUS_PENDING,
+                \App\Models\FIN\LedgerModel::STATUS_PENDING_L1,
+            ];
+
+            $byDate = [];
+            foreach (array_reverse($ordered) as $entry) {
+                $txn = $entry['txn'];
+                $isDebit = $entry['is_debit'];
+                $amount = (float) $txn->amount;
+                $txnDate = \Carbon\Carbon::parse($txn->transaction_date)->format('Y-m-d');
+
+                if (!isset($byDate[$txnDate])) {
+                    $byDate[$txnDate] = [
                         'date' => $txnDate,
                         'transactions' => [],
                         'total_in' => 0,
                         'total_out' => 0,
+                        'total_pending' => 0,
                         'net_change' => 0,
                     ];
                 }
-                
-                // Format transaction
-                $formattedTxn = [
+
+                $isAwaiting = in_array($txn->approval_status, $awaitingStatuses, true)
+                    && !$txn->balance_updated;
+
+                $byDate[$txnDate]['transactions'][] = [
                     'id' => $txn->id,
                     'date' => $txn->transaction_date,
                     'created_at' => $txn->created_at ? $txn->created_at->toIso8601String() : null,
                     'type' => $txn->transaction_type,
+                    // Was rendered client-side from an 8-entry map that lacked vendor_payment —
+                    // so nearly every Frozen row read "📝 Transaction". Server-side now, from the
+                    // one map, so phone and web say the same word.
+                    'type_label' => \App\Models\FIN\LedgerModel::typeLabel($txn->transaction_type),
                     'description' => $txn->description,
-                    'amount' => $txn->amount,
+                    'amount' => $amount,
                     'is_debit' => $isDebit,
                     'approval_status' => $txn->approval_status,
-                    'other_account' => $isDebit ? 
+                    'is_pending' => $isAwaiting,
+                    'balance_after' => $entry['balance_after'] !== null
+                        ? round($entry['balance_after'], 2) : null,
+                    'moved_by' => $txn->createdBy->fullname ?? 'System',
+                    'other_account' => $isDebit ?
                         ($txn->toAccount ? $txn->toAccount->account_name : 'Unknown') :
                         ($txn->fromAccount ? $txn->fromAccount->account_name : 'Unknown'),
                     'reference_type' => $txn->reference_type,
                     'reference_id' => $txn->reference_id,
                 ];
-                
-                // Add to date group
-                $dateGroup['transactions'][] = $formattedTxn;
-                
-                // Calculate totals for this date (only approved transactions affect balance)
-                if ($txn->approval_status === \App\Models\FIN\LedgerModel::STATUS_APPROVED) {
-                    if ($isDebit) {
-                        $dateGroup['total_out'] += $txn->amount;
-                    } else {
-                        $dateGroup['total_in'] += $txn->amount;
-                    }
+
+                if ($isAwaiting) {
+                    $byDate[$txnDate]['total_pending'] += $amount;
+                } elseif ($isDebit) {
+                    $byDate[$txnDate]['total_out'] += $amount;
+                } else {
+                    $byDate[$txnDate]['total_in'] += $amount;
                 }
             }
-            
-            // Save last group
-            if ($dateGroup !== null) {
-                $dateGroup['net_change'] = $dateGroup['total_in'] - $dateGroup['total_out'];
-                $groupedTransactions[] = $dateGroup;
+
+            foreach ($byDate as &$dayGroup) {
+                // ⭐ EVERY group. This line used to sit after the loop and therefore ran only for
+                // the LAST group — every other day rendered a green "+Rs. 0" next to a non-zero
+                // In/Out row (the reported symptom).
+                $dayGroup['net_change'] = $dayGroup['total_in'] - $dayGroup['total_out'];
             }
+            unset($dayGroup);
+
+            $groupedTransactions = array_values($byDate);
             
             // Calculate summary (only approved transactions)
             $totalIn = \App\Models\FIN\LedgerModel::where('to_account_id', $accountId)
@@ -18928,6 +19224,23 @@ class RiderController extends Controller
                 ->where('account_category', '!=', 'employee_cash')
                 ->whereIn('account_code', ['NF_CASH', 'ONLINE', 'EXP_FUND'])
                 ->get(['id', 'account_code', 'account_name']);
+
+            // ⏳ Same source as the web account page's "Waiting for approval" strip, so the two
+            // can never disagree about how much is being held out of this balance. Non-fatal:
+            // this is an informational banner, and it must never take the statement down with it.
+            $pendingSummary = ['count' => 0, 'missing_in' => 0, 'missing_out' => 0, 'missing_net' => 0];
+            try {
+                $pa = app(\App\Services\FIN\PendingLedgerActionsService::class)
+                    ->forAccount($account, $user->id);
+                $pendingSummary = [
+                    'count' => $pa['count'] ?? 0,
+                    'missing_in' => $pa['missing_in'] ?? 0,
+                    'missing_out' => $pa['missing_out'] ?? 0,
+                    'missing_net' => $pa['missing_net'] ?? 0,
+                ];
+            } catch (\Exception $e) {
+                \Log::warning('Mobile NF Ledger: pending actions unavailable: ' . $e->getMessage());
+            }
             
             return response()->json([
                 'success' => true,
@@ -18949,6 +19262,14 @@ class RiderController extends Controller
                     'advance_balance' => $advanceBalance,
                 ],
                 'grouped_transactions' => $groupedTransactions,
+                // Lets the client hide the balance column rather than print a blank one on the
+                // accounts where a forward walk is not the right answer (employee cash).
+                'has_running_balance' => $showRunning,
+                // ⏳ Money held OUT of the balance above by a pending approval. Deliberately
+                // computed outside the date window — money stuck for months is exactly what the
+                // window hides. Scalars only: approving from the phone is not offered here, so
+                // the row list (and its web-only URLs) is not shipped.
+                'pending_actions' => $pendingSummary,
                 'company_accounts' => $companyAccounts,
                 'pagination' => [
                     'has_more' => $hasMore,
@@ -19801,6 +20122,10 @@ class RiderController extends Controller
                     'status' => $req->status,
                     'description' => $req->description,
                     'source' => $req->attendance_id ? 'meter' : 'manual',
+                    // What it was FILED against, so the approve row can pre-select it
+                    // instead of defaulting to NF Cash and silently rebooking it.
+                    'filed_source_id' => $req->payment_source_account_id,
+                    'filed_bank_id' => $req->receiving_account_id,
                     'attachment_url' => $attachmentUrl,
                     'created_at' => $req->created_at ? $req->created_at->format('Y-m-d H:i:s') : null,
                 ];
@@ -19833,6 +20158,12 @@ class RiderController extends Controller
                     'status' => $req->status,
                     'description' => $req->description,
                     'source' => 'maintenance',
+                    // The manager's own category name, so the approver sees WHAT the
+                    // job was rather than just "maintenance".
+                    'maintenance_type' => app(\App\Services\Riders\MaintenanceTypeService::class)
+                        ->labelFor($req->maintenance_type_id ?? null, $req->service_type),
+                    'filed_source_id' => $req->payment_source_account_id,
+                    'filed_bank_id' => $req->receiving_account_id,
                     'attachment_url' => $attachmentUrl,
                     'created_at' => $req->created_at ? $req->created_at->format('Y-m-d H:i:s') : null,
                 ];
@@ -19841,14 +20172,16 @@ class RiderController extends Controller
             $stats['maintenance_requests_amount'] = $maintenanceRequestsData->sum('amount');
 
             // Payment source accounts for petrol approval dropdown
+            // ⭐ Aug-2026: was four hardcoded account codes with NF Cash first — a
+            // copy of "which accounts may this person pay from" that disagreed with
+            // both the create side and the Fleet strip. Now the one service, so the
+            // approver is offered exactly what he is tagged for. Shape is unchanged
+            // (id/code/name are all still present), so an existing APK keeps working.
+            // Daily Closing is Nizami Farms operations → business unit 1.
             $petrolPaymentAccounts = [];
             if ($petrolRequestsData->count() > 0 || $maintenanceRequestsData->count() > 0) {
-                $petrolPaymentAccounts = AccountModel::whereIn('account_code', ['NF_CASH', 'EXP_FUND', 'ONLINE', 'PETTY_CASH'])
-                    ->where('is_active', 1)
-                    ->orderByRaw("CASE WHEN account_code = 'NF_CASH' THEN 1 WHEN account_code = 'EXP_FUND' THEN 2 WHEN account_code = 'ONLINE' THEN 3 ELSE 4 END")
-                    ->select('id', 'account_code', 'account_name')
-                    ->get()
-                    ->map(fn($a) => ['id' => $a->id, 'code' => $a->account_code, 'name' => $a->account_name]);
+                $petrolPaymentAccounts = app(\App\Services\FIN\PaymentSourceService::class)
+                    ->sourcesFor($user, 1, \App\Services\FIN\PaymentSourceService::PURPOSE_EXPENSE);
             }
 
             // Get all riders for filter dropdown
@@ -20581,10 +20914,15 @@ class RiderController extends Controller
             foreach ($priorities as $item) {
                 $order = OrderModel::where('id', $item['order_id'])
                     ->where('assigned_rider_user_id', $riderId)
-                    // Van block (out_for_delivery) + up-next block (processing).
+                    // Van block (out_for_delivery) + up-next block (processing)
+                    // + on_van (Aug-2026): the store sequences orders WHILE they
+                    // are on the van, and that sequence must survive the handover
+                    // — which it does, because 'on_van' is deliberately NOT in the
+                    // priority-clear list above. The rider lands with the store's
+                    // plan already loaded and only has to press Dispatch.
                     // Any other status in the payload (e.g. an order cancelled
                     // since the client loaded) simply doesn't match and is skipped.
-                    ->whereIn('order_status', ['out_for_delivery', 'processing'])
+                    ->whereIn('order_status', ['out_for_delivery', 'processing', 'on_van'])
                     ->first();
                 
                 if ($order) {

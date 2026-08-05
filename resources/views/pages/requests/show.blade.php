@@ -260,41 +260,98 @@
                         $isFinalApproval = ($canApproveLevel2 && $request->requires_level_2) || 
                                           ($canApproveLevel1 && !$request->requires_level_2);
                         
-                        // Get available payment source accounts
+                        // 💳 Where the money comes out of.
+                        // ⭐ Aug-2026: this used to be its own hardcoded list — three
+                        // account codes PLUS every employee-cash account in the
+                        // company, offered to any final approver. It now comes from
+                        // PaymentSourceService, so the approver sees exactly what he
+                        // is tagged for in THIS request's business unit, and an
+                        // employee-cash account only if it is his own and tagged.
                         $paymentSources = collect();
+                        $payBanks = [];
                         if ($isExpenseRequest && $isFinalApproval) {
-                            $paymentSources = \App\Models\FIN\AccountModel::where(function($query) {
-                                    $query->whereIn('account_code', ['EXP_FUND', 'ONLINE', 'NF_CASH'])
-                                          ->orWhere('account_category', 'employee_cash');
-                                })
-                                ->where('is_active', 1)
-                                ->orderBy('account_name')
-                                ->get();
+                            $paySvc = app(\App\Services\FIN\PaymentSourceService::class);
+                            $paymentSources = collect($paySvc->sourcesFor(
+                                auth()->user(),
+                                $request->business_unit_id ?: 1,
+                                ($request->category->category_code ?? null) === 'salary_advance'
+                                    ? \App\Services\FIN\PaymentSourceService::PURPOSE_ADVANCE
+                                    : \App\Services\FIN\PaymentSourceService::PURPOSE_EXPENSE
+                            ));
+                            $payBanks = $paySvc->banks();
                         }
                     @endphp
                     
                     @if($isExpenseRequest && $isFinalApproval && $paymentSources->count() > 0)
+                    @php
+                        // Pre-select what was FILED (if this approver may use it),
+                        // else this approver's own default. Your pick still wins —
+                        // you just start from what the filer said, not from
+                        // whatever happens to be first in the list.
+                        $filedId    = $request->payment_source_account_id;
+                        $filedUsable = $filedId && $paymentSources->firstWhere('id', (int) $filedId);
+                        $preselectId = $filedUsable
+                            ? (int) $filedId
+                            : (optional($paymentSources->firstWhere('is_default', true))['id'] ?? null);
+                    @endphp
                     <div class="mb-4 p-4 bg-blue-50 border border-blue-200 rounded">
                         <label class="kt-label font-semibold text-blue-900">💰 Payment Source</label>
-                        <select name="payment_source_account_id" class="kt-select mt-2">
-                            <option value="">Expense Fund (default)</option>
+                        <select name="payment_source_account_id" id="approve_payment_source" class="kt-select mt-2" onchange="approveSourceChanged()">
                             @foreach($paymentSources as $account)
-                                <option value="{{ $account->id }}" 
-                                    {{ $request->payment_source_account_id == $account->id ? 'selected' : '' }}>
-                                    {{ $account->account_name }} 
-                                    (Balance: Rs. {{ number_format($account->current_balance, 2) }})
+                                <option value="{{ $account['id'] }}"
+                                    data-online="{{ $account['is_online'] ? '1' : '0' }}"
+                                    data-bank="{{ $account['preferred_bank_id'] ?? '' }}"
+                                    {{ (int) $account['id'] === $preselectId ? 'selected' : '' }}>
+                                    {{ $account['display_name'] ?: $account['name'] }}
+                                    (Balance: Rs. {{ number_format($account['balance'], 2) }})
                                 </option>
                             @endforeach
                         </select>
                         <p class="text-xs text-blue-700 mt-2">
-                            ℹ️ Select which account to pay this expense from. 
-                            @if($request->payment_source_account_id)
-                                <strong>Requester selected: {{ $request->paymentSourceAccount->account_name ?? 'Unknown' }}</strong>
+                            ℹ️ Select which account to pay this expense from.
+                            @if($filedId && $request->paymentSourceAccount)
+                                <strong>Filed as: {{ $request->paymentSourceAccount->account_name }}</strong>
+                                @unless($filedUsable) <span class="text-red-600">— you are not set up to use that account, so pick another.</span>@endunless
                             @else
-                                Defaults to Expense Fund if not selected.
+                                Nothing was chosen when this was filed, so your pick decides.
                             @endif
                         </p>
+
+                        {{-- A bank source must name the bank it left from, or the
+                             per-bank balances drift. The create side has demanded
+                             this since Jul-2026; approval is now the main place the
+                             account gets chosen, so it demands it too. --}}
+                        <div id="approve-bank-wrap" class="mt-3" style="display:none;">
+                            <label class="kt-label font-semibold text-blue-900">🏦 From which bank</label>
+                            <select name="receiving_account_id" id="approve_receiving_account" class="kt-select mt-1" disabled>
+                                <option value="">Select the bank…</option>
+                                @foreach($payBanks as $bank)
+                                    <option value="{{ $bank['id'] }}"
+                                        {{ (int) ($request->receiving_account_id ?? 0) === (int) $bank['id'] ? 'selected' : '' }}>
+                                        {{ $bank['name'] }}
+                                    </option>
+                                @endforeach
+                            </select>
+                        </div>
                     </div>
+                    <script>
+                    // Disabled (not merely hidden) so a cash-funded approval never
+                    // submits a bank id at all.
+                    function approveSourceChanged() {
+                        var sel  = document.getElementById('approve_payment_source');
+                        var wrap = document.getElementById('approve-bank-wrap');
+                        var bank = document.getElementById('approve_receiving_account');
+                        if (!sel || !wrap || !bank) return;
+                        var opt = sel.options[sel.selectedIndex];
+                        var need = !!(opt && opt.dataset.online === '1') && bank.options.length > 1;
+                        wrap.style.display = need ? 'block' : 'none';
+                        bank.disabled = !need;
+                        bank.required = need;
+                        if (!need) { bank.value = ''; return; }
+                        if (!bank.value && opt.dataset.bank) { bank.value = opt.dataset.bank; }
+                    }
+                    approveSourceChanged();
+                    </script>
                     @endif
                     
                     <div class="mb-4">

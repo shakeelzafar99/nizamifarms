@@ -66,11 +66,25 @@
             @endif
         </div>
         <div class="p-accts">
+            {{-- Clickable: the ONLINE tile on the accounts list lands on this page, not on the
+                 account's own page, so this chip is the only way in to its ledger — and to the
+                 "👤 Who uses this account" panel that sets who may pay from it and whose default
+                 it is. Without it that panel is unreachable for the very account most people
+                 need to configure. --}}
             @foreach($onlineAccounts as $oa)
-                <div class="pool-chip">{{ $oa['name'] }}<b class="num">{{ $money0($oa['balance']) }}</b></div>
+                <a class="pool-chip" href="{{ route('fin.hub.account', ['id' => $oa['id'], 'scope' => $scope]) }}"
+                   title="Open {{ $oa['name'] }} — ledger and who may pay from it"
+                   style="text-decoration:none;color:inherit;">
+                    {{ $oa['name'] }}<b class="num">{{ $money0($oa['balance']) }}</b>
+                    <span style="color:var(--accent);font-weight:700;margin-left:6px;">👤 ›</span>
+                </a>
             @endforeach
         </div>
     </div>
+
+    {{-- ⏳ Pending balance actions against the pool — this page is where the ONLINE tile on the
+         accounts list lands, so its "N waiting for approval" chip resolves HERE. --}}
+    @include('fin.hub.partials.pending-actions')
 
     {{-- Toolbar --}}
     <div class="filter-bar" style="justify-content:space-between">

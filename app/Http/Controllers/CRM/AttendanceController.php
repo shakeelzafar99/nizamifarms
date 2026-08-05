@@ -435,8 +435,15 @@ class AttendanceController extends Controller
                 $hasBike  = \Illuminate\Support\Facades\Schema::hasColumn('t_ops_rider_profile', 'company_bike');
                 $hasGrace = \Illuminate\Support\Facades\Schema::hasColumn('t_ops_rider_profile', 'overnight_grace_km');
                 if ($hasBike) {
+                    // ⭐ Phase C: who is on a company machine THAT DAY (registry
+                    //    first, profile checkbox as the fallback population).
+                    //    Set-based on purpose — this runs for a whole month grid.
+                    $companyToday = array_flip(
+                        (new \App\Services\Riders\VehicleResolver())->companyRiderIdsFor($selectedDate)
+                    );
                     $cols = $hasGrace ? ['user_id', 'company_bike', 'overnight_grace_km'] : ['user_id', 'company_bike'];
-                    foreach (DB::table('t_ops_rider_profile')->whereIn('user_id', $userIds)->where('company_bike', 1)->get($cols) as $prof) {
+                    foreach (DB::table('t_ops_rider_profile')->whereIn('user_id', $userIds)->get($cols) as $prof) {
+                        if (!isset($companyToday[(int) $prof->user_id])) continue;
                         $bikeSet[$prof->user_id] = true;
                         if ($hasGrace && $prof->overnight_grace_km !== null && $prof->overnight_grace_km !== '') {
                             $graceByUser[$prof->user_id] = (float) $prof->overnight_grace_km;
@@ -502,10 +509,17 @@ class AttendanceController extends Controller
         try {
             if (!empty($userIds) && \Illuminate\Support\Facades\Schema::hasColumn('t_ops_attendance', 'work_expected_by')) {
                 $wjSvc = new \App\Services\Riders\WorkJourneyService();
+                // ⭐ Phase C: company-machine cohort for THAT day, still requiring a
+                //    home pin (the going-home flow needs somewhere to go home to).
+                $companySet = array_flip(
+                    (new \App\Services\Riders\VehicleResolver())->companyRiderIdsFor($selectedDate)
+                );
                 $bikeUsers = DB::table('t_ops_rider_profile')
                     ->whereIn('user_id', $userIds)
-                    ->where('company_bike', 1)->whereNotNull('home_latitude')
-                    ->pluck('user_id')->all();
+                    ->whereNotNull('home_latitude')
+                    ->pluck('user_id')
+                    ->filter(fn ($uid) => isset($companySet[(int) $uid]))
+                    ->values()->all();
                 if (!empty($bikeUsers)) {
                     $wCols = ['id', 'user_id', 'attendance_date', 'login_time', 'meter_start', 'meter_start_source',
                               'meter_start_recorded_at', 'work_expected_by', 'work_eta_min', 'work_distance_km',
@@ -629,6 +643,25 @@ class AttendanceController extends Controller
             $row->meter_required = isset($meterExempt[$row->user_id]) ? 0 : 1;
             // Effective overnight grace: per-rider override → global default.
             $row->overnight_grace_km = $graceByUser[$row->user_id] ?? $defaultGrace;
+            // ⭐ PHASE C3 — TRANSFER-DAY ALLOWANCE (owner ruling: "on transfer day
+            //    instead of marking it personal usage we should give some room").
+            //    Handing a bike over is real travel: the outgoing rider brings it
+            //    to the incoming one. On the day an assignment starts or ends for
+            //    the machine he is on, the overnight allowance gains
+            //    VEHICLE_TRANSFER_GRACE_KM. Flag-gated with everything else — off,
+            //    this line does nothing.
+            $row->transfer_day = false;
+            try {
+                $vres = new \App\Services\Riders\VehicleResolver();
+                if ($vres->rulesEnabled()) {
+                    $vid = $vres->vehicleForDay((int) $row->user_id, $selectedDate);
+                    if ($vid && $vres->isTransferDay($vid, $selectedDate)) {
+                        $row->transfer_day = true;
+                        $row->overnight_grace_km = (float) $row->overnight_grace_km
+                            + (new \App\Services\Riders\VehicleService())->transferGraceKm();
+                    }
+                }
+            } catch (\Throwable $e) { /* grace is a kindness, never a 500 */ }
             // Going-home meter state (drives the manager valve on the row); null = not on the flow.
             $row->home_journey = $homeByUser[$row->user_id] ?? null;
             // U5 morning-start state (START line + check-in-unlock valve); null = not on the flow.
@@ -3252,7 +3285,11 @@ class AttendanceController extends Controller
             //    page's viewMeterPicturePath() opens them (no server-side URL building needed).
             //    is_company_bike drives the modal's shape: bike riders get the full home story
             //    (last-night / overnight / at-home); everyone else gets just start + end.
-            $isCompanyBike = (int) (DB::table('t_ops_rider_profile')->where('user_id', $userId)->value('company_bike') ?? 0) === 1;
+            // ⭐ Phase C: the machine he had ON THIS DAY decides, not today's
+            //    checkbox — this modal is often opened on a past date, and the
+            //    meter story's shape must match the bike he actually rode then.
+            $isCompanyBike = (new \App\Services\Riders\FuelClaimRules())
+                ->ridesCompanyBike($userId, substr((string) $date, 0, 10));
             $meterStory = [
                 'prev'  => ['value' => $prevMeterEnd !== null ? (int) $prevMeterEnd : null, 'date' => $prevMeterDate ? substr((string) $prevMeterDate, 0, 10) : null],
                 'start' => [

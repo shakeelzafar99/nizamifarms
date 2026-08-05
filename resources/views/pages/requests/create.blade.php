@@ -99,8 +99,15 @@
                         <select id="category_id" name="category_id" class="kt-select" required onchange="handleCategoryChange()">
                             <option value="">Select Category</option>
                             @foreach($categories as $category)
-                            <option value="{{ $category->id }}" 
+                            {{-- data-bu: which books this category spends from. Comes from
+                                 expense_bu_type (nf|khaas|all), the mapping Request Settings
+                                 already maintains — a Khaas Expense must offer Khaas accounts
+                                 and stamp the request BU 2. Until Aug-2026 this form sent no
+                                 business unit at all, so a Khaas expense filed here was
+                                 stamped Nizami Farms. --}}
+                            <option value="{{ $category->id }}"
                                     data-code="{{ $category->category_code }}"
+                                    data-bu="{{ ($category->expense_bu_type ?? 'nf') === 'khaas' ? 2 : 1 }}"
                                     data-requires-l1="{{ $category->requiresLevel1() ? '1' : '0' }}"
                                     data-requires-l2="{{ $category->requiresLevel2() ? '1' : '0' }}">
                                 {{ $category->category_name }}
@@ -174,11 +181,43 @@
                          Service type stays Maintenance-only. -->
                     <div id="bike-service-fields" style="display: none;" class="mb-6">
                         <label class="kt-label" id="bike-fields-label">Bike Service (only if this is for a rider's bike)</label>
+                        {{-- The manager's own categories, grouped by kind. `service_type`
+                             is DERIVED server-side from the chosen type's bucket, so this
+                             select posts a type id and the machine flag is never trusted
+                             from the client. Falls back to the original two options when
+                             types are not configured yet (batch 12 not run). --}}
+                        @php
+                            $maintTypes = app(\App\Services\Riders\MaintenanceTypeService::class)->options();
+                        @endphp
+                        {{-- ⚠ Exactly ONE of these renders, and it always carries
+                             id="service_type" — the show/hide JS below and the
+                             deep-link handler both look that id up, and two elements
+                             sharing it would leave one of them silently unmanaged. --}}
+                        @if(!empty($maintTypes))
+                        <select name="maintenance_type_id" id="service_type" class="kt-select mb-2">
+                            <option value="">Not a bike / other maintenance</option>
+                            @foreach(['regular' => '🛢️ Regular service', 'repair' => '🔧 Repair'] as $bucket => $groupLabel)
+                                @php $inGroup = array_values(array_filter($maintTypes, fn($t) => $t['bucket'] === $bucket)); @endphp
+                                @if($inGroup)
+                                <optgroup label="{{ $groupLabel }}">
+                                    @foreach($inGroup as $t)
+                                        <option value="{{ $t['id'] }}" data-bucket="{{ $t['bucket'] }}">
+                                            {{ $t['name'] }} — due {{ $t['due_label'] }}
+                                        </option>
+                                    @endforeach
+                                </optgroup>
+                                @endif
+                            @endforeach
+                        </select>
+                        @else
+                        {{-- Types not configured yet (batch 12 not run): the original
+                             two-option picker, posting the raw machine flag. --}}
                         <select name="service_type" id="service_type" class="kt-select mb-2">
                             <option value="">Not a bike / other maintenance</option>
                             <option value="oil_change">🛢️ Regular service (oil change / tuning)</option>
                             <option value="repair">🔧 Repair (anything broken)</option>
                         </select>
+                        @endif
                         <input type="number" name="meter_at_fill" id="meter_at_fill" class="kt-input" placeholder="Odometer at the service (km)" min="0" max="9999999" step="1" style="display: none;">
                         <p class="text-xs text-gray-500 mt-1" id="bike-service-hint" style="display: none;">
                             A <b>Regular service</b> with the odometer resets the bike's service-due clock on approval. A Repair never does.
@@ -193,14 +232,21 @@
 
                     <!-- 💳 Paid from — money categories only. The select is DISABLED
                          while hidden so FormData omits it entirely: a leave request
-                         must never carry a payment source. -->
+                         must never carry a payment source.
+                         Options for BOTH books are rendered and filtered by the
+                         selected category's data-bu, so switching to Khaas Expense
+                         swaps the accounts without a round trip. The server re-derives
+                         the same list and rejects anything not on it. -->
+                    <input type="hidden" name="business_unit_id" id="business_unit_id" value="1">
                     <div id="pay-from-field" style="display: none;" class="mb-6">
                         <label class="kt-label">💳 Paid from</label>
                         <select name="payment_source_account_id" id="payment_source_account_id" class="kt-select" disabled onchange="handlePaySourceChange()">
                             @foreach($paySources ?? [] as $src)
                                 <option value="{{ $src['id'] }}"
+                                        data-bu="{{ $src['business_unit_id'] ?? 1 }}"
                                         data-online="{{ $src['is_online'] ? '1' : '0' }}"
-                                        {{ $src['is_default'] ? 'selected' : '' }}>
+                                        data-default="{{ $src['is_default'] ? '1' : '0' }}"
+                                        data-bank="{{ $src['preferred_bank_id'] ?? '' }}">
                                     {{ $src['display_name'] ?: $src['name'] }}
                                 </option>
                             @endforeach
@@ -268,14 +314,43 @@ function updatePayFromFields(categoryCode) {
     const paySelect = document.getElementById('payment_source_account_id');
     if (!payField || !paySelect) return;
 
-    const isMoney = ['expense', 'khaas_expense', 'advance', 'salary_advance'].includes(categoryCode);
-    const hasOptions = paySelect.options.length > 0;
+    // Which books does this category spend from? Drives BOTH the account list and
+    // the business_unit_id the request is stamped with — they must never disagree,
+    // or the expense lands in one set of books funded from the other's account.
+    const catOpt = document.getElementById('category_id').selectedOptions[0];
+    const bu = (catOpt && catOpt.dataset.bu) ? catOpt.dataset.bu : '1';
+    document.getElementById('business_unit_id').value = bu;
 
-    payField.style.display = (isMoney && hasOptions) ? 'block' : 'none';
-    paySelect.disabled = !(isMoney && hasOptions);
+    const isMoney = ['expense', 'khaas_expense', 'qurbani', 'advance', 'salary_advance'].includes(categoryCode);
+
+    // Show only this book's accounts. A hidden option is also DISABLED so it can
+    // never be submitted, and deselected so it cannot stay chosen from before.
+    let visible = 0, preferred = null, firstVisible = null;
+    Array.from(paySelect.options).forEach(o => {
+        const match = (o.dataset.bu || '1') === bu;
+        o.hidden = !match;
+        o.disabled = !match;
+        if (match) {
+            visible++;
+            if (!firstVisible) firstVisible = o;
+            if (o.dataset.default === '1') preferred = o;
+        } else if (o.selected) {
+            o.selected = false;
+        }
+    });
+
+    const show = isMoney && visible > 0;
+    payField.style.display = show ? 'block' : 'none';
+    paySelect.disabled = !show;
+
+    // Pre-select this user's account for THIS book (their star), else the first.
+    if (show && !Array.from(paySelect.options).some(o => o.selected && !o.hidden)) {
+        (preferred || firstVisible).selected = true;
+    }
+
     // One allowed account is still worth showing — "it came out of the fund" is
     // information the filer wants confirmed — but there is nothing to choose.
-    document.getElementById('pay-from-hint').textContent = paySelect.options.length === 1
+    document.getElementById('pay-from-hint').textContent = visible === 1
         ? 'This is the only account you can spend from.'
         : 'The account this money actually left.';
 
@@ -297,7 +372,15 @@ function handlePaySourceChange() {
     bankField.style.display = needsBank ? 'block' : 'none';
     bankSelect.disabled = !needsBank;
     bankSelect.required = needsBank;
-    if (!needsBank) bankSelect.value = '';
+    if (!needsBank) { bankSelect.value = ''; return; }
+
+    // Pre-select the bank this person usually pays from, if one is tagged. Saying
+    // "Online Bank" does not say WHICH bank, and the wrong pick silently skews a
+    // per-bank balance.
+    const pref = opt.dataset.bank;
+    if (pref && !bankSelect.value) {
+        if (Array.from(bankSelect.options).some(o => o.value === pref)) bankSelect.value = pref;
+    }
 }
 
 function handleCategoryChange() {

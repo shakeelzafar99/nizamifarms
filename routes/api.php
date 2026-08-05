@@ -170,6 +170,49 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::prefix('rider')->group(function () {
         // Dashboard
         Route::get('/dashboard', [\App\Http\Controllers\API\RiderController::class, 'dashboard']);
+
+        // 🚚 VAN OPERATIONS (Aug-2026). The driver's journey strip + the scans.
+        //    `manifest` is the whole strip in one call so his home screen never
+        //    flickers between two round trips. `start-leg` is the ONE action
+        //    behind "Where to next?" — there is deliberately no "van left"
+        //    endpoint: leaving is implied by the first leg, and the ping fires
+        //    itself exactly once.
+        Route::get('/van/manifest', [\App\Http\Controllers\API\VanController::class, 'manifest']);
+        Route::post('/van/start-leg', [\App\Http\Controllers\API\VanController::class, 'startLeg']);
+        Route::post('/van/dispatch-selected', [\App\Http\Controllers\API\VanController::class, 'dispatchSelected']);
+        Route::post('/van/orders/{id}/load-scan', [\App\Http\Controllers\API\VanController::class, 'loadScan']);
+        Route::post('/van/orders/{id}/handover-scan', [\App\Http\Controllers\API\VanController::class, 'handoverScan']);
+        Route::post('/van/orders/{id}/handover-override', [\App\Http\Controllers\API\VanController::class, 'handoverOverride']);
+        Route::post('/van/orders/{id}/unload', [\App\Http\Controllers\API\VanController::class, 'unload']);
+
+        // 📍 Meet-up STOPS. Presets live in t_ops_company_locations behind
+        //    `is_handover_point` (they are NOT offices — see LocationService).
+        //    A stop may be a NAME with no pin until a driver first stands there;
+        //    an ad-hoc pin is trip-local until a manager promotes it.
+        //    Declared before '/van/stops/{id}' so 'promote' is not read as an id.
+        Route::get('/van/stops', [\App\Http\Controllers\API\VanController::class, 'stops']);
+        Route::post('/van/stops', [\App\Http\Controllers\API\VanController::class, 'saveStop']);
+        Route::post('/van/stops/set', [\App\Http\Controllers\API\VanController::class, 'setStop']);
+        Route::post('/van/stops/reached', [\App\Http\Controllers\API\VanController::class, 'reachedStop']);
+        Route::post('/van/stops/complete', [\App\Http\Controllers\API\VanController::class, 'completeStop']);
+        Route::post('/van/stops/promote/{handoverId}', [\App\Http\Controllers\API\VanController::class, 'promoteStop']);
+        Route::post('/van/stops/{id}', [\App\Http\Controllers\API\VanController::class, 'saveStop']);
+        Route::delete('/van/stops/{id}', [\App\Http\Controllers\API\VanController::class, 'retireStop']);
+        // The rider's "Meet the van" card — his side of the same trip.
+        Route::get('/van/meet-card', [\App\Http\Controllers\API\VanController::class, 'meetCard']);
+        // The store's live van panel (mobile store mode). ETAs are cached-or-
+        // approximated and warmed out of band — this polls and must never block.
+        Route::get('/van/store-panel', [\App\Http\Controllers\API\VanController::class, 'storePanel']);
+        // Just "who drives a van today" — cheap enough for the store's orders
+        // screen to ask on every load so it can offer the load scan on the row.
+        Route::get('/van/drivers', [\App\Http\Controllers\API\VanController::class, 'drivers']);
+
+        // 🏍️ "My vehicle" (Aug-2026) — the rider's OWN machine: what he has, its
+        // odometer and service state, his fuel/maintenance history and the dated
+        // condition photos. SELF-SCOPED, so no permission key: it resolves the
+        // caller's own assignment and can return nothing else. Everyone else's
+        // costs stay behind `view_bike_costs`, which this never touches.
+        Route::get('/my-vehicle', [\App\Http\Controllers\API\MyVehicleController::class, 'show']);
         
         // Orders - reusing existing filter endpoint (enhanced with customer order count)
         Route::get('/orders', [\App\Http\Controllers\CRM\OrderController::class, 'filter']);
@@ -830,6 +873,9 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::put('/{id}', [\App\Http\Controllers\CRM\CustomerController::class, 'update']);
         Route::post('/{id}/notes', [\App\Http\Controllers\CRM\CustomerController::class, 'addNote']);
         Route::post('/{id}/set-verified-location', [\App\Http\Controllers\CRM\CustomerController::class, 'setVerifiedLocation']);
+        // Aug-2026 — pin history for the mobile sheet. Same controller method as
+        // the web route so both surfaces read one wording (PinHistoryService).
+        Route::get('/{id}/location-history', [\App\Http\Controllers\CRM\CustomerController::class, 'locationHistory']);
         Route::post('/{id}/geocode', [\App\Http\Controllers\CRM\CustomerController::class, 'geocode']);
         Route::post('/{id}/geocode-single', [\App\Http\Controllers\CRM\CustomerController::class, 'geocodeSingle']);
     });

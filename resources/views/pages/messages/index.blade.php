@@ -295,6 +295,12 @@
 .wa-conv-item:hover { background: #f3f4f6; }
 .wa-conv-item.active { background: #dcfce7; }
 .wa-conv-item.unread { background: #f0fdf4; }
+/* Tagged-for-you pin. Amber rather than the unread green so "a teammate needs
+   you" is distinguishable at a glance from "the customer replied". */
+.wa-conv-item.pinned-mention { background: #fffbeb; border-left: 3px solid #f59e0b; }
+.wa-conv-item.pinned-mention.active { background: #fef3c7; }
+.wa-conv-pinned { font-size: 11px; font-weight: 700; color: #b45309; margin-top: 3px;
+                  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .wa-avatar {
     width: 44px;
     height: 44px;
@@ -1478,6 +1484,11 @@ select.wa-mgr-input { background: #fff; cursor: pointer; }
              no extra HTTP traffic). Hidden when empty by default via
              inline display:none. --}}
         <div id="waActiveDeliveryBanner" style="display:none;background:linear-gradient(135deg,#dbeafe,#eff6ff);border-bottom:1px solid #bfdbfe;padding:8px 14px;font-size:12.5px;color:#1e3a8a;cursor:pointer;" title="Click for details"></div>
+        {{-- Aug-2026 — "a pin from this customer is waiting". Sits above the
+             message list because the hint under the bubble scrolls out of view,
+             which is exactly how the Aug-2 pin went unnoticed until after the
+             order had shipped. Filled by renderPinPendingBar(). --}}
+        <div id="waPinPendingBar" style="display:none;"></div>
         <div class="wa-chat-msgs" id="waChatMessages">
             <div class="wa-loading">Loading messages...</div>
         </div>
@@ -3133,6 +3144,11 @@ select.wa-mgr-input { background: #fff; cursor: pointer; }
             let cls = 'wa-conv-item';
             if (isActive) cls += ' active';
             if (isUnread) cls += ' unread';
+            // Aug-2026: a teammate tagged ME here recently and I haven't opened
+            // it yet. The server has already floated these to the top; the tint
+            // + caption make it read as a section rather than a list that
+            // reshuffled itself. Clears on open (mention_seen_at is stamped).
+            if (c.pinned_mention) cls += ' pinned-mention';
             // Only show the goat badge when the Qurbani feature is enabled
             // (master switch in settings drawer); we hide the badge otherwise.
             const qBadge = (waQurbaniEnabled && c.is_qurbani) ? '<span title="Qurbani conversation" style="margin-right:4px;font-size:14px;">🐐</span>' : '';
@@ -3159,11 +3175,17 @@ select.wa-mgr-input { background: #fff; cursor: pointer; }
             const proofBadge = (pp && pp.status && pp.status !== 'none')
                 ? `<span title="${esc(pp.label)}" style="margin-left:4px; display:inline-flex; align-items:center; padding:0 5px; border-radius:7px; font-size:10px; font-weight:700; background:${pp.color}1A; color:${pp.color}; border:1px solid ${pp.color}55;">${pp.has_whatsapp?'📷':''}${pp.has_sms?'📱':''}${pp.has_email?'✉️':''}</span>`
                 : '';
+            // Aug-2026: this customer sent a location pin we did not save and
+            // nobody has dealt with it yet. Sits with the other attention badges
+            // so the inbox surfaces it without anyone opening the chat.
+            const pinBadge = c.pin_reply_pending
+                ? `<span title="${esc('Location pin waiting' + (c.pin_reply_pending.away_text ? ' — ' + c.pin_reply_pending.away_text : '') + (c.pin_reply_pending.at_human ? ' (' + c.pin_reply_pending.at_human + ')' : ''))}" style="margin-left:4px;display:inline-flex;align-items:center;padding:0 5px;border-radius:7px;font-size:10px;font-weight:700;background:#FEF3C7;color:#92400E;border:1px solid #FCD34D;">📍</span>`
+                : '';
             return `<div class="${cls}" onclick="openConv(${c.id})" data-id="${c.id}">
                 <div class="wa-avatar">${(c.customer_name||'?')[0].toUpperCase()}</div>
                 <div class="wa-conv-info">
                     <div class="wa-conv-top">
-                        <div class="wa-conv-name">${qBadge}${failBadge}${esc(c.customer_name || c.wa_phone)}${proofBadge}</div>
+                        <div class="wa-conv-name">${qBadge}${failBadge}${esc(c.customer_name || c.wa_phone)}${proofBadge}${pinBadge}</div>
                         <div class="wa-conv-time">${fmtTime(c.last_message_at)}</div>
                     </div>
                     <div class="wa-conv-bottom">
@@ -3171,6 +3193,7 @@ select.wa-mgr-input { background: #fff; cursor: pointer; }
                         ${isUnread ? `<div class="wa-unread-badge">${c.unread_count}</div>` : ''}
                     </div>
                     ${matchBlock}
+                    ${c.pinned_mention ? `<div class="wa-conv-pinned" title="Tagged for you — opens and clears">📌 ${esc(c.pinned_mention.label)} · by ${esc(c.pinned_mention.by)} · ${esc(c.pinned_mention.ago)}</div>` : ''}
                     ${c.customer_city ? `<div class="wa-conv-city">${esc(c.customer_city)}</div>` : ''}
                 </div>
             </div>`;
@@ -3317,6 +3340,49 @@ select.wa-mgr-input { background: #fff; cursor: pointer; }
         }, POLL_INTERVAL);
     };
 
+    // Aug-2026 — find the server's verdict for one inbound location message.
+    // Nearest verdict within two minutes wins (the audit row is written by the
+    // same webhook request that saved the message, so they are near-simultaneous);
+    // each verdict is consumed once so repeated pins do not share an outcome.
+    // Returns null when nothing matches — e.g. messages that predate this
+    // feature, which must stay silent rather than claim an outcome.
+    function pinVerdictFor(msgIso, used) {
+        const list = (activeConv && activeConv.location_verdicts) || [];
+        if (!list.length || !msgIso) return null;
+        const t = new Date(msgIso).getTime();
+        if (isNaN(t)) return null;
+        let best = null, bestIdx = -1, bestGap = 120000; // 2 minutes
+        for (let i = 0; i < list.length; i++) {
+            if (used.has(i) || !list[i].at) continue;
+            const vt = new Date(list[i].at).getTime();
+            if (isNaN(vt)) continue;
+            const gap = Math.abs(vt - t);
+            if (gap <= bestGap) { best = list[i]; bestIdx = i; bestGap = gap; }
+        }
+        if (bestIdx >= 0) used.add(bestIdx);
+        return best;
+    }
+
+    // Amber bar across the top of the chat when a pin this customer sent is
+    // still sitting unused. The bubble hint alone is not enough — it scrolls
+    // out of view, which is precisely how the Aug-2 pin went unnoticed.
+    function renderPinPendingBar() {
+        const host = document.getElementById('waPinPendingBar');
+        if (!host) return;
+        const p = activeConv && activeConv.pin_reply_pending;
+        if (!p) { host.style.display = 'none'; host.innerHTML = ''; return; }
+        let h = '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:7px 12px;background:#FFFBEB;border-bottom:1px solid #FCD34D;">';
+        h += '<span style="font-size:12px;font-weight:700;color:#92400E;">⚠️ ' + esc(p.headline || 'A pin from this customer is waiting') + '</span>';
+        if (p.away_text) h += '<span style="font-size:11.5px;color:#78350F;">' + esc(p.away_text) + '</span>';
+        if (p.at_human) h += '<span style="font-size:11.5px;color:#B45309;">· ' + esc(p.at_human) + '</span>';
+        if (p.offered && p.offered.maps_url) {
+            h += '<a href="' + esc(p.offered.maps_url) + '" target="_blank" style="margin-left:auto;font-size:11.5px;font-weight:700;color:#92400E;text-decoration:underline;">See their pin ↗</a>';
+        }
+        h += '</div>';
+        host.innerHTML = h;
+        host.style.display = 'block';
+    }
+
     function renderMessages(msgs, hasMore, preserveHistoryMode) {
         const el = document.getElementById('waChatMessages');
         // May-2026 — Cache the just-rendered list so loadOlderMessages()
@@ -3360,6 +3426,13 @@ select.wa-mgr-input { background: #fff; cursor: pointer; }
         const seenSince = (activeConv && Array.isArray(activeConv.seen_by))
             ? activeConv.seen_by.filter(s => s.last_read_at && new Date(s.last_read_at).getTime() >= lastInTs)
             : [];
+
+        // Aug-2026 — outcomes of this customer's location replies, decided by the
+        // server. Matched to bubbles by time (the verdict is written inside the
+        // same webhook request that stored the message) and each verdict is
+        // consumed once, so two pins minutes apart keep their own outcome.
+        const usedPinVerdicts = new Set();
+        renderPinPendingBar();
 
         msgs.forEach((m, idx) => {
             if (m.created_at) {
@@ -3411,7 +3484,28 @@ select.wa-mgr-input { background: #fff; cursor: pointer; }
                 // customer = no place to save). Outbound pins we
                 // ourselves sent obviously don't need this.
                 if (!isOut && lat && lng && activeConv && activeConv.customer_id) {
-                    html += `<button type="button" class="wa-set-verified-btn" data-cust="${activeConv.customer_id}" data-lat="${esc(String(lat))}" data-lng="${esc(String(lng))}" style="margin-top:4px;background:#2563EB;color:#fff;border:none;border-radius:5px;padding:5px 10px;font-size:11px;font-weight:600;cursor:pointer;">📌 Set as Verified Location</button>`;
+                    // ⭐ Aug-2026 — say what ACTUALLY happened to this pin.
+                    // ⚠ Never decide this from "does the customer have a pin?":
+                    // since the re-request rule landed, a reply to a manual
+                    // re-request DOES overwrite, so that test would print "not
+                    // saved" directly under a pin it had just saved. The server
+                    // ships the real verdict; with no match we say nothing.
+                    const pv = pinVerdictFor(m.created_at, usedPinVerdicts);
+                    if (pv) {
+                        const tone = pv.saved
+                            ? {bg:'#F0FDF4', bd:'#86EFAC', fg:'#047857'}
+                            : (pv.needs_action ? {bg:'#FFFBEB', bd:'#FCD34D', fg:'#92400E'}
+                                               : {bg:'#F9FAFB', bd:'#E5E7EB', fg:'#4B5563'});
+                        html += `<div style="margin-top:4px;padding:6px 8px;background:${tone.bg};border:1px solid ${tone.bd};border-radius:6px;">`;
+                        html += `<div style="font-size:11px;font-weight:700;color:${tone.fg};">${pv.saved ? '✅' : '⚠️'} ${esc(pv.headline)}</div>`;
+                        if (pv.detail) {
+                            html += `<div style="font-size:11px;color:${tone.fg};opacity:.85;margin-top:1px;">${esc(pv.detail)}</div>`;
+                        }
+                        html += `</div>`;
+                    }
+                    // The button stays regardless: even an auto-saved pin can be
+                    // re-applied harmlessly, and a refused one needs exactly this.
+                    html += `<button type="button" class="wa-set-verified-btn" data-cust="${activeConv.customer_id}" data-lat="${esc(String(lat))}" data-lng="${esc(String(lng))}" data-context="chat_pin" style="margin-top:4px;background:#2563EB;color:#fff;border:none;border-radius:5px;padding:5px 10px;font-size:11px;font-weight:600;cursor:pointer;">📌 Set as Verified Location</button>`;
                 }
             }
             if (m.content && m.type !== 'location' && m.type !== 'audio') {
@@ -3428,7 +3522,7 @@ select.wa-mgr-input { background: #fff; cursor: pointer; }
                     const mapsRe = /https?:\/\/(maps\.google\.com|www\.google\.com\/maps|goo\.gl\/maps|maps\.app\.goo\.gl|g\.co\/maps)[^\s)\]"<]*/i;
                     const um = m.content.match(mapsRe);
                     if (um && um[0]) {
-                        html += `<button type="button" class="wa-set-verified-btn" data-cust="${activeConv.customer_id}" data-url="${esc(um[0])}" style="margin-top:4px;background:#2563EB;color:#fff;border:none;border-radius:5px;padding:5px 10px;font-size:11px;font-weight:600;cursor:pointer;">📌 Set as Verified Location</button>`;
+                        html += `<button type="button" class="wa-set-verified-btn" data-cust="${activeConv.customer_id}" data-url="${esc(um[0])}" data-context="chat_link" style="margin-top:4px;background:#2563EB;color:#fff;border:none;border-radius:5px;padding:5px 10px;font-size:11px;font-weight:600;cursor:pointer;">📌 Set as Verified Location</button>`;
                     }
                 }
             }
@@ -3476,6 +3570,11 @@ select.wa-mgr-input { background: #fff; cursor: pointer; }
                 } else {
                     return;
                 }
+                // Tell the audit trail WHERE this save came from, so the pin
+                // history can say "saved from the customer's chat pin" rather
+                // than a flat "web" that hides the best provenance we have.
+                const ctx = btn.getAttribute('data-context');
+                if (ctx) payload.context = ctx;
                 const original = btn.innerHTML;
                 btn.disabled = true;
                 btn.innerHTML = 'Saving...';

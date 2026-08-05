@@ -162,7 +162,7 @@ class WhatsAppWebController extends Controller
         $hasReadsTable = Schema::hasTable('t_wa_conversation_reads');
         $hasQurbaniCol = Schema::hasColumn('t_wa_conversations', 'is_qurbani');
 
-        $query = ConversationModel::with('customer:id,first_name,last_name,phone_normalized,city')
+        $query = ConversationModel::with('customer:id,first_name,last_name,phone_normalized,city,latitude,longitude,verified_location_url')
             ->orderByDesc('last_message_at');
 
         // Limited view: only conversations whose most recent activity is within
@@ -313,6 +313,38 @@ class WhatsAppWebController extends Controller
         // Fetch conversations + last-read timestamps for this user in one shot.
         $lastReadMap = [];
         $convs = $query->limit($perPage)->get();
+
+        // Pull in chats the viewer was tagged on that fall OUTSIDE this page —
+        // the list is sorted by last_message_at, so a fresh tag on an old
+        // thread would otherwise never reach the pinned section. On the "@ me"
+        // filter, ignore the freshness window so that filter is genuinely
+        // complete (it used to search only the loaded page). Mirrors the API
+        // controller; see WhatsAppController::MENTION_PIN_HOURS.
+        if (!$isPagedFetch
+            && Schema::hasTable('t_wa_conversation_labels')
+            && Schema::hasColumn('t_wa_conversation_labels', 'mention_seen_at')) {
+            $wantsAllMentions = $request->boolean('assigned_to_me');
+            $mentionIds = DB::table('t_wa_conversation_labels as cl')
+                ->join('t_wa_labels as l', 'l.id', '=', 'cl.label_id')
+                ->where('l.user_id', $userId)
+                ->whereNull('cl.mention_seen_at')
+                ->when(!$wantsAllMentions, fn($q) => $q->where(
+                    'cl.applied_at', '>=',
+                    now()->subHours(\App\Http\Controllers\API\WhatsAppController::MENTION_PIN_HOURS)
+                ))
+                ->distinct()->pluck('cl.conversation_id')->map(fn($i) => (int) $i)->all();
+
+            $missing = array_diff($mentionIds, $convs->pluck('id')->map(fn($i) => (int) $i)->all());
+            if (!empty($missing)) {
+                $extra = ConversationModel::with('customer:id,first_name,last_name,phone_normalized,city,latitude,longitude,verified_location_url')
+                    ->whereIn('id', $missing)
+                    // A limited-access user must not gain reach through a tag.
+                    ->when($access['limited'], fn($q) => $q->where('last_message_at', '>=', $access['cutoff']))
+                    ->get();
+                $convs = $convs->concat($extra);
+            }
+        }
+
         $convIds = $convs->pluck('id')->all();
 
         // Backfill missing customer_id links for conversations whose customer
@@ -499,16 +531,24 @@ class WhatsAppWebController extends Controller
         // per-conversation unread @mentions for the current viewer (Phase 2).
         $labelsByConv = [];
         $mentionsByConv = [];
+        // Mirrors the API controller — see WhatsAppController::MENTION_PIN_HOURS
+        // for the full rationale. A recent, unread team tag pins the chat to
+        // the top of the tagged user's inbox until they open it.
+        $pinByConv = [];
         $hasLabelsTable = Schema::hasTable('t_wa_labels') && Schema::hasTable('t_wa_conversation_labels');
         $hasSeenCol = $hasLabelsTable && Schema::hasColumn('t_wa_conversation_labels', 'mention_seen_at');
         if ($hasLabelsTable && !empty($convIds)) {
-            $cols = ['cl.conversation_id', 'l.id', 'l.name', 'l.color', 'l.user_id'];
+            $cols = ['cl.conversation_id', 'l.id', 'l.name', 'l.color', 'l.user_id',
+                     'cl.applied_at', 'cl.applied_by', 'u.fullname as applied_by_name'];
             if ($hasSeenCol) $cols[] = 'cl.mention_seen_at';
             $labelRows = DB::table('t_wa_conversation_labels as cl')
                 ->join('t_wa_labels as l', 'l.id', '=', 'cl.label_id')
+                // fullname, NOT name — t_sys_user has no `name` column.
+                ->leftJoin('t_sys_user as u', 'u.id', '=', 'cl.applied_by')
                 ->whereIn('cl.conversation_id', $convIds)
                 ->orderBy('l.name')
                 ->get($cols);
+            $pinCutoff = now()->subHours(\App\Http\Controllers\API\WhatsAppController::MENTION_PIN_HOURS);
             foreach ($labelRows as $lr) {
                 $labelsByConv[$lr->conversation_id][] = [
                     'id'      => (int) $lr->id,
@@ -522,6 +562,19 @@ class WhatsAppWebController extends Controller
                     && empty($lr->mention_seen_at)) {
                     $mentionsByConv[$lr->conversation_id] =
                         ($mentionsByConv[$lr->conversation_id] ?? 0) + 1;
+
+                    $appliedAt = $lr->applied_at ? \Carbon\Carbon::parse($lr->applied_at) : null;
+                    if ($appliedAt && $appliedAt->gte($pinCutoff)) {
+                        $existing = $pinByConv[$lr->conversation_id] ?? null;
+                        if (!$existing || $appliedAt->gt(\Carbon\Carbon::parse($existing['applied_at']))) {
+                            $pinByConv[$lr->conversation_id] = [
+                                'label'      => $lr->name,
+                                'by'         => $lr->applied_by_name ?: 'a teammate',
+                                'applied_at' => $appliedAt->toIso8601String(),
+                                'ago'        => $appliedAt->diffForHumans(null, true) . ' ago',
+                            ];
+                        }
+                    }
                 }
             }
         }
@@ -580,7 +633,19 @@ class WhatsAppWebController extends Controller
             }
         }
 
-        $conversations = $convs->map(function ($conv) use ($unreadByConv, $lastMsgByConv, $hasQurbaniCol, $matchByConvId, $labelsByConv, $mentionsByConv, $failedByConv, $proofByCustomer) {
+        // Aug-2026 — which of these customers has a location pin sitting unused?
+        // ONE batched, indexed lookup for the whole page (never per row), exactly
+        // like the payment-proof map above. Empty array if the audit table isn't
+        // on this environment yet, so the inbox degrades to "no badges".
+        $pinPendingByCustomer = [];
+        try {
+            $pinPendingByCustomer = app(\App\Services\Location\PinHistoryService::class)
+                ->pendingReplies($convs->pluck('customer_id')->filter()->unique()->values()->all());
+        } catch (\Throwable $e) {
+            Log::debug('getConversations: pin-pending map skipped', ['error' => $e->getMessage()]);
+        }
+
+        $conversations = $convs->map(function ($conv) use ($unreadByConv, $lastMsgByConv, $hasQurbaniCol, $matchByConvId, $labelsByConv, $mentionsByConv, $pinByConv, $failedByConv, $proofByCustomer, $pinPendingByCustomer) {
             $lastMsg = $lastMsgByConv[$conv->id] ?? null;
             $unread = $unreadByConv[$conv->id] ?? 0;
             $failed = $failedByConv[$conv->id] ?? null;
@@ -640,14 +705,31 @@ class WhatsAppWebController extends Controller
                 'labels' => $labelsByConv[$conv->id] ?? [],
                 // Phase 2: unread @mentions targeted at the viewer.
                 'mentions_count' => (int) ($mentionsByConv[$conv->id] ?? 0),
+                // Present ⇒ pins to the top for THIS viewer until they open it.
+                'pinned_mention' => $pinByConv[$conv->id] ?? null,
                 // Apr-2026: failed-send indicator on inbox rows.
                 'last_send_failed' => $failed !== null,
                 'last_send_error'  => $failed['error_message'] ?? null,
                 'last_send_template' => $failed['template_name'] ?? null,
                 // Jun-2026: payment-proof badge (null when none).
                 'payment_proof' => $proof,
+                // Aug-2026: a location pin from this customer we did not save and
+                // nobody has resolved. Null for everyone else.
+                'pin_reply_pending' => $conv->customer_id
+                    ? ($pinPendingByCustomer[(int) $conv->customer_id] ?? null)
+                    : null,
             ];
         });
+
+        // Pinned tags lead, newest first; everything else keeps its normal
+        // last_message_at order. Stable sort on the built rows (see the API
+        // controller for the rationale) — once read the pin is null and the row
+        // simply returns to its natural position.
+        $conversations = $conversations->sortByDesc(function ($c) {
+            return empty($c['pinned_mention'])
+                ? 0
+                : strtotime($c['pinned_mention']['applied_at'] ?? 'now');
+        }, SORT_NUMERIC)->values();
 
         // "Unread" filter applied after compute so it uses per-user counts.
         if ($request->filter === 'unread') {
@@ -749,7 +831,7 @@ class WhatsAppWebController extends Controller
             return response()->json(['success' => false, 'message' => 'No permission'], 403);
         }
 
-        $conversation = ConversationModel::with('customer:id,first_name,last_name,phone_normalized,city')->findOrFail($conversationId);
+        $conversation = ConversationModel::with('customer:id,first_name,last_name,phone_normalized,city,latitude,longitude,verified_location_url')->findOrFail($conversationId);
 
         // Limited users cannot access conversations whose most recent activity
         // is older than the cutoff. Returning 404 (not 403) so the UI treats
@@ -765,7 +847,7 @@ class WhatsAppWebController extends Controller
         if (!$conversation->customer_id) {
             $linkedId = app(WhatsAppService::class)->relinkConversationCustomer($conversation);
             if ($linkedId) {
-                $conversation->load('customer:id,first_name,last_name,phone_normalized,city');
+                $conversation->load('customer:id,first_name,last_name,phone_normalized,city,latitude,longitude,verified_location_url');
             }
         }
 
@@ -881,6 +963,31 @@ class WhatsAppWebController extends Controller
                 'customer_name' => $conversation->customer ? $conversation->customer->full_name : ($conversation->wa_contact_name ?: $conversation->wa_phone),
                 'customer_city' => $conversation->customer?->city ?? '',
                 'customer_orders' => $totalOrders,
+                // Aug-2026 — does this customer ALREADY have a verified pin? Kept
+                // for context only. ⚠ It must NOT be used to decide what the chat
+                // says about a location reply: since the re-request rule landed, a
+                // reply to a manual re-request DOES overwrite, so "has a pin" no
+                // longer implies "was not saved". Use location_verdicts below.
+                'customer_has_pin' => $conversation->customer
+                    ? ((
+                        $conversation->customer->latitude && $conversation->customer->longitude
+                        && (float) $conversation->customer->latitude !== 0.0
+                        && (float) $conversation->customer->longitude !== 0.0
+                       ) || !empty($conversation->customer->verified_location_url))
+                    : false,
+                // What actually happened to each pin this customer sent — saved,
+                // saved-as-a-replacement, or refused (and why). The client matches
+                // these to location bubbles by time and stays silent without a
+                // match, so it can never invent an outcome.
+                'location_verdicts' => $conversation->customer_id
+                    ? app(\App\Services\Location\PinHistoryService::class)
+                        ->replyVerdicts((int) $conversation->customer_id)
+                    : [],
+                // The unresolved one, for the header bar.
+                'pin_reply_pending' => $conversation->customer_id
+                    ? app(\App\Services\Location\PinHistoryService::class)
+                        ->pendingReply((int) $conversation->customer_id)
+                    : null,
                 'wa_phone' => $conversation->wa_phone,
                 'status' => $conversation->status,
                 'unread_count' => 0,

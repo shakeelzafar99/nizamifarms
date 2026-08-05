@@ -1505,6 +1505,13 @@ class WhatsAppService
      */
     public function isSessionActive(ConversationModel $conversation): bool
     {
+        // Same dev-only override as the model's copy — this service method
+        // gates the actual send endpoints, so both must agree or the composer
+        // opens and then the send is refused. Never active in production.
+        if (ConversationModel::devSessionOverride($conversation->wa_phone)) {
+            return true;
+        }
+
         if (!$conversation->last_customer_message_at) {
             return false;
         }

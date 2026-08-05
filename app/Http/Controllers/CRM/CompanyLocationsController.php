@@ -78,6 +78,16 @@ class CompanyLocationsController extends Controller
                     $join->on('ula.location_id', '=', 'loc.id')
                          ->where('ula.is_active', 1);
                 })
+                // ⚠ Van MEET-UP POINTS share this table but are not offices — they
+                //   have no staff, no attendance and no shifts. Showing them here
+                //   would let someone assign a rider to a roadside rendezvous as his
+                //   work location. They are managed on their own screen instead.
+                //   Schema-guarded, so this is a no-op before batch 14.
+                ->when(\App\Services\LocationService::hasHandoverPointColumn(), function ($q) {
+                    $q->where(function ($w) {
+                        $w->where('loc.is_handover_point', 0)->orWhereNull('loc.is_handover_point');
+                    });
+                })
                 ->select(
                     'loc.id',
                     'loc.location_name',

@@ -115,6 +115,43 @@ class LedgerModel extends BaseModel
     const STATUS_REVERSED     = 'reversed';     // For payment method changes after delivery
 
     /**
+     * Human labels for transaction_type — the wording the Ledger Hub account page shows.
+     *
+     * Added Aug-2026 so the MOBILE ledger stops printing a generic "Transaction" for every row
+     * (its own local map knew only 8 types and had no `vendor_payment`, which is most of what a
+     * Frozen account actually contains).
+     *
+     * ⚠ This is NOT yet the only copy. The same wording is duplicated in
+     * `fin/hub/account-detail.blade.php` ($typeLabels), `AccountActivityService::TYPE_LABELS`
+     * (which says "Fund Transfer" for transfer) and `PendingLedgerActionsService::TYPE_LABELS`.
+     * Those are live and working, so they were left alone rather than refactored underneath a
+     * bug fix — but this constant is where they should converge. Match THIS map when changing
+     * wording, and prefer it for anything new.
+     */
+    const TYPE_LABELS = [
+        self::TYPE_INVOICE          => 'Invoice',
+        self::TYPE_ORDER_PAYMENT    => 'Order Payment',
+        self::TYPE_EMPLOYEE_DEPOSIT => 'Deposit',
+        self::TYPE_EXPENSE          => 'Expense',
+        self::TYPE_VENDOR_PURCHASE  => 'Vendor Purchase',
+        self::TYPE_VENDOR_PAYMENT   => 'Vendor Payment',
+        self::TYPE_SETTLEMENT       => 'Settlement',
+        self::TYPE_TRANSFER         => 'Transfer',
+        self::TYPE_ADJUSTMENT       => 'Adjustment',
+        self::TYPE_SALARY_ADVANCE   => 'Salary Advance',
+        self::TYPE_SALARY_PAYMENT   => 'Salary',
+        self::TYPE_OPENING_BALANCE  => 'Opening Balance',
+        self::TYPE_REIMBURSEMENT_ACCRUAL => 'Reimbursement',
+        self::TYPE_REIMBURSEMENT_PAYMENT => 'Reimbursement Paid',
+    ];
+
+    /** Label for a transaction_type, falling back to a readable form of the raw key. */
+    public static function typeLabel(?string $type): string
+    {
+        return self::TYPE_LABELS[$type] ?? ucwords(str_replace('_', ' ', (string) $type));
+    }
+
+    /**
      * Relationships
      */
     public function fromAccount(): BelongsTo

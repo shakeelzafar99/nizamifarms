@@ -174,11 +174,21 @@ class CheckoutClassifierService
             }
 
             // Company-bike riders are excluded (their office checkout is normal).
-            $bikeIds = [];
-            if (\Illuminate\Support\Facades\Schema::hasColumn('t_ops_rider_profile', 'company_bike')) {
-                $bikeIds = array_flip(DB::table('t_ops_rider_profile')->where('company_bike', 1)
-                    ->whereIn('user_id', $userIds)->pluck('user_id')->all());
-            }
+            // ⭐ Phase C: company-machine riders are excluded, resolved PER DAY.
+            //    This method spans a RANGE, and a rider can be on a company bike
+            //    for part of it — judging the whole range by one day would either
+            //    hide real exceptions or invent them. The loop below already
+            //    knows each row's own date, so the cohort is memoised per date
+            //    (a handful of days, one resolve each — not per row).
+            $companyByDate = [];
+            $isCompanyOn = function (string $d) use (&$companyByDate) {
+                if (!array_key_exists($d, $companyByDate)) {
+                    $companyByDate[$d] = array_flip(
+                        (new VehicleResolver())->companyRiderIdsFor($d)
+                    );
+                }
+                return $companyByDate[$d];
+            };
 
             // Deliveries in the window → per (uid|date): count + the LAST drop (coords/customer/order/time).
             $delRows = DB::table('t_crm_order_status_history as h')
@@ -205,8 +215,9 @@ class CheckoutClassifierService
 
             foreach ($atts as $att) {
                 $uid = (int) $att->user_id;
-                if (isset($bikeIds[$uid])) { continue; }
                 $date = substr((string) $att->attendance_date, 0, 10);
+                $companyThatDay = $isCompanyOn($date);
+                if (isset($companyThatDay[$uid])) { continue; }
                 $key = $uid . '|' . $date;
                 if (empty($delByKey[$key]['count'])) { continue; } // no delivery that day → office normal
                 if (!$office || $office->latitude === null || $office->longitude === null) { continue; }

@@ -18,6 +18,13 @@ use Illuminate\Support\Facades\Storage;
 
 class WhatsAppController extends Controller
 {
+    /**
+     * How long a team tag keeps a chat pinned to the top of the tagged user's
+     * inbox while still unread. Owner's call (Aug-2026): 48h rather than
+     * same-day, so a 9 PM tag doesn't vanish at midnight.
+     */
+    public const MENTION_PIN_HOURS = 48;
+
     protected WhatsAppService $whatsapp;
 
     public function __construct(WhatsAppService $whatsapp)
@@ -289,6 +296,51 @@ class WhatsAppController extends Controller
                 ->limit($perPage)
                 ->get();
 
+            // ── Pinned @mentions (Aug-2026) ─────────────────────────────────
+            // A chat someone tagged me on RECENTLY and that I haven't opened
+            // yet is pinned to the top of the inbox until I read it. The list
+            // is sorted by last_message_at, so such a chat can easily sit
+            // below the fold — a customer's thread might be days old while the
+            // tag is minutes old. Pull those conversations in EXPLICITLY on the
+            // first page and merge, or the pin would silently miss the very
+            // rows it exists for.
+            //
+            // Only FRESH tags pin (MENTION_PIN_HOURS). Prod carries 242
+            // @Taimur tags, 16 of them unseen and over a week old — without
+            // the window the inbox would open with a wall of ancient pins,
+            // which is the clutter this is meant to remove. Older tags keep
+            // their label and stay findable under the "@ me" filter; they just
+            // stop shouting.
+            $pinnedIds = [];
+            if (!$isPagedFetch && $hasLabelsTableForPins = (Schema::hasTable('t_wa_conversation_labels')
+                    && Schema::hasColumn('t_wa_conversation_labels', 'mention_seen_at'))) {
+                // On the "@ me" filter, pull in EVERY unseen mention regardless
+                // of age. Without this the filter only ever searched the loaded
+                // page, so an old tag on an old chat was invisible there too —
+                // and "the label is still findable under @me" (the reason it is
+                // safe not to pin stale tags) would not actually be true.
+                $wantsAllMentions = $request->boolean('assigned_to_me');
+
+                $pinnedIds = DB::table('t_wa_conversation_labels as cl')
+                    ->join('t_wa_labels as l', 'l.id', '=', 'cl.label_id')
+                    ->where('l.user_id', $userId)
+                    ->whereNull('cl.mention_seen_at')
+                    ->when(!$wantsAllMentions, fn($q) =>
+                        $q->where('cl.applied_at', '>=', now()->subHours(self::MENTION_PIN_HOURS)))
+                    ->distinct()
+                    ->pluck('cl.conversation_id')
+                    ->map(fn($id) => (int) $id)
+                    ->all();
+
+                $missing = array_diff($pinnedIds, $conversations->pluck('id')->map(fn($i) => (int) $i)->all());
+                if (!empty($missing)) {
+                    $extra = ConversationModel::whereIn('id', $missing)->get();
+                    // Same shape as the paged batch; ordering is re-applied
+                    // client-side (pinned section first), so append is fine.
+                    $conversations = $conversations->concat($extra);
+                }
+            }
+
             // Backfill missing customer_id links for conversations whose
             // customer record was created AFTER the conversation existed.
             // Cheap batched lookup — only fires for unlinked rows in this
@@ -426,17 +478,26 @@ class WhatsAppController extends Controller
             // show a small "@" ping on inbox rows without another round-trip.
             $labelsByConv = [];
             $mentionsByConv = [];
+            // Per-conversation pin payload for the viewer: who tagged them,
+            // when, and under which label — that caption is the whole reason
+            // the section is understandable ("@Taimur · by Farooq · 2h ago")
+            // rather than a mysterious row that jumped to the top.
+            $pinByConv = [];
             $hasLabelsTable = Schema::hasTable('t_wa_labels') && Schema::hasTable('t_wa_conversation_labels');
             $hasSeenCol = $hasLabelsTable && Schema::hasColumn('t_wa_conversation_labels', 'mention_seen_at');
             if ($hasLabelsTable && !empty($conversationIds)) {
-                $cols = ['cl.conversation_id', 'l.id', 'l.name', 'l.color', 'l.user_id'];
+                $cols = ['cl.conversation_id', 'l.id', 'l.name', 'l.color', 'l.user_id',
+                         'cl.applied_at', 'cl.applied_by', 'u.fullname as applied_by_name'];
                 if ($hasSeenCol) $cols[] = 'cl.mention_seen_at';
 
                 $labelRows = DB::table('t_wa_conversation_labels as cl')
                     ->join('t_wa_labels as l', 'l.id', '=', 'cl.label_id')
+                    // fullname, NOT name — t_sys_user has no `name` column.
+                    ->leftJoin('t_sys_user as u', 'u.id', '=', 'cl.applied_by')
                     ->whereIn('cl.conversation_id', $conversationIds)
                     ->orderBy('l.name')
                     ->get($cols);
+                $pinCutoff = now()->subHours(self::MENTION_PIN_HOURS);
                 foreach ($labelRows as $lr) {
                     $labelsByConv[$lr->conversation_id][] = [
                         'id'      => (int) $lr->id,
@@ -451,6 +512,21 @@ class WhatsAppController extends Controller
                         && empty($lr->mention_seen_at)) {
                         $mentionsByConv[$lr->conversation_id] =
                             ($mentionsByConv[$lr->conversation_id] ?? 0) + 1;
+
+                        // …and pin it only if the tag is still FRESH. Keep the
+                        // newest tag when several are unseen on one chat.
+                        $appliedAt = $lr->applied_at ? \Carbon\Carbon::parse($lr->applied_at) : null;
+                        if ($appliedAt && $appliedAt->gte($pinCutoff)) {
+                            $existing = $pinByConv[$lr->conversation_id] ?? null;
+                            if (!$existing || $appliedAt->gt(\Carbon\Carbon::parse($existing['applied_at']))) {
+                                $pinByConv[$lr->conversation_id] = [
+                                    'label'      => $lr->name,
+                                    'by'         => $lr->applied_by_name ?: 'a teammate',
+                                    'applied_at' => $appliedAt->toIso8601String(),
+                                    'ago'        => $appliedAt->diffForHumans(null, true) . ' ago',
+                                ];
+                            }
+                        }
                     }
                 }
             }
@@ -538,7 +614,19 @@ class WhatsAppController extends Controller
                 }
             }
 
-            $result = $conversations->map(function ($conv) use ($lastMessages, $unreadByConv, $hasQurbaniCol, $matchByConvId, $labelsByConv, $mentionsByConv, $failedByConv, $proofByCustomer) {
+            // ⭐ Aug-2026 — customers in this list sitting on a location pin we did
+            //    not save. ONE batched, indexed lookup for the page (never per row),
+            //    same shape as the payment-proof map. Empty array if the audit
+            //    table isn't on this environment yet.
+            $pinPendingByCustomer = [];
+            try {
+                $pinPendingByCustomer = app(\App\Services\Location\PinHistoryService::class)
+                    ->pendingReplies($conversations->pluck('customer_id')->filter()->unique()->values()->all());
+            } catch (\Throwable $e) {
+                \Log::debug('getConversations: pin-pending map skipped', ['error' => $e->getMessage()]);
+            }
+
+            $result = $conversations->map(function ($conv) use ($lastMessages, $unreadByConv, $hasQurbaniCol, $matchByConvId, $labelsByConv, $mentionsByConv, $pinByConv, $failedByConv, $proofByCustomer, $pinPendingByCustomer) {
                 $lastMsg = $lastMessages->get($conv->id);
                 $failed = $failedByConv[$conv->id] ?? null;
                 // Resolve payment-proof badge payload for this customer (null when none).
@@ -592,14 +680,41 @@ class WhatsAppController extends Controller
                     'labels' => $labelsByConv[$conv->id] ?? [],
                     // Phase 2: unread @mentions targeted at the viewer.
                     'mentions_count' => (int) ($mentionsByConv[$conv->id] ?? 0),
+                    // Present ⇒ this chat pins to the top for THIS viewer until
+                    // they open it. Carries the caption so the row can explain
+                    // itself. Clears automatically: opening the chat stamps
+                    // mention_seen_at (markRead), so the next poll drops it
+                    // back into its normal time-sorted position.
+                    'pinned_mention' => $pinByConv[$conv->id] ?? null,
                     // Apr-2026: failed-send indicator on inbox rows.
                     'last_send_failed' => $failed !== null,
                     'last_send_error'  => $failed['error_message'] ?? null,
                     'last_send_template' => $failed['template_name'] ?? null,
                     // Jun-2026: payment-proof badge (null when none).
                     'payment_proof' => $proof,
+                    // Aug-2026: this customer sent a location pin we did not save
+                    // and nobody has dealt with it. Null for everyone else.
+                    'pin_reply_pending' => $conv->customer_id
+                        ? ($pinPendingByCustomer[(int) $conv->customer_id] ?? null)
+                        : null,
                 ];
             });
+
+            // Pinned tags float to the top, newest tag first; everything else
+            // keeps the normal last_message_at order. Done as a STABLE sort on
+            // the built rows (not in SQL) so the merged-in conversations —
+            // which were fetched outside the paged window — land in the right
+            // place too. Once read, pinned_mention is null and the row simply
+            // falls back into its natural position; nothing is re-ordered
+            // permanently, which is why this reads as a section rather than a
+            // list that mysteriously shuffles.
+            $result = $result->sortByDesc(function ($c) {
+                if (empty($c['pinned_mention'])) {
+                    return 0;
+                }
+                // Later tag ⇒ higher key ⇒ nearer the top, above all unpinned.
+                return strtotime($c['pinned_mention']['applied_at'] ?? 'now');
+            }, SORT_NUMERIC)->values();
 
             if ($filter === 'unread') {
                 $result = $result->filter(fn($c) => ($c['unread_count'] ?? 0) > 0)->values();
@@ -804,12 +919,34 @@ class WhatsAppController extends Controller
                     'is_qurbani' => $hasQurbaniCol ? (bool) $conversation->is_qurbani : false,
                     'qurbani_flag_reason' => $hasQurbaniCol ? ($conversation->qurbani_flag_reason ?? null) : null,
                     'session_active' => $conversation->isSessionActive(),
-                    'session_expires_at' => $conversation->last_customer_message_at
-                        ? $conversation->last_customer_message_at->addHours(24)->toIso8601String()
-                        : null,
+                    // The app ALSO gates on this timestamp client-side (voice
+                    // recording + send both compare it to now), so a dev-open
+                    // number must get a future expiry or the composer unlocks
+                    // while recording stays blocked. Never fires in production.
+                    'session_expires_at' => \App\Models\WhatsApp\ConversationModel::devSessionOverride($conversation->wa_phone)
+                        ? now()->addHours(24)->toIso8601String()
+                        : ($conversation->last_customer_message_at
+                            ? $conversation->last_customer_message_at->addHours(24)->toIso8601String()
+                            : null),
                     'assigned_to' => $conversation->assigned_to,
                     'seen_by' => $seenBy,
                     'labels' => $convLabels,
+                    // ⭐ Aug-2026 — parity with the web chat. What ACTUALLY happened
+                    //    to each pin this customer sent: saved, saved-as-a-replacement
+                    //    (a manual re-request now overwrites), or refused and why.
+                    //    The app matches these to location bubbles BY TIMESTAMP and
+                    //    shows nothing without a match — it must never decide the
+                    //    wording itself from "does this customer have a pin?", which
+                    //    is wrong the moment a re-requested reply overwrites.
+                    'location_verdicts' => $conversation->customer_id
+                        ? app(\App\Services\Location\PinHistoryService::class)
+                            ->replyVerdicts((int) $conversation->customer_id)
+                        : [],
+                    // The unresolved one, for the alert bar above the messages.
+                    'pin_reply_pending' => $conversation->customer_id
+                        ? app(\App\Services\Location\PinHistoryService::class)
+                            ->pendingReply((int) $conversation->customer_id)
+                        : null,
                 ],
                 'messages' => $result,
                 'has_more' => $messages->count() === $limit,

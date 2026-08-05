@@ -12,7 +12,15 @@
 <div id="fleetView" style="display: none;">
 
     <div class="fl-bar">
-        <div class="fl-monthwrap">
+        {{-- Riders = what each rider's bike COSTS (the original screen, untouched).
+             Vehicles = the machines themselves and who has them (Aug-2026).
+             Two questions about the same fleet, so they live in one tab rather
+             than a new sidebar entry. --}}
+        <div class="fl-modes">
+            <button type="button" id="flModeRiders" class="fl-mode on" onclick="flSetMode('riders')">👤 Riders</button>
+            <button type="button" id="flModeVehicles" class="fl-mode" onclick="flSetMode('vehicles')">🏍️ Vehicles</button>
+        </div>
+        <div class="fl-monthwrap" id="flMonthWrap">
             <button class="fl-nav" onclick="flShiftMonth(-1)" title="Previous month">‹</button>
             <input type="month" id="flMonthInput" onchange="flLoad(this.value)">
             <button class="fl-nav" onclick="flShiftMonth(1)" title="Next month">›</button>
@@ -27,6 +35,10 @@
         <div class="fl-newreq">
             <button type="button" class="fl-newreqbtn" onclick="flOpenNew('Petrol')" title="File a petrol claim for a rider">⛽ New petrol</button>
             <button type="button" class="fl-newreqbtn" onclick="flOpenNew('Maintenance')" title="File a maintenance claim for a rider">🔧 New maintenance</button>
+            {{-- Shown only to whoever may change service schedules (manage_bike_service).
+                 Hidden entirely for everyone else rather than shown-and-refused. --}}
+            <button type="button" class="fl-newreqbtn" id="flTypesBtn" style="display:none;"
+                    onclick="flOpenTypes()" title="Add or edit the maintenance categories">⚙️ Types</button>
         </div>
     </div>
 
@@ -64,6 +76,16 @@
     </div>
 
     <div id="flDetail" class="fl-detail" style="display:none;"></div>
+
+    {{-- ═══ VEHICLES (Aug-2026) ═══
+         The machines as things in their own right: what they are, who has them,
+         what condition they were handed over in. Hidden until the toggle is used,
+         so the costs screen opens exactly as it always did. --}}
+    <div id="flVehWrap" style="display:none;">
+        <div id="flVehIntro" class="fl-vintro"></div>
+        <div id="flVehGrid" class="fl-vgrid"><div class="fl-empty">Loading…</div></div>
+        <div id="flVehDetail" class="fl-vdetail" style="display:none;"></div>
+    </div>
 </div>
 
 <style>
@@ -170,6 +192,65 @@
 .fl-btn{border:1px solid #d1d5db;background:#fff;border-radius:6px;padding:5px 11px;cursor:pointer;font-size:12px;color:#374151;}
 .fl-btn:hover{background:#f3f4f6;}
 
+/* ---------- Vehicles view (Aug-2026, scoped .fl-v*) ---------- */
+.fl-modes{display:flex;gap:0;border:1px solid #d1d5db;border-radius:8px;overflow:hidden;}
+.fl-mode{border:none;background:#fff;padding:6px 13px;font-size:12.5px;font-weight:700;color:#6b7280;cursor:pointer;white-space:nowrap;}
+.fl-mode + .fl-mode{border-left:1px solid #d1d5db;}
+.fl-mode.on{background:#f59e0b;color:#fff;}
+.fl-mode:not(.on):hover{background:#f9fafb;}
+
+.fl-vintro{margin:12px 16px 0;font-size:12px;color:#6b7280;line-height:1.5;}
+.fl-vintro b{color:#111827;}
+.fl-vwarn{margin:12px 16px 0;padding:10px 13px;border-radius:8px;background:#fffbeb;border:1px solid #fcd34d;font-size:12.5px;color:#78350f;}
+.fl-vgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(310px,1fr));gap:12px;padding:12px 16px;}
+.fl-vcard{border:1px solid #e5e7eb;border-radius:10px;background:#fff;padding:12px;cursor:pointer;transition:box-shadow .12s,border-color .12s;}
+.fl-vcard:hover{border-color:#fcd34d;box-shadow:0 3px 12px rgba(0,0,0,.07);}
+.fl-vcard.retired{opacity:.55;}
+.fl-vtop{display:flex;align-items:flex-start;gap:10px;}
+.fl-vphoto{width:52px;height:52px;border-radius:8px;object-fit:cover;border:1px solid #e5e7eb;background:#f3f4f6;flex-shrink:0;}
+.fl-vnophoto{width:52px;height:52px;border-radius:8px;border:1px dashed #d1d5db;display:flex;align-items:center;justify-content:center;font-size:22px;color:#d1d5db;flex-shrink:0;}
+.fl-vname{font-size:15px;font-weight:700;color:#111827;line-height:1.2;}
+.fl-vsub{font-size:11.5px;color:#6b7280;margin-top:2px;}
+.fl-vtag{display:inline-block;padding:1px 7px;border-radius:20px;font-size:10px;font-weight:700;vertical-align:middle;margin-left:6px;}
+.fl-vtag.co{background:#dbeafe;color:#1e40af;}
+.fl-vtag.own{background:#f3f4f6;color:#4b5563;}
+.fl-vkeeper{margin-top:9px;font-size:12.5px;color:#374151;}
+.fl-vkeeper b{color:#111827;}
+.fl-vkeeper.none{color:#b45309;font-weight:600;}
+/* Standing "needs a home pin" nag — amber, informative, self-clearing. */
+.fl-vwarnpin{margin-top:6px;font-size:11.5px;line-height:1.45;color:#92400e;
+  background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:6px 8px;}
+.fl-vstats{display:flex;gap:14px;flex-wrap:wrap;margin-top:8px;font-size:12px;color:#4b5563;font-variant-numeric:tabular-nums;}
+.fl-vchip{display:inline-block;padding:2px 8px;border-radius:20px;font-size:11px;font-weight:700;}
+.fl-vchip.ok{background:#dcfce7;color:#166534;}
+.fl-vchip.due{background:#fef3c7;color:#92400e;}
+.fl-vchip.over{background:#fee2e2;color:#991b1b;}
+.fl-vchip.unk{background:#f3f4f6;color:#6b7280;}
+.fl-vfoot{display:flex;align-items:center;gap:7px;margin-top:10px;padding-top:9px;border-top:1px solid #f1f5f9;}
+.fl-vbtn{border:1px solid #d1d5db;background:#fff;border-radius:7px;padding:5px 11px;font-size:12px;font-weight:600;color:#374151;cursor:pointer;}
+.fl-vbtn:hover{background:#f3f4f6;}
+.fl-vbtn.primary{background:#f59e0b;border-color:#f59e0b;color:#fff;}
+.fl-vbtn.primary:hover{background:#d97706;}
+
+.fl-vdetail{margin:0 16px 16px;border:1px solid #e5e7eb;border-radius:10px;background:#fff;overflow:hidden;}
+.fl-vdhead{display:flex;align-items:center;gap:12px;padding:14px 16px;border-bottom:1px solid #e5e7eb;background:#fafafa;flex-wrap:wrap;}
+.fl-vdbody{padding:14px 16px;}
+.fl-vsec{margin-bottom:16px;}
+.fl-vsec h4{font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;color:#6b7280;margin:0 0 8px;}
+.fl-vstrip{display:flex;gap:9px;overflow-x:auto;padding-bottom:4px;}
+.fl-vpic{flex-shrink:0;width:104px;}
+.fl-vpic img{width:104px;height:82px;object-fit:cover;border-radius:7px;border:1px solid #e5e7eb;cursor:pointer;background:#f3f4f6;}
+.fl-vpiclab{font-size:10.5px;color:#6b7280;margin-top:3px;line-height:1.3;}
+.fl-vhrow{display:flex;align-items:center;gap:10px;padding:7px 0;border-bottom:1px solid #f1f5f9;font-size:12.5px;}
+.fl-vhrow:last-child{border-bottom:none;}
+.fl-vhnow{background:#dcfce7;color:#166534;padding:1px 7px;border-radius:20px;font-size:10px;font-weight:700;}
+
+.fl-vdaychip{display:inline-block;margin-left:7px;padding:1px 7px;border-radius:20px;font-size:10.5px;font-weight:700;background:#f3f4f6;color:#4b5563;vertical-align:middle;}
+.fl-vdaychip.fix{background:#e0e7ff;color:#3730a3;}
+.fl-vdaychip.xfer{background:#fef3c7;color:#92400e;}
+.fl-vdaylink{margin-left:7px;font-size:10.5px;font-weight:700;color:#9ca3af;text-decoration:none;vertical-align:middle;}
+.fl-vdaylink:hover{color:#b45309;text-decoration:underline;}
+
 /* photo lightbox (inline-styled shell — the purged utility classes cannot be trusted here) */
 #flLightbox{display:none;position:fixed;top:0;left:0;right:0;bottom:0;z-index:4000;background:rgba(0,0,0,.75);align-items:center;justify-content:center;}
 #flLightbox img{max-width:92vw;max-height:88vh;border-radius:8px;box-shadow:0 12px 44px rgba(0,0,0,.5);background:#fff;}
@@ -184,6 +265,223 @@
 {{-- New bike expense. Inline-styled shell on purpose — this page's CSS is purged
      of the legacy utility classes, so a class-based modal renders top-left and
      will not scroll (see the metronic-v9 note). --}}
+{{-- ⚙️ MAINTENANCE TYPES — the manager's own category list.
+     Inline styles for the same reason as the modal below: this page's shell drops
+     the legacy utility classes, so a class-based modal renders top-left and will
+     not scroll (see the metronic-v9 note). --}}
+<div id="flTypesModal" onclick="if(event.target===this)flCloseTypes()"
+     style="display:none;position:fixed;inset:0;z-index:4200;background:rgba(0,0,0,.5);
+            align-items:center;justify-content:center;padding:16px;">
+  <div style="background:#fff;border-radius:12px;width:100%;max-width:560px;max-height:90vh;
+              overflow-y:auto;box-shadow:0 18px 60px rgba(0,0,0,.35);">
+    <div style="display:flex;align-items:center;gap:9px;padding:14px 18px;border-bottom:1px solid #e5e7eb;">
+      <b style="font-size:15px;color:#111827;">⚙️ Maintenance types</b>
+      <button type="button" onclick="flCloseTypes()" title="Close"
+              style="margin-left:auto;border:none;background:none;font-size:24px;color:#9ca3af;cursor:pointer;line-height:1;">&times;</button>
+    </div>
+    <div style="padding:14px 18px;">
+      <div style="font-size:11.5px;color:#6b7280;margin-bottom:10px;">
+        The list riders and managers pick from when filing maintenance. A <b>Regular</b> type can
+        carry a schedule (“every 1,200&nbsp;km”); a <b>Repair</b> happens as needed.
+        Only a regular type that <b>resets the service clock</b> counts as “the bike was serviced” —
+        tick it for oil services only, or a brake-shoe job will make the bike look serviced when it is not.
+      </div>
+      <div id="flTypesBody" style="font-size:13px;">Loading…</div>
+
+      <div id="flTypesForm" style="margin-top:12px;padding-top:12px;border-top:1px solid #e5e7eb;display:none;">
+        <input type="hidden" id="flTypeId">
+        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;">
+          <div style="flex:2;min-width:150px;">
+            <label style="display:block;font-size:11.5px;font-weight:700;color:#374151;margin-bottom:4px;">Name</label>
+            <input id="flTypeName" type="text" maxlength="80" placeholder="e.g. Brake Shoe"
+                   style="width:100%;border:1px solid #d1d5db;border-radius:8px;padding:7px 9px;font-size:13px;">
+          </div>
+          <div style="flex:1;min-width:110px;">
+            <label style="display:block;font-size:11.5px;font-weight:700;color:#374151;margin-bottom:4px;">Kind</label>
+            <select id="flTypeBucket" onchange="flTypeBucketChanged()"
+                    style="width:100%;border:1px solid #d1d5db;border-radius:8px;padding:7px 9px;font-size:13px;">
+              <option value="regular">🛢️ Regular</option>
+              <option value="repair">🔧 Repair</option>
+            </select>
+          </div>
+          <div style="flex:1;min-width:110px;">
+            <label style="display:block;font-size:11.5px;font-weight:700;color:#374151;margin-bottom:4px;">Due every (km)</label>
+            <input id="flTypeInterval" type="number" min="0" max="200000" step="100" placeholder="blank = as conditions"
+                   style="width:100%;border:1px solid #d1d5db;border-radius:8px;padding:7px 9px;font-size:13px;">
+          </div>
+        </div>
+        <label id="flTypeResetWrap" style="display:block;margin-top:8px;font-size:12.5px;color:#374151;">
+          <input type="checkbox" id="flTypeResets"> This one resets the bike's service-due clock
+        </label>
+        <div id="flTypesError" style="display:none;font-size:12px;color:#b91c1c;background:#fef2f2;
+             border:1px solid #fecaca;border-radius:8px;padding:7px 9px;margin-top:8px;"></div>
+        <div style="display:flex;gap:8px;margin-top:10px;">
+          <button type="button" onclick="flSaveType()" id="flTypeSaveBtn"
+                  style="padding:8px 14px;border:none;border-radius:8px;background:#f59e0b;color:#fff;
+                         font-size:13px;font-weight:700;cursor:pointer;">Save</button>
+          <button type="button" onclick="flResetTypeForm()"
+                  style="padding:8px 14px;border:1px solid #d1d5db;background:#fff;border-radius:8px;
+                         font-size:13px;font-weight:600;color:#374151;cursor:pointer;">Clear</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+{{-- 🏍️ ASSIGN / REASSIGN a vehicle. Inline-styled shell for the same reason as the
+     others (purged legacy classes render a class-based modal top-left, unscrollable).
+
+     ⭐ The consequence preview is the point of this modal. Handing a bike over changes
+     who is measured for its meter, whether the company buys the fuel, and whether the
+     overnight checks can run at all — so the server is asked what WILL happen and the
+     answer is shown in words before Save is ever pressed. --}}
+<div id="flvAssignModal" onclick="if(event.target===this)flvCloseAssign()"
+     style="display:none;position:fixed;inset:0;z-index:4200;background:rgba(0,0,0,.5);
+            align-items:center;justify-content:center;padding:16px;">
+  <div style="background:#fff;border-radius:12px;width:100%;max-width:520px;max-height:90vh;
+              overflow-y:auto;box-shadow:0 18px 60px rgba(0,0,0,.35);">
+    <div style="display:flex;align-items:center;gap:9px;padding:14px 18px;border-bottom:1px solid #e5e7eb;">
+      <b id="flvAssignTitle" style="font-size:15px;color:#111827;">Assign vehicle</b>
+      <button type="button" onclick="flvCloseAssign()" title="Close"
+              style="margin-left:auto;border:none;background:none;font-size:24px;color:#9ca3af;cursor:pointer;line-height:1;">&times;</button>
+    </div>
+    <div style="padding:14px 18px;">
+      <input type="hidden" id="flvAssignVehicleId">
+
+      <label style="display:block;font-size:11.5px;font-weight:700;color:#374151;margin-bottom:4px;">Give it to</label>
+      <select id="flvAssignRider" onchange="flvPreviewAssign()"
+              style="width:100%;border:1px solid #d1d5db;border-radius:8px;padding:8px 9px;font-size:13px;">
+      </select>
+
+      <div style="display:flex;gap:9px;margin-top:10px;">
+        <div style="flex:1;">
+          <label style="display:block;font-size:11.5px;font-weight:700;color:#374151;margin-bottom:4px;">From</label>
+          <input type="date" id="flvAssignDate" onchange="flvPreviewAssign()"
+                 style="width:100%;border:1px solid #d1d5db;border-radius:8px;padding:7px 9px;font-size:13px;">
+        </div>
+        <div style="flex:2;">
+          <label style="display:block;font-size:11.5px;font-weight:700;color:#374151;margin-bottom:4px;">Note <span style="font-weight:400;color:#9ca3af;">(optional)</span></label>
+          <input type="text" id="flvAssignNote" maxlength="255" placeholder="e.g. Arslan on leave"
+                 style="width:100%;border:1px solid #d1d5db;border-radius:8px;padding:7px 9px;font-size:13px;">
+        </div>
+      </div>
+
+      {{-- Condition photos. Optional by design — a handover with no photo is still a
+           handover, and blocking on a camera would just mean the assignment never
+           gets recorded at all. --}}
+      <div style="margin-top:11px;">
+        <label style="display:block;font-size:11.5px;font-weight:700;color:#374151;margin-bottom:4px;">
+          📷 Condition photos <span style="font-weight:400;color:#9ca3af;">(optional — how it looks at handover)</span>
+        </label>
+        <input type="file" id="flvAssignPhotos" accept="image/*" multiple
+               style="width:100%;font-size:12px;">
+      </div>
+
+      <div id="flvPreviewBox" style="margin-top:12px;font-size:12.5px;"></div>
+
+      <div id="flvAssignError" style="display:none;font-size:12px;color:#b91c1c;background:#fef2f2;
+           border:1px solid #fecaca;border-radius:8px;padding:7px 9px;margin-top:9px;"></div>
+
+      <div style="display:flex;gap:8px;margin-top:12px;">
+        <button type="button" id="flvAssignSave" onclick="flvSaveAssign()"
+                style="padding:9px 16px;border:none;border-radius:8px;background:#f59e0b;color:#fff;
+                       font-size:13px;font-weight:700;cursor:pointer;">Assign</button>
+        <button type="button" onclick="flvCloseAssign()"
+                style="padding:9px 16px;border:1px solid #d1d5db;background:#fff;border-radius:8px;
+                       font-size:13px;font-weight:600;color:#374151;cursor:pointer;">Cancel</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+{{-- ➕ ADD / EDIT a machine, and set the fixed base a van needs. --}}
+<div id="flvEditModal" onclick="if(event.target===this)flvCloseEdit()"
+     style="display:none;position:fixed;inset:0;z-index:4200;background:rgba(0,0,0,.5);
+            align-items:center;justify-content:center;padding:16px;">
+  <div style="background:#fff;border-radius:12px;width:100%;max-width:500px;max-height:90vh;
+              overflow-y:auto;box-shadow:0 18px 60px rgba(0,0,0,.35);">
+    <div style="display:flex;align-items:center;gap:9px;padding:14px 18px;border-bottom:1px solid #e5e7eb;">
+      <b id="flvEditTitle" style="font-size:15px;color:#111827;">Add a vehicle</b>
+      <button type="button" onclick="flvCloseEdit()" title="Close"
+              style="margin-left:auto;border:none;background:none;font-size:24px;color:#9ca3af;cursor:pointer;line-height:1;">&times;</button>
+    </div>
+    <div style="padding:14px 18px;">
+      <input type="hidden" id="flvEditId">
+      <div style="display:flex;gap:9px;flex-wrap:wrap;">
+        <div style="flex:1;min-width:120px;">
+          <label style="display:block;font-size:11.5px;font-weight:700;color:#374151;margin-bottom:4px;">Kind</label>
+          <select id="flvEditType" style="width:100%;border:1px solid #d1d5db;border-radius:8px;padding:7px 9px;font-size:13px;">
+            <option value="bike">🏍️ Bike</option>
+            <option value="van">🚚 Van</option>
+          </select>
+        </div>
+        <div style="flex:1;min-width:130px;">
+          <label style="display:block;font-size:11.5px;font-weight:700;color:#374151;margin-bottom:4px;">Plate</label>
+          <input id="flvEditReg" type="text" maxlength="32" placeholder="e.g. AY-4771"
+                 style="width:100%;border:1px solid #d1d5db;border-radius:8px;padding:7px 9px;font-size:13px;">
+        </div>
+        <div style="flex:1;min-width:130px;">
+          <label style="display:block;font-size:11.5px;font-weight:700;color:#374151;margin-bottom:4px;">Name <span style="font-weight:400;color:#9ca3af;">(if no plate)</span></label>
+          <input id="flvEditNick" type="text" maxlength="64" placeholder="e.g. Van"
+                 style="width:100%;border:1px solid #d1d5db;border-radius:8px;padding:7px 9px;font-size:13px;">
+        </div>
+      </div>
+      <div style="display:flex;gap:9px;flex-wrap:wrap;margin-top:9px;">
+        <div style="flex:2;min-width:150px;">
+          <label style="display:block;font-size:11.5px;font-weight:700;color:#374151;margin-bottom:4px;">Make / model</label>
+          <input id="flvEditModelName" type="text" maxlength="64" placeholder="e.g. Honda CG125"
+                 style="width:100%;border:1px solid #d1d5db;border-radius:8px;padding:7px 9px;font-size:13px;">
+        </div>
+        <div style="flex:1;min-width:130px;">
+          <label style="display:block;font-size:11.5px;font-weight:700;color:#374151;margin-bottom:4px;">Service every (km)</label>
+          <input id="flvEditInterval" type="number" min="0" max="200000" step="100" placeholder="blank = company default"
+                 style="width:100%;border:1px solid #d1d5db;border-radius:8px;padding:7px 9px;font-size:13px;">
+        </div>
+      </div>
+      <label style="display:block;margin-top:9px;font-size:12.5px;color:#374151;">
+        <input type="checkbox" id="flvEditCompany" checked> The company buys the fuel for this one
+      </label>
+      <label style="display:block;margin-top:5px;font-size:12.5px;color:#374151;">
+        <input type="checkbox" id="flvEditActive" checked> In service
+      </label>
+
+      {{-- The base. A bike left blank behaves exactly as today: it sleeps wherever its
+           rider does, measured against that rider's own home pin. Only a machine with a
+           home of its own (the van's parking) needs a base here. --}}
+      <div style="margin-top:12px;padding-top:11px;border-top:1px solid #e5e7eb;">
+        <label style="display:block;font-size:11.5px;font-weight:700;color:#374151;margin-bottom:4px;">
+          📍 Where it is parked overnight <span style="font-weight:400;color:#9ca3af;">(leave blank for a bike)</span>
+        </label>
+        <div style="font-size:11.5px;color:#6b7280;margin-bottom:6px;line-height:1.45;">
+          Blank means it sleeps wherever its rider does, and the morning and overnight meter
+          checks use <b>that rider's own home</b> — which is what every bike should do.
+          Set a point only for a machine with a fixed home of its own, like the van's parking.
+        </div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;">
+          <input id="flvEditLat" type="text" placeholder="latitude"
+                 style="flex:1;min-width:110px;border:1px solid #d1d5db;border-radius:8px;padding:7px 9px;font-size:13px;">
+          <input id="flvEditLng" type="text" placeholder="longitude"
+                 style="flex:1;min-width:110px;border:1px solid #d1d5db;border-radius:8px;padding:7px 9px;font-size:13px;">
+          <input id="flvEditRadius" type="number" min="50" max="5000" step="50" placeholder="radius m"
+                 style="width:110px;border:1px solid #d1d5db;border-radius:8px;padding:7px 9px;font-size:13px;">
+        </div>
+      </div>
+
+      <div id="flvEditError" style="display:none;font-size:12px;color:#b91c1c;background:#fef2f2;
+           border:1px solid #fecaca;border-radius:8px;padding:7px 9px;margin-top:9px;"></div>
+
+      <div style="display:flex;gap:8px;margin-top:12px;">
+        <button type="button" onclick="flvSaveVehicle()" id="flvEditSave"
+                style="padding:9px 16px;border:none;border-radius:8px;background:#f59e0b;color:#fff;
+                       font-size:13px;font-weight:700;cursor:pointer;">Save</button>
+        <button type="button" onclick="flvCloseEdit()"
+                style="padding:9px 16px;border:1px solid #d1d5db;background:#fff;border-radius:8px;
+                       font-size:13px;font-weight:600;color:#374151;cursor:pointer;">Cancel</button>
+      </div>
+    </div>
+  </div>
+</div>
+
 <div id="flNewModal" onclick="if(event.target===this)flCloseNew()"
      style="display:none;position:fixed;inset:0;z-index:4200;background:rgba(0,0,0,.5);
             align-items:center;justify-content:center;padding:16px;">
@@ -203,6 +501,10 @@
         <div id="flNewBikeHint" style="font-size:11px;color:#6b7280;margin-top:4px;"></div>
       </div>
 
+      {{-- 🔧 What was done. Populated from the manager's own maintenance types
+           (grouped Regular / Repair). Falls back to the original two-option list
+           when the types table is not there yet, so the form still works if the
+           web files are uploaded before SQL batch 12 runs. --}}
       <div id="flNewSvcWrap" style="display:none;">
         <label style="display:block;font-size:11.5px;font-weight:700;color:#374151;margin-bottom:4px;">What was done</label>
         <select id="flNewServiceType" onchange="flNewSvcChanged()"
@@ -211,6 +513,7 @@
           <option value="oil_change">🛢️ Regular service (oil change / tuning)</option>
           <option value="repair">🔧 Repair (anything broken)</option>
         </select>
+        <div id="flNewSvcDue" style="font-size:11px;color:#6b7280;margin-top:4px;"></div>
       </div>
 
       <div style="display:flex;gap:10px;">
@@ -268,6 +571,10 @@
 
       <div id="flNewError" style="display:none;font-size:12px;color:#b91c1c;background:#fef2f2;
            border:1px solid #fecaca;border-radius:8px;padding:8px 10px;"></div>
+      {{-- ✏️ Doubles as the EDIT form: same fields, different verb. A separate
+           modal would have meant two copies of the meter/type/date rules. --}}
+      <div id="flNewEditNote" style="display:none;font-size:11.5px;color:#3730a3;background:#eef2ff;
+           border:1px solid #c7d2fe;border-radius:8px;padding:8px 10px;"></div>
     </div>
     <div style="display:flex;gap:8px;padding:12px 18px;border-top:1px solid #e5e7eb;">
       <button type="button" onclick="flCloseNew()"
@@ -293,6 +600,7 @@ const flExpenseCategoryId = {{ $expenseCategoryId ?? 'null' }};
 let flSelected = null;
 let flInitDone = false;
 let flApproval = null;    // what THIS user may approve + the payment sources
+let flRider = null;       // the rider currently open in the drawer (for editing a claim)
 let flCanManageService = false;   // may this user CHANGE service schedules?
 let flDefaultInterval = 0;        // company-wide km between regular services
 
@@ -335,6 +643,9 @@ function flLoad(month, fresh) {
         .then(res => {
             if (!res.success) throw new Error(res.message || 'Failed');
             flData = res;
+            // The ⚙️ Types button belongs to whoever may change service schedules.
+            const tb = document.getElementById('flTypesBtn');
+            if (tb) tb.style.display = res.can_manage_types ? '' : 'none';
             flRenderTable(res);
             flRenderVerdict(res.totals);
             flRenderNotes(res);
@@ -512,13 +823,29 @@ function flSelectRider(uid) {
     el.style.display = 'block';
     el.innerHTML = '<div class="fl-dhead"><h4>Loading…</h4></div>';
 
-    fetch(FL_BASE + '/rider?month=' + encodeURIComponent(flMonth) + '&rider_id=' + uid)
-        .then(r => r.json())
-        .then(res => {
+    // Which machine he was on each day rides along with the costs. Fetched in
+    // parallel and deliberately FAILURE-TOLERANT: an older server (or one where
+    // batch 13 has not been run) simply returns nothing and the day rows render
+    // exactly as they always did.
+    Promise.all([
+        fetch(FL_BASE + '/rider?month=' + encodeURIComponent(flMonth) + '&rider_id=' + uid)
+            .then(r => r.json()),
+        fetch(FLV_BASE + '/rider-days?rider_id=' + uid + '&month=' + encodeURIComponent(flMonth))
+            .then(r => r.ok ? r.json() : {days: []}).catch(() => ({days: []})),
+    ])
+        .then(([res, vd]) => {
             if (!res.success) throw new Error(res.message || 'Failed');
             flApproval = res.approval || null;
             flCanManageService = !!res.can_manage_service;
             flDefaultInterval = res.default_interval_km || 0;
+            // Kept so the edit form can find a claim by id without another round
+            // trip — the drawer already has every field it needs.
+            flRider = res.rider || null;
+
+            flvDayMap = {};
+            flvDaysCanManage = !!(vd && vd.can_manage);
+            ((vd && vd.days) || []).forEach(d => { flvDayMap[d.date] = d; });
+
             flRenderDetail(res.rider);
         })
         .catch(() => {
@@ -556,7 +883,7 @@ function flRenderDetail(r) {
             km = '<span class="' + cls + '">' + (FL_DAY_TEXT[d.detail] || FL_DAY_TEXT[d.status] || 'no meter reading') + '</span>';
         }
         return '<div class="fl-day"><div class="fl-dayhead">' +
-            '<span class="fl-daydate">' + flDate(d.date) + '</span>' +
+            '<span class="fl-daydate">' + flDate(d.date) + flvDayChip(r.user_id, d.date) + '</span>' +
             '<span class="fl-daykm">' + km + '</span></div>' + claims + '</div>';
     }).join('');
 
@@ -590,6 +917,38 @@ function flRenderDetail(r) {
             '<div style="font-size:11px;color:#9ca3af;margin-top:7px;line-height:1.45;">' +
             'Riders normally record a service by filing a Maintenance request with the meter reading — ' +
             'approving it resets this automatically. Use “Record service” only for work filed no other way.</div>';
+    }
+
+    // 🔧 Per-type schedule — each job on its own clock. This is what the manager
+    // asked for: "Oil Change every 1,200" and "Brake Shoe every 10,000" are not
+    // the same countdown, and one combined number hid that.
+    const sched = r.service_schedule || [];
+    if (sched.length) {
+        svcHtml += '<h5 style="margin-top:14px;">Service schedule</h5>' + sched.map(s => {
+            const tone = s.state === 'overdue' ? '#b91c1c'
+                       : (s.state === 'due_soon' ? '#b45309'
+                       : (s.state === 'ok' ? '#15803d' : '#9ca3af'));
+            const right = s.due_in_km === null
+                ? '<span style="color:#9ca3af;">never recorded</span>'
+                : (s.due_in_km < 0
+                    ? '<b style="color:' + tone + '">' + flNum(Math.abs(s.due_in_km)) + ' km overdue</b>'
+                    : '<b style="color:' + tone + '">' + flNum(s.due_in_km) + ' km left</b>');
+            return '<div class="fl-svc"><span>' + flEsc(s.name) +
+                   ' <span style="color:#9ca3af;">· every ' + flNum(s.interval_km) + ' km</span></span>' +
+                   '<span>' + right +
+                   (s.last_meter !== null ? ' <span style="color:#9ca3af;">· last ' + flNum(s.last_meter) + ' km</span>' : '') +
+                   '</span></div>';
+        }).join('');
+    }
+
+    // Where this month's maintenance money actually went.
+    const byType = r.maint_by_type || [];
+    if (byType.length) {
+        svcHtml += '<h5 style="margin-top:14px;">This month by type</h5>' + byType.map(x =>
+            '<div class="fl-svc"><span>' + flEsc(x.label) +
+            ' <span style="color:#9ca3af;">· ' + x.n + ' claim' + (x.n === 1 ? '' : 's') +
+            (x.pending_n ? ', ' + x.pending_n + ' pending' : '') + '</span></span>' +
+            '<span>Rs ' + flNum(x.total) + '</span></div>').join('');
     }
 
     const hist = r.service_history || [];   // approved + pending, filtered server-side
@@ -678,8 +1037,11 @@ function flClaimRow(c) {
         : '<div class="fl-nophoto" title="No photo attached">✕</div>';
 
     let mid = '<span class="fl-amt">Rs ' + flNum(c.amount) + '</span>';
+    // Show the manager's own category name ("Brake Shoe") when the claim carries
+    // one; older claims fall back to the generic Regular/Repair wording.
     mid += ' <span class="fl-pill ' + (c.kind === 'fuel' ? 'fl-own' : 'fl-company') + '">' +
-           (c.kind === 'fuel' ? '⛽ fuel' : '🔧 ' + flServiceLabel(c.service_type)) + '</span>';
+           (c.kind === 'fuel' ? '⛽ fuel'
+                              : '🔧 ' + flEsc(c.maintenance_type || flServiceLabel(c.service_type))) + '</span>';
     if (c.source === 'meter') {
         mid += ' <span class="fl-muted">' + c.meter_distance + ' km × ' + c.petrol_rate + '</span>';
     } else {
@@ -734,13 +1096,31 @@ function flClaimRow(c) {
     let actions = '';
     if (c.status === 'pending' && flApproval && flApproval.can_approve
         && c.next_level && flApproval.levels.indexOf(c.next_level) !== -1) {
-        const accs = (flApproval.accounts || []).map(a =>
-            '<option value="' + a.id + '">' + flEsc(a.account_name) + '</option>').join('');
+        // ⭐ Pre-select what the claim was FILED against, falling back to this
+        // approver's own default. Until Aug-2026 this list always started on its
+        // first option (NF Cash) and flApprove ALWAYS sent it — so a manager who
+        // filed "paid from Online Bank" had it silently rebooked to NF Cash unless
+        // the approver happened to touch the dropdown.
+        const list = flApproval.accounts || [];
+        const filed = list.some(a => a.id === c.filed_source_id) ? c.filed_source_id : null;
+        const preferred = filed || (list.find(a => a.is_default) || {}).id;
+        const accs = list.map(a =>
+            '<option value="' + a.id + '"' + (a.id === preferred ? ' selected' : '') +
+            ' data-online="' + (a.is_online ? '1' : '0') + '">' +
+            flEsc(a.display_name || a.name) + '</option>').join('');
         actions =
             '<div class="fl-actions" id="flAct' + c.id + '">' +
-            (accs ? '<select class="fl-src" id="flSrc' + c.id + '" title="Pay from">' + accs + '</select>' : '') +
+            (accs ? '<select class="fl-src" id="flSrc' + c.id + '" title="Pay from"' +
+                    ' data-filed="' + (filed || '') + '" data-bank="' + (c.filed_bank_id || '') + '">' + accs + '</select>' : '') +
             '<button class="fl-approve" onclick="flApprove(' + c.id + ',' + c.next_level + ')">✅ Approve</button>' +
             '<button class="fl-reject" onclick="flReject(' + c.id + ',' + c.next_level + ')">❌ Reject</button>' +
+            // ✏️ Correct what the rider sent BEFORE approving it — wrong category,
+            // wrong amount, wrong meter. Only while pending: once approved the
+            // money is in the ledger and the service may have moved the clock.
+            (flCanManageTypes()
+                ? '<button class="fl-reject" style="background:#e0e7ff;color:#3730a3;border-color:#c7d2fe;" ' +
+                  'onclick="flOpenEdit(' + c.id + ')">✏️ Edit</button>'
+                : '') +
             '</div>';
     }
 
@@ -809,8 +1189,40 @@ function flApprove(id, level) {
     if (!confirm('Approve this claim?')) return;
     const sel = document.getElementById('flSrc' + id);
     const extra = {comments: 'Approved from Fleet'};
-    if (sel && sel.value) extra.payment_source_account_id = parseInt(sel.value, 10);
+    if (sel && sel.value) {
+        extra.payment_source_account_id = parseInt(sel.value, 10);
+        // An ONLINE source must say which bank, or the per-bank balances drift.
+        // The bank the claim was filed with is reused when the source is unchanged;
+        // if the approver switched TO an online source that had no bank, ask.
+        const opt = sel.options[sel.selectedIndex];
+        if (opt && opt.dataset.online === '1') {
+            let bank = sel.dataset.bank ? parseInt(sel.dataset.bank, 10) : null;
+            const unchanged = sel.dataset.filed && parseInt(sel.dataset.filed, 10) === parseInt(sel.value, 10);
+            if (!bank || !unchanged) {
+                bank = flAskBank(bank);
+                if (bank === null) return;          // cancelled — do not approve blind
+            }
+            extra.receiving_account_id = bank;
+        }
+    }
     flClaimAction(id, level, 'approve', extra);
+}
+
+/**
+ * Which of our banks did this leave from? A numbered prompt rather than a modal:
+ * this strip is a dense table row and the list is short. Returns null if cancelled.
+ */
+function flAskBank(current) {
+    const banks = (flData && flData.pay_banks) ? flData.pay_banks : [];
+    if (!banks.length) return current || null;
+    const lines = banks.map((b, i) => (i + 1) + '. ' + (b.short_code || b.name)).join('\n');
+    const cur = banks.findIndex(b => b.id === current);
+    const ans = prompt('This is an online payment — which bank did it leave from?\n\n' + lines,
+                       cur >= 0 ? String(cur + 1) : '1');
+    if (ans === null) return null;
+    const idx = parseInt(ans, 10) - 1;
+    if (isNaN(idx) || idx < 0 || idx >= banks.length) { alert('That is not one of the listed banks.'); return null; }
+    return banks[idx].id;
 }
 
 function flReject(id, level) {
@@ -857,13 +1269,44 @@ function flSetDefaultInterval() {
 
 /** A service HAPPENED — resets the due clock. Never touches the schedule. */
 function flMarkServiced(uid, suggested) {
+    // ⭐ Every type WITH A SCHEDULE is offered — exactly the ones the service
+    // schedule counts down (oil 1,200 · oil+tuning 2,500 · brake shoe 10,000).
+    // An earlier cut offered only clock-resetting types, which left Brake Shoe
+    // with a countdown on screen and no way to reset it. Recording a non-oil job
+    // resets ITS OWN countdown only — the server keeps the bike's overall
+    // service-due clock for oil services, so brake shoes can never make an
+    // overdue oil change look done.
+    // "As conditions" types (Chain Set, Misc) are absent on purpose: nothing to
+    // count down to, so file those as a maintenance request with the bill.
+    const schedTypes = ((flData && flData.maint_types) || []).filter(t => t.interval_km > 0);
+    let typeId = null;
+
+    if (schedTypes.length > 1) {
+        const lines = schedTypes.map((t, i) =>
+            (i + 1) + '. ' + t.name + ' (every ' + flNum(t.interval_km) + ' km)' +
+            (t.resets_service_clock ? '' : ' — own schedule only')).join('\n');
+        const pick = window.prompt('Which service was done?\n\n' + lines, '1');
+        if (pick === null) return;
+        const idx = parseInt(pick, 10) - 1;
+        if (isNaN(idx) || idx < 0 || idx >= schedTypes.length) { alert('That is not one of the listed services.'); return; }
+        typeId = schedTypes[idx].id;
+    } else if (schedTypes.length === 1) {
+        typeId = schedTypes[0].id;
+    }
+
+    const chosen = schedTypes.find(t => t.id === typeId);
     const v = window.prompt(
-        'Odometer reading at this service (km):\n\nThis records that a regular service was done and resets the due date.',
+        'Odometer reading at this service (km):' +
+        (chosen ? '\n\n' + chosen.name + ' — next due ' + chosen.due_label + '.' : '') +
+        '\n\nThis records that the service was done and resets the due date.',
         suggested || '');
     if (v === null) return;
     const meter = parseInt(String(v).replace(/[^0-9]/g, ''), 10);
     if (!meter || meter < 0) { alert('Enter the odometer reading in kilometres.'); return; }
-    flPostService({ rider_id: uid, meter: meter });
+
+    const payload = { rider_id: uid, meter: meter };
+    if (typeId) payload.maintenance_type_id = typeId;
+    flPostService(payload);
 }
 
 /** The SCHEDULE — how often this bike falls due. Never records a service. */
@@ -912,10 +1355,18 @@ function flOpenNew(cat) {
         alert('The "Expense" request category is not configured, so a claim cannot be filed from here.');
         return;
     }
+    // Leaving edit mode: the modal is shared, so every trace of the last edit has
+    // to go or a new claim inherits its disabled rider and hidden pay pickers.
+    flEditId = null;
+    document.getElementById('flNewEditNote').style.display = 'none';
+    document.getElementById('flNewRider').disabled = false;
+    document.getElementById('flNewSubmit').textContent = 'Create request';
+
     flNewCat = cat;
     const isPetrol = cat === 'Petrol';
     document.getElementById('flNewTitle').textContent = isPetrol ? '⛽ New petrol request' : '🔧 New maintenance request';
     document.getElementById('flNewSvcWrap').style.display = isPetrol ? 'none' : 'block';
+    flFillMaintTypes();
     document.getElementById('flNewServiceType').value = '';
 
     // Riders come from the month payload already loaded for this screen.
@@ -1008,6 +1459,101 @@ function flNewPickBank(id) {
 
 function flCloseNew() { document.getElementById('flNewModal').style.display = 'none'; }
 
+/** May this user manage types / correct a filed claim? Same server-side gate. */
+function flCanManageTypes() { return !!(flData && flData.can_manage_types); }
+
+// =============================================
+// ✏️ EDIT A FILED CLAIM (pending only)
+// Reuses the new-request modal — identical fields, so a second form would have
+// meant a second copy of the meter/type/date rules that then drifts.
+// =============================================
+let flEditId = null;
+
+function flOpenEdit(claimId) {
+    // The claim as the server last sent it — searched across the loaded rider's days.
+    let claim = null;
+    ((flRider && flRider.days) || []).forEach(d => (d.claims || []).forEach(c => { if (c.id === claimId) claim = c; }));
+    if (!claim) { alert('Could not find that claim — refresh and try again.'); return; }
+
+    flEditId = claimId;
+    flNewCat = claim.kind === 'fuel' ? 'Petrol' : 'Maintenance';
+    const isPetrol = flNewCat === 'Petrol';
+
+    document.getElementById('flNewTitle').textContent = isPetrol ? '✏️ Edit petrol claim' : '✏️ Edit maintenance claim';
+    document.getElementById('flNewSvcWrap').style.display = isPetrol ? 'none' : 'block';
+    flFillMaintTypes();
+
+    // The rider cannot be changed here — moving a claim between riders would move
+    // it between two different bikes and odometer histories. Re-file instead.
+    const rsel = document.getElementById('flNewRider');
+    rsel.innerHTML = '<option>' + flEsc((flRider && flRider.name) || 'this rider') + '</option>';
+    rsel.disabled = true;
+    document.getElementById('flNewBikeHint').textContent = 'Filed for this rider — to move it to someone else, reject it and file again.';
+
+    const svcSel = document.getElementById('flNewServiceType');
+    svcSel.value = claim.maintenance_type_id ? ('type:' + claim.maintenance_type_id)
+                 : (claim.service_type || '');
+
+    document.getElementById('flNewAmount').value = claim.amount ?? '';
+    document.getElementById('flNewMeter').value  = claim.meter_at_fill ?? '';
+    document.getElementById('flNewNote').value   = claim.note || '';
+    const d = (claim.filed_at || '').slice(0, 10);
+    if (d) document.getElementById('flNewDate').value = d;
+
+    // Paying is decided at approval, not here — hide the money pickers so an edit
+    // cannot quietly re-book the source.
+    document.getElementById('flNewPayWrap').style.display = 'none';
+    document.getElementById('flNewBankWrap').style.display = 'none';
+
+    const note = document.getElementById('flNewEditNote');
+    note.textContent = 'Correcting claim #' + claimId + ' before approval. The rider keeps the claim; only these details change.';
+    note.style.display = 'block';
+
+    document.getElementById('flNewSubmit').textContent = 'Save changes';
+    flNewError('');
+    flNewSvcChanged();
+    flNewMeterTyped();
+    document.getElementById('flNewModal').style.display = 'flex';
+}
+
+/** Send just the corrected fields; the server re-runs every filing rule on them. */
+function flSubmitEdit() {
+    const svc    = document.getElementById('flNewServiceType').value;
+    const amount = parseFloat(document.getElementById('flNewAmount').value);
+    const meter  = document.getElementById('flNewMeter').value;
+    const date   = document.getElementById('flNewDate').value;
+    const note   = document.getElementById('flNewNote').value;
+
+    if (!amount || amount <= 0) { flNewError('Enter the amount.'); return; }
+
+    const body = {amount: amount, expense_date: date, description: note};
+    if (meter !== '') body.meter_at_fill = parseInt(meter, 10);
+    if (flNewCat === 'Maintenance' && svc.indexOf('type:') === 0) {
+        body.maintenance_type_id = parseInt(svc.slice(5), 10);
+    }
+
+    const btn = document.getElementById('flNewSubmit');
+    btn.disabled = true; btn.textContent = 'Saving…';
+    flNewError('');
+
+    fetch('/orders/riders-map/fleet/claim/' + flEditId + '/edit', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json', 'Accept': 'application/json',
+                  'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || ''},
+        body: JSON.stringify(body)
+    })
+    .then(r => r.json().then(j => ({ok: r.ok, j})))
+    .then(({ok, j}) => {
+        // The server's own message explains WHY (meter needed, reading out of range).
+        if (!ok || !j.success) { flNewError(j.message || 'Could not save the change.'); return; }
+        flCloseNew();
+        flLoad(flMonth, true);
+        if (flSelected) flSelectRider(flSelected);
+    })
+    .catch(() => flNewError('Could not save the change. Please try again.'))
+    .finally(() => { btn.disabled = false; btn.textContent = 'Save changes'; });
+}
+
 function flNewError(msg) {
     const el = document.getElementById('flNewError');
     el.textContent = msg || '';
@@ -1054,22 +1600,202 @@ function flNewMeterTyped() {
     el.style.display = 'block';
 }
 
+// =============================================
+// ⚙️ MAINTENANCE TYPES — the manager's own category list
+// Server is the authority: every write returns the full list and we re-render
+// from that, so the screen can never drift from what was actually stored.
+// =============================================
+const FL_TYPES_URL = '/orders/riders-map/fleet/maintenance-types';
+
+function flOpenTypes() {
+    document.getElementById('flTypesModal').style.display = 'flex';
+    flResetTypeForm();
+    flLoadTypes();
+}
+function flCloseTypes() { document.getElementById('flTypesModal').style.display = 'none'; }
+
+function flLoadTypes() {
+    fetch(FL_TYPES_URL, {headers: {'Accept': 'application/json'}})
+        .then(r => r.json())
+        .then(flRenderTypes)
+        .catch(() => { document.getElementById('flTypesBody').textContent = 'Could not load the types.'; });
+}
+
+function flRenderTypes(d) {
+    const body = document.getElementById('flTypesBody');
+    if (!d || !d.success) { body.textContent = 'Could not load the types.'; return; }
+    if (!d.available) {
+        body.innerHTML = '<i>Maintenance types are not set up on this database yet (SQL batch 12).</i>';
+        document.getElementById('flTypesForm').style.display = 'none';
+        return;
+    }
+    document.getElementById('flTypesForm').style.display = d.can_manage ? 'block' : 'none';
+
+    const rows = d.types || [];
+    if (!rows.length) { body.innerHTML = '<i>No types yet — add the first one below.</i>'; return; }
+
+    const group = (bucket, label) => {
+        const list = rows.filter(t => t.bucket === bucket);
+        if (!list.length) return '';
+        return '<div style="margin-bottom:10px;">'
+            + '<div style="font-size:11.5px;font-weight:700;color:#6b7280;margin-bottom:4px;">' + label + '</div>'
+            + list.map(t =>
+                '<div style="display:flex;align-items:center;gap:8px;padding:6px 2px;border-bottom:1px solid #f3f4f6;'
+                + (t.is_active ? '' : 'opacity:.55;') + '">'
+                + '<div style="flex:1;min-width:0;">'
+                +   '<b style="font-size:13px;">' + flEsc(t.name) + '</b>'
+                +   (t.is_active ? '' : ' <span style="font-size:11px;color:#b45309;">(retired)</span>')
+                +   '<div style="font-size:11.5px;color:#6b7280;">Due ' + flEsc(t.due_label)
+                +   (t.resets_service_clock ? ' · resets the service clock' : '') + '</div>'
+                + '</div>'
+                + (d.can_manage
+                    ? '<button type="button" onclick="flEditType(' + t.id + ')" style="padding:3px 9px;font-size:12px;'
+                      + 'border:1px solid #d1d5db;background:#fff;border-radius:6px;cursor:pointer;">Edit</button>'
+                      + '<button type="button" onclick="flDeleteType(' + t.id + ',\'' + flEsc(t.name).replace(/'/g, "\\'") + '\')" '
+                      + 'style="padding:3px 9px;font-size:12px;border:1px solid #fecaca;background:#fff;color:#b91c1c;'
+                      + 'border-radius:6px;cursor:pointer;">' + (t.is_active ? 'Retire' : 'Delete') + '</button>'
+                    : '')
+                + '</div>').join('')
+            + '</div>';
+    };
+    body.innerHTML = group('regular', '🛢️ Regular service') + group('repair', '🔧 Repair');
+
+    // Keep the picker on the create form in step with what was just edited.
+    if (flData) { flData.maint_types = rows.filter(t => t.is_active); }
+    window._flTypes = rows;
+}
+
+function flResetTypeForm() {
+    document.getElementById('flTypeId').value = '';
+    document.getElementById('flTypeName').value = '';
+    document.getElementById('flTypeBucket').value = 'regular';
+    document.getElementById('flTypeInterval').value = '';
+    document.getElementById('flTypeResets').checked = false;
+    document.getElementById('flTypeSaveBtn').textContent = 'Save';
+    flTypesError('');
+    flTypeBucketChanged();
+}
+
+function flTypesError(msg) {
+    const el = document.getElementById('flTypesError');
+    el.textContent = msg || '';
+    el.style.display = msg ? 'block' : 'none';
+}
+
+/** A repair never resets the service clock — the server enforces it too. */
+function flTypeBucketChanged() {
+    const isRegular = document.getElementById('flTypeBucket').value === 'regular';
+    document.getElementById('flTypeResetWrap').style.display = isRegular ? 'block' : 'none';
+    if (!isRegular) document.getElementById('flTypeResets').checked = false;
+}
+
+function flEditType(id) {
+    const t = (window._flTypes || []).find(x => x.id === id);
+    if (!t) return;
+    document.getElementById('flTypeId').value = t.id;
+    document.getElementById('flTypeName').value = t.name;
+    document.getElementById('flTypeBucket').value = t.bucket;
+    document.getElementById('flTypeInterval').value = t.interval_km || '';
+    document.getElementById('flTypeResets').checked = !!t.resets_service_clock;
+    document.getElementById('flTypeSaveBtn').textContent = 'Save changes';
+    flTypeBucketChanged();
+    flTypesError('');
+}
+
+function flSaveType() {
+    const id = document.getElementById('flTypeId').value;
+    const name = document.getElementById('flTypeName').value.trim();
+    if (!name) { flTypesError('Give the type a name.'); return; }
+
+    const body = {
+        type_name: name,
+        bucket: document.getElementById('flTypeBucket').value,
+        interval_km: parseInt(document.getElementById('flTypeInterval').value, 10) || 0,
+        resets_service_clock: document.getElementById('flTypeResets').checked,
+        is_active: true,
+    };
+    fetch(FL_TYPES_URL + (id ? '/' + id : ''), {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json', 'Accept': 'application/json',
+                  'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || ''},
+        body: JSON.stringify(body)
+    }).then(r => r.json()).then(d => {
+        if (!d.success) { flTypesError(d.message || 'Could not save.'); return; }
+        flRenderTypes(d);
+        flResetTypeForm();
+    }).catch(() => flTypesError('Could not save. Please try again.'));
+}
+
+function flDeleteType(id, name) {
+    if (!confirm('Remove "' + name + '"? If it has already been used it is kept on those claims and just hidden from the list.')) return;
+    fetch(FL_TYPES_URL + '/' + id, {
+        method: 'DELETE',
+        headers: {'Accept': 'application/json',
+                  'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || ''}
+    }).then(r => r.json()).then(d => {
+        if (!d.success) { flTypesError(d.message || 'Could not remove.'); return; }
+        flRenderTypes(d);
+        flResetTypeForm();
+    }).catch(() => flTypesError('Could not remove. Please try again.'));
+}
+
+/**
+ * Fill the "what was done" list from the manager's own types, grouped
+ * Regular / Repair. Leaves the built-in two-option list alone when types are not
+ * configured yet, so the form still works before SQL batch 12 runs.
+ */
+function flFillMaintTypes() {
+    const sel = document.getElementById('flNewServiceType');
+    const types = (flData && flData.maint_types) ? flData.maint_types : [];
+    if (!sel || !types.length) return;
+
+    const group = (bucket, label) => {
+        const rows = types.filter(t => t.bucket === bucket);
+        if (!rows.length) return '';
+        return '<optgroup label="' + label + '">' + rows.map(t =>
+            '<option value="type:' + t.id + '" data-bucket="' + t.bucket + '"' +
+            ' data-due="' + flEsc(t.due_label) + '">' + flEsc(t.name) + '</option>').join('') + '</optgroup>';
+    };
+    sel.innerHTML = '<option value="">Not a bike / other maintenance</option>'
+        + group('regular', '🛢️ Regular service')
+        + group('repair', '🔧 Repair');
+}
+
+/** The chosen option's bucket — drives the meter requirement. */
+function flSvcBucket() {
+    const sel = document.getElementById('flNewServiceType');
+    const opt = sel ? sel.options[sel.selectedIndex] : null;
+    if (!opt || !opt.value) return '';
+    // Typed option carries its bucket; the legacy fallback list carries the raw
+    // machine value.
+    if (opt.dataset && opt.dataset.bucket) return opt.dataset.bucket;
+    return opt.value === 'oil_change' ? 'regular' : (opt.value === 'repair' ? 'repair' : '');
+}
+
 function flNewSvcChanged() {
     const sel = document.getElementById('flNewRider');
     const opt = sel.options[sel.selectedIndex];
     const isCompany = opt && opt.dataset && opt.dataset.company === '1';
-    const svc = document.getElementById('flNewServiceType').value;
+    const bucket = flSvcBucket();
     // Required on a company bike for petrol, and for a SCHEDULED service (a
     // service with no odometer can never reset the bike's service clock).
     // A repair never needs it.
-    const need = isCompany && (flNewCat === 'Petrol' || svc === 'oil_change');
+    const need = isCompany && (flNewCat === 'Petrol' || bucket === 'regular');
     document.getElementById('flNewMeterReq').textContent = need ? '(required)' : '(optional)';
     document.getElementById('flNewMeterHint').textContent = flNewCat === 'Petrol'
         ? 'The odometer at the moment of filling — this is what links the fill to the km ridden.'
-        : (svc === 'oil_change' ? 'The odometer at the service — this resets the bike\'s service-due clock on approval.' : '');
+        : (bucket === 'regular' ? 'The odometer at the service — this resets the bike\'s service-due clock on approval.' : '');
+
+    // "every 1,200 km" / "as conditions" — the manager's own schedule for this job.
+    const due = document.getElementById('flNewSvcDue');
+    const svcOpt = document.getElementById('flNewServiceType').selectedOptions[0];
+    if (due) due.textContent = (svcOpt && svcOpt.dataset && svcOpt.dataset.due) ? ('Due ' + svcOpt.dataset.due) : '';
 }
 
 function flSubmitNew() {
+    // The same button serves both jobs — the modal is shared, so the verb is too.
+    if (flEditId) { flSubmitEdit(); return; }
+
     const uid    = document.getElementById('flNewRider').value;
     const amount = parseFloat(document.getElementById('flNewAmount').value);
     const date   = document.getElementById('flNewDate').value;
@@ -1103,7 +1829,12 @@ function flSubmitNew() {
         expense_date: date,
     };
     if (meter !== '') body.meter_at_fill = parseInt(meter, 10);
-    if (flNewCat === 'Maintenance' && svc) body.service_type = svc;
+    // A typed option sends the type id and lets the SERVER derive service_type
+    // from its bucket; the legacy fallback list still sends the raw value.
+    if (flNewCat === 'Maintenance' && svc) {
+        if (svc.indexOf('type:') === 0) body.maintenance_type_id = parseInt(svc.slice(5), 10);
+        else body.service_type = svc;
+    }
     if (payId) body.payment_source_account_id = payId;
     // Only ever sent with a bank source — the server drops it otherwise, but a
     // cash claim should not carry a bank id in the first place.
@@ -1180,5 +1911,634 @@ function flEsc(s) {
     return String(s === null || s === undefined ? '' : s)
         .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
         .replace(/"/g, '&quot;').replace(/'/g, '&#039;');
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   VEHICLES (Aug-2026) — the machines, and who has them.
+
+   Kept in its own block with an `flv` prefix so it cannot collide with the costs
+   screen above. The two views share only the tab and the toggle; switching
+   between them never reloads the other's data.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+const FLV_BASE = FL_BASE + '/vehicles';
+let flvMode      = 'riders';   // which view the tab is showing
+let flvData      = null;       // last /vehicles payload
+let flvOpenId    = null;       // vehicle whose profile is expanded
+let flvLoaded    = false;      // fetched at least once
+let flvPreviewSeq = 0;         // guards against a slow preview landing after a newer one
+
+/** Switch between the costs table and the machines. */
+function flSetMode(mode) {
+    flvMode = mode;
+    const isVeh = mode === 'vehicles';
+
+    document.getElementById('flModeRiders').classList.toggle('on', !isVeh);
+    document.getElementById('flModeVehicles').classList.toggle('on', isVeh);
+
+    // Everything the COSTS view owns — including the month picker, which means
+    // nothing here — is hidden as one group.
+    ['flMonthWrap', 'flHeadline', 'flVerdict', 'flNotes', 'flDetail'].forEach(id => {
+        const el = document.getElementById(id);
+        if (!el) return;
+        if (isVeh) { el.dataset.flPrevDisplay = el.style.display || ''; el.style.display = 'none'; }
+        else if (el.dataset.flPrevDisplay !== undefined) { el.style.display = el.dataset.flPrevDisplay; }
+    });
+    const tw = document.querySelector('#fleetView .fl-tablewrap');
+    if (tw) tw.style.display = isVeh ? 'none' : '';
+    const nr = document.querySelector('#fleetView .fl-newreq');
+    if (nr) nr.style.display = isVeh ? 'none' : '';
+
+    document.getElementById('flVehWrap').style.display = isVeh ? '' : 'none';
+    if (isVeh && !flvLoaded) flvLoad();
+}
+
+function flvLoad() {
+    const grid = document.getElementById('flVehGrid');
+    grid.innerHTML = '<div class="fl-empty">Loading…</div>';
+
+    fetch(FLV_BASE, { headers: { 'Accept': 'application/json' } })
+        .then(r => r.status === 403 ? Promise.reject(new Error('403')) : r.json())
+        .then(res => {
+            if (!res.success) throw new Error(res.message || 'Failed');
+            flvLoaded = true;
+            flvData = res;
+
+            // The SQL has not been run yet — say so plainly instead of showing an
+            // empty grid that looks like "there are no vehicles".
+            if (res.available === false) {
+                document.getElementById('flVehIntro').innerHTML =
+                    '<div class="fl-vwarn">The vehicle list is not set up on this server yet '
+                    + '(database batch 13 has not been run). Nothing else on this page is affected.</div>';
+                grid.innerHTML = '';
+                return;
+            }
+            flvRenderIntro(res);
+            flvRenderGrid(res.vehicles || []);
+        })
+        .catch(err => {
+            grid.innerHTML = '<div class="fl-empty">'
+                + (err.message === '403'
+                    ? 'You do not have permission to see the fleet.'
+                    : 'Could not load the vehicles. Please try again.')
+                + '</div>';
+        });
+}
+
+function flvRenderIntro(res) {
+    const el = document.getElementById('flVehIntro');
+    let h = 'Every machine the company runs, and who has it now. '
+          + 'Meter readings and service history follow the <b>vehicle</b>, so a bike keeps its own '
+          + 'record when it changes hands.';
+
+    // Honest about the fact that Phase A records but does not yet enforce.
+    if (res.rules_enabled === false) {
+        h += ' <span style="color:#92400e;">Assignments are being recorded now; the meter rules '
+           + 'still follow the rider until this is switched on.</span>';
+    }
+    if (res.can_manage) {
+        h += ' <button type="button" class="fl-vbtn primary" style="margin-left:8px;" '
+           + 'onclick="flvOpenEdit(null)">➕ Add a vehicle</button>';
+    }
+    // 📍 The PERMANENT door to the meet-up points list.
+    //
+    // ⚠ Without this the list was only reachable from the ⚙ on the store's van
+    //   panel — which only exists WHILE A VAN IS OUT. So the stops a van run
+    //   depends on could not be set up before the first van run: chicken and egg.
+    //   Vehicles is the right home for it (it is van infrastructure, next to the
+    //   van itself), and it is always reachable. `vpOpenStops` lives in the
+    //   van-panel partial, which is in the DOM on this page whether or not the
+    //   live view is showing — so the same modal serves both doors.
+    if (typeof vpOpenStops === 'function') {
+        h += ' <button type="button" class="fl-vbtn" style="margin-left:6px;" '
+           + 'onclick="vpOpenStops()" title="Where riders collect their orders from the van">'
+           + '📍 Meet-up points</button>';
+    }
+    el.innerHTML = h;
+}
+
+function flvRenderGrid(list) {
+    const grid = document.getElementById('flVehGrid');
+    if (!list.length) {
+        grid.innerHTML = '<div class="fl-empty">No vehicles yet.</div>';
+        return;
+    }
+    grid.innerHTML = list.map(flvCard).join('');
+}
+
+function flvCard(v) {
+    const canManage = flvData && flvData.can_manage;
+    const icon      = v.vtype === 'van' ? '🚚' : '🏍️';
+    const photo     = v.photo_count > 0 && v.first_photo_url
+        ? '<img class="fl-vphoto" src="' + flEsc(v.first_photo_url) + '" alt="">'
+        : '<div class="fl-vnophoto">' + icon + '</div>';
+
+    const keeper = v.keeper_name
+        ? '<div class="fl-vkeeper">👤 <b>' + flEsc(v.keeper_name) + '</b>'
+            + (v.assigned_on ? ' <span style="color:#9ca3af;">since ' + flvDate(v.assigned_on) + '</span>' : '')
+          + '</div>'
+        : '<div class="fl-vkeeper none">⚠ Not assigned to anyone</div>';
+
+    const s = v.service || {};
+    let svc = '<span class="fl-vchip unk">service unknown</span>';
+    if (s.due_in_km !== null && s.due_in_km !== undefined) {
+        if (s.due_in_km < 0)        svc = '<span class="fl-vchip over">🛢 ' + flNum(-s.due_in_km) + ' km overdue</span>';
+        else if (s.state === 'due_soon') svc = '<span class="fl-vchip due">🛢 due in ' + flNum(s.due_in_km) + ' km</span>';
+        else                        svc = '<span class="fl-vchip ok">🛢 due in ' + flNum(s.due_in_km) + ' km</span>';
+    }
+
+    return ''
+      + '<div class="fl-vcard' + (v.is_active ? '' : ' retired') + '" onclick="flvOpen(' + v.id + ')">'
+      +   '<div class="fl-vtop">'
+      +     photo
+      +     '<div style="min-width:0;flex:1;">'
+      +       '<div class="fl-vname">' + flEsc(v.name)
+      +         '<span class="fl-vtag ' + (v.is_company ? 'co' : 'own') + '">'
+      +           (v.is_company ? 'company' : 'own') + '</span>'
+      +       '</div>'
+      +       '<div class="fl-vsub">' + icon + ' ' + flEsc(v.make_model || (v.vtype === 'van' ? 'Van' : 'Bike'))
+      +         (v.base && v.base.has_base ? ' · 📍 parked at a fixed spot' : '')
+      +         (v.is_active ? '' : ' · retired')
+      +       '</div>'
+      +     '</div>'
+      +   '</div>'
+      +   keeper
+      /* ⭐ STANDING ALERT (owner ruling Aug-4): a company machine whose overnight
+         and morning meter checks have nowhere to measure from. It stays on the
+         card until the pin is saved, then disappears by itself — nothing to
+         dismiss. Quiet for personal or unassigned machines. */
+      +   (v.needs_home_pin
+            ? '<div class="fl-vwarnpin">⚠ No home location for '
+              + flEsc((v.keeper_name || 'the rider').split(' ')[0])
+              + ' — overnight and morning meter checks cannot run. '
+              + '<b>Set it on the Riders page.</b></div>'
+            : '')
+      +   '<div class="fl-vstats">'
+      +     '<span>' + (v.current_meter !== null ? flNum(v.current_meter) + ' km' : 'no reading yet') + '</span>'
+      +     svc
+      +     (v.photo_count ? '<span>📷 ' + v.photo_count + '</span>' : '')
+      +   '</div>'
+      +   '<div class="fl-vfoot" onclick="event.stopPropagation()">'
+      +     (canManage
+        ? '<button type="button" class="fl-vbtn primary" onclick="flvOpenAssign(' + v.id + ')">'
+            + (v.keeper_user_id ? '🔄 Reassign' : '➕ Assign') + '</button>'
+          + (v.keeper_user_id ? '<button type="button" class="fl-vbtn" onclick="flvRelease(' + v.id + ')">Take back</button>' : '')
+          + '<button type="button" class="fl-vbtn" onclick="flvOpenEdit(' + v.id + ')">✏️ Edit</button>'
+        : '')
+      +     '<button type="button" class="fl-vbtn" style="margin-left:auto;" onclick="flvOpen(' + v.id + ')">Profile ▸</button>'
+      +   '</div>'
+      + '</div>';
+}
+
+/** Expand one vehicle: condition photos, who has had it, and its service state. */
+function flvOpen(id) {
+    flvOpenId = id;
+    const box = document.getElementById('flVehDetail');
+    box.style.display = '';
+    box.innerHTML = '<div class="fl-vdbody">Loading…</div>';
+    box.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+
+    fetch(FLV_BASE + '/' + id, { headers: { 'Accept': 'application/json' } })
+        .then(r => r.json())
+        .then(res => {
+            if (!res.success) throw new Error(res.message || 'Failed');
+            flvRenderDetail(res.vehicle, res.can_manage, res);
+        })
+        .catch(() => { box.innerHTML = '<div class="fl-vdbody">Could not load that vehicle.</div>'; });
+}
+
+function flvCloseDetail() {
+    flvOpenId = null;
+    document.getElementById('flVehDetail').style.display = 'none';
+}
+
+function flvRenderDetail(v, canManage, res) {
+    const s = v.service || {};
+    const icon = v.vtype === 'van' ? '🚚' : '🏍️';
+
+    /* ⭐ THIS MACHINE'S fuel & maintenance for the month — the same
+       `claimsForVehicle` the rider's own screen reads, so a manager and a rider
+       can never see two different histories for one bike. Each row names WHO
+       filed it, which is what stops a new keeper mistaking a predecessor's
+       spend for his own. Rows attributed by assignment window (rather than a
+       stamped vehicle_id, which only exists from Aug-2026) are marked, so the
+       reconstruction never pretends to be a record. */
+    const cl  = (res && res.claims) || [];
+    const tot = (res && res.claims_total) || {};
+    /* The bike's Rs/km — this month vs the previous 3 pooled (same server
+       method the rider's screen reads, so the two can never disagree). */
+    const av  = (res && res.averages) || {};
+    const ks  = (res && res.keeper_stint) || null;
+    /* ⭐ The rider-vs-machine diagnostic (owner ruling Aug-4): the current
+       keeper's stint against the bike's own last-3-months baseline. */
+    let avLine = '';
+    if (ks && ks.rs_per_km) {
+        avLine += '<div style="font-size:12px;color:#0f766e;margin-bottom:3px;">'
+                + '👤 <b>' + flEsc(ks.name || 'Keeper') + ': Rs ' + ks.rs_per_km + '/km</b>'
+                + ' over ' + flNum(ks.km) + ' km since ' + flvDate(ks.since)
+                + ((av.last3 && av.last3.rs_per_km)
+                    ? ' · this bike\'s usual is Rs ' + av.last3.rs_per_km + '/km' : '')
+                + '</div>';
+    } else if (av.last3 && av.last3.rs_per_km) {
+        avLine += '<div style="font-size:12px;color:#0f766e;margin-bottom:3px;">'
+                + 'This bike\'s usual: <b>Rs ' + av.last3.rs_per_km + '/km</b> (last 3 months)</div>';
+    }
+    if (av.this_month && av.this_month.rs_per_km) {
+        avLine += '<div style="font-size:12px;color:#6b7280;margin-bottom:6px;">'
+                + '⛽ Rs ' + av.this_month.rs_per_km + '/km this month ('
+                + flNum(av.this_month.km) + ' km)</div>';
+    }
+    const spend = cl.length
+        ? avLine
+          + '<div style="font-size:12.5px;color:#374151;margin-bottom:7px;">'
+          + '⛽ <b>Rs ' + flNum(tot.fuel_rs || 0) + '</b> fuel · 🔧 <b>Rs '
+          + flNum(tot.maint_rs || 0) + '</b> maintenance</div>'
+          + cl.map(c =>
+              '<div class="fl-vhrow">'
+            +   '<span style="min-width:118px;">' + flEsc(c.kind) + '</span>'
+            +   '<span style="min-width:88px;color:#6b7280;">' + flvDate(c.date) + '</span>'
+            +   '<span style="min-width:92px;"><b>Rs ' + flNum(c.amount) + '</b></span>'
+            +   '<span style="color:#6b7280;">by ' + flEsc(c.by_name || '—')
+            +     (c.meter ? ' · meter ' + flNum(c.meter) : '') + '</span>'
+            +   (c.is_pending ? '<span class="fl-vchip due">waiting</span>' : '')
+            +   (c.stamped ? '' : '<span class="fl-vchip unk" title="Attributed from who held the '
+                + 'bike on that date — filed before claims recorded a vehicle">from history</span>')
+            + '</div>').join('')
+        : '<div style="font-size:12px;color:#9ca3af;">Nothing filed for this machine this month.</div>';
+
+    const photos = (v.photos || []).length
+        ? '<div class="fl-vstrip">' + v.photos.map(p =>
+              '<div class="fl-vpic">'
+            +   '<img src="' + flEsc(p.url) + '" onclick="flPhoto(\'' + flEsc(p.url) + '\')" alt="">'
+            +   '<div class="fl-vpiclab">' + flEsc(p.label) + '<br>' + flvDate(p.taken_on)
+            +     (p.note ? '<br><span style="color:#9ca3af;">' + flEsc(p.note) + '</span>' : '')
+            +   '</div>'
+            + '</div>').join('') + '</div>'
+        : '<div style="font-size:12px;color:#9ca3af;">No photos yet. Add them when the vehicle changes hands, '
+          + 'so its condition on the day is on record.</div>';
+
+    const history = (v.history || []).length
+        ? v.history.map(h =>
+              '<div class="fl-vhrow">'
+            +   '<span style="min-width:150px;"><b>' + flEsc(h.rider_name || ('user ' + h.user_id)) + '</b></span>'
+            +   '<span style="color:#6b7280;">' + flvDate(h.assigned_on) + ' → '
+            +     (h.released_on ? flvDate(h.released_on) : 'now') + '</span>'
+            +   (h.is_current ? '<span class="fl-vhnow">current</span>' : '')
+            +   (h.note ? '<span style="color:#9ca3af;font-size:11.5px;">' + flEsc(h.note) + '</span>' : '')
+            + '</div>').join('')
+        : '<div style="font-size:12px;color:#9ca3af;">Never assigned.</div>';
+
+    document.getElementById('flVehDetail').innerHTML = ''
+      + '<div class="fl-vdhead">'
+      +   '<div style="font-size:16px;font-weight:700;color:#111827;">' + icon + ' ' + flEsc(v.name) + '</div>'
+      +   '<span class="fl-vtag ' + (v.is_company ? 'co' : 'own') + '">' + (v.is_company ? 'company' : 'own') + '</span>'
+      +   '<div style="font-size:12.5px;color:#6b7280;">'
+      +     (v.keeper_name ? 'with <b style="color:#111827;">' + flEsc(v.keeper_name) + '</b>' : 'unassigned')
+      +     (v.current_meter !== null ? ' · ' + flNum(v.current_meter) + ' km' : '')
+      +   '</div>'
+      +   '<button type="button" class="fl-vbtn" style="margin-left:auto;" onclick="flvCloseDetail()">Close</button>'
+      + '</div>'
+      + '<div class="fl-vdbody">'
+      +   '<div class="fl-vsec">'
+      +     '<h4>Condition</h4>' + photos
+      +     (canManage
+          ? '<div style="margin-top:9px;">'
+            + '<input type="file" id="flvMorePhotos" accept="image/*" multiple style="font-size:12px;">'
+            + '<button type="button" class="fl-vbtn" style="margin-left:8px;" onclick="flvUploadMore(' + v.id + ')">Add photos</button>'
+            + '</div>'
+          : '')
+      +   '</div>'
+      +   '<div class="fl-vsec">'
+      +     '<h4>Service</h4>'
+      +     '<div style="font-size:12.5px;color:#374151;line-height:1.7;">'
+      +       'Due every <b>' + flNum(s.interval_km) + ' km</b>'
+      +       (s.last_service_meter !== null && s.last_service_meter !== undefined
+              ? ' · last done at <b>' + flNum(s.last_service_meter) + ' km</b>'
+                + (s.last_service_at ? ' on ' + flvDate(s.last_service_at) : '')
+              : ' · <span style="color:#b45309;">no service recorded yet</span>')
+      +       (s.due_in_km !== null && s.due_in_km !== undefined
+              ? (s.due_in_km < 0
+                  ? ' · <b style="color:#991b1b;">' + flNum(-s.due_in_km) + ' km overdue</b>'
+                  : ' · due in <b>' + flNum(s.due_in_km) + ' km</b>')
+              : '')
+      +     '</div>'
+      +   '</div>'
+      +   '<div class="fl-vsec">'
+      +     '<h4>Fuel &amp; maintenance this month</h4>' + spend
+      +   '</div>'
+      +   '<div class="fl-vsec">'
+      +     '<h4>Who has had it</h4>' + history
+      +   '</div>'
+      + '</div>';
+}
+
+// ── assign ────────────────────────────────────────────────────────────────
+function flvOpenAssign(vehicleId) {
+    const v = (flvData.vehicles || []).find(x => x.id === vehicleId);
+    if (!v) return;
+
+    document.getElementById('flvAssignVehicleId').value = vehicleId;
+    document.getElementById('flvAssignTitle').textContent =
+        (v.keeper_user_id ? 'Reassign ' : 'Assign ') + v.name;
+    document.getElementById('flvAssignNote').value = '';
+    document.getElementById('flvAssignPhotos').value = '';
+    document.getElementById('flvAssignError').style.display = 'none';
+    document.getElementById('flvPreviewBox').innerHTML = '';
+
+    // Local date, never toISOString() — that reads as yesterday before 5am PKT.
+    const d = new Date();
+    document.getElementById('flvAssignDate').value =
+        d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+
+    const sel = document.getElementById('flvAssignRider');
+    sel.innerHTML = '<option value="">— choose a rider —</option>'
+        + (flvData.riders || []).map(r =>
+            '<option value="' + r.user_id + '"' + (r.user_id === v.keeper_user_id ? ' selected' : '') + '>'
+          + flEsc(r.name) + (r.company_bike ? ' · 🏢' : ' · 👤') + (r.has_vehicle ? '' : ' · free')
+          + '</option>').join('');
+
+    document.getElementById('flvAssignModal').style.display = 'flex';
+    if (sel.value) flvPreviewAssign();
+}
+
+function flvCloseAssign() { document.getElementById('flvAssignModal').style.display = 'none'; }
+
+/**
+ * Ask the SERVER what this handover would do. Deliberately not computed here —
+ * the answer depends on who currently holds what and whose home pin is missing,
+ * and a stale guess in the browser would be worse than no preview at all.
+ */
+function flvPreviewAssign() {
+    const vid  = document.getElementById('flvAssignVehicleId').value;
+    const uid  = document.getElementById('flvAssignRider').value;
+    const date = document.getElementById('flvAssignDate').value;
+    const box  = document.getElementById('flvPreviewBox');
+    if (!vid || !uid) { box.innerHTML = ''; return; }
+
+    const seq = ++flvPreviewSeq;
+    box.innerHTML = '<span style="color:#9ca3af;">Checking…</span>';
+
+    fetch(FLV_BASE + '/' + vid + '/preview-assign?user_id=' + encodeURIComponent(uid)
+          + '&date=' + encodeURIComponent(date), { headers: { 'Accept': 'application/json' } })
+        .then(r => r.json())
+        .then(res => {
+            if (seq !== flvPreviewSeq) return;   // a newer preview already answered
+            const lines = (res.lines || []).map(l =>
+                '<div style="margin-bottom:3px;">• ' + flEsc(l) + '</div>').join('');
+            const warns = (res.warnings || []).map(w =>
+                '<div style="margin-top:6px;padding:7px 9px;border-radius:7px;background:#fffbeb;'
+              + 'border:1px solid #fcd34d;color:#78350f;">⚠ ' + flEsc(w) + '</div>').join('');
+            box.innerHTML = (lines || warns)
+                ? '<div style="padding:9px 11px;border-radius:8px;background:#f9fafb;border:1px solid #e5e7eb;color:#374151;">'
+                  + lines + warns + '</div>'
+                : '';
+        })
+        .catch(() => { if (seq === flvPreviewSeq) box.innerHTML = ''; });
+}
+
+function flvSaveAssign() {
+    const vid  = document.getElementById('flvAssignVehicleId').value;
+    const uid  = document.getElementById('flvAssignRider').value;
+    const err  = document.getElementById('flvAssignError');
+    const btn  = document.getElementById('flvAssignSave');
+    if (!uid) { err.textContent = 'Choose a rider first.'; err.style.display = ''; return; }
+
+    const fd = new FormData();
+    fd.append('user_id', uid);
+    fd.append('date', document.getElementById('flvAssignDate').value || '');
+    fd.append('note', document.getElementById('flvAssignNote').value || '');
+    const files = document.getElementById('flvAssignPhotos').files;
+    for (let i = 0; i < files.length && i < 8; i++) fd.append('photos[]', files[i]);
+
+    err.style.display = 'none';
+    btn.disabled = true; btn.textContent = 'Saving…';
+
+    fetch(FLV_BASE + '/' + vid + '/assign', {
+        method: 'POST',
+        headers: {
+            'Accept': 'application/json',
+            'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || ''
+        },
+        body: fd
+    })
+    .then(r => r.json())
+    .then(res => {
+        if (!res.success) throw new Error(res.message || 'Failed');
+        flvCloseAssign();
+        flvLoad();
+        if (flvOpenId === Number(vid)) flvOpen(Number(vid));
+    })
+    .catch(e => { err.textContent = e.message || 'Could not assign that vehicle.'; err.style.display = ''; })
+    .finally(() => { btn.disabled = false; btn.textContent = 'Assign'; });
+}
+
+function flvRelease(vehicleId) {
+    const v = (flvData.vehicles || []).find(x => x.id === vehicleId);
+    if (!v) return;
+    if (!confirm('Take ' + v.name + ' back from ' + (v.keeper_name || 'its rider') + '?\n\n'
+               + 'Its history stays on record; it simply has no rider until you assign it again.')) return;
+
+    fetch(FLV_BASE + '/' + vehicleId + '/release', {
+        method: 'POST',
+        headers: {
+            'Accept': 'application/json',
+            'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || ''
+        }
+    })
+    .then(r => r.json())
+    .then(res => {
+        if (!res.success) throw new Error(res.message || 'Failed');
+        flvLoad();
+        if (flvOpenId === vehicleId) flvOpen(vehicleId);
+    })
+    .catch(e => alert(e.message || 'Could not release that vehicle.'));
+}
+
+// ── add / edit ────────────────────────────────────────────────────────────
+function flvOpenEdit(id) {
+    const v = id ? (flvData.vehicles || []).find(x => x.id === id) : null;
+    document.getElementById('flvEditId').value        = id || '';
+    document.getElementById('flvEditTitle').textContent = v ? ('Edit ' + v.name) : 'Add a vehicle';
+    document.getElementById('flvEditType').value      = v ? v.vtype : 'bike';
+    document.getElementById('flvEditReg').value       = v ? (v.reg_no || '') : '';
+    document.getElementById('flvEditNick').value      = v ? (v.nickname || '') : '';
+    document.getElementById('flvEditModelName').value = v ? (v.make_model || '') : '';
+    document.getElementById('flvEditInterval').value  =
+        v && v.service && v.service.interval_km ? v.service.interval_km : '';
+    document.getElementById('flvEditCompany').checked = v ? !!v.is_company : true;
+    document.getElementById('flvEditActive').checked  = v ? !!v.is_active : true;
+    document.getElementById('flvEditLat').value    = v && v.base && v.base.latitude  !== null ? v.base.latitude  : '';
+    document.getElementById('flvEditLng').value    = v && v.base && v.base.longitude !== null ? v.base.longitude : '';
+    document.getElementById('flvEditRadius').value = v && v.base && v.base.radius_m  !== null ? v.base.radius_m  : '';
+    document.getElementById('flvEditError').style.display = 'none';
+    document.getElementById('flvEditModal').style.display = 'flex';
+}
+
+function flvCloseEdit() { document.getElementById('flvEditModal').style.display = 'none'; }
+
+function flvSaveVehicle() {
+    const id  = document.getElementById('flvEditId').value;
+    const err = document.getElementById('flvEditError');
+    const btn = document.getElementById('flvEditSave');
+    const csrf = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || '';
+
+    const body = {
+        vtype:      document.getElementById('flvEditType').value,
+        reg_no:     document.getElementById('flvEditReg').value.trim(),
+        nickname:   document.getElementById('flvEditNick').value.trim(),
+        make_model: document.getElementById('flvEditModelName').value.trim(),
+        is_company: document.getElementById('flvEditCompany').checked,
+        is_active:  document.getElementById('flvEditActive').checked,
+        service_interval_km: parseInt(document.getElementById('flvEditInterval').value, 10) || 0
+    };
+
+    err.style.display = 'none';
+    btn.disabled = true; btn.textContent = 'Saving…';
+
+    fetch(FLV_BASE + (id ? '/' + id : ''), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Accept': 'application/json', 'X-CSRF-TOKEN': csrf },
+        body: JSON.stringify(body)
+    })
+    .then(r => r.json())
+    .then(res => {
+        if (!res.success) throw new Error(res.message || 'Failed');
+        // The base is a second, separate write — it has its own endpoint because
+        // clearing it is meaningful (the machine goes back to following its rider).
+        const vid = id || (res.vehicle && res.vehicle.id);
+        const lat = document.getElementById('flvEditLat').value.trim();
+        const lng = document.getElementById('flvEditLng').value.trim();
+        const rad = document.getElementById('flvEditRadius').value.trim();
+        const hadBase = res.vehicle && res.vehicle.base && res.vehicle.base.has_base;
+
+        if (!vid || (!lat && !lng && !hadBase)) return null;
+        return fetch(FLV_BASE + '/' + vid + '/base', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Accept': 'application/json', 'X-CSRF-TOKEN': csrf },
+            body: JSON.stringify(
+                (!lat || !lng)
+                    ? { clear: true }
+                    : { latitude: lat, longitude: lng, radius_m: parseInt(rad, 10) || null })
+        }).then(r => r.json()).then(b => { if (!b.success) throw new Error(b.message || 'Base not saved'); });
+    })
+    .then(() => { flvCloseEdit(); flvLoad(); if (flvOpenId) flvOpen(flvOpenId); })
+    .catch(e => { err.textContent = e.message || 'Could not save.'; err.style.display = ''; })
+    .finally(() => { btn.disabled = false; btn.textContent = 'Save'; });
+}
+
+function flvUploadMore(vehicleId) {
+    const input = document.getElementById('flvMorePhotos');
+    if (!input || !input.files.length) { alert('Choose one or more photos first.'); return; }
+
+    const fd = new FormData();
+    for (let i = 0; i < input.files.length && i < 8; i++) fd.append('photos[]', input.files[i]);
+    fd.append('context', 'condition');
+
+    fetch(FLV_BASE + '/' + vehicleId + '/photos', {
+        method: 'POST',
+        headers: {
+            'Accept': 'application/json',
+            'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || ''
+        },
+        body: fd
+    })
+    .then(r => r.json())
+    .then(res => {
+        if (!res.success) throw new Error(res.message || 'Failed');
+        flvOpen(vehicleId);
+        flvLoad();
+    })
+    .catch(e => alert(e.message || 'Could not upload those photos.'));
+}
+
+/* ── which machine each day was on, inside the rider drill-down ───────────── */
+let flvDayMap = {};          // 'YYYY-MM-DD' -> {vehicle_id, label, overridden, transfer}
+let flvDaysCanManage = false;
+
+/**
+ * The chip beside a day's date. Silent when there is nothing to say — a fleet
+ * with one bike per rider would otherwise repeat the same plate 30 times down
+ * the column, which is noise, not information. So it renders only when the day
+ * is interesting (a manager correction, or a handover) or when the manager can
+ * act on it.
+ */
+function flvDayChip(uid, date) {
+    const d = flvDayMap[date];
+    if (!d || !d.label) {
+        return flvDaysCanManage
+            ? ' <a href="#" class="fl-vdaylink" onclick="flvEditDay(' + uid + ',\'' + date + '\');return false;"'
+              + ' title="Record which vehicle he was on">🏍️ set</a>'
+            : '';
+    }
+    let chip = '';
+    if (d.overridden) {
+        chip = '<span class="fl-vdaychip fix" title="Recorded by a manager for this day">✎ '
+             + flEsc(d.label) + '</span>';
+    } else if (d.transfer) {
+        chip = '<span class="fl-vdaychip xfer" title="This vehicle changed hands on this day — '
+             + 'the handover ride is allowed for, not counted as personal use">🔁 ' + flEsc(d.label) + '</span>';
+    } else {
+        return flvDaysCanManage
+            ? ' <a href="#" class="fl-vdaylink" onclick="flvEditDay(' + uid + ',\'' + date + '\');return false;"'
+              + ' title="' + flEsc(d.label) + ' — click to correct">' + flEsc(d.label) + '</a>'
+            : ' <span class="fl-vdaychip">' + flEsc(d.label) + '</span>';
+    }
+    return ' ' + (flvDaysCanManage
+        ? '<a href="#" style="text-decoration:none;" onclick="flvEditDay(' + uid + ',\'' + date + '\');return false;">'
+          + chip + '</a>'
+        : chip);
+}
+
+/**
+ * Correct (or clear) the machine recorded against one day.
+ *
+ * The vehicle list is fetched on demand rather than assumed: this is reachable
+ * from the costs drawer without the Vehicles view ever having been opened, and
+ * "open that tab first, then come back" is not an instruction worth giving.
+ */
+async function flvEditDay(uid, date) {
+    let list = ((flvData && flvData.vehicles) || []);
+    if (!list.length) {
+        try {
+            const res = await fetch(FLV_BASE, {headers: {'Accept': 'application/json'}}).then(r => r.json());
+            if (res && res.success) { flvData = res; list = res.vehicles || []; }
+        } catch (e) { /* falls through to the message below */ }
+    }
+    if (!list.length) {
+        alert('No vehicles are registered yet, so there is nothing to record against this day.');
+        return;
+    }
+    const menu = list.map((v, i) => (i + 1) + ' = ' + v.name).join('\n');
+    const ans = window.prompt(
+        'Which vehicle was he on for ' + date + '?\n\n' + menu +
+        '\n\n0 = follow the normal assignment (clear any correction)',
+        '');
+    if (ans === null) return;
+
+    const n = parseInt(String(ans).trim(), 10);
+    if (isNaN(n) || n < 0 || n > list.length) { alert('Enter a number from the list.'); return; }
+    const vehicleId = n === 0 ? null : list[n - 1].id;
+
+    fetch(FLV_BASE + '/day-override', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json', 'Accept': 'application/json',
+            'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || ''
+        },
+        body: JSON.stringify({user_id: uid, date: date, vehicle_id: vehicleId})
+    })
+    .then(r => r.json())
+    .then(res => {
+        if (!res.success) throw new Error(res.message || 'Failed');
+        flSelectRider(uid);      // re-render the drawer with the corrected day
+    })
+    .catch(e => alert(e.message || 'Could not save that.'));
+}
+
+/** "12 Jan 26" — short, unambiguous, and never a US month/day flip. */
+function flvDate(d) {
+    if (!d) return '';
+    const x = new Date(d + 'T12:00:00');
+    return isNaN(x) ? d : x.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: '2-digit' });
 }
 </script>

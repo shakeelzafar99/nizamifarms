@@ -1083,15 +1083,20 @@ class ApprovalController extends Controller
             ])
             ->whereNull('request_id')
             ->where('mode', 'online') // ⭐ Only online mode
+            // ⭐ Aug-2026: invoice-queue types ONLY. This page reviews customer collections
+            // against payment proof; mode=online alone also swept in transfers/deposits, which
+            // rendered as "Unknown" customers and buried real actions. Those now live on the
+            // Ledger Hub pending card + Approvals Dashboard instead.
+            ->whereIn('transaction_type', [LedgerModel::TYPE_INVOICE, LedgerModel::TYPE_ORDER_PAYMENT])
             ->where(fn ($q) => $this->excludeShopCustomers($q)) // Shop orders live in the Shop tab
             ->with(['fromAccount', 'toAccount', 'createdBy', 'order.customer', 'receivingAccount'])
             ->orderBy('transaction_date', 'desc')
             ->get();
-        
+
         foreach ($pendingLedger as $ledger) {
             $items[] = $this->formatOnlineLedgerItem($ledger, 1);
         }
-        
+
         return $this->attachProofStatus($items);
     }
 
@@ -1101,10 +1106,12 @@ class ApprovalController extends Controller
     private function getOnlineL2Items($onlineAccount)
     {
         $items = [];
-        
+
         $pendingLedger = LedgerModel::where('approval_status', LedgerModel::STATUS_PENDING_L2)
             ->whereNull('request_id')
             ->where('mode', 'online') // ⭐ Only online mode
+            // ⭐ Aug-2026: invoice-queue types only (see getOnlineL1Items).
+            ->whereIn('transaction_type', [LedgerModel::TYPE_INVOICE, LedgerModel::TYPE_ORDER_PAYMENT])
             ->where(fn ($q) => $this->excludeShopCustomers($q)) // Shop orders live in the Shop tab
             ->with(['fromAccount', 'toAccount', 'createdBy', 'order.customer', 'receivingAccount'])
             ->orderBy('transaction_date', 'desc')
@@ -1139,6 +1146,9 @@ class ApprovalController extends Controller
             ->whereBetween('approval_date', [$dateFrom, $dateTo])
             ->whereNull('request_id')
             ->where('mode', 'online') // ⭐ Only online mode
+            // ⭐ Aug-2026: invoice-queue types only, matching the pending tabs — an approved
+            // transfer belongs to the ledger/dashboard history, not the collections review.
+            ->whereIn('transaction_type', [LedgerModel::TYPE_INVOICE, LedgerModel::TYPE_ORDER_PAYMENT])
             ->where(fn ($q) => $this->excludeShopCustomers($q)) // Shop payments live in the Shop tab
             ->with(['fromAccount', 'toAccount', 'createdBy', 'order.customer', 'approvedBy', 'receivingAccount'])
             ->orderBy('approval_date', 'desc')

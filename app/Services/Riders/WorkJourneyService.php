@@ -42,30 +42,94 @@ class WorkJourneyService
         return (float) $this->config('METER_CONTINUITY_KM', 1);
     }
 
+    /** How far back to look for a usable closing reading before giving up. */
+    const CLOSING_LOOKBACK_ROWS = 60;
+
+    /** A day's ride above this is a typo, not a commute (meter_end / meter_home caps). */
+    const MAX_DAY_RUN_KM  = 500;
+    const MAX_HOME_RUN_KM = 700;
+
     /**
      * The last recorded day-closing meter before $date for this rider — meter_home when the
      * proper home flow closed the day, else meter_end. Used for the morning continuity check
      * AND for showing "prev end" context. Returns ['value' => int, 'date' => 'Y-m-d'] or null.
+     *
+     * ⭐ SKIPS UNUSABLE ROWS (Aug-2026). It used to take the most recent row whatever it
+     * said, so one junk value became "last night's meter" and produced a message nobody
+     * could act on: Danish's 2026-07-24 row has meter_end = 0, which is why entering a real
+     * 33,590 read back as *"Last night's meter was 0 — your reading is 33,590 km higher."*
+     * Now such a row is passed over for the most recent one that can actually be read.
+     *
+     * ⚠ DELIBERATELY NOT the >1000 floor that FuelClaimRules::odometerWindow() and
+     *   FleetFuelService::currentMeters() use. That floor assumes 5-figure odometers, but a
+     *   NEW bike genuinely reads in the hundreds — Asim ran 165 → 931 km across April 2026 in
+     *   a clean ascending sequence, and Danish's May rows do the same. Applying the floor here
+     *   would silently return null for those riders and switch their morning continuity check
+     *   OFF, which is worse than the message it was fixing. Only two things are refused:
+     *     • a closing value of 0 or less — that is "nothing was recorded", never an odometer
+     *     • an impossible day's run against a usable start (Arslan 26,261 → 56,403 = +30,142)
+     *   Anything else is returned exactly as before, so a clean rider is unaffected.
+     *
+     * Measured over the replica's 853 rider-days: 850 identical, and the 3 that moved are
+     * Arslan's typo, Danish's zero, and Shabib's 2026-01-30 row (start 100 / end 2,686 while
+     * his bike reads ~4,000 — junk on both sides, so no usable close exists and this returns
+     * NULL). ⚠ NULL means "cannot be measured", NOT "no gap": callers already treat it that
+     * way (continuity() returns null, the morning gate asks for no confirmation). Returning a
+     * number we know to be wrong is what produced the unactionable message in the first place.
      */
     public function lastClosingMeter(int $userId, string $beforeDate): ?array
     {
         try {
-            $row = DB::table('t_ops_attendance')
+            $rows = DB::table('t_ops_attendance')
                 ->where('user_id', $userId)
                 ->where('attendance_date', '<', $beforeDate)
                 ->where(function ($q) {
                     $q->whereNotNull('meter_home')->orWhereNotNull('meter_end');
                 })
                 ->orderByDesc('attendance_date')
-                ->first(['attendance_date', 'meter_home', 'meter_end']);
-            if (!$row) {
-                return null;
+                ->limit(self::CLOSING_LOOKBACK_ROWS)
+                ->get(['attendance_date', 'meter_start', 'meter_home', 'meter_end']);
+
+            foreach ($rows as $row) {
+                $val = self::usableClosing($row);
+                if ($val !== null) {
+                    return ['value' => $val, 'date' => substr((string) $row->attendance_date, 0, 10)];
+                }
             }
-            $val = $row->meter_home !== null && $row->meter_home !== '' ? (int) $row->meter_home : (int) $row->meter_end;
-            return ['value' => $val, 'date' => substr((string) $row->attendance_date, 0, 10)];
+            return null;
         } catch (\Throwable $e) {
             return null;
         }
+    }
+
+    /**
+     * The closing reading on one attendance row, or null when it cannot be trusted.
+     * meter_home wins over meter_end when both are present (the home flow is the
+     * proper close) — but a junk meter_home now falls through to meter_end instead
+     * of poisoning the answer.
+     */
+    private static function usableClosing($row): ?int
+    {
+        $start = (isset($row->meter_start) && is_numeric($row->meter_start)) ? (int) $row->meter_start : null;
+
+        foreach (['meter_home' => self::MAX_HOME_RUN_KM, 'meter_end' => self::MAX_DAY_RUN_KM] as $col => $cap) {
+            $raw = $row->$col ?? null;
+            if ($raw === null || $raw === '' || !is_numeric($raw)) {
+                continue;
+            }
+            $v = (int) $raw;
+            if ($v <= 0) {
+                continue;                       // 0 = never recorded, not an odometer at zero
+            }
+            if ($start !== null && $start > 0) {
+                $run = $v - $start;
+                if ($run < 0 || $run > $cap) {
+                    continue;                   // the day cannot have happened
+                }
+            }
+            return $v;
+        }
+        return null;
     }
 
     /**
@@ -261,9 +325,14 @@ class WorkJourneyService
             if (!Schema::hasColumn('t_ops_attendance', 'work_expected_by')) {
                 return $out;
             }
+            // ⭐ Phase C: whoever was on a company machine on THIS date (registry
+            //    first, profile checkbox as the fallback population).
+            $companySet = array_flip((new VehicleResolver())->companyRiderIdsFor($date));
             $bikeUsers = DB::table('t_ops_rider_profile')
-                ->where('company_bike', 1)->whereNotNull('home_latitude')
-                ->pluck('user_id')->all();
+                ->whereNotNull('home_latitude')
+                ->pluck('user_id')
+                ->filter(fn ($uid) => isset($companySet[(int) $uid]))
+                ->values()->all();
             if (empty($bikeUsers)) {
                 return $out;
             }

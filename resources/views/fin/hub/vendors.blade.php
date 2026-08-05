@@ -60,29 +60,24 @@
                         <th>Vendor</th><th class="r">NF owes</th><th class="r">Purchases</th><th class="r">Payments</th><th>Last payment</th><th class="r">Actions</th>
                     </tr></thead>
                     <tbody>
-                    @forelse($vendors as $v)
-                        <tr class="t-row" onclick="window.location='{{ route('fin.hub.vendor', ['id' => $v['id'], 'scope' => $scope]) }}'">
-                            <td>
-                                <span class="rider-name" style="gap:8px">{{ $v['name'] }}
-                                    <span class="type-chip">{{ $v['method'] === 'by_weight' ? '⚖ weight' : '📦 total' }}</span>
-                                </span>
-                                @if($v['code'])<div class="iv-sub mono" style="color:var(--ink3);margin-left:0">{{ $v['code'] }}</div>@endif
-                            </td>
-                            <td class="r"><span class="amt num" style="color:{{ $v['payable'] > 0.5 ? 'var(--owe)' : 'var(--in)' }}">{{ number_format($v['payable'], 2) }}</span></td>
-                            <td class="r num">{{ $v['purchases'] ? number_format($v['purchases'], 0) : '—' }}</td>
-                            <td class="r num">{{ $v['payments'] ? number_format($v['payments'], 0) : '—' }}</td>
-                            <td class="cell-date">{{ $v['last_pay'] ? \Carbon\Carbon::parse($v['last_pay'])->format('M d, Y') : '—' }}</td>
-                            <td><div class="row-actions" onclick="event.stopPropagation()">
-                                @if(!auth()->user()?->isReadOnly())
-                                <button class="mini-btn" type="button" onclick="hubOpenVendorEdit(@js($v))">Edit</button>
-                                @if($v['deletable'])<button class="mini-btn" type="button" onclick="hubDeleteVendor({{ $v['id'] }}, @js($v['name']))" style="color:var(--out)">Delete</button>@endif
-                                @endif
-                                <a class="mini-btn" href="{{ route('fin.hub.vendor', ['id' => $v['id'], 'scope' => $scope]) }}">Ledger →</a>
-                            </div></td>
-                        </tr>
-                    @empty
+                    @if($vendors->isEmpty())
                         <tr><td colspan="6"><div class="empty">No vendors match.</div></td></tr>
-                    @endforelse
+                    @elseif($vendorGroups)
+                        {{-- Combined scope: NF first, then Frozen, with a quiet unit header between. --}}
+                        @foreach($vendorGroups as $g)
+                            <tr class="bu-sep{{ $loop->first ? ' first' : '' }}">
+                                <td colspan="6">
+                                    <span class="bu-name">{{ $g['label'] }}</span>
+                                    <span class="bu-count">{{ $g['rows']->count() }} {{ \Illuminate\Support\Str::plural('vendor', $g['rows']->count()) }}</span>
+                                    @php $gOwed = (float) $g['rows']->sum('payable'); @endphp
+                                    @if($gOwed > 0.5)<span class="bu-owed num">owes Rs. {{ number_format($gOwed, 0) }}</span>@endif
+                                </td>
+                            </tr>
+                            @include('fin.hub.partials.vendor-rows', ['rows' => $g['rows'], 'scope' => $scope])
+                        @endforeach
+                    @else
+                        @include('fin.hub.partials.vendor-rows', ['rows' => $vendors, 'scope' => $scope])
+                    @endif
                     </tbody>
                 </table>
             </div>

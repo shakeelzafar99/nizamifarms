@@ -476,6 +476,13 @@ class OrderController extends Controller
                         'unlock_active' => $order->customer->verifiedPinUnlockActive(),
                         'unlocked_until' => $order->customer->verifiedPinUnlockActive()
                             ? $order->customer->verified_pin_unlocked_until->toIso8601String() : null,
+                        // Aug-2026 — is a pin the CUSTOMER sent sitting unused in
+                        // the chat? The auto-save never overwrites an existing pin
+                        // (correctly), but until now that refusal was invisible and
+                        // an order shipped to a stale address the next day. One
+                        // indexed lookup, detail view only — never on a list poll.
+                        'pin_reply_pending' => app(\App\Services\Location\PinHistoryService::class)
+                            ->pendingReply((int) $order->customer->id),
                     ];
                 }
             }
@@ -2097,6 +2104,13 @@ class OrderController extends Controller
                             'kept_db_status' => $order->order_status,
                         ]);
                     } elseif ($order instanceof \App\Models\CRM\OrderModel) {
+                        // 🚚 An order ON THE VAN is not moved from a dropdown (owner
+                        // ruling Aug-4): the handover scan is what proves who took it
+                        // and where. The rest of the edit still saves.
+                        $vanBlock = \App\Services\Riders\VanService::manualChangeBlock($order, $submittedStatus);
+                        if ($vanBlock !== null) {
+                            $statusChangeWarning = $vanBlock;
+                        } else {
                         try {
                             $ok = $order->changeStatus($submittedStatus, 'Changed via order edit form', auth()->id());
                             if (!$ok) {
@@ -2121,6 +2135,7 @@ class OrderController extends Controller
                             ]);
                             $statusChangeWarning = "Status change to '{$submittedStatus}' failed: {$e->getMessage()} — the rest of the order was saved.";
                         }
+                        } // end van-guard else
                     } else {
                         // Shopify staging order — direct write, as before.
                         $order->order_status = $submittedStatus;
@@ -5639,6 +5654,13 @@ class OrderController extends Controller
                 $v = preg_replace('/[\x00-\x1F\x7F]+/', '', $v);
                 $out[$k] = mb_substr(trim($v), 0, $max);
             }
+            // Numeric: QR module size in printer dots. The ESC/POS QR command (GS ( k fn 67)
+            // accepts 1..16 ONLY — out of range and the printer silently falls back to a tiny
+            // default QR. Clamped 8..16 here so a malformed request can never break the label.
+            // 16 = current (largest) size; 12 = the pre-Aug-2026 size, the fallback if the
+            // BT-600M mishandles large modules. Absent => 16, matching the app's own default.
+            $qr = (int) $request->input('qr_module_size', 16);
+            $out['qr_module_size'] = max(8, min(16, $qr > 0 ? $qr : 16));
             \DB::table('t_sys_config')->where('id', 1)->update(['receipt_print_config' => json_encode($out, JSON_UNESCAPED_UNICODE)]);
             return response()->json(['success' => true]);
         } catch (\Exception $e) {

@@ -757,6 +757,19 @@ class QurbaniLocationRequestService
             'saved_by'    => $userId,
         ]);
 
+        // Audit it — the comment above has said "write the pin and audit" since
+        // this method was written, but the audit half was never added, so a
+        // reviewer-approved pin was the one staff-driven pin change with no trail.
+        \App\Services\AuditLogger::logCustomerPinChange(
+            (int) $row->customer_id,
+            trim(((string) ($customer->first_name ?? '')) . ' ' . ((string) ($customer->last_name ?? ''))),
+            $customer->latitude,
+            $customer->longitude,
+            $row->reply_latitude,
+            $row->reply_longitude,
+            'Qurbani location reply approved by reviewer'
+        );
+
         return ['saved' => true, 'skipped_reason' => null, 'customer_id' => (int) $row->customer_id];
     }
 

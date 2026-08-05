@@ -552,6 +552,12 @@ class FleetFuelService
                          service_due_km,
                          attendance_id, attachments, created_at, title, description,
                          requires_level_1, level_1_status, requires_level_2, level_2_status,
+                         -- What the claim was FILED against. The approve strip
+                         -- pre-selects this instead of its own first option, which
+                         -- used to overwrite the filer's choice with NF Cash unless
+                         -- the approver happened to touch the dropdown.
+                         payment_source_account_id, receiving_account_id,
+                         maintenance_type_id,
                          COALESCE(expense_date, DATE(created_at)) AS d")
             ->whereIn('expense_category', [self::CAT_FUEL, self::CAT_MAINT])
             ->whereRaw("COALESCE(expense_date, DATE(created_at)) BETWEEN ? AND ?", [$from, $to])
@@ -631,18 +637,73 @@ class FleetFuelService
     }
 
     /** Due / due-soon / overdue per bike. Null when we cannot tell. */
+    /**
+     * Per rider: the interval of the type of their most recent APPROVED
+     * clock-resetting service. Empty for anyone whose last service was untyped
+     * (every rider before Aug-2026) — the caller then falls back as before.
+     *
+     * Only clock-resetting types count: a brake-shoe job is real maintenance but
+     * it is not what "next service due" measures, so it must not set the schedule
+     * any more than it resets the clock.
+     *
+     * @return array<int, int>  userId => interval_km
+     */
+    private function lastServiceTypeIntervals(array $userIds): array
+    {
+        if (!$userIds) {
+            return [];
+        }
+        try {
+            if (!\Illuminate\Support\Facades\Schema::hasTable('t_fleet_maintenance_types')) {
+                return [];
+            }
+            // The newest qualifying claim per rider, then that type's interval.
+            $rows = DB::table('t_req_master as r')
+                ->join('t_fleet_maintenance_types as t', 't.id', '=', 'r.maintenance_type_id')
+                ->whereIn('r.requester_user_id', $userIds)
+                ->where('r.expense_category', 'Maintenance')
+                ->where('r.status', 'approved')
+                ->where('t.resets_service_clock', 1)
+                ->where('t.interval_km', '>', 0)
+                ->orderBy('r.requester_user_id')
+                ->orderByDesc('r.meter_at_fill')
+                ->get(['r.requester_user_id as uid', 't.interval_km']);
+
+            $out = [];
+            foreach ($rows as $row) {
+                // Ordered newest-first per rider, so the first one wins.
+                if (!isset($out[(int) $row->uid])) {
+                    $out[(int) $row->uid] = (int) $row->interval_km;
+                }
+            }
+            return $out;
+        } catch (\Throwable $e) {
+            return [];
+        }
+    }
+
     private function serviceState(array $userIds): array
     {
         $profiles = $this->profiles();
         $current  = $this->currentMeters($userIds);
         $default  = (int) $this->cfg('BIKE_SERVICE_INTERVAL_KM', 3000);
 
+        // ⭐ Aug-2026: the schedule follows THE WORK LAST DONE. If the bike had the
+        // 2,500 km oil+tuning, it is due in 2,500 — not in whatever the bike's
+        // generic override says. Without this the chip kept showing the old single
+        // interval while the frozen `service_due_km` on the request used the type's,
+        // and the two disagreed on the same screen.
+        // Precedence: last clock-resetting service's type → per-bike override →
+        // company default. The override still governs every bike with no typed
+        // service yet, which today is all of them.
+        $lastTypeInterval = $this->lastServiceTypeIntervals($userIds);
+
         $out = [];
         foreach ($userIds as $uid) {
             $p = $profiles[$uid] ?? null;
             if (!$p) continue;
 
-            $interval = (int) ($p->service_interval_km ?: $default);
+            $interval = (int) (($lastTypeInterval[$uid] ?? 0) ?: ($p->service_interval_km ?: $default));
             $now      = $current[$uid] ?? null;
             $last     = $p->last_service_meter !== null ? (int) $p->last_service_meter : null;
 
@@ -786,6 +847,8 @@ class FleetFuelService
         }
 
         // --- attach claims (a claim can land on a day with no attendance row) ---
+        // Resolved once for the whole month rather than per claim row.
+        $maintTypes = app(\App\Services\Riders\MaintenanceTypeService::class);
         foreach ($byDay as $date => $list) {
             if (!isset($days[$date])) {
                 // A claim dated on a day with no attendance row at all (e.g. filed
@@ -809,6 +872,10 @@ class FleetFuelService
                     'km_since_fill_odd' => ($sinceById[$r->id] ?? null) === -1,
                     'litres'         => $r->litres !== null ? (float) $r->litres : null,
                     'service_type'   => $r->service_type,
+                    // The manager's own label for this job ("Brake Shoe"), falling back
+                    // to the bucket name on rows filed before types existed.
+                    'maintenance_type_id' => $r->maintenance_type_id !== null ? (int) $r->maintenance_type_id : null,
+                    'maintenance_type'    => $maintTypes->labelFor($r->maintenance_type_id ?? null, $r->service_type),
                     // Regular services only: how far the bike ran since the last
                     // one, and by how much this beat the schedule.
                     'km_since_service' => $serviceGap[$r->id]['since'] ?? null,
@@ -841,6 +908,12 @@ class FleetFuelService
                     // approve action from here posts the same level the Daily
                     // Closing screen would. null once nothing is pending.
                     'next_level' => $this->nextApprovalLevel($r),
+                    // The account it was FILED against (null on older claims, and
+                    // on anything a rider raised — he is never asked). The approver
+                    // still decides, but he starts from what was filed rather than
+                    // from whatever happens to be first in the list.
+                    'filed_source_id' => $r->payment_source_account_id !== null ? (int) $r->payment_source_account_id : null,
+                    'filed_bank_id'   => $r->receiving_account_id !== null ? (int) $r->receiving_account_id : null,
                 ];
             }
         }
@@ -880,7 +953,140 @@ class FleetFuelService
             'off_nights' => $offNights,
             'service' => ($this->serviceState([$userId])[$userId] ?? null),
             'service_history' => $this->serviceHistory($userId),
+            // 🔧 Per-type schedule — the report the manager actually asked for:
+            // each job on its own clock (oil 1,200 / brake shoe 10,000 / …) rather
+            // than one number for the whole bike.
+            'service_schedule' => $this->serviceSchedule($userId),
+            // What the month's maintenance money went ON, by type.
+            'maint_by_type' => $this->maintByType($userId, $from, $to),
         ];
+    }
+
+    /**
+     * Every scheduled maintenance type, with when this rider's bike last had it
+     * and how far it is from being due again.
+     *
+     * Derived from approved claims, not stored anywhere — so it self-corrects if a
+     * claim is edited or rejected, and needs no backfill. Only types that carry an
+     * interval appear: "as conditions" work (Chain Set, Misc) has no due date to
+     * count down to and would just be noise on a schedule.
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    private function serviceSchedule(int $userId): array
+    {
+        try {
+            if (!\Illuminate\Support\Facades\Schema::hasTable('t_fleet_maintenance_types')) {
+                return [];
+            }
+            $types = DB::table('t_fleet_maintenance_types')
+                ->where('is_active', 1)->where('interval_km', '>', 0)
+                ->orderBy('sort_order')->orderBy('type_name')
+                ->get(['id', 'type_name', 'interval_km', 'bucket']);
+            if ($types->isEmpty()) {
+                return [];
+            }
+
+            // Last job per type for this rider — from APPROVED claims (the normal
+            // path, which carries the bill and the photo) AND from manually
+            // recorded services (work done outside the system, no bill). Both are
+            // real evidence the job happened; whichever is further along the
+            // odometer is the one that counts.
+            $last = DB::table('t_req_master')
+                ->where('requester_user_id', $userId)
+                ->where('expense_category', 'Maintenance')
+                ->where('status', 'approved')
+                ->whereNotNull('maintenance_type_id')
+                ->whereNotNull('meter_at_fill')
+                ->groupBy('maintenance_type_id')
+                ->selectRaw('maintenance_type_id AS tid, MAX(meter_at_fill) AS m,
+                             MAX(COALESCE(expense_date, DATE(created_at))) AS d')
+                ->get()->keyBy('tid');
+
+            if (\Illuminate\Support\Facades\Schema::hasTable('t_fleet_service_log')) {
+                $logged = DB::table('t_fleet_service_log')
+                    ->where('user_id', $userId)
+                    ->groupBy('maintenance_type_id')
+                    ->selectRaw('maintenance_type_id AS tid, MAX(meter) AS m, MAX(service_date) AS d')
+                    ->get();
+                foreach ($logged as $row) {
+                    $existing = $last->get($row->tid);
+                    if (!$existing || (int) $row->m > (int) $existing->m) {
+                        $last->put($row->tid, $row);
+                    }
+                }
+            }
+
+            $now = $this->currentMeters([$userId])[$userId] ?? null;
+
+            $out = [];
+            foreach ($types as $t) {
+                $l    = $last->get($t->id);
+                $lastM = $l ? (int) $l->m : null;
+                // due_in is only meaningful when we know BOTH where the bike is now
+                // and when this job was last done. Anything else stays null rather
+                // than inventing a countdown from a made-up reference point.
+                $dueIn = ($lastM !== null && $now !== null)
+                    ? (int) $t->interval_km - ($now - $lastM) : null;
+
+                $out[] = [
+                    'id'          => (int) $t->id,
+                    'name'        => $t->type_name,
+                    'bucket'      => $t->bucket,
+                    'interval_km' => (int) $t->interval_km,
+                    'last_meter'  => $lastM,
+                    'last_at'     => $l->d ?? null,
+                    'due_at_km'   => $lastM !== null ? $lastM + (int) $t->interval_km : null,
+                    'due_in_km'   => $dueIn,
+                    'state'       => $dueIn === null ? 'unknown'
+                                    : ($dueIn < 0 ? 'overdue' : ($dueIn <= 150 ? 'due_soon' : 'ok')),
+                ];
+            }
+            return $out;
+        } catch (\Throwable $e) {
+            return [];
+        }
+    }
+
+    /**
+     * This month's maintenance spend split by type — "where did the Rs 1,760 go".
+     * Approved and pending both count; pending is flagged so the manager can see
+     * what is still waiting on him.
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    private function maintByType(int $userId, string $from, string $to): array
+    {
+        try {
+            $rows = DB::table('t_req_master as r')
+                ->leftJoin('t_fleet_maintenance_types as t', 't.id', '=', 'r.maintenance_type_id')
+                ->where('r.requester_user_id', $userId)
+                ->where('r.expense_category', 'Maintenance')
+                ->whereNotIn('r.status', ['cancelled', 'rejected'])
+                ->whereRaw('COALESCE(r.expense_date, DATE(r.created_at)) BETWEEN ? AND ?', [$from, $to])
+                ->groupBy('r.maintenance_type_id', 't.type_name', 'r.service_type')
+                ->selectRaw("COALESCE(t.type_name,
+                                CASE WHEN r.service_type IN ('oil_change','general') THEN 'Regular service'
+                                     WHEN r.service_type = 'repair' THEN 'Repair'
+                                     ELSE 'Maintenance' END) AS label,
+                             SUM(r.amount) AS total, COUNT(*) AS n,
+                             SUM(CASE WHEN r.status = 'pending' THEN 1 ELSE 0 END) AS pending_n")
+                ->get();
+
+            // Untyped rows collapse onto the same bucket label, so merge by label.
+            $merged = [];
+            foreach ($rows as $r) {
+                $k = $r->label;
+                $merged[$k] ??= ['label' => $k, 'total' => 0.0, 'n' => 0, 'pending_n' => 0];
+                $merged[$k]['total']     += (float) $r->total;
+                $merged[$k]['n']         += (int) $r->n;
+                $merged[$k]['pending_n'] += (int) $r->pending_n;
+            }
+            usort($merged, fn ($a, $b) => $b['total'] <=> $a['total']);
+            return array_values($merged);
+        } catch (\Throwable $e) {
+            return [];
+        }
     }
 
     /**

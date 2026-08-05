@@ -760,9 +760,15 @@ class PayrollService
     /**
      * Unsettled approved salary advances for a user (oldest first).
      *
-     * Carries the PROVENANCE of each advance (funding account, who gave it, the note) so the
-     * drill-down can show WHICH advance is which — a manager voiding a wrong one must be able
-     * to tell two same-amount advances apart before acting. Two extra lookups, not N+1.
+     * Carries the PROVENANCE of each advance (funding account, WHICH BANK, who gave it, the note)
+     * so the drill-down can show WHICH advance is which — a manager voiding a wrong one must be
+     * able to tell two same-amount advances apart before acting. Three extra lookups, not N+1.
+     *
+     * The bank matters more than the chart account: 'Online Bank' is a SINGLE account and the real
+     * bank is only a tag (receiving_account_id). A void restores that bank by dropping the ledger
+     * row out of BankBalanceService's approved-rows sum, so the reviewer must see which bank will
+     * move before deciding. Legacy advances predating per-bank tracking have no tag — they stay
+     * null and the UI says so rather than naming a bank it doesn't know.
      */
     private function openAdvances(int $userId): array
     {
@@ -775,16 +781,29 @@ class PayrollService
                 })
                 ->orderBy('created_at', 'asc')
                 ->get(['id', 'amount', 'request_number', 'created_at', 'description',
-                       'payment_source_account_id', 'created_by', 'ledger_transaction_id']);
+                       'payment_source_account_id', 'receiving_account_id', 'created_by',
+                       'ledger_transaction_id']);
             if ($rows->isEmpty()) {
                 return [];
             }
 
-            $acctNames = [];
+            $accts = collect();
             $ids = $rows->pluck('payment_source_account_id')->filter()->unique()->all();
             if ($ids) {
-                $acctNames = DB::table('t_fin_accounts')->whereIn('id', $ids)
-                    ->pluck('account_name', 'id')->toArray();
+                $accts = DB::table('t_fin_accounts')->whereIn('id', $ids)
+                    ->get(['id', 'account_name', 'account_category'])->keyBy('id');
+            }
+
+            // Same label shape the paid-period receipts use ("Meezan Bank Limited ••4237") so the
+            // advance drill and the salary receipt name a bank identically.
+            $bankLabels = [];
+            $bankIds = $rows->pluck('receiving_account_id')->filter()->unique()->all();
+            if ($bankIds) {
+                $bankLabels = DB::table('t_fin_online_receiving_accounts')->whereIn('id', $bankIds)
+                    ->get(['id', 'name', 'bank_name', 'account_last4'])
+                    ->mapWithKeys(fn ($b) => [$b->id => trim(($b->name ?: $b->bank_name)
+                        . ($b->account_last4 ? ' ••' . $b->account_last4 : ''))])
+                    ->toArray();
             }
             $userNames = [];
             $uids = $rows->pluck('created_by')->filter()->unique()->all();
@@ -799,7 +818,15 @@ class PayrollService
                 'amount' => (float) ($r->amount ?? 0),
                 'date' => $r->created_at ? substr((string) $r->created_at, 0, 10) : null,
                 'source' => $r->payment_source_account_id
-                    ? ($acctNames[$r->payment_source_account_id] ?? null) : null,
+                    ? ($accts[$r->payment_source_account_id]->account_name ?? null) : null,
+                // Online-funded rows name the actual bank; cash rows have none by design.
+                'is_online' => $r->payment_source_account_id
+                    ? (($accts[$r->payment_source_account_id]->account_category ?? null)
+                        === \App\Models\FIN\AccountModel::CATEGORY_BANK)
+                    : false,
+                'bank' => $r->receiving_account_id
+                    ? ($bankLabels[$r->receiving_account_id] ?? ('Bank #' . $r->receiving_account_id))
+                    : null,
                 'given_by' => $r->created_by ? ($userNames[$r->created_by] ?? null) : null,
                 'note' => $r->description ?: null,
                 // Only a POSTED advance can be voided (the void restores its ledger row).
@@ -1063,6 +1090,18 @@ class PayrollService
                 $actorName = DB::table('t_sys_user')->where('id', $actorId)->value('fullname') ?: ('User ' . $actorId);
                 $stamp = 'VOIDED by ' . $actorName . ' on ' . now()->format('Y-m-d H:i:s') . ' — Reason: ' . $reason;
                 $restoredTo = \App\Models\FIN\AccountModel::find($ledger->from_account_id)?->account_name;
+                // Name the tagged bank instead of the shared 'Online Bank' account: that per-bank
+                // figure is what actually moves (the row drops out of BankBalanceService's sum
+                // once it is no longer approved), so the confirmation must match what they'll see.
+                if ($ledger->receiving_account_id) {
+                    $bank = DB::table('t_fin_online_receiving_accounts')
+                        ->where('id', $ledger->receiving_account_id)
+                        ->first(['name', 'bank_name', 'account_last4']);
+                    if ($bank) {
+                        $restoredTo = trim(($bank->name ?: $bank->bank_name)
+                            . ($bank->account_last4 ? ' ••' . $bank->account_last4 : ''));
+                    }
+                }
                 $amount = (float) $ledger->amount;
 
                 // 1. Money back, through the canonical engine.

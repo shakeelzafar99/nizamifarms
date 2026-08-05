@@ -357,8 +357,11 @@ class RiderReportsController extends Controller
             // Company-bike riders are EXCLUDED (their office checkout is normal — they go home after).
             $bikeIds = [];
             if (\Illuminate\Support\Facades\Schema::hasColumn('t_ops_rider_profile', 'company_bike')) {
-                $bikeIds = DB::table('t_ops_rider_profile')->where('company_bike', 1)
-                    ->whereIn('user_id', $ids)->pluck('user_id')->all();
+                // ⭐ Phase C: whoever was on a company machine on THIS date.
+                $companySet = array_flip(
+                    (new \App\Services\Riders\VehicleResolver())->companyRiderIdsFor($date)
+                );
+                $bikeIds = array_values(array_filter($ids, fn ($u) => isset($companySet[(int) $u])));
             }
             $bikeIds = array_flip($bikeIds);
 
@@ -428,7 +431,11 @@ class RiderReportsController extends Controller
 
             // Company-bike riders + their per-rider grace override (if any).
             $cols = $hasGrace ? ['user_id', 'overnight_grace_km'] : ['user_id'];
-            $bikeRiders = DB::table('t_ops_rider_profile')->where('company_bike', 1)->get($cols);
+            // ⭐ Phase C: the company-machine cohort for THIS date.
+            $companyIds = (new \App\Services\Riders\VehicleResolver())->companyRiderIdsFor($date);
+            $bikeRiders = empty($companyIds)
+                ? collect()
+                : DB::table('t_ops_rider_profile')->whereIn('user_id', $companyIds)->get($cols);
             if ($bikeRiders->isEmpty()) {
                 return $out;
             }

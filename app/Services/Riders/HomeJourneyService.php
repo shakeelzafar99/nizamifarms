@@ -18,15 +18,32 @@ use Illuminate\Support\Facades\Log;
  */
 class HomeJourneyService
 {
-    /** A rider is on the going-home flow only if company_bike AND a home pin is set. */
-    public function riderHomePin(int $userId): ?array
+    /**
+     * A rider is on the going-home flow only if he is on a COMPANY MACHINE and a
+     * home pin is set.
+     *
+     * ⭐ PHASE C — THIS IS WHERE THE TWO SEAMS MEET. The gate ("is he on a company
+     *    machine today?") now comes from the vehicle registry via FuelClaimRules,
+     *    so assigning a company bike puts a rider on the going-home flow without
+     *    anyone ticking a second box. The PIN itself is still his home, which is
+     *    correct for a bike: if Danish takes Arslan's bike home the fence must be
+     *    Danish's house. A machine with its own base (the van's parking) is
+     *    handled by `VehicleResolver::overnightPinFor`, which wraps this.
+     *
+     * ⚠ Gated: while VEHICLE_RULES is off, or for a rider holding no registered
+     *   vehicle, the gate is the old profile checkbox exactly as before.
+     */
+    public function riderHomePin(int $userId, ?string $date = null): ?array
     {
         if (!Schema::hasColumn('t_ops_rider_profile', 'home_latitude')) {
             return null;
         }
         $p = DB::table('t_ops_rider_profile')->where('user_id', $userId)
             ->first(['company_bike', 'home_latitude', 'home_longitude', 'home_radius_m']);
-        if (!$p || (int) ($p->company_bike ?? 0) !== 1) {
+        if (!$p) {
+            return null;
+        }
+        if (!(new FuelClaimRules())->ridesCompanyBike($userId, $date)) {
             return null;
         }
         if ($p->home_latitude === null || $p->home_longitude === null) {

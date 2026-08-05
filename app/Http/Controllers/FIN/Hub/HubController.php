@@ -45,7 +45,9 @@ class HubController extends Controller
         }
 
         // --- Base query (mirrors LedgerController::index filters) ------------------------------
-        $query = LedgerModel::with(['fromAccount', 'toAccount', 'createdBy', 'order.customer']);
+        // receivingAccount: the physical bank tag, surfaced in the drawer so an online row says
+        // WHICH bank at a glance. Eager-loaded — the list renders 50 rows.
+        $query = LedgerModel::with(['fromAccount', 'toAccount', 'createdBy', 'order.customer', 'receivingAccount']);
 
         $user = auth()->user();
         $isTaimur = $user && $user->roles()->whereRaw('LOWER(urole_name) = ?', ['taimur'])->exists();
@@ -150,8 +152,14 @@ class HubController extends Controller
         ];
 
         // Pending strip (global signal, not scope-filtered).
-        $pendingL1 = LedgerModel::whereIn('approval_status', [LedgerModel::STATUS_PENDING, LedgerModel::STATUS_PENDING_L1])->count();
-        $pendingL2 = LedgerModel::where('approval_status', LedgerModel::STATUS_PENDING_L2)->count();
+        //
+        // Split into BALANCE ACTIONS vs INVOICES (Aug-2026). A single blended "91 waiting" is how
+        // one stuck Rs 20,000 transfer hid behind ~90 routine delivered-invoice approvals for two
+        // days. The two queues live in different screens and move at completely different rates,
+        // so the strip now names them separately and links each to the screen that clears it.
+        // (The old blended L1/L2 counts are gone with the blended strip they fed — the split
+        // below carries both numbers the strip now shows.)
+        $pendingSplit = app(\App\Services\FIN\PendingLedgerActionsService::class)->summary();
 
         // Operational period figures (Qurbani excluded) — feed the pending sub-lines on the Online
         // and Riders cards (pending L1/L2, pending deposits/expenses).
@@ -196,8 +204,7 @@ class HubController extends Controller
             'kpis'             => $kpis,
             'pnl'              => $pnl,
             'positions'        => $positions,
-            'pendingL1'        => $pendingL1,
-            'pendingL2'        => $pendingL2,
+            'pendingSplit'     => $pendingSplit,
             'startDate'        => $startDate,
             'endDate'          => $endDate,
             'filters'          => $request->only(['type', 'mode', 'status', 'account_id', 'search']),
@@ -365,12 +372,19 @@ class HubController extends Controller
             }
         }
 
+        // ⏳ Per-account pending-action counts, so an account holding stuck money is visible from
+        // the list instead of only after opening it. Invoice approvals are excluded — see
+        // PendingLedgerActionsService.
+        $pendingCounts = app(\App\Services\FIN\PendingLedgerActionsService::class)
+            ->countsByAccount($companyAccounts->pluck('id')->all());
+
         return view('fin.hub.accounts', [
             'active'          => 'accounts',
             'scope'           => $scope,
             'canSeeKhaas'     => $canSeeKhaas,
             'canSeeMulti'     => $canSeeMulti,
             'companyAccounts' => $companyAccounts,
+            'pendingCounts'   => $pendingCounts,
             'riders'          => $riders,
             'assets'          => $assets,
             'expenseCategories' => $this->expenseCategories(),
@@ -585,6 +599,13 @@ class HubController extends Controller
             ];
         }
 
+        // ⏳ What is waiting on approval for THIS account — deliberately computed outside the
+        // period window above, because money stuck for months is exactly what the window hides
+        // (see PendingLedgerActionsService). Invoices are excluded there: they belong to Online
+        // Approvals and would bury everything else.
+        $pendingActions = app(\App\Services\FIN\PendingLedgerActionsService::class)
+            ->forAccount($account, auth()->id());
+
         return view('fin.hub.account-detail', [
             'active'      => 'accounts',
             'scope'       => $scope,
@@ -595,6 +616,7 @@ class HubController extends Controller
             'isAsset'     => $isAsset,
             'balance'     => $balance,
             'ledger'      => $ledger,
+            'pendingActions' => $pendingActions,
             'riderMeta'   => $riderMeta,
             'days'        => $days,
             'daysLabel'   => $daysLabel,
@@ -604,6 +626,170 @@ class HubController extends Controller
                                 ? route('fin.employee.show', $account->id)
                                 : route('fin.accounts.show', $account->id),
         ]);
+    }
+
+    // ── "Who uses this account" (Aug-2026) ────────────────────────────────────
+    //
+    // The account-usage tags in t_fin_account_users decide which payment sources a
+    // person is offered, per purpose, and which one is pre-selected. Managed here
+    // rather than on a users×accounts grid because there are ~9 spendable accounts
+    // and ~30 users: a short list per account is readable, the grid is not — and it
+    // matches how the owner talks about it ("Askari - Shabib is Shabib's account").
+    //
+    // Editing is gated on `manage_account_users` (Taimur + Shabib). Everyone else
+    // who can open the account sees the list read-only, which is useful on its own
+    // ("why can't I pay from this?").
+
+    /** JSON: the people tagged on this account + everyone who could be added. */
+    public function accountUsers(Request $request, $id)
+    {
+        $account = AccountModel::findOrFail($id);
+        $this->guardAccountVisible($account);
+
+        $rows = \App\Models\FIN\AccountUserModel::with('user')
+            ->where('account_id', $account->id)
+            ->get()
+            ->map(function ($t) use ($account) {
+                return [
+                    'id'                => $t->id,
+                    'user_id'           => $t->user_id,
+                    'name'              => $t->user->fullname ?? ('User #' . $t->user_id),
+                    'is_default'        => (bool) $t->is_default,
+                    'can_expense'       => (bool) $t->can_expense,
+                    'can_vendor'        => (bool) $t->can_vendor,
+                    'can_advance'       => (bool) $t->can_advance,
+                    'preferred_bank_id' => $t->preferred_bank_id,
+                    // ⚠ A tag cannot grant reach into a business unit the person's
+                    // ROLE cannot open — it would be a second, weaker permission
+                    // system. Say so here, or the tag looks silently broken.
+                    'bu_blocked'        => !$this->userCanReachBu($t->user_id, (int) $account->business_unit_id),
+                ];
+            })
+            ->sortByDesc('is_default')->values();
+
+        return response()->json([
+            'success'    => true,
+            'can_manage' => (bool) auth()->user()?->hasPermission('manage_account_users')
+                            && !auth()->user()?->isReadOnly(),
+            'is_bank'    => $account->account_category === AccountModel::CATEGORY_BANK,
+            'bu_name'    => optional(\App\Models\FIN\BusinessUnitModel::find($account->business_unit_id))->name,
+            'rows'       => $rows,
+            'banks'      => app(\App\Services\FIN\PaymentSourceService::class)->banks(),
+            'candidates' => \App\Models\SysAdmin\UserModel::whereNotIn(
+                    'id', $rows->pluck('user_id')->all() ?: [0]
+                )
+                ->orderBy('fullname')
+                ->get(['id', 'fullname'])
+                ->map(fn ($u) => ['id' => $u->id, 'name' => $u->fullname]),
+        ]);
+    }
+
+    /** Add or update one person's tag on this account. */
+    public function saveAccountUser(Request $request, $id)
+    {
+        if (!auth()->user()?->hasPermission('manage_account_users') || auth()->user()?->isReadOnly()) {
+            return response()->json(['success' => false, 'message' => 'Not authorised to change who uses this account.'], 403);
+        }
+
+        $account = AccountModel::findOrFail($id);
+        $this->guardAccountVisible($account);
+
+        $data = $request->validate([
+            'user_id'           => 'required|exists:t_sys_user,id',
+            'can_expense'       => 'nullable|boolean',
+            'can_vendor'        => 'nullable|boolean',
+            'can_advance'       => 'nullable|boolean',
+            'is_default'        => 'nullable|boolean',
+            'preferred_bank_id' => 'nullable|integer|exists:t_fin_online_receiving_accounts,id',
+        ]);
+
+        try {
+            $tag = \App\Models\FIN\AccountUserModel::firstOrNew([
+                'account_id' => $account->id,
+                'user_id'    => (int) $data['user_id'],
+            ]);
+            $tag->can_expense = (bool) ($data['can_expense'] ?? false);
+            $tag->can_vendor  = (bool) ($data['can_vendor'] ?? false);
+            $tag->can_advance = (bool) ($data['can_advance'] ?? false);
+            // A bank preference is meaningless on a cash account and would be a
+            // confusing leftover if the account were ever re-categorised.
+            $tag->preferred_bank_id = $account->account_category === AccountModel::CATEGORY_BANK
+                ? ($data['preferred_bank_id'] ?? null)
+                : null;
+            $tag->created_by = $tag->exists ? $tag->created_by : auth()->id();
+            $tag->updated_by = auth()->id();
+            if (!$tag->exists) {
+                $tag->is_default = false;
+            }
+            $tag->save();
+
+            // Starring is a move, not a toggle: setDefault() clears this user's
+            // other star IN THE SAME BUSINESS UNIT (one home account per book).
+            if (!empty($data['is_default'])) {
+                \App\Models\FIN\AccountUserModel::setDefault((int) $data['user_id'], $account->id);
+            } elseif ($tag->is_default) {
+                $tag->is_default = false;
+                $tag->save();
+            }
+
+            return $this->accountUsers($request, $id);
+        } catch (\Throwable $e) {
+            \Log::error('saveAccountUser failed', ['account' => $id, 'error' => $e->getMessage()]);
+            return response()->json(['success' => false, 'message' => 'Could not save. Please try again.'], 500);
+        }
+    }
+
+    /** Remove one person's tag from this account. */
+    public function deleteAccountUser(Request $request, $id, $userId)
+    {
+        if (!auth()->user()?->hasPermission('manage_account_users') || auth()->user()?->isReadOnly()) {
+            return response()->json(['success' => false, 'message' => 'Not authorised to change who uses this account.'], 403);
+        }
+
+        $account = AccountModel::findOrFail($id);
+        $this->guardAccountVisible($account);
+
+        \App\Models\FIN\AccountUserModel::where('account_id', $account->id)
+            ->where('user_id', (int) $userId)
+            ->delete();
+
+        return $this->accountUsers($request, $id);
+    }
+
+    /** Same private-account rule accountDetail() enforces — don't leak via the API. */
+    private function guardAccountVisible(AccountModel $account): void
+    {
+        $user = auth()->user();
+        $isTaimur = $user && $user->roles()->whereRaw('LOWER(urole_name) = ?', ['taimur'])->exists();
+        if ($account->is_private && !$isTaimur) {
+            abort(403);
+        }
+    }
+
+    /** Does this user's role reach the business unit the account lives in? */
+    private function userCanReachBu(int $userId, int $buId): bool
+    {
+        try {
+            $role = \Illuminate\Support\Facades\DB::table('t_sys_user_role as ur')
+                ->join('t_sys_role as r', 'r.id', '=', 'ur.role_id')
+                ->where('ur.user_id', $userId)
+                ->select('r.id', 'r.business_unit_access', 'r.default_business_unit_id')
+                ->first();
+            if (!$role) {
+                return $buId === 1;
+            }
+            $access = $role->business_unit_access ?? 'all';
+            if ($access === 'all') {
+                return true;
+            }
+            if ($access === 'multiple') {
+                return \Illuminate\Support\Facades\DB::table('t_sys_role_business_unit')
+                    ->where('role_id', $role->id)->where('business_unit_id', $buId)->exists();
+            }
+            return (int) ($role->default_business_unit_id ?? 1) === $buId;
+        } catch (\Throwable $e) {
+            return true;   // BU columns missing → don't show a scary false warning
+        }
     }
 
     /** Resolve + guard the scope param against the user's accessible business units. */
@@ -700,7 +886,7 @@ class HubController extends Controller
     {
         $start = \Carbon\Carbon::today()->subDays($days)->startOfDay();
 
-        $rowsQuery = LedgerModel::with(['fromAccount', 'toAccount', 'createdBy', 'order.customer'])
+        $rowsQuery = LedgerModel::with(['fromAccount', 'toAccount', 'createdBy', 'order.customer', 'receivingAccount'])
             ->where(function ($q) use ($account) {
                 $q->where('from_account_id', $account->id)->orWhere('to_account_id', $account->id);
             })
@@ -736,16 +922,42 @@ class HubController extends Controller
         }
 
         // Group by date (DESC), each group carries in/out/net.
+        //
+        // Aug-2026 fix: In/Out now count only money that ACTUALLY MOVED. Previously every row in
+        // the day was summed regardless of approval, so a day containing an unapproved Rs 20,000
+        // transfer announced "In Rs. 20,000" while the Balance column beside it — correctly —
+        // never budged. The header and the balance contradicted each other, and the header was
+        // the one people read. Unapproved amounts are now carried separately and labelled as
+        // pending rather than silently folded into the day's takings.
+        //
+        // ONLY rows still awaiting a decision are diverted. This list also carries rejected and
+        // reversed rows, which have their own (pre-existing) treatment in these totals — they are
+        // deliberately left exactly as they were, so the single behaviour change here is that
+        // un-approved money stops being counted as money that arrived. Calling a rejected row
+        // "pending" would trade one wrong label for another.
+        //
+        // pending_l2 is NOT awaiting in this sense: L1 already posted its balance, L2 only
+        // verifies. balance_updated is consulted as a second opinion so a row posted by any other
+        // route is never mis-filed as pending.
+        $awaitingStatuses = [LedgerModel::STATUS_PENDING, LedgerModel::STATUS_PENDING_L1];
+
         $groups = [];
         foreach (array_reverse($items) as $it) {
             $d = \Carbon\Carbon::parse($it['row']->transaction_date)->toDateString();
             if (!isset($groups[$d])) {
-                $groups[$d] = ['date' => $d, 'in' => 0.0, 'out' => 0.0, 'items' => []];
+                $groups[$d] = ['date' => $d, 'in' => 0.0, 'out' => 0.0, 'pending' => 0.0, 'items' => []];
             }
-            if ($it['is_in']) {
-                $groups[$d]['in'] += (float) $it['row']->amount;
+
+            $amount = (float) $it['row']->amount;
+            $awaiting = in_array($it['row']->approval_status, $awaitingStatuses, true)
+                && !$it['row']->balance_updated;
+
+            if ($awaiting) {
+                $groups[$d]['pending'] += $amount;
+            } elseif ($it['is_in']) {
+                $groups[$d]['in'] += $amount;
             } else {
-                $groups[$d]['out'] += (float) $it['row']->amount;
+                $groups[$d]['out'] += $amount;
             }
             $groups[$d]['items'][] = $it;
         }
@@ -833,6 +1045,20 @@ class HubController extends Controller
         // name sorts 2 before 10. The "total owed" tile above still carries the money headline.
         })->sortBy('name', SORT_NATURAL | SORT_FLAG_CASE)->values();
 
+        // In a combined scope the list mixes two businesses, so split it into NF-then-Frozen
+        // sections (alphabetical inside each) rather than one interleaved run. A single-unit scope
+        // has nothing to separate and stays flat.
+        $buNames = \App\Models\FIN\BusinessUnitModel::pluck('name', 'id')->all();
+        $vendorGroups = null;
+        if ($rows->pluck('bu')->unique()->count() > 1) {
+            $vendorGroups = $rows->groupBy('bu')
+                ->sortKeys() // BU 1 (NF) above BU 2 (Frozen)
+                ->map(fn ($grp, $buId) => [
+                    'label' => $buNames[$buId] ?? ('Business unit ' . $buId),
+                    'rows'  => $grp->values(),
+                ])->values()->all();
+        }
+
         $totals = [
             'owed' => (float) $rows->sum('payable'),
             'with_balance' => $rows->filter(fn ($r) => $r['payable'] > 0.5)->count(),
@@ -842,7 +1068,8 @@ class HubController extends Controller
 
         return view('fin.hub.vendors', [
             'active' => 'vendors', 'scope' => $scope, 'canSeeKhaas' => $canSeeKhaas, 'canSeeMulti' => $canSeeMulti,
-            'noVendors' => false, 'vendors' => $rows, 'totals' => $totals, 'search' => $search,
+            'noVendors' => false, 'vendors' => $rows, 'vendorGroups' => $vendorGroups,
+            'totals' => $totals, 'search' => $search,
             'startDate' => $startDate, 'endDate' => $endDate,
             // Create/edit-vendor modal selects.
             'businessUnits' => AccountModel::getUserAccessibleBusinessUnits(),
@@ -877,7 +1104,7 @@ class HubController extends Controller
         }
         $hasRange = $startDate && $endDate;
 
-        $all = LedgerModel::with(['fromAccount', 'createdBy'])
+        $all = LedgerModel::with(['fromAccount', 'createdBy', 'receivingAccount'])
             ->where(function ($q) use ($account) {
                 $q->where('to_account_id', $account->id)->orWhere('from_account_id', $account->id);
             })
@@ -1082,13 +1309,26 @@ class HubController extends Controller
         $qfMode = $isQ ? \App\Services\QurbaniFinanceFilter::MODE_INCLUDE : \App\Services\QurbaniFinanceFilter::MODE_EXCLUDE;
 
         // Pool = the online chart account(s) for this scope.
-        $onlineAccounts = AccountModel::where('account_category', AccountModel::CATEGORY_BANK)
+        $poolAccountModels = AccountModel::where('account_category', AccountModel::CATEGORY_BANK)
             ->when($isQ, fn ($q) => $q->where('account_code', 'LIKE', 'QURBANI%'))
             ->when(!$isQ, fn ($q) => $q->where('account_code', 'NOT LIKE', 'QURBANI%'))
             ->orderBy('account_name')
-            ->get(['id', 'account_name', 'account_code', 'current_balance'])
-            ->map(fn ($a) => ['name' => $a->account_name, 'code' => $a->account_code, 'balance' => (float) $a->current_balance])->values();
+            ->get(['id', 'account_name', 'account_code', 'current_balance']);
+        // `id` is carried so this page can link back to the account's own page —
+        // the ONLINE tile on the accounts list lands HERE rather than there, so
+        // without a link the account page (and the "who uses this account" panel
+        // on it) is unreachable by clicking for the one account that most needs it.
+        $onlineAccounts = $poolAccountModels
+            ->map(fn ($a) => ['id' => $a->id, 'name' => $a->account_name, 'code' => $a->account_code, 'balance' => (float) $a->current_balance])->values();
         $ledgerOnlineBalance = (float) $onlineAccounts->sum('balance');
+
+        // ⏳ Pending balance actions against the pool. This page is where the ONLINE tile on the
+        // accounts list actually lands (the pool tile opens Banks, not the account page), so the
+        // tile's "N waiting for approval" chip must find its list HERE — without this, the chip
+        // points at a page that never shows them. Same card, same service, same endpoints as the
+        // account page; invoices stay excluded (they belong to Online Approvals).
+        $pendingActions = app(\App\Services\FIN\PendingLedgerActionsService::class)
+            ->forAccounts($poolAccountModels, auth()->id());
 
         // Physical bank cards + tracked total + manual fixes — only in the operational (non-qurbani) scope.
         $status = in_array($request->get('status'), ['all', 'inactive'], true) ? $request->get('status') : 'active';
@@ -1178,7 +1418,7 @@ class HubController extends Controller
 
         return view('fin.hub.banks', [
             'active' => 'banks', 'scope' => $scope, 'canSeeKhaas' => $canSeeKhaas, 'canSeeMulti' => $canSeeMulti,
-            'isQ' => $isQ,
+            'isQ' => $isQ, 'pendingActions' => $pendingActions,
             'banks' => $rows, 'status' => $status, 'activeCount' => $activeCount, 'inactiveCount' => $inactiveCount,
             'sumBalances' => $sumBalances, 'unassigned' => $unassigned, 'unassignedCount' => $unassignedCount,
             'unassignedSince' => $balances->unassignedSince(),
@@ -1493,6 +1733,9 @@ class HubController extends Controller
         $rec = [
             'amount' => $money($it['amount'] ?? 0),
             'dir' => $it['direction'] ?? 'neutral',
+            // On a bank's own statement every row belongs to that bank — naming it keeps the
+            // drawer consistent with the same row opened from the Overview.
+            'bank' => $isUnassigned ? null : ($bank['short_code'] ?? $bank['name'] ?? null),
             'sub' => trim((string) ($it['description'] ?? '')) ?: '—',
             'date' => !empty($it['date']) ? \Carbon\Carbon::parse($it['date'])->format('M d, Y') : '—',
             // When it was actually typed into the system — distinct from the transaction date,

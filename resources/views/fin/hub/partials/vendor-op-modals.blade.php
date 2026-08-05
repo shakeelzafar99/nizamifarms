@@ -461,6 +461,18 @@
             alert(j.message||'Could not delete.');
         }catch(e){ alert('Network error.'); }
     };
+    // Enter anywhere in the ⚖ modal's inputs posts the purchase — typing a qty and hitting Enter is
+    // the whole flow. Tab is untouched (it still walks to the next field/line). Deliberately NOT
+    // bound to the product <select> (Enter there belongs to the dropdown) or to buttons, and it
+    // no-ops while the submit is disabled (nothing entered yet).
+    document.getElementById('hubWeighted').addEventListener('keydown', function(e){
+        if(e.key !== 'Enter' || e.shiftKey) return;
+        var t = e.target;
+        if(!t || t.tagName !== 'INPUT' || t.type === 'file') return;
+        e.preventDefault();
+        if(!document.getElementById('hubWtSubmit').disabled) hubSubmitWeighted();
+    });
+
     document.addEventListener('keydown', function(e){ if(e.key==='Escape'){ ['hubPurchase','hubWeighted','hubPay','hubReport','hubEditTxn'].forEach(function(id){ document.getElementById(id).classList.remove('on'); }); } });
 })();
 </script>

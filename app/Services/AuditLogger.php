@@ -23,6 +23,9 @@ use Illuminate\Support\Facades\Log;
  */
 class AuditLogger
 {
+    /** Written by the WhatsApp webhook (no logged-in user) — see log()'s $source. */
+    public const SOURCE_WHATSAPP = 'whatsapp';
+
     /** Per-request cache of the table-exists check (null = not checked yet). */
     private static ?bool $tableExists = null;
 
@@ -36,6 +39,9 @@ class AuditLogger
      * @param array|null $changes        {field: {old, new}} — from diff()/snapshot()
      * @param int|null   $relatedOrderId prod order id this touched (feeds the order timeline)
      * @param string|null$note
+     * @param string|null$source         override the auto-detected surface (e.g. 'whatsapp' for
+     *                                   a webhook-driven write, which detectSource() would
+     *                                   otherwise mislabel 'mobile' because it is an api/* path)
      */
     public static function log(
         string $action,
@@ -44,7 +50,8 @@ class AuditLogger
         ?string $entityLabel = null,
         ?array $changes = null,
         ?int $relatedOrderId = null,
-        ?string $note = null
+        ?string $note = null,
+        ?string $source = null
     ): void {
         try {
             if (self::$tableExists === null) {
@@ -57,7 +64,7 @@ class AuditLogger
             DB::table('t_sys_audit_log')->insert([
                 'at'               => now(),
                 'user_id'          => self::userId(),
-                'source'           => self::detectSource(),
+                'source'           => $source !== null ? substr($source, 0, 20) : self::detectSource(),
                 'action'           => substr($action, 0, 40),
                 'entity_type'      => substr($entityType, 0, 40),
                 'entity_id'        => $entityId,
@@ -93,6 +100,8 @@ class AuditLogger
      * @param mixed       $oldLat,$oldLng pre-write coords (may be null)
      * @param mixed       $newLat,$newLng post-write coords (may be null)
      * @param string|null $note           context, e.g. 'Verified pin (mobile)'
+     * @param string|null $source         surface override (see log()) — pass SOURCE_WHATSAPP for
+     *                                    a pin the customer shared in chat and we auto-saved
      */
     public static function logCustomerPinChange(
         $customerId,
@@ -101,7 +110,8 @@ class AuditLogger
         $oldLng,
         $newLat,
         $newLng,
-        ?string $note = null
+        ?string $note = null,
+        ?string $source = null
     ): void {
         // Skip no-op writes (loose compare handles "33.10" vs 33.1).
         if ((string) $oldLat === (string) $newLat && (string) $oldLng === (string) $newLng) {
@@ -131,7 +141,73 @@ class AuditLogger
             // keep the base note
         }
 
-        self::log('pin_updated', 'customer', $customerId, $customerLabel, $changes, null, $finalNote);
+        self::log('pin_updated', 'customer', $customerId, $customerLabel, $changes, null, $finalNote, $source);
+    }
+
+    /**
+     * Aug-2026 — record a customer location reply that arrived but was NOT saved.
+     *
+     * The auto-save deliberately never overwrites an existing pin
+     * (OpenOrderLocationService::autoSaveInbound). That is the right default, but
+     * until now the refusal was completely silent: on Aug-2 a customer replied to
+     * a location request with a pin 1 km from her stale saved one, nothing was
+     * written, nothing was logged, and the order went out the next day to the old
+     * address. This row is the missing signal — it says "a better pin is sitting
+     * in the chat, one click away".
+     *
+     * Deliberately NOT a pin_updated row: nothing changed. The UI renders it as a
+     * warning with a "use it" action rather than as a history entry.
+     *
+     * @param mixed       $curLat,$curLng the pin we KEPT (may be null)
+     * @param mixed       $offLat,$offLng the pin the customer OFFERED
+     * @param string      $reasonCode     machine tag — ONLY 'existing_pin_kept' asks a human to
+     *                                    act; the others are informational (see PinHistoryService)
+     * @param string|null $reason         human sentence shown to staff
+     */
+    public static function logCustomerPinReplyIgnored(
+        $customerId,
+        ?string $customerLabel,
+        $curLat,
+        $curLng,
+        $offLat,
+        $offLng,
+        string $reasonCode = 'existing_pin_kept',
+        ?string $reason = null
+    ): void {
+        $changes = [
+            // Machine tag first — the UI keys the "needs a human" amber dot off
+            // this, never off the note text (which is free-form and translatable).
+            'reason'            => ['old' => null, 'new' => $reasonCode],
+            'kept_latitude'     => ['old' => null, 'new' => $curLat],
+            'kept_longitude'    => ['old' => null, 'new' => $curLng],
+            'offered_latitude'  => ['old' => null, 'new' => $offLat],
+            'offered_longitude' => ['old' => null, 'new' => $offLng],
+        ];
+
+        // How far the offered pin sits from the one we kept — the whole point.
+        // A 30 m difference is noise; a 1.4 km difference is a wrong delivery.
+        $note = $reason ?: 'Customer sent a pin — not saved';
+        try {
+            if (is_numeric($curLat) && is_numeric($curLng) && is_numeric($offLat) && is_numeric($offLng)) {
+                $awayM = (int) round(\App\Services\LocationService::calculateDistance(
+                    (float) $curLat, (float) $curLng, (float) $offLat, (float) $offLng
+                ));
+                $note .= ' — ' . \App\Services\LocationService::formatDistance($awayM) . ' from the saved pin';
+            }
+        } catch (\Throwable $e) {
+            // keep the base note
+        }
+
+        self::log(
+            'pin_reply_ignored',
+            'customer',
+            $customerId,
+            $customerLabel,
+            $changes,
+            null,
+            $note,
+            self::SOURCE_WHATSAPP
+        );
     }
 
     /**

@@ -14,12 +14,32 @@
 <div class="nfhub">
     @include('fin.hub.partials.nav', ['active' => 'overview', 'scope' => $scope, 'canSeeKhaas' => $canSeeKhaas, 'canSeeMulti' => $canSeeMulti])
 
-    @if(($pendingL1 + $pendingL2) > 0)
+    {{-- Two separate queues, never blended (Aug-2026). Balance actions — transfers, vendor
+         payments, expenses, deposits — are a handful of items that hold real money out of the
+         accounts. Invoice approvals are a daily stream of dozens. Showing one total let a stuck
+         Rs 20,000 transfer hide behind ~90 invoices, so each queue now gets its own line and its
+         own link to the screen that actually clears it. --}}
+    @if(($pendingSplit['actions'] ?? 0) > 0)
     <div class="pending-strip">
         <span class="pdot"></span>
-        <span><b>{{ $pendingL1 + $pendingL2 }} transactions waiting for approval</b> — {{ $pendingL1 }} at L1 · {{ $pendingL2 }} at L2</span>
+        <span>
+            <b>{{ $pendingSplit['actions'] }} balance {{ \Illuminate\Support\Str::plural('action', $pendingSplit['actions']) }} waiting for approval</b>
+            — Rs. {{ number_format($pendingSplit['actions_amount'], 0) }} in transfers, payments &amp; deposits not yet posted
+        </span>
         <span class="spacer"></span>
-        <a class="btn primary" style="padding:4px 12px" href="{{ request()->fullUrlWithQuery(['status' => 'pending']) }}">Review pending</a>
+        <a class="btn primary" style="padding:4px 12px" href="{{ route('approvals.index') }}">Review these</a>
+    </div>
+    @endif
+
+    @if(($pendingSplit['invoices'] ?? 0) > 0)
+    <div class="pending-strip" style="background:var(--info-soft);border-color:color-mix(in srgb,var(--info) 25%,transparent)">
+        <span class="pdot" style="background:var(--info)"></span>
+        <span style="color:var(--ink2)">
+            <b style="color:var(--info)">{{ $pendingSplit['invoices'] }} invoice approvals</b>
+            — the daily delivered-order queue, reviewed against payment proof
+        </span>
+        <span class="spacer"></span>
+        <a class="btn" style="padding:4px 12px" href="{{ route('approvals.online') }}">Online Approvals ↗</a>
     </div>
     @endif
 
@@ -233,7 +253,13 @@
                             'status' => $sKey,
                             'statusLabel' => $sLabel,
                             'date' => \Carbon\Carbon::parse($dateBasis)->format('M d, Y'),
-                            'by' => optional($row->createdBy)->name ?? '—',
+                            // Which of OUR banks this went through. Present only on rows that touch
+                            // an online account — cash-to-cash rows carry no tag, so the drawer
+                            // simply shows nothing extra for them.
+                            'bank' => optional($row->receivingAccount)->short_code
+                                ?: optional($row->receivingAccount)->name,
+                            // fullname, not name — UserModel has no `name` (always NULL otherwise)
+                            'by' => optional($row->createdBy)->fullname ?? '—',
                             'pending' => in_array($st, ['pending', 'pending_l1', 'pending_l2'], true),
                         ];
                     @endphp

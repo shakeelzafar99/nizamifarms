@@ -54,6 +54,24 @@ class LocationService
      * 
      * @return object|null Base location {id, location_name, latitude, longitude, radius_meters}
      */
+    /**
+     * Does this database know about van meet-up points yet? (batch 14)
+     *
+     * Cached per process: the office lookups below run on hot paths, and asking
+     * information_schema every time would be a needless read.
+     */
+    public static function hasHandoverPointColumn(): bool
+    {
+        static $has = null;
+        if ($has !== null) return $has;
+        try {
+            $has = \Illuminate\Support\Facades\Schema::hasColumn('t_ops_company_locations', 'is_handover_point');
+        } catch (\Throwable $e) {
+            $has = false;
+        }
+        return $has;
+    }
+
     public static function getPrimaryBaseLocation()
     {
         return DB::table('t_ops_company_locations')
@@ -290,6 +308,14 @@ class LocationService
             $offices = DB::table('t_ops_company_locations')
                 ->where('is_active', 1)
                 ->whereNotNull('latitude')->whereNotNull('longitude')
+                // ⚠ A VAN MEET-UP POINT IS NOT AN OFFICE (Aug-2026). Handover stops
+                //   live in this same table, so without this a rider standing at the
+                //   meet point would satisfy the "check in at any office" rule and
+                //   could clock in at a roadside rendezvous. Schema-guarded: before
+                //   batch 14 the column does not exist and this is a no-op.
+                ->when(self::hasHandoverPointColumn(), fn ($q) => $q->where(function ($w) {
+                    $w->where('is_handover_point', 0)->orWhereNull('is_handover_point');
+                }))
                 ->get(['id', 'location_name', 'latitude', 'longitude', 'radius_meters']);
         } catch (\Throwable $e) {
             return null;

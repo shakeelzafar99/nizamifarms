@@ -40,6 +40,13 @@ class OrderStatusService
                 return ['success' => false, 'message' => 'Order not found'];
             }
 
+            // 🚚 An order ON THE VAN is only moved by the van doors (handover
+            // scan / no-scan override / take-off-the-van) — owner ruling Aug-4.
+            $vanBlock = \App\Services\Riders\VanService::manualChangeBlock($order, $statusCode);
+            if ($vanBlock !== null) {
+                return ['success' => false, 'message' => $vanBlock];
+            }
+
             $success = $order->changeStatus($statusCode, $notes, $userId ?? auth()->id());
             
             return [

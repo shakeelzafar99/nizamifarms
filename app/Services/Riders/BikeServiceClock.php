@@ -37,7 +37,18 @@ class BikeServiceClock
         try {
             if ($req->status !== RequestModel::STATUS_APPROVED) return;
             if ($req->expense_category !== 'Maintenance') return;
-            if (!in_array($req->service_type, ['oil_change', 'general'], true)) return;
+
+            // ⭐ Aug-2026: which REGULAR services actually reset the clock is now a
+            // property of the chosen type, not of the bucket. The manager's list has
+            // several regular types on different schedules (oil 1,200 km, brake shoe
+            // 10,000 km); before this, any of them would have reset the one clock and
+            // a bike with fresh brake shoes would have looked oil-serviced while its
+            // oil was overdue. Untyped rows — every row before this ships — keep the
+            // old answer exactly: any oil_change/general resets it.
+            if (!app(\App\Services\Riders\MaintenanceTypeService::class)
+                    ->resetsClock($req->maintenance_type_id ?? null, $req->service_type)) {
+                return;
+            }
 
             $meter = (int) ($req->meter_at_fill ?? 0);
             if ($meter <= 1000) return;      // missing or a dropped-digit typo
@@ -90,7 +101,19 @@ class BikeServiceClock
             $last = $profile->last_service_meter !== null ? (int) $profile->last_service_meter : null;
             if ($last === null || $meter <= $last) return;
 
-            $interval = (int) ($profile->service_interval_km ?: 0);
+            // Interval priority: the TYPE's own schedule (Oil Change = 1,200 km)
+            // beats the per-bike override, which beats the company default. The
+            // type knows best — "how far since the last one" is only meaningful
+            // against the schedule for THAT service.
+            $interval = 0;
+            $type = app(\App\Services\Riders\MaintenanceTypeService::class)
+                ->find($req->maintenance_type_id ?? null);
+            if ($type && (int) $type->interval_km > 0) {
+                $interval = (int) $type->interval_km;
+            }
+            if ($interval <= 0) {
+                $interval = (int) ($profile->service_interval_km ?: 0);
+            }
             if ($interval <= 0) {
                 $interval = (int) (DB::table('t_fin_config')
                     ->where('config_key', 'BIKE_SERVICE_INTERVAL_KM')->value('config_value') ?: 0);

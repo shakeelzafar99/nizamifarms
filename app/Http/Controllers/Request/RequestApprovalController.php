@@ -11,6 +11,17 @@ use Illuminate\Support\Facades\Log;
 class RequestApprovalController extends Controller
 {
     /**
+     * Refuse an approval that sets an ONLINE payment source without naming the
+     * bank it left from.
+     *
+     * FALSE until the APK carrying the bank picker on Daily Closing / Fleet
+     * approve is out — turning it on first would block those approvals on the day
+     * the web files go up. Flip to true after that build ships; the warn-log in
+     * approve() shows how often it would have fired.
+     */
+    private const ENFORCE_APPROVE_BANK = false;
+
+    /**
      * Approve request at a given level
      */
     public function approve(Request $request, $id)
@@ -18,7 +29,14 @@ class RequestApprovalController extends Controller
         $validated = $request->validate([
             'level' => 'required|in:1,2',
             'comments' => 'nullable|string',
-            'payment_source_account_id' => 'nullable|exists:t_fin_accounts,id'
+            'payment_source_account_id' => 'nullable|exists:t_fin_accounts,id',
+            // ⭐ Aug-2026: the approve side accepted a payment source but NOT the
+            // bank it left from, so an approver switching a claim to an ONLINE
+            // source posted an untagged bank outflow and the per-bank balances
+            // drifted. The create side has demanded this since Jul-2026; approval
+            // is now the MAIN path for choosing the account (owner ruling: the
+            // approver's pick outranks the filer's), so it has to demand it too.
+            'receiving_account_id' => 'nullable|integer|exists:t_fin_online_receiving_accounts,id',
         ]);
 
         $requestModel = RequestModel::findOrFail($id);
@@ -41,13 +59,64 @@ class RequestApprovalController extends Controller
             ], 400);
         }
 
-        try {
-            // If payment source is provided, save it to the request
-            if (isset($validated['payment_source_account_id'])) {
-                $requestModel->payment_source_account_id = $validated['payment_source_account_id'];
-                $requestModel->save();
+        // ── The account this money comes out of ────────────────────────────────
+        // Owner ruling (Aug-2026): the APPROVER's pick outranks the filer's — a
+        // rider cannot know which account his claim should be deducted from. So
+        // this is the authoritative choice, and it is checked against the
+        // APPROVER's own allow-list, in the business unit the request was stamped
+        // with, through the same PaymentSourceService call that built their picker.
+        if (isset($validated['payment_source_account_id'])) {
+            $sourceAccount = \App\Models\FIN\AccountModel::find($validated['payment_source_account_id']);
+            $buForSource   = $requestModel->business_unit_id ?: 1;
+            $purpose       = ($requestModel->category->category_code ?? null) === 'salary_advance'
+                ? \App\Services\FIN\PaymentSourceService::PURPOSE_ADVANCE
+                : \App\Services\FIN\PaymentSourceService::PURPOSE_EXPENSE;
+
+            if (!app(\App\Services\FIN\PaymentSourceService::class)
+                    ->allows($user, $validated['payment_source_account_id'], $buForSource, $purpose)) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'You are not set up to pay from that account. Ask Taimur or Shabib to add you to it (Ledger Hub → the account → "Who uses this account").'
+                ], 403);
             }
-            
+
+            $isBankSource = $sourceAccount
+                && $sourceAccount->account_category === \App\Models\FIN\AccountModel::CATEGORY_BANK;
+            $bankGiven = $validated['receiving_account_id'] ?? null;
+
+            if ($isBankSource && !$bankGiven) {
+                // ⚠ STAGED ROLLOUT. The mobile approve screens do not send a bank
+                // until the next APK, and refusing them outright would block Daily
+                // Closing approvals the day the web files go up. So: warn now,
+                // enforce once the APK is out — flip ENFORCE_APPROVE_BANK to true
+                // and delete this branch. Same pattern as meter_required.
+                // Until then the row keeps whatever bank was filed with it (below),
+                // which is right far more often than null.
+                if (self::ENFORCE_APPROVE_BANK) {
+                    return response()->json([
+                        'success' => false,
+                        'message' => 'Select which bank this online payment is made from.'
+                    ], 422);
+                }
+                Log::warning('Approval set an online payment source without naming a bank', [
+                    'request_id' => $requestModel->id,
+                    'account_id' => $validated['payment_source_account_id'],
+                    'approver'   => $user->id,
+                    'kept_bank'  => $requestModel->receiving_account_id,
+                ]);
+            }
+
+            $requestModel->payment_source_account_id = $validated['payment_source_account_id'];
+            // A cash-funded row must never carry a bank tag; a bank-funded one keeps
+            // the bank just named, else whatever it was filed with.
+            $requestModel->receiving_account_id = $isBankSource
+                ? ($bankGiven ?: $requestModel->receiving_account_id)
+                : null;
+            $requestModel->save();
+        }
+
+        try {
+
             $success = $requestModel->processApproval(
                 $level,
                 $user->id,

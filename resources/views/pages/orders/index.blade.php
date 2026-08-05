@@ -3206,21 +3206,46 @@ function viewOrderDetails(orderId) {
                     html += '</p>';
                 }
                 
+                // ⭐ Aug-2026 — a pin the CUSTOMER sent that we did not save.
+                // Never overwriting a verified pin is the right rule, but the
+                // refusal used to be invisible: on Aug-2 a customer replied with a
+                // pin ~1 km from her stale one and the order shipped to the old
+                // address the next day. Now it says so, right above the pin it
+                // would have replaced.
+                if (order.verified_location.pin_reply_pending) {
+                    var prp = order.verified_location.pin_reply_pending;
+                    html += '<div onclick="openPinHistory(' + order.customer_id + ')" style="margin-top: 8px; padding: 7px 9px; background: #fffbeb; border: 1px solid #f59e0b; border-radius: 6px; cursor: pointer;" title="Click to check it">';
+                    html += '<span style="font-size: 11px; font-weight: 700; color: #92400e;">⚠️ Customer sent a new location' + (prp.away_text ? ' — ' + prp.away_text : '') + '</span>';
+                    html += '<div style="font-size: 10.5px; color: #78350f; margin-top: 2px;">It was not saved — the old pin is still being used. Click to check it.</div>';
+                    html += '</div>';
+                }
+
+                // Footer: who set the pin, and the way in to the full story. The
+                // History link shows even when nobody is recorded — "no trail" is
+                // itself the answer someone is looking for.
+                html += '<p style="margin: 6px 0 0 0; padding-top: 6px; border-top: 1px solid #bbf7d0; font-size: 10px; color: #059669; display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">';
                 if (order.verified_location.saved_by) {
-                    html += '<p style="margin: 6px 0 0 0; padding-top: 6px; border-top: 1px solid #bbf7d0; font-size: 10px; color: #059669;">';
-                    html += '<i class="fas fa-user"></i> ' + order.verified_location.saved_by;
+                    html += '<span><i class="fas fa-user"></i> ' + order.verified_location.saved_by;
                     if (order.verified_location.saved_at) {
                         html += ' • ' + new Date(order.verified_location.saved_at).toLocaleString();
                     }
-                    html += '</p>';
+                    html += '</span>';
                 }
-                
+                html += '<span style="flex: 1;"></span>';
+                if (order.customer_id) {
+                    html += '<a href="javascript:void(0)" onclick="openPinHistory(' + order.customer_id + ')" style="color: #4f46e5; font-weight: 700; text-decoration: none; font-size: 10.5px;" title="Who set this location, and how?">🕘 History</a>';
+                }
+                html += '</p>';
+
                 html += '</div>';
             } else if (order.customer_id) {
                 html += '<div style="margin-top: 12px; padding: 10px; background-color: #eff6ff; border-radius: 6px; border: 1px solid #3b82f6; text-align: center;">';
                 html += '<button onclick="setVerifiedLocation(' + order.customer_id + ')" style="padding: 6px 12px; background-color: #3b82f6; color: white; border: none; border-radius: 6px; font-size: 12px; font-weight: 500; cursor: pointer;">';
                 html += '<i class="fas fa-map-marker-alt"></i> Set Verified Location';
                 html += '</button>';
+                // Still worth a look with no pin set: the history can show that a
+                // customer already sent one we never used.
+                html += '<div style="margin-top: 6px;"><a href="javascript:void(0)" onclick="openPinHistory(' + order.customer_id + ')" style="color: #4f46e5; font-weight: 700; text-decoration: none; font-size: 10.5px;">🕘 History</a></div>';
                 html += '</div>';
             }
             
@@ -11802,7 +11827,11 @@ function getCellContent(order, columnId) {
             
             // Make customer name clickable if customer_id exists
             if (order.customer_id && order.customer_id !== 'N/A' && order.customer_id !== null) {
-                return `<div class="table-text-primary"><span class="customer-name-link text-blue-600 hover:text-blue-800 hover:underline font-medium cursor-pointer" onclick="openCustomerDetails(${order.customer_id})" title="View customer details">${customerName}</span></div>`;
+                // Aug-2026 — empty slot for the "location pin waiting" badge. It is
+                // filled by paintPinPendingBadges() once the map arrives, rather
+                // than re-rendering the table (which would drop checkbox state) or
+                // making all three order-list payloads carry the flag.
+                return `<div class="table-text-primary"><span class="customer-name-link text-blue-600 hover:text-blue-800 hover:underline font-medium cursor-pointer" onclick="openCustomerDetails(${order.customer_id})" title="View customer details">${customerName}</span><span class="pin-pending-slot" data-cust="${order.customer_id}"></span></div>`;
             } else {
                 return `<div class="table-text-primary">${customerName}</div>`;
             }
@@ -16235,6 +16264,265 @@ document.addEventListener('DOMContentLoaded', function() {
 });
 
 // ============================================
+// "Location pin waiting" badges on the orders list (Aug-2026).
+//
+// The customer sent us a pin we did not save and nobody has dealt with it. The
+// order rows badge themselves from ONE small call — the map only ever holds
+// unresolved cases inside the 30-day flag window — so none of the three code
+// paths that fill window.ordersData had to change.
+//
+// Painted into the empty .pin-pending-slot spans that getCellContent() leaves
+// behind, so a refresh never disturbs checkboxes or scroll position.
+// ============================================
+var pinPendingMap = null;
+
+function paintPinPendingBadges() {
+    if (!pinPendingMap) return;
+    document.querySelectorAll('.pin-pending-slot').forEach(function (slot) {
+        var cid = slot.getAttribute('data-cust');
+        var p = cid ? pinPendingMap[cid] : null;
+        if (!p) {
+            // Also drop the painted marker: if this customer is flagged AGAIN
+            // later (a fresh unused pin), the badge must be able to come back.
+            slot.innerHTML = '';
+            slot.removeAttribute('data-painted');
+            return;
+        }
+        if (slot.getAttribute('data-painted') === cid) return; // already done
+        slot.setAttribute('data-painted', cid);
+        var tip = 'Customer sent a location pin we did not save'
+            + (p.away_text ? ' — ' + p.away_text : '')
+            + (p.at_human ? ' (' + p.at_human + ')' : '')
+            + '. Click for the history.';
+        slot.innerHTML = '<span onclick="event.stopPropagation(); openPinHistory(' + cid + ')" title="'
+            + String(tip).replace(/"/g, '&quot;')
+            + '" style="margin-left:5px; cursor:pointer; display:inline-flex; align-items:center; padding:0 5px; border-radius:7px; font-size:10px; font-weight:700; background:#FEF3C7; color:#92400E; border:1px solid #FCD34D;">📍</span>';
+    });
+}
+
+function loadPinPendingMap() {
+    fetch('/customers/pin-replies-pending', { headers: { 'Accept': 'application/json' } })
+        .then(function (r) { return r.json(); })
+        .then(function (d) {
+            pinPendingMap = (d && d.pending) ? d.pending : {};
+            paintPinPendingBadges();
+        })
+        .catch(function () { /* a missing badge must never break the orders page */ });
+}
+
+document.addEventListener('DOMContentLoaded', function () {
+    loadPinPendingMap();
+    // Rows are re-rendered by filters/polling; repaint cheaply from the cached
+    // map (no extra requests) so badges survive those redraws.
+    setInterval(paintPinPendingBadges, 3000);
+    // The orders page stays open all day; re-fetch the small map every 3
+    // minutes so a badge resolved on another screen (chat, mobile, another
+    // browser) clears here too instead of going stale until a reload.
+    setInterval(loadPinPendingMap, 180000);
+});
+
+// ============================================
+// Pin history (Aug-2026) — "who set this location, and how?"
+//
+// SHARED COMPONENT. This block is duplicated VERBATIM in:
+//   resources/views/pages/orders/index.blade.php
+//   resources/views/pages/customers/index.blade.php
+// Keep the copies identical (same convention as the approvals
+// proof-filter chips). All wording comes from the server
+// (PinHistoryService) so web and mobile read the same.
+//
+// Entry point: openPinHistory(customerId)
+// ============================================
+(function () {
+    if (window.openPinHistory) return; // already installed on this page
+
+    var TONE = {
+        amber: { bg: '#fffbeb', bd: '#fcd34d', fg: '#92400e' },
+        green: { bg: '#f0fdf4', bd: '#86efac', fg: '#047857' },
+        blue:  { bg: '#eff6ff', bd: '#93c5fd', fg: '#1d4ed8' },
+        gray:  { bg: '#f9fafb', bd: '#e5e7eb', fg: '#4b5563' }
+    };
+
+    function esc(s) {
+        return String(s === null || s === undefined ? '' : s)
+            .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+    }
+
+    // Same shape the server uses for history rows ("02 Aug 2026, 8:15 PM"), so
+    // the current pin's date and the trail's dates read as one list.
+    function fmtWhen(iso) {
+        if (!iso) return '';
+        try {
+            var dt = new Date(iso);
+            if (isNaN(dt.getTime())) return '';
+            var MON = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+            var hh = dt.getHours(), ap = hh >= 12 ? 'PM' : 'AM';
+            hh = hh % 12; if (hh === 0) hh = 12;
+            var mm = dt.getMinutes(); if (mm < 10) mm = '0' + mm;
+            var dd = dt.getDate(); if (dd < 10) dd = '0' + dd;
+            return dd + ' ' + MON[dt.getMonth()] + ' ' + dt.getFullYear() + ', ' + hh + ':' + mm + ' ' + ap;
+        } catch (e) { return ''; }
+    }
+
+    function shell() {
+        var o = document.getElementById('pinHistoryOverlay');
+        if (o) return o;
+        o = document.createElement('div');
+        o.id = 'pinHistoryOverlay';
+        // Above the order/customer modals (which sit at 10000).
+        o.style.cssText = 'display:none; position:fixed; inset:0; z-index:10060; background:rgba(0,0,0,0.45); overflow:auto;';
+        o.innerHTML = '<div style="background:#fff; margin:6vh auto; width:92%; max-width:560px; border-radius:12px; box-shadow:0 12px 40px rgba(0,0,0,0.25);" id="pinHistoryBox"></div>';
+        o.addEventListener('click', function (e) { if (e.target === o) window.closePinHistory(); });
+        document.body.appendChild(o);
+        return o;
+    }
+
+    function pinLink(p, label) {
+        if (!p) return '';
+        return '<a href="' + esc(p.maps_url) + '" target="_blank" style="color:#2563eb; text-decoration:none; font-weight:600; font-size:11.5px;">' + esc(label) + ' &#8599;</a>';
+    }
+
+    function entry(h) {
+        var t = TONE[h.tone] || TONE.gray;
+        var s = '<div style="display:flex; gap:10px; padding:10px 12px; border:1px solid ' + t.bd + '; background:' + t.bg + '; border-radius:9px; margin-bottom:8px;">';
+        s += '<div style="font-size:16px; line-height:1.2;">' + esc(h.icon) + '</div>';
+        s += '<div style="flex:1; min-width:0;">';
+        s += '<div style="font-weight:700; font-size:12.5px; color:' + t.fg + ';">' + esc(h.headline) + '</div>';
+        s += '<div style="font-size:11.5px; color:#6b7280; margin-top:2px;">' + esc(h.who || '')
+           + (h.at_display ? ' &middot; ' + esc(h.at_display) : '')
+           + (h.at_human ? ' <span style="color:#9ca3af;">(' + esc(h.at_human) + ')</span>' : '') + '</div>';
+        var move = h.moved_text || h.away_text;
+        if (move) {
+            s += '<div style="font-size:11.5px; color:' + t.fg + '; margin-top:3px; font-weight:600;">' + esc(move) + '</div>';
+        }
+        if (h.kind === 'ignored' && h.detail) {
+            s += '<div style="font-size:11px; color:#6b7280; margin-top:3px;">' + esc(h.detail) + '</div>';
+        }
+        var links = [];
+        if (h.old) links.push(pinLink(h.old, 'Previous pin'));
+        if (h.new) links.push(pinLink(h.new, 'This pin'));
+        if (h.offered) links.push(pinLink(h.offered, 'Customer pin'));
+        if (links.length) {
+            s += '<div style="margin-top:5px; display:flex; gap:12px; flex-wrap:wrap;">' + links.join('') + '</div>';
+        }
+        s += '</div></div>';
+        return s;
+    }
+
+    function render(d) {
+        var box = document.getElementById('pinHistoryBox');
+        if (!box) return;
+
+        var h = '';
+        h += '<div style="display:flex; align-items:center; justify-content:space-between; gap:10px; padding:14px 18px; background:linear-gradient(135deg,#4f46e5 0%,#4338ca 100%); color:#fff; border-radius:12px 12px 0 0;">';
+        h += '<div style="font-size:15px; font-weight:700;">&#128205; Location history' + (d.customer_name ? ' &mdash; ' + esc(d.customer_name) : '') + '</div>';
+        h += '<button onclick="closePinHistory()" style="background:none; border:none; color:#fff; font-size:24px; line-height:1; cursor:pointer; padding:0 2px;">&times;</button>';
+        h += '</div>';
+        h += '<div style="padding:16px 18px; max-height:72vh; overflow-y:auto;">';
+
+        // 1. The thing that needs a human, first.
+        var pr = d.pending_reply;
+        if (pr) {
+            h += '<div style="padding:12px; border:1px solid #f59e0b; background:#fffbeb; border-radius:10px; margin-bottom:14px;">';
+            h += '<div style="font-weight:700; color:#92400e; font-size:13px;">&#9888;&#65039; Customer sent a new location — not saved yet</div>';
+            h += '<div style="font-size:12px; color:#78350f; margin-top:4px;">Sent '
+               + (pr.at_human ? esc(pr.at_human) : 'recently')
+               + (pr.away_text ? ', <strong>' + esc(pr.away_text) + '</strong>' : '')
+               + '. It was not saved because this customer already has a verified pin.</div>';
+            h += '<div style="margin-top:8px; display:flex; gap:10px; flex-wrap:wrap;">';
+            if (pr.offered) {
+                h += '<a href="' + esc(pr.offered.maps_url) + '" target="_blank" style="padding:5px 11px; background:#fff; border:1px solid #fcd34d; border-radius:6px; color:#92400e; font-size:11.5px; font-weight:700; text-decoration:none;">See their pin &#8599;</a>';
+            }
+            if (d.phone) {
+                h += '<a href="/messages?focus_phone=' + encodeURIComponent(d.phone) + '" target="_blank" style="padding:5px 11px; background:#4f46e5; border:1px solid #4f46e5; border-radius:6px; color:#fff; font-size:11.5px; font-weight:700; text-decoration:none;">Open the chat to use it &rarr;</a>';
+            }
+            h += '</div></div>';
+        }
+
+        // 2. What is saved right now.
+        var c = d.current || {};
+        if (c.has_pin) {
+            h += '<div style="padding:10px 12px; border:1px solid #86efac; background:#f0fdf4; border-radius:10px; margin-bottom:14px;">';
+            h += '<div style="font-size:11px; text-transform:uppercase; letter-spacing:.4px; color:#059669; font-weight:700;">Current pin</div>';
+            h += '<div style="font-family:monospace; font-size:12px; color:#065f46; margin-top:3px;">' + esc(c.latitude) + ', ' + esc(c.longitude) + '</div>';
+            // WHO and WHEN together — "by Kanan Anoos" alone leaves the obvious
+            // next question unanswered, and the date is already on the customer
+            // record even when there is no audit trail behind it.
+            var whoWhen = [];
+            if (c.saved_by) whoWhen.push('by ' + esc(c.saved_by));
+            // Server-formatted first (one clock for this whole panel); the local
+            // fallback only covers an older cached payload without the field.
+            var savedWhen = c.saved_at_display || fmtWhen(c.saved_at);
+            if (savedWhen) whoWhen.push(esc(savedWhen));
+            if (whoWhen.length) {
+                h += '<div style="font-size:11.5px; color:#6b7280; margin-top:3px;">' + whoWhen.join(' &middot; ') + '</div>';
+            }
+            if (c.maps_url) {
+                h += '<div style="margin-top:5px;">' + pinLink({ maps_url: c.maps_url }, 'Open in Google Maps') + '</div>';
+            }
+            h += '</div>';
+        } else {
+            h += '<div style="padding:10px 12px; border:1px solid #fecaca; background:#fef2f2; border-radius:10px; margin-bottom:14px; font-size:12.5px; color:#991b1b; font-weight:600;">No verified pin saved for this customer.</div>';
+        }
+
+        // 3. The trail.
+        if (!d.available) {
+            h += '<div style="font-size:12.5px; color:#6b7280; padding:14px; text-align:center; background:#f9fafb; border-radius:8px;">History is not switched on in this environment yet.</div>';
+        } else if (!d.history || !d.history.length) {
+            // "No changes recorded" alone reads like the pin came from nowhere.
+            // We DO know when it was saved (it is on the customer record), so say
+            // so — the trail only starts where detailed history was switched on.
+            var since = c.saved_at_display || fmtWhen(c.saved_at);
+            h += '<div style="font-size:12.5px; color:#6b7280; padding:14px; text-align:center; background:#f9fafb; border-radius:8px;">';
+            if (since) {
+                h += 'No pin changes recorded yet.'
+                   + '<br><span style="font-size:11.5px;">The pin above was saved on <strong>' + esc(since) + '</strong>'
+                   + (c.saved_by ? ' by ' + esc(c.saved_by) : '') + '. New changes will show here from now on.</span>';
+            } else {
+                h += 'No pin changes recorded yet.<br><span style="font-size:11.5px;">New changes will show here from now on.</span>';
+            }
+            h += '</div>';
+        } else {
+            h += '<div style="font-size:11px; text-transform:uppercase; letter-spacing:.4px; color:#9ca3af; font-weight:700; margin-bottom:7px;">What happened, newest first</div>';
+            for (var i = 0; i < d.history.length; i++) h += entry(d.history[i]);
+        }
+
+        h += '</div>';
+        box.innerHTML = h;
+    }
+
+    window.closePinHistory = function () {
+        var o = document.getElementById('pinHistoryOverlay');
+        if (o) o.style.display = 'none';
+    };
+
+    window.openPinHistory = function (customerId) {
+        if (!customerId) return;
+        var o = shell();
+        o.style.display = 'block';
+        var box = document.getElementById('pinHistoryBox');
+        box.innerHTML = '<div style="padding:34px; text-align:center; color:#6b7280; font-size:13px;">Loading location history&hellip;</div>';
+
+        fetch('/customers/' + customerId + '/location-history', { headers: { 'Accept': 'application/json' } })
+            .then(function (r) { return r.json(); })
+            .then(function (d) {
+                if (!d || !d.success) throw new Error((d && d.message) || 'failed');
+                render(d);
+            })
+            .catch(function (e) {
+                console.error('pin history', e);
+                box.innerHTML = '<div style="padding:28px; text-align:center; color:#b91c1c; font-size:13px;">Could not load the location history.'
+                    + '<div style="margin-top:10px;"><button onclick="closePinHistory()" style="padding:6px 14px; border:1px solid #d1d5db; background:#fff; border-radius:6px; cursor:pointer;">Close</button></div></div>';
+            });
+    };
+
+    document.addEventListener('keydown', function (e) {
+        if (e.key === 'Escape') window.closePinHistory();
+    });
+})();
+
+// ============================================
 // Verified Location Functions (Reused from customers page)
 // ============================================
 let currentCustomerId = null;
@@ -18812,6 +19100,16 @@ document.addEventListener('DOMContentLoaded', function() {
     {k:'show_address', t:'Show customer address', d:''},
     {k:'show_disclaimer', t:'Show "not a final invoice" note', d:'Prints a note above the items warning that quantities may change. Off = hidden.'}
   ];
+  /* QR size escape hatch: the printer's own QR command caps the module size at 16 dots, which is
+     the default. If a printer mishandles a large QR (prints it tiny or blank), pick 12 here to go
+     back to the pre-Aug-2026 size — takes effect on the next print, NO new app build needed. */
+  var QR_SIZES=[
+    {v:16, t:'Largest - 50mm (default)'},
+    {v:14, t:'Large - 44mm'},
+    {v:12, t:'Previous size - 37mm'},
+    {v:10, t:'Small - 31mm'},
+    {v:8,  t:'Smallest - 25mm'}
+  ];
   var TEXTS=[
     {k:'store_name', t:'Store name (header)', def:'NIZAMI FARMS', max:40},
     {k:'tagline_text', t:'Tagline', def:'Fresh Farm Meat', max:40},
@@ -18824,6 +19122,7 @@ document.addEventListener('DOMContentLoaded', function() {
     var body={};
     TOGGLES.forEach(function(f){ body[f.k]=overlay.querySelector('#rfc-'+f.k).checked?1:0; });
     TEXTS.forEach(function(f){ body[f.k]=overlay.querySelector('#rfc-'+f.k).value; });
+    body.qr_module_size=parseInt(overlay.querySelector('#rfc-qr_module_size').value,10)||16;
     fetch('/orders/receipt-config/settings',{method:'POST',headers:{'Content-Type':'application/json','X-Requested-With':'XMLHttpRequest','X-CSRF-TOKEN':csrf()},body:JSON.stringify(body)})
       .then(function(r){return r.json();}).then(function(d){ hide(); alert(d&&d.success?'Receipt settings saved. New prints will use them.':((d&&d.message)||'Could not save settings.')); })
       .catch(function(){ alert('Could not save settings.'); });
@@ -18839,10 +19138,17 @@ document.addEventListener('DOMContentLoaded', function() {
     TEXTS.forEach(function(f){
       texts+='<div style="margin-bottom:10px;"><label style="display:block;font-size:12px;font-weight:600;color:#334155;margin-bottom:4px;">'+f.t+'</label><input type="text" id="rfc-'+f.k+'" maxlength="'+f.max+'" style="width:100%;box-sizing:border-box;padding:8px 10px;border:1px solid #cbd5e1;border-radius:6px;font-size:13px;"></div>';
     });
+    var qrOpts='';
+    QR_SIZES.forEach(function(s){ qrOpts+='<option value="'+s.v+'">'+s.t+'</option>'; });
+    var qrRow='<div style="margin-bottom:10px;"><label style="display:block;font-size:12px;font-weight:600;color:#334155;margin-bottom:4px;">QR code size</label>'
+      +'<select id="rfc-qr_module_size" style="width:100%;box-sizing:border-box;padding:8px 10px;border:1px solid #cbd5e1;border-radius:6px;font-size:13px;background:#fff;">'+qrOpts+'</select>'
+      +'<span style="display:block;font-size:12px;color:#64748b;margin-top:4px;">Bigger is easier for riders to scan. All sizes fit the 80mm paper. If the QR ever prints tiny or blank, choose <b>Previous size</b> - it takes effect on the next print, no app update needed.</span></div>';
     overlay.innerHTML='<div style="background:#fff;border-radius:12px;max-width:460px;width:100%;padding:20px;max-height:90vh;overflow:auto;">'
       +'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;"><h3 style="margin:0;font-size:18px;font-weight:700;color:#0f172a;">Receipt fields</h3><button id="rfc-close" style="border:none;background:none;font-size:24px;cursor:pointer;color:#64748b;line-height:1;">&times;</button></div>'
       +'<p style="margin:0 0 14px;font-size:13px;color:#64748b;">Choose what the receipt shows and edit the store text. Order number, QR, customer name and items always print. Leave a text box empty to hide that line.</p>'
       +rows
+      +'<div style="border-top:1px solid #e2e8f0;margin:12px 0 14px;"></div>'
+      +qrRow
       +'<div style="border-top:1px solid #e2e8f0;margin:12px 0 14px;"></div>'
       +texts
       +'<div style="display:flex;gap:10px;justify-content:flex-end;margin-top:8px;"><button id="rfc-cancel" style="padding:9px 16px;border:1px solid #cbd5e1;background:#fff;border-radius:8px;font-weight:600;cursor:pointer;color:#334155;">Cancel</button><button id="rfc-save" style="padding:9px 16px;border:none;background:#0f766e;color:#fff;border-radius:8px;font-weight:700;cursor:pointer;">Save</button></div></div>';
@@ -18857,11 +19163,15 @@ document.addEventListener('DOMContentLoaded', function() {
     overlay.style.display='flex';
     TOGGLES.forEach(function(f){ overlay.querySelector('#rfc-'+f.k).checked=true; });
     TEXTS.forEach(function(f){ overlay.querySelector('#rfc-'+f.k).value=f.def; });
+    overlay.querySelector('#rfc-qr_module_size').value='16';
     fetch('/orders/receipt-config/settings',{headers:{'X-Requested-With':'XMLHttpRequest'}})
       .then(function(r){return r.json();}).then(function(d){
         var c=d&&d.config?d.config:{};
         TOGGLES.forEach(function(f){ if(Object.prototype.hasOwnProperty.call(c,f.k)) overlay.querySelector('#rfc-'+f.k).checked=!!Number(c[f.k]); });
         TEXTS.forEach(function(f){ if(Object.prototype.hasOwnProperty.call(c,f.k)) overlay.querySelector('#rfc-'+f.k).value=String(c[f.k]); });
+        // Only accept a value the dropdown actually offers, else the select silently blanks.
+        var q=Number(c.qr_module_size);
+        if(QR_SIZES.some(function(s){ return s.v===q; })) overlay.querySelector('#rfc-qr_module_size').value=String(q);
       }).catch(function(){});
   };
 })();

@@ -257,6 +257,49 @@ Route::middleware(['auth'])->group(function () {
     Route::get('/orders/riders-map/fleet/rider', [\App\Http\Controllers\CRM\FleetFuelController::class, 'rider'])->name('orders.riders-map.fleet.rider');
     Route::post('/orders/riders-map/fleet/mark-serviced', [\App\Http\Controllers\CRM\FleetFuelController::class, 'markServiced'])->name('orders.riders-map.fleet.mark-serviced');
     Route::post('/orders/riders-map/fleet/default-interval', [\App\Http\Controllers\CRM\FleetFuelController::class, 'setDefaultInterval'])->name('orders.riders-map.fleet.default-interval');
+    // 🔧 Manager-editable maintenance types (Aug-2026). Reading is open to anyone
+    // who can open Bikes (the pickers need it); writes are gated on
+    // `manage_bike_service` inside the controller so they return JSON the modals
+    // can show rather than an HTML redirect.
+    Route::get('/orders/riders-map/fleet/maintenance-types', [\App\Http\Controllers\CRM\FleetFuelController::class, 'maintenanceTypes'])->name('orders.riders-map.fleet.maintenance-types');
+    Route::post('/orders/riders-map/fleet/maintenance-types', [\App\Http\Controllers\CRM\FleetFuelController::class, 'saveMaintenanceType'])->name('orders.riders-map.fleet.maintenance-types.create');
+    Route::post('/orders/riders-map/fleet/maintenance-types/{id}', [\App\Http\Controllers\CRM\FleetFuelController::class, 'saveMaintenanceType'])->name('orders.riders-map.fleet.maintenance-types.save');
+    Route::delete('/orders/riders-map/fleet/maintenance-types/{id}', [\App\Http\Controllers\CRM\FleetFuelController::class, 'deleteMaintenanceType'])->name('orders.riders-map.fleet.maintenance-types.delete');
+    // ✏️ Correct a PENDING fuel/maintenance claim a rider already filed.
+    Route::post('/orders/riders-map/fleet/claim/{id}/edit', [\App\Http\Controllers\CRM\FleetFuelController::class, 'editClaim'])->name('orders.riders-map.fleet.claim-edit');
+    // 🏍️🚚 VEHICLE REGISTRY (Aug-2026) — bikes and the van as assignable machines.
+    // Reading uses the same keys that open Bikes; every write is gated on the new
+    // `assign_vehicles` permission INSIDE the controller, so a refusal comes back as
+    // JSON the modal can show rather than an HTML redirect.
+    // These sit above the '{riderId}' catch-all with the rest of the fleet routes.
+    // 🚚 Van panel + meet-up stop management on the WEB (same controller the app
+    // uses — one implementation, so the two surfaces cannot drift).
+    Route::get('/orders/van/panel', [\App\Http\Controllers\API\VanController::class, 'storePanel'])->name('orders.van.panel');
+    Route::get('/orders/van/stops', [\App\Http\Controllers\API\VanController::class, 'stops'])->name('orders.van.stops');
+    Route::post('/orders/van/stops', [\App\Http\Controllers\API\VanController::class, 'saveStop'])->name('orders.van.stops.create');
+    Route::post('/orders/van/stops/promote/{handoverId}', [\App\Http\Controllers\API\VanController::class, 'promoteStop'])->name('orders.van.stops.promote');
+    // ⭐ Send a van to a meet-up point from the WEB — the same controller action
+    //    the store's mobile board and the driver's own picker call, so all three
+    //    surfaces do exactly one thing and cannot drift (owner ruling Aug-4).
+    //    Declared before '/stops/{id}' so 'set' is never read as an id.
+    Route::post('/orders/van/stops/set', [\App\Http\Controllers\API\VanController::class, 'setStop'])->name('orders.van.stops.set');
+    Route::post('/orders/van/stops/{id}', [\App\Http\Controllers\API\VanController::class, 'saveStop'])->name('orders.van.stops.save');
+    Route::delete('/orders/van/stops/{id}', [\App\Http\Controllers\API\VanController::class, 'retireStop'])->name('orders.van.stops.retire');
+
+    Route::get('/orders/riders-map/fleet/vehicles', [\App\Http\Controllers\CRM\VehicleController::class, 'index'])->name('orders.riders-map.fleet.vehicles');
+    // "He was on a different bike that day" — the only writer of attendance.vehicle_id.
+    // Declared BEFORE '/vehicles/{id}' so 'day-override' is not read as a vehicle id.
+    Route::post('/orders/riders-map/fleet/vehicles/day-override', [\App\Http\Controllers\CRM\VehicleController::class, 'dayOverride'])->name('orders.riders-map.fleet.vehicles.day-override');
+    Route::get('/orders/riders-map/fleet/vehicles/rider-days', [\App\Http\Controllers\CRM\VehicleController::class, 'riderDays'])->name('orders.riders-map.fleet.vehicles.rider-days');
+    Route::post('/orders/riders-map/fleet/vehicles', [\App\Http\Controllers\CRM\VehicleController::class, 'save'])->name('orders.riders-map.fleet.vehicles.create');
+    Route::delete('/orders/riders-map/fleet/vehicles/photo/{photoId}', [\App\Http\Controllers\CRM\VehicleController::class, 'deletePhoto'])->name('orders.riders-map.fleet.vehicles.photo-delete');
+    Route::get('/orders/riders-map/fleet/vehicles/{id}', [\App\Http\Controllers\CRM\VehicleController::class, 'show'])->name('orders.riders-map.fleet.vehicles.show');
+    Route::get('/orders/riders-map/fleet/vehicles/{id}/preview-assign', [\App\Http\Controllers\CRM\VehicleController::class, 'previewAssign'])->name('orders.riders-map.fleet.vehicles.preview-assign');
+    Route::post('/orders/riders-map/fleet/vehicles/{id}', [\App\Http\Controllers\CRM\VehicleController::class, 'save'])->name('orders.riders-map.fleet.vehicles.save');
+    Route::post('/orders/riders-map/fleet/vehicles/{id}/assign', [\App\Http\Controllers\CRM\VehicleController::class, 'assign'])->name('orders.riders-map.fleet.vehicles.assign');
+    Route::post('/orders/riders-map/fleet/vehicles/{id}/release', [\App\Http\Controllers\CRM\VehicleController::class, 'release'])->name('orders.riders-map.fleet.vehicles.release');
+    Route::post('/orders/riders-map/fleet/vehicles/{id}/base', [\App\Http\Controllers\CRM\VehicleController::class, 'setBase'])->name('orders.riders-map.fleet.vehicles.base');
+    Route::post('/orders/riders-map/fleet/vehicles/{id}/photos', [\App\Http\Controllers\CRM\VehicleController::class, 'addPhotos'])->name('orders.riders-map.fleet.vehicles.photos');
     Route::get('/orders/riders-map/live-status', [\App\Http\Controllers\API\RiderController::class, 'getRidersLiveStatus'])->name('orders.riders-map.live-status');
     Route::get('/orders/riders-map/riders-for-history', [\App\Http\Controllers\API\RiderController::class, 'getRidersForHistory'])->name('orders.riders-map.riders-for-history');
     Route::get('/orders/riders-map/rider-history/{riderId}', [\App\Http\Controllers\API\RiderController::class, 'getRiderDeliveryHistory'])->name('orders.riders-map.rider-delivery-history');
@@ -766,6 +809,9 @@ Route::middleware(['auth'])->group(function () {
         Route::get('/find-duplicates', [\App\Http\Controllers\CRM\CustomerController::class, 'findDuplicates'])->name('customers.find-duplicates');
         Route::get('/search-for-merge', [\App\Http\Controllers\CRM\CustomerController::class, 'searchForMerge'])->name('customers.search-for-merge');
         Route::post('/merge', [\App\Http\Controllers\CRM\CustomerController::class, 'mergeCustomers'])->name('customers.merge');
+        // Aug-2026 — customers sitting on an unused location pin (orders-list badge).
+        // MUST stay above /{id} or "pin-replies-pending" is read as a customer id.
+        Route::get('/pin-replies-pending', [\App\Http\Controllers\CRM\CustomerController::class, 'pinRepliesPending'])->name('customers.pinRepliesPending');
         Route::post('/upload-promo-image', [\App\Http\Controllers\CRM\CustomerController::class, 'uploadPromoImage'])->name('customers.upload-promo-image');
         Route::post('/delete-promo-image', [\App\Http\Controllers\CRM\CustomerController::class, 'deletePromoImage'])->name('customers.delete-promo-image');
         Route::get('/{id}', [\App\Http\Controllers\CRM\CustomerController::class, 'show'])->name('customers.show');
@@ -774,6 +820,8 @@ Route::middleware(['auth'])->group(function () {
         Route::put('/{id}', [\App\Http\Controllers\CRM\CustomerController::class, 'update'])->name('customers.update');
         Route::post('/{id}/notes', [\App\Http\Controllers\CRM\CustomerController::class, 'addNote'])->name('customers.addNote');
         Route::post('/{id}/set-verified-location', [\App\Http\Controllers\CRM\CustomerController::class, 'setVerifiedLocation'])->name('customers.setVerifiedLocation');
+        // Aug-2026 — pin history ("who set this location, and how?").
+        Route::get('/{id}/location-history', [\App\Http\Controllers\CRM\CustomerController::class, 'locationHistory'])->name('customers.locationHistory');
         // Verified-pin lock: grant / cancel a rider unlock window (Jul-2026)
         Route::post('/{id}/unlock-verified-pin', [\App\Http\Controllers\CRM\CustomerController::class, 'unlockVerifiedPin'])->name('customers.unlockVerifiedPin');
         Route::post('/{id}/relock-verified-pin', [\App\Http\Controllers\CRM\CustomerController::class, 'relockVerifiedPin'])->name('customers.relockVerifiedPin');
@@ -1184,6 +1232,13 @@ Route::middleware(['auth'])->group(function () {
             Route::get('/', [\App\Http\Controllers\FIN\Hub\HubController::class, 'overview'])->name('overview');
             Route::get('/accounts', [\App\Http\Controllers\FIN\Hub\HubController::class, 'accounts'])->name('accounts');
             Route::get('/account/{id}', [\App\Http\Controllers\FIN\Hub\HubController::class, 'accountDetail'])->name('account');
+            // 👤 Who may pay FROM this account (t_fin_account_users). Read is open to
+            // anyone who can open the account; writes are gated on
+            // `manage_account_users` inside the controller so they return JSON the
+            // panel can show rather than an HTML redirect.
+            Route::get('/account/{id}/users', [\App\Http\Controllers\FIN\Hub\HubController::class, 'accountUsers'])->name('account-users');
+            Route::post('/account/{id}/users', [\App\Http\Controllers\FIN\Hub\HubController::class, 'saveAccountUser'])->name('account-users.save');
+            Route::delete('/account/{id}/users/{userId}', [\App\Http\Controllers\FIN\Hub\HubController::class, 'deleteAccountUser'])->name('account-users.delete');
             Route::get('/data/transfer-accounts', [\App\Http\Controllers\FIN\Hub\HubController::class, 'transferAccountsData'])->name('transfer-accounts');
             Route::get('/vendors', [\App\Http\Controllers\FIN\Hub\HubController::class, 'vendors'])->name('vendors');
             Route::get('/vendor/{id}', [\App\Http\Controllers\FIN\Hub\HubController::class, 'vendorDetail'])->name('vendor');

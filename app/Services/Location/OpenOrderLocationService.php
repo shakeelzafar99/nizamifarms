@@ -9,6 +9,7 @@ use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Schema;
 
 /**
  * Open Orders → "Get Customer Locations".
@@ -998,17 +999,81 @@ class OpenOrderLocationService
 
         $cust = DB::table('t_crm_prod_customer')
             ->where('id', $customerId)
-            ->first(['id', 'latitude', 'longitude', 'verified_location_url']);
+            ->first([
+                'id', 'first_name', 'last_name', 'latitude', 'longitude', 'verified_location_url',
+                'verified_location_saved_at', 'verified_location_saved_by',
+            ]);
         if (!$cust) {
             return false;
         }
+        $label = trim(((string) ($cust->first_name ?? '')) . ' ' . ((string) ($cust->last_name ?? ''))) ?: null;
         $hasPin = $cust->latitude && $cust->longitude
             && (float) $cust->latitude !== 0.0 && (float) $cust->longitude !== 0.0;
+
+        // Set when this reply REPLACES an existing pin (see the re-request rule
+        // below) — it changes the audit wording and clears a stale saved URL.
+        $isReplacement = false;
+
         if ($hasPin || !empty($cust->verified_location_url)) {
-            return false; // already verified — leave it
+            // ⭐ Aug-2026 — a pin already on file. The default is still "never
+            // overwrite": on Aug-2 customer 3908 replied with a pin ~1 km from her
+            // stale one, we kept the stale one silently, and the order went out to
+            // the wrong place the next day. Recording the refusal is what turns
+            // "silently wrong" into "one click to fix".
+            //
+            // THE ONE EXCEPTION (owner ruling, Aug-4): a team member manually
+            // re-requested the location. That is a human saying "this pin is
+            // wrong" — the reply IS the replacement they asked for, so saving it
+            // needs no second human step. Everything else still refuses.
+            $reRequest = $this->manualLocationReRequest($customerId);
+
+            if (!$reRequest) {
+                // Nobody asked (or the ask was automated / too old) — keep what we
+                // have. One distinction matters for the amber flag: if the QURBANI
+                // request is the newest one, its reviewer drawer already owns this
+                // reply, so flagging it here would be a false alarm on a flow that
+                // is working.
+                $this->recordIgnoredReply(
+                    $cust,
+                    $label,
+                    $valid,
+                    $this->lastRequestIsQurbani($customerId) ? 'qurbani_flow' : 'existing_pin_kept'
+                );
+                return false;
+            }
+
+            // A pin the TEAM saved after we asked wins over the reply. The rider
+            // standing at the door is ground truth for a pin dropped from a sofa
+            // (same principle as the 24h grace window). A pin the CUSTOMER set
+            // themselves does not block their own newer correction.
+            if ($this->staffPinSavedAfter($cust, $reRequest->created_at)) {
+                $this->recordIgnoredReply($cust, $label, $valid, 'staff_pin_newer');
+                return false;
+            }
+
+            // Sanity brake: a huge jump is "here is where I am right now", not a
+            // corrected delivery address. Hold it for a human.
+            if ($this->replyJumpTooFar($cust, $valid)) {
+                $this->recordIgnoredReply($cust, $label, $valid, 'reply_too_far');
+                return false;
+            }
+
+            $isReplacement = true;
+            // falls through to the save below
         }
 
-        if (!$this->lastRequestIsOpenOrder($customerId)) {
+        // A replacement has already proven the request was ours, manual and recent
+        // (a stricter test than this one), so it skips straight to the save.
+        if (!$isReplacement && !$this->lastRequestIsOpenOrder($customerId)) {
+            // No pin, but this reply isn't ours to save — either nothing was asked
+            // or the qurbani reviewer owns it. Informational only (no amber dot):
+            // the qurbani drawer saves these on approval.
+            $this->recordIgnoredReply(
+                $cust,
+                $label,
+                $valid,
+                $this->lastRequestIsQurbani($customerId) ? 'qurbani_flow' : 'no_request_pending'
+            );
             return false; // not our flow (no request, or the qurbani flow owns it)
         }
 
@@ -1017,11 +1082,13 @@ class OpenOrderLocationService
             'longitude'                  => $valid['longitude'],
             'verified_location_saved_at' => now(),
             'verified_location_saved_by' => null, // null = auto-saved from WhatsApp reply
+            // Always rewrite the URL, never leave a stale one. On a REPLACEMENT the
+            // old link points at the OLD place, and "Open in Maps" prefers the URL
+            // over the coordinates — so keeping it would send the rider to exactly
+            // the address this reply was meant to correct.
+            'verified_location_url'      => !empty($sourceUrl) ? mb_substr($sourceUrl, 0, 500) : null,
             'updated_at'                 => now(),
         ];
-        if (!empty($sourceUrl)) {
-            $update['verified_location_url'] = mb_substr($sourceUrl, 0, 500);
-        }
 
         DB::table('t_crm_prod_customer')->where('id', $customerId)->update($update);
 
@@ -1030,9 +1097,207 @@ class OpenOrderLocationService
             'lat' => $valid['latitude'],
             'lng' => $valid['longitude'],
             'via_url' => $sourceUrl,
+            'replaced_existing_pin' => $isReplacement,
         ]);
 
+        // Audit it like every other pin write. Until Aug-2026 this path was the
+        // ONLY one that changed a customer's pin without leaving an audit row, so
+        // "who set this pin?" had no answer whenever the answer was "the customer".
+        \App\Services\AuditLogger::logCustomerPinChange(
+            $customerId,
+            $label,
+            $cust->latitude,
+            $cust->longitude,
+            $valid['latitude'],
+            $valid['longitude'],
+            $isReplacement
+                ? ($sourceUrl
+                    ? 'Customer replied to a location re-request with a map link (auto-saved, replaced the old pin)'
+                    : 'Customer replied to a location re-request (auto-saved, replaced the old pin)')
+                : ($sourceUrl
+                    ? 'Customer shared a map link on WhatsApp (auto-saved)'
+                    : 'Customer shared a pin on WhatsApp (auto-saved)'),
+            \App\Services\AuditLogger::SOURCE_WHATSAPP
+        );
+
         return true;
+    }
+
+    /**
+     * Write the audit row for a location reply we received but did NOT save, and
+     * mirror it to the log. Never throws — a failed note must not break the
+     * webhook, which is still just saving an inbound message.
+     *
+     * @param object      $cust    the customer row (id + current pin)
+     * @param array       $valid   validated ['latitude','longitude'] the customer sent
+     * @param string      $code    existing_pin_kept | staff_pin_newer | reply_too_far
+     *                             | qurbani_flow | no_request_pending
+     */
+    protected function recordIgnoredReply($cust, ?string $label, array $valid, string $code): void
+    {
+        $sentences = [
+            'existing_pin_kept'  => 'Customer sent a pin on WhatsApp — NOT saved, the existing verified pin was kept',
+            'staff_pin_newer'    => 'Customer sent a pin on WhatsApp — not saved, the team had already saved a newer pin',
+            'reply_too_far'      => 'Customer sent a pin on WhatsApp — NOT saved, it is a long way from the saved pin and needs a human to judge',
+            'qurbani_flow'       => 'Customer sent a pin on WhatsApp — held for Qurbani review, not auto-saved',
+            'no_request_pending' => 'Customer sent a pin on WhatsApp — no location request was pending, not auto-saved',
+        ];
+
+        try {
+            \App\Services\AuditLogger::logCustomerPinReplyIgnored(
+                (int) $cust->id,
+                $label,
+                $cust->latitude,
+                $cust->longitude,
+                $valid['latitude'],
+                $valid['longitude'],
+                $code,
+                $sentences[$code] ?? $sentences['existing_pin_kept']
+            );
+        } catch (\Throwable $e) {
+            // audit is best-effort
+        }
+
+        // Also to the daily log, so this is greppable during an incident even if
+        // nobody opens the UI (this is exactly what was missing on Aug-2).
+        Log::info('OpenOrderLocation: inbound pin NOT auto-saved', [
+            'customer_id'  => (int) $cust->id,
+            'reason'       => $code,
+            'offered_lat'  => $valid['latitude'],
+            'offered_lng'  => $valid['longitude'],
+            'kept_lat'     => $cust->latitude,
+            'kept_lng'     => $cust->longitude,
+        ]);
+    }
+
+    /**
+     * ⭐ Aug-2026 — did a PERSON manually re-request this customer's location
+     * recently? That is the single condition under which a reply is allowed to
+     * replace an existing verified pin (owner ruling).
+     *
+     * "Manually" is the whole safety property: `sent_by` is only set when a human
+     * pressed send in a chat window. Both automated senders — the bulk Get
+     * Customer Locations tool and the auto-drain — pass userId NULL AND only ever
+     * target customers with no pin, so neither can reach this door.
+     *
+     * The template must also be the newest location-family message, so a qurbani
+     * request sent afterwards takes the flow back off us.
+     *
+     * @return object|null the request row (id, created_at, sent_by) or null
+     */
+    protected function manualLocationReRequest(int $customerId)
+    {
+        $ours = $this->requestTemplates();
+        if (empty($ours)) {
+            return null;
+        }
+        $family = array_values(array_unique(array_merge($ours, ['qurbani_location'])));
+        $hours = (int) $this->cfg('rerequest_window_hours', 24);
+        if ($hours <= 0) {
+            return null; // window disabled = the exception is off
+        }
+
+        $last = DB::table('t_wa_messages as m')
+            ->join('t_wa_conversations as c', 'c.id', '=', 'm.conversation_id')
+            ->where('c.customer_id', $customerId)
+            ->where('m.direction', 'outbound')
+            ->where('m.type', 'template')
+            ->whereIn('m.template_name', $family)
+            ->orderByDesc('m.id')
+            ->first(['m.id', 'm.template_name', 'm.sent_by', 'm.created_at']);
+
+        if (!$last || !in_array($last->template_name, $ours, true)) {
+            return null; // nothing asked, or the qurbani flow owns this customer
+        }
+        if (empty($last->sent_by)) {
+            return null; // automated send — never a licence to overwrite
+        }
+        if (Carbon::parse($last->created_at)->lessThan(now()->subHours($hours))) {
+            return null; // asked too long ago to treat this reply as the answer
+        }
+
+        return $last;
+    }
+
+    /**
+     * Did a STAFF MEMBER save a pin after we asked the customer? If so their pin
+     * wins and the reply is only flagged, never applied — the person who was
+     * physically at the door beats a pin dropped from the sofa, which is the same
+     * principle the 24h grace window encodes.
+     *
+     * A pin the CUSTOMER set themselves (auto-saved reply = saved_by NULL, or the
+     * customer app = VERIFIED_PIN_CUSTOMER_ID) does NOT block them from
+     * correcting it with a newer reply.
+     */
+    protected function staffPinSavedAfter($cust, $requestAt): bool
+    {
+        if (empty($cust->verified_location_saved_at)) {
+            return false;
+        }
+        try {
+            if (Carbon::parse($cust->verified_location_saved_at)
+                ->lessThanOrEqualTo(Carbon::parse($requestAt))) {
+                return false; // the pin predates the request — it is what we doubted
+            }
+        } catch (\Throwable $e) {
+            return false; // unreadable timestamp — don't block the replacement
+        }
+
+        $by = $cust->verified_location_saved_by;
+        if ($by === null) {
+            return false; // auto-saved from a customer reply
+        }
+        if ((int) $by === \App\Models\CRM\CustomerModel::VERIFIED_PIN_CUSTOMER_ID) {
+            return false; // the customer set it in the app
+        }
+        return true; // a real staff member, after we asked
+    }
+
+    /** Is the replacement absurdly far from the pin on file? (see config) */
+    protected function replyJumpTooFar($cust, array $valid): bool
+    {
+        $maxKm = (float) $this->cfg('rerequest_max_jump_km', 50);
+        if ($maxKm <= 0) {
+            return false; // brake disabled
+        }
+        if (!is_numeric($cust->latitude) || !is_numeric($cust->longitude)) {
+            return false; // URL-only pin, nothing to measure against
+        }
+        try {
+            $m = \App\Services\LocationService::calculateDistance(
+                (float) $cust->latitude,
+                (float) $cust->longitude,
+                (float) $valid['latitude'],
+                (float) $valid['longitude']
+            );
+            return ($m / 1000) > $maxKm;
+        } catch (\Throwable $e) {
+            return false;
+        }
+    }
+
+    /**
+     * True when the customer's most recent location-family request was the
+     * QURBANI one — used only to explain (in the audit note) why a reply was not
+     * auto-saved. Mirrors lastRequestIsOpenOrder()'s window and ordering.
+     */
+    protected function lastRequestIsQurbani(int $customerId): bool
+    {
+        $ours = $this->requestTemplates();
+        $family = array_values(array_unique(array_merge($ours, ['qurbani_location'])));
+        $windowDays = (int) $this->cfg('autosave_window_days', 14);
+
+        $last = DB::table('t_wa_messages as m')
+            ->join('t_wa_conversations as c', 'c.id', '=', 'm.conversation_id')
+            ->where('c.customer_id', $customerId)
+            ->where('m.direction', 'outbound')
+            ->where('m.type', 'template')
+            ->whereIn('m.template_name', $family)
+            ->where('m.created_at', '>=', now()->subDays($windowDays))
+            ->orderByDesc('m.id')
+            ->value('m.template_name');
+
+        return $last === 'qurbani_location';
     }
 
     /**

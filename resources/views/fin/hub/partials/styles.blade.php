@@ -82,6 +82,28 @@
   .nfhub .pending-strip b{color:var(--owe)}
   .nfhub .pending-strip .spacer{flex:1}
 
+  /* ⏳ pending balance actions (account page) — the ledger rows standing between money and this
+     account's balance. Amber like the pending strip, because it is the same "someone must act"
+     signal, but a card rather than a strip since each row is individually actionable. */
+  .nfhub .pact{background:var(--owe-soft);border:1px solid color-mix(in srgb,var(--owe) 28%,transparent);
+    border-radius:var(--radius);margin-bottom:16px;overflow:hidden}
+  .nfhub .pact-head{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;padding:11px 15px 9px}
+  .nfhub .pact-head h3{font-size:14px;font-weight:700;margin:0;color:var(--owe)}
+  .nfhub .pact-head .pact-sub{font-size:12.5px;color:var(--ink2)}
+  .nfhub .pact-head .spacer{flex:1}
+  .nfhub .pact-row{display:flex;align-items:center;gap:12px;flex-wrap:wrap;
+    padding:10px 15px;border-top:1px solid color-mix(in srgb,var(--owe) 18%,transparent)}
+  .nfhub .pact-row.done{opacity:.45}
+  .nfhub .pact-main{flex:1;min-width:200px}
+  .nfhub .pact-main b{font-size:13.5px;display:block}
+  .nfhub .pact-main .pact-meta{font-size:11.5px;color:var(--ink2);margin-top:2px}
+  .nfhub .pact-amt{font-weight:700;font-size:14px;white-space:nowrap}
+  .nfhub .pact-amt.in{color:var(--in)} .nfhub .pact-amt.out{color:var(--out)}
+  .nfhub .pact-btns{display:flex;gap:6px;flex-wrap:wrap}
+  .nfhub .pact-note{padding:9px 15px;font-size:11.5px;color:var(--ink2);
+    border-top:1px solid color-mix(in srgb,var(--owe) 18%,transparent)}
+  .nfhub .day-head .day-pending{color:var(--owe);font-weight:600}
+
   /* tiles */
   .nfhub .tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin-bottom:16px}
   .nfhub .tile{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);
@@ -387,6 +409,14 @@
   /* pinned copy of the summary at the top of the wizard — stays visible while the bank list scrolls */
   .hubmodal .rb-foot.rb-top{position:sticky;top:-16px;z-index:5;margin:0 0 12px;box-shadow:var(--shadow)}
 
+  /* vendors list: business-unit section header (combined scope only) */
+  .nfhub tr.bu-sep > td{background:var(--surface2);border-top:2px solid var(--line);
+    padding:7px 12px !important;white-space:nowrap}
+  .nfhub tr.bu-sep.first > td{border-top:0}
+  .nfhub .bu-name{font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:.06em;color:var(--ink2)}
+  .nfhub .bu-count{font-size:11px;color:var(--ink3);margin-left:8px}
+  .nfhub .bu-owed{font-size:11px;color:var(--owe);font-weight:700;margin-left:8px}
+
   /* vendor statement: day-header quick-add buttons + bill-image chip */
   .nfhub .day-add{display:inline-flex;gap:4px;margin-left:8px}
   .nfhub .day-add .mini-btn{padding:2px 8px;font-size:11px}
@@ -431,6 +461,20 @@
   .nfhub .row-time{font-size:10.5px;color:var(--ink3);white-space:nowrap;font-weight:600;
     font-variant-numeric:tabular-nums}
   .nfhub .row-time.late{font-style:italic}
+
+  /* drawer: line items of a weighted purchase + the attached bill photo */
+  .drawer .d-item{display:flex;align-items:baseline;gap:8px;padding:6px 0;border-bottom:1px solid var(--line2)}
+  .drawer .d-item:last-child{border-bottom:0}
+  .drawer .di-name{flex:1;font-size:12.5px;color:var(--ink);font-weight:600;min-width:0;
+    overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .drawer .di-calc{font-size:11px;color:var(--ink3);white-space:nowrap}
+  .drawer .di-total{font-size:12.5px;color:var(--ink);white-space:nowrap}
+  .drawer #nfhubDImg{max-width:100%;max-height:260px;border-radius:10px;border:1px solid var(--line);display:block}
+
+  /* drawer: which physical bank an online row went through (hidden for cash-only rows) */
+  .drawer .d-bank{display:inline-flex;align-items:center;gap:5px;margin-top:7px;padding:3px 10px;
+    border-radius:99px;background:var(--surface2);border:1px solid var(--line);font-size:11.5px}
+  .drawer .d-bank b{font-weight:800;color:var(--ink);letter-spacing:.01em}
 
   /* drawer: balance before → after for a statement row */
   .drawer .d-bal{display:flex;align-items:center;gap:12px}

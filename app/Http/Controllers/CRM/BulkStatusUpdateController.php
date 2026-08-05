@@ -43,9 +43,19 @@ class BulkStatusUpdateController extends Controller
                 
                 if ($status === 'delivered') {
                     $order = OrderModel::where('order_number', $orderNumber)->first();
-                    
+
                     if ($order) {
                         try {
+                            // 🚚 A row for an order still ON THE VAN is reported, not
+                            // applied — if the sheet says delivered while the system
+                            // says on-van, one of them is wrong and a human should
+                            // look, not have the import silently pick a winner.
+                            $vanBlock = \App\Services\Riders\VanService::manualChangeBlock($order, 'delivered');
+                            if ($vanBlock !== null) {
+                                $results['errors'][] = "Order {$orderNumber} skipped: {$vanBlock}";
+                                continue;
+                            }
+
                             // Use the changeStatus method to update with history
                             if (method_exists($order, 'changeStatus')) {
                                 $success = $order->changeStatus('delivered', 'Bulk update from CSV import');

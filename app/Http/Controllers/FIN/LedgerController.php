@@ -441,9 +441,17 @@ class LedgerController extends Controller
                     ->with('error', 'Select which bank this transfer goes through.');
             }
 
-            // Determine approval status
-            // Online transfers require approval
-            $approvalStatus = $request->mode === 'online'
+            // Determine approval status.
+            // Online transfers require approval — UNLESS the person entering it already holds
+            // every approval level `account_transfer` requires, in which case queueing it just
+            // asks them to approve their own entry. (Aug-2026 owner ruling; the internal-request
+            // flow has behaved this way since forever — see SelfApprovalPolicy for the full note.
+            // Cash transfers were always auto-approved and are untouched by this.)
+            $selfApproved = $request->mode === 'online'
+                && app(\App\Services\FIN\SelfApprovalPolicy::class)
+                    ->canSelfApprove(LedgerModel::TYPE_TRANSFER, auth()->id());
+
+            $approvalStatus = ($request->mode === 'online' && !$selfApproved)
                 ? LedgerModel::STATUS_PENDING
                 : LedgerModel::STATUS_APPROVED;
 
@@ -456,7 +464,10 @@ class LedgerController extends Controller
                 }
             }
 
-            // Create ledger entry
+            // Create ledger entry.
+            // A self-approved row is STAMPED (approved_by / approval_date / comments) so it reads
+            // as a deliberate decision in the audit trail and shows up in the Approvals "Approved"
+            // tab, rather than looking like a row that quietly never needed approving.
             $ledger = LedgerModel::create([
                 'transaction_date' => $request->transaction_date,
                 'transaction_type' => LedgerModel::TYPE_TRANSFER,
@@ -467,6 +478,12 @@ class LedgerController extends Controller
                 'mode' => $request->mode,
                 'receiving_account_id' => $transferBankId,
                 'approval_status' => $approvalStatus,
+                'approval_date' => $selfApproved ? now()->toDateString() : null,
+                'approved_by' => $selfApproved ? auth()->id() : null,
+                'comments' => $selfApproved
+                    ? app(\App\Services\FIN\SelfApprovalPolicy::class)
+                        ->auditNote(LedgerModel::TYPE_TRANSFER, auth()->id())
+                    : null,
                 'created_by' => auth()->id()
             ]);
 
@@ -487,7 +504,9 @@ class LedgerController extends Controller
 
             $message = $approvalStatus === LedgerModel::STATUS_PENDING
                 ? 'Transfer created and pending approval!'
-                : 'Transfer completed successfully!';
+                : ($selfApproved
+                    ? 'Transfer completed and posted — no approval needed, you hold the rights for it.'
+                    : 'Transfer completed successfully!');
 
             return redirect()->route('fin.ledger.index')
                            ->with('success', $message);
@@ -1646,7 +1665,8 @@ class LedgerController extends Controller
                     'from_account_id' => $transaction->from_account_id,
                     'to_account' => $transaction->toAccount ? $transaction->toAccount->account_name : '-',
                     'to_account_id' => $transaction->to_account_id,
-                    'created_by' => $transaction->createdBy ? $transaction->createdBy->name : '-',
+                    // fullname, not name — UserModel has no `name`, so this always returned '-'
+                    'created_by' => $transaction->createdBy ? $transaction->createdBy->fullname : '-',
                     'created_at' => $transaction->created_at ? $transaction->created_at->format('M j, Y g:i A') : '-',
                 ]
             ]);

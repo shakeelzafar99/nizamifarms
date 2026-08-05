@@ -225,10 +225,12 @@ window.viewCustomer = function(id) {
                             ${vloc.unlock_active
                                 ? `<button onclick="relockCustomerPin(${customer.id})" style="padding:4px 12px; background:#fff; color:#b45309; border:1px solid #fcd34d; border-radius:6px; font-size:12.5px; font-weight:600; cursor:pointer;" title="Cancel the unlock — the pin locks again for riders">🔒 Re-lock</button>`
                                 : `<button onclick="unlockCustomerPin(${customer.id})" style="padding:4px 12px; background:#fff; color:#d97706; border:1px solid #fbbf24; border-radius:6px; font-size:12.5px; font-weight:600; cursor:pointer;" title="Let the rider change this pin (auto-locks after one save or 6 hours)">🔓 Unlock for rider</button>`}
+                            <button onclick="openPinHistory(${customer.id})" style="padding:4px 10px; background:#fff; color:#4f46e5; border:1px solid #c7d2fe; border-radius:6px; font-size:12.5px; font-weight:600; cursor:pointer;" title="Who set this location, and how?">🕘 History</button>
                             <button onclick="updateVerifiedLocation(${customer.id})" style="padding:4px 12px; background:#3b82f6; color:#fff; border:none; border-radius:6px; font-size:12.5px; font-weight:500; cursor:pointer;">Update</button>
                         ` : `
                             <span style="font-weight:700; color:#dc2626;">Not set</span>
                             <div style="flex:1; min-width:6px;"></div>
+                            <button onclick="openPinHistory(${customer.id})" style="padding:4px 10px; background:#fff; color:#4f46e5; border:1px solid #c7d2fe; border-radius:6px; font-size:12.5px; font-weight:600; cursor:pointer;" title="Was a location ever set, or sent by the customer?">🕘 History</button>
                             <button onclick="setVerifiedLocation(${customer.id})" style="padding:4px 12px; background:#3b82f6; color:#fff; border:none; border-radius:6px; font-size:12.5px; font-weight:500; cursor:pointer;">Set location</button>
                         `}
                     </div>
@@ -4749,6 +4751,207 @@ addLineItem = function() {
         }
     }
 };
+
+// ============================================
+// Pin history (Aug-2026) — "who set this location, and how?"
+//
+// SHARED COMPONENT. This block is duplicated VERBATIM in:
+//   resources/views/pages/orders/index.blade.php
+//   resources/views/pages/customers/index.blade.php
+// Keep the copies identical (same convention as the approvals
+// proof-filter chips). All wording comes from the server
+// (PinHistoryService) so web and mobile read the same.
+//
+// Entry point: openPinHistory(customerId)
+// ============================================
+(function () {
+    if (window.openPinHistory) return; // already installed on this page
+
+    var TONE = {
+        amber: { bg: '#fffbeb', bd: '#fcd34d', fg: '#92400e' },
+        green: { bg: '#f0fdf4', bd: '#86efac', fg: '#047857' },
+        blue:  { bg: '#eff6ff', bd: '#93c5fd', fg: '#1d4ed8' },
+        gray:  { bg: '#f9fafb', bd: '#e5e7eb', fg: '#4b5563' }
+    };
+
+    function esc(s) {
+        return String(s === null || s === undefined ? '' : s)
+            .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+    }
+
+    // Same shape the server uses for history rows ("02 Aug 2026, 8:15 PM"), so
+    // the current pin's date and the trail's dates read as one list.
+    function fmtWhen(iso) {
+        if (!iso) return '';
+        try {
+            var dt = new Date(iso);
+            if (isNaN(dt.getTime())) return '';
+            var MON = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+            var hh = dt.getHours(), ap = hh >= 12 ? 'PM' : 'AM';
+            hh = hh % 12; if (hh === 0) hh = 12;
+            var mm = dt.getMinutes(); if (mm < 10) mm = '0' + mm;
+            var dd = dt.getDate(); if (dd < 10) dd = '0' + dd;
+            return dd + ' ' + MON[dt.getMonth()] + ' ' + dt.getFullYear() + ', ' + hh + ':' + mm + ' ' + ap;
+        } catch (e) { return ''; }
+    }
+
+    function shell() {
+        var o = document.getElementById('pinHistoryOverlay');
+        if (o) return o;
+        o = document.createElement('div');
+        o.id = 'pinHistoryOverlay';
+        // Above the order/customer modals (which sit at 10000).
+        o.style.cssText = 'display:none; position:fixed; inset:0; z-index:10060; background:rgba(0,0,0,0.45); overflow:auto;';
+        o.innerHTML = '<div style="background:#fff; margin:6vh auto; width:92%; max-width:560px; border-radius:12px; box-shadow:0 12px 40px rgba(0,0,0,0.25);" id="pinHistoryBox"></div>';
+        o.addEventListener('click', function (e) { if (e.target === o) window.closePinHistory(); });
+        document.body.appendChild(o);
+        return o;
+    }
+
+    function pinLink(p, label) {
+        if (!p) return '';
+        return '<a href="' + esc(p.maps_url) + '" target="_blank" style="color:#2563eb; text-decoration:none; font-weight:600; font-size:11.5px;">' + esc(label) + ' &#8599;</a>';
+    }
+
+    function entry(h) {
+        var t = TONE[h.tone] || TONE.gray;
+        var s = '<div style="display:flex; gap:10px; padding:10px 12px; border:1px solid ' + t.bd + '; background:' + t.bg + '; border-radius:9px; margin-bottom:8px;">';
+        s += '<div style="font-size:16px; line-height:1.2;">' + esc(h.icon) + '</div>';
+        s += '<div style="flex:1; min-width:0;">';
+        s += '<div style="font-weight:700; font-size:12.5px; color:' + t.fg + ';">' + esc(h.headline) + '</div>';
+        s += '<div style="font-size:11.5px; color:#6b7280; margin-top:2px;">' + esc(h.who || '')
+           + (h.at_display ? ' &middot; ' + esc(h.at_display) : '')
+           + (h.at_human ? ' <span style="color:#9ca3af;">(' + esc(h.at_human) + ')</span>' : '') + '</div>';
+        var move = h.moved_text || h.away_text;
+        if (move) {
+            s += '<div style="font-size:11.5px; color:' + t.fg + '; margin-top:3px; font-weight:600;">' + esc(move) + '</div>';
+        }
+        if (h.kind === 'ignored' && h.detail) {
+            s += '<div style="font-size:11px; color:#6b7280; margin-top:3px;">' + esc(h.detail) + '</div>';
+        }
+        var links = [];
+        if (h.old) links.push(pinLink(h.old, 'Previous pin'));
+        if (h.new) links.push(pinLink(h.new, 'This pin'));
+        if (h.offered) links.push(pinLink(h.offered, 'Customer pin'));
+        if (links.length) {
+            s += '<div style="margin-top:5px; display:flex; gap:12px; flex-wrap:wrap;">' + links.join('') + '</div>';
+        }
+        s += '</div></div>';
+        return s;
+    }
+
+    function render(d) {
+        var box = document.getElementById('pinHistoryBox');
+        if (!box) return;
+
+        var h = '';
+        h += '<div style="display:flex; align-items:center; justify-content:space-between; gap:10px; padding:14px 18px; background:linear-gradient(135deg,#4f46e5 0%,#4338ca 100%); color:#fff; border-radius:12px 12px 0 0;">';
+        h += '<div style="font-size:15px; font-weight:700;">&#128205; Location history' + (d.customer_name ? ' &mdash; ' + esc(d.customer_name) : '') + '</div>';
+        h += '<button onclick="closePinHistory()" style="background:none; border:none; color:#fff; font-size:24px; line-height:1; cursor:pointer; padding:0 2px;">&times;</button>';
+        h += '</div>';
+        h += '<div style="padding:16px 18px; max-height:72vh; overflow-y:auto;">';
+
+        // 1. The thing that needs a human, first.
+        var pr = d.pending_reply;
+        if (pr) {
+            h += '<div style="padding:12px; border:1px solid #f59e0b; background:#fffbeb; border-radius:10px; margin-bottom:14px;">';
+            h += '<div style="font-weight:700; color:#92400e; font-size:13px;">&#9888;&#65039; Customer sent a new location — not saved yet</div>';
+            h += '<div style="font-size:12px; color:#78350f; margin-top:4px;">Sent '
+               + (pr.at_human ? esc(pr.at_human) : 'recently')
+               + (pr.away_text ? ', <strong>' + esc(pr.away_text) + '</strong>' : '')
+               + '. It was not saved because this customer already has a verified pin.</div>';
+            h += '<div style="margin-top:8px; display:flex; gap:10px; flex-wrap:wrap;">';
+            if (pr.offered) {
+                h += '<a href="' + esc(pr.offered.maps_url) + '" target="_blank" style="padding:5px 11px; background:#fff; border:1px solid #fcd34d; border-radius:6px; color:#92400e; font-size:11.5px; font-weight:700; text-decoration:none;">See their pin &#8599;</a>';
+            }
+            if (d.phone) {
+                h += '<a href="/messages?focus_phone=' + encodeURIComponent(d.phone) + '" target="_blank" style="padding:5px 11px; background:#4f46e5; border:1px solid #4f46e5; border-radius:6px; color:#fff; font-size:11.5px; font-weight:700; text-decoration:none;">Open the chat to use it &rarr;</a>';
+            }
+            h += '</div></div>';
+        }
+
+        // 2. What is saved right now.
+        var c = d.current || {};
+        if (c.has_pin) {
+            h += '<div style="padding:10px 12px; border:1px solid #86efac; background:#f0fdf4; border-radius:10px; margin-bottom:14px;">';
+            h += '<div style="font-size:11px; text-transform:uppercase; letter-spacing:.4px; color:#059669; font-weight:700;">Current pin</div>';
+            h += '<div style="font-family:monospace; font-size:12px; color:#065f46; margin-top:3px;">' + esc(c.latitude) + ', ' + esc(c.longitude) + '</div>';
+            // WHO and WHEN together — "by Kanan Anoos" alone leaves the obvious
+            // next question unanswered, and the date is already on the customer
+            // record even when there is no audit trail behind it.
+            var whoWhen = [];
+            if (c.saved_by) whoWhen.push('by ' + esc(c.saved_by));
+            // Server-formatted first (one clock for this whole panel); the local
+            // fallback only covers an older cached payload without the field.
+            var savedWhen = c.saved_at_display || fmtWhen(c.saved_at);
+            if (savedWhen) whoWhen.push(esc(savedWhen));
+            if (whoWhen.length) {
+                h += '<div style="font-size:11.5px; color:#6b7280; margin-top:3px;">' + whoWhen.join(' &middot; ') + '</div>';
+            }
+            if (c.maps_url) {
+                h += '<div style="margin-top:5px;">' + pinLink({ maps_url: c.maps_url }, 'Open in Google Maps') + '</div>';
+            }
+            h += '</div>';
+        } else {
+            h += '<div style="padding:10px 12px; border:1px solid #fecaca; background:#fef2f2; border-radius:10px; margin-bottom:14px; font-size:12.5px; color:#991b1b; font-weight:600;">No verified pin saved for this customer.</div>';
+        }
+
+        // 3. The trail.
+        if (!d.available) {
+            h += '<div style="font-size:12.5px; color:#6b7280; padding:14px; text-align:center; background:#f9fafb; border-radius:8px;">History is not switched on in this environment yet.</div>';
+        } else if (!d.history || !d.history.length) {
+            // "No changes recorded" alone reads like the pin came from nowhere.
+            // We DO know when it was saved (it is on the customer record), so say
+            // so — the trail only starts where detailed history was switched on.
+            var since = c.saved_at_display || fmtWhen(c.saved_at);
+            h += '<div style="font-size:12.5px; color:#6b7280; padding:14px; text-align:center; background:#f9fafb; border-radius:8px;">';
+            if (since) {
+                h += 'No pin changes recorded yet.'
+                   + '<br><span style="font-size:11.5px;">The pin above was saved on <strong>' + esc(since) + '</strong>'
+                   + (c.saved_by ? ' by ' + esc(c.saved_by) : '') + '. New changes will show here from now on.</span>';
+            } else {
+                h += 'No pin changes recorded yet.<br><span style="font-size:11.5px;">New changes will show here from now on.</span>';
+            }
+            h += '</div>';
+        } else {
+            h += '<div style="font-size:11px; text-transform:uppercase; letter-spacing:.4px; color:#9ca3af; font-weight:700; margin-bottom:7px;">What happened, newest first</div>';
+            for (var i = 0; i < d.history.length; i++) h += entry(d.history[i]);
+        }
+
+        h += '</div>';
+        box.innerHTML = h;
+    }
+
+    window.closePinHistory = function () {
+        var o = document.getElementById('pinHistoryOverlay');
+        if (o) o.style.display = 'none';
+    };
+
+    window.openPinHistory = function (customerId) {
+        if (!customerId) return;
+        var o = shell();
+        o.style.display = 'block';
+        var box = document.getElementById('pinHistoryBox');
+        box.innerHTML = '<div style="padding:34px; text-align:center; color:#6b7280; font-size:13px;">Loading location history&hellip;</div>';
+
+        fetch('/customers/' + customerId + '/location-history', { headers: { 'Accept': 'application/json' } })
+            .then(function (r) { return r.json(); })
+            .then(function (d) {
+                if (!d || !d.success) throw new Error((d && d.message) || 'failed');
+                render(d);
+            })
+            .catch(function (e) {
+                console.error('pin history', e);
+                box.innerHTML = '<div style="padding:28px; text-align:center; color:#b91c1c; font-size:13px;">Could not load the location history.'
+                    + '<div style="margin-top:10px;"><button onclick="closePinHistory()" style="padding:6px 14px; border:1px solid #d1d5db; background:#fff; border-radius:6px; cursor:pointer;">Close</button></div></div>';
+            });
+    };
+
+    document.addEventListener('keydown', function (e) {
+        if (e.key === 'Escape') window.closePinHistory();
+    });
+})();
 
 // ============================================
 // Verified Location Functions

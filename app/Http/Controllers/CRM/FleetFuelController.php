@@ -112,6 +112,283 @@ class FleetFuelController extends Controller
         }
     }
 
+    // ── Maintenance types (Aug-2026) ──────────────────────────────────────────
+    //
+    // A named, manager-editable list on top of the two buckets. The manager runs
+    // the workshop schedule (oil 1,200 km, oil+tuning 2,500, brake shoe 10,000,
+    // chain set and misc as conditions) and adds repair types as he meets them,
+    // so the list has to be data he owns rather than a hardcoded picker.
+    // Gate: `manage_bike_service` — the same right that already covers changing a
+    // bike's service schedule, which Qasim holds. Reading is open to anyone who
+    // can open Bikes, because the pickers need it.
+
+    /** JSON: the full list, including retired types, for the manage screen. */
+    public function maintenanceTypes(Request $request)
+    {
+        if (!$this->allowed()) {
+            return response()->json(['success' => false, 'message' => 'Not authorised'], 403);
+        }
+        $svc = app(\App\Services\Riders\MaintenanceTypeService::class);
+
+        return response()->json([
+            'success'    => true,
+            'available'  => $svc->available(),
+            'can_manage' => $this->canManageService(),
+            'types'      => $svc->options(true),
+        ]);
+    }
+
+    /** Create or update one type. */
+    public function saveMaintenanceType(Request $request, $id = null)
+    {
+        if (!$this->canManageService()) {
+            return response()->json(['success' => false, 'message' => 'Not authorised to change maintenance types'], 403);
+        }
+        $svc = app(\App\Services\Riders\MaintenanceTypeService::class);
+        if (!$svc->available()) {
+            return response()->json(['success' => false, 'message' => 'Maintenance types are not set up yet (SQL batch 12).'], 422);
+        }
+
+        $data = $request->validate([
+            'type_name'   => 'required|string|max:80',
+            'bucket'      => 'required|in:regular,repair',
+            // NULL / 0 = "as conditions" — Chain Set and Misc have no schedule and
+            // must never nag.
+            'interval_km' => 'nullable|integer|min:0|max:200000',
+            'resets_service_clock' => 'nullable|boolean',
+            'is_active'   => 'nullable|boolean',
+            'sort_order'  => 'nullable|integer|min:0|max:9999',
+        ]);
+
+        try {
+            $model = $id
+                ? \App\Models\Riders\MaintenanceTypeModel::find((int) $id)
+                : new \App\Models\Riders\MaintenanceTypeModel();
+            if ($id && !$model) {
+                return response()->json(['success' => false, 'message' => 'That maintenance type no longer exists.'], 404);
+            }
+
+            // The name is the natural key and history reads it — a duplicate would
+            // make two rows indistinguishable on every past claim.
+            $clash = \App\Models\Riders\MaintenanceTypeModel::where('type_name', $data['type_name'])
+                ->when($id, fn ($q) => $q->where('id', '!=', (int) $id))->exists();
+            if ($clash) {
+                return response()->json(['success' => false, 'message' => 'There is already a type with that name.'], 422);
+            }
+
+            $model->type_name   = $data['type_name'];
+            $model->bucket      = $data['bucket'];
+            $model->interval_km = ((int) ($data['interval_km'] ?? 0)) > 0 ? (int) $data['interval_km'] : null;
+            // Only a REGULAR service can reset the service clock; a repair never
+            // does, whatever the form sends.
+            $model->resets_service_clock = $data['bucket'] === 'regular'
+                ? (bool) ($data['resets_service_clock'] ?? false) : false;
+            $model->is_active  = (bool) ($data['is_active'] ?? true);
+            $model->sort_order = (int) ($data['sort_order'] ?? 0);
+            if (!$model->exists) { $model->created_by = auth()->id(); }
+            $model->updated_by = auth()->id();
+            $model->save();
+
+            $this->forgetFleetCaches();
+
+            return $this->maintenanceTypes($request);
+        } catch (\Throwable $e) {
+            \Log::error('saveMaintenanceType failed', ['id' => $id, 'error' => $e->getMessage()]);
+            return response()->json(['success' => false, 'message' => 'Could not save that type.'], 500);
+        }
+    }
+
+    /**
+     * Retire a type. ⭐ Never a hard delete once anything references it — a past
+     * claim must keep showing the name it was filed under, and the service clock
+     * reads the type's flag when re-evaluating history. An unused type is removed
+     * outright so a typo does not linger.
+     */
+    public function deleteMaintenanceType(Request $request, $id)
+    {
+        if (!$this->canManageService()) {
+            return response()->json(['success' => false, 'message' => 'Not authorised to change maintenance types'], 403);
+        }
+        try {
+            $model = \App\Models\Riders\MaintenanceTypeModel::find((int) $id);
+            if (!$model) {
+                return $this->maintenanceTypes($request);
+            }
+            $inUse = \DB::table('t_req_master')->where('maintenance_type_id', $model->id)->exists();
+            if ($inUse) {
+                $model->is_active  = false;
+                $model->updated_by = auth()->id();
+                $model->save();
+            } else {
+                $model->delete();
+            }
+            $this->forgetFleetCaches();
+            return $this->maintenanceTypes($request);
+        } catch (\Throwable $e) {
+            \Log::error('deleteMaintenanceType failed', ['id' => $id, 'error' => $e->getMessage()]);
+            return response()->json(['success' => false, 'message' => 'Could not remove that type.'], 500);
+        }
+    }
+
+    /**
+     * ⭐ Correct a claim a rider already filed (owner, Aug-3): "once the rider
+     * sends it, Qasim or Shabib should be able to edit it if the wrong category
+     * was picked, or any other such issue."
+     *
+     * PENDING ONLY, deliberately. Once a claim is approved its money is in the
+     * ledger and its service may have reset the bike's clock — silently editing
+     * that row would leave the ledger and the clock disagreeing with the record.
+     * An approved claim is corrected the way it always was: reverse it and file
+     * it again.
+     *
+     * Re-runs FuelClaimRules on the EDITED values, so an edit cannot land a claim
+     * in a state the same claim could not have been filed in — e.g. switching a
+     * repair to a regular service on a company bike without a meter reading.
+     */
+    public function editClaim(Request $request, $id)
+    {
+        if (!$this->canManageService()) {
+            return response()->json(['success' => false, 'message' => 'Not authorised to edit bike claims'], 403);
+        }
+
+        $data = $request->validate([
+            'maintenance_type_id' => 'nullable|integer',
+            'amount'        => 'nullable|numeric|min:1|max:9999999',
+            'meter_at_fill' => 'nullable|integer|min:0|max:9999999',
+            'expense_date'  => 'nullable|date',
+            'description'   => 'nullable|string|max:1000',
+        ]);
+
+        try {
+            $req = \App\Models\Request\RequestModel::with('category')->find((int) $id);
+            if (!$req) {
+                return response()->json(['success' => false, 'message' => 'That request no longer exists.'], 404);
+            }
+            if (!in_array($req->expense_category, ['Petrol', 'Maintenance'], true)) {
+                return response()->json(['success' => false, 'message' => 'This screen only edits fuel and maintenance claims.'], 422);
+            }
+            if ($req->status !== \App\Models\Request\RequestModel::STATUS_PENDING) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'This claim is already ' . $req->status . '. An approved claim has money in the ledger — reverse it and file it again instead.',
+                ], 422);
+            }
+
+            $svcTypes = app(\App\Services\Riders\MaintenanceTypeService::class);
+            $isMaint  = $req->expense_category === 'Maintenance';
+
+            // Only resolve a type for maintenance; a petrol claim never carries one.
+            [$serviceType, $typeId] = $isMaint
+                ? $svcTypes->resolve(
+                    array_key_exists('maintenance_type_id', $data) ? $data['maintenance_type_id'] : $req->maintenance_type_id,
+                    $req->service_type
+                  )
+                : [null, null];
+
+            $amount = array_key_exists('amount', $data) && $data['amount'] !== null
+                ? (float) $data['amount'] : (float) $req->amount;
+            $meter = array_key_exists('meter_at_fill', $data)
+                ? ($data['meter_at_fill'] !== null ? (int) $data['meter_at_fill'] : null)
+                : ($req->meter_at_fill !== null ? (int) $req->meter_at_fill : null);
+            $date = $data['expense_date'] ?? ($req->expense_date
+                ? \Carbon\Carbon::parse($req->expense_date)->format('Y-m-d') : null);
+
+            // The edited claim must satisfy the same rules as a fresh one. Keyed to
+            // the RIDER the claim belongs to (his bike, his odometer), with the
+            // editor as actor so the own-bike petrol block steps aside exactly as
+            // it does when a manager files on his behalf.
+            // ⚠ `ignore_request_id` keeps the duplicate-claim guard from seeing THIS
+            // row as its own duplicate — without it, saving an edit unchanged would
+            // reject itself.
+            $rules = (new \App\Services\Riders\FuelClaimRules())->check(
+                (int) $req->requester_user_id,
+                $req->expense_category,
+                [
+                    'amount'        => $amount,
+                    'expense_date'  => $date,
+                    'meter_at_fill' => $meter,
+                    'service_type'  => $serviceType,
+                    'attendance_id' => $req->attendance_id,
+                    'ignore_request_id' => $req->id,
+                ],
+                (int) auth()->id()
+            );
+            if (!$rules['ok']) {
+                return response()->json(['success' => false, 'message' => $rules['message']], 422);
+            }
+
+            $before = [
+                'maintenance_type_id' => $req->maintenance_type_id,
+                'service_type' => $req->service_type,
+                'amount' => (float) $req->amount,
+                'meter_at_fill' => $req->meter_at_fill,
+                'expense_date' => $req->expense_date ? \Carbon\Carbon::parse($req->expense_date)->format('Y-m-d') : null,
+            ];
+
+            if ($isMaint) {
+                $req->service_type = $serviceType;
+                $req->maintenance_type_id = $typeId;
+            }
+            $req->amount = $amount;
+            $req->meter_at_fill = $meter;
+            if ($date) { $req->expense_date = $date; }
+            if (array_key_exists('description', $data) && $data['description'] !== null) {
+                $req->description = $data['description'];
+            }
+            $req->updated_by = auth()->id();
+            $req->save();
+
+            // The rider is told his claim was corrected, in the record itself —
+            // an edit that leaves no trace is indistinguishable from him having
+            // filed it that way.
+            \Log::info('Bike claim edited before approval', [
+                'request_id' => $req->id, 'editor' => auth()->id(),
+                'before' => $before,
+                'after'  => [
+                    'maintenance_type_id' => $req->maintenance_type_id,
+                    'service_type' => $req->service_type,
+                    'amount' => (float) $req->amount,
+                    'meter_at_fill' => $req->meter_at_fill,
+                    'expense_date' => $req->expense_date ? \Carbon\Carbon::parse($req->expense_date)->format('Y-m-d') : null,
+                ],
+            ]);
+
+            $this->forgetFleetCaches();
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Claim updated.',
+                'claim'   => [
+                    'id' => $req->id,
+                    'amount' => (float) $req->amount,
+                    'meter_at_fill' => $req->meter_at_fill,
+                    'expense_date' => $req->expense_date ? \Carbon\Carbon::parse($req->expense_date)->format('Y-m-d') : null,
+                    'maintenance_type_id' => $req->maintenance_type_id,
+                    'maintenance_type' => $svcTypes->labelFor($req->maintenance_type_id, $req->service_type),
+                    'service_type' => $req->service_type,
+                ],
+            ]);
+        } catch (\Throwable $e) {
+            \Log::error('editClaim failed', ['id' => $id, 'error' => $e->getMessage()]);
+            return response()->json(['success' => false, 'message' => 'Could not save that change.'], 500);
+        }
+    }
+
+    /** Drop the month/rider caches the Bikes screens read. */
+    private function forgetFleetCaches(): void
+    {
+        try {
+            foreach ([Carbon::today()->format('Y-m'), Carbon::today()->subMonthNoOverflow()->format('Y-m')] as $m) {
+                Cache::forget("fleet_fuel_month_{$m}");
+                foreach (\DB::table('t_ops_rider_profile')->pluck('user_id') as $rid) {
+                    Cache::forget("fleet_fuel_rider_{$rid}_{$m}");
+                }
+            }
+        } catch (\Throwable $e) {
+            // Caches expire within CACHE_SECS anyway — never fail a write over this.
+        }
+    }
+
     /**
      * Record a service (oil change) against a bike — the manual reset that sits
      * alongside the automatic one from approving an oil-change request.
@@ -139,7 +416,35 @@ class FleetFuelController extends Controller
             'date'     => 'nullable|date',
             // 0 / null means "follow the company default" (BIKE_SERVICE_INTERVAL_KM).
             'interval_km' => 'nullable|integer|min:0|max:100000',
+            // ⭐ WHICH service was done. Optional (an old APK sends none), but when
+            // given it must be one that actually resets the clock — see below.
+            'maintenance_type_id' => 'nullable|integer',
         ]);
+
+        // ⚠ Any type WITH A SCHEDULE can be recorded here — those are exactly the
+        // ones the service-schedule panel counts down (oil 1,200 · oil+tuning
+        // 2,500 · brake shoe 10,000). An earlier cut allowed only clock-resetting
+        // types, which left Brake Shoe with a visible countdown and no way on
+        // earth to reset it. What differs per type is the EFFECT, below: only a
+        // clock-resetting one moves the bike's overall service-due clock, so a
+        // brake-shoe job still cannot make an overdue oil change look done.
+        // "As conditions" types (Chain Set, Misc) are refused: they have no
+        // countdown, so there is nothing here to record against.
+        $recordType = null;
+        if ($request->filled('maintenance_type_id') && $request->filled('meter')) {
+            $recordType = app(\App\Services\Riders\MaintenanceTypeService::class)
+                ->find($data['maintenance_type_id']);
+            if (!$recordType) {
+                return response()->json(['success' => false, 'message' => 'That maintenance type no longer exists.'], 422);
+            }
+            if ((int) $recordType->interval_km <= 0) {
+                return response()->json([
+                    'success' => false,
+                    'message' => '"' . $recordType->type_name . '" is done as conditions require, so it has no due date to reset. '
+                        . 'File it as a maintenance request instead — that keeps the bill and the photo with it.',
+                ], 422);
+            }
+        }
 
         if (!$request->filled('meter') && !$request->filled('interval_km')) {
             return response()->json([
@@ -156,10 +461,43 @@ class FleetFuelController extends Controller
 
             $update = ['updated_at' => now()];
 
-            // A service actually happened → reset the due clock.
+            // A service actually happened.
             if ($request->filled('meter')) {
-                $update['last_service_meter'] = (int) $data['meter'];
-                $update['last_service_at']    = $data['date'] ?? Carbon::today()->format('Y-m-d');
+                $serviceDate = $data['date'] ?? Carbon::today()->format('Y-m-d');
+
+                // Every scheduled type gets a log row, so the per-type countdown on
+                // the Bikes drawer resets. Deliberately NOT a zero-amount expense
+                // request: a service record is not a money movement, and faking one
+                // would put Rs 0 rows into the expense reports and the ledger.
+                if ($recordType && \Illuminate\Support\Facades\Schema::hasTable('t_fleet_service_log')) {
+                    \DB::table('t_fleet_service_log')->insert([
+                        'user_id'             => (int) $data['rider_id'],
+                        'maintenance_type_id' => (int) $recordType->id,
+                        'meter'               => (int) $data['meter'],
+                        'service_date'        => $serviceDate,
+                        'note'                => 'Recorded on the Bikes screen (no bill filed)',
+                        'created_by'          => auth()->id(),
+                        'created_at'          => now(),
+                    ]);
+                }
+
+                // ⭐ ONLY a clock-resetting type moves the bike's overall service-due
+                // clock. A brake-shoe job is real work on its own 10,000 km cycle,
+                // but it must never make an overdue oil change look done — the same
+                // rule the approval path enforces via BikeServiceClock.
+                if (!$recordType || $recordType->resets_service_clock) {
+                    $update['last_service_meter'] = (int) $data['meter'];
+                    $update['last_service_at']    = $serviceDate;
+
+                    // And the schedule follows the work done: an Oil + Tuning means
+                    // due again in 2,500 km, not whatever the bike's old override
+                    // said. (A claim approved the normal way derives this from its
+                    // own request row; a hand-recorded service has none, so the
+                    // per-bike override is where it lands.)
+                    if ($recordType && (int) $recordType->interval_km > 0) {
+                        $update['service_interval_km'] = (int) $recordType->interval_km;
+                    }
+                }
             }
             // The schedule changed → how often it falls due. Never touches when
             // it was last serviced.
@@ -187,7 +525,18 @@ class FleetFuelController extends Controller
             // change is what made the two buttons look interchangeable.
             $said = [];
             if ($request->filled('meter')) {
-                $said[] = 'Service recorded at ' . number_format((int) $data['meter']) . ' km';
+                // Name the job and its next due, and be explicit when it did NOT
+                // move the bike's overall clock — otherwise recording brake shoes
+                // reads as "the bike is serviced", which is the whole confusion
+                // the per-type schedule exists to remove.
+                $said[] = ($recordType ? $recordType->type_name : 'Service')
+                    . ' recorded at ' . number_format((int) $data['meter']) . ' km'
+                    . ($recordType && (int) $recordType->interval_km > 0
+                        ? ' — next due at ' . number_format((int) $data['meter'] + (int) $recordType->interval_km) . ' km'
+                        : '');
+                if ($recordType && !$recordType->resets_service_clock) {
+                    $said[] = 'The bike\'s overall service-due clock is unchanged (only an oil service moves that)';
+                }
             }
             if ($request->filled('interval_km')) {
                 $said[] = ((int) $data['interval_km']) > 0
@@ -379,15 +728,19 @@ class FleetFuelController extends Controller
             }
         }
 
+        // ⭐ Aug-2026: this used to be four hardcoded account codes, NF Cash first —
+        // a fifth independent copy of "which accounts may this person pay from",
+        // and one that disagreed with the create side (which defaults to the
+        // Expense Fund). Both now come from PaymentSourceService, so the approver
+        // is offered exactly what he is tagged for and nothing the server would
+        // reject. Bikes is Nizami Farms operations, hence business unit 1.
         $accounts = [];
         if ($levels) {
             try {
-                $accounts = \App\Models\FIN\AccountModel::whereIn('account_code', ['NF_CASH', 'EXP_FUND', 'ONLINE', 'PETTY_CASH'])
-                    ->where('is_active', 1)
-                    ->orderByRaw("CASE WHEN account_code = 'NF_CASH' THEN 1 WHEN account_code = 'EXP_FUND' THEN 2 WHEN account_code = 'ONLINE' THEN 3 ELSE 4 END")
-                    ->get(['id', 'account_code', 'account_name'])
-                    ->toArray();
+                $accounts = app(\App\Services\FIN\PaymentSourceService::class)
+                    ->sourcesFor($u, 1, \App\Services\FIN\PaymentSourceService::PURPOSE_EXPENSE);
             } catch (\Throwable $e) {
+                \Log::warning('FleetFuel approval accounts failed', ['error' => $e->getMessage()]);
                 $accounts = [];
             }
         }
@@ -421,8 +774,16 @@ class FleetFuelController extends Controller
             $u   = auth()->user();
 
             return [
-                'pay_sources'  => $svc->sourcesFor($u),
+                // Bikes is Nizami Farms operations — always business unit 1, never
+                // Khaas. Stated explicitly so a future default change elsewhere
+                // cannot quietly start offering the other books' accounts here.
+                'pay_sources'  => $svc->sourcesFor($u, 1, \App\Services\FIN\PaymentSourceService::PURPOSE_EXPENSE),
                 'pay_banks'    => $svc->banks(),
+                // 🔧 The manager's maintenance types, riding along for the same
+                // reason as the accounts: a separate endpoint would carry its own
+                // permission gate and lock out the very people who file claims.
+                'maint_types'  => app(\App\Services\Riders\MaintenanceTypeService::class)->options(),
+                'can_manage_types' => $this->canManageService(),
                 // Read-only users see the numbers but must not file claims.
                 'can_pay_from' => !($u && method_exists($u, 'isReadOnly') && $u->isReadOnly()),
             ];

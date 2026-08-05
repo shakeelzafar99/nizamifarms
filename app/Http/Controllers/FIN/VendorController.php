@@ -765,7 +765,18 @@ class VendorController extends Controller
                                    $vendorPaymentCategory->approvalConfig->requires_level_2;
             }
             
-            $approvalStatus = $requiresApproval ? LedgerModel::STATUS_PENDING : LedgerModel::STATUS_APPROVED;
+            // Aug-2026: even when the category demands approval, don't queue it against someone
+            // who already holds every level it requires — they would only be approving their own
+            // entry. `vendor_payment` needs NO levels today, so this changes nothing right now;
+            // it is here so that turning approval ON in Request Settings can never strand the
+            // approvers' own payments the way it stranded online transfers. (SelfApprovalPolicy.)
+            $selfApproved = $requiresApproval
+                && app(\App\Services\FIN\SelfApprovalPolicy::class)
+                    ->canSelfApprove(LedgerModel::TYPE_VENDOR_PAYMENT, auth()->id());
+
+            $approvalStatus = ($requiresApproval && !$selfApproved)
+                ? LedgerModel::STATUS_PENDING
+                : LedgerModel::STATUS_APPROVED;
             // Any bank-category paying account is an online movement (matches the
             // server-wide rule used by expenses / Bank Balances), not just the
             // account literally coded 'ONLINE'.
@@ -823,6 +834,10 @@ class VendorController extends Controller
                 'bill_image' => $receiptImagePath, // Store receipt image in bill_image field
                 'created_by' => auth()->id(),
                 'comments' => "Paid from: {$paymentAccount->account_name}"
+                    . ($selfApproved
+                        ? ' | ' . app(\App\Services\FIN\SelfApprovalPolicy::class)
+                            ->auditNote(LedgerModel::TYPE_VENDOR_PAYMENT, auth()->id())
+                        : '')
             ]);
 
             // Apply via the canonical engine when approved (vendor_payment: vendor owed −, till/bank −),

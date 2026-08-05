@@ -1669,6 +1669,10 @@ class CustomerController extends Controller
                 'latitude' => 'nullable|numeric|between:-90,90',
                 'longitude' => 'nullable|numeric|between:-180,180',
                 'url' => 'nullable|string|max:500',
+                // Aug-2026 — where in the UI this save was made from, so the pin
+                // history can say "saved from the customer's chat pin" instead of
+                // a flat "web". Purely descriptive; never changes what is saved.
+                'context' => 'nullable|string|max:30',
             ]);
 
             // Must provide either coordinates OR URL
@@ -1818,7 +1822,19 @@ class CustomerController extends Controller
                 trim(($customer->first_name ?? '') . ' ' . ($customer->last_name ?? '')),
                 $oldPinLat, $oldPinLng,
                 $customer->latitude, $customer->longitude,
-                'Verified pin (web)'
+                // Say HOW the pin got here. This endpoint serves the web page, the
+                // messages screen's "Set as Verified Location" button AND the
+                // store app, and those are meaningfully different provenances when
+                // someone is later asking "why is this pin wrong?".
+                match ((string) ($validated['context'] ?? '')) {
+                    'chat_pin'  => "Saved from the customer's pin in the chat",
+                    'chat_link' => "Saved from the customer's map link in the chat",
+                    default     => $request->bearerToken()
+                        ? ($isBoundRider
+                            ? 'Verified pin dropped by the rider at the door'
+                            : 'Verified pin dropped in the store app')
+                        : 'Verified pin set on the web app',
+                }
             );
 
             $approximate   = $coordsSource === 'geocoded';
@@ -1853,6 +1869,102 @@ class CustomerController extends Controller
                 'success' => false,
                 'message' => 'Failed to save location: ' . $e->getMessage(),
             ], 500);
+        }
+    }
+
+    /**
+     * Aug-2026 — the pin's story: who set this customer's location, how, and
+     * when, plus any customer-sent pin we received but did not save.
+     *
+     * Serves BOTH the web popover and the mobile sheet from one place (route is
+     * registered in web.php and api.php), so the wording can never drift between
+     * them. Read-only and defensive: if the audit table isn't on this environment
+     * yet the response is a valid empty history rather than an error.
+     */
+    public function locationHistory(Request $request, $id)
+    {
+        try {
+            $customer = CustomerModel::find($id);
+            if (!$customer) {
+                return response()->json(['success' => false, 'message' => 'Customer not found'], 404);
+            }
+
+            $svc = app(\App\Services\Location\PinHistoryService::class);
+            $history = $svc->forCustomer((int) $id, (int) $request->input('limit', 15));
+
+            $savedByName = null;
+            if ($customer->verified_location_saved_by) {
+                $savedByName = ((int) $customer->verified_location_saved_by === CustomerModel::VERIFIED_PIN_CUSTOMER_ID)
+                    ? 'Customer'
+                    : DB::table('t_sys_user')->where('id', $customer->verified_location_saved_by)->value('fullname');
+            }
+
+            $hasPin = $customer->latitude && $customer->longitude
+                && (float) $customer->latitude !== 0.0 && (float) $customer->longitude !== 0.0;
+
+            return response()->json([
+                'success'       => true,
+                // false = the audit SQL hasn't been run here yet; the UI says so
+                // instead of implying this customer's pin was never touched.
+                'available'     => $svc->available(),
+                'customer_id'   => (int) $id,
+                'customer_name' => trim(($customer->first_name ?? '') . ' ' . ($customer->last_name ?? '')),
+                // Lets the UI deep-link to the chat (/messages?focus_phone=…) when
+                // a customer-sent pin is sitting there unused.
+                'phone'         => $customer->phone ?: $customer->phone_normalized,
+                'current'       => [
+                    'has_pin'   => (bool) $hasPin,
+                    'latitude'  => $hasPin ? (float) $customer->latitude : null,
+                    'longitude' => $hasPin ? (float) $customer->longitude : null,
+                    'url'       => $customer->verified_location_url,
+                    'maps_url'  => $hasPin
+                        ? 'https://www.google.com/maps/search/?api=1&query=' . $customer->latitude . ',' . $customer->longitude
+                        : null,
+                    'saved_by'  => $savedByName,
+                    'saved_at'  => $customer->verified_location_saved_at
+                        ? \Carbon\Carbon::parse($customer->verified_location_saved_at)->toIso8601String()
+                        : null,
+                    // Formatted HERE, exactly like the history rows. Letting the
+                    // browser format the ISO instead makes the current pin and the
+                    // trail below it disagree whenever the viewer's clock is not
+                    // the app's (seen in testing: 6:32 PM rendered as 4:32 PM).
+                    'saved_at_display' => $customer->verified_location_saved_at
+                        ? \Carbon\Carbon::parse($customer->verified_location_saved_at)->format('d M Y, g:i A')
+                        : null,
+                ],
+                'history'       => $history,
+                'pending_reply' => $svc->pendingReply((int) $id),
+            ]);
+        } catch (\Exception $e) {
+            \Log::warning('Failed to load customer location history', [
+                'customer_id' => $id,
+                'error'       => $e->getMessage(),
+            ]);
+            return response()->json([
+                'success' => false,
+                'message' => 'Could not load location history',
+            ], 500);
+        }
+    }
+
+    /**
+     * Aug-2026 — every customer currently sitting on a location pin we received
+     * but did not save. Small by construction (the flag ages out at 30 days and
+     * resolved ones drop off), so the orders page can badge its rows from one
+     * cheap call instead of every order-list payload carrying the flag.
+     */
+    public function pinRepliesPending()
+    {
+        try {
+            $map = app(\App\Services\Location\PinHistoryService::class)->allPending();
+            return response()->json([
+                'success' => true,
+                'pending' => (object) $map, // object, so JS can index by customer id
+                'count'   => count($map),
+            ]);
+        } catch (\Exception $e) {
+            // Never let a badge break the orders page.
+            return response()->json(['success' => true, 'pending' => (object) [], 'count' => 0]);
         }
     }
 

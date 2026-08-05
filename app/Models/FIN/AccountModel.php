@@ -34,6 +34,15 @@ class AccountModel extends BaseModel
                 $model->business_unit_id = self::DEFAULT_BUSINESS_UNIT_ID;
             }
         });
+
+        // A NEW company account must immediately be usable by the people who are
+        // supposed to see every account, or it would be invisible to them with no
+        // error to explain why (payment-source pickers are tag-driven since
+        // Aug-2026). Only cash/bank — employee-cash, vendor and expense accounts
+        // are created in bulk by other helpers and are never auto-tagged.
+        static::created(function ($model) {
+            \App\Services\FIN\PaymentSourceService::autoTagNewAccount($model);
+        });
     }
 
     protected $fillable = [

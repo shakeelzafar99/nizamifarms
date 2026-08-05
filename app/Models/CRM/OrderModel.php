@@ -1446,7 +1446,13 @@ class OrderModel extends BaseModel
                 // rebuilds each batch's planned sequence from estimated_delivery_at
                 // (planned_sequence), so wiping it there would blind the report.
                 // NOT cleared for 'out_for_delivery' — that's the live run itself.
-                if (in_array($statusCode, ['on_hold', 'cancelled', 'refunded', 'processing', 'new', 'pending'], true)) {
+                // 'on_van' joins this list (Aug-2026): an order pulled BACK off a
+                // live run onto the van is no longer a timed stop, and leaving the
+                // old ETA on it would quote a dead promise the moment it went out
+                // again — the exact failure this list was written for. The forward
+                // direction is unaffected: on_van → out_for_delivery does not clear
+                // anything, so the rider's dispatch times it fresh.
+                if (in_array($statusCode, ['on_hold', 'cancelled', 'refunded', 'processing', 'new', 'pending', 'on_van'], true)) {
                     $this->estimated_delivery_at = null;
                     $this->eta_calculated_at = null;
                     $this->eta_calculated_by = null;

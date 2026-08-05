@@ -122,8 +122,16 @@ class FuelClaimRules
         }
 
         // ── 3. Flat-cash petrol guards ─────────────────────────────────────────
+        // `ignore_request_id` = the row being EDITED. Without it a manager saving
+        // a correction to an existing claim would be told he had just filed a
+        // duplicate of it — the row is its own same-amount, same-day neighbour.
         if ($category === 'Petrol' && !$isMetered) {
-            return $this->checkFlatPetrol($forUserId, (float) ($input['amount'] ?? 0), $claimDate);
+            return $this->checkFlatPetrol(
+                $forUserId,
+                (float) ($input['amount'] ?? 0),
+                $claimDate,
+                $this->intOrNull($input['ignore_request_id'] ?? null)
+            );
         }
 
         return $this->pass();
@@ -140,8 +148,19 @@ class FuelClaimRules
         $win = $this->odometerWindow($userId, $date);
 
         if ($win['floor'] !== null && $meter < $win['floor'] - self::METER_SLACK_KM) {
+            // ⭐ Teach the remedy, don't just refuse. The most common legitimate hit
+            // (owner, Aug-3): a rider fills MID-SHIFT and hands over the receipt
+            // after his day has closed — so the claim is filed the NEXT day, the
+            // form defaults to today, and the reading is "below" yesterday's close.
+            // Dated to the day of the fill it passes, because the window brackets
+            // by the claim's own date. Without this sentence the block reads as
+            // "the system won't let me", and it gets worked around with a fake
+            // higher reading — which poisons the very history the check reads.
             return 'That reading (' . number_format($meter) . ' km) is lower than this bike\'s '
-                . number_format($win['floor']) . ' km recorded before ' . $date . '. Please check the number.';
+                . number_format($win['floor']) . ' km recorded before ' . $date . '. '
+                . 'If the fill or service actually happened on an earlier day, change the '
+                . 'request\'s date to that day — the reading is checked against the date it is filed for. '
+                . 'Otherwise please check the number.';
         }
         if ($win['ceil'] !== null && $meter > $win['ceil'] + self::METER_SLACK_KM) {
             return 'That reading (' . number_format($meter) . ' km) is higher than this bike\'s '
@@ -160,7 +179,7 @@ class FuelClaimRules
      * (b) SOFT FLAG a cash claim on a day the meter already paid for, or simply
      *     the 2nd cash claim of the day. Allowed; the approver is told.
      */
-    private function checkFlatPetrol(int $userId, float $amount, string $claimDate): array
+    private function checkFlatPetrol(int $userId, float $amount, string $claimDate, ?int $ignoreRequestId = null): array
     {
         try {
             $sameDay = DB::table('t_req_master')
@@ -168,6 +187,8 @@ class FuelClaimRules
                 ->where('expense_category', 'Petrol')
                 ->whereRaw('COALESCE(expense_date, DATE(created_at)) = ?', [$claimDate])
                 ->whereNotIn('status', ['cancelled', 'rejected'])
+                // The row being edited is not a duplicate of itself.
+                ->when($ignoreRequestId, fn ($q) => $q->where('id', '!=', $ignoreRequestId))
                 ->get(['id', 'amount', 'attendance_id', 'created_at']);
         } catch (\Throwable $e) {
             return $this->pass();          // never block a claim on a read failure
@@ -202,6 +223,23 @@ class FuelClaimRules
      */
     public function odometerWindow(int $userId, string $date): array
     {
+        // ⭐ PHASE C: the window belongs to the MACHINE he held on that date, not
+        //    to the man. Danish's first fill on DCR-799 (~24,800) must be judged
+        //    against DCR-799's series — his own bike's 33,700 would wrongly
+        //    refuse the right reading AND wrongly accept the old bike's. Gated
+        //    like everything else; any failure falls through to the rider-keyed
+        //    window below, so the check itself is never lost.
+        try {
+            $res = new VehicleResolver();
+            if ($res->rulesEnabled()) {
+                $vid = $res->vehicleForDay($userId, $date);
+                if ($vid) {
+                    $win = (new VehicleService())->meterWindowFor($vid, $date);
+                    if ($win !== null) return $win;
+                }
+            }
+        } catch (\Throwable $e) { /* fall back to the rider-keyed window */ }
+
         try {
             $sane = 'meter_start > ' . self::MIN_PLAUSIBLE_METER . '
                      AND (meter_end IS NULL OR (meter_end >= meter_start AND meter_end - meter_start <= 500))
@@ -284,8 +322,42 @@ class FuelClaimRules
         return !$this->isPerKmRider($userId);
     }
 
-    /** Is this rider on a company-owned bike (the company buys the actual fuel)? */
-    public function ridesCompanyBike(int $userId): bool
+    /**
+     * Is this rider on a company-owned bike (the company buys the actual fuel)?
+     *
+     * ⭐ PHASE C: THE ASSIGNMENT DECIDES, NOT A CHECKBOX (owner ruling Aug-4 —
+     *    "company bike and bike assignment should be linked, otherwise it doesn't
+     *    make sense"). Answered per DATE, because a rider can hold a company
+     *    machine for a week and his own the rest of the month, and the fuel
+     *    treatment must follow the machine he actually had that day.
+     *
+     * ⚠ Gated inside `isCompanyDay`: while `VEHICLE_RULES` is off — and for any
+     *   rider holding no registered vehicle — this returns the profile checkbox
+     *   exactly as it always did. Nobody outside the registry changes behaviour.
+     *
+     * ⚠ Callers that pass no date get TODAY. Anything judging a past day (month
+     *   reports, attendance rows) MUST pass that day's date or it will grade
+     *   history by today's arrangement.
+     */
+    public function ridesCompanyBike(int $userId, ?string $date = null): bool
+    {
+        try {
+            return (new VehicleResolver())->isCompanyDay(
+                $userId, $date ?: Carbon::today()->format('Y-m-d')
+            );
+        } catch (\Throwable $e) {
+            return $this->profileCompanyBikeFlag($userId);
+        }
+    }
+
+    /**
+     * The raw profile checkbox — the FALLBACK the registry falls back TO.
+     *
+     * ⚠⚠ `VehicleResolver::isCompanyDay` calls THIS, never `ridesCompanyBike`.
+     *    Calling the other way round would recurse forever now that
+     *    `ridesCompanyBike` asks the resolver. Keep this one flag-free and dumb.
+     */
+    public function profileCompanyBikeFlag(int $userId): bool
     {
         try {
             return (int) DB::table('t_ops_rider_profile')

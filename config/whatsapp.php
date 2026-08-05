@@ -31,6 +31,25 @@ return [
     'business_hours_start' => env('WHATSAPP_BUSINESS_HOURS_START', '09:00'),
     'business_hours_end' => env('WHATSAPP_BUSINESS_HOURS_END', '21:00'),
 
+    /*
+    |--------------------------------------------------------------------------
+    | Dev-only: numbers whose 24-hour window is treated as permanently open
+    |--------------------------------------------------------------------------
+    | Meta's webhook points at PRODUCTION, so a message sent to the business
+    | number never reaches a local install — `last_customer_message_at` stays
+    | stale on dev and the composer is stuck on "Send template", which makes
+    | free-form/voice UI impossible to exercise locally.
+    |
+    | Listing a number here makes isSessionActive() return true for it. It is
+    | ignored outright when APP_ENV=production (see ConversationModel::
+    | devSessionOverride) so uploading this file can never open a real
+    | customer's window. Meta still enforces its own 24h rule on its side, so a
+    | send may still be REJECTED — the point is to reach and test the UI.
+    |
+    | Comma-separated, any format (+92…, 0345…, 92…) — matched on digits.
+    */
+    'dev_open_numbers' => env('WHATSAPP_DEV_OPEN_NUMBERS', ''),
+
     // Firebase Cloud Messaging
     'firebase_project_id' => env('FIREBASE_PROJECT_ID', ''),
     'firebase_credentials_path' => env('FIREBASE_CREDENTIALS_PATH', 'firebase-service-account.json'),

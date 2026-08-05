@@ -151,6 +151,11 @@ class ApprovalsAPIController extends Controller
                 ->whereIn('approval_status', ['pending', 'pending_l1', 'pending_l2'])
                 ->whereNull('request_id') // Exclude ledger entries linked to requests
                 ->where('mode', 'online') // ⭐ Simplified: Only online mode (most common case)
+                // ⭐ Aug-2026, mirrors the web getOnlineL1Items: invoice-queue types only. Every
+                // row here is labelled "Online Invoice" below, so a mode=online transfer/deposit
+                // rendered as a nameless invoice. Those are surfaced on the Ledger Hub pending
+                // card and the main approvals list instead.
+                ->whereIn('transaction_type', [\App\Models\FIN\LedgerModel::TYPE_INVOICE, \App\Models\FIN\LedgerModel::TYPE_ORDER_PAYMENT])
                 // Shop customers settle via the Shop tab (order-based), so keep
                 // their orders out of the Regular pending list.
                 ->whereDoesntHave('order.customer', fn ($c) => $c->where('customer_type', \App\Models\CRM\CustomerModel::TYPE_SHOP))
@@ -229,6 +234,8 @@ class ApprovalsAPIController extends Controller
                     ->where('approval_status', 'approved')
                     ->whereNull('request_id')
                     ->where('mode', 'online')
+                    // ⭐ Aug-2026: invoice-queue types only, matching the pending list above.
+                    ->whereIn('transaction_type', [\App\Models\FIN\LedgerModel::TYPE_INVOICE, \App\Models\FIN\LedgerModel::TYPE_ORDER_PAYMENT])
                     ->where('approval_date', '>=', $thirtyDaysAgo)
                     ->whereDoesntHave('order.customer', fn ($c) => $c->where('customer_type', \App\Models\CRM\CustomerModel::TYPE_SHOP))
                     ->with([
