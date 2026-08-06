@@ -123,11 +123,10 @@
                     </div>
                 </div>
                 <div class="flex items-center gap-2 shrink-0">
-                    <form method="POST" action="{{ route('khaas.transfers.approve', $ptr->id) }}" class="inline">
-                        @csrf
-                        <button type="submit" onclick="return confirm('Approve transfer of {{ $ptr->quantity }} units of {{ $ptr->product ? addslashes($ptr->product->title) : '' }} to store?')"
-                            class="px-3 py-1.5 text-xs font-medium rounded-lg shadow-sm" style="background-color: #16a34a; color: #ffffff;" onmouseover="this.style.backgroundColor='#15803d'" onmouseout="this.style.backgroundColor='#16a34a'">✓ Approve</button>
-                    </form>
+                    {{-- Aug-2026: was a bare confirm()+POST. Opens the modal so the
+                         approver can name whoever actually counted the stock. --}}
+                    <button type="button" onclick="openProductApproveModal({{ $ptr->id }}, '{{ $ptr->product ? addslashes($ptr->product->title) : '' }}', {{ $ptr->quantity }})"
+                        class="px-3 py-1.5 text-xs font-medium rounded-lg shadow-sm" style="background-color: #16a34a; color: #ffffff;" onmouseover="this.style.backgroundColor='#15803d'" onmouseout="this.style.backgroundColor='#16a34a'">✓ Approve</button>
                     <button type="button" onclick="openProductRejectModal({{ $ptr->id }}, '{{ $ptr->product ? addslashes($ptr->product->title) : '' }}', {{ $ptr->quantity }})"
                         class="px-3 py-1.5 text-xs font-medium rounded-lg" style="background-color: #fef2f2; color: #dc2626; border: 1px solid #fecaca;" onmouseover="this.style.backgroundColor='#fee2e2'" onmouseout="this.style.backgroundColor='#fef2f2'">✕ Reject</button>
                 </div>
@@ -484,6 +483,43 @@
     </div>
 </div>
 
+<!-- Approve Transfer Modal (Aug-2026) — captures WHO COUNTED the stock -->
+{{-- Same shell rules as the reject modal below: inset-0 / max-w-* / flex-shrink-0
+     are purged so they're inline, but NEVER put `display` on the outer overlay —
+     it would outrank .hidden{display:none} and the modal could never close. --}}
+<div id="productApproveModal" class="hidden fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4" style="z-index: 999999; top:0; right:0; bottom:0; left:0; background-color:rgba(0,0,0,0.5); padding:1rem;" onclick="if(event.target===this)closeProductApproveModal()">
+    <div class="bg-white rounded-2xl shadow-2xl max-w-md w-full overflow-hidden" style="width:100%; max-width:28rem; max-height:90vh; display:flex; flex-direction:column; background:#fff; border-radius:1rem; overflow:hidden; box-shadow:0 20px 25px -5px rgba(0,0,0,0.10), 0 10px 10px -5px rgba(0,0,0,0.04);" onclick="event.stopPropagation()">
+        <div class="px-6 py-5 border-b border-gray-100" style="background: linear-gradient(to right, #f0fdf4, #ecfdf5); flex-shrink:0;">
+            <div class="flex items-center gap-3">
+                <div class="w-10 h-10 rounded-xl bg-green-100 flex items-center justify-center text-xl">✅</div>
+                <div>
+                    <h3 class="text-lg font-bold text-gray-900">Approve Transfer</h3>
+                    <p class="text-xs text-gray-500" id="productApproveModalInfo"></p>
+                </div>
+            </div>
+        </div>
+        <form id="productApproveForm" method="POST">
+            @csrf
+            <div class="px-6 py-5" style="flex:1 1 auto; min-height:0; overflow-y:auto;">
+                <label class="block text-sm font-semibold text-gray-700 mb-2">Counted by</label>
+                <select name="counted_by" id="productApproveCountedBy"
+                        class="w-full px-4 py-3 border-2 border-gray-200 rounded-xl text-sm focus:ring-2 focus:ring-green-500 focus:border-green-500"
+                        style="width:100%; padding:0.75rem 1rem; border:2px solid #e5e7eb; border-radius:0.75rem; font-size:0.875rem; background:#fff;">
+                    @foreach($countedByUsers ?? [] as $u)
+                        <option value="{{ $u->id }}" @selected($u->id == auth()->id())>{{ $u->fullname }}@if($u->id == auth()->id()) (me)@endif</option>
+                    @endforeach
+                    <option value="">— Not recorded —</option>
+                </select>
+                <p class="text-xs text-gray-400 mt-2">Defaults to you. Change it if someone else did the physical count.</p>
+            </div>
+            <div class="px-6 py-4 border-t border-gray-100 bg-gray-50 flex items-center justify-end gap-3" style="flex-shrink:0; display:flex; align-items:center; justify-content:flex-end; gap:0.75rem;">
+                <button type="button" onclick="closeProductApproveModal()" class="px-5 py-2.5 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-xl hover:bg-gray-50">Cancel</button>
+                <button type="submit" class="px-5 py-2.5 text-sm font-medium text-white rounded-xl shadow-sm" style="background-color: #16a34a;" onmouseover="this.style.backgroundColor='#15803d'" onmouseout="this.style.backgroundColor='#16a34a'">Approve Transfer</button>
+            </div>
+        </form>
+    </div>
+</div>
+
 <!-- Reject Transfer Modal (for pending approvals) -->
 <div id="productRejectModal" class="hidden fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4" style="z-index: 999999; top:0; right:0; bottom:0; left:0; background-color:rgba(0,0,0,0.5); padding:1rem;" onclick="if(event.target===this)closeProductRejectModal()">
     <div class="bg-white rounded-2xl shadow-2xl max-w-md w-full overflow-hidden" style="width:100%; max-width:28rem; max-height:90vh; display:flex; flex-direction:column; background:#fff; border-radius:1rem; overflow:hidden; box-shadow:0 20px 25px -5px rgba(0,0,0,0.10), 0 10px 10px -5px rgba(0,0,0,0.04);" onclick="event.stopPropagation()">
@@ -787,6 +823,22 @@ function openProductRejectModal(transferId, productName, quantity) {
 }
 function closeProductRejectModal() {
     document.getElementById('productRejectModal').classList.add('hidden');
+    document.body.style.overflow = '';
+}
+
+// === Approve Transfer Modal (records WHO COUNTED the stock) ===
+function openProductApproveModal(transferId, productName, quantity) {
+    document.getElementById('productApproveModalInfo').textContent = quantity + ' units of "' + productName + '" — stock moves into the shop';
+    document.getElementById('productApproveForm').action = '{{ url("khaas/transfers") }}/' + transferId + '/approve';
+    // Reset to the default (me) each time so a pick made for one transfer
+    // doesn't quietly carry over to the next one approved in this session.
+    var sel = document.getElementById('productApproveCountedBy');
+    if (sel) sel.value = '{{ auth()->id() }}';
+    document.getElementById('productApproveModal').classList.remove('hidden');
+    document.body.style.overflow = 'hidden';
+}
+function closeProductApproveModal() {
+    document.getElementById('productApproveModal').classList.add('hidden');
     document.body.style.overflow = '';
 }
 

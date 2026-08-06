@@ -45,6 +45,75 @@ class WorkJourneyService
     /** How far back to look for a usable closing reading before giving up. */
     const CLOSING_LOOKBACK_ROWS = 60;
 
+    /**
+     * ⭐⭐ PHASE D — THE CONTINUITY BASELINE, KEYED TO THE **MACHINE**.
+     *
+     * THE BUG THIS FIXES. An odometer is a fact about a bike, but this check has
+     * always compared a rider's morning reading against HIS OWN last close. The
+     * day a rider swaps machines those are two different odometers, so the gap is
+     * thousands of kilometres and he is met with *"your reading is LOWER, which
+     * should be impossible"* — for a perfectly honest reading. The 1 km threshold
+     * is deliberately tight (it is what catches real typos) so a swap could never
+     * pass it. Comparing against the MACHINE's own last reading makes the same
+     * check correct across a handover: whoever rode it last, that is where the
+     * odometer stood.
+     *
+     * @return null|array{value:int, date:?string, label:?string, source:string}
+     *   `label` is the plate/nickname when the baseline came from the machine, so
+     *   the message can name it. Null = nothing to compare against; every caller
+     *   already treats that as "ask no question" (a brand-new bike, correctly).
+     *
+     * ⚠ A machine with NO history returns null rather than falling back to the
+     *   rider's old bike — silence beats comparing against the wrong odometer,
+     *   which is the very failure being fixed.
+     */
+    public function continuityBaseline(int $userId, string $beforeDate): ?array
+    {
+        try {
+            $resolver = new VehicleResolver();
+            if ($resolver->rulesEnabled() && $resolver->available()) {
+                $vid = $resolver->currentVehicleFor($userId, $beforeDate);
+                if ($vid) {
+                    $win   = (new VehicleService())->meterWindowFor($vid, $beforeDate);
+                    $floor = $win['floor'] ?? null;
+                    return $floor === null ? null : [
+                        'value'  => (int) $floor,
+                        'date'   => null,
+                        'label'  => $resolver->labelFor($vid),
+                        'source' => 'vehicle',
+                    ];
+                }
+                // He holds nothing: there is no machine whose continuity to check.
+                if ($resolver->hasRiderProfile($userId)) return null;
+            }
+        } catch (\Throwable $e) {
+            Log::warning('continuityBaseline fell back to the rider chain', [
+                'user' => $userId, 'error' => $e->getMessage(),
+            ]);
+        }
+
+        $prev = $this->lastClosingMeter($userId, $beforeDate);
+        return $prev === null ? null
+            : ['value' => (int) $prev['value'], 'date' => $prev['date'], 'label' => null, 'source' => 'rider'];
+    }
+
+    /**
+     * The sentence shown when a morning reading is too far from the baseline.
+     * One copy, so the three gates that ask cannot drift apart in wording.
+     */
+    public static function continuityMessage(array $base, int $gapKm): string
+    {
+        $whose = !empty($base['label'])
+            ? $base['label'] . '\'s last reading was ' . number_format($base['value'])
+            : 'Last night\'s meter was ' . number_format($base['value']);
+
+        return $gapKm >= 0
+            ? $whose . ' — your reading is ' . number_format($gapKm) . ' km higher. '
+              . 'Check the meter again, or confirm if it is correct.'
+            : $whose . ' — your reading is LOWER, which should be impossible. '
+              . 'Check it again, or confirm to send it to your manager.';
+    }
+
     /** A day's ride above this is a typo, not a commute (meter_end / meter_home caps). */
     const MAX_DAY_RUN_KM  = 500;
     const MAX_HOME_RUN_KM = 700;
@@ -406,6 +475,13 @@ class WorkJourneyService
                 ->get(['id', 'user_id', 'attendance_date', 'login_time', 'meter_start', 'meter_start_source',
                        'meter_home', 'meter_end', 'work_expected_by']);
 
+            // ⭐ PHASE D — the days each rider's MACHINE changed. On a handover day the
+            //   morning reading belongs to a different odometer than last night's close,
+            //   so a gap there is the handover, not a discrepancy. Flagging it sent the
+            //   manager chasing a rider who had done nothing wrong. ONE query for all
+            //   riders, never per row (this method runs over a whole month).
+            $swapDays = $this->assignmentBoundaryDays($bikeUsers);
+
             // Continuity across the range without per-row queries: walk each rider's rows in
             // date order carrying the previous closing meter (seeded by ONE lookup per rider;
             // each day's own meter_home/meter_end is already in the row).
@@ -423,6 +499,7 @@ class WorkJourneyService
                 if ($state === 'no_home_start') { $issues[] = 'no_home_start'; }
                 if ($r->meter_start !== null && $r->meter_start !== '' && $prevByUser[$uid] !== null
                     && (string) ($r->meter_start_source ?? '') === 'home'
+                    && empty($swapDays[$uid . '|' . $date])
                     && abs((int) $r->meter_start - $prevByUser[$uid]) > $this->continuityKm()) {
                     $issues[] = 'meter_gap';
                 }
@@ -445,4 +522,29 @@ class WorkJourneyService
         return $out;
     }
 
+    /**
+     * Every "userId|date" on which one of these riders started or ended holding a
+     * machine. A lookup set, so a month-long walk costs ONE query.
+     *
+     * ⚠ Both ends matter: the day he GIVES a bike up and the day he TAKES one are
+     *   each a day with two odometers in play.
+     */
+    private function assignmentBoundaryDays(array $userIds): array
+    {
+        $out = [];
+        try {
+            $res = new VehicleResolver();
+            if (!$res->available() || !$res->rulesEnabled() || empty($userIds)) return $out;
+
+            foreach (DB::table(VehicleService::T_ASSIGN)->whereIn('user_id', $userIds)
+                        ->get(['user_id', 'assigned_on', 'released_on']) as $a) {
+                foreach ([$a->assigned_on, $a->released_on] as $d) {
+                    if ($d) $out[(int) $a->user_id . '|' . substr((string) $d, 0, 10)] = true;
+                }
+            }
+        } catch (\Throwable $e) {
+            Log::warning('assignmentBoundaryDays failed (non-fatal)', ['error' => $e->getMessage()]);
+        }
+        return $out;
+    }
 }

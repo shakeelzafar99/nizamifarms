@@ -692,7 +692,12 @@ class ShiftController extends Controller
         $locations = [];
         $defaultLocationId = null;
         try {
+            // ⚠ Van meet-up points share this table but are NOT offices — never
+            //   offer one as a work location (see LocationService::nearestOfficeWithin).
             $locations = DB::table('t_ops_company_locations')->where('is_active', 1)
+                ->when(\App\Services\LocationService::hasHandoverPointColumn(), fn ($q) => $q->where(function ($w) {
+                    $w->where('is_handover_point', 0)->orWhereNull('is_handover_point');
+                }))
                 ->orderByDesc('is_primary')->orderBy('location_name')
                 ->get(['id', 'location_name as name', 'is_primary'])
                 ->map(fn ($l) => ['id' => (int) $l->id, 'name' => $l->name, 'is_primary' => (int) $l->is_primary === 1])
@@ -1004,6 +1009,16 @@ class ShiftController extends Controller
     private function withLocation(array $data, ?int $locationId): array
     {
         if ($this->locationColumnExists()) {
+            // ⚠ Never let a van meet-up point become a shift's work location —
+            //   the check-in rules honour it. Dropped to null (the rider falls
+            //   back to his default/primary office) rather than refused, so a
+            //   stale form still saves the SHIFT it was really about.
+            if ($locationId && !\App\Services\LocationService::isAssignableOffice($locationId)) {
+                \Log::warning('Shift assign ignored a van meet-up point as a work location', [
+                    'location_id' => $locationId, 'by' => auth()->id(),
+                ]);
+                $locationId = null;
+            }
             $data['location_id'] = $locationId;
         }
         return $data;
@@ -1017,6 +1032,13 @@ class ShiftController extends Controller
     private function setUserDefaultLocation(int $userId, int $locationId): void
     {
         try {
+            // ⚠ A meet-up point is not an office — never make one somebody's default.
+            if (!\App\Services\LocationService::isAssignableOffice($locationId)) {
+                \Log::warning('Refused to set a van meet-up point as a default office', [
+                    'user_id' => $userId, 'location_id' => $locationId, 'by' => auth()->id(),
+                ]);
+                return;
+            }
             DB::table('t_ops_user_location_assignment')->where('user_id', $userId)
                 ->update(['is_active' => 0, 'updated_at' => now()]);
             $existing = DB::table('t_ops_user_location_assignment')

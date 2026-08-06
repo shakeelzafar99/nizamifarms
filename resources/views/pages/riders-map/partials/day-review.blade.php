@@ -25,6 +25,11 @@
     </div>
 
     <div id="drTrailNote" class="dr-note" style="display:none;"></div>
+    {{-- 🚚 The van day. Rendered ABOVE the rider rail because it is the story
+         those rows cannot tell: the rider lines show each person's deliveries,
+         never the choreography between them. Hidden entirely on days no van
+         ran, so an ordinary day looks exactly as it always has. --}}
+    <div id="drVanTrips" class="dr-van" style="display:none;"></div>
 
     <!-- Level 1: rider cards -->
     <div id="drRiderRail" class="dr-rail">
@@ -84,6 +89,17 @@
 .dr-tile.flight b{color:#1d4ed8;}
 
 .dr-note{padding:8px 16px;background:#f1f5f9;color:#475569;font-size:12.5px;border-bottom:1px solid #e2e8f0;}
+/* 🚚 van trips — teal to match the van surfaces everywhere else */
+.dr-van{padding:10px 16px;border-bottom:1px solid #e2e8f0;background:#f8fafc;}
+.dr-vancard{background:#fff;border:1px solid #ccfbf1;border-left:3px solid #0f766e;border-radius:9px;padding:10px 12px;margin-bottom:8px;}
+.dr-vanhead{font-size:13.5px;font-weight:800;color:#0f766e;}
+.dr-vanhead .dur{font-weight:600;color:#64748b;font-size:11.5px;}
+.dr-vancounts{font-size:12px;color:#475569;margin-top:3px;}
+.dr-vanline{font-size:11.5px;color:#64748b;margin-top:5px;line-height:1.7;}
+.dr-vanrider{display:flex;gap:8px;align-items:baseline;margin-top:5px;padding-top:5px;border-top:1px dashed #f1f5f9;}
+.dr-vanrider .nm{font-size:12.5px;font-weight:700;color:#0f172a;min-width:130px;}
+.dr-vanrider .mt{font-size:11.5px;color:#64748b;}
+.dr-vanflags{margin-top:7px;font-size:11.5px;color:#b45309;line-height:1.6;}
 
 .dr-rail{display:flex;gap:10px;padding:14px 16px;overflow-x:auto;flex-wrap:wrap;}
 .dr-card{border:1px solid #e5e7eb;border-radius:8px;padding:10px 14px;min-width:190px;background:#fff;cursor:pointer;transition:.15s;}
@@ -203,6 +219,9 @@ function drLoadDay(date) {
     drBackToRiders();
     document.getElementById('drRiderRail').innerHTML = '<div class="dr-empty">Loading…</div>';
     document.getElementById('drTiles').innerHTML = '';
+    // Cleared up front, not just re-rendered on success — a too-old date or a
+    // failed fetch must not leave the PREVIOUS date's van card standing.
+    drRenderVanTrips([]);
 
     fetch(DR_BASE + '?date=' + encodeURIComponent(date))
         .then(r => r.json())
@@ -218,6 +237,7 @@ function drLoadDay(date) {
             }
             drRenderTiles(res);
             drRenderTrailNote(res);
+            drRenderVanTrips(res.van_trips || []);
             drRenderRail(res.riders || []);
         })
         .catch(err => {
@@ -240,6 +260,74 @@ function drRenderTiles(res) {
 
 function drTile(value, label, cls) {
     return '<div class="dr-tile ' + (cls || '') + '"><b>' + value + '</b><span>' + label + '</span></div>';
+}
+
+/* 🚚 THE VAN DAY — one card per trip.
+   Day Review's rider rows already show each person's deliveries; what they can
+   never show is the choreography BETWEEN them: when the van loaded and left,
+   how long it stood at the meet-up point, who kept it waiting, and how long
+   each rider then took to actually set off. Read-only — every figure here is
+   already recorded by the scans and the dispatch engine. */
+function drRenderVanTrips(trips) {
+    const el = document.getElementById('drVanTrips');
+    if (!el) return;
+    if (!trips.length) { el.style.display = 'none'; el.innerHTML = ''; return; }
+
+    el.style.display = 'block';
+    el.innerHTML = trips.map(t => {
+        const tot = t.totals || {};
+
+        // The trip's spine: loaded → left → each stop → closed.
+        const line = [];
+        if (t.loaded_at)   line.push('loaded ' + drHm(t.loaded_at));
+        if (t.departed_at) line.push('left ' + drHm(t.departed_at));
+        (t.stops || []).forEach(s => {
+            let bit = drEsc(s.label);
+            if (s.reached_at) {
+                bit += ' ' + drHm(s.reached_at);
+                if (s.waiting_minutes !== null && s.waiting_minutes !== undefined) {
+                    bit += ' (stood ' + s.waiting_minutes + 'm)';
+                }
+            } else {
+                bit += ' — never reached';
+            }
+            line.push('📍 ' + bit);
+        });
+        line.push(t.ended_at ? 'closed ' + drHm(t.ended_at) : 'still open');
+
+        const counts = [];
+        if (tot.own)     counts.push(tot.own + ' own');
+        if (tot.carried) counts.push(tot.carried + ' carried for ' + tot.riders
+                                   + ' rider' + (tot.riders === 1 ? '' : 's'));
+        if (tot.uncollected) counts.push(tot.uncollected + ' never collected');
+
+        // Per rider: how long the van waited, and the gap before he set off.
+        const riders = (t.riders || []).map(r => {
+            const bits = [r.collected + ' of ' + r.orders + ' collected'];
+            if (r.wait_minutes !== null && r.wait_minutes !== undefined) {
+                bits.push('van waited ' + r.wait_minutes + 'm');
+            }
+            if (r.dispatch_lag_minutes !== null && r.dispatch_lag_minutes !== undefined) {
+                bits.push('set off ' + r.dispatch_lag_minutes + 'm later');
+            }
+            return '<div class="dr-vanrider">'
+                 + '<span class="nm">' + (r.complete ? '✅' : '⏳') + ' ' + drEsc(r.name) + '</span>'
+                 + '<span class="mt">' + drEsc(bits.join(' · ')) + '</span></div>';
+        }).join('');
+
+        const flags = (t.flags || []).length
+            ? '<div class="dr-vanflags">' + t.flags.map(f => '⚠️ ' + drEsc(f)).join('<br>') + '</div>'
+            : '';
+
+        return '<div class="dr-vancard">'
+             + '<div class="dr-vanhead">🚚 ' + drEsc(t.driver_name) + '’s van'
+             + (t.duration_minutes ? ' <span class="dur">' + t.duration_minutes + ' min out</span>' : '')
+             + '</div>'
+             + (counts.length ? '<div class="dr-vancounts">' + drEsc(counts.join(' · ')) + '</div>' : '')
+             + '<div class="dr-vanline">' + line.join(' → ') + '</div>'
+             + riders + flags
+             + '</div>';
+    }).join('');
 }
 
 function drRenderTrailNote(res) {

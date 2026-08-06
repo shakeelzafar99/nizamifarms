@@ -1507,6 +1507,17 @@ class RiderController extends Controller
                 $startOffsetMinutes = max(0, min(30, (int) $clientOffset));
             } else {
                 $startOffsetMinutes = $isRedispatch ? 0 : 5;
+
+                // ⭐ THE VAN DRIVER GETS NO HEAD START (owner ruling Aug-2026:
+                //    "no 5 min headstart needed here"). The grace buys time to
+                //    walk out and reach a motorbike; when he dispatches his
+                //    second wave he is already sitting in a running van at the
+                //    meet-up point, so the padding only makes every promise to
+                //    the customer 5 minutes pessimistic. Driving side ONLY — a
+                //    rider who has just collected off the van keeps his grace.
+                if ($this->riderIsDrivingVanNow((int) $riderId)) {
+                    $startOffsetMinutes = 0;
+                }
             }
 
             // ⭐ Calculate cumulative ETA for each order
@@ -1885,6 +1896,37 @@ class RiderController extends Controller
                 ->exists();
 
             return $memo[$riderId] = $onTheRoad;
+        } catch (\Throwable $e) {
+            return $memo[$riderId] = false;
+        }
+    }
+
+    /**
+     * Is this user OUT ON THE ROAD IN THE VAN right now (the driving side only)?
+     *
+     * Deliberately narrower than `riderIsAtVanMeetPoint`, which also answers true
+     * for a rider who has just collected off the van. Used for the start-grace
+     * rule: the +5 minutes exists so a rider can walk out and reach his
+     * motorbike, and a driver already sitting in a running van has no walk to
+     * make (owner ruling: "no 5 min headstart needed here" for the van driver's
+     * second wave). The receiving rider's grace is deliberately left alone —
+     * that was never ruled on, and shaving 5 minutes off his promises would make
+     * him read late to customers.
+     *
+     * Same 14h bound and fail-safe-false as riderIsAtVanMeetPoint.
+     */
+    private function riderIsDrivingVanNow(int $riderId): bool
+    {
+        static $memo = [];
+        if (array_key_exists($riderId, $memo)) return $memo[$riderId];
+        try {
+            if (!\Schema::hasTable('t_ops_van_trip')) return $memo[$riderId] = false;
+            return $memo[$riderId] = \DB::table('t_ops_van_trip')
+                ->where('van_user_id', $riderId)
+                ->whereNull('ended_at')
+                ->whereNotNull('departed_at')
+                ->where('departed_at', '>=', now()->subHours(14))
+                ->exists();
         } catch (\Throwable $e) {
             return $memo[$riderId] = false;
         }
@@ -4775,16 +4817,10 @@ class RiderController extends Controller
                 }
             } catch (\Throwable $e) { /* default false */ }
 
-            // Is the meter reading compulsory for this user? (riders-page tag; default required
-            // for anyone WITH a rider profile, exempt for untagged/management or no profile.)
+            // Is the meter reading compulsory for this user? (Phase D: the bike registry
+            // decides — see meterRequiredForUser(). Falls back to the riders-page tag.)
             // null = column not deployed yet → the app keeps its legacy optional behaviour.
-            $meterRequired = null;
-            try {
-                if (\Illuminate\Support\Facades\Schema::hasColumn('t_ops_rider_profile', 'meter_required')) {
-                    $mr = \DB::table('t_ops_rider_profile')->where('user_id', $user->id)->value('meter_required');
-                    $meterRequired = $mr === null ? 0 : (int) $mr; // no profile row → not required
-                }
-            } catch (\Throwable $e) { /* null = legacy behaviour */ }
+            $meterRequired = $this->meterRequiredForUser($user->id, $today);
 
             return response()->json([
                 'success' => true,
@@ -4852,6 +4888,54 @@ class RiderController extends Controller
      * Check in for today
      * Optionally accepts meter picture and GPS location
      */
+    /**
+     * ⭐⭐ PHASE D — IS THE METER COMPULSORY FOR THIS RIDER TODAY?
+     *
+     * THE SINGLE SOURCE for all three surfaces that ask: the `meter_required` flag
+     * in the today-attendance payload (which drives the app's whole "Meter & Check
+     * In / Out" chain), the check-in gate and the checkout gate.
+     *
+     * ⚠⚠ THEY MUST NEVER DISAGREE. If the flag said "optional" while the gate said
+     *    "required", the app would not offer the meter screen and the server would
+     *    refuse the check-in — a rider stranded at the office with no button that
+     *    helps him. That is why this is one method and not three copies.
+     *
+     * Order:
+     *   1. the bike registry (owner ruling R2: no machine = no meter). Silent
+     *      unless VEHICLE_RULES is on AND he is a rider AND the tables exist.
+     *   2. the old Rider Management checkbox — unchanged for everyone the
+     *      registry has no opinion about.
+     *
+     * Returns 1 / 0, or null when the legacy column isn't deployed (the app then
+     * keeps its pre-Jul-28 optional behaviour).
+     *
+     * FAIL-SAFE: any error falls through to the checkbox, never to "required".
+     */
+    private function meterRequiredForUser(int $userId, ?string $date = null): ?int
+    {
+        try {
+            $byRegistry = (new \App\Services\Riders\VehicleResolver())
+                ->meterRequiredNow($userId, $date);
+            if ($byRegistry !== null) {
+                return $byRegistry ? 1 : 0;
+            }
+        } catch (\Throwable $e) {
+            \Log::warning('meterRequiredForUser: registry check failed, using the profile flag', [
+                'user_id' => $userId, 'error' => $e->getMessage(),
+            ]);
+        }
+
+        try {
+            if (!\Illuminate\Support\Facades\Schema::hasColumn('t_ops_rider_profile', 'meter_required')) {
+                return null;                 // column not deployed → legacy optional
+            }
+            $mr = \DB::table('t_ops_rider_profile')->where('user_id', $userId)->value('meter_required');
+            return $mr === null ? 0 : (int) $mr;   // no profile row → not required
+        } catch (\Throwable $e) {
+            return null;
+        }
+    }
+
     /**
      * Is the manager's "riders must be at their location to check in" rule ON?
      * Stored as t_fin_config ATTENDANCE_REQUIRE_LOCATION ('1' = on). Defaults to
@@ -5325,8 +5409,11 @@ class RiderController extends Controller
             //    The manager check-in unlock is the valve, same as the ETA lock below.
             //    FAIL-OPEN on errors — a DB hiccup must never strand a rider at the office.
             try {
-                if (\Illuminate\Support\Facades\Schema::hasColumn('t_ops_rider_profile', 'meter_required')) {
-                    $mrFlag = \DB::table('t_ops_rider_profile')->where('user_id', $user->id)->value('meter_required');
+                // ⭐ PHASE D: asked through meterRequiredForUser() so the gate and the
+                //   app's meter_required flag are always the SAME answer — a rider is
+                //   never refused for a reading his app didn't offer to take.
+                $mrFlag = $this->meterRequiredForUser($user->id, $today);
+                {
                     if ((int) $mrFlag === 1
                         && (!$existing || $existing->meter_start === null || $existing->meter_start === '')) {
                         $mrUnlock = false;
@@ -6428,7 +6515,9 @@ class RiderController extends Controller
                         && $request->boolean('u5') && !$request->boolean('confirm_gap')) {
                         try {
                             $wjU = new \App\Services\Riders\WorkJourneyService();
-                            $prevM = $wjU->lastClosingMeter($user->id, $today);
+                            // ⭐ PHASE D: the MACHINE's last reading, not the man's — a rider
+                            //   who swapped bikes is no longer accused of an impossible meter.
+                            $prevM = $wjU->continuityBaseline($user->id, $today);
                             if ($prevM !== null) {
                                 $gapKm = (int) $meterReading - $prevM['value'];
                                 if (abs($gapKm) > $wjU->continuityKm()) {
@@ -6438,9 +6527,7 @@ class RiderController extends Controller
                                         'gap_km' => $gapKm,
                                         'prev_value' => $prevM['value'],
                                         'prev_date' => $prevM['date'],
-                                        'message' => $gapKm >= 0
-                                            ? "Last night's meter was {$prevM['value']} — your reading is {$gapKm} km higher. Check the meter again, or confirm if it is correct."
-                                            : "Last night's meter was {$prevM['value']} — your reading is LOWER, which should be impossible. Check it again, or confirm to send it to your manager.",
+                                        'message' => \App\Services\Riders\WorkJourneyService::continuityMessage($prevM, $gapKm),
                                     ]);
                                 }
                             }
@@ -6701,11 +6788,26 @@ class RiderController extends Controller
             //        shows on the attendance/Bikes pages).
             //    FAIL-OPEN on errors — never strand a rider at the office over a DB hiccup.
             try {
+                $mrColumn = \Illuminate\Support\Facades\Schema::hasColumn('t_ops_rider_profile', 'meter_required');
+                // ⭐ PHASE D — a day OPENED on a meter must be CLOSED on one, even if the
+                //   machine changed hands at lunchtime. Without this a mid-day handover
+                //   leaves a half-read day (a start with no end) and those kilometres
+                //   drop out of the bike's chain as "unaccounted" for good. He read it
+                //   this morning; he can read it at the point he handed it over.
+                //   ⚠ Only in the Phase-D world (the resolver has an opinion) — on a
+                //     server with the switch off this clause must not exist at all.
+                $registrySpeaks = (new \App\Services\Riders\VehicleResolver())
+                    ->meterRequiredNow($user->id, $today) !== null;
+                $openedOnAMeter = $registrySpeaks
+                    && $existing->meter_start !== null && $existing->meter_start !== '';
+
                 if (!$checkoutBypass
-                    && \Illuminate\Support\Facades\Schema::hasColumn('t_ops_rider_profile', 'meter_required')
+                    && ($mrColumn || $registrySpeaks)
                     && ($existing->meter_end === null || $existing->meter_end === '')) {
-                    $mrFlagOut = \DB::table('t_ops_rider_profile')->where('user_id', $user->id)->value('meter_required');
-                    if ((int) $mrFlagOut === 1
+                    // Asked through the SAME helper the app's flag came from, so the gate
+                    // can never demand a reading the app didn't offer to take.
+                    $mrFlagOut = $this->meterRequiredForUser($user->id, $today);
+                    if (((int) $mrFlagOut === 1 || $openedOnAMeter)
                         && (new \App\Services\Riders\HomeJourneyService())->riderHomePin($user->id) === null) {
                         return response()->json([
                             'success' => false,
@@ -7143,7 +7245,8 @@ class RiderController extends Controller
 
             // CONTINUITY gate: morning reading vs the last closing meter (bike slept at home).
             $meterStart = (int) $request->meter_start;
-            $prev = $wj->lastClosingMeter($user->id, $today);
+            // ⭐ PHASE D: keyed to the machine he is actually on (see continuityBaseline).
+            $prev = $wj->continuityBaseline($user->id, $today);
             if ($prev !== null) {
                 $gap = $meterStart - $prev['value'];
                 if (abs($gap) > $wj->continuityKm() && !$request->boolean('confirm_gap')) {
@@ -7153,9 +7256,7 @@ class RiderController extends Controller
                         'gap_km' => $gap,
                         'prev_value' => $prev['value'],
                         'prev_date' => $prev['date'],
-                        'message' => $gap >= 0
-                            ? "Last night's meter was {$prev['value']} — your reading is {$gap} km higher. Check the meter again, or confirm if it is correct."
-                            : "Last night's meter was {$prev['value']} — your reading is LOWER, which should be impossible. Check it again, or confirm to send it to your manager.",
+                        'message' => \App\Services\Riders\WorkJourneyService::continuityMessage($prev, $gap),
                     ]);
                 }
             }
@@ -7318,11 +7419,14 @@ class RiderController extends Controller
                         return null; // off-day / holiday
                     }
                 } catch (\Throwable $e) { /* can't resolve → keep offering (harmless) */ }
-                $prev = $wj->lastClosingMeter($userId, now()->format('Y-m-d'));
+                // ⭐ PHASE D: the card previews the same baseline the gate will judge
+                //   against — his machine's last reading, not his own last bike's.
+                $prev = $wj->continuityBaseline($userId, now()->format('Y-m-d'));
                 return [
                     'state' => 'offer',
                     'prev_meter' => $prev['value'] ?? null,
                     'prev_meter_date' => $prev['date'] ?? null,
+                    'prev_meter_label' => $prev['label'] ?? null,
                     'continuity_km' => $wj->continuityKm(),
                 ];
             }
@@ -11696,9 +11800,10 @@ class RiderController extends Controller
             // Server-side payment source validation.
             // ⭐ Aug-2026: mirrors Request\RequestController::store() exactly — the
             // account allow-list (t_fin_account_users) decides, through the SAME
-            // PaymentSourceService call that built the picker. Business unit is
-            // enforced implicitly (candidates are scoped to the request's BU), so a
-            // Khaas account can no longer fund an NF expense.
+            // PaymentSourceService call that built the picker. Since Aug-6-2026 a
+            // tagged account may fund a request filed against ANY reachable unit
+            // (the request's own unit stamps the books); untagged users still get
+            // only their unit's legacy fallback.
             $paymentSourceAccountId = $request->input('payment_source_account_id');
             $expenseBankId = null; // which of OUR banks an online expense is paid from
             if ($paymentSourceAccountId) {
@@ -13711,6 +13816,31 @@ class RiderController extends Controller
             }
         }
 
+        // 🚚 Riders who have JUST COLLECTED OFF THE VAN. A handover scan makes
+        // orders out_for_delivery with no ETA, away from the office — the exact
+        // shape this detector flags — but pressing Dispatch is the very NEXT step
+        // of the sanctioned van flow, not a forgotten one. Without this exclusion
+        // a rider whose first job of the day is a van collection gets a permanent
+        // `t_ops_dispatch_missed` row written against him for doing it right.
+        // Same 45-minute window the dispatch-origin guard uses. Schema-guarded and
+        // fail-safe: on any error the set is empty = today's behaviour exactly.
+        $justCollected = [];
+        try {
+            if (\Schema::hasColumn('t_crm_prod_order', 'handover_at')) {
+                $justCollected = array_flip(array_map('intval',
+                    \DB::table('t_crm_prod_order')
+                        ->whereIn('assigned_rider_user_id', $riderIds)
+                        ->where('order_status', 'out_for_delivery')
+                        ->whereNull('eta_calculated_at')
+                        ->whereNotNull('handover_at')
+                        ->where('handover_at', '>=', now()->subMinutes(45))
+                        ->distinct()->pluck('assigned_rider_user_id')->all()
+                ));
+            }
+        } catch (\Throwable $e) {
+            $justCollected = [];
+        }
+
         // Names (only needed for flagged riders, but cheap to fetch all).
         $names = \DB::table('t_sys_user')
             ->whereIn('id', $riderIds)
@@ -13735,7 +13865,12 @@ class RiderController extends Controller
             $hasDeliveredDispatched = (int) ($deliveredDispatched[$rid] ?? 0) > 0;
             // Never flag a rider MID-RUN (still carrying a dispatched wave) — he's
             // working, not "forgot". Requires undispatched OFD + fresh GPS.
-            if ($cnt > 0 && !$hasPendingDispatched && isset($latestByRider[$rid])) {
+            // A fresh van collection is not a forgotten dispatch — see above.
+            if (isset($justCollected[$rid])) {
+                $entry['van_handover_recent'] = true;
+            }
+            if ($cnt > 0 && !$hasPendingDispatched && isset($latestByRider[$rid])
+                && !isset($justCollected[$rid])) {
                 $pt = $latestByRider[$rid];
                 $dist = $this->haversineDistance($officeLat, $officeLng, (float) $pt->latitude, (float) $pt->longitude);
                 $entry['distance_meters'] = (int) round($dist);
@@ -13994,6 +14129,59 @@ class RiderController extends Controller
             ->count();
         if ($pendingDispatched > 0) {
             return null; // Still delivering the current dispatch.
+        }
+
+        // 🚚 HE IS NOT GOING TO THE OFFICE — HE IS GOING TO MEET THE VAN.
+        // This check knows nothing about van cargo, so it used to announce
+        // "returning · back at 3:40" about two people whose destination was the
+        // meet-up point: the rider whose NEXT batch is still on the van (he has
+        // finished this wave, so every gate above passes), and the VAN DRIVER on
+        // his way to the rendezvous with a second wave still aboard. A confident
+        // wrong arrival time is worse than none. Schema-guarded and fail-open:
+        // any error leaves the pre-van behaviour untouched.
+        try {
+            if (\Schema::hasColumn('t_crm_prod_order', 'van_loaded_at')) {
+                // His own next batch is sitting on somebody's van.
+                //
+                // ⚠ TIME-BOUNDED (the review's rule: anything keyed on a live van
+                //   pointer carries a bound). `unload` still has no button, so
+                //   stranded on_van boxes are real — three sat on Mashood's van
+                //   for DAYS. Unbounded, one stale box would hide this rider's
+                //   "back at office" time indefinitely. 20h = the store panel's
+                //   own freshness window for the same column.
+                $awaitingVan = \DB::table('t_crm_prod_order')
+                    ->where('assigned_rider_user_id', $riderId)
+                    ->where('order_status', 'on_van')
+                    ->whereNotNull('van_loaded_at')
+                    ->where('van_loaded_at', '>=', now()->subHours(20))
+                    ->exists();
+                if ($awaitingVan) return null;
+
+                // The driver: heading to the stop, or still carrying for others.
+                // Deliberately NOT "has an open trip" — once the van is empty and
+                // his deliveries are done, the drive home IS a genuine return and
+                // the store should see when he lands.
+                if (\Schema::hasTable('t_ops_van_trip')) {
+                    $trip = \DB::table('t_ops_van_trip')
+                        ->where('van_user_id', $riderId)
+                        ->whereNull('ended_at')->whereNotNull('departed_at')
+                        ->where('departed_at', '>=', now()->subHours(14))
+                        ->orderByDesc('id')->first();
+                    if ($trip) {
+                        if ((string) $trip->current_leg === 'to_stop') return null;
+                        $stillCarrying = \DB::table('t_crm_prod_order')
+                            ->where('van_user_id', $riderId)
+                            ->where('order_status', 'on_van')
+                            ->whereNotNull('van_loaded_at')
+                            // Same stranded-box bound as above.
+                            ->where('van_loaded_at', '>=', now()->subHours(20))
+                            ->exists();
+                        if ($stillCarrying) return null;
+                    }
+                }
+            }
+        } catch (\Throwable $e) {
+            // Fall through — a van lookup must never cost the live board its ETA.
         }
 
         // Must have delivered at least one DISPATCHED order today (i.e. there
@@ -17625,6 +17813,17 @@ class RiderController extends Controller
                 if (!empty($exUids) && \Illuminate\Support\Facades\Schema::hasColumn('t_ops_rider_profile', 'meter_required')) {
                     $meterExemptSet = array_flip(DB::table('t_ops_rider_profile')->whereIn('user_id', $exUids)
                         ->where('meter_required', 0)->pluck('user_id')->all());
+                }
+                // ⭐ PHASE D: the registry exempts too — a rider with no machine on the
+                //   sheet's date was not asked, so the phone must not flag him either.
+                //   Mirrors the web sheet exactly; silent while rules are off.
+                $vresEx = new \App\Services\Riders\VehicleResolver();
+                if (!empty($exUids) && $vresEx->rulesEnabled() && $vresEx->available()) {
+                    $heldOnDate = $vresEx->machineHoldersOn($selectedDate);
+                    foreach (DB::table('t_ops_rider_profile')->whereIn('user_id', $exUids)
+                        ->pluck('user_id') as $xu) {
+                        if (!isset($heldOnDate[(int) $xu])) { $meterExemptSet[(int) $xu] = true; }
+                    }
                 }
             } catch (\Throwable $e) { /* no column → nobody exempt */ }
             try {
@@ -24520,6 +24719,50 @@ class RiderController extends Controller
     }
 
     /**
+     * Mark ONE open-order line item free / charged from the mobile app, so a
+     * complimentary item no longer forces a trip to the web Edit Invoice screen.
+     *
+     * Permission: whoever may CREATE an order may mark an item free (owner
+     * ruling, Aug-2026) — deliberately NOT scan_line_item_qty, which is the
+     * weighing permission. The mobile-OR-web check mirrors OrderController::store()
+     * so a role granted only the web permission does not silently lose access.
+     *
+     * All the money handling (line totals, order totals, and the refusals on
+     * closed / already-invoiced orders) lives in LineItemQuantityService::setFree.
+     *
+     * PUT /api/rider/orders/{orderId}/line-items/{lineItemId}/free
+     * Body: { is_free: bool }
+     */
+    public function updateLineItemFree(Request $request, $orderId, $lineItemId)
+    {
+        $user = Auth::user();
+        if (!$user || !($user->hasMobilePermission('create_orders') || $user->hasPermission('create_orders'))) {
+            return response()->json(['success' => false, 'message' => 'You do not have permission to mark items free'], 403);
+        }
+
+        $validated = $request->validate([
+            'is_free' => 'required|boolean',
+        ]);
+
+        $order = \App\Models\CRM\OrderModel::find($orderId);
+        if (!$order) {
+            return response()->json(['success' => false, 'message' => 'Order not found'], 404);
+        }
+
+        $lineItem = \App\Models\CRM\OrderLineItemModel::where('id', $lineItemId)
+            ->where('order_id', $orderId)
+            ->first();
+        if (!$lineItem) {
+            return response()->json(['success' => false, 'message' => 'Line item not found in this order'], 404);
+        }
+
+        $service = new \App\Services\CRM\LineItemQuantityService();
+        $result = $service->setFree($order, $lineItem, (bool) $validated['is_free'], $user->id);
+
+        return response()->json($result, $result['success'] ? 200 : 422);
+    }
+
+    /**
      * Barcode-qty feature: set MULTIPLE open-order line-item quantities in ONE
      * request (the mobile multi-row manual "Save all"). Atomic — all rows are
      * validated and applied in a single transaction, totals recomputed once
@@ -30192,7 +30435,12 @@ class RiderController extends Controller
                 'changes' => $changes];
         }
         // Active office locations (for the assign screen's location bubbles).
+        // ⚠ Van meet-up points live in this table too and are NOT offices — a
+        //   rendezvous must never be assignable as somebody's work location.
         $locations = \DB::table('t_ops_company_locations')->where('is_active', 1)
+            ->when(\App\Services\LocationService::hasHandoverPointColumn(), fn ($q) => $q->where(function ($w) {
+                $w->where('is_handover_point', 0)->orWhereNull('is_handover_point');
+            }))
             ->orderByDesc('is_primary')->orderBy('location_name')
             ->get(['id', 'location_name', 'is_primary'])
             ->map(fn($l) => ['id' => (int) $l->id, 'name' => $l->location_name, 'is_primary' => (int) $l->is_primary === 1]);

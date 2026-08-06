@@ -1,5 +1,7 @@
 @extends('layouts.app')
 
+@section('title', 'Shipping')
+
 @section('content')
 <div class="container-fluid">
     <div class="flex flex-col gap-5 lg:gap-7.5">

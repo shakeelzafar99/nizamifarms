@@ -1,5 +1,7 @@
 @extends('layouts.app')
 
+@section('title', 'Import Legacy Data')
+
 @section('content')
 <div class="max-w-3xl mx-auto p-6">
     <div class="flex justify-between items-center mb-6">

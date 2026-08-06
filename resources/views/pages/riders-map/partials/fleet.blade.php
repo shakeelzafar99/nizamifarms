@@ -202,10 +202,32 @@
 .fl-vintro{margin:12px 16px 0;font-size:12px;color:#6b7280;line-height:1.5;}
 .fl-vintro b{color:#111827;}
 .fl-vwarn{margin:12px 16px 0;padding:10px 13px;border-radius:8px;background:#fffbeb;border:1px solid #fcd34d;font-size:12.5px;color:#78350f;}
-.fl-vgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(310px,1fr));gap:12px;padding:12px 16px;}
+.fl-vgrid{padding:12px 16px;}
+/* ⭐ Two sides: working pairs on the left, everything idle on the right. Collapses
+   to one column on a narrow screen — the left side stays first, which is the side
+   a manager reads every day. */
+.fl-vsplit{display:grid;grid-template-columns:1.15fr .85fr;gap:16px;align-items:start;}
+@media (max-width:1100px){.fl-vsplit{grid-template-columns:1fr;}}
+.fl-vcol{min-width:0;display:flex;flex-direction:column;gap:10px;}
+.fl-vcolh{margin:0 0 2px;font-size:12px;font-weight:800;color:#6b7280;text-transform:uppercase;
+  letter-spacing:.05em;display:flex;align-items:center;gap:7px;}
+.fl-vcolh span{background:#f3f4f6;color:#4b5563;border-radius:20px;padding:1px 8px;font-size:11px;letter-spacing:0;}
+.fl-vsubh{margin-top:6px;font-size:11.5px;font-weight:700;color:#92400e;text-transform:uppercase;letter-spacing:.04em;}
+.fl-vretired{margin-top:6px;}
+.fl-vretired summary{font-size:11.5px;color:#9ca3af;cursor:pointer;padding:4px 0;}
+.fl-vretired[open] summary{margin-bottom:8px;}
 .fl-vcard{border:1px solid #e5e7eb;border-radius:10px;background:#fff;padding:12px;cursor:pointer;transition:box-shadow .12s,border-color .12s;}
 .fl-vcard:hover{border-color:#fcd34d;box-shadow:0 3px 12px rgba(0,0,0,.07);}
 .fl-vcard.retired{opacity:.55;}
+/* Per-type service schedule rows on the machine profile. */
+.fl-vsched{margin-top:9px;display:flex;flex-direction:column;}
+.fl-vschedrow{display:flex;align-items:center;gap:10px;padding:6px 0;font-size:12.5px;
+  color:#374151;border-top:1px solid #f3f4f6;}
+.fl-vschedrow:first-child{border-top:none;}
+/* A rider holding nothing — a state to act on, not an error. */
+.fl-vcard.fl-vrider{cursor:default;border-style:dashed;background:#fcfcfd;}
+.fl-vcard.fl-vrider:hover{border-color:#e5e7eb;box-shadow:none;}
+.fl-vnote{margin-top:8px;font-size:11.5px;line-height:1.45;color:#6b7280;}
 .fl-vtop{display:flex;align-items:flex-start;gap:10px;}
 .fl-vphoto{width:52px;height:52px;border-radius:8px;object-fit:cover;border:1px solid #e5e7eb;background:#f3f4f6;flex-shrink:0;}
 .fl-vnophoto{width:52px;height:52px;border-radius:8px;border:1px dashed #d1d5db;display:flex;align-items:center;justify-content:center;font-size:22px;color:#d1d5db;flex-shrink:0;}
@@ -214,9 +236,13 @@
 .fl-vtag{display:inline-block;padding:1px 7px;border-radius:20px;font-size:10px;font-weight:700;vertical-align:middle;margin-left:6px;}
 .fl-vtag.co{background:#dbeafe;color:#1e40af;}
 .fl-vtag.own{background:#f3f4f6;color:#4b5563;}
+.fl-vtag.none{background:#fef3c7;color:#92400e;}
 .fl-vkeeper{margin-top:9px;font-size:12.5px;color:#374151;}
 .fl-vkeeper b{color:#111827;}
-.fl-vkeeper.none{color:#b45309;font-weight:600;}
+/* "Nobody has this one" is informational, not a fault — amber, not red. */
+.fl-vkeeper.none{color:#9ca3af;font-weight:600;}
+/* An own bike whose owner is out on a company machine: exactly where it should be. */
+.fl-vkeeper.parked{color:#6b7280;}
 /* Standing "needs a home pin" nag — amber, informative, self-clearing. */
 .fl-vwarnpin{margin-top:6px;font-size:11.5px;line-height:1.45;color:#92400e;
   background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:6px 8px;}
@@ -348,10 +374,33 @@
     <div style="padding:14px 18px;">
       <input type="hidden" id="flvAssignVehicleId">
 
+      {{-- Only shown when the manager came in from a RIDER card ("give him a bike"),
+           where the machine is the thing still to be chosen. Hidden otherwise. --}}
+      <div style="display:none;margin-bottom:10px;">
+        <label style="display:block;font-size:11.5px;font-weight:700;color:#374151;margin-bottom:4px;">Which machine</label>
+        <select id="flvAssignVehicleSel" onchange="flvAssignVehicleChanged()"
+                style="width:100%;border:1px solid #d1d5db;border-radius:8px;padding:8px 9px;font-size:13px;">
+        </select>
+      </div>
+
       <label style="display:block;font-size:11.5px;font-weight:700;color:#374151;margin-bottom:4px;">Give it to</label>
       <select id="flvAssignRider" onchange="flvPreviewAssign()"
               style="width:100%;border:1px solid #d1d5db;border-radius:8px;padding:8px 9px;font-size:13px;">
       </select>
+
+      {{-- ⭐⭐ "AND WHAT ABOUT HIM?" (owner ask, Aug-6).
+           Handing a machine over used to be half an act: the outgoing rider's
+           assignment closed and nothing else happened, so he silently held nothing
+           while the system still judged him as if he had a bike. Now the manager
+           answers for him here, and the three options are the three real ones. --}}
+      <div id="flvDisplacedBox" style="display:none;margin-top:12px;border:1px solid #fde68a;
+           background:#fffbeb;border-radius:9px;padding:10px 11px;">
+        <div id="flvDisplacedQ" style="font-size:12.5px;font-weight:700;color:#92400e;margin-bottom:7px;"></div>
+        <div id="flvDisplacedOpts" style="display:flex;flex-direction:column;gap:5px;"></div>
+        <select id="flvDisplacedVehicle" onchange="flvDisplacedPick('vehicle')"
+                style="display:none;width:100%;margin-top:7px;border:1px solid #d1d5db;
+                       border-radius:8px;padding:7px 9px;font-size:12.5px;"></select>
+      </div>
 
       <div style="display:flex;gap:9px;margin-top:10px;">
         <div style="flex:1;">
@@ -499,6 +548,9 @@
         <select id="flNewRider" onchange="flNewRiderChanged()"
                 style="width:100%;border:1px solid #d1d5db;border-radius:8px;padding:8px 10px;font-size:13px;"></select>
         <div id="flNewBikeHint" style="font-size:11px;color:#6b7280;margin-top:4px;"></div>
+        {{-- ⭐ Which machine this claim lands on, from the registry, for the claim's
+             own date — so nobody files against the wrong bike after a handover. --}}
+        <div id="flNewWhichBike" style="display:none;font-size:11.5px;color:#0f766e;margin-top:4px;"></div>
       </div>
 
       {{-- 🔧 What was done. Populated from the manager's own maintenance types
@@ -524,7 +576,9 @@
         </div>
         <div style="flex:1;">
           <label style="display:block;font-size:11.5px;font-weight:700;color:#374151;margin-bottom:4px;">Date</label>
-          <input id="flNewDate" type="date"
+          {{-- Changing the date can change the bike: a backdated claim belongs to
+               whoever's machine it was THAT day. --}}
+          <input id="flNewDate" type="date" onchange="flNewWhichBike()"
                  style="width:100%;border:1px solid #d1d5db;border-radius:8px;padding:8px 10px;font-size:13px;">
         </div>
       </div>
@@ -1511,6 +1565,7 @@ function flOpenEdit(claimId) {
 
     document.getElementById('flNewSubmit').textContent = 'Save changes';
     flNewError('');
+    flNewWhichBike();     // an edit still says which machine it belongs to
     flNewSvcChanged();
     flNewMeterTyped();
     document.getElementById('flNewModal').style.display = 'flex';
@@ -1571,6 +1626,43 @@ function flNewRiderChanged() {
             : 'Own bike — paid per shift kilometre. The meter is optional here.');
     flNewSvcChanged();
     flNewMeterTyped();          // the since-last-fill line is per rider
+    flNewWhichBike();           // ⭐ and WHICH machine this will land on
+}
+
+/**
+ * ⭐ NAME THE MACHINE BEFORE THE CLAIM IS FILED (owner ask, Aug-5).
+ *
+ * "So the team knows which bike they are raising for." Asked of the registry, so
+ * it follows a reassignment on its own, and keyed to the CLAIM'S DATE rather than
+ * today — a backdated claim lands on the bike he had THAT day, which is exactly how
+ * the server stamps it. Changing either the rider or the date re-asks.
+ *
+ * Silent when there is nothing to say (no rider picked, no machine registered):
+ * a label is never worth breaking a form over.
+ */
+let flNewBikeSeq = 0;
+function flNewWhichBike() {
+    const el  = document.getElementById('flNewWhichBike');
+    if (!el) return;
+    const uid  = document.getElementById('flNewRider').value;
+    const date = document.getElementById('flNewDate').value;
+    if (!uid) { el.style.display = 'none'; el.textContent = ''; return; }
+
+    const seq = ++flNewBikeSeq;        // last answer wins, never a stale one
+    fetch(FLV_BASE + '/for-user?user_id=' + encodeURIComponent(uid)
+          + (date ? '&date=' + encodeURIComponent(date) : ''),
+          { headers: { 'Accept': 'application/json' } })
+        .then(r => r.json())
+        .then(res => {
+            if (seq !== flNewBikeSeq) return;
+            const v = res && res.vehicle;
+            if (!v) { el.style.display = 'none'; el.textContent = ''; return; }
+            el.style.display = '';
+            el.innerHTML = (v.vtype === 'van' ? '🚚' : '🏍️')
+                + ' This will be recorded against <b>' + flEsc(v.name) + '</b>'
+                + (v.is_company ? '' : ' <span style="color:#9ca3af;">(his own bike)</span>');
+        })
+        .catch(() => { if (seq === flNewBikeSeq) el.style.display = 'none'; });
 }
 
 /**
@@ -2017,27 +2109,169 @@ function flvRenderIntro(res) {
     el.innerHTML = h;
 }
 
+/**
+ * ⭐⭐ THE FLEET AS WORKING PAIRS, NOT AS A LIST OF OBJECTS (owner ruling R4, Aug-6).
+ *
+ * The old grid was one card per machine, which meant a rider on a company bike
+ * appeared TWICE — once on the bike he rides and once as the ⚠ "Not assigned to
+ * anyone" own bike he has parked. And a rider with NO machine appeared nowhere at
+ * all, which is exactly the state that most needs a manager's attention.
+ *
+ * So the screen is now two sides:
+ *   LEFT  "On the road"    — machine + rider, one card per working pair
+ *   RIGHT "Parked & spare" — idle machines, then RIDERS WITH NO MACHINE
+ *
+ * A parked own bike says "Danish is on DCR-799" instead of raising an alarm about
+ * a bike that is exactly where it should be. And "no bike" becomes a visible,
+ * assignable state rather than an absence you have to notice.
+ */
 function flvRenderGrid(list) {
     const grid = document.getElementById('flVehGrid');
     if (!list.length) {
         grid.innerHTML = '<div class="fl-empty">No vehicles yet.</div>';
         return;
     }
-    grid.innerHTML = list.map(flvCard).join('');
+
+    const onRoad = list.filter(v => v.keeper_user_id && v.is_active);
+    const idle   = list.filter(v => !v.keeper_user_id && v.is_active);
+    const retired = list.filter(v => !v.is_active);
+
+    // Who is on a machine right now — so a parked own bike can name where its
+    // owner actually is instead of reading as a fault.
+    const keeperOf = {};
+    onRoad.forEach(v => { keeperOf[v.keeper_user_id] = v; });
+
+    // ⭐ RIDERS WITH NO MACHINE. Derived from the roster's has_vehicle, which the
+    //   server computes from the OPEN ASSIGNMENT (never the stale profile mirror).
+    const freeRiders = ((flvData && flvData.riders) || []).filter(r => !r.has_vehicle);
+
+    const company = a => (a.is_company ? 0 : 1);
+    onRoad.sort((a, b) => company(a) - company(b) || a.name.localeCompare(b.name));
+    idle.sort((a, b) => company(a) - company(b) || a.name.localeCompare(b.name));
+
+    const left = '<div class="fl-vcol">'
+        + '<h4 class="fl-vcolh">🛣️ On the road <span>' + onRoad.length + '</span></h4>'
+        // ⚠ NOT `.map(flvCard)` — map passes the INDEX as the second argument, which
+        //   would arrive as the keeper lookup. Harmless for these cards today, but
+        //   only by accident; pass it explicitly so it stays true.
+        + (onRoad.length ? onRoad.map(v => flvCard(v, keeperOf)).join('')
+            : '<div class="fl-empty" style="padding:14px;">Nobody is on a machine right now.</div>')
+        + '</div>';
+
+    const right = '<div class="fl-vcol">'
+        + '<h4 class="fl-vcolh">🅿️ Parked &amp; spare <span>'
+            + (idle.length + freeRiders.length) + '</span></h4>'
+        + (idle.length ? idle.map(v => flvCard(v, keeperOf)).join('') : '')
+        + (freeRiders.length
+            ? '<div class="fl-vsubh">Riders with no machine</div>'
+              + freeRiders.map(flvFreeRiderCard).join('')
+            : '')
+        + (!idle.length && !freeRiders.length
+            ? '<div class="fl-empty" style="padding:14px;">Every machine is out and every rider has one.</div>'
+            : '')
+        + (retired.length
+            ? '<details class="fl-vretired"><summary>' + retired.length + ' retired</summary>'
+              + retired.map(v => flvCard(v, keeperOf)).join('') + '</details>'
+            : '')
+        + '</div>';
+
+    grid.innerHTML = '<div class="fl-vsplit">' + left + right + '</div>';
 }
 
-function flvCard(v) {
+/**
+ * A rider holding nothing. The point of showing him at all: under the registry
+ * rules he is no longer asked for meter readings and cannot file his own fuel —
+ * correct while he really has no bike, and quietly wrong the moment he is riding
+ * something nobody recorded. Putting him on screen with an Assign button is what
+ * keeps that from going unnoticed.
+ */
+function flvFreeRiderCard(r) {
+    const canManage = flvData && flvData.can_manage;
+    const first = (r.name || '').split(' ')[0];
+    return ''
+      + '<div class="fl-vcard fl-vrider">'
+      +   '<div class="fl-vtop">'
+      +     '<div class="fl-vnophoto">👤</div>'
+      +     '<div style="min-width:0;flex:1;">'
+      +       '<div class="fl-vname">' + flEsc(r.name)
+      +         '<span class="fl-vtag none">no bike</span></div>'
+      +       '<div class="fl-vsub">'
+      +         (r.free_since
+                    ? 'Has had no machine since ' + flvDate(r.free_since)
+                    : 'No machine on record')
+      +       '</div>'
+      +     '</div>'
+      +   '</div>'
+      +   '<div class="fl-vnote">'
+      +     (flvData && flvData.rules_enabled
+                ? 'Not asked for meter readings, and cannot file his own fuel, while this is the case.'
+                : 'Once vehicle rules are switched on he will not be asked for meter readings.')
+      +   '</div>'
+      +   (canManage
+            ? '<div class="fl-vfoot">'
+              + '<button type="button" class="fl-vbtn primary" onclick="flvAssignToRider(' + r.user_id + ')">'
+              +   '➕ Give him a bike</button>'
+              + '<button type="button" class="fl-vbtn" onclick="flvNewOwnBike(' + r.user_id + ','
+              +   JSON.stringify(r.name) + ')" title="Register a bike he owns himself and assign it to him">'
+              +   '🏍️ New own bike</button>'
+              + '</div>'
+            : '')
+      + '</div>';
+}
+
+/**
+ * ➕ Give a machine to a rider — the reverse of the usual flow (pick the man, then
+ * the machine). Opens the ordinary assign modal on the first spare, with the rider
+ * preselected; the vehicle dropdown lets the manager change it.
+ */
+function flvAssignToRider(userId) {
+    const spare = ((flvData && flvData.vehicles) || [])
+        .filter(v => !v.keeper_user_id && v.is_active);
+    if (!spare.length) {
+        alert('There is no spare machine to give. Add one, or take one back from another rider first.');
+        return;
+    }
+    flvOpenAssign(spare[0].id, userId);
+}
+
+/**
+ * 🏍️ Register a rider's OWN bike and hand it to him in one step — the onboarding
+ * path for a new rider who arrives with his own machine (owner asked, Aug-6).
+ * Without this, "where do I enter him?" is a two-screen answer nobody remembers.
+ */
+function flvNewOwnBike(userId, name) {
+    flvOpenEdit(null);
+    document.getElementById('flvEditNick').value = name + ' - own bike';
+    document.getElementById('flvEditCompany').checked = false;   // his bike, his fuel
+    document.getElementById('flvEditTitle').textContent = 'Add ' + name + '’s own bike';
+    flvPendingAssignUser = userId;      // handed to him the moment it is created
+}
+
+function flvCard(v, keeperOf) {
     const canManage = flvData && flvData.can_manage;
     const icon      = v.vtype === 'van' ? '🚚' : '🏍️';
     const photo     = v.photo_count > 0 && v.first_photo_url
         ? '<img class="fl-vphoto" src="' + flEsc(v.first_photo_url) + '" alt="">'
         : '<div class="fl-vnophoto">' + icon + '</div>';
 
+    // ⭐ An idle OWN bike whose owner is out on a company machine is not a problem
+    //   — it is a bike parked exactly where it should be. Saying "⚠ Not assigned to
+    //   anyone" about it sent managers looking for a fault that did not exist.
+    //   The owner is found from the vehicle's own name-holder: whoever last held it.
+    let parkedBecause = null;
+    if (!v.keeper_user_id && !v.is_company && keeperOf && v.last_keeper_user_id) {
+        const on = keeperOf[v.last_keeper_user_id];
+        if (on) parkedBecause = (v.last_keeper_name || 'its owner').split(' ')[0] + ' is on ' + on.name;
+    }
+
     const keeper = v.keeper_name
         ? '<div class="fl-vkeeper">👤 <b>' + flEsc(v.keeper_name) + '</b>'
             + (v.assigned_on ? ' <span style="color:#9ca3af;">since ' + flvDate(v.assigned_on) + '</span>' : '')
           + '</div>'
-        : '<div class="fl-vkeeper none">⚠ Not assigned to anyone</div>';
+        : (parkedBecause
+            ? '<div class="fl-vkeeper parked">🅿️ Parked — ' + flEsc(parkedBecause) + '</div>'
+            : '<div class="fl-vkeeper none">Nobody has this one — '
+              + (canManage ? 'give it to a rider below.' : 'not assigned.') + '</div>');
 
     const s = v.service || {};
     let svc = '<span class="fl-vchip unk">service unknown</span>';
@@ -2090,21 +2324,169 @@ function flvCard(v) {
       + '</div>';
 }
 
+/**
+ * ⭐ Which half of "this month" the profile is showing (owner ruling Aug-5):
+ *    'money' = what was spent (the default, unchanged), 'days' = where the
+ *    kilometres went. The day list is fetched only when asked for — see the
+ *    note on VehicleController::days.
+ *
+ * ⚠ Named `flvDetailMode`, NOT `flvMode` — that one already means riders-vs-
+ *   vehicles for the whole tab (see flSetMode above). Re-declaring it here was a
+ *   SyntaxError that killed this entire script block, so the Bikes tab never
+ *   loaded at all.
+ */
+let flvDetailMode = 'money';
+let flvLastRes = null;
+const flvDaysCache = {};          // 'vehicleId|month' → the day payload
+
+function flvDaysKey(res) { return res.vehicle.id + '|' + (res.month || flMonth); }
+
+function flvSetDetailMode(mode) {
+    flvDetailMode = mode;
+    if (!flvLastRes) return;
+    const key = flvDaysKey(flvLastRes);
+
+    if (mode === 'days' && !flvDaysCache[key]) {
+        flvDaysCache[key] = { loading: true };
+        flvRenderDetail(flvLastRes.vehicle, flvLastRes.can_manage, flvLastRes);
+        fetch(FLV_BASE + '/' + flvLastRes.vehicle.id + '/days?month='
+              + encodeURIComponent(flvLastRes.month || flMonth),
+              { headers: { 'Accept': 'application/json' } })
+            .then(r => r.json())
+            .then(res => { flvDaysCache[key] = res && res.success ? res : { error: true }; })
+            .catch(() => { flvDaysCache[key] = { error: true }; })
+            .finally(() => {
+                // Only redraw if the manager is still looking at this bike and mode.
+                if (flvLastRes && flvDaysKey(flvLastRes) === key && flvDetailMode === 'days') {
+                    flvRenderDetail(flvLastRes.vehicle, flvLastRes.can_manage, flvLastRes);
+                }
+            });
+        return;
+    }
+    flvRenderDetail(flvLastRes.vehicle, flvLastRes.can_manage, flvLastRes);
+}
+
 /** Expand one vehicle: condition photos, who has had it, and its service state. */
 function flvOpen(id) {
     flvOpenId = id;
+    flvDetailMode = 'money';      // every open starts on the cheap view
     const box = document.getElementById('flVehDetail');
     box.style.display = '';
     box.innerHTML = '<div class="fl-vdbody">Loading…</div>';
     box.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 
-    fetch(FLV_BASE + '/' + id, { headers: { 'Accept': 'application/json' } })
+    // ⚠ Pass the month the manager is actually looking at. Without it the popover
+    //   always reported the CURRENT month while the table behind it showed another.
+    fetch(FLV_BASE + '/' + id + '?month=' + encodeURIComponent(flMonth),
+          { headers: { 'Accept': 'application/json' } })
         .then(r => r.json())
         .then(res => {
             if (!res.success) throw new Error(res.message || 'Failed');
+            flvLastRes = res;
             flvRenderDetail(res.vehicle, res.can_manage, res);
         })
         .catch(() => { box.innerHTML = '<div class="fl-vdbody">Could not load that vehicle.</div>'; });
+}
+
+/**
+ * The month's kilometres, day by day — the receipt behind the figure above it.
+ * Every stretch the machine moved is on one of these lines, so the four totals
+ * add back up to the headline number (the server says whether they did).
+ */
+function flvDaysHtml(res) {
+    const d = flvDaysCache[flvDaysKey(res)];
+    if (!d)          return '';
+    if (d.loading)   return '<div style="font-size:12px;color:#9ca3af;">Loading the day list…</div>';
+    if (d.error)     return '<div style="font-size:12px;color:#b91c1c;">Could not load the day list.</div>';
+
+    const t = d.totals || {};
+    const cell = (n, label, tone) =>
+        '<div style="flex:1;min-width:74px;text-align:center;padding:7px 4px;background:#f9fafb;'
+      + 'border:1px solid #e5e7eb;border-radius:8px;">'
+      + '<div style="font-size:15px;font-weight:700;color:' + (tone || '#111827') + ';">' + flNum(n) + '</div>'
+      + '<div style="font-size:10.5px;color:#6b7280;text-transform:uppercase;letter-spacing:.03em;">' + label + '</div>'
+      + '</div>';
+
+    const strip = '<div style="display:flex;gap:6px;margin-bottom:8px;flex-wrap:wrap;">'
+        + cell(t.on_duty || 0, 'on duty')
+        + cell(t.off_duty || 0, 'off duty', (t.off_duty ? '#b45309' : null))
+        + (t.unaccounted ? cell(t.unaccounted, 'unaccounted', '#b91c1c') : '')
+        + cell(t.total || 0, 'total')
+        + '</div>';
+
+    // ⭐ Say plainly whether the rows behind the total actually make it up. A list
+    //    that quietly disagrees with the number above it is worse than no list.
+    const note = d.reconciles
+        ? '<div style="font-size:11.5px;color:#6b7280;margin-bottom:9px;">'
+          + 'Every kilometre below is a stretch between two readings of this machine — '
+          + 'they add up to the ' + flNum(d.month_km === null ? (t.total || 0) : d.month_km)
+          + ' km shown above.</div>'
+        : '<div style="font-size:11.5px;color:#b45309;margin-bottom:9px;">'
+          + '⚠ These rows come to ' + flNum(t.total || 0) + ' km but the month figure is '
+          + (d.month_km === null ? '—' : flNum(d.month_km))
+          + ' km. A meter reading in this month looks wrong.</div>';
+
+    let hidden = 0;
+    const rows = (d.days || []).map(day => {
+        const interesting = day.work_km !== null || day.gap_km || day.home_km
+            || (day.claims && day.claims.length) || day.anomaly || day.status === 'no_meter';
+        if (!interesting) { hidden++; return ''; }
+
+        let km = '';
+        if (day.gap_km) {
+            const bad = day.gap_kind === 'unaccounted';
+            km += '<div style="font-size:12px;color:' + (bad ? '#b91c1c' : '#b45309') + ';">'
+                + (bad ? '⚠ ' : '↳ ') + '<b>' + flNum(day.gap_km) + ' km</b> '
+                + (bad ? 'unaccounted' : 'off duty')
+                + (day.gap_since ? ' since ' + flvDate(day.gap_since) : ' before this reading')
+                + (bad ? ' <span style="color:#9ca3af;">(spans a day worked without a reading)</span>' : '')
+                + '</div>';
+        }
+        if (day.work_km !== null) {
+            km += '<div style="font-size:12.5px;color:#374151;">'
+                + flNum(day.meter_start) + ' → ' + flNum(day.meter_end)
+                + ' · <b>' + flNum(day.work_km) + ' km</b> on duty</div>';
+        }
+        if (day.home_km) {
+            km += '<div style="font-size:12px;color:#b45309;">↳ <b>' + flNum(day.home_km)
+                + ' km</b> off duty after the close (ride home)</div>';
+        }
+        if (day.work_km === null && !day.gap_km && day.status === 'no_meter') {
+            km += '<div style="font-size:12px;color:#b45309;">worked, but no usable meter reading — '
+                + 'these kilometres cannot be split</div>';
+        }
+        if (day.status === 'leave' && day.work_km === null) {
+            km += '<div style="font-size:12px;color:#9ca3af;">on leave</div>';
+        }
+        if (day.anomaly) {
+            km += '<div style="font-size:12px;color:#b91c1c;">⚠ '
+                + (day.anomaly === 'meter_back' ? 'the reading went backwards here'
+                                                : 'the jump here is too large to be real')
+                + ' — not counted</div>';
+        }
+
+        const claims = (day.claims || []).map(c =>
+              '<div style="font-size:11.5px;color:#6b7280;margin-left:10px;">'
+            + flEsc(c.kind) + ' · <b style="color:#374151;">Rs ' + flNum(c.amount) + '</b>'
+            + (c.meter ? ' · meter ' + flNum(c.meter) : '')
+            + ' · by ' + flEsc(c.by_name || '—')
+            + (c.is_pending ? ' <span class="fl-vchip due">waiting</span>' : '')
+            + '</div>').join('');
+
+        return '<div style="padding:7px 0;border-bottom:1px solid #f3f4f6;">'
+            + '<div style="display:flex;align-items:baseline;gap:8px;margin-bottom:2px;">'
+            + '<b style="font-size:12.5px;color:#111827;min-width:74px;">'
+            + (day.status === 'tail' ? 'after ' + flvDate(day.gap_since) : flvDate(day.date)) + '</b>'
+            + '<span style="font-size:11.5px;color:#6b7280;">' + flEsc(day.keeper || '—') + '</span>'
+            + (day.assumed ? '<span class="fl-vchip unk" title="Before the registry recorded who had '
+                + 'this machine — credited to its first known keeper">assumed</span>' : '')
+            + '</div>' + km + claims + '</div>';
+    }).join('');
+
+    return strip + note
+        + (rows || '<div style="font-size:12px;color:#9ca3af;">No readings for this machine this month.</div>')
+        + (hidden ? '<div style="font-size:11.5px;color:#9ca3af;margin-top:7px;">· ' + hidden
+            + ' other day' + (hidden === 1 ? '' : 's') + ' with nothing recorded for this machine</div>' : '');
 }
 
 function flvCloseDetail() {
@@ -2148,9 +2530,8 @@ function flvRenderDetail(v, canManage, res) {
                 + '⛽ Rs ' + av.this_month.rs_per_km + '/km this month ('
                 + flNum(av.this_month.km) + ' km)</div>';
     }
-    const spend = cl.length
-        ? avLine
-          + '<div style="font-size:12.5px;color:#374151;margin-bottom:7px;">'
+    const money = cl.length
+        ? '<div style="font-size:12.5px;color:#374151;margin-bottom:7px;">'
           + '⛽ <b>Rs ' + flNum(tot.fuel_rs || 0) + '</b> fuel · 🔧 <b>Rs '
           + flNum(tot.maint_rs || 0) + '</b> maintenance</div>'
           + cl.map(c =>
@@ -2165,6 +2546,19 @@ function flvRenderDetail(v, canManage, res) {
                 + 'bike on that date — filed before claims recorded a vehicle">from history</span>')
             + '</div>').join('')
         : '<div style="font-size:12px;color:#9ca3af;">Nothing filed for this machine this month.</div>';
+
+    /* ⭐ Two halves of the same month (owner ruling Aug-5): what it COST, and where
+       the kilometres behind that cost went. The diagnostic line above the toggle
+       belongs to both, so it stays put when the manager switches. */
+    const modeBtn = (m, label) =>
+        '<button type="button" class="fl-vbtn" style="padding:3px 9px;font-size:11.5px;'
+      + (flvDetailMode === m ? 'background:#fff7ed;border-color:#fdba74;color:#9a3412;font-weight:700;' : '')
+      + '" onclick="flvSetDetailMode(\'' + m + '\')">' + label + '</button>';
+    const spend = avLine
+        + '<div style="display:flex;gap:6px;margin:0 0 9px;">'
+        + modeBtn('money', '💰 Fuel &amp; maintenance') + modeBtn('days', '📅 Day by day')
+        + '</div>'
+        + (flvDetailMode === 'days' ? flvDaysHtml(res) : money);
 
     const photos = (v.photos || []).length
         ? '<div class="fl-vstrip">' + v.photos.map(p =>
@@ -2222,9 +2616,10 @@ function flvRenderDetail(v, canManage, res) {
                   : ' · due in <b>' + flNum(s.due_in_km) + ' km</b>')
               : '')
       +     '</div>'
+      +     flvScheduleHtml(res)
       +   '</div>'
       +   '<div class="fl-vsec">'
-      +     '<h4>Fuel &amp; maintenance this month</h4>' + spend
+      +     '<h4>This month</h4>' + spend
       +   '</div>'
       +   '<div class="fl-vsec">'
       +     '<h4>Who has had it</h4>' + history
@@ -2232,8 +2627,54 @@ function flvRenderDetail(v, canManage, res) {
       + '</div>';
 }
 
+/**
+ * ⭐ THE PER-TYPE SERVICE SCHEDULE ON THE MACHINE (owner ask, Aug-6): oil every
+ * 1,200, oil+tuning every 2,500, brake shoe every 10,000 — each with its own
+ * "last done / due in", exactly what the rider drill-down has shown for weeks,
+ * but keyed to the BIKE. The work travels with the machine now, so "brake shoe
+ * never recorded" must not reset just because the keeper changed.
+ *
+ * Sorted most-urgent first: overdue → due soon → ok → never recorded. The jobs
+ * that need money now are the reason a manager opens this at all.
+ */
+function flvScheduleHtml(res) {
+    const sched = (res && res.service_schedule) || [];
+    if (!sched.length) return '';
+
+    const rank = { overdue: 0, due_soon: 1, ok: 2, unknown: 3 };
+    const rows = sched.slice().sort((a, b) =>
+        (rank[a.state] ?? 9) - (rank[b.state] ?? 9)
+        || (a.due_in_km ?? 1e9) - (b.due_in_km ?? 1e9));
+
+    const chip = t => {
+        if (t.state === 'overdue')  return '<span class="fl-vchip over">' + flNum(-t.due_in_km) + ' km overdue</span>';
+        if (t.state === 'due_soon') return '<span class="fl-vchip due">due in ' + flNum(t.due_in_km) + ' km</span>';
+        if (t.state === 'ok')       return '<span class="fl-vchip ok">due in ' + flNum(t.due_in_km) + ' km</span>';
+        return '<span class="fl-vchip unk">never recorded</span>';
+    };
+
+    return '<div class="fl-vsched">'
+        + rows.map(t => ''
+            + '<div class="fl-vschedrow">'
+            +   '<div style="min-width:0;">'
+            +     '<b>' + flEsc(t.name) + '</b>'
+            +     ' <span style="color:#9ca3af;">every ' + flNum(t.interval_km) + ' km</span>'
+            +     (t.last_meter !== null
+                    ? '<div style="font-size:11px;color:#6b7280;">last at ' + flNum(t.last_meter) + ' km'
+                      + (t.last_at ? ' · ' + flvDate(t.last_at) : '')
+                      + (t.last_by ? ' · by ' + flEsc(t.last_by) : '')
+                      + (t.assumed ? ' <span class="fl-vchip unk" title="Recorded before the registry '
+                          + 'knew who had this machine — credited to its first known keeper">assumed</span>' : '')
+                      + '</div>'
+                    : '')
+            +   '</div>'
+            +   '<div style="margin-left:auto;flex-shrink:0;">' + chip(t) + '</div>'
+            + '</div>').join('')
+        + '</div>';
+}
+
 // ── assign ────────────────────────────────────────────────────────────────
-function flvOpenAssign(vehicleId) {
+function flvOpenAssign(vehicleId, preselectUserId) {
     const v = (flvData.vehicles || []).find(x => x.id === vehicleId);
     if (!v) return;
 
@@ -2244,21 +2685,47 @@ function flvOpenAssign(vehicleId) {
     document.getElementById('flvAssignPhotos').value = '';
     document.getElementById('flvAssignError').style.display = 'none';
     document.getElementById('flvPreviewBox').innerHTML = '';
+    flvClearDisplaced();
 
     // Local date, never toISOString() — that reads as yesterday before 5am PKT.
     const d = new Date();
     document.getElementById('flvAssignDate').value =
         d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
 
+    // When the flow started from a RIDER ("give him a bike") he is preselected and
+    // the machine is the thing being chosen — the reverse of the usual direction.
+    const want = preselectUserId || v.keeper_user_id;
     const sel = document.getElementById('flvAssignRider');
     sel.innerHTML = '<option value="">— choose a rider —</option>'
         + (flvData.riders || []).map(r =>
-            '<option value="' + r.user_id + '"' + (r.user_id === v.keeper_user_id ? ' selected' : '') + '>'
+            '<option value="' + r.user_id + '"' + (r.user_id === want ? ' selected' : '') + '>'
           + flEsc(r.name) + (r.company_bike ? ' · 🏢' : ' · 👤') + (r.has_vehicle ? '' : ' · free')
           + '</option>').join('');
 
+    // Which machine, when the manager came in from a rider card.
+    const vsel = document.getElementById('flvAssignVehicleSel');
+    if (vsel) {
+        const spare = (flvData.vehicles || []).filter(x => !x.keeper_user_id && x.is_active);
+        if (preselectUserId && spare.length > 1) {
+            vsel.parentElement.style.display = '';
+            vsel.innerHTML = spare.map(x =>
+                '<option value="' + x.id + '"' + (x.id === vehicleId ? ' selected' : '') + '>'
+              + flEsc(x.name) + (x.is_company ? ' · company' : ' · own') + '</option>').join('');
+        } else {
+            vsel.parentElement.style.display = 'none';
+        }
+    }
+
     document.getElementById('flvAssignModal').style.display = 'flex';
     if (sel.value) flvPreviewAssign();
+}
+
+/** The machine picker only appears in the rider-first flow; keep it in step. */
+function flvAssignVehicleChanged() {
+    const vsel = document.getElementById('flvAssignVehicleSel');
+    if (!vsel || !vsel.value) return;
+    document.getElementById('flvAssignVehicleId').value = vsel.value;
+    flvPreviewAssign();
 }
 
 function flvCloseAssign() { document.getElementById('flvAssignModal').style.display = 'none'; }
@@ -2292,8 +2759,85 @@ function flvPreviewAssign() {
                 ? '<div style="padding:9px 11px;border-radius:8px;background:#f9fafb;border:1px solid #e5e7eb;color:#374151;">'
                   + lines + warns + '</div>'
                 : '';
+            flvRenderDisplaced(res.displaced);
         })
         .catch(() => { if (seq === flvPreviewSeq) box.innerHTML = ''; });
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   ⭐⭐ "AND WHAT ABOUT HIM?" — the displaced rider.
+   `flvDisplaced` holds the manager's answer, sent with the handover.
+   Default is deliberately NOTHING selected: the manager must say. Left to a
+   default, the quiet option ("no bike") would be chosen for him by accident,
+   and that is precisely the state that used to go unnoticed.
+   ═══════════════════════════════════════════════════════════════════════════ */
+let flvDisplaced = { user_id: null, action: null, vehicle_id: null };
+let flvDisplacedData = null;      // the server's description of who is losing it
+
+function flvClearDisplaced() {
+    flvDisplaced = { user_id: null, action: null, vehicle_id: null };
+    flvDisplacedData = null;
+    const box = document.getElementById('flvDisplacedBox');
+    if (box) box.style.display = 'none';
+}
+
+function flvRenderDisplaced(d) {
+    const box = document.getElementById('flvDisplacedBox');
+    if (!box) return;
+    if (!d) { flvClearDisplaced(); return; }
+
+    // A new person to ask about → forget any earlier answer.
+    if (flvDisplaced.user_id !== d.user_id) {
+        flvDisplaced = { user_id: d.user_id, action: null, vehicle_id: null };
+    }
+    flvDisplacedData = d;
+    const first = (d.name || '').split(' ')[0];
+
+    document.getElementById('flvDisplacedQ').textContent =
+        'And ' + d.name + '? He is giving this machine up — what is he on now?';
+
+    const opt = (action, label, sub) =>
+        '<label style="display:flex;gap:7px;align-items:flex-start;cursor:pointer;font-size:12.5px;color:#374151;">'
+      + '<input type="radio" name="flvDisp" style="margin-top:2px;"'
+      + (flvDisplaced.action === action ? ' checked' : '')
+      + ' onchange="flvDisplacedPick(\'' + action + '\')">'
+      + '<span><b>' + label + '</b>'
+      + (sub ? '<br><span style="color:#92400e;font-size:11.5px;">' + sub + '</span>' : '')
+      + '</span></label>';
+
+    let html = '';
+    if (d.own) {
+        html += opt('own', '👤 Back on his own bike — ' + flEsc(d.own.name),
+                    'His own machine is free; this hands it back to him.');
+    }
+    if ((d.spare || []).length) {
+        html += opt('vehicle', '🏍️ Onto another machine', 'Pick which one below.');
+    }
+    html += opt('none', '🚫 No bike for now',
+                d.goes_quiet
+                  ? first + ' will not be asked for meter readings, and cannot file his own fuel, until he has one again.'
+                  : 'He will show under “Riders with no machine” on the fleet screen.');
+
+    document.getElementById('flvDisplacedOpts').innerHTML = html;
+
+    const sel = document.getElementById('flvDisplacedVehicle');
+    sel.innerHTML = '<option value="">— which machine? —</option>'
+        + (d.spare || []).map(s => '<option value="' + s.id + '">' + flEsc(s.name)
+            + (s.is_company ? ' · company' : ' · own') + '</option>').join('');
+    sel.style.display = flvDisplaced.action === 'vehicle' ? '' : 'none';
+    box.style.display = '';
+}
+
+function flvDisplacedPick(action) {
+    flvDisplaced.action = action;
+    const sel = document.getElementById('flvDisplacedVehicle');
+    if (action === 'vehicle') {
+        sel.style.display = '';
+        flvDisplaced.vehicle_id = sel.value || null;
+    } else {
+        sel.style.display = 'none';
+        flvDisplaced.vehicle_id = null;
+    }
 }
 
 function flvSaveAssign() {
@@ -2303,10 +2847,26 @@ function flvSaveAssign() {
     const btn  = document.getElementById('flvAssignSave');
     if (!uid) { err.textContent = 'Choose a rider first.'; err.style.display = ''; return; }
 
+    // ⚠ Somebody is losing this machine and the manager has not said what he is on
+    //   now. Refusing here is the whole point — a silent default is what left riders
+    //   stranded with no machine and the old rules still judging them.
+    if (flvDisplacedData && flvDisplacedData.user_id && !flvDisplaced.action) {
+        err.textContent = 'Say what ' + flvDisplacedData.name + ' is on now — that is the question above.';
+        err.style.display = ''; return;
+    }
+    if (flvDisplaced.action === 'vehicle' && !flvDisplaced.vehicle_id) {
+        err.textContent = 'Choose which machine he moves onto.';
+        err.style.display = ''; return;
+    }
+
     const fd = new FormData();
     fd.append('user_id', uid);
     fd.append('date', document.getElementById('flvAssignDate').value || '');
     fd.append('note', document.getElementById('flvAssignNote').value || '');
+    if (flvDisplaced.action) {
+        fd.append('displaced_action', flvDisplaced.action);
+        if (flvDisplaced.vehicle_id) fd.append('displaced_vehicle_id', flvDisplaced.vehicle_id);
+    }
     const files = document.getElementById('flvAssignPhotos').files;
     for (let i = 0; i < files.length && i < 8; i++) fd.append('photos[]', files[i]);
 
@@ -2332,30 +2892,86 @@ function flvSaveAssign() {
     .finally(() => { btn.disabled = false; btn.textContent = 'Assign'; });
 }
 
+/**
+ * Taking a machine back displaces its rider exactly as reassigning does, so it
+ * asks the same question — otherwise "Take back" would remain the one door that
+ * still leaves a man with nothing and nobody told.
+ */
 function flvRelease(vehicleId) {
     const v = (flvData.vehicles || []).find(x => x.id === vehicleId);
     if (!v) return;
-    if (!confirm('Take ' + v.name + ' back from ' + (v.keeper_name || 'its rider') + '?\n\n'
-               + 'Its history stays on record; it simply has no rider until you assign it again.')) return;
 
-    fetch(FLV_BASE + '/' + vehicleId + '/release', {
+    fetch(FLV_BASE + '/' + vehicleId + '/preview-release', { headers: { 'Accept': 'application/json' } })
+        .then(r => r.json())
+        .then(res => flvDoRelease(v, res.displaced || null))
+        .catch(() => flvDoRelease(v, null));   // the prompt is a nicety, never a blocker
+}
+
+function flvDoRelease(v, d) {
+    let action = null, targetVehicle = null;
+
+    if (d) {
+        const first = (d.name || '').split(' ')[0];
+        const choices = ['Nothing for now' + (d.goes_quiet
+            ? ' (he stops being asked for meter readings)' : '')];
+        const keys = ['none'];
+        if (d.own) { choices.push('Back on his own bike — ' + d.own.name); keys.push('own'); }
+        if ((d.spare || []).length) { choices.push('Onto another machine'); keys.push('vehicle'); }
+
+        const menu = choices.map((c, i) => '  ' + (i + 1) + '. ' + c).join('\n');
+        const ans = prompt('Take ' + v.name + ' back from ' + d.name + '.\n\n'
+            + 'What is ' + first + ' on after this?\n' + menu + '\n\nType a number:', '1');
+        if (ans === null) return;                       // cancelled
+
+        const idx = parseInt(ans, 10) - 1;
+        if (isNaN(idx) || idx < 0 || idx >= keys.length) { alert('Not one of the options — nothing changed.'); return; }
+        action = keys[idx];
+
+        if (action === 'vehicle') {
+            const list = d.spare.map((s, i) => '  ' + (i + 1) + '. ' + s.name
+                + (s.is_company ? ' (company)' : ' (own)')).join('\n');
+            const pick = prompt('Which machine does ' + first + ' move onto?\n' + list + '\n\nType a number:', '1');
+            if (pick === null) return;
+            const pi = parseInt(pick, 10) - 1;
+            if (isNaN(pi) || pi < 0 || pi >= d.spare.length) { alert('Not one of the options — nothing changed.'); return; }
+            targetVehicle = d.spare[pi].id;
+        }
+    } else if (!confirm('Take ' + v.name + ' back from ' + (v.keeper_name || 'its rider') + '?\n\n'
+               + 'Its history stays on record; it simply has no rider until you assign it again.')) {
+        return;
+    }
+
+    const fd = new FormData();
+    if (action) {
+        fd.append('displaced_action', action);
+        if (targetVehicle) fd.append('displaced_vehicle_id', targetVehicle);
+    }
+
+    fetch(FLV_BASE + '/' + v.id + '/release', {
         method: 'POST',
         headers: {
             'Accept': 'application/json',
             'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || ''
-        }
+        },
+        body: fd
     })
     .then(r => r.json())
     .then(res => {
         if (!res.success) throw new Error(res.message || 'Failed');
         flvLoad();
-        if (flvOpenId === vehicleId) flvOpen(vehicleId);
+        if (flvOpenId === v.id) flvOpen(v.id);
     })
     .catch(e => alert(e.message || 'Could not release that vehicle.'));
 }
 
 // ── add / edit ────────────────────────────────────────────────────────────
+/** Set by "New own bike for X": the rider it is handed to as soon as it exists. */
+let flvPendingAssignUser = null;
+
 function flvOpenEdit(id) {
+    // ⚠ Cleared on EVERY open. flvNewOwnBike() sets it right after calling this, so
+    //   an abandoned "new own bike" can never hand the NEXT vehicle to that rider.
+    flvPendingAssignUser = null;
     const v = id ? (flvData.vehicles || []).find(x => x.id === id) : null;
     document.getElementById('flvEditId').value        = id || '';
     document.getElementById('flvEditTitle').textContent = v ? ('Edit ' + v.name) : 'Add a vehicle';
@@ -2410,6 +3026,19 @@ function flvSaveVehicle() {
         const lng = document.getElementById('flvEditLng').value.trim();
         const rad = document.getElementById('flvEditRadius').value.trim();
         const hadBase = res.vehicle && res.vehicle.base && res.vehicle.base.has_base;
+
+        // ⭐ "New own bike for [rider]" — hand it over the moment it exists, so the
+        //   onboarding path is genuinely ONE step. Chained, not fired alongside:
+        //   the vehicle must exist before it can be assigned.
+        const pending = flvPendingAssignUser;
+        flvPendingAssignUser = null;
+        if (pending && vid) {
+            const afd = new FormData();
+            afd.append('user_id', pending);
+            fetch(FLV_BASE + '/' + vid + '/assign', {
+                method: 'POST', headers: { 'Accept': 'application/json', 'X-CSRF-TOKEN': csrf }, body: afd
+            }).catch(() => { /* the bike is created; assign it from the card */ });
+        }
 
         if (!vid || (!lat && !lng && !hadBase)) return null;
         return fetch(FLV_BASE + '/' + vid + '/base', {

@@ -3,6 +3,7 @@
 namespace App\Services\Assistant;
 
 use App\Models\FIN\AccountModel;
+use App\Services\FIN\PaymentSourceService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Facades\Auth;
@@ -85,6 +86,16 @@ class AssistantDraftService
         $needsBankChoice = $source->account_category === 'bank' && !$receivingId;
 
         $businessUnitId = (int) ($args['business_unit_id'] ?? $prefs['expense_business_unit_id'] ?? 0) ?: null;
+
+        // Mirror the server's payment-source gate BEFORE building the card. The
+        // account and the business unit have to agree — a saved default is for one
+        // set of books and does not follow the user into another — and finding that
+        // out from a 403 after confirming is how a real Frozen expense was lost on
+        // Aug-5-2026.
+        if ($blocked = $this->sourceRefusal($user, $source, $businessUnitId, PaymentSourceService::PURPOSE_EXPENSE)) {
+            return ['error' => $blocked];
+        }
+
         $date = $this->cleanDate($args['expense_date'] ?? null);
         if ($date && $date > now()->toDateString()) {
             return ['error' => 'An expense date cannot be in the future.'];
@@ -1669,5 +1680,47 @@ class AssistantDraftService
     private function buName(int $id): string
     {
         return (string) (DB::table('t_fin_business_units')->where('id', $id)->value('name') ?? ('#' . $id));
+    }
+
+    /**
+     * "Can this person really pay for THESE books out of THAT account?" — asked
+     * with the same service RequestController::store() enforces, before the card
+     * is built rather than after it is confirmed.
+     *
+     * Returns null when it is allowed, otherwise a sentence the model can say out
+     * loud, naming what CAN pay for that unit — a refusal without an alternative
+     * just makes the user guess.
+     *
+     * ⚠ Expenses only. Vendor payments are NOT gated by the account tags on the
+     *   server (FIN\VendorController::recordPayment records whatever account it is
+     *   given), and refusing here would block something that currently works.
+     */
+    private function sourceRefusal($user, ?AccountModel $source, ?int $businessUnitId, string $purpose): ?string
+    {
+        if (!$source) {
+            return null;
+        }
+
+        // Employee-cash and other non-money categories are not payment sources at
+        // all and are gated elsewhere — this rule is about cash/bank accounts.
+        if (!in_array($source->account_category, [AccountModel::CATEGORY_CASH, AccountModel::CATEGORY_BANK], true)) {
+            return null;
+        }
+
+        $svc = app(PaymentSourceService::class);
+        $bu  = $businessUnitId ?: 1;
+
+        if ($svc->allows($user, $source->id, $bu, $purpose)) {
+            return null;
+        }
+
+        $alternatives = collect($svc->sourcesFor($user, $bu, $purpose))
+            ->pluck('display_name')->filter()->take(4)->implode(', ');
+
+        return $source->account_name . ' cannot pay for ' . $this->buName($bu) . '.'
+            . ($alternatives !== ''
+                ? ' For ' . $this->buName($bu) . ' use: ' . $alternatives . '. Ask the user which one, and do not record this until they choose.'
+                : ' Nothing this user is set up for can pay for those books — tell them to ask Taimur or Shabib to add them'
+                  . ' (Ledger Hub → the account → "Who uses this account").');
     }
 }

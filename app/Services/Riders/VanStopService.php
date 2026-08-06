@@ -202,7 +202,13 @@ class VanStopService
      * Any previous open stop on the trip is closed first: the van is at one place
      * at a time, and two "current" stops would make the rider cards ambiguous.
      */
-    public function setStop(int $driverId, array $data, ?int $tripId = null): array
+    /**
+     * @param bool $impliesDeparture TRUE when the DRIVER is choosing where he is
+     *        heading (leaving is implied — there is no separate "van left"
+     *        button). FALSE when the STORE names the point for him, which is a
+     *        plan and must not pretend the van has left the yard.
+     */
+    public function setStop(int $driverId, array $data, ?int $tripId = null, bool $impliesDeparture = true): array
     {
         if (!$this->available()) return $this->fail('Van stops are not set up yet (SQL batch 14).');
 
@@ -273,12 +279,21 @@ class VanStopService
             });
 
             // The leg follows the decision — the driver never sets both.
+            //
+            // ⚠ …but ONLY when the van is actually going there now. This used to
+            //   stamp `departed_at` unconditionally, so a store pre-setting the
+            //   meet-up point while the van was still being loaded (a) made every
+            //   board read "heading to the meet-up point" about a parked van,
+            //   (b) told the riders the driver was on his way, and (c) SWALLOWED
+            //   THE REAL DEPARTURE PING — `startLeg` decides "first leg" from
+            //   `departed_at`, so once it was set the announcement never fired.
             if ($trip) {
-                DB::table(VanService::T_TRIP)->where('id', $trip->id)->update([
-                    'current_leg' => VanService::LEG_TO_STOP,
-                    'departed_at' => $trip->departed_at ?: now(),
-                    'updated_at'  => now(),
-                ]);
+                $update = ['updated_at' => now()];
+                if ($impliesDeparture || !empty($trip->departed_at)) {
+                    $update['current_leg'] = VanService::LEG_TO_STOP;
+                    $update['departed_at'] = $trip->departed_at ?: now();
+                }
+                DB::table(VanService::T_TRIP)->where('id', $trip->id)->update($update);
             }
 
             return ['ok' => true, 'id' => $newId, 'label' => $label,
@@ -326,6 +341,36 @@ class VanStopService
             return ['ok' => true, 'message' => 'Stop closed.'];
         } catch (\Throwable $e) {
             return $this->fail('Could not close that stop.');
+        }
+    }
+
+    /**
+     * ⭐ Close the current stop when a leg change means the van is LEAVING it —
+     *    and only then.
+     *
+     *   done       → the day is over: whatever is open finishes with the trip.
+     *   deliveries → close it ONLY if he had REACHED it (he is driving away from
+     *                a rendezvous he was waiting at). An UN-reached stop is the
+     *                PLAN — "deliver these three, then meet at Do Talwar" — and
+     *                starting the deliveries wave is exactly how that plan
+     *                begins. The first version of this fix closed it here too,
+     *                which wiped the rendezvous the riders had just been told
+     *                about and killed the van's chained arrival time on the
+     *                store board for the whole wave.
+     */
+    public function closeOnLegChange(int $driverId, string $leg): void
+    {
+        try {
+            if ($leg === VanService::LEG_DONE) {
+                $this->completeStop($driverId);
+                return;
+            }
+            if ($leg === VanService::LEG_DELIVERIES) {
+                $cur = $this->currentStop($driverId);
+                if ($cur && $cur->reached_at) $this->completeStop($driverId);
+            }
+        } catch (\Throwable $e) {
+            // Closing a stop must never block a leg change.
         }
     }
 

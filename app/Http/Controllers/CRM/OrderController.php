@@ -2503,6 +2503,11 @@ class OrderController extends Controller
                 return response()->json([
                     'success' => true,
                     'message' => $message,
+                    // ⚠ The status did NOT change (van custody, a refused
+                    //   transition, a failed invoice post). It rides inside
+                    //   `message` too, but as its own field the page can be sure
+                    //   to SHOW it instead of printing a generic success.
+                    'status_warning' => $statusChangeWarning ?: null,
                     'requires_approval' => true,
                     'adjustment_id' => $adjustmentId,
                     'payment_method_changed' => $paymentMethodChanged,
@@ -2523,12 +2528,14 @@ class OrderController extends Controller
                 return response()->json([
                     'success' => true,
                     'message' => $message,
+                    // See above — the change the user asked for was refused.
+                    'status_warning' => $statusChangeWarning ?: null,
                     'payment_method_changed' => $paymentMethodChanged,
                     'customer_synced' => !empty($customerSyncMessage),
                     'order' => $order->load(['customer', 'lineItems', 'discounts'])
                 ]);
             }
-            
+
         } catch (\Exception $e) {
             return response()->json([
                 'success' => false,
@@ -3321,9 +3328,12 @@ class OrderController extends Controller
 
             // Apply the delivery-promise (regular orders only — qurbani + khaas
             // storage have their own flows and never show these buttons).
-            $promiseApplies = $promiseCfg !== null
-                && !$isKhaasStorage
-                && !(isset($hasQurbani) && $hasQurbani);
+            // $promiseButtonsApply = "this order type OFFERS the buttons at all" —
+            // kept separate from $promiseApplies ("a promise was actually chosen")
+            // because the audit row below has to tell those two apart.
+            $promiseButtonsApply = !$isKhaasStorage && !(isset($hasQurbani) && $hasQurbani);
+            $promiseApplies      = $promiseCfg !== null && $promiseButtonsApply;
+            $promiseMessageSent  = false;
             if ($promiseApplies) {
                 // Future-day promise → park in 'pending' (held out of today's active
                 // pipeline; the team activates it to 'new' on its delivery day, which
@@ -3340,7 +3350,42 @@ class OrderController extends Controller
                 }
                 // Delivery confirmation FIRST (location request, if any, follows below).
                 if (!empty($promiseCfg['template'])) {
-                    $this->sendDeliveryPromiseMessage($convertedOrder, $promiseCfg['template']);
+                    $promiseMessageSent = $this->sendDeliveryPromiseMessage($convertedOrder, $promiseCfg['template']);
+                }
+            }
+
+            // Aug-2026 — record the MESSAGING decision on the order's Activity Log.
+            // "Accept without messaging" previously left no trace anywhere: SH-21707 was
+            // accepted that way on Aug-5 and the only way to prove it afterwards was to
+            // spot a MISSING status-history note and an empty WhatsApp thread. One audit
+            // row per acceptance makes it answerable in a single look — and a send that
+            // fails at the API now says so instead of dying in a log nobody reads.
+            // Skipped for khaas/qurbani: those flows never offer the buttons, so a
+            // "no message" row there would be noise rather than signal.
+            if ($promiseButtonsApply) {
+                $templateWanted = $promiseApplies && !empty($promiseCfg['template']);
+                $orderLabel     = (string) ($convertedOrder->order_number ?? ('#' . $convertedOrder->id));
+
+                if (!$templateWanted) {
+                    \App\Services\AuditLogger::log(
+                        'accepted_no_message', 'order', $convertedOrder->id, $orderLabel, null,
+                        (int) $convertedOrder->id,
+                        $promiseCfg === null
+                            ? 'Accepted without messaging — no WhatsApp confirmation sent to the customer.'
+                            : 'Accepted (' . $promise . ') — no WhatsApp confirmation sent to the customer.'
+                    );
+                } elseif ($promiseMessageSent) {
+                    \App\Services\AuditLogger::log(
+                        'accepted_with_message', 'order', $convertedOrder->id, $orderLabel, null,
+                        (int) $convertedOrder->id,
+                        'Accepted (' . $promise . ') — "' . $promiseCfg['template'] . '" confirmation sent.'
+                    );
+                } else {
+                    \App\Services\AuditLogger::log(
+                        'accepted_message_failed', 'order', $convertedOrder->id, $orderLabel, null,
+                        (int) $convertedOrder->id,
+                        'Accepted (' . $promise . ') but the "' . $promiseCfg['template'] . '" confirmation FAILED to send.'
+                    );
                 }
             }
 
@@ -3476,20 +3521,23 @@ class OrderController extends Controller
      * (the accept-button "delivery promise"). Template vars: {{1}} = customer name,
      * {{2}} = order number. Fully NON-FATAL — a send failure never affects the
      * conversion. Mirrors the direct-send pattern in OpenOrderLocationService::sendBulk.
+     *
+     * @return bool true only when WhatsApp accepted the template. The caller writes
+     *              this into the order's Activity Log, so "sent" must mean sent.
      */
-    private function sendDeliveryPromiseMessage($order, string $templateName): void
+    private function sendDeliveryPromiseMessage($order, string $templateName): bool
     {
         try {
             $customerId = (int) ($order->customer_id ?? 0);
             if ($customerId <= 0 || $templateName === '') {
-                return;
+                return false;
             }
 
             $cust = \DB::table('t_crm_prod_customer')
                 ->where('id', $customerId)
                 ->first(['first_name', 'last_name', 'phone', 'phone_normalized']);
             if (!$cust) {
-                return;
+                return false;
             }
 
             $rawPhone = $cust->phone ?: $cust->phone_normalized;
@@ -3497,7 +3545,7 @@ class OrderController extends Controller
                 \Log::info('Delivery-promise message skipped — customer has no phone', [
                     'order_id' => $order->id ?? null, 'template' => $templateName,
                 ]);
-                return;
+                return false;
             }
 
             $wa = app(\App\Services\WhatsAppService::class);
@@ -3530,17 +3578,23 @@ class OrderController extends Controller
                         'order_id' => $order->id ?? null, 'error' => $e->getMessage(),
                     ]);
                 }
-            } else {
-                \Log::warning('Delivery-promise template send failed', [
-                    'order_id' => $order->id ?? null,
-                    'template' => $templateName,
-                    'error' => $resp['error'] ?? 'unknown',
-                ]);
+
+                // The template reached WhatsApp. Persisting it to the conversation
+                // timeline is best-effort and deliberately does NOT change this.
+                return true;
             }
+
+            \Log::warning('Delivery-promise template send failed', [
+                'order_id' => $order->id ?? null,
+                'template' => $templateName,
+                'error' => $resp['error'] ?? 'unknown',
+            ]);
+            return false;
         } catch (\Throwable $e) {
             \Log::warning('sendDeliveryPromiseMessage failed (non-fatal)', [
                 'order_id' => $order->id ?? null, 'template' => $templateName, 'error' => $e->getMessage(),
             ]);
+            return false;
         }
     }
 
@@ -5661,6 +5715,10 @@ class OrderController extends Controller
             // BT-600M mishandles large modules. Absent => 16, matching the app's own default.
             $qr = (int) $request->input('qr_module_size', 16);
             $out['qr_module_size'] = max(8, min(16, $qr > 0 ? $qr : 16));
+            // Who draws the QR. 'image' (default) = the app draws it and sends a picture, which is
+            // NOT bound by the printer firmware's module-size cap; 'printer' = the old ESC/POS QR
+            // command. Escape hatch only — anything unrecognised falls back to 'image'.
+            $out['qr_mode'] = $request->input('qr_mode') === 'printer' ? 'printer' : 'image';
             \DB::table('t_sys_config')->where('id', 1)->update(['receipt_print_config' => json_encode($out, JSON_UNESCAPED_UNICODE)]);
             return response()->json(['success' => true]);
         } catch (\Exception $e) {

@@ -4931,11 +4931,23 @@ window.nfOpenAcceptModal = function(orderId, opts){
       + '    <div style="font-size:13px;color:#6b7280;margin-bottom:14px;">'+nfEscapeHtml(name)+'</div>'
       +      replyHtml
       +      btnHtml
-      + '    <button type="button" onclick="nfDoConvert('+orderId+', \'none\')" style="display:block;width:100%;margin:6px 0 8px;padding:11px 14px;background:#fff;color:#374151;border:1px solid #d1d5db;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;">Accept without messaging</button>'
+      + '    <button type="button" onclick="nfConfirmAcceptNoMessage('+orderId+')" style="display:block;width:100%;margin:6px 0 8px;padding:11px 14px;background:#fff;color:#374151;border:1px solid #d1d5db;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;">Accept without messaging</button>'
       + '    <button type="button" onclick="var m=document.getElementById(\'nfAcceptModal\'); if(m) m.remove();" style="display:block;width:100%;padding:9px;background:transparent;color:#9ca3af;border:none;font-size:13px;cursor:pointer;">Cancel</button>'
       + '  </div>'
       + '</div>';
     document.body.insertAdjacentHTML('beforeend', html);
+};
+
+// Aug-2026 — "Accept without messaging" sits right under the green promise buttons
+// and is the one choice the customer never hears about. It was being hit by mistake
+// (SH-21707, Aug-5: accepted silently, customer's last message stayed the previous
+// evening's "order received" until the rider knocked). Second click required.
+window.nfConfirmAcceptNoMessage = function(orderId){
+    var ok = confirm('No WhatsApp message will be sent to this customer.\n\n'
+        + 'They will NOT get a delivery confirmation for this order.\n\n'
+        + 'Accept without messaging?');
+    if (!ok) return;   // modal stays open so they can pick a delivery day instead
+    nfDoConvert(orderId, 'none');
 };
 
 // Do the actual convert with the chosen delivery promise.
@@ -8205,7 +8217,12 @@ function nfActivityRowHtml(e) {
         created: ['📦', 'Created', '#3b82f6'],
         payment_recorded: ['💰', 'Payment recorded', '#10b981'],
         payment_voided: ['↩️', 'Payment voided', '#ef4444'],
-        payment_deleted: ['↩️', 'Payment removed', '#ef4444']
+        payment_deleted: ['↩️', 'Payment removed', '#ef4444'],
+        // Acceptance messaging decision (Aug-2026). Amber, not grey: "the customer
+        // was never told" is the thing you want to catch while scanning this list.
+        accepted_no_message: ['🔕', 'Accepted — no message sent', '#f59e0b'],
+        accepted_with_message: ['📩', 'Accepted — confirmation sent', '#10b981'],
+        accepted_message_failed: ['⚠️', 'Accepted — confirmation FAILED to send', '#ef4444']
     };
     var m = map[e.action];
     if (!m) {
@@ -8777,7 +8794,16 @@ async function saveOrderChanges(orderId) {
                 if (data.requires_approval) {
                     showSuccessMessage(data.message + ' (Adjustment ID: #' + data.adjustment_id + ')');
                 } else {
-                    showSuccessMessage('Order updated successfully!');
+                    showSuccessMessage(data.message || 'Order updated successfully!');
+                }
+                // ⚠ The save succeeded but the STATUS CHANGE did not — an order on
+                //   the van needs the handover scan, an invoice failed to post, or
+                //   the transition was refused. This used to be swallowed by a
+                //   hard-coded "Order updated successfully!", so staff believed a
+                //   status change had happened when it had not. A toast is too easy
+                //   to miss for something the user explicitly asked for.
+                if (data.status_warning) {
+                    alert('⚠️ ' + data.status_warning);
                 }
                 submitBtn.textContent = 'Save';
                 submitBtn.disabled = false;
@@ -8985,7 +9011,12 @@ async function saveAndCloseOrder(orderId) {
             if (data.requires_approval) {
                 showSuccessMessage(data.message + ' (Adjustment ID: #' + data.adjustment_id + ')');
             } else {
-                showSuccessMessage('Order updated successfully!');
+                showSuccessMessage(data.message || 'Order updated successfully!');
+            }
+            // ⚠ Save succeeded, status change refused — say so before the reload
+            //   takes the message away with it (see the Save handler above).
+            if (data.status_warning) {
+                alert('⚠️ ' + data.status_warning);
             }
             closeModal('editOrderModal');
             // If this editor is running in its own tab, close the tab; otherwise just refresh
@@ -19103,9 +19134,16 @@ document.addEventListener('DOMContentLoaded', function() {
   /* QR size escape hatch: the printer's own QR command caps the module size at 16 dots, which is
      the default. If a printer mishandles a large QR (prints it tiny or blank), pick 12 here to go
      back to the pre-Aug-2026 size — takes effect on the next print, NO new app build needed. */
+  /* Every step 12..16 is offered because the PRINTER's firmware decides the real ceiling: this
+     BT-600M accepted 12 for a month but silently rejected BOTH 16 and 14 (falls back to a tiny
+     default QR instead of clamping). The usable maximum is found by walking down until a size
+     prints big. Missing steps here are also a data-loss trap: a size set by SQL but absent from
+     this list would show as the default 16 and be silently re-saved as 16. */
   var QR_SIZES=[
     {v:16, t:'Largest - 50mm (default)'},
+    {v:15, t:'Bigger - 47mm'},
     {v:14, t:'Large - 44mm'},
+    {v:13, t:'Medium - 41mm'},
     {v:12, t:'Previous size - 37mm'},
     {v:10, t:'Small - 31mm'},
     {v:8,  t:'Smallest - 25mm'}
@@ -19118,14 +19156,49 @@ document.addEventListener('DOMContentLoaded', function() {
     {k:'disclaimer_text', t:'Invoice disclaimer (prints above the items)', def:'NOT A FINAL INVOICE - quantities may change. Your official invoice will be sent on WhatsApp.', max:160}
   ];
   function hide(){ if(overlay) overlay.style.display='none'; }
+  /* ⚠ LANDMINE GUARD (Aug-2026): the load used to fail SILENTLY (empty catch), leaving the
+     hardcoded defaults on screen. Saving from that state would overwrite the real saved store
+     text with defaults - which is exactly how a customised tagline/contact line gets wiped.
+     So: if the load did not succeed, say so loudly and refuse to save. */
+  var loadedOk=false;
+  /* The status line is ALWAYS visible, never only on error. Silence was the actual bug here: the
+     modal showed defaults and looked perfectly normal while the real saved settings never arrived,
+     and one Save would have overwritten them. Now the modal always states where the boxes came
+     from - the server, or defaults - so "looks fine" can never mean "never loaded". */
+  var LOAD_STYLES={
+    loading:{bg:'#f8fafc',bd:'#e2e8f0',fg:'#475569'},
+    ok:{bg:'#f0fdf4',bd:'#bbf7d0',fg:'#166534'},
+    empty:{bg:'#fffbeb',bd:'#fde68a',fg:'#92400e'},
+    fail:{bg:'#fef2f2',bd:'#fecaca',fg:'#991b1b'}
+  };
+  function setLoadState(state,detail){
+    loadedOk=(state==='ok'||state==='empty'); // 'empty' is legitimate: nothing saved yet
+    var box=overlay.querySelector('#rfc-loaderr'), btn=overlay.querySelector('#rfc-save');
+    var s=LOAD_STYLES[state]||LOAD_STYLES.fail;
+    box.style.display='block';
+    box.style.background=s.bg; box.style.borderColor=s.bd; box.style.color=s.fg;
+    if(state==='loading') box.textContent='Loading your saved settings...';
+    else if(state==='ok') box.textContent='Loaded your saved settings from the server. The boxes below show what is saved now.';
+    else if(state==='empty') box.textContent='The server has no saved receipt settings yet, so the boxes below show defaults. Saving will create them.';
+    else box.textContent='COULD NOT LOAD your saved settings ('+(detail||'unknown')+'). Saving is disabled, because the boxes below show DEFAULTS - not what is saved - and saving would overwrite your real settings. Reload the page once; if this message comes back, send a photo of it to Claude.';
+    btn.disabled=!loadedOk;
+    btn.style.opacity=loadedOk?'1':'0.5';
+    btn.style.cursor=loadedOk?'pointer':'not-allowed';
+  }
   function save(){
+    if(!loadedOk){ alert('Settings could not be loaded, so saving is blocked to avoid overwriting them.'); return; }
     var body={};
     TOGGLES.forEach(function(f){ body[f.k]=overlay.querySelector('#rfc-'+f.k).checked?1:0; });
     TEXTS.forEach(function(f){ body[f.k]=overlay.querySelector('#rfc-'+f.k).value; });
     body.qr_module_size=parseInt(overlay.querySelector('#rfc-qr_module_size').value,10)||16;
+    body.qr_mode=overlay.querySelector('#rfc-qr_mode').value==='printer'?'printer':'image';
+    /* Report the HTTP status on failure. A bare "Could not save settings." can't tell a 404
+       (files not uploaded) from a 419 (session expired) from a 500 (server error), which cost a
+       round of guesswork once already. */
+    var st=0;
     fetch('/orders/receipt-config/settings',{method:'POST',headers:{'Content-Type':'application/json','X-Requested-With':'XMLHttpRequest','X-CSRF-TOKEN':csrf()},body:JSON.stringify(body)})
-      .then(function(r){return r.json();}).then(function(d){ hide(); alert(d&&d.success?'Receipt settings saved. New prints will use them.':((d&&d.message)||'Could not save settings.')); })
-      .catch(function(){ alert('Could not save settings.'); });
+      .then(function(r){ st=r.status; return r.json(); }).then(function(d){ hide(); alert(d&&d.success?'Receipt settings saved. New prints will use them.':((d&&d.message)||'Could not save settings.')); })
+      .catch(function(){ alert('Could not save settings - the server returned '+(st?('HTTP '+st):'no response')+' instead of a result. Tell Claude this number.'); });
   }
   function build(){
     overlay=document.createElement('div');
@@ -19142,10 +19215,14 @@ document.addEventListener('DOMContentLoaded', function() {
     QR_SIZES.forEach(function(s){ qrOpts+='<option value="'+s.v+'">'+s.t+'</option>'; });
     var qrRow='<div style="margin-bottom:10px;"><label style="display:block;font-size:12px;font-weight:600;color:#334155;margin-bottom:4px;">QR code size</label>'
       +'<select id="rfc-qr_module_size" style="width:100%;box-sizing:border-box;padding:8px 10px;border:1px solid #cbd5e1;border-radius:6px;font-size:13px;background:#fff;">'+qrOpts+'</select>'
-      +'<span style="display:block;font-size:12px;color:#64748b;margin-top:4px;">Bigger is easier for riders to scan. All sizes fit the 80mm paper. If the QR ever prints tiny or blank, choose <b>Previous size</b> - it takes effect on the next print, no app update needed.</span></div>';
+      +'<span style="display:block;font-size:12px;color:#64748b;margin-top:4px;">Bigger is easier for riders to scan. All sizes fit the 80mm paper. Takes effect on the next print, no app update needed.</span></div>'
+      +'<div style="margin-bottom:10px;"><label style="display:block;font-size:12px;font-weight:600;color:#334155;margin-bottom:4px;">QR drawn by</label>'
+      +'<select id="rfc-qr_mode" style="width:100%;box-sizing:border-box;padding:8px 10px;border:1px solid #cbd5e1;border-radius:6px;font-size:13px;background:#fff;"><option value="image">The app (recommended - any size)</option><option value="printer">The printer (old method - max 37mm)</option></select>'
+      +'<span style="display:block;font-size:12px;color:#64748b;margin-top:4px;">The printer\'s own QR ignores sizes above ~12 and prints a tiny code instead, so the app draws it as a picture. Only switch to <b>The printer</b> if app-drawn codes ever fail to scan. Needs the Aug-2026 app; older phones always use the printer method.</span></div>';
     overlay.innerHTML='<div style="background:#fff;border-radius:12px;max-width:460px;width:100%;padding:20px;max-height:90vh;overflow:auto;">'
       +'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;"><h3 style="margin:0;font-size:18px;font-weight:700;color:#0f172a;">Receipt fields</h3><button id="rfc-close" style="border:none;background:none;font-size:24px;cursor:pointer;color:#64748b;line-height:1;">&times;</button></div>'
       +'<p style="margin:0 0 14px;font-size:13px;color:#64748b;">Choose what the receipt shows and edit the store text. Order number, QR, customer name and items always print. Leave a text box empty to hide that line.</p>'
+      +'<div id="rfc-loaderr" style="margin:0 0 14px;padding:10px 12px;border:1px solid #e2e8f0;background:#f8fafc;color:#475569;border-radius:8px;font-size:12.5px;line-height:1.45;"></div>'
       +rows
       +'<div style="border-top:1px solid #e2e8f0;margin:12px 0 14px;"></div>'
       +qrRow
@@ -19164,15 +19241,43 @@ document.addEventListener('DOMContentLoaded', function() {
     TOGGLES.forEach(function(f){ overlay.querySelector('#rfc-'+f.k).checked=true; });
     TEXTS.forEach(function(f){ overlay.querySelector('#rfc-'+f.k).value=f.def; });
     overlay.querySelector('#rfc-qr_module_size').value='16';
-    fetch('/orders/receipt-config/settings',{headers:{'X-Requested-With':'XMLHttpRequest'}})
-      .then(function(r){return r.json();}).then(function(d){
-        var c=d&&d.config?d.config:{};
+    overlay.querySelector('#rfc-qr_mode').value='image';
+    setLoadState('loading');
+    /* Read the body as TEXT first, then parse. r.json() alone can only say "it failed"; keeping the
+       raw text lets the status line show WHAT came back when it isn't settings (a login page, a
+       hosting security page, a PHP error) - that snippet is the whole diagnosis.
+
+       ⚠⚠ THE TRAP THIS GUARDS (it bit this very modal): an auth/permission failure answers with
+       VALID JSON - e.g. {"message":"Unauthenticated."} - which parses perfectly, has no `config`,
+       and left every box showing DEFAULTS with no error at all. Saving from there would overwrite
+       the real store text. So a reply only counts as loaded when it is 2xx AND actually carries a
+       `config` object; anything else locks Save. */
+    var st=0, httpOk=false;
+    var snip=function(raw){ return String(raw==null?'':raw).replace(/\s+/g,' ').trim().slice(0,90); };
+    fetch('/orders/receipt-config/settings',{headers:{'X-Requested-With':'XMLHttpRequest'},cache:'no-store'})
+      .then(function(r){ st=r.status; httpOk=r.ok; return r.text(); })
+      .then(function(raw){
+        var d=null;
+        try{ d=JSON.parse(raw); }catch(e){}
+        if(!httpOk){
+          setLoadState('fail','HTTP '+st+(d&&d.message?' - the server said: "'+d.message+'"':' - the server sent: "'+snip(raw)+'"'));
+          return;
+        }
+        if(!d||typeof d.config!=='object'||d.config===null){
+          setLoadState('fail','HTTP '+st+' - the reply carried no settings. It was: "'+snip(raw)+'"');
+          return;
+        }
+        var c=d.config;
         TOGGLES.forEach(function(f){ if(Object.prototype.hasOwnProperty.call(c,f.k)) overlay.querySelector('#rfc-'+f.k).checked=!!Number(c[f.k]); });
         TEXTS.forEach(function(f){ if(Object.prototype.hasOwnProperty.call(c,f.k)) overlay.querySelector('#rfc-'+f.k).value=String(c[f.k]); });
         // Only accept a value the dropdown actually offers, else the select silently blanks.
         var q=Number(c.qr_module_size);
         if(QR_SIZES.some(function(s){ return s.v===q; })) overlay.querySelector('#rfc-qr_module_size').value=String(q);
-      }).catch(function(){});
+        if(c.qr_mode==='printer'||c.qr_mode==='image') overlay.querySelector('#rfc-qr_mode').value=c.qr_mode;
+        // Reported AFTER applying, so a crash mid-apply still falls through to the catch below.
+        setLoadState(Object.keys(c).length?'ok':'empty');
+      })
+      .catch(function(){ setLoadState('fail', st?('HTTP '+st+' - the reply could not be read'):'the request never reached the server (blocked by the browser, network or hosting)'); });
   };
 })();
 </script>

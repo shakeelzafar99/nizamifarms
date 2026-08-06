@@ -20,8 +20,8 @@ class AppController extends Controller
         return response()->json([
             'success' => true,
             'version' => [
-                'code' => 1300,                  // Current versionCode (increment this when releasing new version)
-                'name' => '13.0.0',              // Current versionName (user-facing version)
+                'code' => 1310,                  // Current versionCode (increment this when releasing new version)
+                'name' => '13.1.0',              // Current versionName (user-facing version)
                 'download_url' => url('/apk/latest'),  // Serves APK directly with proper headers
                 'release_notes' => 'Bug fixes and improvements.',
                 'force_update' => true,        // Set to true to force users to update

@@ -291,10 +291,17 @@ Route::middleware(['auth'])->group(function () {
     // Declared BEFORE '/vehicles/{id}' so 'day-override' is not read as a vehicle id.
     Route::post('/orders/riders-map/fleet/vehicles/day-override', [\App\Http\Controllers\CRM\VehicleController::class, 'dayOverride'])->name('orders.riders-map.fleet.vehicles.day-override');
     Route::get('/orders/riders-map/fleet/vehicles/rider-days', [\App\Http\Controllers\CRM\VehicleController::class, 'riderDays'])->name('orders.riders-map.fleet.vehicles.rider-days');
+    // Which machine a claim would land on. ⚠ ABOVE '/vehicles/{id}' — otherwise
+    // 'for-user' is read as a vehicle id (same trap as day-override).
+    Route::get('/orders/riders-map/fleet/vehicles/for-user', [\App\Http\Controllers\CRM\VehicleController::class, 'forUser'])->name('orders.riders-map.fleet.vehicles.for-user');
     Route::post('/orders/riders-map/fleet/vehicles', [\App\Http\Controllers\CRM\VehicleController::class, 'save'])->name('orders.riders-map.fleet.vehicles.create');
     Route::delete('/orders/riders-map/fleet/vehicles/photo/{photoId}', [\App\Http\Controllers\CRM\VehicleController::class, 'deletePhoto'])->name('orders.riders-map.fleet.vehicles.photo-delete');
     Route::get('/orders/riders-map/fleet/vehicles/{id}', [\App\Http\Controllers\CRM\VehicleController::class, 'show'])->name('orders.riders-map.fleet.vehicles.show');
+    // The month's kilometres day by day — lazy, only when a manager asks for it.
+    Route::get('/orders/riders-map/fleet/vehicles/{id}/days', [\App\Http\Controllers\CRM\VehicleController::class, 'days'])->name('orders.riders-map.fleet.vehicles.days');
     Route::get('/orders/riders-map/fleet/vehicles/{id}/preview-assign', [\App\Http\Controllers\CRM\VehicleController::class, 'previewAssign'])->name('orders.riders-map.fleet.vehicles.preview-assign');
+    // Who loses this machine if it is taken back — feeds the "and what about him?" prompt.
+    Route::get('/orders/riders-map/fleet/vehicles/{id}/preview-release', [\App\Http\Controllers\CRM\VehicleController::class, 'releasePreview'])->name('orders.riders-map.fleet.vehicles.preview-release');
     Route::post('/orders/riders-map/fleet/vehicles/{id}', [\App\Http\Controllers\CRM\VehicleController::class, 'save'])->name('orders.riders-map.fleet.vehicles.save');
     Route::post('/orders/riders-map/fleet/vehicles/{id}/assign', [\App\Http\Controllers\CRM\VehicleController::class, 'assign'])->name('orders.riders-map.fleet.vehicles.assign');
     Route::post('/orders/riders-map/fleet/vehicles/{id}/release', [\App\Http\Controllers\CRM\VehicleController::class, 'release'])->name('orders.riders-map.fleet.vehicles.release');

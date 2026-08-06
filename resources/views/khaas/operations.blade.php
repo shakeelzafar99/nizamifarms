@@ -401,6 +401,12 @@
                                 {{-- approver may be null if the user record was removed; the
                                      rejecter line below is already guarded the same way. --}}
                                 <div class="text-xs text-green-600 mt-1">Approved by {{ $transfer->approver->fullname ?? 'Unknown' }} · {{ $transfer->approved_at ? $transfer->approved_at->format('M d, h:i A') : '' }}</div>
+                                @if($transfer->counter)
+                                    {{-- Only rendered when actually recorded: every transfer before
+                                         Aug-2026 has no counter, and "not recorded" must not be
+                                         dressed up as the approver having counted it. --}}
+                                    <div class="text-xs text-gray-500 mt-0.5">🔢 Counted by <span class="font-medium text-gray-700">{{ $transfer->counter->fullname }}</span></div>
+                                @endif
                             @elseif($transfer->status === 'rejected')
                                 <div class="text-xs text-red-600 mt-1">
                                     Rejected{{ $transfer->rejected_at ? ' on ' . $transfer->rejected_at->format('M d, h:i A') : '' }}
@@ -411,11 +417,10 @@
                     </div>
                     @if($transfer->status === 'pending')
                     <div class="flex items-center gap-2 shrink-0">
-                        <form method="POST" action="{{ route('khaas.transfers.approve', $transfer->id) }}" class="inline">
-                            @csrf
-                            <button type="submit" onclick="return confirm('Approve transfer of {{ $transfer->quantity }} units?')"
-                                class="px-3 py-1.5 text-xs font-medium rounded-lg shadow-sm" style="background-color: #16a34a; color: #ffffff;" onmouseover="this.style.backgroundColor='#15803d'" onmouseout="this.style.backgroundColor='#16a34a'">✓ Approve</button>
-                        </form>
+                        {{-- Aug-2026: was a bare confirm()+POST. Now opens a modal so the
+                             approver can name whoever actually counted the stock. --}}
+                        <button type="button" onclick="openApproveModal({{ $transfer->id }}, '{{ $transfer->product ? addslashes($transfer->product->title) : '' }}', {{ $transfer->quantity }})"
+                            class="px-3 py-1.5 text-xs font-medium rounded-lg shadow-sm" style="background-color: #16a34a; color: #ffffff;" onmouseover="this.style.backgroundColor='#15803d'" onmouseout="this.style.backgroundColor='#16a34a'">✓ Approve</button>
                         <button type="button" onclick="openRejectModal({{ $transfer->id }}, '{{ $transfer->product ? addslashes($transfer->product->title) : '' }}', {{ $transfer->quantity }})"
                             class="px-3 py-1.5 text-xs font-medium rounded-lg" style="background-color: #fef2f2; color: #dc2626; border: 1px solid #fecaca;" onmouseover="this.style.backgroundColor='#fee2e2'" onmouseout="this.style.backgroundColor='#fef2f2'">✕ Reject</button>
                     </div>
@@ -474,6 +479,45 @@
     </div>
 </div>
 
+{{-- Approve Transfer Modal (Aug-2026) — captures WHO COUNTED the stock.
+     The manager approves; somebody else usually does the counting, and audit
+     wants that name. Optional: "Not recorded" is a real, honest choice.
+     ⚠️ Same shell rules as the reject modal above — inset-0 / max-w-* must be
+     inline, but NEVER put `display` on the outer overlay or it outranks
+     .hidden{display:none} and the modal can never be closed. --}}
+<div id="approveModal" class="hidden fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4" style="z-index: 999999; top:0; right:0; bottom:0; left:0; background-color:rgba(0,0,0,0.5); padding:1rem;" onclick="if(event.target===this)closeApproveModal()">
+    <div class="bg-white rounded-2xl shadow-2xl max-w-md w-full overflow-hidden" style="width:100%; max-width:28rem; max-height:90vh; display:flex; flex-direction:column; background:#fff; border-radius:1rem; overflow:hidden; box-shadow:0 20px 25px -5px rgba(0,0,0,0.10), 0 10px 10px -5px rgba(0,0,0,0.04);" onclick="event.stopPropagation()">
+        <div class="px-6 py-5 border-b border-gray-100" style="background: linear-gradient(to right, #f0fdf4, #ecfdf5);">
+            <div class="flex items-center gap-3">
+                <div class="w-10 h-10 rounded-xl bg-green-100 flex items-center justify-center text-xl">✅</div>
+                <div>
+                    <h3 class="text-lg font-bold text-gray-900">Approve Transfer</h3>
+                    <p class="text-xs text-gray-500" id="approveModalInfo"></p>
+                </div>
+            </div>
+        </div>
+        <form id="approveForm" method="POST">
+            @csrf
+            <div class="px-6 py-5">
+                <label class="block text-sm font-semibold text-gray-700 mb-2">Counted by</label>
+                <select name="counted_by" id="approveCountedBy"
+                        class="w-full px-4 py-3 border-2 border-gray-200 rounded-xl text-sm focus:ring-2 focus:ring-green-500 focus:border-green-500"
+                        style="width:100%; padding:0.75rem 1rem; border:2px solid #e5e7eb; border-radius:0.75rem; font-size:0.875rem; background:#fff;">
+                    @foreach($countedByUsers ?? [] as $u)
+                        <option value="{{ $u->id }}" @selected($u->id == auth()->id())>{{ $u->fullname }}@if($u->id == auth()->id()) (me)@endif</option>
+                    @endforeach
+                    <option value="">— Not recorded —</option>
+                </select>
+                <p class="text-xs text-gray-400 mt-2">Defaults to you. Change it if someone else did the physical count.</p>
+            </div>
+            <div class="px-6 py-4 border-t border-gray-100 bg-gray-50 flex items-center justify-end gap-3">
+                <button type="button" onclick="closeApproveModal()" class="px-5 py-2.5 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-xl hover:bg-gray-50">Cancel</button>
+                <button type="submit" class="px-5 py-2.5 text-sm font-medium text-white rounded-xl shadow-sm" style="background-color: #16a34a;" onmouseover="this.style.backgroundColor='#15803d'" onmouseout="this.style.backgroundColor='#16a34a'">Approve Transfer</button>
+            </div>
+        </form>
+    </div>
+</div>
+
 {{-- Account Activity Modal — last movements in/out of a BU payment account.
      ⚠️ Shell rules (learned the hard way): inset-0 / max-w-* / overflow-y-auto / flex-shrink-0
      ARE purged from the built styles.css, so those must be inline. But .hidden, .flex,
@@ -522,6 +566,20 @@ function openRejectModal(transferId, productName, quantity) {
 }
 function closeRejectModal() {
     document.getElementById('rejectModal').classList.add('hidden');
+    document.body.style.overflow = '';
+}
+function openApproveModal(transferId, productName, quantity) {
+    document.getElementById('approveModalInfo').textContent = quantity + ' units of "' + productName + '" — stock moves into the shop';
+    document.getElementById('approveForm').action = '{{ url("khaas/transfers") }}/' + transferId + '/approve';
+    // Reset to the default (me) each time, so a pick made for one transfer
+    // doesn't quietly carry over to the next one approved in the same session.
+    var sel = document.getElementById('approveCountedBy');
+    if (sel) sel.value = '{{ auth()->id() }}';
+    document.getElementById('approveModal').classList.remove('hidden');
+    document.body.style.overflow = 'hidden';
+}
+function closeApproveModal() {
+    document.getElementById('approveModal').classList.add('hidden');
     document.body.style.overflow = '';
 }
 // ═══════════════════════════════════════════════════════════════

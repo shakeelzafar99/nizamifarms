@@ -119,11 +119,235 @@ class VehicleController extends Controller
                 'averages'   => $svc->fuelAverages((int) $id, $m->format('Y-m')),
                 // The current keeper's stint — the rider-vs-machine diagnostic.
                 'keeper_stint' => $svc->keeperStintStats((int) $id),
+                // ⭐ Per-type service schedule, keyed to THIS machine (owner ask,
+                //   Aug-6) — anchored on the same current meter the header shows.
+                'service_schedule' => $svc->serviceScheduleFor((int) $id,
+                    isset($v['current_meter']) && $v['current_meter'] !== null ? (int) $v['current_meter'] : null),
             ]);
         } catch (\Throwable $e) {
             Log::error('VehicleController show failed', ['id' => $id, 'error' => $e->getMessage()]);
             return response()->json(['success' => false, 'message' => 'Failed to load that vehicle'], 500);
         }
+    }
+
+    /**
+     * ⭐ THE MONTH'S KILOMETRES, DAY BY DAY — the receipt behind the figure on the
+     *    profile (owner ruling, Aug-5).
+     *
+     * Its OWN endpoint, loaded only when a manager asks for it. The profile popover
+     * opens on every "Profile ▸" click; the day list walks each keeper's attendance
+     * and both meter anchors, which is real work to do for a panel most openings
+     * never scroll to. Lazy keeps the popover as quick as it is today.
+     */
+    public function days(Request $request, VehicleService $svc, $id)
+    {
+        if (!$this->canView()) {
+            return response()->json(['success' => false, 'message' => 'Not authorised'], 403);
+        }
+        try {
+            try {
+                $m = $request->query('month')
+                    ? \Carbon\Carbon::parse($request->query('month') . '-01')
+                    : \Carbon\Carbon::today();
+            } catch (\Throwable $e) {
+                $m = \Carbon\Carbon::today();
+            }
+            return response()->json(['success' => true]
+                + $svc->monthDays((int) $id, $m->format('Y-m')));
+        } catch (\Throwable $e) {
+            Log::error('VehicleController days failed', ['id' => $id, 'error' => $e->getMessage()]);
+            return response()->json(['success' => false, 'message' => 'Failed to load the day list'], 500);
+        }
+    }
+
+    /**
+     * ⭐ WHICH MACHINE A CLAIM WILL LAND ON (owner ask, Aug-5).
+     *
+     * Every fuel/maintenance form — the rider's own, the manager's "for someone
+     * else", the web modal — now names the bike before the claim is filed, so the
+     * team can see what they are filing against. It follows reassignment by itself
+     * because it asks the registry, and it is keyed to the CLAIM'S DATE, not today:
+     * a backdated claim lands on the bike he had THAT day (which is exactly how the
+     * server stamps it), so the form must say the same thing.
+     *
+     * Returns the machine only — no costs, no meter history. If the caller may not
+     * look up other people's assignments it returns `vehicle: null` rather than an
+     * error, so a form never breaks over a label.
+     */
+    public function forUser(Request $request, \App\Services\Riders\VehicleResolver $res, VehicleService $svc)
+    {
+        $me = $request->user() ?: auth()->user();
+        // No user_id = "which bike is MINE" — what the rider's own form asks.
+        $uid  = (int) ($request->query('user_id') ?: ($me->id ?? 0));
+        $date = $request->query('date') ?: \Carbon\Carbon::today()->format('Y-m-d');
+        try {
+            $date = \Carbon\Carbon::parse($date)->format('Y-m-d');
+        } catch (\Throwable $e) {
+            $date = \Carbon\Carbon::today()->format('Y-m-d');
+        }
+
+        $isSelf = $me && (int) $me->id === $uid;
+        $mayLook = $isSelf || $this->canView() || $this->mobileAllowed($request);
+        if (!$uid || !$mayLook) {
+            return response()->json(['success' => true, 'vehicle' => null]);
+        }
+
+        try {
+            $vid = $res->vehicleForDay($uid, $date);
+            if (!$vid) return response()->json(['success' => true, 'vehicle' => null]);
+
+            $v = $svc->find($vid);
+            if (!$v) return response()->json(['success' => true, 'vehicle' => null]);
+
+            return response()->json([
+                'success' => true,
+                'date'    => $date,
+                'vehicle' => [
+                    'id'          => $v['id'],
+                    'name'        => $v['name'],
+                    'vtype'       => $v['vtype'],
+                    'is_company'  => $v['is_company'],
+                    'keeper_name' => $v['keeper_name'] ?? null,
+                    'since'       => $v['keeper_since'] ?? null,
+                ],
+            ]);
+        } catch (\Throwable $e) {
+            Log::warning('VehicleController forUser failed', ['user' => $uid, 'error' => $e->getMessage()]);
+            return response()->json(['success' => true, 'vehicle' => null]);
+        }
+    }
+
+    // =================================================================
+    // MOBILE (Aug-2026) — the manager's Bikes screen, read only
+    // =================================================================
+
+    /**
+     * ⭐ THE FLEET IN THE APP (owner ask, Aug-5). The Bikes screen on mobile showed
+     *    RIDERS and their costs; the machines themselves — who has what, what each
+     *    one costs to run, and now where its kilometres went — were web-only. A
+     *    manager in the field could not answer "what has this bike done this month?"
+     *
+     * ⚠ READ ONLY, and that is deliberate. Assigning, releasing, editing, condition
+     *   photos and base pins stay on the web: they are consequential, they want a
+     *   real screen, and `assign_vehicles` has never been a mobile grant. These three
+     *   endpoints add no write path and no new access — the gate is the SAME mobile
+     *   `view_bike_costs` key the Bikes screen already runs on (FleetFuelController::
+     *   mobileAllowed), so anyone who can see running costs can see the fleet they
+     *   belong to, exactly as on the web.
+     */
+    public function apiIndex(Request $request, VehicleService $svc)
+    {
+        if (!$this->mobileAllowed($request)) {
+            return response()->json(['success' => false, 'message' => 'Not authorised'], 403);
+        }
+        try {
+            if (!$svc->available()) {
+                return response()->json(['success' => true, 'available' => false, 'vehicles' => []]);
+            }
+            return response()->json([
+                'success'   => true,
+                'available' => true,
+                'vehicles'  => $svc->all(false),
+                // Mobile never writes to the registry — say so, so the app can't
+                // render an action it has no endpoint for.
+                'can_manage' => false,
+            ]);
+        } catch (\Throwable $e) {
+            Log::error('VehicleController apiIndex failed', ['error' => $e->getMessage()]);
+            return response()->json(['success' => false, 'message' => 'Failed to load the fleet'], 500);
+        }
+    }
+
+    /** One machine: its state, its month's claims, its averages and the keeper's stint. */
+    public function apiShow(Request $request, VehicleService $svc, $id)
+    {
+        if (!$this->mobileAllowed($request)) {
+            return response()->json(['success' => false, 'message' => 'Not authorised'], 403);
+        }
+        try {
+            $v = $svc->find((int) $id);
+            if (!$v) return response()->json(['success' => false, 'message' => 'That vehicle no longer exists.'], 404);
+
+            $m = $this->safeMonth($request->query('month'));
+            $claims = $svc->claimsForVehicle((int) $id,
+                $m->copy()->startOfMonth()->format('Y-m-d'),
+                $m->copy()->endOfMonth()->format('Y-m-d'));
+
+            $fuel = 0.0; $maint = 0.0;
+            foreach ($claims as $c) {
+                if (($c['category'] ?? '') === 'Petrol') $fuel += (float) $c['amount'];
+                else $maint += (float) $c['amount'];
+            }
+
+            return response()->json([
+                'success'      => true,
+                'vehicle'      => $v,
+                'month'        => $m->format('Y-m'),
+                'claims'       => $claims,
+                'claims_total' => ['fuel_rs' => round($fuel, 2), 'maint_rs' => round($maint, 2),
+                                   'count' => count($claims)],
+                'averages'     => $svc->fuelAverages((int) $id, $m->format('Y-m')),
+                'keeper_stint' => $svc->keeperStintStats((int) $id),
+                // Additive — current APKs ignore it; a future one renders the
+                // same per-type schedule the web profile shows.
+                'service_schedule' => $svc->serviceScheduleFor((int) $id,
+                    isset($v['current_meter']) && $v['current_meter'] !== null ? (int) $v['current_meter'] : null),
+                'months'       => $this->recentMonths(),
+            ]);
+        } catch (\Throwable $e) {
+            Log::error('VehicleController apiShow failed', ['id' => $id, 'error' => $e->getMessage()]);
+            return response()->json(['success' => false, 'message' => 'Failed to load that vehicle'], 500);
+        }
+    }
+
+    /** The month's kilometres day by day — lazy, exactly as on the web. */
+    public function apiDays(Request $request, VehicleService $svc, $id)
+    {
+        if (!$this->mobileAllowed($request)) {
+            return response()->json(['success' => false, 'message' => 'Not authorised'], 403);
+        }
+        try {
+            return response()->json(['success' => true]
+                + $svc->monthDays((int) $id, $this->safeMonth($request->query('month'))->format('Y-m')));
+        } catch (\Throwable $e) {
+            Log::error('VehicleController apiDays failed', ['id' => $id, 'error' => $e->getMessage()]);
+            return response()->json(['success' => false, 'message' => 'Failed to load the day list'], 500);
+        }
+    }
+
+    /**
+     * The Bikes screen's OWN mobile key — the same gate FleetFuelController uses.
+     * Authoritative on purpose: an additive gate would make unticking it useless.
+     */
+    private function mobileAllowed(Request $request): bool
+    {
+        $u = $request->user();
+        if (!$u || !method_exists($u, 'hasMobilePermission')) return false;
+        return $u->hasMobilePermission('view_bike_costs');
+    }
+
+    /** Never trust a month off the wire, and never let it run into the future. */
+    private function safeMonth($raw): \Carbon\Carbon
+    {
+        try {
+            $c = $raw ? \Carbon\Carbon::parse($raw . '-01') : \Carbon\Carbon::today()->startOfMonth();
+        } catch (\Throwable $e) {
+            $c = \Carbon\Carbon::today()->startOfMonth();
+        }
+        if ($c->gt(\Carbon\Carbon::today()->startOfMonth())) $c = \Carbon\Carbon::today()->startOfMonth();
+        return $c->startOfMonth();
+    }
+
+    /** The last 6 months, for the app's month switcher. */
+    private function recentMonths(): array
+    {
+        $out = [];
+        $c = \Carbon\Carbon::today()->startOfMonth();
+        for ($i = 0; $i < 6; $i++) {
+            $out[] = ['value' => $c->format('Y-m'), 'label' => $c->format('M Y')];
+            $c->subMonthNoOverflow();
+        }
+        return $out;
     }
 
     /**
@@ -193,6 +417,9 @@ class VehicleController extends Controller
             'note'    => 'nullable|string|max:255',
             'photos'   => 'nullable|array|max:8',
             'photos.*' => 'image|max:' . self::MAX_PHOTO_KB,
+            // ⭐ PHASE D — what happens to the rider losing this machine.
+            'displaced_action'     => 'nullable|in:none,own,vehicle',
+            'displaced_vehicle_id' => 'nullable|integer',
         ]);
 
         $res = $svc->assign((int) $id, (int) $data['user_id'], $data['date'] ?? null,
@@ -204,12 +431,74 @@ class VehicleController extends Controller
         $photoNote = $this->storePhotos($request, $svc, (int) $id, 'handover_in',
                                         $data['date'] ?? null, $res['id'] ?? null);
 
+        $displacedNote = $this->settleDisplacedRider(
+            $svc, $res['displaced_user_id'] ?? null,
+            $data['displaced_action'] ?? null, $data['displaced_vehicle_id'] ?? null,
+            $data['date'] ?? null
+        );
+
         return response()->json([
             'success'      => true,
-            'message'      => trim($res['message'] . ' ' . $photoNote),
+            'message'      => trim($res['message'] . ' ' . $photoNote . ' ' . $displacedNote),
             'changed'      => $res['changed'] ?? true,
             'vehicle'      => $svc->find((int) $id),
         ]);
+    }
+
+    /**
+     * ⭐ PHASE D — GIVE THE DISPLACED RIDER SOMEWHERE TO LAND.
+     *
+     * Taking a machine off someone used to be a half-finished act: his assignment
+     * closed and nothing else happened, so he silently held nothing while the old
+     * profile checkboxes still had him on the company fuel protocol and being asked
+     * for meters. Now the manager says explicitly what happens to him, and the three
+     * answers are the three real ones:
+     *
+     *   'vehicle' → he moves onto another machine (picked from the spares)
+     *   'own'     → his own registered bike is handed back to him — the case nothing
+     *               used to do, which is why a rider's own bike could sit unassigned
+     *               and blind for days
+     *   'none'    → he genuinely has nothing, and from now on the system stops
+     *               asking him for meters instead of pestering him about a bike he
+     *               does not have
+     *
+     * ⚠ RUNS AFTER the main handover, never inside it. The primary assignment is the
+     *   thing that must be atomic; if this second step fails, the handover still
+     *   stands and the manager can place the rider from the fleet screen. The
+     *   reverse — losing a recorded handover because a follow-up failed — is worse.
+     *   So this NEVER throws: it returns a sentence, and a failure is reported as a
+     *   note rather than as a failed handover.
+     */
+    private function settleDisplacedRider(VehicleService $svc, ?int $userId,
+                                          ?string $action, $vehicleId, ?string $date): string
+    {
+        if (!$userId || !$action || $action === 'none') {
+            return $userId && $action === 'none'
+                ? 'The previous rider now has no bike, so he will not be asked for meter readings.'
+                : '';
+        }
+
+        try {
+            $target = null;
+            if ($action === 'own') {
+                $own = $svc->ownVehicleFor($userId);
+                $target = $own['id'] ?? null;
+                if (!$target) return 'His own bike could not be handed back — assign it from the fleet screen.';
+            } elseif ($action === 'vehicle') {
+                $target = (int) $vehicleId;
+                if ($target <= 0) return 'No replacement bike was chosen, so he now has none.';
+            }
+
+            $r = $svc->assign((int) $target, $userId, $date, (int) auth()->id(), 'Moved after handover');
+            return ($r['ok'] ?? false)
+                ? 'He was moved onto ' . ($svc->find((int) $target)['name'] ?? 'another bike') . '.'
+                : 'He could not be moved onto the other bike (' . ($r['message'] ?? 'unknown error') . ').';
+        } catch (\Throwable $e) {
+            Log::error('settleDisplacedRider failed (handover itself is recorded)', [
+                'user_id' => $userId, 'action' => $action, 'error' => $e->getMessage(),
+            ]);
+            return 'The handover is recorded, but the previous rider could not be placed — do it from the fleet screen.';
+        }
     }
 
     public function release(Request $request, VehicleService $svc, $id)
@@ -217,10 +506,12 @@ class VehicleController extends Controller
         if (!$this->canManage()) {
             return response()->json(['success' => false, 'message' => 'Not authorised to assign vehicles'], 403);
         }
-        $request->validate([
+        $data = $request->validate([
             'date'     => 'nullable|date',
             'photos'   => 'nullable|array|max:8',
             'photos.*' => 'image|max:' . self::MAX_PHOTO_KB,
+            'displaced_action'     => 'nullable|in:none,own,vehicle',
+            'displaced_vehicle_id' => 'nullable|integer',
         ]);
 
         // The photos are of the state it came BACK in, so they belong to the
@@ -235,11 +526,42 @@ class VehicleController extends Controller
         $photoNote = $this->storePhotos($request, $svc, (int) $id, 'handover_out',
                                         $request->input('date'), $closing->id ?? null);
 
+        // Taking a bike back displaces its keeper exactly as reassigning does.
+        $displacedNote = $this->settleDisplacedRider(
+            $svc, $res['displaced_user_id'] ?? null,
+            $data['displaced_action'] ?? null, $data['displaced_vehicle_id'] ?? null,
+            $request->input('date')
+        );
+
         return response()->json([
             'success' => true,
-            'message' => trim($res['message'] . ' ' . $photoNote),
+            'message' => trim($res['message'] . ' ' . $photoNote . ' ' . $displacedNote),
             'changed' => $res['changed'] ?? true,
             'vehicle' => $svc->find((int) $id),
+        ]);
+    }
+
+    /** Who loses this machine if it is taken back, and where can he land? */
+    public function releasePreview(Request $request, VehicleService $svc, $id)
+    {
+        if (!$this->canManage()) {
+            return response()->json(['success' => false, 'message' => 'Not authorised to assign vehicles'], 403);
+        }
+        $current = $svc->keeperOf((int) $id);
+        if (!$current) {
+            return response()->json(['success' => true, 'displaced' => null]);
+        }
+        $uid = (int) $current->user_id;
+        return response()->json([
+            'success'   => true,
+            'displaced' => [
+                'user_id'    => $uid,
+                'name'       => DB::table('t_sys_user')->where('id', $uid)->value('fullname') ?: 'the current rider',
+                'own'        => $svc->ownVehicleFor($uid),
+                'spare'      => array_values(array_filter($svc->spareVehicles(),
+                                    fn ($s) => $s['id'] !== (int) $id)),
+                'goes_quiet' => $svc->rulesEnabled(),
+            ],
         ]);
     }
 
@@ -554,17 +876,46 @@ class VehicleController extends Controller
     private function roster(): array
     {
         try {
+            // ⚠⚠ `has_vehicle` is derived from the OPEN ASSIGNMENT, never from
+            //    `p.default_vehicle_id`. That column is a convenience mirror and it
+            //    goes stale: one rider's currently points at a COLLEAGUE'S bike
+            //    (test residue that survived a handover), so trusting it would have
+            //    shown a man as equipped while he holds nothing — and this list is
+            //    exactly what the fleet screen uses to find riders with no machine.
+            $held = [];
+            $since = [];
+            try {
+                foreach (DB::table(VehicleService::T_ASSIGN)->whereNull('released_on')
+                            ->get(['user_id', 'vehicle_id', 'assigned_on']) as $a) {
+                    $held[(int) $a->user_id]  = (int) $a->vehicle_id;
+                    $since[(int) $a->user_id] = substr((string) $a->assigned_on, 0, 10);
+                }
+            } catch (\Throwable $e) { /* no registry → everyone reads as unequipped */ }
+
+            // When he last gave one back — "no bike since 4 Aug" reads far better
+            // than a bare "no bike", and tells the manager whether it is news.
+            $lastHeld = [];
+            try {
+                foreach (DB::table(VehicleService::T_ASSIGN)->whereNotNull('released_on')
+                            ->orderBy('released_on')
+                            ->get(['user_id', 'released_on']) as $a) {
+                    $lastHeld[(int) $a->user_id] = substr((string) $a->released_on, 0, 10);
+                }
+            } catch (\Throwable $e) { /* optional colour */ }
+
             return DB::table('t_ops_rider_profile as p')
                 ->join('t_sys_user as u', 'u.id', '=', 'p.user_id')
                 ->where('p.active', 1)
                 ->orderBy('u.fullname')
-                ->get(['p.user_id', 'u.fullname', 'p.company_bike', 'p.default_vehicle_id',
-                       'p.home_latitude'])
+                ->get(['p.user_id', 'u.fullname', 'p.company_bike', 'p.home_latitude'])
                 ->map(fn ($r) => [
                     'user_id'      => (int) $r->user_id,
                     'name'         => $r->fullname,
                     'company_bike' => (int) $r->company_bike === 1,
-                    'has_vehicle'  => $r->default_vehicle_id !== null,
+                    'has_vehicle'  => isset($held[(int) $r->user_id]),
+                    'vehicle_id'   => $held[(int) $r->user_id] ?? null,
+                    'since'        => $since[(int) $r->user_id] ?? null,
+                    'free_since'   => isset($held[(int) $r->user_id]) ? null : ($lastHeld[(int) $r->user_id] ?? null),
                     'has_home_pin' => $r->home_latitude !== null,
                 ])->all();
         } catch (\Throwable $e) {

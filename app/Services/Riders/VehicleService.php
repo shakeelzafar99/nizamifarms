@@ -40,6 +40,35 @@ class VehicleService
     public const MIN_METER = 1000;
 
     /**
+     * How far back the FIRST keeper's history reaches (see attributionWindows).
+     * A sentinel, not a real date — it simply means "since before we recorded this".
+     */
+    public const PRE_REGISTRY_FROM = '2000-01-01';
+
+    /** A day's on-duty distance beyond this is a typo, not a ride. Mirrors meterWindowFor. */
+    public const MAX_DAY_KM = 500;
+
+    /** A single unwitnessed stretch beyond this is a typo'd meter, not a distance. */
+    public const MAX_GAP_KM = 2000;
+
+    /**
+     * ⭐ A MONTH's plausible ceiling — deliberately NOT MAX_GAP_KM (Aug-6 fix).
+     *
+     * The month figure was capped at 2,000 km, which sounded generous and was
+     * simply wrong: Kanan's machine genuinely runs ~4,600 km/month (32,202 km
+     * since 1 Jan), so EVERY real month before August failed the cap, the header
+     * showed nothing, and the day-by-day view declared a mismatch against a
+     * header that wasn't there — for correct data. The owner confirmed the July
+     * readings are solid; this cap was the only thing rejecting them.
+     *
+     * 10,000 ≈ 330 km/day sustained — nothing here has ever approached it, while
+     * a dropped or doubled digit still lands far outside. The per-day and
+     * per-stretch guards (MAX_DAY_KM, MAX_GAP_KM, SANE_ROW_SQL) stay the typo net
+     * INSIDE the month; this only stops rejecting honest totals.
+     */
+    public const MAX_MONTH_KM = 10000;
+
+    /**
      * ⚠ PLAUSIBLE ROWS ONLY — never a raw MAX/MIN over a meter column.
      * One typo'd row (26,261 → 56,403 in a day) otherwise becomes "current
      * odometer" forever and every service chip reads wildly overdue.
@@ -119,12 +148,19 @@ class VehicleService
             $defaultInterval = (int) $this->cfg('BIKE_SERVICE_INTERVAL_KM', 1200);
             $photoCounts     = $this->photoCounts();
             $thumbs          = $this->latestPhotoPaths();
+            // ⭐ Who last held each idle machine — so the fleet screen can say
+            //   "parked, Danish is on DCR-799" about an own bike sitting still,
+            //   instead of alarming the manager with "not assigned to anyone".
+            $lastKeeper      = $this->lastKeepers();
 
             $out = [];
             foreach ($rows as $r) {
                 $meter = $this->currentMeter((int) $r->id, $r->keeper_user_id ? (int) $r->keeper_user_id : null);
                 $shaped = $this->shape($r, $meter, $defaultInterval, (int) ($photoCounts[$r->id] ?? 0));
                 $shaped['first_photo_url'] = $this->publicUrl($thumbs[$r->id] ?? null);
+                $lk = $lastKeeper[(int) $r->id] ?? null;
+                $shaped['last_keeper_user_id'] = $lk['user_id'] ?? null;
+                $shaped['last_keeper_name']    = $lk['name'] ?? null;
                 $out[] = $shaped;
             }
             return $out;
@@ -265,9 +301,53 @@ class VehicleService
                 $rows = $base()->where('r.vehicle_id', $vehicleId)->get($cols);
             }
 
-            // 2. unstamped rows, attributed by who held it on the claim's date
             $seen = $rows->pluck('id')->flip();
-            foreach ($this->assignmentWindows($vehicleId) as $w) {
+
+            // ⭐ PHASE D — 1b. unstamped claims on a day the manager gave to THIS
+            //   machine. Before the windows, so a borrowed day's fuel is credited to
+            //   the bike that burned it even though the rider was outside every
+            //   window this machine has.
+            //   ⚠ STAMPED rows are never re-pointed: which bike a payment was for is
+            //     frozen at filing time, exactly like service_due_km.
+            // ...and the mirror of it: a day pointed at a DIFFERENT machine takes its
+            // claims with it, or the same fuel would be counted against two bikes.
+            $movedAway = [];
+            if ($this->hasDayOverride()) {
+                foreach (DB::table('t_ops_attendance')
+                            ->whereNotNull('vehicle_id')
+                            ->where('vehicle_id', '!=', $vehicleId)
+                            ->whereBetween('attendance_date', [$from, $to])
+                            ->get(['user_id', 'attendance_date']) as $o) {
+                    $movedAway[(int) $o->user_id . '|' . substr((string) $o->attendance_date, 0, 10)] = true;
+                }
+            }
+
+            $overrideDays = [];         // 'userId|date' handled here, skip below
+            if ($this->hasDayOverride()) {
+                $ov = DB::table('t_ops_attendance')
+                    ->where('vehicle_id', $vehicleId)
+                    ->whereBetween('attendance_date', [$from, $to])
+                    ->get(['user_id', 'attendance_date']);
+                foreach ($ov as $o) {
+                    $d   = substr((string) $o->attendance_date, 0, 10);
+                    $uid = (int) $o->user_id;
+                    $overrideDays[$uid . '|' . $d] = true;
+
+                    $q = $base()->where('r.requester_user_id', $uid)
+                        ->whereRaw('COALESCE(r.expense_date, DATE(r.created_at)) = ?', [$d]);
+                    if ($hasVehicleCol) $q->whereNull('r.vehicle_id');
+                    foreach ($q->get($cols) as $r) {
+                        if (isset($seen[$r->id])) continue;
+                        $seen[$r->id] = true;
+                        $r->_assumed = false;         // a manager said so
+                        $rows->push($r);
+                    }
+                }
+            }
+
+            // 2. unstamped rows, attributed by who held it on the claim's date
+            //    (windows extended backwards for the first keeper — see attributionWindows)
+            foreach ($this->attributionWindows($vehicleId) as $w) {
                 $q = $base()
                     ->where('r.requester_user_id', $w['user_id'])
                     ->whereRaw('COALESCE(r.expense_date, DATE(r.created_at)) >= ?', [$w['from']])
@@ -277,7 +357,13 @@ class VehicleService
 
                 foreach ($q->get($cols) as $r) {
                     if (isset($seen[$r->id])) continue;
+                    $rDate = substr((string) ($r->expense_date ?: $r->created_at), 0, 10);
+                    // That day was given to another machine — its money went with it.
+                    if (isset($movedAway[$w['user_id'] . '|' . $rDate])) continue;
                     $seen[$r->id] = true;
+                    // Filed before the registry knew who had this machine: shown, but
+                    // labelled as an assumption rather than a recorded fact.
+                    $r->_assumed = !empty($w['assumed']) && $rDate < $w['real_from'];
                     $rows->push($r);
                 }
             }
@@ -305,6 +391,9 @@ class VehicleService
                         'id'         => (int) $r->id,
                         'date'       => substr((string) ($r->expense_date ?: $r->created_at), 0, 10),
                         'category'   => $r->expense_category,
+                        // For the per-type service schedule — which job this row was.
+                        'maintenance_type_id' => isset($r->maintenance_type_id) && $r->maintenance_type_id
+                            ? (int) $r->maintenance_type_id : null,
                         'kind'       => $kind,
                         'amount'     => (float) $r->amount,
                         'meter'      => $r->meter_at_fill !== null ? (int) $r->meter_at_fill : null,
@@ -315,10 +404,110 @@ class VehicleService
                         'by_name'    => $r->requester_name,
                         // false = attributed by assignment window, not stamped
                         'stamped'    => $hasVehicleCol && !empty($r->vehicle_id),
+                        // true = predates the registry; credited to the first keeper
+                        'assumed'    => !empty($r->_assumed),
                     ];
                 })->all();
         } catch (\Throwable $e) {
             Log::warning('claimsForVehicle failed', ['vehicle' => $vehicleId, 'error' => $e->getMessage()]);
+            return [];
+        }
+    }
+
+    /**
+     * ⭐⭐ THE PER-TYPE SERVICE SCHEDULE, KEYED TO THE MACHINE (owner ask, Aug-6).
+     *
+     * The rider drill-down has shown this for weeks — oil every 1,200, oil+tuning
+     * every 2,500, brake shoe every 10,000, each with its own "last done / due in".
+     * But it is keyed to the RIDER (`requester_user_id`), which stopped being the
+     * right key the day services started travelling with the bike: hand DCR-799 to
+     * Danish and his profile says "brake shoe never recorded" while the machine
+     * had one 800 km ago under Waseem. The machine's profile is where the schedule
+     * belongs, built from the machine's own attributed history.
+     *
+     * Evidence per type, whichever is furthest along the odometer wins:
+     *   • approved Maintenance claims attributed to THIS machine — through
+     *     `claimsForVehicle`, so stamped rows, window attribution, manager
+     *     day-overrides and the pre-registry backfill all count exactly as the
+     *     money view counts them (the two must never disagree about a service);
+     *   • manual service-log entries (work recorded outside the claim flow),
+     *     attributed by who held the machine on the service date.
+     *
+     * `due_*` need the machine's CURRENT meter — the caller passes the same one
+     * the profile header shows, so "due in 957 km" here always matches up there.
+     */
+    public function serviceScheduleFor(int $vehicleId, ?int $currentMeter): array
+    {
+        if (!$this->available()) return [];
+        try {
+            if (!Schema::hasTable('t_fleet_maintenance_types')) return [];
+            $types = DB::table('t_fleet_maintenance_types')
+                ->where('is_active', 1)->where('interval_km', '>', 0)
+                ->orderBy('sort_order')->orderBy('type_name')
+                ->get(['id', 'type_name', 'interval_km', 'bucket']);
+            if ($types->isEmpty()) return [];
+
+            // Last job per type from the machine's attributed claim history.
+            $last = [];   // tid => ['m' => meter, 'd' => date, 'by' => name, 'assumed' => bool]
+            foreach ($this->claimsForVehicle($vehicleId, self::PRE_REGISTRY_FROM, date('Y-m-d')) as $c) {
+                if (($c['category'] ?? '') !== 'Maintenance') continue;
+                if (($c['status'] ?? '') !== 'approved')      continue;
+                if (empty($c['maintenance_type_id']) || $c['meter'] === null) continue;
+                $tid = (int) $c['maintenance_type_id'];
+                if (!isset($last[$tid]) || (int) $c['meter'] > $last[$tid]['m']) {
+                    $last[$tid] = ['m' => (int) $c['meter'], 'd' => $c['date'],
+                                   'by' => $c['by_name'] ?? null, 'assumed' => !empty($c['assumed'])];
+                }
+            }
+
+            // Manual log entries: rider-keyed rows, attributed by who held the
+            // machine on the day of the work. Small table; resolver memoized.
+            if (Schema::hasTable('t_fleet_service_log')) {
+                $resolver = new VehicleResolver();
+                foreach (DB::table('t_fleet_service_log as l')
+                            ->leftJoin('t_sys_user as u', 'u.id', '=', 'l.user_id')
+                            ->whereNotNull('l.maintenance_type_id')
+                            ->whereNotNull('l.meter')
+                            ->get(['l.user_id', 'l.maintenance_type_id', 'l.meter',
+                                   'l.service_date', 'u.fullname']) as $row) {
+                    $d = substr((string) $row->service_date, 0, 10);
+                    if ($resolver->vehicleForDay((int) $row->user_id, $d) !== $vehicleId) continue;
+                    $tid = (int) $row->maintenance_type_id;
+                    if (!isset($last[$tid]) || (int) $row->meter > $last[$tid]['m']) {
+                        $last[$tid] = ['m' => (int) $row->meter, 'd' => $d,
+                                       'by' => $row->fullname, 'assumed' => false];
+                    }
+                }
+            }
+
+            $out = [];
+            foreach ($types as $t) {
+                $l     = $last[(int) $t->id] ?? null;
+                $lastM = $l['m'] ?? null;
+                // A countdown needs BOTH ends; anything less stays null rather
+                // than inventing one from a made-up reference (same rule as the
+                // rider panel).
+                $dueIn = ($lastM !== null && $currentMeter !== null)
+                    ? (int) $t->interval_km - ($currentMeter - $lastM) : null;
+
+                $out[] = [
+                    'id'          => (int) $t->id,
+                    'name'        => $t->type_name,
+                    'bucket'      => $t->bucket,
+                    'interval_km' => (int) $t->interval_km,
+                    'last_meter'  => $lastM,
+                    'last_at'     => $l['d'] ?? null,
+                    'last_by'     => $l['by'] ?? null,
+                    'assumed'     => !empty($l['assumed']),
+                    'due_at_km'   => $lastM !== null ? $lastM + (int) $t->interval_km : null,
+                    'due_in_km'   => $dueIn,
+                    'state'       => $dueIn === null ? 'unknown'
+                                    : ($dueIn < 0 ? 'overdue' : ($dueIn <= 150 ? 'due_soon' : 'ok')),
+                ];
+            }
+            return $out;
+        } catch (\Throwable $e) {
+            Log::warning('serviceScheduleFor failed', ['vehicle' => $vehicleId, 'error' => $e->getMessage()]);
             return [];
         }
     }
@@ -544,7 +733,24 @@ class VehicleService
                 $warn[] = $rider . ' has no rider profile, so meter tracking will not apply to him.';
             }
 
-            return ['ok' => true, 'lines' => $lines, 'warnings' => $warn, 'no_change' => false];
+            // ⭐ PHASE D — everything the "and what about him?" question needs.
+            //   Silence here is what used to leave a displaced rider in limbo, so
+            //   the modal always asks when somebody is losing this machine.
+            $displaced = null;
+            if ($current) {
+                $dUser = (int) $current->user_id;
+                $displaced = [
+                    'user_id'    => $dUser,
+                    'name'       => DB::table('t_sys_user')->where('id', $dUser)->value('fullname') ?: 'the current rider',
+                    'own'        => $this->ownVehicleFor($dUser),
+                    'spare'      => array_values(array_filter($this->spareVehicles(),
+                                        fn ($s) => $s['id'] !== $vehicleId)),
+                    'goes_quiet' => $this->rulesEnabled(),
+                ];
+            }
+
+            return ['ok' => true, 'lines' => $lines, 'warnings' => $warn, 'no_change' => false,
+                    'displaced' => $displaced];
         } catch (\Throwable $e) {
             Log::warning('VehicleService::previewAssign failed', ['error' => $e->getMessage()]);
             return ['ok' => false, 'lines' => [], 'warnings' => ['Could not work out the consequences.']];
@@ -667,8 +873,30 @@ class VehicleService
                 'on'         => $date, 'by' => $actorId,
             ]);
 
+            // ⭐ THE CARGO GOES WITH THE VAN (owner ruling Aug-5, from a prod
+            //    handover). Boxes already scanned aboard are physically in the
+            //    vehicle — when the keys change hands, so do they. Without this
+            //    they stayed on the old driver's manifest and were invisible to the
+            //    man actually driving them, and the riders waiting at the meet point
+            //    had nobody who could hand them over.
+            //
+            //    OUTSIDE the transaction on purpose: the assignment is the thing
+            //    that must be atomic. If the cargo move fails, the handover is still
+            //    recorded and the boxes can be re-pointed — the reverse (an
+            //    assignment rolled back by a cargo error) would be worse.
+            $moved = 0;
+            if ($current && (string) $v->vtype === 'van') {
+                $moved = app(VanService::class)
+                    ->moveCargo($vehicleId, (int) $current->user_id, $userId, $actorId);
+            }
+
+            // ⭐ PHASE D — WHO WAS LEFT WITHOUT A MACHINE BY THIS. The caller asks the
+            //   manager what to do about him ("another bike / his own / nothing"),
+            //   because the one thing that must not happen is a rider quietly ending
+            //   up with no machine while the system still judges him as if he had one.
             return ['ok' => true, 'message' => $this->displayName($v) . ' assigned.', 'id' => $newId,
-                    'changed' => true];
+                    'changed' => true, 'cargo_moved' => $moved,
+                    'displaced_user_id' => $current ? (int) $current->user_id : null];
         } catch (\Throwable $e) {
             Log::error('VehicleService::assign failed', [
                 'vehicle_id' => $vehicleId, 'user_id' => $userId, 'error' => $e->getMessage(),
@@ -693,7 +921,8 @@ class VehicleService
             });
 
             Log::info('Vehicle released', ['vehicle_id' => $vehicleId, 'from_user' => $current->user_id, 'on' => $date]);
-            return ['ok' => true, 'message' => 'Released.', 'changed' => true];
+            return ['ok' => true, 'message' => 'Released.', 'changed' => true,
+                    'displaced_user_id' => (int) $current->user_id];
         } catch (\Throwable $e) {
             Log::error('VehicleService::release failed', ['id' => $vehicleId, 'error' => $e->getMessage()]);
             return $this->fail('Could not release that vehicle.');
@@ -880,9 +1109,9 @@ class VehicleService
             $lo = $before['floor'] ?? null;
             $hi = $after['floor'] ?? null;
 
-            // 2,000 km/month is far beyond any bike here — beyond it the delta is
-            // a typo'd meter, not a distance. Same instinct as MAX_FORWARD_JUMP.
-            if ($lo !== null && $hi !== null && $hi > $lo && ($hi - $lo) <= 2000) {
+            // Beyond MAX_MONTH_KM the delta is a typo'd meter, not a distance.
+            // (Was 2,000 — which real months exceed; see the constant's comment.)
+            if ($lo !== null && $hi !== null && $hi > $lo && ($hi - $lo) <= self::MAX_MONTH_KM) {
                 $out['km'] = $hi - $lo;
                 if ($out['km'] >= 20 && $fuel > 0) {
                     $out['rs_per_km'] = round($fuel / $out['km'], 2);
@@ -998,6 +1227,283 @@ class VehicleService
         }
     }
 
+    /**
+     * ⭐ THE MACHINE'S MONTH, DAY BY DAY — the receipt behind the month's kilometres
+     *    (owner ruling, Aug-5).
+     *
+     * The profile states "386 km this month" and, until now, nothing stood behind it.
+     * Worse, that figure and the rider's own figure disagree by design (the bike counts
+     * every kilometre it turned; a rider's row counts only his metered duty days), and
+     * a manager had no way to see WHERE the difference came from. This walks the
+     * machine's readings in order and shows each stretch and who held it:
+     *
+     *   on duty       check-in → day close, from the keeper's own attendance
+     *   off duty      between one reading and the next, with nobody on shift
+     *   unaccounted   a stretch spanning a day he WORKED without a usable reading —
+     *                 part work, part commute, unsplittable, so never silently
+     *                 credited to either side
+     *
+     * ⭐ IT MUST ADD UP. The chain is anchored to the SAME two readings
+     *    monthlyFuelStats divides by (`meterWindowFor` floor at the month's start and
+     *    at the start of the next), so the rows sum to the headline figure. When they
+     *    don't — a meter that ran backwards, an implausible jump — `reconciles` comes
+     *    back false and the screen says so rather than quietly showing a total that
+     *    disagrees with the number above it.
+     *
+     * Newest day first, matching the rider drill-down a manager already reads.
+     */
+    public function monthDays(int $vehicleId, string $month): array
+    {
+        $out = [
+            'month' => $month, 'days' => [], 'reconciles' => false, 'month_km' => null,
+            'totals' => ['on_duty' => 0, 'off_duty' => 0, 'unaccounted' => 0, 'total' => 0,
+                         'days_counted' => 0, 'no_meter_days' => 0],
+        ];
+        if (!$this->available()) return $out;
+
+        try {
+            $start = Carbon::parse($month . '-01')->startOfMonth();
+            $end   = $start->copy()->endOfMonth();
+            $from  = $start->format('Y-m-d');
+            $to    = $end->format('Y-m-d');
+
+            $windows = $this->attributionWindows($vehicleId);
+            $names   = $this->keeperNames($windows);
+
+            // --- every keeper's attendance, clamped to the days he actually held it ---
+            $rows = [];
+            foreach ($windows as $w) {
+                $lo = max($from, $w['from']);
+                $hi = $w['to'] ? min($to, $w['to']) : $to;
+                if ($lo > $hi) continue;
+
+                // ⚠ scopeWindowRows: a day the manager has since moved to ANOTHER
+                //   machine is no longer this one's — otherwise a borrowed bike's
+                //   readings stay in the lender's chain and both bikes read wrong.
+                $att = $this->scopeWindowRows(DB::table('t_ops_attendance')
+                    ->where('user_id', $w['user_id'])
+                    ->whereBetween('attendance_date', [$lo, $hi]), $vehicleId)
+                    ->orderBy('attendance_date')
+                    ->get(['attendance_date', 'meter_start', 'meter_end', 'meter_home',
+                           'login_time', 'logout_time', 'leave_type']);
+
+                foreach ($att as $a) {
+                    $d = substr((string) $a->attendance_date, 0, 10);
+                    $rows[$d] = [
+                        'date'        => $d,
+                        'user_id'     => $w['user_id'],
+                        'keeper'      => $names[$w['user_id']] ?? null,
+                        // Held it before the registry recorded the handover.
+                        'assumed'     => !empty($w['assumed']) && $d < $w['real_from'],
+                        'meter_start' => $a->meter_start !== null ? (int) $a->meter_start : null,
+                        'meter_end'   => $a->meter_end   !== null ? (int) $a->meter_end   : null,
+                        'meter_home'  => $a->meter_home  !== null ? (int) $a->meter_home  : null,
+                        'leave'       => $a->leave_type ?: null,
+                        'worked'      => $a->login_time !== null,
+                        'claims'      => [],
+                    ];
+                }
+            }
+
+            // ⭐ Days the manager explicitly gave to THIS machine — the historical
+            //   correction ("Danish was on Waseem's bike that day"). Added AFTER the
+            //   windows so an override always wins the date, which is the whole
+            //   point of it being an override.
+            if ($this->hasDayOverride()) {
+                $ovNames = [];
+                $ovRows = DB::table('t_ops_attendance')
+                    ->where('vehicle_id', $vehicleId)
+                    ->whereBetween('attendance_date', [$from, $to])
+                    ->orderBy('attendance_date')
+                    ->get(['user_id', 'attendance_date', 'meter_start', 'meter_end', 'meter_home',
+                           'login_time', 'logout_time', 'leave_type']);
+                if ($ovRows->count()) {
+                    $ovNames = DB::table('t_sys_user')
+                        ->whereIn('id', $ovRows->pluck('user_id')->unique()->all())
+                        ->pluck('fullname', 'id')->toArray();
+                }
+                foreach ($ovRows as $a) {
+                    $d   = substr((string) $a->attendance_date, 0, 10);
+                    $uid = (int) $a->user_id;
+                    $rows[$d] = [
+                        'date'        => $d,
+                        'user_id'     => $uid,
+                        'keeper'      => $ovNames[$uid] ?? ($names[$uid] ?? null),
+                        'assumed'     => false,          // recorded by a manager, never inferred
+                        'overridden'  => true,
+                        'meter_start' => $a->meter_start !== null ? (int) $a->meter_start : null,
+                        'meter_end'   => $a->meter_end   !== null ? (int) $a->meter_end   : null,
+                        'meter_home'  => $a->meter_home  !== null ? (int) $a->meter_home  : null,
+                        'leave'       => $a->leave_type ?: null,
+                        'worked'      => $a->login_time !== null,
+                        'claims'      => $rows[$d]['claims'] ?? [],
+                    ];
+                }
+            }
+
+            // --- the machine's claims land on their day (a claim can fall on a day
+            //     with no attendance row at all — a day off, or a fill after handover) ---
+            foreach ($this->claimsForVehicle($vehicleId, $from, $to) as $c) {
+                $d = $c['date'];
+                if (!isset($rows[$d])) {
+                    $keeperId = $this->keeperOnDate($windows, $d);
+                    $rows[$d] = [
+                        'date' => $d, 'user_id' => $keeperId,
+                        'keeper' => $keeperId ? ($names[$keeperId] ?? null) : ($c['by_name'] ?? null),
+                        'assumed' => false,
+                        'meter_start' => null, 'meter_end' => null, 'meter_home' => null,
+                        'leave' => null, 'worked' => false, 'claims' => [],
+                    ];
+                }
+                $rows[$d]['claims'][] = $c;
+            }
+
+            ksort($rows);
+
+            // --- walk the chain forward, anchored where the money figure is anchored ---
+            $openWin = $this->meterWindowFor($vehicleId, $from);
+            $prev    = $openWin['floor'] ?? null;      // the reading this month opens on
+            $prevDay = null;
+            $dirty   = false;                          // a worked-but-unmetered day is behind us
+
+            $days = [];
+            foreach ($rows as $d => $r) {
+                $sane = $r['meter_start'] !== null && $r['meter_end'] !== null
+                    && $r['meter_start'] > self::MIN_METER
+                    && $r['meter_end'] >= $r['meter_start']
+                    && ($r['meter_end'] - $r['meter_start']) <= self::MAX_DAY_KM;
+
+                // The reading this day OPENS on: the check-in, or (no attendance) the
+                // day's highest claim meter — the only reading that day leaves behind.
+                $claimMeters = array_values(array_filter(array_map(
+                    fn ($c) => $c['meter'] ?? null, $r['claims']),
+                    fn ($m) => $m !== null && $m > self::MIN_METER));
+                $opensAt = $sane ? $r['meter_start'] : ($claimMeters ? min($claimMeters) : null);
+                $closesAt = $sane
+                    ? max($r['meter_end'], $r['meter_home'] ?? 0)
+                    : ($claimMeters ? max($claimMeters) : null);
+
+                $before = null; $beforeKind = null; $anomaly = null;
+                if ($opensAt !== null && $prev !== null) {
+                    $gap = $opensAt - $prev;
+                    if ($gap < 0)                    { $anomaly = 'meter_back'; }
+                    elseif ($gap > self::MAX_GAP_KM) { $anomaly = 'implausible'; }
+                    elseif ($gap > 0) {
+                        $before     = $gap;
+                        $beforeKind = $dirty ? 'unaccounted' : 'off_duty';
+                    }
+                }
+
+                // The ride home after the office close is outside the shift.
+                $homeKm = ($sane && $r['meter_home'] !== null && $r['meter_home'] > $r['meter_end'])
+                    ? min($r['meter_home'] - $r['meter_end'], self::MAX_DAY_KM) : 0;
+
+                $work = $sane ? $r['meter_end'] - $r['meter_start'] : null;
+
+                // Only a day he WORKED can be "missing" a reading — leave is a state,
+                // not a failure, and it must not poison the next gap.
+                $status = $sane ? 'ok'
+                    : ($r['leave'] ? 'leave'
+                    : ($r['worked'] ? 'no_meter'
+                    : ($r['claims'] ? 'claim_only' : 'no_attendance')));
+                if ($status === 'no_meter') $dirty = true;
+                elseif ($sane)              $dirty = false;
+
+                $days[] = [
+                    'date'        => $d,
+                    'keeper'      => $r['keeper'],
+                    'keeper_user_id' => $r['user_id'],
+                    'assumed'     => $r['assumed'],
+                    'overridden'  => !empty($r['overridden']),
+                    'meter_start' => $r['meter_start'],
+                    'meter_end'   => $r['meter_end'],
+                    'work_km'     => $work,
+                    // The stretch from the previous reading up to this day's first one.
+                    'gap_km'      => $before,
+                    'gap_kind'    => $beforeKind,
+                    'gap_since'   => ($before !== null && $prevDay !== null
+                                      && Carbon::parse($prevDay)->diffInDays(Carbon::parse($d)) > 1)
+                                      ? $prevDay : null,
+                    // Office close → home, on the days the meter-out was taken at home.
+                    'home_km'     => $homeKm ?: null,
+                    'status'      => $status,
+                    'anomaly'     => $anomaly,
+                    'claims'      => $r['claims'],
+                ];
+
+                if ($work !== null)   { $out['totals']['on_duty'] += $work; $out['totals']['days_counted']++; }
+                if ($homeKm)          { $out['totals']['off_duty'] += $homeKm; }
+                if ($beforeKind === 'off_duty')    $out['totals']['off_duty']    += $before;
+                if ($beforeKind === 'unaccounted') $out['totals']['unaccounted'] += $before;
+                if ($status === 'no_meter')        $out['totals']['no_meter_days']++;
+
+                if ($closesAt !== null && ($prev === null || $closesAt >= $prev)) {
+                    $prev = $closesAt; $prevDay = $d;
+                }
+            }
+
+            // --- the tail: from the last reading of the month to where the next month
+            //     opens. Without it the rows would fall short of the headline figure on
+            //     any month whose last movement was never read until the 1st. ---
+            $closeWin = $this->meterWindowFor($vehicleId, $end->copy()->addDay()->format('Y-m-d'));
+            $closesOn = $closeWin['floor'] ?? null;
+            if ($prev !== null && $closesOn !== null && $closesOn > $prev
+                && ($closesOn - $prev) <= self::MAX_GAP_KM) {
+                $tail = $closesOn - $prev;
+                $days[] = [
+                    'date' => $to, 'keeper' => null, 'keeper_user_id' => null, 'assumed' => false,
+                    'meter_start' => null, 'meter_end' => null, 'work_km' => null,
+                    'gap_km' => $tail, 'gap_kind' => $dirty ? 'unaccounted' : 'off_duty',
+                    'gap_since' => $prevDay, 'home_km' => null,
+                    'status' => 'tail', 'anomaly' => null, 'claims' => [],
+                ];
+                if ($dirty) $out['totals']['unaccounted'] += $tail;
+                else        $out['totals']['off_duty']    += $tail;
+            }
+
+            $out['totals']['total'] = $out['totals']['on_duty']
+                + $out['totals']['off_duty'] + $out['totals']['unaccounted'];
+
+            // ⭐ The honesty check: these rows must equal the figure printed above them.
+            //   A month with nothing measurable (no usable readings either side) is not
+            //   a mismatch — both sides say "nothing measured", and they agree on that.
+            $out['month_km']   = $this->monthlyFuelStats($vehicleId, $month)['km'];
+            $out['reconciles'] = $out['month_km'] === null
+                ? $out['totals']['total'] === 0
+                : $out['month_km'] === $out['totals']['total'];
+
+            $out['days'] = array_reverse($days);   // newest first, like the rider view
+            return $out;
+        } catch (\Throwable $e) {
+            Log::warning('monthDays failed', ['vehicle' => $vehicleId, 'error' => $e->getMessage()]);
+            return $out;
+        }
+    }
+
+    /** Names for every keeper in these windows — one query, not one per row. */
+    private function keeperNames(array $windows): array
+    {
+        $ids = array_values(array_unique(array_column($windows, 'user_id')));
+        if (!$ids) return [];
+        try {
+            return DB::table('t_sys_user')->whereIn('id', $ids)
+                ->pluck('fullname', 'id')->toArray();
+        } catch (\Throwable $e) {
+            return [];
+        }
+    }
+
+    /** Who held it on this date, by the windows already loaded. */
+    private function keeperOnDate(array $windows, string $date): ?int
+    {
+        foreach ($windows as $w) {
+            if ($date >= $w['from'] && ($w['to'] === null || $date <= $w['to'])) {
+                return $w['user_id'];
+            }
+        }
+        return null;
+    }
+
     public function meterWindowFor(int $vehicleId, string $date): ?array
     {
         if (!$this->available()) return null;
@@ -1009,25 +1515,26 @@ class VehicleService
             $floorC = [0];
             $ceilC  = [];
 
-            $windows = $this->assignmentWindows($vehicleId);
+            $windows = $this->attributionWindows($vehicleId);
             foreach ($windows as $w) {
-                // BEFORE the date, clamped to his window.
-                $before = DB::table('t_ops_attendance')
+                // BEFORE the date, clamped to his window — minus any day the manager
+                // has since said was spent on a DIFFERENT machine.
+                $before = $this->scopeWindowRows(DB::table('t_ops_attendance')
                     ->where('user_id', $w['user_id'])
                     ->where('attendance_date', '>=', $w['from'])
                     ->when($w['to'], fn ($q) => $q->where('attendance_date', '<=', $w['to']))
-                    ->where('attendance_date', '<', $date)
+                    ->where('attendance_date', '<', $date), $vehicleId)
                     ->whereRaw($sane)
                     ->selectRaw('MAX(GREATEST(COALESCE(meter_end,0), COALESCE(meter_home,0), COALESCE(meter_start,0))) AS m')
                     ->value('m');
                 if ((int) $before > 0) $floorC[] = (int) $before;
 
                 // AFTER the date, still inside his window.
-                $after = DB::table('t_ops_attendance')
+                $after = $this->scopeWindowRows(DB::table('t_ops_attendance')
                     ->where('user_id', $w['user_id'])
                     ->where('attendance_date', '>=', $w['from'])
                     ->when($w['to'], fn ($q) => $q->where('attendance_date', '<=', $w['to']))
-                    ->where('attendance_date', '>', $date)
+                    ->where('attendance_date', '>', $date), $vehicleId)
                     ->whereRaw($sane)
                     ->selectRaw('MIN(COALESCE(NULLIF(meter_start,0), NULLIF(meter_end,0), NULLIF(meter_home,0))) AS m')
                     ->value('m');
@@ -1049,6 +1556,28 @@ class VehicleService
                     $la = $legacyQ()->whereRaw('COALESCE(expense_date, DATE(created_at)) > ?', [$date])->min('meter_at_fill');
                     if ((int) $la > self::MIN_METER) $ceilC[] = (int) $la;
                 }
+            }
+
+            // ⭐ Days the manager pointed AT this machine, whoever the rider was and
+            //   whatever the assignment timeline says — the borrowed-for-an-afternoon
+            //   case. Outside the window loop because the whole point is that these
+            //   days fall outside any window this machine has.
+            if ($this->hasDayOverride()) {
+                $ovBefore = DB::table('t_ops_attendance')
+                    ->where('vehicle_id', $vehicleId)
+                    ->where('attendance_date', '<', $date)
+                    ->whereRaw($sane)
+                    ->selectRaw('MAX(GREATEST(COALESCE(meter_end,0), COALESCE(meter_home,0), COALESCE(meter_start,0))) AS m')
+                    ->value('m');
+                if ((int) $ovBefore > 0) $floorC[] = (int) $ovBefore;
+
+                $ovAfter = DB::table('t_ops_attendance')
+                    ->where('vehicle_id', $vehicleId)
+                    ->where('attendance_date', '>', $date)
+                    ->whereRaw($sane)
+                    ->selectRaw('MIN(COALESCE(NULLIF(meter_start,0), NULLIF(meter_end,0), NULLIF(meter_home,0))) AS m')
+                    ->value('m');
+                if ((int) $ovAfter > self::MIN_METER) $ceilC[] = (int) $ovAfter;
             }
 
             // Claims stamped to THIS machine — whoever filed them.
@@ -1075,6 +1604,67 @@ class VehicleService
         }
     }
 
+    /**
+     * ⭐⭐ PHASE D — DOES THE MANAGER'S DAY-OVERRIDE REACH THE MACHINE'S OWN VIEWS?
+     *
+     * `t_ops_attendance.vehicle_id` is the manager saying "on THAT day he was on
+     * THIS machine" — a bike borrowed for an afternoon, a swap nobody recorded at
+     * the time. The rider-side chips honoured it from the start, but every view of
+     * the MACHINE (day-by-day, odometer window, claim attribution) read the
+     * assignment timeline alone. So a manager could correct a day, watch the chip
+     * change, and still see the kilometres sitting on the wrong bike — the
+     * correction went nowhere useful.
+     *
+     * Applied in BOTH directions, which is the part that matters:
+     *   • a day pointed AT this machine joins its chain, whoever rode it;
+     *   • a day pointed AWAY leaves its keeper's window, so a borrowed bike's
+     *     24,800 km reading stops landing in an own-bike chain that reads 9,000.
+     *
+     * Expressed as a query constraint rather than a PHP set on purpose: it has to
+     * apply inside the same MAX/MIN the odometer window already runs, and a set
+     * would mean pulling every row into memory to filter it.
+     */
+    private function hasDayOverride(): bool
+    {
+        static $ok = null;
+        if ($ok !== null) return $ok;
+        try {
+            $ok = Schema::hasColumn('t_ops_attendance', 'vehicle_id');
+        } catch (\Throwable $e) {
+            $ok = false;
+        }
+        return $ok;
+    }
+
+    /**
+     * Rows inside a keeper's window that have NOT been reassigned to another
+     * machine. (No override column → every row in the window counts, exactly as
+     * before this existed.)
+     */
+    private function scopeWindowRows($q, int $vehicleId)
+    {
+        if (!$this->hasDayOverride()) return $q;
+        return $q->where(function ($w) use ($vehicleId) {
+            $w->whereNull('vehicle_id')->orWhere('vehicle_id', $vehicleId);
+        });
+    }
+
+    /** The most recent keeper of every machine, held or not. One query. */
+    private function lastKeepers(): array
+    {
+        $out = [];
+        try {
+            $rows = DB::table(self::T_ASSIGN . ' as a')
+                ->leftJoin('t_sys_user as u', 'u.id', '=', 'a.user_id')
+                ->orderBy('a.assigned_on')->orderBy('a.id')
+                ->get(['a.vehicle_id', 'a.user_id', 'u.fullname']);
+            foreach ($rows as $r) {           // later row wins
+                $out[(int) $r->vehicle_id] = ['user_id' => (int) $r->user_id, 'name' => $r->fullname];
+            }
+        } catch (\Throwable $e) { /* the label is a nicety */ }
+        return $out;
+    }
+
     /** Every [from, to] window this vehicle has been held in. `to` null = still held. */
     private function assignmentWindows(int $vehicleId): array
     {
@@ -1091,6 +1681,40 @@ class VehicleService
         } catch (\Throwable $e) {
             return [];
         }
+    }
+
+    /**
+     * ⭐ THE SAME WINDOWS, WITH HISTORY BEFORE THE REGISTRY CREDITED TO THE FIRST
+     *    KEEPER (owner ruling, Aug-5).
+     *
+     * The registry was seeded in Aug-2026 with `assigned_on` dates that are when we
+     * started RECORDING who had what — not when they got it. The owner confirms the
+     * bikes had not changed hands: Kanan, Waseem and Arslan were on the same machines
+     * before the seed. Without this, every month before the seed date attributes to
+     * nobody, so the last-3-months baseline a manager compares against is built from
+     * fuel with no kilometres behind it.
+     *
+     * ⚠ DERIVED, NEVER HARDCODED. It extends the EARLIEST window backwards — so the
+     *   keeper it credits is whoever the seed says held it first. Naming the three
+     *   riders in code would be a landmine the day a bike is re-seeded, and there is
+     *   more than one "Arslan" on the user table (only the active one holds a window).
+     *
+     * Rows resolved this way are flagged `assumed` so the screen can say so: an
+     * inference is displayed as an inference, never as a recorded fact.
+     */
+    private function attributionWindows(int $vehicleId): array
+    {
+        $w = $this->assignmentWindows($vehicleId);
+        if (!$w) return $w;
+
+        $w[0]['real_from'] = $w[0]['from'];
+        $w[0]['from']      = self::PRE_REGISTRY_FROM;
+        $w[0]['assumed']   = true;
+        for ($i = 1; $i < count($w); $i++) {
+            $w[$i]['real_from'] = $w[$i]['from'];
+            $w[$i]['assumed']   = false;
+        }
+        return $w;
     }
 
     /** Shape one DB row into the payload both web and mobile read. */
@@ -1195,6 +1819,68 @@ class VehicleService
             }
             return $out;
         } catch (\Throwable $e) {
+            return [];
+        }
+    }
+
+    /**
+     * ⭐ PHASE D — the rider's OWN registered machine, if it is free to give back.
+     *
+     * "His own bike" is not a column: it is the most recent NON-company machine the
+     * registry has seen him on. When he is put on a company bike that assignment is
+     * closed, and until now nothing ever reopened it — so a rider handed back his
+     * company bike and silently had NO machine at all, with his own bike sitting
+     * unassigned in the registry. This is what the handover prompt offers him.
+     *
+     * Returns null when he has no own machine on record, or when someone else
+     * currently holds it (never take a machine off its keeper to give it back).
+     */
+    public function ownVehicleFor(int $userId): ?array
+    {
+        if (!$this->available()) return null;
+        try {
+            $vid = DB::table(self::T_ASSIGN . ' as a')
+                ->join(self::T_VEHICLE . ' as v', 'v.id', '=', 'a.vehicle_id')
+                ->where('a.user_id', $userId)
+                ->where('v.is_company', 0)
+                ->where('v.is_active', 1)
+                ->orderByDesc('a.assigned_on')->orderByDesc('a.id')
+                ->value('a.vehicle_id');
+            if (!$vid) return null;
+
+            if ($this->keeperOf((int) $vid)) return null;      // somebody has it
+
+            $v = DB::table(self::T_VEHICLE)->where('id', $vid)->first();
+            return $v ? ['id' => (int) $v->id, 'name' => $this->displayName($v)] : null;
+        } catch (\Throwable $e) {
+            Log::warning('ownVehicleFor failed', ['user' => $userId, 'error' => $e->getMessage()]);
+            return null;
+        }
+    }
+
+    /**
+     * Active machines nobody currently holds — what a displaced rider can be moved
+     * onto, and what the "no rider" side of the fleet screen lists.
+     */
+    public function spareVehicles(): array
+    {
+        if (!$this->available()) return [];
+        try {
+            $held = DB::table(self::T_ASSIGN)->whereNull('released_on')
+                ->pluck('vehicle_id')->map(fn ($v) => (int) $v)->all();
+
+            return DB::table(self::T_VEHICLE)->where('is_active', 1)
+                ->when($held, fn ($q) => $q->whereNotIn('id', $held))
+                ->orderByDesc('is_company')->orderBy('id')
+                ->get()
+                ->map(fn ($v) => [
+                    'id'         => (int) $v->id,
+                    'name'       => $this->displayName($v),
+                    'is_company' => (int) $v->is_company === 1,
+                    'vtype'      => (string) $v->vtype,
+                ])->all();
+        } catch (\Throwable $e) {
+            Log::warning('spareVehicles failed', ['error' => $e->getMessage()]);
             return [];
         }
     }

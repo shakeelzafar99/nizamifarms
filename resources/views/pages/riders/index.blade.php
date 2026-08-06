@@ -1,5 +1,7 @@
 @extends('layouts.app')
 
+@section('title', 'Rider Management')
+
 @section('content')
 <div class="max-w-6xl mx-auto p-6">
     <div class="flex items-start justify-between mb-6 gap-4 flex-wrap">

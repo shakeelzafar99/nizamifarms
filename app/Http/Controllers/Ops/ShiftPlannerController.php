@@ -258,7 +258,16 @@ class ShiftPlannerController extends Controller
             ->values();
 
         // Active office locations (for the assign dialog's location bubbles).
+        // ⚠ VAN MEET-UP POINTS ARE NOT OFFICES. They share this table, so without
+        //   this filter a roadside rendezvous shows up as an assignable work
+        //   location — and an assigned location is honoured by the attendance
+        //   check-in rules, which is exactly the hole the LocationService and
+        //   CompanyLocationsController exclusions already close. Schema-guarded:
+        //   before batch 14 the column does not exist and this is a no-op.
         $locations = DB::table('t_ops_company_locations')->where('is_active', 1)
+            ->when(\App\Services\LocationService::hasHandoverPointColumn(), fn ($q) => $q->where(function ($w) {
+                $w->where('is_handover_point', 0)->orWhereNull('is_handover_point');
+            }))
             ->orderByDesc('is_primary')->orderBy('location_name')
             ->get(['id', 'location_name', 'is_primary'])
             ->map(fn($l) => ['id' => (int) $l->id, 'name' => $l->location_name, 'is_primary' => (int) $l->is_primary === 1])

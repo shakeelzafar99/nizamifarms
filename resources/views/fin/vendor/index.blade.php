@@ -1,5 +1,7 @@
 @extends('layouts.app')
 
+@section('title', 'Vendors')
+
 @section('content')
 <style>
 @media print {

@@ -72,6 +72,29 @@ class LocationService
         return $has;
     }
 
+    /**
+     * May this location be assigned as somebody's WORK location?
+     *
+     * ⚠ A van meet-up point may not. Stops share this table with offices, and an
+     *   assigned location is honoured by the attendance check-in rules — so
+     *   assigning a rendezvous would let a rider clock in at the roadside, the
+     *   very hole nearestOfficeWithin() closes. The shift pickers already filter
+     *   them out; this is the write-side backstop for a stale form or a
+     *   hand-made request. Schema-guarded, and fails OPEN on a lookup error: a
+     *   legitimate assignment must never be blocked by this check.
+     */
+    public static function isAssignableOffice(?int $locationId): bool
+    {
+        if (!$locationId) return false;
+        if (!self::hasHandoverPointColumn()) return true;
+        try {
+            return !DB::table('t_ops_company_locations')
+                ->where('id', $locationId)->where('is_handover_point', 1)->exists();
+        } catch (\Throwable $e) {
+            return true;
+        }
+    }
+
     public static function getPrimaryBaseLocation()
     {
         return DB::table('t_ops_company_locations')

@@ -75,6 +75,10 @@
             <span class="meta" id="auMeta">Loading…</span>
         </div>
         <div style="padding:4px 2px 10px;">
+            {{-- Since Aug-6-2026 a tag works in EVERY business unit the person can
+                 file against (the request's own unit stamps the books; the account
+                 only says where the money left) — so this list is the whole
+                 answer to "who can pay from here", with no per-unit caveats. --}}
             <div id="auBody" class="meta" style="padding:10px 2px;">Loading…</div>
             <div id="auAdd" style="display:none;margin-top:10px;padding-top:10px;border-top:1px solid var(--line);">
                 <select id="auUser" class="kt-select" style="max-width:260px;padding:7px 9px;border:1px solid var(--line);border-radius:8px;font-size:13px;"></select>
@@ -132,13 +136,6 @@
             '<input type="checkbox"' + (r[key] ? ' checked' : '') + dis +
             ' onchange="auSave(' + r.user_id + ')" id="au_' + key + '_' + r.user_id + '"> ' + label + '</label>';
 
-        // ⚠ A tag on an account whose books the person's ROLE cannot open does
-        // nothing. Say so plainly rather than letting it look like a silent bug.
-        const blocked = r.bu_blocked
-            ? '<div style="font-size:11.5px;color:var(--out);margin-top:3px;">⚠ This person\'s role has no access to ' +
-              auEsc(auState.bu_name || 'these books') + ', so this has no effect until that is changed.</div>'
-            : '';
-
         let bank = '';
         if (AU_ISBANK && auState.banks && auState.banks.length) {
             bank = '<div style="margin-top:4px;font-size:12.5px;">Usual bank: <select id="au_bank_' + r.user_id + '"' + dis +
@@ -159,7 +156,7 @@
                 '<b style="font-size:13.5px;">' + auEsc(r.name) + '</b>' +
                 (r.is_default ? '<span class="type-chip" style="margin-left:6px;">their default</span>' : '') +
                 '<div style="margin-top:3px;">' + tick('can_expense','Expenses') + tick('can_vendor','Vendor payments') + tick('can_advance','Advances') + '</div>' +
-                bank + blocked +
+                bank +
             '</div>' +
             (auState.can_manage
                 ? '<button class="btn" type="button" onclick="auRemove(' + r.user_id + ')" style="padding:3px 9px;font-size:12px;">Remove</button>'

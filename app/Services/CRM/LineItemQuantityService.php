@@ -19,6 +19,10 @@ use Illuminate\Support\Facades\Log;
  * orders — at weighing time open orders carry no ledger entry, so the delicate
  * ledger-adjustment path in OrderController::update is intentionally never
  * touched here (owner rule: invoiced/delivered orders are edited manually).
+ *
+ * Aug-2026: also owns setFree() — the same in-place, same-guardrails treatment
+ * for a line's "free" flag, so every mid-flight money edit to a live order's
+ * line items goes through ONE place with ONE set of refusals.
  */
 class LineItemQuantityService
 {
@@ -176,6 +180,105 @@ class LineItemQuantityService
             'message' => count($results) === 1 ? 'Quantity updated.' : (count($results) . ' quantities updated.'),
             'updated' => count($results),
             'items' => $results,
+            'order_subtotal' => (float) $order->subtotal_price,
+            'order_total' => (float) $order->total_price,
+        ];
+    }
+
+    /**
+     * Toggle ONE line item's "free" flag in place (the mobile Make Free control,
+     * mirroring the web Edit Invoice toggle). Free stores line_total = 0 while
+     * KEEPING unit_price, so un-freeing restores the real price exactly.
+     *
+     * Same guardrails as setQuantity, for the same reason: this moves the order
+     * total, so it is refused on closed and on already-invoiced orders rather
+     * than reaching into the delicate ledger-adjustment path in
+     * OrderController::update (owner rule: invoiced orders are edited manually).
+     *
+     * Deliberately does NOT touch inventory — making a line free changes its
+     * PRICE, never its quantity, so nothing left or returned to stock. Likewise
+     * quantity_source / quantity_updated_* are left alone: they drive the
+     * "barcode vs manual" quantity badge and say nothing about price.
+     *
+     * @return array{success:bool, code?:string, message:string}
+     */
+    public function setFree(
+        OrderModel $order,
+        OrderLineItemModel $lineItem,
+        bool $isFree,
+        ?int $userId
+    ): array {
+        if ((int) $lineItem->order_id !== (int) $order->id) {
+            return ['success' => false, 'code' => 'mismatch', 'message' => 'Line item does not belong to this order.'];
+        }
+        if (in_array($order->order_status, self::CLOSED_STATUSES, true)) {
+            return ['success' => false, 'code' => 'not_open', 'message' => 'This order is already ' . $order->order_status . ' — please change this on the web.'];
+        }
+        if (!empty($order->ledger_transaction_id)) {
+            return ['success' => false, 'code' => 'invoiced', 'message' => 'This order is already invoiced. Please change this on the web.'];
+        }
+
+        $wasFree = (int) ($lineItem->is_free ?? 0) === 1;
+
+        // Idempotent: a double-tap (or a retry after a dropped response) must
+        // not be reported as a failure, and must not re-run the write.
+        if ($wasFree === $isFree) {
+            return [
+                'success' => true,
+                'unchanged' => true,
+                'message' => $isFree ? 'Item is already free.' : 'Item is already charged.',
+                'line_item_id' => (int) $lineItem->id,
+                'is_free' => $isFree,
+                'line_total' => (float) $lineItem->line_total,
+                'order_subtotal' => (float) $order->subtotal_price,
+                'order_total' => (float) $order->total_price,
+            ];
+        }
+
+        try {
+            DB::transaction(function () use ($order, $lineItem, $isFree, $userId) {
+                $lineItem->is_free = $isFree ? 1 : 0;
+
+                if ($isFree) {
+                    $lineItem->line_subtotal = 0;
+                    $lineItem->line_total = 0;
+                } else {
+                    $unit = (float) ($lineItem->unit_price ?? 0);
+                    $qty = (float) ($lineItem->quantity ?? 0);
+                    $lineItem->line_subtotal = round($unit * $qty, 2);
+                    // Mirror getCalculatedTotal(): subtotal - discount + tax.
+                    $lineItem->line_total = round(
+                        $lineItem->line_subtotal
+                        - (float) ($lineItem->discount_amount ?? 0)
+                        + (float) ($lineItem->tax_amount ?? 0),
+                        2
+                    );
+                }
+
+                if ($userId) {
+                    $lineItem->updated_by = $userId;
+                }
+                $lineItem->save();
+
+                $this->recomputeOrderTotals($order);
+            });
+        } catch (\Throwable $e) {
+            Log::error('LineItemQuantityService::setFree failed', [
+                'order_id' => $order->id,
+                'line_item_id' => $lineItem->id,
+                'error' => $e->getMessage(),
+            ]);
+            return ['success' => false, 'code' => 'error', 'message' => 'Failed to update the item. Please try again.'];
+        }
+
+        return [
+            'success' => true,
+            'unchanged' => false,
+            'message' => $isFree ? 'Item marked FREE.' : 'Item is now charged.',
+            'line_item_id' => (int) $lineItem->id,
+            'is_free' => $isFree,
+            'previous_is_free' => $wasFree,
+            'line_total' => (float) $lineItem->line_total,
             'order_subtotal' => (float) $order->subtotal_price,
             'order_total' => (float) $order->total_price,
         ];

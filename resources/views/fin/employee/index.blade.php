@@ -1,5 +1,7 @@
 @extends('layouts.app')
 
+@section('title', 'Employee Cash')
+
 @section('content')
 
 <!-- Invoice Breakdown Modal - Matching Audit Modal Style -->

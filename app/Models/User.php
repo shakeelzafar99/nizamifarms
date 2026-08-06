@@ -110,4 +110,37 @@ class User extends Authenticatable
         // Return unique permissions
         return array_unique($permissions);
     }
+
+    /**
+     * Staff who may be picked as "counted by" on a Frozen warehouse transfer.
+     *
+     * Owner's rule (Aug-2026): use the SAME list the Attendance page shows —
+     * i.e. the roster curated via "Customize user list", not every active
+     * account. That's `t_ops_attendance_visibility`, where NO ROW MEANS VISIBLE
+     * (only an explicit is_visible = 0 hides someone) — mirroring
+     * AttendanceController's own join, which is the source of truth for it.
+     *
+     * ⚠ $alwaysIncludeId (the current user) is unioned in regardless of that
+     * setting, because the picker DEFAULTS to whoever is approving and several
+     * managers — Taimur included — are deliberately hidden from attendance since
+     * they don't clock in. Without this they could not record themselves at all.
+     *
+     * Current user sorts first so the default sits at the top of the list.
+     */
+    public static function countedByCandidates(?int $alwaysIncludeId = null)
+    {
+        return \Illuminate\Support\Facades\DB::table('t_sys_user as u')
+            ->leftJoin('t_ops_attendance_visibility as av', 'av.user_id', '=', 'u.id')
+            ->where('u.is_active', 1)
+            ->where(function ($q) use ($alwaysIncludeId) {
+                $q->whereNull('av.is_visible')      // no record = visible
+                  ->orWhere('av.is_visible', 1);    // explicitly visible
+                if ($alwaysIncludeId) {
+                    $q->orWhere('u.id', $alwaysIncludeId);
+                }
+            })
+            ->orderByRaw('CASE WHEN u.id = ? THEN 0 ELSE 1 END', [$alwaysIncludeId ?? 0])
+            ->orderBy('u.fullname')
+            ->get(['u.id', 'u.fullname']);
+    }
 }

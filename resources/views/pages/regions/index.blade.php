@@ -1,5 +1,7 @@
 @extends('layouts.app')
 
+@section('title', 'Delivery Regions')
+
 @section('content')
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
 <link rel="stylesheet" href="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.css" />

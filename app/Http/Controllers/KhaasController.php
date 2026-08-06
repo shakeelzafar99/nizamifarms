@@ -231,8 +231,12 @@ class KhaasController extends Controller
             ->sort()
             ->values();
 
+        // "Counted by" picker options for the Pending Transfer Approvals banner.
+        $countedByUsers = $this->activeUsersForCountedBy();
+
         return view('khaas.products', compact(
-            'khaasBU', 'products', 'warehouseInventory', 'pendingTransfers', 'pendingTransferRecords', 'categories'
+            'khaasBU', 'products', 'warehouseInventory', 'pendingTransfers', 'pendingTransferRecords', 'categories',
+            'countedByUsers'
         ));
     }
 
@@ -337,7 +341,7 @@ class KhaasController extends Controller
         // === TRANSFERS DATA ===
         $transferStatus = $request->input('transfer_status', 'pending');
         $transferQuery = WarehouseTransferModel::where('business_unit_id', $khaasBU->id)
-            ->with(['product:id,title', 'variant:id,title,sku', 'requester:id,fullname', 'approver:id,fullname']);
+            ->with(['product:id,title', 'variant:id,title,sku', 'requester:id,fullname', 'approver:id,fullname', 'counter:id,fullname']);
         if ($transferStatus !== 'all') {
             $transferQuery->where('status', $transferStatus);
         }
@@ -346,6 +350,10 @@ class KhaasController extends Controller
         $pendingTransferCount = WarehouseTransferModel::where('business_unit_id', $khaasBU->id)->where('status', 'pending')->count();
         $approvedTransferCount = WarehouseTransferModel::where('business_unit_id', $khaasBU->id)->where('status', 'approved')->count();
         $rejectedTransferCount = WarehouseTransferModel::where('business_unit_id', $khaasBU->id)->where('status', 'rejected')->count();
+
+        // "Counted by" picker options (Aug-2026). All active staff, per the
+        // owner's ruling — the counter is not always a Frozen/store user.
+        $countedByUsers = $this->activeUsersForCountedBy();
 
         return view('khaas.operations', compact(
             'khaasBU', 'activeTab',
@@ -356,8 +364,20 @@ class KhaasController extends Controller
             'buPaymentAccounts',
             'dateFrom', 'dateTo', 'expCategory', 'expenseCategories',
             // Transfers
-            'transfers', 'transferStatus', 'pendingTransferCount', 'approvedTransferCount', 'rejectedTransferCount'
+            'transfers', 'transferStatus', 'pendingTransferCount', 'approvedTransferCount', 'rejectedTransferCount',
+            'countedByUsers'
         ));
+    }
+
+    /**
+     * Staff for the transfer "Counted by" picker. Same roster as the Attendance
+     * page ("Customize user list"), plus the current user — see
+     * User::countedByCandidates() for why. One helper, shared with the mobile
+     * endpoint, so the two lists can never drift apart.
+     */
+    private function activeUsersForCountedBy()
+    {
+        return \App\Models\User::countedByCandidates(auth()->id());
     }
 
     /**
@@ -493,7 +513,7 @@ class KhaasController extends Controller
         $status = $request->input('status', 'pending');
 
         $query = WarehouseTransferModel::where('business_unit_id', $khaasBU->id)
-            ->with(['product:id,title', 'variant:id,title,sku', 'requester:id,fullname', 'approver:id,fullname']);
+            ->with(['product:id,title', 'variant:id,title,sku', 'requester:id,fullname', 'approver:id,fullname', 'counter:id,fullname']);
 
         if ($status !== 'all') {
             $query->where('status', $status);
@@ -509,8 +529,11 @@ class KhaasController extends Controller
         $rejectedCount = WarehouseTransferModel::where('business_unit_id', $khaasBU->id)
             ->where('status', 'rejected')->count();
 
+        $countedByUsers = $this->activeUsersForCountedBy();
+
         return view('khaas.transfers', compact(
-            'khaasBU', 'transfers', 'status', 'pendingCount', 'approvedCount', 'rejectedCount'
+            'khaasBU', 'transfers', 'status', 'pendingCount', 'approvedCount', 'rejectedCount',
+            'countedByUsers'
         ));
     }
 
@@ -529,13 +552,28 @@ class KhaasController extends Controller
             return back()->with('error', 'Transfer is not pending.');
         }
 
+        // ⭐ Aug-2026 audit: who physically COUNTED the stock. Optional, and
+        // separate from the approver because the manager approves while somebody
+        // else counts. Absent => NULL ("not recorded"), never inferred from the
+        // approver. Same rule as the mobile path (WarehouseController).
+        $countedBy = WarehouseTransferModel::normaliseCountedBy($request->input('counted_by'));
+        if ($countedBy === false) {
+            return back()->with('error', 'The selected "Counted by" user is not valid or is no longer active.');
+        }
+
         DB::beginTransaction();
         try {
-            $transfer->update([
+            $updateData = [
                 'status' => WarehouseTransferModel::STATUS_APPROVED,
                 'approved_by' => auth()->id(),
                 'approved_at' => now(),
-            ]);
+            ];
+            // Gated: the column only exists once BATCH-16 has been run, and web
+            // files can be uploaded before the SQL is.
+            if ($countedBy !== null && WarehouseTransferModel::supportsCountedBy()) {
+                $updateData['counted_by'] = $countedBy;
+            }
+            $transfer->update($updateData);
 
             // ⭐ Resolve variant: use transfer's variant_id, or fallback to product's first variant
             $variantId = $transfer->product_variant_id;
@@ -1583,7 +1621,7 @@ class KhaasController extends Controller
 
         $productTransfers = WarehouseTransferModel::where('product_id', $productId)
             ->where('business_unit_id', $khaasBU->id)
-            ->with(['requester:id,fullname', 'approver:id,fullname', 'rejecter:id,fullname'])
+            ->with(['requester:id,fullname', 'approver:id,fullname', 'rejecter:id,fullname', 'counter:id,fullname'])
             ->get();
         $transfersById = $productTransfers->keyBy('id');
 

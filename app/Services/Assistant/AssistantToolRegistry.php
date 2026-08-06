@@ -263,20 +263,54 @@ class AssistantToolRegistry
      */
     private function getContext($user): array
     {
-        $accounts = DB::table('t_fin_accounts')
-            ->where('is_active', 1)
-            ->whereIn('account_category', ['cash', 'bank'])
-            ->get(['id', 'account_code', 'account_name', 'account_category', 'is_private'])
-            ->filter(fn($a) => !$a->is_private || $this->isTaimur($user)) // private accounts: Taimur-only, same as RequestController
-            ->map(fn($a) => array_filter([
-                'id' => $a->id,
-                'code' => $a->account_code,
-                'name' => $a->account_name,
-                'is_bank' => $a->account_category === 'bank',
-                // Owner ruling: qurbani is a once-a-year flow. Flag the rows so
-                // a plain "online"/"cash" can never land on a QURBANI_* account.
-                'qurbani_only' => $this->mentionsQurbani($a->account_name . ' ' . $a->account_code) ?: null,
-            ], fn($v) => $v !== null))->values()->all();
+        // ⚠ ASK PaymentSourceService — never query t_fin_accounts here.
+        //
+        // This used to be a raw query filtered only on is_private, so the model was
+        // shown every company account regardless of business unit or of the account
+        // tags that actually decide who may pay from what. On Aug-5-2026 that put
+        // Taimur's Online Bank on a FROZEN expense card, he confirmed it, and the
+        // server 403'd him after the fact — the exact failure the service exists to
+        // prevent ("a picker that offers an account the server will reject is worse
+        // than no picker at all"). The assistant is a picker.
+        //
+        // Each account carries WHICH business units it may fund, per purpose,
+        // because that pairing is the rule: a tagged account funds every unit the
+        // user can file against, an untagged fallback only its own. The model must
+        // send a pair the lists agree on.
+        $paySvc = app(\App\Services\FIN\PaymentSourceService::class);
+
+        $unitRows = \App\Models\FIN\AccountModel::getUserAccessibleBusinessUnits()
+            ->filter(fn($u) => (int) ($u->is_active ?? 1) === 1);
+
+        $accounts = [];
+        foreach ($unitRows as $unit) {
+            foreach ([
+                'expense' => \App\Services\FIN\PaymentSourceService::PURPOSE_EXPENSE,
+                'vendor'  => \App\Services\FIN\PaymentSourceService::PURPOSE_VENDOR,
+            ] as $key => $purpose) {
+                foreach ($paySvc->sourcesFor($user, (int) $unit->id, $purpose) as $src) {
+                    $id = (int) $src['id'];
+                    if (!isset($accounts[$id])) {
+                        $accounts[$id] = [
+                            'id' => $id,
+                            'code' => $src['code'],
+                            'name' => $src['name'],
+                            'is_bank' => (bool) $src['is_online'],
+                            // Owner ruling: qurbani is a once-a-year flow. Flag the rows so
+                            // a plain "online"/"cash" can never land on a QURBANI_* account.
+                            'qurbani_only' => $this->mentionsQurbani($src['name'] . ' ' . $src['code']) ?: null,
+                            'for_expense' => [],
+                            'for_vendor'  => [],
+                        ];
+                    }
+                    $accounts[$id]['for_' . $key][] = (int) $unit->id;
+                }
+            }
+        }
+        $accounts = array_values(array_map(
+            fn($a) => array_filter($a, fn($v) => $v !== null && $v !== []),
+            $accounts
+        ));
 
         $banks = DB::table('t_fin_online_receiving_accounts')
             ->where('is_active', 1)
@@ -285,11 +319,10 @@ class AssistantToolRegistry
             ->map(fn($b) => ['id' => $b->id, 'name' => $b->name, 'code' => $b->short_code])
             ->all();
 
-        $units = DB::table('t_fin_business_units')
-            ->where('is_active', 1)
-            ->get(['id', 'name', 'code'])
-            ->map(fn($u) => ['id' => $u->id, 'name' => $u->name, 'code' => $u->code])
-            ->all();
+        // Only the books this person may actually file against — offering the rest
+        // is the same bug in a different field.
+        $units = $unitRows->map(fn($u) => ['id' => (int) $u->id, 'name' => $u->name, 'code' => $u->code])
+            ->values()->all();
 
         // Real categories people actually use, so the model reuses existing
         // spellings instead of inventing "Petrol" alongside "Fuel/Petrol".
@@ -311,7 +344,10 @@ class AssistantToolRegistry
             'saved_defaults' => $this->prefs($user->id),
             'today' => now()->toDateString(),
             'note' => 'Staff salaries cannot be recorded as an expense — they must go through the Payroll screen. '
-                . 'Accounts flagged qurbani_only are for the once-a-year Qurbani flow ONLY — never use them unless the user literally says "qurbani".',
+                . 'Accounts flagged qurbani_only are for the once-a-year Qurbani flow ONLY — never use them unless the user literally says "qurbani". '
+                . 'payment_source_accounts[].for_expense / for_vendor list the business_unit ids that account may pay for. '
+                . 'The account and the business unit must AGREE: if the user names a business unit, only offer accounts whose list contains it, '
+                . 'and if their saved default account cannot pay for that unit, say so and offer one that can — the server rejects the rest.',
         ];
     }
 

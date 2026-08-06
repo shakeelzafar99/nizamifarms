@@ -29,6 +29,7 @@ class WarehouseTransferModel extends BaseModel
         'requested_by',
         'approved_by',
         'approved_at',
+        'counted_by',
         'rejected_by',
         'rejected_at',
         'rejection_reason',
@@ -65,6 +66,75 @@ class WarehouseTransferModel extends BaseModel
     public function rejecter(): BelongsTo
     {
         return $this->belongsTo(\App\Models\User::class, 'rejected_by');
+    }
+
+    /**
+     * Who physically COUNTED the stock — often not the person who approved.
+     * Optional: NULL means "not recorded", which is what every transfer
+     * predating Aug-2026 means. Never inferred from the approver.
+     */
+    public function counter(): BelongsTo
+    {
+        return $this->belongsTo(\App\Models\User::class, 'counted_by');
+    }
+
+    /**
+     * True once BATCH-16 has been run (t_crm_warehouse_transfer.counted_by).
+     *
+     * Deploy here is manual and web files can land before the SQL does, so
+     * every read/write of counted_by is gated on this — with the column absent
+     * the feature simply does nothing and approvals behave exactly as they did
+     * before, instead of 500ing on an unknown column. Cached per request:
+     * Schema::hasColumn hits information_schema, and the transfer list renders
+     * this once per row.
+     */
+    public static function supportsCountedBy(): bool
+    {
+        static $supported = null;
+        if ($supported === null) {
+            try {
+                $supported = \Illuminate\Support\Facades\Schema::hasColumn('t_crm_warehouse_transfer', 'counted_by');
+            } catch (\Throwable $e) {
+                $supported = false;
+            }
+        }
+        return $supported;
+    }
+
+    /**
+     * Normalise a submitted "counted by" value into something storable.
+     *
+     * Returns:
+     *   null  => nothing was recorded (field left empty) — always allowed,
+     *            and what every pre-Aug-2026 transfer means
+     *   int   => a real, ACTIVE user id
+     *   false => a value WAS supplied but is not a valid active user
+     *
+     * The false case is kept distinct from null on purpose: silently dropping a
+     * bad id would leave the audit trail reading "not recorded" while the person
+     * approving believes they recorded someone. Callers surface it instead.
+     *
+     * "Active" is `is_active = 1`, matching RiderController::getActiveUsers —
+     * the same list that populates the picker. (t_sys_user uses the 1/0
+     * convention, not Y/N.)
+     */
+    public static function normaliseCountedBy($value)
+    {
+        if ($value === null || $value === '' || $value === 'null') {
+            return null;
+        }
+        if (!is_numeric($value)) {
+            return false;
+        }
+        $id = (int) $value;
+        if ($id <= 0) {
+            return false;
+        }
+
+        return \Illuminate\Support\Facades\DB::table('t_sys_user')
+            ->where('id', $id)
+            ->where('is_active', 1)
+            ->exists() ? $id : false;
     }
 
     /**

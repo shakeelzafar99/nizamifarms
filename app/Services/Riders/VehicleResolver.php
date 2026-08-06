@@ -106,6 +106,122 @@ class VehicleResolver
     }
 
     /**
+     * ⭐⭐ PHASE D — "WHAT IS HE HOLDING **RIGHT NOW**?"
+     *
+     * ⚠⚠ THIS IS NOT `vehicleForDay($u, today)` AND THE DIFFERENCE IS THE WHOLE
+     *    POINT. A row released TODAY still *covers* today by date, because the
+     *    handover happened partway through it. That is right for history (the
+     *    morning's kilometres really were his) and wrong for a live gate: at
+     *    5 pm Waseem would still be asked to close the meter of a bike that left
+     *    at 2 pm. So the live gates ask THIS, and only history asks by date.
+     *
+     * Order: the manager's override for today (he said so explicitly) → the OPEN
+     * assignment → nothing.
+     *
+     * ⚠ `t_ops_rider_profile.default_vehicle_id` is DELIBERATELY NOT consulted.
+     *   It is a convenience mirror of the open assignment and can go stale
+     *   (a live example: one rider's mirror points at a colleague's bike). The
+     *   assignment table is the truth; the mirror is not.
+     */
+    public function currentVehicleFor(int $userId, ?string $date = null): ?int
+    {
+        $date = $date ? substr($date, 0, 10) : date('Y-m-d');
+        try {
+            if (!$this->available()) return null;
+
+            $override = DB::table('t_ops_attendance')
+                ->where('user_id', $userId)
+                ->where('attendance_date', $date)
+                ->whereNotNull('vehicle_id')
+                ->value('vehicle_id');
+            if ($override) return (int) $override;
+
+            $open = DB::table(VehicleService::T_ASSIGN)
+                ->where('user_id', $userId)
+                ->whereNull('released_on')
+                ->where('assigned_on', '<=', $date)
+                ->orderByDesc('assigned_on')->orderByDesc('id')
+                ->value('vehicle_id');
+
+            return $open ? (int) $open : null;
+        } catch (\Throwable $e) {
+            Log::warning('currentVehicleFor failed', ['user' => $userId, 'error' => $e->getMessage()]);
+            return null;
+        }
+    }
+
+    /**
+     * Has the registry ever known this person to hold a machine? (Any assignment
+     * row, open or closed.)
+     *
+     * ⭐ WHY IT EXISTS. "He holds nothing" and "we have never recorded anything
+     *    about him" look identical from the assignment table, but they must not be
+     *    treated identically anywhere that REMOVES A CAPABILITY. Farooq files flat
+     *    petrol claims and has no registered machine — that is his only path, and
+     *    it has to keep working. Waseem handed a bike back last week; his fuel door
+     *    should close. This is the only thing that tells them apart.
+     *
+     * ⚠ Rules that merely stop DEMANDING something (the meter gates) do not use
+     *   this — see `hasRiderProfile`. Not asking a man for a reading can't hurt
+     *   him; taking away the only way he claims his petrol can.
+     */
+    public function trackedByRegistry(int $userId): bool
+    {
+        static $memo = [];
+        if (isset($memo[$userId])) return $memo[$userId];
+        try {
+            if (!$this->available()) return false;   // not memoized — tables may appear
+            return $memo[$userId] = DB::table(VehicleService::T_ASSIGN)->where('user_id', $userId)->exists();
+        } catch (\Throwable $e) {
+            return false;
+        }
+    }
+
+    /** Is this person a rider at all? Store staff and managers have no profile row.
+     *  Memoized — the month sheets ask per row. */
+    public function hasRiderProfile(int $userId): bool
+    {
+        static $memo = [];
+        if (isset($memo[$userId])) return $memo[$userId];
+        try {
+            return $memo[$userId] = DB::table('t_ops_rider_profile')->where('user_id', $userId)->exists();
+        } catch (\Throwable $e) {
+            return false;
+        }
+    }
+
+    /**
+     * ⭐⭐ THE ONE ANSWER EVERY METER GATE ASKS (owner ruling R2, Aug-6):
+     *    **no machine in the registry = no meter.**
+     *
+     *    true  → he holds a machine, so the reading is compulsory
+     *    false → he holds nothing, so nothing is demanded of him
+     *    null  → the registry has no opinion; the caller uses the old profile
+     *            checkbox exactly as before
+     *
+     * Null is returned when the switch is off, the tables are missing, or the
+     * person is not a rider at all — the three cases where changing behaviour
+     * would be guessing. That is what keeps this inert until `VEHICLE_RULES`
+     * flips, and harmless for store staff forever.
+     *
+     * ⚠ EVERY gate must route through this ONE method — the app's
+     *   `meter_required` flag, the check-in gate and the checkout gate. If the
+     *   flag and the gate ever disagree, the rider is shown a door he cannot
+     *   open, which is the precise shape of a lockout.
+     */
+    public function meterRequiredNow(int $userId, ?string $date = null): ?bool
+    {
+        try {
+            if (!$this->available() || !$this->rulesEnabled()) return null;
+            if (!$this->hasRiderProfile($userId))               return null;
+            return $this->currentVehicleFor($userId, $date) !== null;
+        } catch (\Throwable $e) {
+            Log::warning('meterRequiredNow failed', ['user' => $userId, 'error' => $e->getMessage()]);
+            return null;                      // no opinion = the old behaviour
+        }
+    }
+
+    /**
      * Who had this vehicle on that date — the reverse question, and the one that
      * makes an alert about a MACHINE reachable: a morning flag on AY-4771 has to
      * go to whoever has it today, not whoever had it last month.
@@ -136,6 +252,71 @@ class VehicleResolver
             return $row ? (int) $row : null;
         } catch (\Throwable $e) {
             return null;
+        }
+    }
+
+    /**
+     * ⭐ PHASE D — everyone holding ANY machine on that DATE (windows + overrides),
+     *    as [user_id => vehicle_id]. The set form of `vehicleForDay`, for the
+     *    sheets and reports that judge a whole roster per day: the attendance
+     *    page's ⛽ tick, the mobile sheet, the meter-miss month column.
+     *
+     * ⚠ DATE-scoped, not now-scoped — reports judge history, so a row released
+     *   last week still covers the days it spanned. The live gates use
+     *   `currentVehicleFor`, which is the opposite choice, deliberately.
+     *
+     * Memoized per process: a month grid asks about the same date once per rider.
+     */
+    public function machineHoldersOn(string $date): array
+    {
+        $date = substr($date, 0, 10);
+        static $memo = [];
+        if (isset($memo[$date])) return $memo[$date];
+
+        $held = [];
+        try {
+            if (!$this->available()) return $memo[$date] = [];
+
+            foreach (DB::table(VehicleService::T_ASSIGN)
+                        ->where('assigned_on', '<=', $date)
+                        ->where(function ($q) use ($date) {
+                            $q->whereNull('released_on')->orWhere('released_on', '>=', $date);
+                        })
+                        ->orderBy('assigned_on')->orderBy('id')
+                        ->get(['user_id', 'vehicle_id']) as $a) {
+                $held[(int) $a->user_id] = (int) $a->vehicle_id;   // later row wins
+            }
+            foreach (DB::table('t_ops_attendance')
+                        ->where('attendance_date', $date)
+                        ->whereNotNull('vehicle_id')
+                        ->get(['user_id', 'vehicle_id']) as $o) {
+                $held[(int) $o->user_id] = (int) $o->vehicle_id;   // override outranks
+            }
+        } catch (\Throwable $e) {
+            Log::warning('machineHoldersOn failed', ['date' => $date, 'error' => $e->getMessage()]);
+            $held = [];
+        }
+        return $memo[$date] = $held;
+    }
+
+    /**
+     * Should a REPORT excuse this rider's meter on this date? True only when the
+     * registry is authoritative (rules on, tables there), he is a rider, and he
+     * held nothing that day. Anything else → "no opinion", judge as before.
+     *
+     * This is the report-side twin of `meterRequiredNow`: same blanket rule,
+     * date-scoped instead of now-scoped. Keeping the pair adjacent-but-separate
+     * is deliberate — a report that judged history by today's holding would
+     * retroactively excuse (or accuse) whole months on every handover.
+     */
+    public function meterExcusedOn(int $userId, string $date): bool
+    {
+        try {
+            if (!$this->available() || !$this->rulesEnabled()) return false;
+            if (!$this->hasRiderProfile($userId))               return false;
+            return !isset($this->machineHoldersOn($date)[$userId]);
+        } catch (\Throwable $e) {
+            return false;                     // failure = judge as before
         }
     }
 
@@ -200,7 +381,19 @@ class VehicleResolver
         if (!$this->rulesEnabled()) return $riderFlag;
 
         $v = $this->vehicle($this->vehicleForDay($userId, $date));
-        return $v ? ((int) $v->is_company === 1) : $riderFlag;
+        if ($v) return (int) $v->is_company === 1;
+
+        // ⭐ PHASE D — HOLDING NOTHING IS AN ANSWER, NOT A GAP (owner ruling R2).
+        //   This used to fall back to the checkbox, which is frozen at whatever it
+        //   was the day the bike was taken away: a rider who handed his machine
+        //   back stayed on the company fuel protocol, kept his overnight/home
+        //   checks armed and stayed in every company cohort. For a RIDER the
+        //   registry is now the whole answer — no machine that day, no company day.
+        //
+        // ⚠ Scoped to people who actually have a rider profile. Managers and store
+        //   staff never had a machine and must keep behaving exactly as before;
+        //   the checkbox still speaks for them.
+        return $this->hasRiderProfile($userId) ? false : $riderFlag;
     }
 
     /**
@@ -260,6 +453,18 @@ class VehicleResolver
                 if (!empty($isCompany[$vid])) $out[$uid] = true;   // on a company machine
                 else unset($out[$uid]);                            // on his own → not
             }
+
+            // ⭐ PHASE D — and drop every RIDER holding nothing at all. Must mirror
+            //   isCompanyDay()'s "holding nothing is an answer" exactly: this is the
+            //   set form of the same rule, and a cohort that disagreed with the
+            //   per-rider answer would flag a man in a report for a duty the live
+            //   rules had already excused him from. Non-riders keep the checkbox.
+            $riderIds = DB::table('t_ops_rider_profile')->pluck('user_id')
+                ->map(fn ($v) => (int) $v)->flip()->toArray();
+            foreach (array_keys($out) as $uid) {
+                if (isset($riderIds[$uid]) && !isset($held[$uid])) unset($out[$uid]);
+            }
+
             return array_map('intval', array_keys($out));
         } catch (\Throwable $e) {
             Log::warning('companyRiderIdsFor failed', ['date' => $date, 'error' => $e->getMessage()]);

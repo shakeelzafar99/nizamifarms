@@ -462,6 +462,19 @@ class AttendanceController extends Controller
                     }
                 }
             } catch (\Throwable $e) { /* no column → nobody exempt */ }
+            // ⭐ PHASE D: the registry exempts too — a rider with no machine on THIS
+            //   date was not asked for a meter, so this page must not expect one.
+            //   Date-scoped (this is a historical sheet), silent while rules are off.
+            try {
+                $vres = new \App\Services\Riders\VehicleResolver();
+                if ($vres->rulesEnabled() && $vres->available()) {
+                    $heldToday = $vres->machineHoldersOn($selectedDate);
+                    foreach (DB::table('t_ops_rider_profile')->whereIn('user_id', $userIds)
+                        ->pluck('user_id') as $uid) {
+                        if (!isset($heldToday[(int) $uid])) { $meterExempt[(int) $uid] = true; }
+                    }
+                }
+            } catch (\Throwable $e) { /* registry silent → previous behaviour */ }
         }
         // ── Company-bike GOING-HOME meter state per rider on this date (the manager valve:
         //    unlock a late-locked rider / enter the meter for a dead phone). Guarded — no

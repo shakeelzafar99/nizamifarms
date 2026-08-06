@@ -1,5 +1,7 @@
 @extends('layouts.app')
 
+@section('title', 'My Attendance')
+
 @section('content')
 <div class="max-w-5xl mx-auto p-6">
   <!-- Header with Mark Attendance Button -->

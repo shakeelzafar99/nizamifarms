@@ -49,6 +49,9 @@ class VanController extends Controller
             }
 
             $uid = (int) $user->id;
+            // Same self-heal as the store board — the driver's own strip must not
+            // keep a finished meet-up alive either.
+            $van->completeStopIfHandoverDone($uid, $stops);
             $m   = $van->manifest($uid);
             $trip = $van->openTrip($uid);
 
@@ -111,6 +114,29 @@ class VanController extends Controller
         ]);
 
         $uid  = (int) $user->id;
+
+        // ⭐ FINISHING WITH BOXES STILL ABOARD NEEDS A DELIBERATE YES. "Finish the
+        //    trip" was a single unguarded tap: it closed the trip while riders'
+        //    cargo was still on the van, and because the rider card derives
+        //    "departed" from the OPEN trip, those riders were then told their
+        //    orders "have not left the store yet" — about boxes driving away.
+        //    Asked BEFORE ensureTrip so a stray confirm cannot create a trip.
+        if ($data['leg'] === VanService::LEG_DONE && !$request->boolean('force')) {
+            $t = $van->manifest($uid)['totals'];
+            $uncollected = max(0, (int) $t['carried_total'] - (int) $t['carried_handed']);
+            $myParked    = (int) $t['mine_on_van'];
+            if ($uncollected > 0 || $myParked > 0) {
+                $bits = [];
+                if ($uncollected > 0) $bits[] = $uncollected . ' not collected';
+                if ($myParked > 0)    $bits[] = $myParked . ' of yours';
+                return response()->json([
+                    'success'       => false,
+                    'needs_confirm' => true,
+                    'message'       => 'Still on the van: ' . implode(' · ', $bits) . '. Finish anyway?',
+                ], 422);
+            }
+        }
+
         $trip = $van->ensureTrip($uid, null, $uid);
         if (!$trip) {
             return response()->json(['success' => false, 'message' => 'Could not start the trip.'], 500);
@@ -128,12 +154,32 @@ class VanController extends Controller
             ], fn ($v) => $v !== null));
 
             // The departure ping — once per trip, whatever he re-plans afterwards.
+            //
+            // ⚠ CLAIM THE LATCH BEFORE PUSHING, IN ONE CONDITIONAL UPDATE. The
+            //   old order (read the row → check the latch → push → set the latch)
+            //   let two fast taps on "Where to next?" both read the same
+            //   un-latched row and both announce, so every rider was told twice
+            //   that the van had left. `WHERE departure_notified_at IS NULL` makes
+            //   the database the referee: exactly one caller gets a row back.
             $notified = 0;
-            if ($firstLeg && $data['leg'] !== VanService::LEG_DONE && empty($trip->departure_notified_at)) {
-                $notified = $this->announceDeparture($uid, $van);
-                DB::table(VanService::T_TRIP)->where('id', $trip->id)
-                    ->update(['departure_notified_at' => now()]);
+            if ($firstLeg && $data['leg'] !== VanService::LEG_DONE) {
+                $claimed = DB::table(VanService::T_TRIP)
+                    ->where('id', $trip->id)
+                    ->whereNull('departure_notified_at')
+                    ->update(['departure_notified_at' => now(), 'updated_at' => now()]);
+                if ($claimed > 0) {
+                    $notified = $this->announceDeparture($uid, $van);
+                }
             }
+
+            // ⭐ DRIVING AWAY CLOSES THE MEET-UP — but only a meet-up he was AT.
+            //    Nothing used to close the stop except the driver remembering to
+            //    press "Done", so riders kept seeing "the van is waiting for you"
+            //    while it delivered elsewhere. The reached/planned distinction
+            //    lives in closeOnLegChange: a REACHED stop closes when he drives
+            //    off; a merely-PLANNED one survives the deliveries wave, because
+            //    "deliver these three, then meet at X" is the whole point.
+            (new \App\Services\Riders\VanStopService())->closeOnLegChange($uid, $data['leg']);
 
             // A deliveries leg with picked stops dispatches them in the same
             // action — one press, not two.
@@ -148,6 +194,11 @@ class VanController extends Controller
                 'trip'            => $this->tripPayload($fresh, $van->manifest($uid)),
                 'riders_notified' => $notified,
                 'dispatch'        => $dispatch,
+                // ⚠ The LEG started, but the dispatch inside it may have been
+                //   refused — and a refusal used to vanish into a cheerful
+                //   "Delivering." while nothing was timed and his stops sat on
+                //   the van with no clock. The app alerts on this.
+                'dispatch_failed' => $dispatch !== null && !($dispatch['ok'] ?? false),
                 'message'         => $this->legMessage($data['leg'], $firstLeg, $notified, $dispatch),
             ]);
         } catch (\Throwable $e) {
@@ -266,11 +317,19 @@ class VanController extends Controller
         if ($cur && ($cur['latitude'] ?? null) !== null && empty($cur['reached_at'])) {
             $pos = $this->lastFix($uid);
             if ($pos) {
-                $eta = $this->etaBetween($pos, $cur['latitude'], $cur['longitude'], 'van_stop_eta:' . $uid);
+                // Same leg rule as the store board, so his card and the store can
+                // never quote different arrivals: heading there now → direct;
+                // delivering first → chained after his remaining stops.
+                if ($trip && (string) $trip->current_leg === VanService::LEG_TO_STOP) {
+                    $eta = $this->etaBetween($pos, $cur['latitude'], $cur['longitude'], 'van_stop_eta:' . $uid);
+                    if ($eta) $eta['warm_from'] = $pos;
+                } else {
+                    $eta = $this->etaToStopAfterStops($uid, $pos, $cur['latitude'], $cur['longitude'],
+                                                      'van_stop_eta:' . $uid);
+                }
                 $cur['eta'] = $eta;
-                if ($eta && ($eta['source'] ?? '') === 'approx') {
-                    $this->warmEtas([['key' => $eta['cache_key'], 'from' => $pos,
-                                       'to' => ['lat' => $cur['latitude'], 'lng' => $cur['longitude']]]]);
+                if ($j = $this->warmJobFor($eta, $cur['latitude'], $cur['longitude'])) {
+                    $this->warmEtas([$j]);
                 }
             }
         }
@@ -308,6 +367,7 @@ class VanController extends Controller
         ]);
 
         $uid = (int) $user->id;
+        $setByStore = false;
         if (!empty($data['van_user_id']) && (int) $data['van_user_id'] !== $uid) {
             if (!$this->canManageStops($user)) {
                 return response()->json([
@@ -316,13 +376,35 @@ class VanController extends Controller
                 ], 403);
             }
             $uid = (int) $data['van_user_id'];
+            $setByStore = true;
         }
         unset($data['van_user_id']);
 
-        $res = $stops->setStop($uid, $data);
+        // ⭐ THE TARGET MUST ACTUALLY BE RUNNING A VAN. Setting a stop creates a
+        //    trip, so without this any authenticated rider could mint himself an
+        //    open van trip — which paints a ghost card on the store panel and,
+        //    because the dispatch-origin guard trusts an open departed trip for
+        //    14h, quietly bypasses the phantom-GPS office anchor. It also stops a
+        //    STALE store card on a handover day from sending the OUTGOING driver
+        //    and resurrecting the trip that was just closed.
+        if (!$van->isVanDriver($uid) && !$van->isCarrying($uid)) {
+            $who = DB::table('t_sys_user')->where('id', $uid)->value('fullname');
+            return response()->json([
+                'success' => false,
+                'message' => ($who ?: 'That user') . ' is not driving a van right now. '
+                           . 'Refresh the van board and try again.',
+            ], 422);
+        }
+
+        // ⭐ WHO SET IT DECIDES WHETHER THE VAN HAS LEFT. The driver choosing a
+        //    meet-up point IS him setting off (there is deliberately no "van
+        //    left" button). The STORE naming the point is a plan — the van may
+        //    still be on the loading bay — so it must not stamp a departure.
+        $res = $stops->setStop($uid, $data, null, !$setByStore);
         if (!$res['ok']) return response()->json(['success' => false, 'message' => $res['message']], 422);
 
-        $notified = $this->announceStop($uid, $van, $res);
+        $trip = $van->openTrip($uid);
+        $notified = $this->announceStop($uid, $van, $res, !empty($trip->departed_at));
 
         return response()->json([
             'success'         => true,
@@ -430,28 +512,40 @@ class VanController extends Controller
                 return response()->json(['success' => true, 'has_cargo' => false]);
             }
 
-            $cargo = DB::table('t_crm_prod_order')
-                ->where('assigned_rider_user_id', $uid)
-                ->where('order_status', VanService::STATUS_ON_VAN)
+            $cargo = DB::table('t_crm_prod_order as o')
+                ->leftJoin('t_crm_prod_customer as c', 'c.id', '=', 'o.customer_id')
+                ->where('o.assigned_rider_user_id', $uid)
+                ->where('o.order_status', VanService::STATUS_ON_VAN)
                 // ⭐ LOADED only. "On Van" without stamps is just the staff's plan
                 //    — nothing is physically on any van yet, so telling the rider
                 //    to go meet it would send him to a van that isn't carrying
                 //    his boxes (and `van_user_id` would be NULL anyway).
-                ->whereNotNull('van_user_id')
-                ->whereNotNull('van_loaded_at')
+                ->whereNotNull('o.van_user_id')
+                ->whereNotNull('o.van_loaded_at')
                 // ⭐⭐ NOT HIS OWN VAN. The driver is the assigned rider on his own
                 //    stops AND the carrier of them, so without this he was shown
                 //    "the van is waiting for you" about the van he is sitting in
                 //    (seen on the device Aug-4). He collects nothing and scans no
                 //    handover — his stops go straight to his wave picker.
-                ->where('van_user_id', '!=', $uid)
-                ->get(['id', 'order_number', 'van_user_id', 'expected_packets']);
+                ->where('o.van_user_id', '!=', $uid)
+                ->get([
+                    'o.id', 'o.order_number', 'o.van_user_id', 'o.expected_packets',
+                    'o.handover_scanned_packets',
+                    DB::raw('CONCAT(COALESCE(c.first_name,""), " ", COALESCE(c.last_name,"")) as customer_name'),
+                ]);
 
             if ($cargo->isEmpty()) {
                 return response()->json(['success' => true, 'has_cargo' => false]);
             }
 
             $driverId = (int) $cargo->first()->van_user_id;
+
+            // ⚠ One rider's boxes can sit on TWO vans. The card describes ONE van,
+            //   so everything it reports — the count, the packets and the collect
+            //   checklist — is scoped to that same van. Reporting a total that
+            //   spans vans while showing one van's stop is how "2 waiting" ends up
+            //   next to a checklist of 3.
+            $cargo = $cargo->filter(fn ($c) => (int) $c->van_user_id === $driverId)->values();
             $trip = $van->openTrip($driverId);
             $stop = $stops->currentStopPayload($driverId);
 
@@ -463,6 +557,49 @@ class VanController extends Controller
 
             $driverName = DB::table('t_sys_user')->where('id', $driverId)->value('fullname');
             $departed   = $trip && $trip->departed_at;
+
+            // ⭐ "REACH THE VAN BY WHEN" (the owner's original ask): the van's own
+            //    arrival at the stop, so the rider can pace his run instead of
+            //    guessing. Same leg rule as every other surface — heading there
+            //    now → direct; delivering his own stops first → chained after
+            //    them. Cached-or-approximate, never blocking, and absent rather
+            //    than wrong when GPS is stale.
+            $vanEta = null;
+            if ($departed && $stop && ($stop['latitude'] ?? null) !== null && empty($stop['reached_at'])) {
+                $dpos = $this->lastFix($driverId);
+                if ($dpos) {
+                    if ((string) $trip->current_leg === VanService::LEG_TO_STOP) {
+                        $vanEta = $this->etaBetween($dpos, $stop['latitude'], $stop['longitude'],
+                                                    'van_stop_eta:' . $driverId);
+                        if ($vanEta) $vanEta['warm_from'] = $dpos;
+                    } else {
+                        $vanEta = $this->etaToStopAfterStops($driverId, $dpos,
+                            $stop['latitude'], $stop['longitude'], 'van_stop_eta:' . $driverId);
+                    }
+                    if ($j = $this->warmJobFor($vanEta, $stop['latitude'], $stop['longitude'])) {
+                        $this->warmEtas([$j]);
+                    }
+                }
+            }
+
+            // ⭐ HIS OWN required arrival: finish the stops he is riding now, then
+            //    get to the rendezvous — chained through his remaining promised
+            //    stops with the same per-stop buffer, live-re-estimated from his
+            //    GPS when he is running behind his promises. This is the "reach
+            //    the van by WHEN" half of the card; the van's arrival above is
+            //    the other half.
+            $yourEta = null;
+            if ($stop && ($stop['latitude'] ?? null) !== null) {
+                $rpos = $this->lastFix($uid);
+                if ($rpos) {
+                    $yourEta = $this->etaToStopAfterStops($uid, $rpos,
+                        $stop['latitude'], $stop['longitude'], 'rider_stop_eta:' . $uid);
+                    if ($j = $this->warmJobFor($yourEta, $stop['latitude'], $stop['longitude'])) {
+                        $this->warmEtas([$j]);
+                    }
+                }
+            }
+            $youBit = $yourEta ? ' · you ~' . $yourEta['arrival_display'] : '';
 
             // One honest sentence for each real situation.
             if (!$departed) {
@@ -477,11 +614,15 @@ class VanController extends Controller
                 $state = 'waiting';
                 $head  = '🚚 The van is waiting for you';
                 $sub   = 'At ' . $stop['label']
-                       . ($stop['waiting_minutes'] !== null ? ' · waiting ' . $stop['waiting_minutes'] . ' min' : '');
+                       . ($stop['waiting_minutes'] !== null ? ' · waiting ' . $stop['waiting_minutes'] . ' min' : '')
+                       . $youBit;
             } else {
                 $state = 'en_route';
                 $head  = '🚚 Meet the van';
-                $sub   = ($driverName ?: 'The driver') . ' is on the way to ' . $stop['label'] . '.';
+                // Both times ride in the sentence itself (server-decided words),
+                // so every app build shows them with no client change.
+                $sub   = ($driverName ?: 'The driver') . ' is on the way to ' . $stop['label']
+                       . ($vanEta ? ' — there ~' . $vanEta['arrival_display'] : '') . $youBit . '.';
             }
 
             return response()->json([
@@ -494,6 +635,30 @@ class VanController extends Controller
                 'packets'      => (int) $cargo->sum(fn ($c) => (int) ($c->expected_packets ?: 1)),
                 'driver_name'  => $driverName,
                 'stop'         => $stop,
+                // When the van will be at the stop, and when HE can be — null
+                // once arrived / when GPS cannot say. The sentence above already
+                // carries both; these are for clients that render them apart.
+                'van_eta'      => $vanEta,
+                'your_eta'     => $yourEta,
+                // ⭐ THE COLLECT CHECKLIST, FROM THE SERVER. The app used to build
+                //    it from /rider/orders, which is scoped to him but NOT to a
+                //    van: it listed boxes merely TAGGED "On Van" (still at the
+                //    store) and boxes on a different van, so the header count and
+                //    the checklist disagreed and a box that was never aboard could
+                //    be "collected". These rows are exactly what he may collect
+                //    here. `customer_name` is a STRING on purpose — /rider/orders
+                //    returns `customer` as an OBJECT, which is what rendered the
+                //    scanner white on Aug-4.
+                'items'        => $cargo->map(fn ($c) => [
+                    'id'               => (int) $c->id,
+                    'order_number'     => $c->order_number,
+                    'expected_packets' => (int) ($c->expected_packets ?: 1),
+                    // Survives closing and reopening the scanner mid-order —
+                    // the client only ever knew about scans it made itself.
+                    'handover_scanned_count' => $c->handover_scanned_packets
+                        ? count((array) json_decode($c->handover_scanned_packets, true)) : 0,
+                    'customer_name'    => trim((string) $c->customer_name) ?: null,
+                ])->values()->all(),
                 // The card waits its turn behind stops he has already promised.
                 'after_current_run' => $remaining > 0,
                 'remaining_stops'   => $remaining,
@@ -539,10 +704,37 @@ class VanController extends Controller
         $user = Auth::user();
         if (!$user) return response()->json(['success' => false, 'message' => 'Not authorised'], 401);
 
+        // ⭐ `has_work` — is there anything VAN-SHAPED to do today?
+        //    A van is assigned in the registry permanently, so "a driver exists"
+        //    was true every single day and the store's 🚚 tab never went away
+        //    (owner, Aug-6: "the van is always showing"). The tab should follow
+        //    the WORK: something tagged for the van, something aboard, or a trip
+        //    already running. Tagging the first order brings it back.
+        $hasWork = false;
+        if ($van->available()) {
+            try {
+                $hasWork = DB::table('t_crm_prod_order')
+                        ->where('order_status', VanService::STATUS_ON_VAN)
+                        ->exists()
+                    || DB::table('t_crm_prod_order')
+                        ->whereNotNull('van_loaded_at')
+                        ->where('van_loaded_at', '>=', now()->subHours(20))
+                        ->exists()
+                    || DB::table(VanService::T_TRIP)
+                        ->whereNull('ended_at')
+                        ->where('trip_date', '>=', today()->subDay()->format('Y-m-d'))
+                        ->exists();
+            } catch (\Throwable $e) {
+                // A lookup failure must not hide a tab the store may need.
+                $hasWork = true;
+            }
+        }
+
         return response()->json([
             'success' => true,
             'available' => $van->available(),
             'drivers' => $van->available() ? $van->todaysDrivers() : [],
+            'has_work' => $hasWork,
         ]);
     }
 
@@ -584,6 +776,12 @@ class VanController extends Controller
             $warm = [];
             $vans = [];
             foreach ($driverIds as $did) {
+                // ⭐ Self-heal a finished (or pointless) meet-up before rendering:
+                //    reached + nobody left to collect = the wait is over. This is
+                //    what retires a zombie left by an unpressed "Done" — the prod
+                //    board read "waiting (307 min)" about a van with nothing
+                //    aboard until the next poll after this shipped.
+                $van->completeStopIfHandoverDone($did, $stops);
                 $m    = $van->manifest($did);
                 $trip = $van->openTrip($did);
                 $stop = $stops->currentStopPayload($did);
@@ -594,13 +792,30 @@ class VanController extends Controller
                     ? 'to_stop'
                     : (($trip && $trip->departed_at) ? 'delivering' : 'loading');
 
+                // ⭐ The van's ETA to the rendezvous — shown on the DELIVERING leg
+                //    too, not just once he is formally heading there. If he chose
+                //    "deliver three of mine first, then meet the riders", the
+                //    riders' whole plan depends on when he actually turns up, and
+                //    that is exactly when the board used to show nothing at all.
+                //
+                // ⭐ THE LEG SAYS WHAT HE IS DOING, so it picks the arithmetic:
+                //    to_stop    → he is driving there NOW: direct GPS→stop, even
+                //                 if older promised stops are still open (his
+                //                 declared intent outranks the schedule);
+                //    delivering → stops first, THEN the rendezvous: arrival is
+                //                 chained after his remaining promised stops.
                 $vanEta = null;
-                if ($mode === 'to_stop' && $pos && $stop && $stop['latitude'] !== null && empty($stop['reached_at'])) {
-                    $vanEta = $this->etaBetween($pos, $stop['latitude'], $stop['longitude'], 'van_stop_eta:' . $did);
-                    if (($vanEta['source'] ?? '') === 'approx') {
-                        $warm[] = ['key' => $vanEta['cache_key'], 'from' => $pos,
-                                   'to' => ['lat' => $stop['latitude'], 'lng' => $stop['longitude']]];
+                if ($pos && $stop && $stop['latitude'] !== null && empty($stop['reached_at'])
+                    && in_array($mode, ['to_stop', 'delivering'], true)) {
+                    if ($mode === 'to_stop') {
+                        $vanEta = $this->etaBetween($pos, $stop['latitude'], $stop['longitude'],
+                                                    'van_stop_eta:' . $did);
+                        if ($vanEta) $vanEta['warm_from'] = $pos;
+                    } else {
+                        $vanEta = $this->etaToStopAfterStops($did, $pos, $stop['latitude'], $stop['longitude'],
+                                                             'van_stop_eta:' . $did);
                     }
+                    if ($j = $this->warmJobFor($vanEta, $stop['latitude'], $stop['longitude'])) $warm[] = $j;
                 }
 
                 // Inbound riders — only those who still have cargo to collect.
@@ -610,12 +825,13 @@ class VanController extends Controller
                     $rpos = $this->lastFix($g['user_id']);
                     $eta  = null;
                     if ($rpos && $stop && $stop['latitude'] !== null) {
-                        $eta = $this->etaBetween($rpos, $stop['latitude'], $stop['longitude'],
-                                                 'rider_stop_eta:' . $g['user_id']);
-                        if (($eta['source'] ?? '') === 'approx') {
-                            $warm[] = ['key' => $eta['cache_key'], 'from' => $rpos,
-                                       'to' => ['lat' => $stop['latitude'], 'lng' => $stop['longitude']]];
-                        }
+                        // ⭐ AFTER HIS REMAINING STOPS. A rider four drops from
+                        //    finishing used to read "6 min" here, so the store and
+                        //    the driver both planned around a meeting that could
+                        //    not happen for an hour.
+                        $eta = $this->etaToStopAfterStops($g['user_id'], $rpos,
+                            $stop['latitude'], $stop['longitude'], 'rider_stop_eta:' . $g['user_id']);
+                        if ($j = $this->warmJobFor($eta, $stop['latitude'], $stop['longitude'])) $warm[] = $j;
                     }
                     $inbound[] = [
                         'user_id'  => $g['user_id'],
@@ -703,23 +919,35 @@ class VanController extends Controller
 
             $eta = null;
             $pos = $this->lastFix((int) $g['user_id']);
-            if ($pos && $stop && ($stop['latitude'] ?? null) !== null && empty($stop['reached_at'])) {
-                $eta = $this->etaBetween($pos, $stop['latitude'], $stop['longitude'],
-                                         'rider_stop_eta:' . $g['user_id']);
-                if (($eta['source'] ?? '') === 'approx') {
-                    $warm[] = ['key' => $eta['cache_key'], 'from' => $pos,
-                               'to' => ['lat' => $stop['latitude'], 'lng' => $stop['longitude']]];
-                }
+            // ⚠ The `reached_at` gate used to live here too, so the moment the
+            //   driver tapped "I'm here" every rider collapsed to "waiting to
+            //   collect" with no distance and no time — exactly when a waiting
+            //   driver most wants to know how far off they are. The store board
+            //   never had that gate, so the two surfaces disagreed all through
+            //   the wait.
+            if ($pos && $stop && ($stop['latitude'] ?? null) !== null) {
+                $eta = $this->etaToStopAfterStops((int) $g['user_id'], $pos,
+                    $stop['latitude'], $stop['longitude'], 'rider_stop_eta:' . $g['user_id']);
+                if ($j = $this->warmJobFor($eta, $stop['latitude'], $stop['longitude'])) $warm[] = $j;
             }
 
             $g['remaining_stops'] = $remaining;
             $g['eta'] = $eta;
             if ($remaining > 0) {
+                // Now that the ETA is chained through those stops, say WHEN — the
+                // driver could see "3 stops first" but never how long that meant.
+                // Only the CHAINED figure though: when his promises are overdue
+                // the fallback is a direct drive-time, and "3 stops first · ~4:32"
+                // built from that would promise an arrival his stops don't allow.
                 $g['state']  = 'delivering';
-                $g['detail'] = $remaining . ' stop' . ($remaining === 1 ? '' : 's') . ' first';
+                $g['detail'] = $remaining . ' stop' . ($remaining === 1 ? '' : 's') . ' first'
+                             . ($eta && !empty($eta['after_stops']) ? ' · ~' . $eta['arrival_display'] : '');
             } elseif ($eta) {
                 $g['state']  = 'coming';
-                $g['detail'] = $eta['distance_display'] . ' · ~' . $eta['minutes'] . ' min';
+                // Distance is absent when the figure rests on promised times
+                // rather than a measured leg — don't render a stray separator.
+                $g['detail'] = ($eta['distance_display'] ? $eta['distance_display'] . ' · ' : '')
+                             . '~' . $eta['minutes'] . ' min';
             } else {
                 $g['state']  = 'waiting';
                 $g['detail'] = 'waiting to collect';
@@ -807,6 +1035,156 @@ class VanController extends Controller
         ];
     }
 
+    /**
+     * ⭐ WHEN WILL THEY REACH THE MEET-UP POINT — allowing for the stops they
+     *    still have to deliver first (owner ruling: "their eta and then meet up
+     *    point reaching time").
+     *
+     * A straight GPS→stop line is the right answer ONLY for someone who is
+     * driving there now. For anyone mid-route it is badly wrong: a rider with
+     * four promised stops left showed "6 min" on the store board, so the van
+     * planned around a rendezvous that could not happen for an hour.
+     *
+     * The chain is cheap because the expensive part is already paid for: every
+     * promised stop carries `estimated_delivery_at` from the dispatch engine, so
+     * the only leg left to price is the LAST stop → the meet point.
+     *
+     *      arrival ≈ last promised delivery time + drive(last stop → meet point)
+     *
+     * Falls back to the direct figure whenever there is nothing promised, or the
+     * promises are already in the past (his run is effectively over). Returns the
+     * usual eta shape plus `after_stops` / `stops_first`, and `warm_from` so the
+     * caller can warm the SAME cache entry it just read.
+     */
+    /**
+     * ⏱ Matches `calculateDeliveryEtas`' $stopTimeMinutes: `estimated_delivery_at`
+     *   is the ARRIVAL at a stop, and ~10 minutes are spent delivering there —
+     *   so the ride to the meet point starts one service-stop after the last
+     *   promise. Leaving this out made every chained arrival ~10 min optimistic.
+     */
+    private const STOP_SERVICE_MIN = 10;
+
+    private function etaToStopAfterStops(int $userId, ?array $pos, float $toLat, float $toLng, string $cacheKeyBase): ?array
+    {
+        $direct = function () use ($pos, $toLat, $toLng, $cacheKeyBase) {
+            if (!$pos) return null;
+            $e = $this->etaBetween($pos, $toLat, $toLng, $cacheKeyBase);
+            if ($e) $e['warm_from'] = $pos;
+            return $e;
+        };
+
+        try {
+            $rows = DB::table('t_crm_prod_order as o')
+                ->leftJoin('t_crm_prod_customer as c', 'c.id', '=', 'o.customer_id')
+                ->where('o.assigned_rider_user_id', $userId)
+                ->where('o.order_status', VanService::STATUS_OFD)
+                ->whereNotNull('o.estimated_delivery_at')
+                // Route order — the sequence he is actually riding.
+                ->orderByRaw('COALESCE(o.delivery_priority, 999) ASC, o.id ASC')
+                ->get([
+                    'o.estimated_delivery_at',
+                    DB::raw('COALESCE(c.latitude, c.geocoded_latitude) as lat'),
+                    DB::raw('COALESCE(c.longitude, c.geocoded_longitude) as lng'),
+                ]);
+        } catch (\Throwable $e) {
+            return $direct();
+        }
+
+        if ($rows->isEmpty()) return $direct();
+
+        $stopsLeft = $rows->count();
+        $last      = $rows->sortByDesc('estimated_delivery_at')->first();
+        $lastTs    = strtotime((string) $last->estimated_delivery_at);
+
+        if ($lastTs && $lastTs > time()) {
+            // ── ON SCHEDULE: his promises still stand, and they already embody
+            //    his position at dispatch + Google legs + the per-stop buffer.
+            //    Delivered stops drop out of OFD, so the anchor tracks his
+            //    actual progress poll by poll. Arrival = last promised arrival
+            //    + the service stop there + the ride to the meet point.
+            $tail = null;
+            if ($last->lat !== null && $last->lng !== null) {
+                $tail = $this->etaBetween(
+                    ['lat' => (float) $last->lat, 'lng' => (float) $last->lng, 'age_minutes' => null],
+                    $toLat, $toLng, $cacheKeyBase . ':tail'
+                );
+            }
+
+            $arrivalTs = $lastTs + self::STOP_SERVICE_MIN * 60 + (int) (($tail['minutes'] ?? 0) * 60);
+
+            return [
+                'minutes'          => max(1, (int) round(($arrivalTs - time()) / 60)),
+                // Honest about how it was built: the tail leg's source when we
+                // have one, otherwise it rests purely on the promised times.
+                'source'           => $tail['source'] ?? 'schedule',
+                'cache_key'        => $tail['cache_key'] ?? null,
+                'warm_from'        => ($tail && $last->lat !== null)
+                    ? ['lat' => (float) $last->lat, 'lng' => (float) $last->lng] : null,
+                'distance_meters'  => $tail['distance_meters'] ?? null,
+                'distance_display' => $tail['distance_display'] ?? null,
+                'arrival_display'  => date('h:i A', $arrivalTs),
+                'gps_age_minutes'  => $pos['age_minutes'] ?? null,
+                // What the boards say out loud: "after 3 stops · ~4:20 PM".
+                'after_stops'      => true,
+                'stops_first'      => $stopsLeft,
+            ];
+        }
+
+        // ── RUNNING LATE: every promise is in the past but stops remain. The
+        //    schedule is dead, so RE-ESTIMATE LIVE from where he actually is:
+        //    chain his current GPS through the remaining stops in route order at
+        //    the board's ~22 km/h, the same 10-min service per stop, then the
+        //    tail to the meet point. This used to fall back to a DIRECT figure —
+        //    "2 min away" about a rider with three stops still to deliver, the
+        //    exact lie the chained ETA was built to kill.
+        if (!$pos) return null;   // late AND no GPS — no honest number exists
+
+        $minutes = 0.0;
+        $cur     = ['lat' => (float) $pos['lat'], 'lng' => (float) $pos['lng']];
+        foreach ($rows as $r) {
+            if ($r->lat !== null && $r->lng !== null) {
+                $m = \App\Services\LocationService::calculateDistance(
+                    $cur['lat'], $cur['lng'], (float) $r->lat, (float) $r->lng);
+                if ($m > self::ETA_SANE_MAX_METRES) return $direct();   // phantom fix — don't compound it
+                $minutes += ($m / 1000) / 22 * 60;
+                $cur = ['lat' => (float) $r->lat, 'lng' => (float) $r->lng];
+            }
+            // A stop with no pin still takes the service time.
+            $minutes += self::STOP_SERVICE_MIN;
+        }
+
+        $tail = $this->etaBetween($cur + ['age_minutes' => null], $toLat, $toLng, $cacheKeyBase . ':tail');
+        if (!$tail) return $direct();
+        $minutes  += $tail['minutes'];
+        $arrivalTs = time() + (int) round($minutes * 60);
+
+        return [
+            'minutes'          => max(1, (int) round($minutes)),
+            // The chain legs are approximations even when the tail is cached
+            // Google — never let a live re-estimate masquerade as authoritative.
+            'source'           => 'approx',
+            'cache_key'        => $tail['cache_key'],
+            'warm_from'        => $cur,
+            'distance_meters'  => null,
+            'distance_display' => null,
+            'arrival_display'  => date('h:i A', $arrivalTs),
+            'gps_age_minutes'  => $pos['age_minutes'] ?? null,
+            'after_stops'      => true,
+            'stops_first'      => $stopsLeft,
+            // Rebuilt from his live position, not the promise log.
+            'live'             => true,
+        ];
+    }
+
+    /** Queue a warm job for an approximated ETA, if it needs one. */
+    private function warmJobFor(?array $eta, float $toLat, float $toLng): ?array
+    {
+        if (!$eta || ($eta['source'] ?? '') !== 'approx') return null;
+        if (empty($eta['cache_key']) || empty($eta['warm_from'])) return null;
+        return ['key' => $eta['cache_key'], 'from' => $eta['warm_from'],
+                'to' => ['lat' => $toLat, 'lng' => $toLng]];
+    }
+
     /** Fill cold ETA caches after the response has been sent. */
     private function warmEtas(array $jobs): void
     {
@@ -847,9 +1225,16 @@ class VanController extends Controller
                 return $who . ' is heading to ' . ($stop['label'] ?? 'the meet-up point');
             case 'delivering':
                 $left = $m['totals']['carried_total'] - $m['totals']['carried_handed'];
-                return $left > 0
-                    ? $who . ' is delivering his own orders · ' . $left . ' still to hand over'
-                    : $who . ' is delivering his own orders';
+                if ($left > 0) {
+                    return $who . ' is delivering his own orders · ' . $left . ' still to hand over';
+                }
+                // Nothing aboard at all (an empty departed trip — test runs, or a
+                // day that finished its handover): "delivering his own orders"
+                // would be a claim about orders that do not exist.
+                if (($m['totals']['mine_total'] ?? 0) === 0 && ($m['totals']['carried_total'] ?? 0) === 0) {
+                    return $who . ' is out with the van';
+                }
+                return $who . ' is delivering his own orders';
             default:
                 return $who . ' is loading';
         }
@@ -897,7 +1282,62 @@ class VanController extends Controller
 
         $res = $van->loadScan($order, $data['scan_code'], (int) $data['van_user_id'], (int) $user->id,
                               $request->boolean('manual'));
+
+        // ⭐ If the meet-up point was set BEFORE this rider's cargo was aboard,
+        //    he was never told where to go: `announceStop` can only reach riders
+        //    with boxes already loaded. His FIRST box landing is the moment he
+        //    becomes part of the rendezvous — tell him now, once.
+        if (($res['ok'] ?? false) && !empty($res['complete'])) {
+            $this->announceStopToNewRider($order, (int) $data['van_user_id'], $van);
+        }
+
         return response()->json(['success' => $res['ok']] + $res, $res['ok'] ? 200 : 422);
+    }
+
+    /**
+     * Push the current meet-up point to a rider whose FIRST box just completed
+     * loading. Best-effort: a push failure must never fail a scan.
+     */
+    private function announceStopToNewRider($order, int $vanUserId, VanService $van): void
+    {
+        try {
+            $riderId = (int) $order->assigned_rider_user_id;
+            // The driver collects nothing — his stops go to his wave picker.
+            if (!$riderId || $riderId === $vanUserId) return;
+
+            $stop = app(\App\Services\Riders\VanStopService::class)->currentStopPayload($vanUserId);
+            if (!$stop) return;   // no rendezvous set yet — announceStop will cover it later
+
+            // Only his FIRST loaded box on this van — box two says nothing new.
+            $loadedCount = DB::table('t_crm_prod_order')
+                ->where('van_user_id', $vanUserId)
+                ->where('assigned_rider_user_id', $riderId)
+                ->where('order_status', VanService::STATUS_ON_VAN)
+                ->whereNotNull('van_loaded_at')
+                ->count();
+            if ($loadedCount !== 1) return;
+
+            $trip       = $van->openTrip($vanUserId);
+            $driverName = DB::table('t_sys_user')->where('id', $vanUserId)->value('fullname') ?: 'The van';
+            app(\App\Services\FirebaseService::class)->notifyUser(
+                $riderId,
+                [
+                    'title' => '📍 Meet the van at ' . ($stop['label'] ?? 'the meet-up point'),
+                    'body'  => !empty($trip->departed_at)
+                        ? $driverName . ' is heading there with your orders.'
+                        : $driverName . ' will meet you there once the van leaves.',
+                ],
+                [
+                    'type'      => 'van_stop_set',
+                    'latitude'  => (string) ($stop['latitude'] ?? ''),
+                    'longitude' => (string) ($stop['longitude'] ?? ''),
+                    'label'     => (string) ($stop['label'] ?? ''),
+                ],
+                'shift_notifications'
+            );
+        } catch (\Throwable $e) {
+            Log::warning('First-box stop push failed', ['order' => $order->id ?? null, 'error' => $e->getMessage()]);
+        }
     }
 
     /** The receiving rider collects his packets at the meet point. */
@@ -993,12 +1433,18 @@ class VanController extends Controller
      * Tell the riders with cargo where to meet. Best-effort per rider — one dead
      * token must not stop the others being told.
      */
-    private function announceStop(int $driverId, VanService $van, array $stop): int
+    private function announceStop(int $driverId, VanService $van, array $stop, bool $departed = true): int
     {
         $riders = $van->ridersAwaiting($driverId);
         if (empty($riders)) return 0;
 
         $driverName = DB::table('t_sys_user')->where('id', $driverId)->value('fullname') ?: 'The van';
+        // ⚠ Don't say he is on his way if the van has not left. The store often
+        //   names the point while loading is still going on; "will meet you
+        //   there" is true then, "is heading there" is not.
+        $body = $departed
+            ? $driverName . ' is heading there with your orders.'
+            : $driverName . ' will meet you there once the van leaves.';
         $sent = 0;
         foreach ($riders as $rid) {
             try {
@@ -1006,7 +1452,7 @@ class VanController extends Controller
                     $rid,
                     [
                         'title' => '📍 Meet the van at ' . ($stop['label'] ?? 'the meet-up point'),
-                        'body'  => $driverName . ' is heading there with your orders.',
+                        'body'  => $body,
                     ],
                     [
                         'type'      => 'van_stop_set',
@@ -1104,9 +1550,15 @@ class VanController extends Controller
         }
         if ($leg === VanService::LEG_TO_STOP)   $bits[] = 'Heading to the meet-up point.';
         if ($leg === VanService::LEG_DELIVERIES) {
-            $bits[] = $dispatch && ($dispatch['ok'] ?? false)
-                ? ($dispatch['dispatched'] ?? 0) . ' deliveries dispatched.'
-                : 'Delivering.';
+            if ($dispatch && ($dispatch['ok'] ?? false)) {
+                $bits[] = ($dispatch['dispatched'] ?? 0) . ' deliveries dispatched.';
+            } elseif ($dispatch) {
+                // Say what went wrong. "Delivering." over a failed dispatch left
+                // the driver believing his stops were timed when none were.
+                $bits[] = '⚠️ Not dispatched: ' . ($dispatch['message'] ?: 'could not time those deliveries.');
+            } else {
+                $bits[] = 'Delivering.';
+            }
         }
         if ($leg === VanService::LEG_DONE) $bits[] = 'Trip closed.';
         return implode(' ', $bits) ?: 'Updated.';

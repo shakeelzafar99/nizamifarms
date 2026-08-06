@@ -66,15 +66,114 @@ class VanService
      * Is this user a van driver right now? Derived from the vehicle registry —
      * there is no separate flag to rotate and forget (registry plan §1.3).
      */
+    /**
+     * Is this user driving a van (today, or on a given date)?
+     *
+     * ⚠⚠ ASKS `todaysDrivers()`, NOT THE RESOLVER DIRECTLY (fixed Aug-5, prod).
+     *   On a handover day the resolver deliberately answers "yes" for BOTH the
+     *   outgoing and the incoming rider — the outgoing one genuinely drove it that
+     *   morning, which is the right answer for meters and fuel. It is the WRONG
+     *   answer for "who is driving the van right now": it renamed the old driver's
+     *   Orders tab to Van all day and left him holding the load-scan door for a van
+     *   he had already handed over. One van has one driver at a time, and
+     *   `todaysDrivers()` is the single place that decides which.
+     */
     public function isVanDriver(int $userId, ?string $date = null): bool
     {
         try {
-            $res = new VehicleResolver();
-            if (!$res->available()) return false;
-            $v = $res->vehicle($res->vehicleForDay($userId, $date ?: today()->format('Y-m-d')));
-            return $v && (string) $v->vtype === 'van';
+            foreach ($this->todaysDrivers($date) as $d) {
+                if ((int) $d['user_id'] === $userId) return true;
+            }
+            return false;
         } catch (\Throwable $e) {
             return false;
+        }
+    }
+
+    /**
+     * ⭐ THE CARGO GOES WITH THE VAN (owner ruling, Aug-5 — from a prod handover).
+     *
+     * When a van changes hands mid-day, the boxes already scanned aboard are
+     * physically in that vehicle. Until now they kept pointing at the OLD driver:
+     * they vanished from the new driver's manifest, the riders waiting at the meet
+     * point had nobody who could hand them over, and the only way out was the
+     * `unload` path — which has no button on either surface.
+     *
+     * MOVES: orders still ABOARD (on_van, scanned aboard, not yet handed over).
+     * LEAVES: anything already collected (handover_at set) or already out for
+     *         delivery — those have left the van and belong to history.
+     *
+     * ⭐ The driver's OWN stops need no special case. Once the van is Farooq's, a
+     *    box for Mashood is simply cargo Farooq carries for him — the existing
+     *    "carrying for rider X" group and its handover scan take over, which is
+     *    exactly the truth on the road.
+     *
+     * ⚠ Custody stamps (`van_loaded_at/by`, `dispatch_scanned_at`) are NOT cleared:
+     *   they record who put the box on the van, which remains true. The handover
+     *   scan re-stamps when it actually changes hands.
+     *
+     * Returns how many orders moved. Never throws — a failure here must not undo a
+     * handover that has already been recorded.
+     */
+    public function moveCargo(int $vehicleId, int $fromUserId, int $toUserId, ?int $actorId = null): int
+    {
+        if (!$this->available() || $fromUserId === $toUserId) return 0;
+
+        try {
+            $ids = DB::table('t_crm_prod_order')
+                ->where('van_user_id', $fromUserId)
+                ->where('order_status', self::STATUS_ON_VAN)
+                ->whereNotNull('van_loaded_at')
+                ->whereNull('handover_at')
+                ->pluck('id')->all();
+
+            if (!$ids) {
+                // Still end the old driver's trip — he is not driving it any more.
+                $this->endTripOnHandover($fromUserId, $actorId);
+                return 0;
+            }
+
+            // Attach to the new driver's OPEN trip if he has one. Otherwise null:
+            // his next load or leg calls ensureTrip, which will adopt them. Never
+            // leave them pointing at the old driver's trip — that trip is over.
+            $newTrip = $this->openTrip($toUserId);
+
+            DB::table('t_crm_prod_order')->whereIn('id', $ids)->update([
+                'van_user_id'    => $toUserId,
+                'van_vehicle_id' => $vehicleId,
+                'van_trip_id'    => $newTrip->id ?? null,
+                'updated_at'     => now(),
+            ]);
+
+            $this->endTripOnHandover($fromUserId, $actorId);
+
+            Log::info('Van cargo moved with the vehicle', [
+                'vehicle_id' => $vehicleId, 'from_user' => $fromUserId, 'to_user' => $toUserId,
+                'orders' => $ids, 'by' => $actorId,
+            ]);
+            return count($ids);
+        } catch (\Throwable $e) {
+            Log::error('VanService::moveCargo failed', [
+                'vehicle_id' => $vehicleId, 'from' => $fromUserId, 'to' => $toUserId,
+                'error' => $e->getMessage(),
+            ]);
+            return 0;
+        }
+    }
+
+    /** The outgoing driver's trip ends when the van does — a trip is one driver's run. */
+    private function endTripOnHandover(int $userId, ?int $actorId = null): void
+    {
+        try {
+            $trip = $this->openTrip($userId);
+            if (!$trip) return;
+            DB::table(self::T_TRIP)->where('id', $trip->id)->update([
+                'ended_at'   => now(),
+                'updated_at' => now(),
+            ]);
+            Log::info('Van trip closed by handover', ['trip' => $trip->id, 'user' => $userId, 'by' => $actorId]);
+        } catch (\Throwable $e) {
+            Log::warning('endTripOnHandover failed', ['user' => $userId, 'error' => $e->getMessage()]);
         }
     }
 
@@ -121,22 +220,46 @@ class VanService
                 ->pluck('id')->map(fn ($v) => (int) $v)->all();
             if (!$vanIds) return [];
 
-            // Whoever holds one on this date (assignment windows are date-scoped,
-            // and a manager's day-override wins — both live in the resolver).
-            $holders = DB::table(VehicleService::T_ASSIGN)
+            // Whoever holds one on this date (assignment windows are date-scoped).
+            //
+            // ⚠⚠ ONE VAN, ONE DRIVER (fixed Aug-5 from a prod report: the board
+            //   showed Mashood AND Farooq the day the van changed hands).
+            //   A row released ON this date still COVERS this date — that is not a
+            //   bug in the data (the registry had exactly one open row) and it is
+            //   the right answer for fuel and meters, because the outgoing rider
+            //   really did drive it that morning. But this method answers a
+            //   different question: who is driving that van NOW. So rows are ranked
+            //   per VEHICLE and only the winner is returned:
+            //     open row (nobody has taken it back) → latest assigned_on → latest id.
+            $rows = DB::table(VehicleService::T_ASSIGN)
                 ->whereIn('vehicle_id', $vanIds)
                 ->whereDate('assigned_on', '<=', $date)
                 ->where(function ($q) use ($date) {
                     $q->whereNull('released_on')->orWhereDate('released_on', '>=', $date);
                 })
-                ->pluck('user_id')->map(fn ($v) => (int) $v)->unique()->values()->all();
+                ->orderBy('vehicle_id')
+                ->get(['id', 'user_id', 'vehicle_id', 'assigned_on', 'released_on']);
+
+            $best = [];
+            foreach ($rows as $r) {
+                $vid  = (int) $r->vehicle_id;
+                $rank = [
+                    $r->released_on === null ? 1 : 0,          // still held beats handed back
+                    substr((string) $r->assigned_on, 0, 10),   // then the later handover
+                    (int) $r->id,
+                ];
+                if (!isset($best[$vid]) || $rank > $best[$vid]['rank']) {
+                    $best[$vid] = ['rank' => $rank, 'user_id' => (int) $r->user_id];
+                }
+            }
 
             $out = [];
-            foreach ($holders as $uid) {
-                // Re-ask the resolver rather than trusting the raw window: it is
-                // the one place that applies overrides, so the two can't drift.
-                $vid = $this->vanVehicleIdFor($uid, $date);
-                if (!$vid) continue;
+            foreach ($best as $vid => $b) {
+                $uid = $b['user_id'];
+                // A manager's day-override still wins: re-ask the resolver, which is
+                // the one place that applies it, so the two can never drift. If the
+                // override moved him off the van today, he is not driving it today.
+                if ($this->vanVehicleIdFor($uid, $date) !== $vid) continue;
                 $out[] = [
                     'user_id'    => $uid,
                     'name'       => (string) (DB::table('t_sys_user')->where('id', $uid)->value('fullname') ?: 'Driver'),
@@ -259,6 +382,23 @@ class VanService
         $parsed = $this->parseScan($scanCode, $order);
         if (!$parsed['ok']) return $parsed;
 
+        // ⭐ A HAND-ENTERED PACKET FILLS THE FIRST GAP. The app can only offer
+        //    "the next one" derived from a COUNT — it never learns WHICH indices
+        //    are aboard — so if packet 2 was scanned by camera and packet 1 is
+        //    the one whose label is ruined, every manual tap re-sent 2 and the
+        //    order could never be completed by hand at all. "No label" means one
+        //    more packet is physically here, so record the lowest still missing.
+        if ($manual) {
+            $have = $this->decodePackets($order->van_loaded_packets);
+            for ($i = 1; $i <= $parsed['target']; $i++) {
+                if (!in_array($i, $have, true)) {
+                    $parsed['idx'] = $i;
+                    break;
+                }
+            }
+            $parsed['already'] = in_array($parsed['idx'], $have, true);
+        }
+
         $scanned = $this->mergePacket($order->van_loaded_packets, $parsed['idx']);
         $target  = $parsed['target'];
         $complete = count($scanned) >= $target;
@@ -307,12 +447,18 @@ class VanService
             return [
                 'ok' => true,
                 'already_scanned' => $parsed['already'],
+                'packets_unknown' => $parsed['packets_unknown'],
                 'scanned_count'   => count($scanned),
                 'target'          => $target,
                 'complete'        => $complete,
-                'message'         => $complete
-                    ? 'All packets on board — order is on the van'
-                    : 'Packet ' . $parsed['idx'] . ' loaded (' . count($scanned) . ' of ' . $target . ')',
+                // ⭐ A repeat read says so. It used to report every re-read of the
+                //    same label as a fresh success, which is what made waving the
+                //    scanner look like it was accepting boxes it had never seen.
+                'message'         => $parsed['already']
+                    ? 'Packet ' . $parsed['idx'] . ' was already aboard (' . count($scanned) . ' of ' . $target . ')'
+                    : ($complete
+                        ? 'All packets on board — order is on the van'
+                        : 'Packet ' . $parsed['idx'] . ' loaded (' . count($scanned) . ' of ' . $target . ')'),
             ];
         } catch (\Throwable $e) {
             Log::error('VanService::loadScan failed', ['order' => $order->id, 'error' => $e->getMessage()]);
@@ -377,13 +523,22 @@ class VanService
                 : 'That order is not on the van.');
         }
 
+        // ⭐ TAG = PLAN, SCAN = PROOF — so it must actually BE aboard. "On Van"
+        //    on its own is only the staff saying it should go by van; the box is
+        //    still in the building until a load scan stamps the carrier. Without
+        //    this, collecting a merely-tagged order wrote a handover that never
+        //    happened and sent it out for delivery with no van recorded at all.
+        if (empty($order->van_loaded_at) || empty($order->van_user_id)) {
+            return $this->fail('That order has not been loaded onto a van yet — it is still at the store.');
+        }
+
         if ((int) $order->assigned_rider_user_id !== $scannerId) {
             $name = DB::table('t_sys_user')->where('id', $order->assigned_rider_user_id)->value('fullname');
             return $this->fail('This order is for ' . ($name ?: 'another rider')
                 . ' — ask the store to reassign it before you take it.');
         }
 
-        $parsed = $this->parseScan($scanCode, $order);
+        $parsed = $this->parseScan($scanCode, $order, 'handover');
         if (!$parsed['ok']) return $parsed;
 
         $scanned  = $this->mergePacket($order->handover_scanned_packets, $parsed['idx']);
@@ -418,17 +573,24 @@ class VanService
                 // → OFD, still undispatched. `van_user_id` is KEPT: it is how the
                 //   reports answer "which orders went out on the van".
                 $order->changeStatus(self::STATUS_OFD, 'Handed over from the van', $scannerId);
+
+                // The last box of the last rider ends the meet-up by itself —
+                // the driver never needed a "Done" press for a finished handover.
+                $this->completeStopIfHandoverDone((int) $order->van_user_id);
             }
 
             return [
                 'ok' => true,
                 'already_scanned' => $parsed['already'],
+                'packets_unknown' => $parsed['packets_unknown'],
                 'scanned_count'   => count($scanned),
                 'target'          => $target,
                 'complete'        => $complete,
-                'message'         => $complete
-                    ? 'Order collected — press Dispatch when you set off'
-                    : 'Packet ' . $parsed['idx'] . ' collected (' . count($scanned) . ' of ' . $target . ')',
+                'message'         => $parsed['already']
+                    ? 'Packet ' . $parsed['idx'] . ' was already collected (' . count($scanned) . ' of ' . $target . ')'
+                    : ($complete
+                        ? 'Order collected — press Dispatch when you set off'
+                        : 'Packet ' . $parsed['idx'] . ' collected (' . count($scanned) . ' of ' . $target . ')'),
             ];
         } catch (\Throwable $e) {
             Log::error('VanService::handoverScan failed', ['order' => $order->id, 'error' => $e->getMessage()]);
@@ -446,6 +608,10 @@ class VanService
     {
         if (!$this->available()) return $this->fail('Van features are not set up yet (SQL batch 14).');
         if ($order->order_status !== self::STATUS_ON_VAN) return $this->fail('That order is not on the van.');
+        // Same rule as the scan: you cannot hand over what was never loaded.
+        if (empty($order->van_loaded_at) || empty($order->van_user_id)) {
+            return $this->fail('That order has not been loaded onto a van yet — it is still at the store.');
+        }
         if (!$order->assigned_rider_user_id) return $this->fail('That order has no assigned rider.');
 
         try {
@@ -454,6 +620,9 @@ class VanService
             $order->save();
             $order->changeStatus(self::STATUS_OFD,
                 'Handed over without scan: ' . mb_substr($reason, 0, 180), $actorId);
+
+            // Same rule as the scan: the last collected box ends the meet-up.
+            $this->completeStopIfHandoverDone((int) $order->van_user_id);
 
             Log::info('Van handover override', [
                 'order' => $order->id, 'by' => $actorId, 'reason' => $reason,
@@ -592,6 +761,66 @@ class VanService
         }
     }
 
+    /**
+     * Is this user physically carrying anything on a van right now?
+     *
+     * Used alongside `isVanDriver` wherever a van ACTION is authorised: the
+     * registry answers "is he rostered on the van today", this answers "does he
+     * have boxes aboard" — a mid-day stand-in must be able to act on cargo he is
+     * actually holding, and nobody else may pretend to be running a van.
+     */
+    public function isCarrying(int $userId): bool
+    {
+        if (!$this->available()) return false;
+        try {
+            return DB::table('t_crm_prod_order')
+                ->where('van_user_id', $userId)
+                ->where('order_status', self::STATUS_ON_VAN)
+                ->whereNotNull('van_loaded_at')
+                // ⚠ Time-bounded: this AUTHORISES van actions (setStop), and a
+                //   stranded box — unload still has no button — must not keep an
+                //   old driver holding van powers for days. Same 20h window the
+                //   store panel uses for this column.
+                ->where('van_loaded_at', '>=', now()->subHours(20))
+                ->exists();
+        } catch (\Throwable $e) {
+            return false;
+        }
+    }
+
+    /**
+     * ⭐ A MEET-UP'S JOB IS THE HANDOVER — WHEN NOBODY IS LEFT TO COLLECT, THE
+     *    WAIT IS OVER (owner, Aug-6: "if there's no cargo why show waiting?").
+     *
+     * Closes the current stop when the driver has REACHED it and no rider has
+     * loaded cargo left to take. Two ways to get there, both real:
+     *   • the last rider scans his last box — the natural end of the meet-up;
+     *   • the stop never had cargo behind it at all (a test run, or everything
+     *     unloaded) — the zombie that sat on the prod board reading
+     *     "waiting (307 min)" about a van with nothing aboard.
+     *
+     * An UN-reached stop is never touched (it is the plan), and a stop with
+     * cargo still aboard keeps its honest waiting timer. Returns true when it
+     * closed something. Never throws — this runs on read paths too.
+     */
+    public function completeStopIfHandoverDone(int $vanUserId, ?VanStopService $stops = null): bool
+    {
+        if (!$this->available()) return false;
+        try {
+            $stops = $stops ?: new VanStopService();
+            $cur = $stops->currentStop($vanUserId);
+            if (!$cur || !$cur->reached_at) return false;
+            if (!empty($this->ridersAwaiting($vanUserId))) return false;
+            $stops->completeStop($vanUserId);
+            Log::info('Van stop auto-closed — nothing left to hand over', [
+                'driver' => $vanUserId, 'stop' => $cur->id,
+            ]);
+            return true;
+        } catch (\Throwable $e) {
+            return false;
+        }
+    }
+
     /** Riders who still have cargo on this van — the push audience, derived. */
     public function ridersAwaiting(int $vanUserId): array
     {
@@ -604,6 +833,179 @@ class VanService
                 ->distinct()->pluck('assigned_rider_user_id')
                 ->map(fn ($v) => (int) $v)->filter()->values()->all();
         } catch (\Throwable $e) {
+            return [];
+        }
+    }
+
+    // =================================================================
+    // DAY REVIEW — the trip, after the fact (D3)
+    // =================================================================
+
+    /**
+     * Every van trip on a date, as a timeline the manager can read.
+     *
+     * Day Review already shows the PIECES of a van day — the driver's own
+     * deliveries and each rider's post-handover run are ordinary orders — but
+     * never the choreography between them: when it loaded, when it left, how
+     * long it sat at the meet-up point, who kept it waiting, and how long a
+     * rider took to start delivering after collecting. All of it is already
+     * recorded; this only reads.
+     *
+     * Read-only, no schema, and every block is defensive: a van report must
+     * never be the reason Day Review fails to open.
+     */
+    public function dayTrips(string $date): array
+    {
+        if (!$this->available()) return [];
+
+        // A rider standing at the meet-up point for longer than this, or taking
+        // longer than this to set off after collecting, is worth a look.
+        $WAIT_FLAG_MIN     = 20;
+        $DISPATCH_FLAG_MIN = 15;
+
+        try {
+            $trips = DB::table(self::T_TRIP)->whereDate('trip_date', $date)->orderBy('id')->get();
+            if ($trips->isEmpty()) return [];
+
+            $mins = function ($from, $to) {
+                if (!$from || !$to) return null;
+                $a = strtotime((string) $from); $b = strtotime((string) $to);
+                if (!$a || !$b) return null;
+                return max(0, (int) round(($b - $a) / 60));
+            };
+
+            $out = [];
+            foreach ($trips as $t) {
+                $driverName = (string) (DB::table('t_sys_user')->where('id', $t->van_user_id)
+                    ->value('fullname') ?: 'Driver');
+
+                // Orders on this trip. Matched by trip id, or — ONLY for orders
+                // carrying no trip id at all (cargo moved between drivers gets
+                // NULL) — by "this driver loaded it that day".
+                //
+                // ⚠ The fallback must be restricted to NULL-trip orders. As a
+                //   plain OR it made EVERY trip of the day claim ALL the
+                //   driver's boxes, so a finish-and-restart day (exactly the
+                //   Aug-5 handover shape) double-counted everything per card.
+                $orders = DB::table('t_crm_prod_order as o')
+                    ->leftJoin('t_sys_user as u', 'u.id', '=', 'o.assigned_rider_user_id')
+                    ->whereNotNull('o.van_loaded_at')
+                    ->where(function ($q) use ($t, $date) {
+                        $q->where('o.van_trip_id', $t->id)
+                          ->orWhere(function ($w) use ($t, $date) {
+                              $w->whereNull('o.van_trip_id')
+                                ->where('o.van_user_id', $t->van_user_id)
+                                ->whereDate('o.van_loaded_at', $date);
+                          });
+                    })
+                    ->get([
+                        'o.id', 'o.order_number', 'o.assigned_rider_user_id',
+                        'o.van_loaded_at', 'o.handover_at', 'o.eta_calculated_at',
+                        'u.fullname as rider_name',
+                    ]);
+
+                $loadedAt = null;
+                $own = 0; $carried = 0; $collected = 0;
+                $byRider = [];
+                foreach ($orders as $o) {
+                    if ($o->van_loaded_at && (!$loadedAt || $o->van_loaded_at < $loadedAt)) {
+                        $loadedAt = $o->van_loaded_at;
+                    }
+                    if ((int) $o->assigned_rider_user_id === (int) $t->van_user_id) {
+                        $own++;
+                        continue;
+                    }
+                    $carried++;
+                    $rid = (int) $o->assigned_rider_user_id;
+                    if (!isset($byRider[$rid])) {
+                        $byRider[$rid] = ['user_id' => $rid, 'name' => $o->rider_name ?: ('Rider #' . $rid),
+                                          'orders' => 0, 'collected' => 0,
+                                          'first_collect_at' => null, 'first_dispatch_at' => null];
+                    }
+                    $byRider[$rid]['orders']++;
+                    if ($o->handover_at) {
+                        $collected++;
+                        $byRider[$rid]['collected']++;
+                        if (!$byRider[$rid]['first_collect_at'] || $o->handover_at < $byRider[$rid]['first_collect_at']) {
+                            $byRider[$rid]['first_collect_at'] = $o->handover_at;
+                        }
+                    }
+                    if ($o->eta_calculated_at) {
+                        if (!$byRider[$rid]['first_dispatch_at'] || $o->eta_calculated_at < $byRider[$rid]['first_dispatch_at']) {
+                            $byRider[$rid]['first_dispatch_at'] = $o->eta_calculated_at;
+                        }
+                    }
+                }
+
+                $stops = DB::table(self::T_HANDOVER)->where('trip_id', $t->id)->orderBy('id')
+                    ->get(['label', 'is_adhoc', 'status', 'set_at', 'reached_at', 'completed_at']);
+                $firstReached = null;
+                foreach ($stops as $s) {
+                    if ($s->reached_at && (!$firstReached || $s->reached_at < $firstReached)) {
+                        $firstReached = $s->reached_at;
+                    }
+                }
+
+                $flags = [];
+                $riders = [];
+                foreach ($byRider as $g) {
+                    // How long the VAN waited for this rider, and how long he
+                    // then took to actually set off.
+                    $wait = $mins($firstReached, $g['first_collect_at']);
+                    $lag  = $mins($g['first_collect_at'], $g['first_dispatch_at']);
+                    $riders[] = $g + [
+                        'wait_minutes'         => $wait,
+                        'dispatch_lag_minutes' => $lag,
+                        'complete'             => $g['collected'] >= $g['orders'],
+                    ];
+                    if ($wait !== null && $wait > $WAIT_FLAG_MIN) {
+                        $flags[] = $g['name'] . ' kept the van waiting ' . $wait . ' min';
+                    }
+                    if ($lag !== null && $lag > $DISPATCH_FLAG_MIN) {
+                        $flags[] = $g['name'] . ' took ' . $lag . ' min to dispatch after collecting';
+                    }
+                    if ($g['collected'] < $g['orders']) {
+                        $flags[] = $g['name'] . ' did not collect '
+                                 . ($g['orders'] - $g['collected']) . ' of ' . $g['orders'];
+                    }
+                }
+                if ($carried > 0 && $stops->isEmpty()) {
+                    $flags[] = 'Carried orders but no meet-up point was ever set';
+                }
+                if (!$t->ended_at && $date < today()->format('Y-m-d')) {
+                    $flags[] = 'Trip was never closed';
+                }
+
+                usort($riders, fn ($a, $b) => strcmp((string) $a['name'], (string) $b['name']));
+
+                $out[] = [
+                    'trip_id'      => (int) $t->id,
+                    'driver_name'  => $driverName,
+                    'loaded_at'    => $loadedAt,
+                    'departed_at'  => $t->departed_at,
+                    'ended_at'     => $t->ended_at,
+                    'duration_minutes' => $mins($t->departed_at, $t->ended_at),
+                    'totals'       => [
+                        'own' => $own, 'carried' => $carried,
+                        'collected' => $collected, 'uncollected' => max(0, $carried - $collected),
+                        'riders' => count($riders),
+                    ],
+                    'stops'        => $stops->map(fn ($s) => [
+                        'label'           => $s->label ?: 'Meet-up point',
+                        'is_adhoc'        => (int) $s->is_adhoc === 1,
+                        'status'          => (string) $s->status,
+                        'set_at'          => $s->set_at,
+                        'reached_at'      => $s->reached_at,
+                        'completed_at'    => $s->completed_at,
+                        'waiting_minutes' => $mins($s->reached_at, $s->completed_at),
+                    ])->all(),
+                    'riders'       => $riders,
+                    'flags'        => $flags,
+                ];
+            }
+            return $out;
+        } catch (\Throwable $e) {
+            Log::warning('VanService::dayTrips failed', ['date' => $date, 'error' => $e->getMessage()]);
             return [];
         }
     }
@@ -655,15 +1057,16 @@ class VanService
                 return null;
             }
 
-            if ($targetStatus === 'processing') {
-                // ⚠️ The `unload` endpoint does this properly (it also clears the
-                //    van stamps, which a bare status change would leave behind,
-                //    stranding the order on a van it is no longer in). It has NO
-                //    BUTTON YET — until it does, this message must not send
-                //    people looking for one.
-                return 'This order is on the van, so taking it off has to clear the van records '
-                     . 'too — otherwise it stays attached to a van it is no longer in. Ask for '
-                     . '"take off the van" to be run for this order.';
+            // ⭐ TAKING IT OFF THE VAN IS JUST A STATUS CHANGE (owner ruling
+            //    Aug-6). Sending a loaded order back into the building IS the
+            //    unload, so it is allowed from every ordinary door — and
+            //    `OrderModel::changeStatus` clears the van pointers on that exact
+            //    transition, which is what used to make a bare status change
+            //    unsafe (the order kept its `van_user_id` and reappeared on the
+            //    van's manifest the next time it went out). The dedicated
+            //    `unload` endpoint still exists and does the same thing.
+            if (in_array($targetStatus, ['processing', 'new', 'pending'], true)) {
+                return null;
             }
 
             $rider = null;
@@ -692,7 +1095,7 @@ class VanService
      * Parse a packet QR against THIS order. Copied in behaviour from dispatchScan
      * so a picker's muscle memory carries over exactly.
      */
-    private function parseScan(string $code, OrderModel $order): array
+    private function parseScan(string $code, OrderModel $order, string $mode = 'load'): array
     {
         $code  = trim($code);
         $parts = explode('|', $code);
@@ -718,20 +1121,44 @@ class VanService
 
         $target = (int) ($order->expected_packets ?: $totalFromCode ?: 1);
         if ($target < 1) $target = 1;
+        $idx = $idx ?: 1;
 
-        return ['ok' => true, 'idx' => $idx ?: 1, 'target' => $target, 'already' => false];
+        // ⚠ `already` USED TO BE HARD-CODED FALSE (fixed Aug-5 from a prod report:
+        //   "he waved the scanner around and it just marked it loaded"). Every
+        //   re-read of the same label flashed a fresh green success, so waving at
+        //   one box looked exactly like scanning several. The older dispatch
+        //   scanner has always computed this properly — the van one was the odd
+        //   one out. The count was never wrong; the FEEDBACK was.
+        $scanned = [];
+        $existing = $mode === 'handover' ? $order->handover_scanned_packets : $order->van_loaded_packets;
+        if (!empty($existing)) {
+            $decoded = json_decode($existing, true);
+            if (is_array($decoded)) $scanned = array_map('intval', $decoded);
+        }
+
+        return [
+            'ok' => true, 'idx' => $idx, 'target' => $target,
+            'already' => in_array($idx, $scanned, true),
+            // ⚠ Neither the order nor the label says how many packets there are, so
+            //   ONE beep completes it. That is the long-standing rule (the dispatch
+            //   scan does the same), but the scanner must SAY so rather than let a
+            //   single read silently stand for a whole trolley.
+            'packets_unknown' => empty($order->expected_packets) && empty($totalFromCode),
+        ];
+    }
+
+    /** The packet indices already recorded in a JSON array column. */
+    private function decodePackets($existing): array
+    {
+        if (empty($existing)) return [];
+        $decoded = json_decode($existing, true);
+        return is_array($decoded) ? array_map('intval', $decoded) : [];
     }
 
     /** Add a packet index to a JSON array column, unique + sorted. */
     private function mergePacket($existing, int $idx): array
     {
-        $scanned = [];
-        if (!empty($existing)) {
-            $decoded = json_decode($existing, true);
-            if (is_array($decoded)) {
-                $scanned = array_values(array_unique(array_map('intval', $decoded)));
-            }
-        }
+        $scanned = array_values(array_unique($this->decodePackets($existing)));
         if (!in_array($idx, $scanned, true)) $scanned[] = $idx;
         sort($scanned);
         return $scanned;

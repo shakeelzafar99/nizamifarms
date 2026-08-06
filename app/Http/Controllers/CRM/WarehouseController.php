@@ -430,16 +430,35 @@ class WarehouseController extends Controller
             if ($transfer->status !== WarehouseTransferModel::STATUS_PENDING) {
                 return response()->json(['success' => false, 'message' => 'Transfer is not pending'], 400);
             }
-            
+
+            // ⭐ Aug-2026 audit: who physically COUNTED the stock. Optional, and
+            // separate from the approver because the manager approves while
+            // somebody else counts. Absent => NULL ("not recorded"); it is never
+            // inferred from the approver, or an old APK that doesn't send the
+            // field would silently assert something we don't actually know.
+            $countedBy = WarehouseTransferModel::normaliseCountedBy($request->input('counted_by'));
+            if ($countedBy === false) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'The selected "Counted by" user is not valid or is no longer active.',
+                ], 422);
+            }
+
             DB::beginTransaction();
-            
+
             // Update transfer status
-            $transfer->update([
+            $updateData = [
                 'status' => WarehouseTransferModel::STATUS_APPROVED,
                 'approved_by' => auth()->id(),
                 'approved_at' => now(),
-            ]);
-            
+            ];
+            // Gated: the column only exists once BATCH-16 has been run, and web
+            // files can be uploaded before the SQL is.
+            if ($countedBy !== null && WarehouseTransferModel::supportsCountedBy()) {
+                $updateData['counted_by'] = $countedBy;
+            }
+            $transfer->update($updateData);
+
             // ⭐ Resolve variant: use transfer's variant_id, or fallback to product's first variant
             $variantId = $transfer->product_variant_id;
             $variant = null;
@@ -590,6 +609,31 @@ class WarehouseController extends Controller
      * Get transfer history for a business unit (approved/rejected transfers)
      * Used by Store Mode Khaas Inventory screen to show who approved what
      */
+    /**
+     * Options for the transfer "Counted by" picker.
+     *
+     * Same roster as the Attendance page's "Customize user list", plus the
+     * current user (the picker's default) — see User::countedByCandidates().
+     * Shared with the web modal so the two lists cannot drift apart.
+     *
+     * GET /api/warehouse/counted-by-users
+     */
+    public function getCountedByUsers(Request $request)
+    {
+        try {
+            return response()->json([
+                'success' => true,
+                'users' => \App\Models\User::countedByCandidates(Auth::id()),
+                'me_id' => Auth::id(),
+            ]);
+        } catch (\Exception $e) {
+            \Log::error('Failed to load counted-by users', ['error' => $e->getMessage()]);
+            // Non-fatal: the picker falls back to "me" / "not recorded", because
+            // an optional audit field must never block a stock transfer.
+            return response()->json(['success' => false, 'users' => [], 'me_id' => Auth::id()], 500);
+        }
+    }
+
     public function getTransferHistory(Request $request)
     {
         try {
@@ -602,7 +646,7 @@ class WarehouseController extends Controller
             
             $transfers = WarehouseTransferModel::where('business_unit_id', $businessUnitId)
                 ->whereIn('status', [WarehouseTransferModel::STATUS_APPROVED, WarehouseTransferModel::STATUS_REJECTED])
-                ->with(['product:id,title', 'variant:id,title,sku', 'requester:id,fullname', 'approver:id,fullname', 'rejecter:id,fullname'])
+                ->with(['product:id,title', 'variant:id,title,sku', 'requester:id,fullname', 'approver:id,fullname', 'rejecter:id,fullname', 'counter:id,fullname'])
                 ->orderBy('updated_at', 'desc')
                 ->limit($limit)
                 ->get()
@@ -625,6 +669,10 @@ class WarehouseController extends Controller
                         'requested_by' => $t->requester?->fullname ?? 'Unknown',
                         'action_by' => $actionBy,
                         'action_at' => $actionAt,
+                        // Who physically counted. Null on every transfer before
+                        // Aug-2026 and whenever it was left blank — the client
+                        // shows the line only when it's set.
+                        'counted_by_name' => $t->counter?->fullname,
                         'notes' => $t->notes,
                         'rejection_reason' => $t->rejection_reason,
                         'created_at' => $t->created_at?->format('M d, h:i A'),

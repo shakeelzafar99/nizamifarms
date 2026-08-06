@@ -1,5 +1,7 @@
 @extends('layouts.app')
 
+@section('title', e($vendor->vendor_name))
+
 @section('content')
 <style>
 @media print {

@@ -1,5 +1,7 @@
 @extends('layouts.app')
 
+@section('title', 'Operations')
+
 @section('content')
 {{-- NF (Jul-2026): Tailwind COLOR-UTILITY BACKFILL.
      This page's buttons/badges use bg/text/border color utilities

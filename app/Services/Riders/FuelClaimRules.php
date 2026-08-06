@@ -102,6 +102,33 @@ class FuelClaimRules
             );
         }
 
+        // ── 0b. NO MACHINE THAT DAY → he cannot file his own fuel or service ────
+        // Owner ruling R1 (Aug-6). A rider who has handed his bike back still had
+        // an open fuel door: the profile checkbox was frozen at "company bike", so
+        // nothing stopped him claiming petrol for a machine he no longer has.
+        //
+        // ⚠⚠ SCOPED TO RIDERS THE REGISTRY HAS ACTUALLY TRACKED, and that is not
+        //    fussiness — it is the difference between closing a door and breaking
+        //    someone's only path. Farooq has no registered machine and files flat
+        //    petrol claims (14 of them in the last quarter); Taimur and Shabib the
+        //    same for maintenance. A blanket "no vehicle = no claim" would cut all
+        //    of them off overnight. `trackedByRegistry` is true only for someone
+        //    the registry has actually seen holding something — so it refuses
+        //    Waseem, who gave his bike back, and never speaks about Farooq.
+        //
+        // Narrow on purpose, same shape as the per-km rule above:
+        //   • SELF-SERVICE only — a manager on-behalf is how reality gets recorded
+        //   • FLAT only — the automatic metered claim is not a hand-typed request
+        //   • judged on the CLAIM'S DATE, so a late claim for a day he did hold
+        //     the bike still goes through
+        if ($isSelfService && !$isMetered && $this->hasNoMachineOn($forUserId, $claimDate)) {
+            return $this->fail(
+                'You have no bike recorded for ' . $claimDate . ', so this claim cannot be '
+                . 'raised from your app. If you were riding that day, ask your manager to '
+                . 'record the bike for you — then file it again.'
+            );
+        }
+
         // ── 1. Meter required on a COMPANY bike ────────────────────────────────
         // Only the flat cash kind: a metered claim already has the day's readings.
         if ($meter === null && !$isMetered && $this->ridesCompanyBike($forUserId)) {
@@ -319,7 +346,33 @@ class FuelClaimRules
     /** For the app: may this user file a petrol claim for himself? */
     public function canSelfFilePetrol(int $userId): bool
     {
-        return !$this->isPerKmRider($userId);
+        return !$this->isPerKmRider($userId)
+            && !$this->hasNoMachineOn($userId, Carbon::today()->format('Y-m-d'));
+    }
+
+    /**
+     * Does the registry positively say this rider held NOTHING on that date?
+     *
+     * Three things must all be true, and each one is load-bearing:
+     *   • the switch is on and the tables exist — otherwise the registry has no
+     *     standing to refuse anything;
+     *   • the registry has TRACKED him (some assignment, ever) — so it never
+     *     speaks about people it has never known, like Farooq;
+     *   • it resolves no machine for that date.
+     *
+     * FAIL-OPEN: any error answers "no" (i.e. do not block). A read failure must
+     * never turn into a refused claim.
+     */
+    public function hasNoMachineOn(int $userId, string $date): bool
+    {
+        try {
+            $res = new VehicleResolver();
+            if (!$res->available() || !$res->rulesEnabled()) return false;
+            if (!$res->trackedByRegistry($userId))            return false;
+            return $res->vehicleForDay($userId, substr($date, 0, 10)) === null;
+        } catch (\Throwable $e) {
+            return false;
+        }
     }
 
     /**

@@ -20,15 +20,23 @@ use Illuminate\Support\Facades\Schema;
  * the one that was filed, is worse than no picker at all. So new surfaces ask here.
  *
  * ── The model (owner rulings, Aug-2026) ────────────────────────────────────────
- * 1. BUSINESS UNIT SCOPES FIRST, for everybody. Khaas accounts appear only in a
- *    Khaas context, Nizami Farms accounts only in an NF context. Before this,
- *    Taimur and Shabib were offered "khaas taimur" and "NF food" while filing an
- *    ordinary NF petrol claim, and the request was stamped BU 1 regardless.
+ * 1. TAGS DECIDE, EVERYWHERE (ruling revised Aug-6-2026). An account you are
+ *    tagged on in `t_fin_account_users` may fund a request filed against ANY
+ *    business unit your role can reach — the request's own business unit stamps
+ *    the books (LedgerPostingService writes the REQUEST's unit; vendor payments
+ *    the VENDOR's), so where the money physically left changes no report. This
+ *    replaced one day of "only accounts flagged is_shared_across_bu cross" —
+ *    the owner then ruled the flag redundant: being tagged IS the access
+ *    ("Qasim can pay maintenance from the khaas account he has access to").
+ *    A borrowed row is labelled with its home unit and sorts after the unit's own.
  * 2. TAGS DECIDE, not the permission. `t_fin_account_users` says who may pay from
  *    what, per purpose. `expense_all_payment_sources` survives only as a safety
- *    fallback for a user who has no tags at all (see resolve() below).
+ *    fallback for a user who has no tags at all (see resolve() below) — and that
+ *    fallback stays UNIT-SCOPED like the pre-tag world it preserves: crossing is
+ *    for the explicitly tagged, never for "sees everything".
  * 3. The DEFAULT is a per-user, per-business-unit star, stored as data. The old
- *    rule was hardcoded here: `isTaimurRole ? ONLINE : EXP_FUND`.
+ *    rule was hardcoded here: `isTaimurRole ? ONLINE : EXP_FUND`. A borrowed
+ *    account's star counts only in its HOME unit (see defaultAccountId).
  *
  * ⚠ QURBANI: QURBANI_CASH / QURBANI_ONLINE live in business unit 1 BY DESIGN, so
  *   business-unit scoping alone can never keep them out of an NF expense picker.
@@ -97,8 +105,26 @@ class PaymentSourceService
 
         $expenseFundId = optional($this->expenseFund())->id;
 
-        $out = $accounts->map(function (AccountModel $a) use ($bankIds, $defaultId, $tagsByAccount, $expenseFundId) {
+        // Names for the units a cross-unit account is being borrowed FROM, so the
+        // row can say so. One query, and only when there is something to label —
+        // "Online Bank" alone in a Frozen picker looks like Frozen has its own.
+        $foreignBuNames = [];
+        $foreignBuIds = $accounts->pluck('business_unit_id')->map(fn ($v) => (int) $v)
+            ->filter(fn ($v) => $v !== $bu)->unique()->values();
+        if ($foreignBuIds->isNotEmpty()) {
+            try {
+                $foreignBuNames = \App\Models\FIN\BusinessUnitModel::whereIn('id', $foreignBuIds)
+                    ->pluck('name', 'id')->all();
+            } catch (\Throwable $e) {
+                $foreignBuNames = [];                       // a label, never a blocker
+            }
+        }
+
+        $out = $accounts->map(function (AccountModel $a) use ($bankIds, $defaultId, $tagsByAccount, $expenseFundId, $bu, $foreignBuNames) {
             $tag = $tagsByAccount[$a->id] ?? null;
+            // Only a tagged account can appear outside its own unit (resolve()).
+            $crossBu = (int) $a->business_unit_id !== $bu;
+            $borrowedFrom = $crossBu ? ($foreignBuNames[(int) $a->business_unit_id] ?? null) : null;
             return [
                 'id'               => $a->id,
                 'code'             => $a->account_code,
@@ -110,13 +136,24 @@ class PaymentSourceService
                 // as the account name on installed apps until they update.
                 'account_name'     => $a->account_name,
                 // "Exp Fund" is the label the mobile expense form has always shown
-                // for the fund; everything else uses its real name.
-                'display_name'     => ($expenseFundId && $a->id === $expenseFundId) ? 'Exp Fund' : $a->account_name,
+                // for the fund; everything else uses its real name. A borrowed
+                // account names its home unit — carried in display_name rather than
+                // a new field on purpose, so every existing picker (web Blade,
+                // mobile, the approve strips) shows it with no client change and
+                // no APK.
+                'display_name'     => (($expenseFundId && $a->id === $expenseFundId) ? 'Exp Fund' : $a->account_name)
+                                      . ($borrowedFrom ? ' (' . $borrowedFrom . ')' : ''),
                 'balance'          => (float) $a->current_balance,
+                // The account's OWN books. For a borrowed shared account this is
+                // NOT the unit being filed against — use for_business_unit_id for
+                // "which picker does this row belong in", or a Frozen row keyed on
+                // this one silently files itself back under Nizami Farms.
                 'business_unit_id' => $a->business_unit_id,
+                'for_business_unit_id' => $bu,
                 'is_default'       => ($a->id === $defaultId),
                 'is_online'        => isset($bankIds[(int) $a->id]),
                 'is_tagged'        => (bool) $tag,
+                'is_shared'        => $crossBu,
                 'preferred_bank_id'=> $tag->preferred_bank_id ?? null,
             ];
         })->values()->all();
@@ -201,65 +238,67 @@ class PaymentSourceService
      * The heart of it. Returns [Collection<AccountModel>, array<accountId, tagRow>].
      *
      * Order matters:
-     *   1. Business unit scopes the candidates (and the user must be able to reach
-     *      that unit at all).
-     *   2. Tags filter them. If the user has ANY tag for this purpose in this unit,
-     *      that IS the list — untagging is how the owner hides an account he never
-     *      uses, so nothing may be added back afterwards.
-     *   3. Only if he has NO tags anywhere do we fall back, and then to exactly
-     *      what this user saw before batch 10 shipped: everything for a holder of
-     *      expense_all_payment_sources, otherwise the Expense Fund alone (or the
-     *      unit's configured default account outside Nizami Farms).
+     *   1. The user's role must reach the unit being FILED at all.
+     *   2. TAGGED users get their tagged accounts — from EVERY unit, not just the
+     *      one being filed (ruling revised Aug-6-2026). The request's own unit
+     *      stamps the books, so a khaas-tagged account funding an NF maintenance
+     *      claim changes no report — only which balance the money left. Untagging
+     *      is still how the owner hides an account: nothing is added back after.
+     *   3. Only if he has NO tags for this purpose do we fall back, and then to
+     *      exactly what this user saw before batch 10 shipped: everything IN THIS
+     *      UNIT for a holder of expense_all_payment_sources, otherwise the Expense
+     *      Fund alone (or the unit's configured default account outside Nizami
+     *      Farms). The fallback never crosses units — crossing is a tag privilege.
      *
      * That last branch is why an un-migrated or un-tagged production behaves
      * identically to today rather than locking everyone out.
      */
     private function resolve($user, int $bu, string $purpose): array
     {
-        // ⚠ The ROLE's business-unit access gates everything, tags included. A tag
-        // cannot grant reach into Frozen/Khaas on its own — if it could, tagging
-        // would quietly become a second, weaker permission system for books the
-        // user cannot otherwise open. Before Aug-2026 an unreachable unit still
-        // handed back that unit's configured default account, so a crafted
-        // business_unit_id got a fundable account out of the server; returning
-        // nothing closes that.
-        // (The Hub tag panel warns when a tagged user's role cannot reach the
-        // account's unit, so this never looks like the tag silently failing.)
+        // ⚠ The ROLE's business-unit access gates the unit being FILED. A tag
+        // cannot grant the right to file against Frozen/Khaas on its own — if it
+        // could, tagging would quietly become a second, weaker permission system
+        // for books the user cannot otherwise open. (What a tag DOES grant, since
+        // Aug-6-2026, is funding: a reachable unit's request may be paid from a
+        // tagged account that lives elsewhere.) Before Aug-2026 an unreachable
+        // unit still handed back that unit's configured default account, so a
+        // crafted business_unit_id got a fundable account out of the server;
+        // returning nothing closes that.
         if (!$this->buIsReachable($bu)) {
             return [collect(), []];
         }
 
-        // Company accounts in this unit. `visibleTo` keeps private accounts for Taimur.
-        $companyCandidates = AccountModel::where('is_active', 1)
-            ->where('business_unit_id', $bu)
-            ->whereIn('account_category', [AccountModel::CATEGORY_CASH, AccountModel::CATEGORY_BANK])
-            ->visibleTo($user)
-            ->orderBy('account_name')
-            ->get();
-
         $tags = $this->tagsFor($user, $purpose);
 
         if ($tags->isEmpty()) {
-            return [$this->fallback($user, $bu, $companyCandidates), []];
+            return [$this->fallback($user, $bu, $this->companyAccountsIn($bu, $user)), []];
         }
 
-        // A manager may fund from an employee-cash account only if it is HIS OWN.
-        // These accounts exist for holding company cash rather than spending it, so
-        // they are never offered unless explicitly tagged (owner ruling, Aug-2026).
-        $ownCash = AccountModel::where('is_active', 1)
-            ->where('business_unit_id', $bu)
-            ->where('account_category', AccountModel::CATEGORY_EMPLOYEE_CASH)
-            ->where('user_id', $user->id)
+        // Every account this user is tagged on, whatever unit it lives in:
+        // company cash + bank anywhere, and an employee-cash account only if it
+        // is HIS OWN (those exist for holding company cash rather than spending
+        // it, so they are never offered unless explicitly tagged — owner ruling,
+        // Aug-2026). `visibleTo` keeps private accounts for Taimur. Sorted so the
+        // unit's own accounts lead and borrowed ones follow, each alphabetical —
+        // a Frozen picker starts with Frozen's money.
+        $tagged = AccountModel::where('is_active', 1)
+            ->whereIn('id', $tags->keys()->all())
+            ->where(function ($q) use ($user) {
+                $q->whereIn('account_category', [AccountModel::CATEGORY_CASH, AccountModel::CATEGORY_BANK])
+                  ->orWhere(function ($own) use ($user) {
+                      $own->where('account_category', AccountModel::CATEGORY_EMPLOYEE_CASH)
+                          ->where('user_id', $user->id);
+                  });
+            })
             ->visibleTo($user)
-            ->get();
-
-        $candidates = $companyCandidates->concat($ownCash);
-        $tagged     = $candidates->filter(fn ($a) => $tags->has($a->id))->values();
+            ->get()
+            ->sortBy(fn ($a) => ((int) $a->business_unit_id === $bu ? '0|' : '1|') . mb_strtolower($a->account_name))
+            ->values();
 
         if ($tagged->isEmpty()) {
-            // Tagged elsewhere but not in this unit — e.g. Taimur untagged both
-            // Khaas accounts. Give the unit's baseline, not everything.
-            return [$this->fallback($user, $bu, $companyCandidates, true), []];
+            // Tags exist but none survive — every tagged account deactivated or
+            // out of category. Give the unit's baseline, not everything.
+            return [$this->fallback($user, $bu, $this->companyAccountsIn($bu, $user), true), []];
         }
 
         $byAccount = [];
@@ -268,6 +307,17 @@ class PaymentSourceService
         }
 
         return [$tagged, $byAccount];
+    }
+
+    /** The unit's own company cash + bank accounts — the untagged fallback's world. */
+    private function companyAccountsIn(int $bu, $user)
+    {
+        return AccountModel::where('is_active', 1)
+            ->where('business_unit_id', $bu)
+            ->whereIn('account_category', [AccountModel::CATEGORY_CASH, AccountModel::CATEGORY_BANK])
+            ->visibleTo($user)
+            ->orderBy('account_name')
+            ->get();
     }
 
     /**
@@ -319,9 +369,17 @@ class PaymentSourceService
      */
     private function defaultAccountId($user, int $bu, $accounts, array $tagsByAccount): ?int
     {
-        foreach ($tagsByAccount as $accountId => $tag) {
-            if ($tag && $tag->is_default) {
-                return (int) $accountId;
+        foreach ($accounts as $a) {
+            $tag = $tagsByAccount[$a->id] ?? null;
+            // ⚠ …and the star must belong to THIS unit. Tagged accounts now appear
+            // in every unit's picker, but a star is per-unit data
+            // (AccountUserModel::setDefault clears siblings by the ACCOUNT's
+            // unit), so without this test starring Online Bank in Nizami Farms
+            // would silently re-point Frozen's default at it too, and every
+            // Frozen expense would default to the wrong books' money. In its home
+            // unit it stars exactly as before.
+            if ($tag && $tag->is_default && (int) $a->business_unit_id === $bu) {
+                return (int) $a->id;
             }
         }
 

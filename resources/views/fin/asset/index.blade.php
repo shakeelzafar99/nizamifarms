@@ -1,5 +1,7 @@
 @extends('layouts.app')
 
+@section('title', 'Company Assets')
+
 @section('content')
 <div class="max-w-7xl mx-auto p-6">
     <!-- Back to Ledger Link -->

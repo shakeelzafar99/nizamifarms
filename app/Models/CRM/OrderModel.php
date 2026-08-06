@@ -1370,7 +1370,7 @@ class OrderModel extends BaseModel
             // This supports API/webhook updates and flexible status management
 
             // Handle everything at application level (no triggers needed)
-            $result = \DB::transaction(function () use ($statusCode, $notes, $changedBy, $newStatus) {
+            $result = \DB::transaction(function () use ($statusCode, $notes, $changedBy, $newStatus, $previousNfStatus) {
                 \Log::info("OrderModel::changeStatus - Starting transaction", [
                     'order_id' => $this->id,
                     'status_code' => $statusCode,
@@ -1456,6 +1456,38 @@ class OrderModel extends BaseModel
                     $this->estimated_delivery_at = null;
                     $this->eta_calculated_at = null;
                     $this->eta_calculated_by = null;
+                }
+
+                // 🚚 COMING OFF THE VAN CLEARS THE VAN RECORDS (owner ruling
+                // Aug-6: "if I just change the status from on_van won't it remove
+                // it?" — it should, and now it does).
+                //
+                // Moving a loaded order BACK INTO THE BUILDING is the unload: the
+                // box is off the vehicle, so the pointers that say which van is
+                // carrying it must go with it. Leaving them behind was the whole
+                // reason the manual door used to be blocked — the order kept a
+                // `van_user_id`, and the next time it went out for delivery it
+                // reappeared on that van's manifest and store board as if it had
+                // ridden along. One place, so every door is covered: the edit
+                // form, store mode, the Status Hub, bulk change and CSV import.
+                //
+                // ⚠ NOT on the way OUT (`out_for_delivery`): the handover scan
+                //   deliberately KEEPS `van_user_id` — it is how the reports
+                //   answer "which orders went out on the van".
+                // ⚠ NOT on cancel/refund/hold: the box really was aboard when it
+                //   died, and that is history worth keeping. Every van query
+                //   filters on on_van/out_for_delivery, so those rows drop out of
+                //   the live boards on their own.
+                if ($previousNfStatus === 'on_van'
+                    && in_array($statusCode, ['processing', 'new', 'pending'], true)) {
+                    foreach ([
+                        'van_user_id', 'van_vehicle_id', 'van_trip_id',
+                        'van_loaded_at', 'van_loaded_by', 'van_loaded_packets',
+                    ] as $col) {
+                        if (\Illuminate\Support\Facades\Schema::hasColumn($this->getTable(), $col)) {
+                            $this->{$col} = null;
+                        }
+                    }
                 }
                 if (method_exists($this, 'setAttribute')) {
                     $this->setAttribute('updated_by', $changedBy ?? (auth()->check() ? auth()->id() : 1));
@@ -1962,6 +1994,19 @@ class OrderModel extends BaseModel
                 $order = static::find($orderId);
                 if (!$order) {
                     $results['failed'][] = ['id' => $orderId, 'error' => 'Order not found'];
+                    continue;
+                }
+
+                // 🚚 The van custody rule applies here too. This is the chokepoint
+                // for EVERY bulk caller (the orders page's bulk action, the status
+                // hub's bulk service), and it was the one manual door the Aug-4
+                // guard never covered — a loaded on-van order could be swept to
+                // "delivered" in a multi-select with no handover scan, leaving the
+                // van stamps behind. Refused per order and REPORTED, so the rest of
+                // the selection still goes through. No-op for non-van orders.
+                $vanBlock = \App\Services\Riders\VanService::manualChangeBlock($order, $statusCode);
+                if ($vanBlock !== null) {
+                    $results['failed'][] = ['id' => $orderId, 'error' => $vanBlock];
                     continue;
                 }
 

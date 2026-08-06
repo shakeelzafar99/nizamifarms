@@ -99,18 +99,68 @@ class DayChecksService
             }
             if (empty($meterUsers)) { return $out; }
 
+            // ⭐ PHASE D — the registry can EXCUSE a day (never demand one): a rider
+            //   holding no machine on that date has no meter to read, and the day a
+            //   machine changed hands is excused too — the outgoing man cannot close
+            //   a meter that left at lunchtime. One assignments query for everyone;
+            //   silent (empty sets) while VEHICLE_RULES is off or pre-batch-13.
+            $heldWindows = [];   // uid => [[from,to|null],...]
+            $swapDays    = [];   // 'uid|date' => true
+            try {
+                $vres = new \App\Services\Riders\VehicleResolver();
+                if ($vres->available() && $vres->rulesEnabled()) {
+                    foreach (\Illuminate\Support\Facades\DB::table(\App\Services\Riders\VehicleService::T_ASSIGN)
+                                ->whereIn('user_id', $meterUsers)
+                                ->get(['user_id', 'assigned_on', 'released_on']) as $a) {
+                        $u = (int) $a->user_id;
+                        $f = substr((string) $a->assigned_on, 0, 10);
+                        $t = $a->released_on ? substr((string) $a->released_on, 0, 10) : null;
+                        $heldWindows[$u][] = [$f, $t];
+                        $swapDays[$u . '|' . $f] = true;
+                        if ($t) { $swapDays[$u . '|' . $t] = true; }
+                    }
+                    // A rider the registry tracks but with no windows at all: every
+                    // day is excused (he is in $meterUsers only by role/history).
+                }
+            } catch (\Throwable $e) { $heldWindows = []; $swapDays = []; }
+            $judgeByRegistry = !empty($heldWindows)
+                || (isset($vres) && $vres->available() && $vres->rulesEnabled());
+
+            $attCols = ['user_id', 'attendance_date', 'login_time', 'logout_time', 'meter_start', 'meter_end', 'meter_home'];
+            $hasOverrideCol = false;
+            try {
+                $hasOverrideCol = \Illuminate\Support\Facades\Schema::hasColumn('t_ops_attendance', 'vehicle_id');
+                if ($hasOverrideCol) { $attCols[] = 'vehicle_id'; }
+            } catch (\Throwable $e) { /* no column → windows only */ }
+
             $rows = \Illuminate\Support\Facades\DB::table('t_ops_attendance')
                 ->whereIn('user_id', $meterUsers)
                 ->whereBetween('attendance_date', [$from, $to])
                 ->whereNotNull('login_time')
                 ->whereNotNull('logout_time')   // finished days only — see meterMissReason()
                 ->orderBy('attendance_date')
-                ->get(['user_id', 'attendance_date', 'login_time', 'logout_time', 'meter_start', 'meter_end', 'meter_home']);
+                ->get($attCols);
 
             foreach ($rows as $r) {
+                $uid = (int) $r->user_id;
+                $d   = substr((string) $r->attendance_date, 0, 10);
+
+                if ($judgeByRegistry) {
+                    // Only riders are excusable — non-profiled meter users (a
+                    // supervisor who types readings) keep the old judgement.
+                    $vres2 = new \App\Services\Riders\VehicleResolver();
+                    if ($vres2->hasRiderProfile($uid)) {
+                        if (isset($swapDays[$uid . '|' . $d])) { continue; }   // handover day
+                        $held = !empty($r->vehicle_id);                        // manager said so
+                        foreach ($heldWindows[$uid] ?? [] as [$f, $t]) {
+                            if ($d >= $f && ($t === null || $d <= $t)) { $held = true; break; }
+                        }
+                        if (!$held) { continue; }                              // no machine that day
+                    }
+                }
+
                 $reason = self::meterMissReason(true, $r->login_time, $r->logout_time, $r->meter_start, $r->meter_end, $r->meter_home);
                 if ($reason === null) { continue; }
-                $uid = (int) $r->user_id;
                 if (!isset($out[$uid])) { $out[$uid] = ['days' => 0, 'detail' => []]; }
                 $out[$uid]['days']++;
                 $out[$uid]['detail'][substr((string) $r->attendance_date, 0, 10)] = $reason;
@@ -258,7 +308,15 @@ class DayChecksService
         $has = fn ($v) => $v !== null && $v !== '';
         // meter_required === 0 = the owner exempted him in Rider Management; the app stops asking,
         // so the tick must stop judging. Only an explicit 0 exempts (null/absent = judge as before).
+        // ⭐ PHASE D: the registry excuses too — a rider with no machine THAT DAY was not asked,
+        //   so this verdict must not hold the missing reading against him (same rule, date-scoped).
+        $registryExcused = false;
+        try {
+            $registryExcused = (new \App\Services\Riders\VehicleResolver())
+                ->meterExcusedOn((int) $g('user_id'), $date);
+        } catch (\Throwable $e) { /* judge as before */ }
         $carriesMeter = ((int) ($g('meter_required') ?? 1) !== 0)
+            && !$registryExcused
             && ($isRider || $bike || $has($meterStart) || $has($meterEnd) || $has($meterHome));
         $missReason = self::meterMissReason(
             $carriesMeter, $g('login_time'), $g('logout_time'),

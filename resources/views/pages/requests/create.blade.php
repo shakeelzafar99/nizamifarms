@@ -243,7 +243,11 @@
                         <select name="payment_source_account_id" id="payment_source_account_id" class="kt-select" disabled onchange="handlePaySourceChange()">
                             @foreach($paySources ?? [] as $src)
                                 <option value="{{ $src['id'] }}"
-                                        data-bu="{{ $src['business_unit_id'] ?? 1 }}"
+                                        {{-- The unit this row was built FOR, not the account's own
+                                             books. The shared online bank appears in both lists and
+                                             belongs in both — keyed on its own business_unit_id it
+                                             would vanish from the Frozen list and double up in NF's. --}}
+                                        data-bu="{{ $src['for_business_unit_id'] ?? $src['business_unit_id'] ?? 1 }}"
                                         data-online="{{ $src['is_online'] ? '1' : '0' }}"
                                         data-default="{{ $src['is_default'] ? '1' : '0' }}"
                                         data-bank="{{ $src['preferred_bank_id'] ?? '' }}">

@@ -175,8 +175,11 @@ function vpCard(v) {
 
     // Stats read differently per mode — show only what is true right now.
     let stats = '';
-    if (v.mode === 'to_stop' && v.van_eta) {
-        stats += vpStat('Van', v.van_eta.distance_display + ' · ~' + v.van_eta.minutes + ' min'
+    // ⭐ Shown on the DELIVERING leg too, not just once he is formally heading
+    //    there: when he delivers a few of his own stops first, "when does the van
+    //    actually arrive" is the number the whole meet-up is planned around.
+    if (v.van_eta) {
+        stats += vpStat('Van', vpEta(v.van_eta)
             + (v.van_eta.source === 'approx' ? ' <span style="color:#b45309;">(est)</span>' : ''));
     }
     if (waiting && stop.waiting_minutes !== null) {
@@ -204,8 +207,11 @@ function vpCard(v) {
         riders = '<div class="vp-riders"><h5>Waiting to collect</h5>' + v.inbound.map(r => {
             const eta = r.eta
                 ? '<span class="vp-reta' + (r.eta.source === 'approx' ? ' approx' : '') + '">'
-                  + r.eta.distance_display + ' · ~' + r.eta.minutes + ' min</span>'
-                : '<span class="vp-reta approx">no GPS</span>';
+                  + vpEta(r.eta) + '</span>'
+                // ⚠ "no GPS" was claimed whenever the ETA was absent — including
+                //   when no meet-up point is set yet, or the fix failed the
+                //   60 km sanity cap. The payload says which; use it.
+                : '<span class="vp-reta approx">' + (r.has_gps ? 'no ETA yet' : 'no GPS') + '</span>';
             return '<div class="vp-rider">'
                  + '<span class="vp-rname">👤 ' + vpEsc(r.name) + '</span>'
                  + '<span class="vp-rmeta">' + r.orders + ' order' + (r.orders === 1 ? '' : 's')
@@ -300,6 +306,16 @@ function vpLoadStops() {
                           + ' onclick="vpRetireStop(' + s.id + ')">Retire</button>'
                           + '</span>'
                         : '')
+                    // ⭐ Retiring used to be a ONE-WAY DOOR: the manage buttons only
+                    //    rendered for active stops, and the duplicate-name check counts
+                    //    retired rows too — so a retired point could neither be brought
+                    //    back nor re-added under its own name, ever.
+                    + (vpCanManage && !s.is_active
+                        ? '<span style="margin-left:auto;">'
+                          + '<button type="button" class="vp-sbtn"'
+                          + ' onclick="vpUnretireStop(' + s.id + ',' + vpJs(s.name) + ')">↩ Bring back</button>'
+                          + '</span>'
+                        : '')
                     + '</div>').join('')
                 : '<div class="vp-empty">No meet-up points yet — add the first one below.</div>';
 
@@ -316,7 +332,14 @@ function vpLoadStops() {
                           '<div class="vp-strow"><b style="min-width:150px;">' + vpEsc(s.label) + '</b>'
                           + '<span class="vp-pill adhoc">one-off</span>'
                           + '<button type="button" class="vp-sbtn" style="margin-left:auto;"'
-                          + ' onclick="vpPromote(' + s.id + ',\'' + vpEsc(s.label).replace(/'/g, "\\'") + '\')">'
+                          // ⚠ vpJs, NOT vpEsc + a quote-replace. vpEsc runs first and
+                          //   turns every ' into &#039;, so the .replace() that followed
+                          //   matched nothing — and the browser then DECODED the entity
+                          //   back into a live quote inside this JS string. A label like
+                          //   "McDonald's corner" broke the button outright, and a
+                          //   driver-typed ad-hoc label could run script in a manager's
+                          //   session. vpJs JSON-encodes first, then escapes the quotes.
+                          + ' onclick="vpPromote(' + s.id + ',' + vpJs(s.label) + ')">'
                           + '💾 Keep this spot</button></div>').join('')
                       + '</div>';
             }
@@ -483,7 +506,25 @@ function vpRetireStop(id) {
         method: 'DELETE',
         headers: {'Accept': 'application/json',
                   'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || ''}
-    }).then(r => r.json()).then(() => vpLoadStops()).catch(() => {});
+    })
+    .then(r => r.json())
+    // A refusal used to be thrown away, so the list simply reloaded with the
+    // stop still there and no explanation.
+    .then(res => { if (!res.success) alert(res.message || 'Could not retire that stop.'); vpLoadStops(); })
+    .catch(() => alert('Could not retire that stop.'));
+}
+
+/* Bring a retired stop back into the driver's list. */
+function vpUnretireStop(id, name) {
+    fetch(VP_STOPS + '/' + id, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json', 'Accept': 'application/json',
+                  'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || ''},
+        body: JSON.stringify({name: name, is_active: true})
+    })
+    .then(r => r.json())
+    .then(res => { if (!res.success) alert(res.message || 'Could not bring that stop back.'); vpLoadStops(); })
+    .catch(() => alert('Could not bring that stop back.'));
 }
 
 function vpPromote(handoverId, suggested) {
@@ -513,5 +554,19 @@ function vpEsc(s) {
     return String(s === null || s === undefined ? '' : s)
         .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
         .replace(/"/g, '&quot;').replace(/'/g, '&#039;');
+}
+
+/* ONE place that turns an ETA payload into words.
+   An ETA can now be CHAINED through the stops someone still has to deliver
+   before they can come to the meet-up point — in that shape there is no single
+   measured leg to quote a distance for, so it reads as "after 3 stops · ~4:20 PM"
+   instead of a straight-line figure that ignores the route they are on. */
+function vpEta(e) {
+    if (!e) return '';
+    if (e.after_stops) {
+        return 'after ' + e.stops_first + ' stop' + (e.stops_first === 1 ? '' : 's')
+             + ' · ~' + (e.arrival_display || (e.minutes + ' min'));
+    }
+    return (e.distance_display ? e.distance_display + ' · ' : '') + '~' + e.minutes + ' min';
 }
 </script>

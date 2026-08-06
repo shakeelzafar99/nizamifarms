@@ -372,6 +372,15 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/store/fleet/rider', [\App\Http\Controllers\CRM\FleetFuelController::class, 'apiRider']);
     // Service schedule from the app — per-bike and company-wide. Both need the
     // MOBILE `manage_bike_service` grant on top of Bikes read access.
+    // 🏍️ The machines themselves (Aug-2026) — READ ONLY on mobile. Same
+    // `view_bike_costs` mobile grant as the Bikes screen; assigning, editing and
+    // photos stay on the web. `/days` is the month's kilometres, day by day.
+    // Which machine a claim will land on — used by every fuel/maintenance form.
+    // ⚠ ABOVE '/vehicles/{id}': 'vehicle-for-user' is its own path, not an id.
+    Route::get('/store/fleet/vehicle-for-user', [\App\Http\Controllers\CRM\VehicleController::class, 'forUser']);
+    Route::get('/store/fleet/vehicles', [\App\Http\Controllers\CRM\VehicleController::class, 'apiIndex']);
+    Route::get('/store/fleet/vehicles/{id}', [\App\Http\Controllers\CRM\VehicleController::class, 'apiShow']);
+    Route::get('/store/fleet/vehicles/{id}/days', [\App\Http\Controllers\CRM\VehicleController::class, 'apiDays']);
     Route::post('/store/fleet/mark-serviced', [\App\Http\Controllers\CRM\FleetFuelController::class, 'apiMarkServiced']);
     Route::post('/store/fleet/default-interval', [\App\Http\Controllers\CRM\FleetFuelController::class, 'apiSetDefaultInterval']);
     Route::get('/store/cancelled-orders', [\App\Http\Controllers\API\RiderController::class, 'getStoreCancelledOrders']); // ⭐ Cancelled orders grouped by date
@@ -565,6 +574,10 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::put('/orders/{orderId}/line-items/{lineItemId}/quantity', [\App\Http\Controllers\API\RiderController::class, 'updateLineItemQuantity']);
     // Barcode-qty: set MANY line-item quantities in one atomic request (manual "Save all").
     Route::put('/orders/{orderId}/line-items/quantities', [\App\Http\Controllers\API\RiderController::class, 'updateLineItemQuantitiesBatch']);
+    // Aug-2026: mark an open order's line item free / charged from the app
+    // (same control as the web Edit Invoice "Make Free" button). Gated by
+    // create_orders, not the scan permission — see the controller docblock.
+    Route::put('/orders/{orderId}/line-items/{lineItemId}/free', [\App\Http\Controllers\API\RiderController::class, 'updateLineItemFree']);
     // Line-item quick-note presets (chips next to the "Add note" box).
     // Shared team-wide list; same controller backs the web routes in
     // routes/web.php so there is one source of truth.
@@ -794,6 +807,10 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('/transfers/history', [\App\Http\Controllers\CRM\WarehouseController::class, 'getTransferHistory']);
         Route::post('/transfer/{id}/approve', [\App\Http\Controllers\CRM\WarehouseController::class, 'approveTransfer']);
         Route::post('/transfer/{id}/reject', [\App\Http\Controllers\CRM\WarehouseController::class, 'rejectTransfer']);
+        // Aug-2026: options for the "Counted by" picker shown when accepting a
+        // transfer. Same roster as the Attendance page — deliberately NOT
+        // /rider/users/active, which is every active account and excludes self.
+        Route::get('/counted-by-users', [\App\Http\Controllers\CRM\WarehouseController::class, 'getCountedByUsers']);
         Route::get('/product-history', [\App\Http\Controllers\CRM\WarehouseController::class, 'getProductHistory']);
         
         // ⭐ Batch Production Tracking

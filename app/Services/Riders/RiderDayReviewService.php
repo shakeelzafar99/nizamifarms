@@ -61,9 +61,20 @@ class RiderDayReviewService
         $inFlight  = $isToday ? $this->inFlightCounts() : [];
         $kms       = $this->dayKm($date);
 
+        // 🚚 The van day, if there was one. Read-only and defensive — it is an
+        //    extra story ABOVE the rider list, never a reason the day fails to
+        //    open. Fetched before the early return so a van-only day (everything
+        //    still aboard, nothing delivered yet) still renders its trip card.
+        $vanTrips = [];
+        try {
+            $vanTrips = (new VanService())->dayTrips($date);
+        } catch (\Throwable $e) {
+            $vanTrips = [];
+        }
+
         $ids = array_unique(array_merge(array_keys($delivered), array_keys($inFlight)));
         if (!$ids) {
-            return ['riders' => [], 'totals' => $this->emptyTotals()];
+            return ['riders' => [], 'totals' => $this->emptyTotals(), 'van_trips' => $vanTrips];
         }
 
         $names = DB::table('t_sys_user')->whereIn('id', $ids)
@@ -113,6 +124,8 @@ class RiderDayReviewService
                 'needs_look'   => $tNeeds,
                 'in_flight'    => $tFlight,
             ],
+            // 🚚 The handover choreography the rider rows cannot show.
+            'van_trips' => $vanTrips,
         ];
     }
 

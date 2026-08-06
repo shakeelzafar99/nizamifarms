@@ -659,10 +659,11 @@ class HubController extends Controller
                     'can_vendor'        => (bool) $t->can_vendor,
                     'can_advance'       => (bool) $t->can_advance,
                     'preferred_bank_id' => $t->preferred_bank_id,
-                    // ⚠ A tag cannot grant reach into a business unit the person's
-                    // ROLE cannot open — it would be a second, weaker permission
-                    // system. Say so here, or the tag looks silently broken.
-                    'bu_blocked'        => !$this->userCanReachBu($t->user_id, (int) $account->business_unit_id),
+                    // No unit warning here any more. Since Aug-6-2026 a tag works
+                    // in EVERY unit the person can file against (the request's own
+                    // unit stamps the books) — the account's home unit no longer
+                    // limits who may spend from it, so there is nothing to warn
+                    // about.
                 ];
             })
             ->sortByDesc('is_default')->values();
@@ -763,32 +764,6 @@ class HubController extends Controller
         $isTaimur = $user && $user->roles()->whereRaw('LOWER(urole_name) = ?', ['taimur'])->exists();
         if ($account->is_private && !$isTaimur) {
             abort(403);
-        }
-    }
-
-    /** Does this user's role reach the business unit the account lives in? */
-    private function userCanReachBu(int $userId, int $buId): bool
-    {
-        try {
-            $role = \Illuminate\Support\Facades\DB::table('t_sys_user_role as ur')
-                ->join('t_sys_role as r', 'r.id', '=', 'ur.role_id')
-                ->where('ur.user_id', $userId)
-                ->select('r.id', 'r.business_unit_access', 'r.default_business_unit_id')
-                ->first();
-            if (!$role) {
-                return $buId === 1;
-            }
-            $access = $role->business_unit_access ?? 'all';
-            if ($access === 'all') {
-                return true;
-            }
-            if ($access === 'multiple') {
-                return \Illuminate\Support\Facades\DB::table('t_sys_role_business_unit')
-                    ->where('role_id', $role->id)->where('business_unit_id', $buId)->exists();
-            }
-            return (int) ($role->default_business_unit_id ?? 1) === $buId;
-        } catch (\Throwable $e) {
-            return true;   // BU columns missing → don't show a scary false warning
         }
     }
 

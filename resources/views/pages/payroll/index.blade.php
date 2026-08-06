@@ -1,5 +1,7 @@
 @extends('layouts.app')
 
+@section('title', 'Payroll')
+
 @section('content')
 <style>
   .pr-wrap { max-width: 1280px; margin: 0 auto; padding: 18px 16px 120px; font-size: 13px; color: #1f2937; }

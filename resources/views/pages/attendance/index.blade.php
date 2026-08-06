@@ -1,5 +1,7 @@
 @extends('layouts.app')
 
+@section('title', 'Attendance Management')
+
 @section('content')
 <script>
   // Pass logged-in user info to JavaScript
