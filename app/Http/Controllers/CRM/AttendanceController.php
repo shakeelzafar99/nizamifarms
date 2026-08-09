@@ -259,6 +259,13 @@ class AttendanceController extends Controller
             })
             ->orderBy('u.fullname');
 
+        // ⭐ The bypass tell, for the OT fallback below (owner ruling Aug-8): a
+        //   checkout that rode a manager unlock must not count as overtime.
+        //   Guarded — dev DBs may lag the column.
+        if ((new \App\Services\HR\OvertimeService())->hasUnlockColumn()) {
+            $query->addSelect('a.checkout_unlock_until');
+        }
+
         // ⭐ GPS-accuracy hardening columns. Selected ONLY once the hardening SQL has been
         // applied, so uploading the web files before running it can never 500 this page
         // (unlike the checkout_attempt_* block above, which is unconditional). They carry the
@@ -332,9 +339,15 @@ class AttendanceController extends Controller
             } elseif (!is_null($row->overtime_minutes)) {
                 $row->overtime_minutes = (int) $row->overtime_minutes;
             } else {
+                // ⭐ Bypass re-base (owner ruling Aug-8), same rule as the snapshot
+                //   stamper: an unlocked checkout counts to the last delivered order
+                //   (null = nothing provable → 0); a normal checkout keeps its time.
                 $e = strtotime($selectedDate . ' ' . $shiftData['shift_end'] . ':00');
-                $o = strtotime($selectedDate . ' ' . $row->logout_time);
-                $row->overtime_minutes = ($o > $e) ? (int) (($o - $e) / 60) : 0;
+                $o = (new \App\Services\HR\OvertimeService())->otEndTs(
+                    (int) $row->user_id, $selectedDate, $row->login_time, $row->logout_time,
+                    $row->checkout_unlock_until ?? null
+                );
+                $row->overtime_minutes = ($o !== null && $o > $e) ? (int) (($o - $e) / 60) : 0;
             }
 
             // ⭐ Calculate meter distance

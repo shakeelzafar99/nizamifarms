@@ -6925,6 +6925,12 @@ class RiderController extends Controller
     private function buildHomeJourneyPayload(int $userId, $attendance): array
     {
         try {
+            // ⭐ Holds-NOW guard, mirroring armHomeJourney: the app's home_flow flag
+            //   and card must go quiet the moment the machine is handed over — not
+            //   at midnight when the date rolls.
+            if ($this->holdsCompanyMachineNow($userId) === false) {
+                return [null, false];
+            }
             $hj = new \App\Services\Riders\HomeJourneyService();
             $home = $hj->riderHomePin($userId);
             $homeFlow = $home !== null;
@@ -6986,8 +6992,42 @@ class RiderController extends Controller
      * stores home_expected_by. Returns the payload for the app's Ride-Home card, or null when the
      * rider isn't on the flow (not company-bike, or no home pin). Non-fatal by contract.
      */
+    /**
+     * ⭐ PHASE D FOLLOW-UP (Aug-8 prod find) — does he hold a COMPANY machine RIGHT NOW?
+     *
+     * The home flow used to ask the DATE-scoped question, and on a handover day the
+     * outgoing rider's released assignment still COVERS the date — so at his evening
+     * checkout the ride-home journey armed for a bike that left at lunchtime, and he
+     * was nagged for a meter he could not take (Waseem, 6 Aug: home photo every night
+     * of the month except that one). The live gates must ask what he holds NOW.
+     *
+     *   true  → holds a company machine, the overnight flow applies
+     *   false → holds nothing, or his own machine — no overnight flow
+     *   null  → registry silent (rules off / not a rider) → old behaviour, unchanged
+     */
+    private function holdsCompanyMachineNow(int $userId): ?bool
+    {
+        try {
+            $res = new \App\Services\Riders\VehicleResolver();
+            if (!$res->available() || !$res->rulesEnabled()) return null;
+            if (!$res->hasRiderProfile($userId))             return null;
+            $vid = $res->currentVehicleFor($userId);
+            if ($vid === null) return false;
+            $v = $res->vehicle($vid);
+            return $v ? ((int) $v->is_company === 1) : false;
+        } catch (\Throwable $e) {
+            return null;                       // no opinion = never block the old flow
+        }
+    }
+
     private function armHomeJourney(int $userId, int $attendanceId, $lat, $lng, string $today): ?array
     {
+        // ⭐ Holds-NOW guard: a rider who gave his machine up at lunch must not be
+        //   armed for its meter at 9 pm. Null (registry silent) falls through to
+        //   the date-scoped pin check — exactly the old behaviour.
+        if ($this->holdsCompanyMachineNow($userId) === false) {
+            return null;
+        }
         $hj = new \App\Services\Riders\HomeJourneyService();
         $home = $hj->riderHomePin($userId);
         if (!$home) {

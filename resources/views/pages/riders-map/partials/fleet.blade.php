@@ -2225,12 +2225,22 @@ function flvFreeRiderCard(r) {
  * preselected; the vehicle dropdown lets the manager change it.
  */
 function flvAssignToRider(userId) {
+    // ⚠⚠ THE 12:05 LESSON (7 Aug, prod): this used to preselect the first spare of
+    //    ANY kind — which that morning was "Danish - own bike", and one Save put
+    //    Waseem on Danish's personal machine. Another man's own bike is NEVER a
+    //    quick pick: only company machines and the rider's OWN bike qualify here.
+    //    (Genuinely lending X's personal bike to Y stays possible from the bike's
+    //    own card, where the manager can see whose it is.)
     const spare = ((flvData && flvData.vehicles) || [])
-        .filter(v => !v.keeper_user_id && v.is_active);
+        .filter(v => !v.keeper_user_id && v.is_active
+                     && (v.is_company || v.last_keeper_user_id === userId));
     if (!spare.length) {
-        alert('There is no spare machine to give. Add one, or take one back from another rider first.');
+        alert('There is no spare company machine (and he has no own bike on record). '
+            + 'Add a vehicle, take one back from another rider, or use "New own bike".');
         return;
     }
+    // His own bike first — giving a man his own machine back is the common case.
+    spare.sort((a, b) => (a.last_keeper_user_id === userId ? 0 : 1) - (b.last_keeper_user_id === userId ? 0 : 1));
     flvOpenAssign(spare[0].id, userId);
 }
 
@@ -2702,10 +2712,12 @@ function flvOpenAssign(vehicleId, preselectUserId) {
           + flEsc(r.name) + (r.company_bike ? ' · 🏢' : ' · 👤') + (r.has_vehicle ? '' : ' · free')
           + '</option>').join('');
 
-    // Which machine, when the manager came in from a rider card.
+    // Which machine, when the manager came in from a rider card. Same filter as
+    // flvAssignToRider: company machines + HIS own bike, never someone else's.
     const vsel = document.getElementById('flvAssignVehicleSel');
     if (vsel) {
-        const spare = (flvData.vehicles || []).filter(x => !x.keeper_user_id && x.is_active);
+        const spare = (flvData.vehicles || []).filter(x => !x.keeper_user_id && x.is_active
+            && (x.is_company || x.last_keeper_user_id === preselectUserId));
         if (preselectUserId && spare.length > 1) {
             vsel.parentElement.style.display = '';
             vsel.innerHTML = spare.map(x =>
@@ -2767,9 +2779,10 @@ function flvPreviewAssign() {
 /* ═══════════════════════════════════════════════════════════════════════════
    ⭐⭐ "AND WHAT ABOUT HIM?" — the displaced rider.
    `flvDisplaced` holds the manager's answer, sent with the handover.
-   Default is deliberately NOTHING selected: the manager must say. Left to a
-   default, the quiet option ("no bike") would be chosen for him by accident,
-   and that is precisely the state that used to go unnoticed.
+   ⭐ OWNER RULING (Aug-8): his own registered bike, when free, is the DEFAULT —
+   preselected here AND applied server-side even when nothing is sent (older
+   clients). The dangerous silent option ("no bike") still requires an explicit
+   pick; when he has no own bike the manager must still choose.
    ═══════════════════════════════════════════════════════════════════════════ */
 let flvDisplaced = { user_id: null, action: null, vehicle_id: null };
 let flvDisplacedData = null;      // the server's description of who is losing it
@@ -2786,9 +2799,11 @@ function flvRenderDisplaced(d) {
     if (!box) return;
     if (!d) { flvClearDisplaced(); return; }
 
-    // A new person to ask about → forget any earlier answer.
+    // A new person to ask about → reset. ⭐ OWNER RULING (Aug-8): when his own
+    // registered bike is free, "back on his own bike" is the DEFAULT — the server
+    // applies it even if nothing is sent. "No bike" stays an explicit choice.
     if (flvDisplaced.user_id !== d.user_id) {
-        flvDisplaced = { user_id: d.user_id, action: null, vehicle_id: null };
+        flvDisplaced = { user_id: d.user_id, action: d.own ? 'own' : null, vehicle_id: null };
     }
     flvDisplacedData = d;
     const first = (d.name || '').split(' ')[0];
@@ -2808,7 +2823,7 @@ function flvRenderDisplaced(d) {
     let html = '';
     if (d.own) {
         html += opt('own', '👤 Back on his own bike — ' + flEsc(d.own.name),
-                    'His own machine is free; this hands it back to him.');
+                    'His own machine is free — this is what happens unless you pick otherwise.');
     }
     if ((d.spare || []).length) {
         html += opt('vehicle', '🏍️ Onto another machine', 'Pick which one below.');
@@ -2912,11 +2927,14 @@ function flvDoRelease(v, d) {
 
     if (d) {
         const first = (d.name || '').split(' ')[0];
-        const choices = ['Nothing for now' + (d.goes_quiet
-            ? ' (he stops being asked for meter readings)' : '')];
-        const keys = ['none'];
-        if (d.own) { choices.push('Back on his own bike — ' + d.own.name); keys.push('own'); }
+        // ⭐ OWNER RULING (Aug-8): his own bike, when free, is option 1 AND the
+        //   default — "no bike" must be chosen deliberately, never inherited.
+        const choices = []; const keys = [];
+        if (d.own) { choices.push('Back on his own bike — ' + d.own.name + ' (the default)'); keys.push('own'); }
         if ((d.spare || []).length) { choices.push('Onto another machine'); keys.push('vehicle'); }
+        choices.push('Nothing for now' + (d.goes_quiet
+            ? ' (he stops being asked for meter readings)' : ''));
+        keys.push('none');
 
         const menu = choices.map((c, i) => '  ' + (i + 1) + '. ' + c).join('\n');
         const ans = prompt('Take ' + v.name + ' back from ' + d.name + '.\n\n'

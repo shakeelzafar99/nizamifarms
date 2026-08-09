@@ -743,8 +743,12 @@ class VehicleService
                     'user_id'    => $dUser,
                     'name'       => DB::table('t_sys_user')->where('id', $dUser)->value('fullname') ?: 'the current rider',
                     'own'        => $this->ownVehicleFor($dUser),
+                    // ⚠ COMPANY machines only. His own bike is its own option above,
+                    //   and another man's personal bike must never be one quick pick
+                    //   away — that exact slip put Waseem on "Danish - own bike" for
+                    //   85 minutes on 7 Aug (prod).
                     'spare'      => array_values(array_filter($this->spareVehicles(),
-                                        fn ($s) => $s['id'] !== $vehicleId)),
+                                        fn ($s) => $s['id'] !== $vehicleId && $s['is_company'])),
                     'goes_quiet' => $this->rulesEnabled(),
                 ];
             }

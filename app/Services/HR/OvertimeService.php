@@ -17,6 +17,122 @@ class OvertimeService
 {
     private ?float $targetHoursMemo = null;
 
+    /** 'uid|date' → last-delivered epoch (or null). A month walk asks per day. */
+    private array $lastDeliveryMemo = [];
+
+    private ?bool $unlockColMemo = null;
+
+    /** Is the manager-unlock column deployed? (Guarded — dev DBs may lag.) */
+    public function hasUnlockColumn(): bool
+    {
+        if ($this->unlockColMemo === null) {
+            try {
+                $this->unlockColMemo = \Illuminate\Support\Facades\Schema::hasColumn(
+                    't_ops_attendance', 'checkout_unlock_until');
+            } catch (\Throwable $e) {
+                $this->unlockColMemo = false;
+            }
+        }
+        return $this->unlockColMemo;
+    }
+
+    /**
+     * ⭐ DID THIS CHECKOUT RIDE A MANAGER UNLOCK? (owner ruling, Aug-8)
+     *
+     * TIGHT on purpose: the logout must fall INSIDE the unlock window. The
+     * "bypassed" chip on the attendance page uses a looser test (unlock row +
+     * any logout), which also matches a rider who was unlocked at 14:00 but then
+     * checked out NORMALLY at 21:30 after the unlock expired — and the owner's
+     * rule is explicit that a regular checkout, wherever it happens, keeps its
+     * real time. Only a checkout that actually USED the valve is re-based.
+     *
+     * Logout is a bare TIME on the row; past-midnight rolls to the next day
+     * (same rule as dailyOvertimeMinutes). 2 min slack for clock skew.
+     */
+    public function bypassedCheckout(string $date, ?string $login, ?string $logout, $unlockUntil): bool
+    {
+        if (empty($logout) || empty($unlockUntil)) {
+            return false;
+        }
+        $o = strtotime($date . ' ' . $logout);
+        if ($o === false) {
+            return false;
+        }
+        if (!empty($login)) {
+            $l = strtotime($date . ' ' . $login);
+            if ($l !== false && $o < $l) {
+                $o += 86400;
+            }
+        }
+        $u = strtotime((string) $unlockUntil);
+        return $u !== false && $o <= $u + 120;
+    }
+
+    /**
+     * When this rider DELIVERED his last order that day (epoch), or null.
+     * The same join CheckoutClassifierService trusts for "away on a delivery".
+     */
+    public function lastDeliveryTs(int $userId, string $date): ?int
+    {
+        $key = $userId . '|' . $date;
+        if (array_key_exists($key, $this->lastDeliveryMemo)) {
+            return $this->lastDeliveryMemo[$key];
+        }
+        $ts = null;
+        try {
+            $t = DB::table('t_crm_order_status_history as h')
+                ->join('t_crm_prod_order as o', 'o.id', '=', 'h.order_id')
+                ->where('o.assigned_rider_user_id', $userId)
+                ->where('h.status_code', 'delivered')
+                ->whereDate('h.changed_at', $date)
+                ->max('h.changed_at');
+            $ts = $t ? (strtotime((string) $t) ?: null) : null;
+        } catch (\Throwable $e) {
+            $ts = null;
+        }
+        return $this->lastDeliveryMemo[$key] = $ts;
+    }
+
+    /**
+     * ⭐⭐ THE OT-COUNTABLE END OF A DAY (epoch), owner ruling Aug-8.
+     *
+     * A normal checkout — at the office, at the last drop, wherever — keeps its
+     * real time: that is the day as worked. A checkout that rode a manager
+     * unlock is different: the timestamp is when the VALVE was used, not when
+     * the work ended (the live case: a rider bypassed at 00:05 was credited
+     * 13h13m and ~4h of bonus-leave overtime for a day that ended with his last
+     * drop hours earlier). For those days the end becomes the LAST DELIVERED
+     * ORDER — "that's when he was supposed to" — clamped to never exceed the
+     * actual logout. A bypassed day with NO deliveries returns null: nothing
+     * provable happened past the shift, so nothing is counted.
+     */
+    public function otEndTs(int $userId, string $date, ?string $login, ?string $logout, $unlockUntil): ?int
+    {
+        if (empty($logout)) {
+            return null;
+        }
+        $o = strtotime($date . ' ' . $logout);
+        if ($o === false) {
+            return null;
+        }
+        if (!empty($login)) {
+            $l = strtotime($date . ' ' . $login);
+            if ($l !== false && $o < $l) {
+                $o += 86400;
+            }
+        }
+
+        if (!$this->bypassedCheckout($date, $login, $logout, $unlockUntil)) {
+            return $o;                        // a real checkout keeps its real time
+        }
+
+        $last = $this->lastDeliveryTs($userId, $date);
+        if ($last === null) {
+            return null;                      // bypassed + nothing delivered → no measurable OT
+        }
+        return min($last, $o);                // never later than the actual logout
+    }
+
     private function targetHours(): float
     {
         if ($this->targetHoursMemo === null) {
@@ -58,11 +174,15 @@ class OvertimeService
         $total = 0;
         $dates = [];
         try {
+            $cols = ['attendance_date', 'login_time', 'logout_time'];
+            if ($this->hasUnlockColumn()) {
+                $cols[] = 'checkout_unlock_until';   // the bypass tell (guarded — dev DBs may lag)
+            }
             $rows = DB::table('t_ops_attendance')->where('user_id', $userId)
                 ->whereBetween('attendance_date', [$start, $end])
                 ->whereNotNull('login_time')->where('login_time', '!=', '')
                 ->whereNotNull('logout_time')->where('logout_time', '!=', '')
-                ->get(['attendance_date', 'login_time', 'logout_time']);
+                ->get($cols);
             // A HALF-DAY counts no overtime (owner's rule) — mirror the late/OT suppression in
             // sumLateOvertimeMinutes so target-OT (and its bonus-leave accrual) can't reward
             // a day the rider only half-worked.
@@ -70,7 +190,17 @@ class OvertimeService
             foreach ($rows as $r) {
                 $date = substr((string) $r->attendance_date, 0, 10);
                 if (isset($halfDays[$date])) { continue; }
-                $ot = $this->dailyOvertimeMinutes($r->login_time, $r->logout_time);
+                // ⭐ The day ends when the WORK ended (owner ruling Aug-8): a checkout
+                //   that rode a manager unlock is re-based to the last delivered order;
+                //   a normal checkout keeps its real time. null = nothing countable.
+                $endTs = $this->otEndTs($userId, $date, $r->login_time, $r->logout_time,
+                                        $r->checkout_unlock_until ?? null);
+                if ($endTs === null) { continue; }
+                $l = strtotime($date . ' ' . $r->login_time);
+                if ($l === false || $endTs <= $l) { continue; }
+                $workedMin = ($endTs - $l) / 60;
+                $targetMin = $this->targetHours() * 60;
+                $ot = $workedMin > $targetMin ? (int) round($workedMin - $targetMin) : 0;
                 if ($ot > 0) {
                     $total += $ot;
                     $dates[$date] = $ot;

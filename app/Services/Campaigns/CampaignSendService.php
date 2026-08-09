@@ -221,15 +221,31 @@ class CampaignSendService
     // Run bookkeeping
     // =====================================================================
 
-    public function startRun(int $campaignId, int $target, string $mode, ?int $userId): int
+    /**
+     * Whether the runs table can carry a hand-picked audience. Guarded the same
+     * way as sent_via: absent column = today's behaviour, so the files can be
+     * uploaded before the SQL without sending to the wrong people.
+     */
+    public function supportsRunSelection(): bool
     {
-        return (int) DB::table('t_crm_campaign_send_runs')->insertGetId([
+        return Schema::hasColumn('t_crm_campaign_send_runs', 'selection_json');
+    }
+
+    public function startRun(int $campaignId, int $target, string $mode, ?int $userId, ?array $selection = null): int
+    {
+        $row = [
             'campaign_id' => $campaignId,
             'mode'        => $mode,
             'target_count'=> $target,
             'started_by'  => $userId,
             'started_at'  => now(),
-        ]);
+        ];
+        // A hand-picked audience rides on the run row so the background worker
+        // can honour it ticks later, long after the browser has gone.
+        if (!empty($selection) && $this->supportsRunSelection()) {
+            $row['selection_json'] = json_encode(array_values($selection));
+        }
+        return (int) DB::table('t_crm_campaign_send_runs')->insertGetId($row);
     }
 
     public function finishRun(int $runId, string $reason): void

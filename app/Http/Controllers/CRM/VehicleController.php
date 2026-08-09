@@ -472,10 +472,25 @@ class VehicleController extends Controller
     private function settleDisplacedRider(VehicleService $svc, ?int $userId,
                                           ?string $action, $vehicleId, ?string $date): string
     {
-        if (!$userId || !$action || $action === 'none') {
-            return $userId && $action === 'none'
-                ? 'The previous rider now has no bike, so he will not be asked for meter readings.'
-                : '';
+        if (!$userId) {
+            return '';
+        }
+
+        // ⭐ OWNER RULING (Aug-8): a rider with his OWN registered bike falls back to
+        //   it BY DEFAULT — "no bike" only when the manager says so specifically.
+        //   The live case: Danish gave DCR-799 back on 7 Aug and was left holding
+        //   nothing while his own bike sat unassigned, so the registry stopped
+        //   asking him for meters the moment he went back to riding it. No answer
+        //   from the client (or an older client that never asks) now means "back on
+        //   his own bike" whenever that bike exists and is free.
+        if (!$action) {
+            $action = $svc->ownVehicleFor($userId) ? 'own' : null;
+            if (!$action) {
+                return '';   // nothing to fall back to — the fleet screen shows him under "no machine"
+            }
+        }
+        if ($action === 'none') {
+            return 'The previous rider now has no bike, so he will not be asked for meter readings.';
         }
 
         try {
@@ -558,8 +573,9 @@ class VehicleController extends Controller
                 'user_id'    => $uid,
                 'name'       => DB::table('t_sys_user')->where('id', $uid)->value('fullname') ?: 'the current rider',
                 'own'        => $svc->ownVehicleFor($uid),
+                // Company machines only — same reasoning as previewAssign's list.
                 'spare'      => array_values(array_filter($svc->spareVehicles(),
-                                    fn ($s) => $s['id'] !== (int) $id)),
+                                    fn ($s) => $s['id'] !== (int) $id && $s['is_company'])),
                 'goes_quiet' => $svc->rulesEnabled(),
             ],
         ]);

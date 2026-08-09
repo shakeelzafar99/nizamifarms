@@ -9,25 +9,52 @@
 
     <a class="back-link" href="{{ route('fin.hub.vendors', ['scope' => $scope]) }}">‹ Vendors</a>
 
-    <div class="bal-head">
+    @php
+        // Same state vocabulary as the vendors list, for ONE vendor.
+        // ⚠ $lastPayment is range-scoped by vendorLedger() — under a filter it is the last payment
+        // IN THAT RANGE, not overall. So the "silent Nd" judgement is only made on all-history;
+        // a filtered view shows plain owes/settled rather than a number that would be a lie.
+        $vdStaleDays = 30;
+        $vdLastDate  = $lastPayment ? \Carbon\Carbon::parse($lastPayment->transaction_date) : null;
+        $vdDays = (!$hasRange && $vdLastDate)
+            ? (int) abs($vdLastDate->copy()->startOfDay()->diffInDays(\Carbon\Carbon::now()->startOfDay()))
+            : null;
+        if ($payable > 0.5) {
+            $vdStale = !$hasRange && ($vdDays === null || $vdDays >= $vdStaleDays);
+            $vdState = $vdStale ? 'stale' : 'owes';
+            $vdPill  = $vdStale
+                ? ['stale', $vdDays === null ? 'owes · never paid' : 'owes · silent ' . $vdDays . 'd']
+                : ['owes', 'owes'];
+        } else {
+            $vdState = 'settled';
+            $vdPill  = ['ok', abs($payable) < 0.005 ? 'settled' : 'in credit'];
+        }
+        $vdAgo = $vdDays === null ? null
+            : ($vdDays === 0 ? 'today' : ($vdDays === 1 ? 'yesterday' : $vdDays . ' days ago'));
+        $vdAgoCls = $vdDays === null ? '' : ($vdDays <= 1 ? 'fresh' : ($vdDays >= $vdStaleDays ? 'old' : ''));
+    @endphp
+
+    <div class="bal-head vs-{{ $vdState }}">
         <div class="bal-main">
-            <div class="b-label">NF owes</div>
+            <div class="b-label">NF owes <span class="status {{ $vdPill[0] }} b-pill">{{ $vdPill[1] }}</span></div>
             <div class="num-lg num" style="color:{{ $payable > 0.5 ? 'var(--owe)' : 'var(--in)' }}">Rs. {{ number_format($payable, 2) }}</div>
             <div class="b-note">{{ $vendor->vendor_name }} <span class="mono" style="color:var(--ink3)">{{ optional($account)->account_code }}</span> · {{ $vendor->default_purchase_method === 'by_weight' ? 'by weight' : 'by total' }}</div>
         </div>
         <div class="bal-chips">
-            <div class="stat-chip">Purchases{{ $hasRange ? ' · period' : '' }}<b class="num">Rs. {{ number_format($periodPurchases, 0) }}</b></div>
-            <div class="stat-chip">Payments{{ $hasRange ? ' · period' : '' }}<b class="num">Rs. {{ number_format($periodPayments, 0) }}</b></div>
-            <div class="stat-chip">Last payment<b>{{ $lastPayment ? \Carbon\Carbon::parse($lastPayment->transaction_date)->format('M d') : '—' }}</b></div>
+            <div class="stat-chip sc-owe">Purchases{{ $hasRange ? ' · period' : '' }}<b class="num">Rs. {{ number_format($periodPurchases, 0) }}</b></div>
+            <div class="stat-chip sc-in">Payments{{ $hasRange ? ' · period' : '' }}<b class="num">Rs. {{ number_format($periodPayments, 0) }}</b></div>
+            <div class="stat-chip {{ $vdState === 'stale' ? 'sc-old' : '' }}">Last payment{{ $hasRange ? ' · period' : '' }}<b>{{ $vdLastDate ? $vdLastDate->format('M d') : '—' }}</b>
+                @if($vdAgo)<span class="sc-ago {{ $vdAgoCls }}">{{ $vdAgo }}</span>@endif
+            </div>
         </div>
         <div class="bal-actions">
             @if($vendor->default_purchase_method === 'by_weight')
-                @if(!auth()->user()?->isReadOnly())<button class="btn primary" type="button" onclick="hubOpenWeighted()">⚖ Purchase</button>@endif
+                @if(!auth()->user()?->isReadOnly())<button class="btn solid-owe" type="button" onclick="hubOpenWeighted()">⚖ Purchase</button>@endif
                 <button class="btn" type="button" onclick="hubOpenProducts()" title="Manage this vendor's products">📦 Products</button>
             @else
-                @if(!auth()->user()?->isReadOnly())<button class="btn primary" type="button" onclick="hubOpenPurchase()">＋ Purchase</button>@endif
+                @if(!auth()->user()?->isReadOnly())<button class="btn solid-owe" type="button" onclick="hubOpenPurchase()">＋ Purchase</button>@endif
             @endif
-            @if(!auth()->user()?->isReadOnly())<button class="btn" type="button" onclick="hubOpenPayment()">💵 Payment</button>@endif
+            @if(!auth()->user()?->isReadOnly())<button class="btn solid-in" type="button" onclick="hubOpenPayment()">💵 Payment</button>@endif
             <button class="btn" type="button" onclick="hubOpenReport()">📊 Report</button>
         </div>
     </div>
@@ -79,7 +106,7 @@
                     <span class="m-caret">▸</span>
                     <b class="m-label">{{ $m['label'] }}</b>
                     <span class="m-count">{{ $m['count'] }} {{ \Illuminate\Support\Str::plural('entry', $m['count']) }}</span>
-                    <span class="m-sums">📦 Rs. {{ number_format($m['purchases'], 0) }} · 💵 Rs. {{ number_format($m['payments'], 0) }}</span>
+                    <span class="m-sums"><span class="s-pur {{ $m['purchases'] > 0 ? '' : 'z' }}">📦 Rs. {{ number_format($m['purchases'], 0) }}</span> · <span class="s-pay {{ $m['payments'] > 0 ? '' : 'z' }}">💵 Rs. {{ number_format($m['payments'], 0) }}</span></span>
                     <span class="day-net {{ $mCls }}">{{ $mTxt }}</span>
                     <span class="m-closing">balance <b class="num" style="color:{{ $m['closing'] > 0.5 ? 'var(--owe)' : 'var(--ink2)' }}">Rs. {{ number_format($m['closing'], 0) }}</b></span>
                 </button>

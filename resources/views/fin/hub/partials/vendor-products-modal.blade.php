@@ -55,7 +55,7 @@
                             <button class="mini-btn" type="button" onclick="hubPrAction('{{ $p->id }}/set-default', 'Default set')" title="Pre-select this product on purchase lines">★ Default</button>
                         @endif
                         <button class="mini-btn" type="button" onclick="hubPrAction('{{ $p->id }}/toggle', '{{ $p->is_active ? 'Switched off' : 'Switched on' }}')">{{ $p->is_active ? 'Turn off' : 'Turn on' }}</button>
-                        <button class="mini-btn" type="button" style="color:var(--out)" onclick="hubPrDelete({{ $p->id }}, @json($p->product_name))">Delete</button>
+                        <button class="mini-btn danger" type="button" onclick="hubPrDelete({{ $p->id }}, @json($p->product_name))">Delete</button>
                     </span>
                     @endunless
                 </div>

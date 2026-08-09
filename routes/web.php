@@ -322,8 +322,15 @@ Route::middleware(['auth'])->group(function () {
     Route::get('/orders/delivery-scan/settings', [OrderController::class, 'getDeliveryScanSettings'])->name('orders.delivery-scan.settings.get');
     Route::post('/orders/delivery-scan/settings', [OrderController::class, 'saveDeliveryScanSettings'])->name('orders.delivery-scan.settings.save');
     // Receipt printout field config (operations "More" menu). Static paths before /orders/{id}.
-    Route::get('/orders/receipt-config/settings', [OrderController::class, 'getReceiptPrintConfig'])->name('orders.receipt-config.settings.get');
-    Route::post('/orders/receipt-config/settings', [OrderController::class, 'saveReceiptPrintConfig'])->name('orders.receipt-config.settings.save');
+    // ⚠ The path deliberately avoids the words "config"/"settings": the host's StackProtect bot
+    // filter challenges /settings-shaped URLs BEFORE they reach Laravel (verified Aug-2026 — see
+    // WORKLOG), which broke this modal on prod while dev worked. Same handlers, new address.
+    Route::get('/orders/receipt-print-fields', [OrderController::class, 'getReceiptPrintConfig'])->name('orders.receipt-config.settings.get');
+    Route::post('/orders/receipt-print-fields', [OrderController::class, 'saveReceiptPrintConfig'])->name('orders.receipt-config.settings.save');
+    // Deprecated aliases of the two routes above (old path, blocked by StackProtect on prod).
+    // Kept one release so a partial upload can never strand the modal; delete after both files ship.
+    Route::get('/orders/receipt-config/settings', [OrderController::class, 'getReceiptPrintConfig'])->name('orders.receipt-config.settings.get.legacy');
+    Route::post('/orders/receipt-config/settings', [OrderController::class, 'saveReceiptPrintConfig'])->name('orders.receipt-config.settings.save.legacy');
     Route::get('/orders/{id}', [OrderController::class, 'show'])->name('orders.show');
     Route::get('/orders/{id}/invoice', [OrderController::class, 'invoice'])->name('orders.invoice');
     Route::get('/orders/{id}/edit-tab', [OrderController::class, 'editTab'])->name('orders.edit.tab');

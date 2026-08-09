@@ -7,10 +7,10 @@
     --bg:#F4F6F5; --surface:#FFFFFF; --surface2:#ECF0EE; --line:#D9E1DC; --line2:#E7ECE9;
     --ink:#18221C; --ink2:#54635B; --ink3:#7E8C84;
     --accent:#0E7A52; --accent-ink:#FFFFFF; --accent-soft:#E1F0E9; --accent-line:#B9DCCC;
-    --in:#177A3D; --in-soft:#E3F2E8;
+    --in:#177A3D; --in-soft:#E3F2E8; --in-ink:#FFFFFF;
     --out:#B0392F; --out-soft:#F8E9E7;
-    --owe:#9A5C0B; --owe-soft:#FAEFDB;
-    --info:#28609F; --info-soft:#E4EDF7;
+    --owe:#9A5C0B; --owe-soft:#FAEFDB; --owe-ink:#FFFFFF;
+    --info:#28609F; --info-soft:#E4EDF7; --info-ink:#FFFFFF;
     --shadow:0 1px 2px rgba(24,34,28,.06),0 4px 14px rgba(24,34,28,.06);
     --shadow-lg:0 8px 32px rgba(24,34,28,.18);
     --radius:10px;
@@ -22,10 +22,10 @@
     --bg:#0E1411; --surface:#151C18; --surface2:#1C2420; --line:#2A342E; --line2:#232C27;
     --ink:#E5ECE7; --ink2:#9DAFA5; --ink3:#6F7F77;
     --accent:#3FC493; --accent-ink:#07281A; --accent-soft:#143529; --accent-line:#1F4A37;
-    --in:#52C97F; --in-soft:#12331F;
+    --in:#52C97F; --in-soft:#12331F; --in-ink:#07281A;
     --out:#EF8B7D; --out-soft:#3A1E1A;
-    --owe:#E0A44F; --owe-soft:#382A12;
-    --info:#82B2E5; --info-soft:#17293D;
+    --owe:#E0A44F; --owe-soft:#382A12; --owe-ink:#2A1B05;
+    --info:#82B2E5; --info-soft:#17293D; --info-ink:#0A1F33;
     --shadow:0 1px 2px rgba(0,0,0,.35),0 4px 14px rgba(0,0,0,.3);
     --shadow-lg:0 8px 32px rgba(0,0,0,.5);
   }
@@ -496,6 +496,194 @@
   .hubmodal .bankchip.unsure{border-style:dashed;color:var(--owe);border-color:color-mix(in srgb,var(--owe) 40%,transparent)}
   .hubmodal .bankchip.unsure.on{background:var(--owe-soft);border-color:var(--owe);color:var(--owe)}
   .hubmodal .inactive-tag{font-size:10px;font-weight:700;color:var(--ink3);background:var(--surface2);padding:1px 6px;border-radius:5px}
+
+  /* ==========================================================================
+     VENDORS LIST — state colour system.
+     Borrowed from the Online Approvals page: every row states what it IS in
+     colour, every button states what it DOES in colour. Four states, one
+     meaning each:
+       amber (owe)  = NF owes this vendor
+       red   (out)  = NF owes AND no payment for 30+ days   <- the one to act on
+       green (in)   = settled, but active in the period
+       grey  (ink3) = idle — no balance, no movement this period
+     Everything here is namespaced to vendors-page classes (.vstile, .vchip,
+     .v-row, .vstatus, .tc-*, .mini-btn modifiers) so no other Hub page moves.
+     ========================================================================== */
+
+  /* state tiles — the old info tiles, now clickable filters */
+  .nfhub .vstate{display:grid;grid-template-columns:repeat(auto-fit,minmax(168px,1fr));gap:12px;margin-bottom:12px}
+  .nfhub .vstile{background:var(--surface);border:1.5px solid var(--line);border-top-width:4px;border-radius:12px;
+    padding:12px 15px;text-align:left;box-shadow:var(--shadow);cursor:pointer;width:100%;display:block;
+    transition:transform .12s,box-shadow .12s,background .12s,border-color .12s}
+  .nfhub .vstile:hover{transform:translateY(-1px);box-shadow:var(--shadow-lg)}
+  .nfhub .vstile .v-label{font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--ink3);
+    font-weight:800;display:flex;align-items:center;gap:6px}
+  .nfhub .vstile .v-count{font-size:24px;font-weight:800;margin:3px 0 1px;line-height:1.1}
+  .nfhub .vstile .v-money{font-size:12.5px;font-weight:700;color:var(--ink2)}
+  .nfhub .vstile.s-all{border-top-color:var(--info)}
+  .nfhub .vstile.s-owes{border-top-color:var(--owe)}      .nfhub .vstile.s-owes .v-money{color:var(--owe)}
+  .nfhub .vstile.s-stale{border-top-color:var(--out)}     .nfhub .vstile.s-stale .v-money{color:var(--out)}
+  .nfhub .vstile.s-settled{border-top-color:var(--in)}    .nfhub .vstile.s-settled .v-money{color:var(--in)}
+  .nfhub .vstile.on.s-all{background:var(--info-soft);border-color:var(--info)}
+  .nfhub .vstile.on.s-owes{background:var(--owe-soft);border-color:var(--owe)}
+  .nfhub .vstile.on.s-stale{background:var(--out-soft);border-color:var(--out)}
+  .nfhub .vstile.on.s-settled{background:var(--in-soft);border-color:var(--in)}
+  .nfhub .vstile[data-empty="1"]{opacity:.5}
+
+  /* period figures (the old Purchases/Payments tiles) kept as one quiet strip */
+  .nfhub .period-strip{display:flex;gap:9px;flex-wrap:wrap;align-items:center;margin-bottom:14px;font-size:12.5px;color:var(--ink2)}
+  .nfhub .period-strip .pchip{background:var(--surface);border:1px solid var(--line);border-radius:99px;
+    padding:4px 13px;display:inline-flex;gap:7px;align-items:center;box-shadow:var(--shadow);white-space:nowrap}
+  .nfhub .period-strip .pchip b{font-weight:700;color:var(--ink)}
+  .nfhub .period-strip .pchip b.g{color:var(--in)} .nfhub .period-strip .pchip b.o{color:var(--owe)}
+
+  /* filter chips (type / business unit) inside the filter bar */
+  .nfhub .chip-rows{display:flex;flex-direction:column;gap:8px;margin-top:10px;padding-top:10px;
+    border-top:1px dashed var(--line2)}
+  .nfhub .chip-row{display:flex;align-items:center;gap:7px;flex-wrap:wrap}
+  .nfhub .chip-row .c-label{font-size:10px;letter-spacing:.06em;text-transform:uppercase;color:var(--ink3);
+    font-weight:700;min-width:42px}
+  .nfhub .vchip{border:1.5px solid var(--line);background:var(--surface);color:var(--ink2);border-radius:99px;
+    padding:4px 13px;font-size:12px;font-weight:700;cursor:pointer;transition:all .12s;
+    display:inline-flex;gap:6px;align-items:center;white-space:nowrap}
+  .nfhub .vchip:hover{border-color:var(--ink3);color:var(--ink)}
+  .nfhub .vchip .cdot{width:8px;height:8px;border-radius:50%;flex:0 0 auto}
+  .nfhub .vchip .cnt{background:var(--surface2);border-radius:99px;padding:0 7px;font-size:11px;color:var(--ink3)}
+  .nfhub .vchip.on{background:var(--info);border-color:var(--info);color:var(--info-ink)}
+  .nfhub .vchip.on .cnt{background:color-mix(in srgb,var(--info-ink) 22%,transparent);color:var(--info-ink)}
+  /* unselected chips still carry a hint of the colour they stand for */
+  .nfhub .vchip.c-weight{border-color:color-mix(in srgb,var(--info) 45%,transparent)}
+  .nfhub .vchip.c-total{border-color:color-mix(in srgb,var(--accent) 45%,transparent)}
+  .nfhub .vchip.c-weight.on{background:var(--info);border-color:var(--info)}
+  .nfhub .vchip.c-total.on{background:var(--accent);border-color:var(--accent);color:var(--accent-ink)}
+  .nfhub .vchip.c-total.on .cnt{color:var(--accent-ink)}
+
+  /* legend in the card header — replaces the "amber = NF owes" footnote */
+  .nfhub .legend{display:flex;gap:13px;flex-wrap:wrap;font-size:11.5px;color:var(--ink2);align-items:center}
+  .nfhub .legend span{display:inline-flex;align-items:center;gap:5px;font-weight:600;white-space:nowrap}
+  .nfhub .legend i{width:9px;height:9px;border-radius:3px;display:inline-block;flex:0 0 auto}
+  .nfhub .legend .l-owe i{background:var(--owe)}
+  .nfhub .legend .l-stale i{background:var(--out)}
+  .nfhub .legend .l-ok i{background:var(--in)}
+  .nfhub .legend .l-idle i{background:var(--ink3);opacity:.5}
+
+  /* vendor rows: 4px left state bar + a faint tint of the same colour */
+  .nfhub table.vendors-table{min-width:900px}
+  .nfhub tbody tr.v-row{cursor:pointer}
+  .nfhub tbody tr.v-row > td:first-child{border-left:4px solid transparent}
+  .nfhub tbody tr.v-row.st-owes > td{background:color-mix(in srgb,var(--owe) 5%,var(--surface))}
+  .nfhub tbody tr.v-row.st-owes > td:first-child{border-left-color:var(--owe)}
+  .nfhub tbody tr.v-row.st-stale > td{background:color-mix(in srgb,var(--out) 5%,var(--surface))}
+  .nfhub tbody tr.v-row.st-stale > td:first-child{border-left-color:var(--out)}
+  .nfhub tbody tr.v-row.st-settled > td{background:color-mix(in srgb,var(--in) 4%,var(--surface))}
+  .nfhub tbody tr.v-row.st-settled > td:first-child{border-left-color:var(--in)}
+  .nfhub tbody tr.v-row.st-idle > td{background:var(--surface)}
+  .nfhub tbody tr.v-row.st-idle > td:first-child{border-left-color:var(--line)}
+  .nfhub tbody tr.v-row.st-idle .v-name,.nfhub tbody tr.v-row.st-idle .amt{opacity:.62}
+  /* hover has to out-specify the tint above, so it is stated per state */
+  .nfhub tbody tr.v-row.st-owes:hover > td{background:color-mix(in srgb,var(--owe) 12%,var(--surface))}
+  .nfhub tbody tr.v-row.st-stale:hover > td{background:color-mix(in srgb,var(--out) 12%,var(--surface))}
+  .nfhub tbody tr.v-row.st-settled:hover > td{background:color-mix(in srgb,var(--in) 10%,var(--surface))}
+  .nfhub tbody tr.v-row.st-idle:hover > td{background:var(--surface2)}
+
+  /* vendor name cell */
+  .nfhub .v-name{font-weight:600;display:flex;align-items:center;gap:9px}
+  .nfhub tr.v-row .avatar{width:30px;height:30px;font-size:11px;font-weight:800}
+  .nfhub tr.v-row.st-owes .avatar{background:var(--owe-soft);color:var(--owe)}
+  .nfhub tr.v-row.st-stale .avatar{background:var(--out-soft);color:var(--out)}
+  .nfhub tr.v-row.st-settled .avatar{background:var(--in-soft);color:var(--in)}
+  .nfhub tr.v-row.st-idle .avatar{background:var(--surface2);color:var(--ink3)}
+  .nfhub .v-code{font-family:"Cascadia Mono",Consolas,ui-monospace,monospace;font-size:11px;
+    color:var(--ink3);margin-left:39px;display:block}
+
+  /* purchase-method chip, coloured by method (weight = blue, total = green) */
+  .nfhub .type-chip.tc-weight{background:var(--info-soft);color:var(--info)}
+  .nfhub .type-chip.tc-total{background:var(--accent-soft);color:var(--accent)}
+
+  /* state pill — same recipe as the existing .status pills */
+  .nfhub .status.owes{background:var(--owe-soft);color:var(--owe)}
+  .nfhub .status.stale{background:var(--out-soft);color:var(--out)}
+  .nfhub .status.idle{background:var(--surface2);color:var(--ink3)}
+
+  /* last-payment freshness under the date */
+  .nfhub .cell-date .ago{display:block;font-size:10.5px;font-weight:700;color:var(--ink3)}
+  .nfhub .cell-date .ago.fresh{color:var(--in)}
+  .nfhub .cell-date .ago.old{color:var(--out)}
+
+  /* amount colours in the list */
+  .nfhub .amt.zero{color:var(--ink3);font-weight:600}
+  .nfhub td.cell-num{color:var(--ink2)}
+
+  /* action buttons — colour by meaning, not all identical grey */
+  .nfhub .mini-btn.solid-info{background:var(--info);border-color:var(--info);color:var(--info-ink)}
+  .nfhub .mini-btn.solid-info:hover{color:var(--info-ink);filter:brightness(1.1)}
+  .nfhub .mini-btn.danger{color:var(--out);border-color:color-mix(in srgb,var(--out) 40%,transparent)}
+  .nfhub .mini-btn.danger:hover{background:var(--out-soft);border-color:var(--out);color:var(--out)}
+
+  /* business-unit section header: owed total as a pill */
+  .nfhub .bu-owed{display:inline-flex;align-items:center;gap:5px;background:var(--owe-soft);
+    border-radius:99px;padding:1px 10px;font-weight:800}
+  .nfhub .bu-owed::before{content:"";width:6px;height:6px;border-radius:50%;background:currentColor}
+
+  @media (max-width:760px){
+    .nfhub .chip-row .c-label{min-width:0;width:100%}
+    .nfhub .card-head .legend{width:100%}
+  }
+
+  /* ==========================================================================
+     VENDOR STATEMENT (detail page) — the same colour grammar as the list.
+     A vendor statement only ever holds two kinds of row, and they are exact
+     opposites:  amber = purchase (grows what NF owes) · green = payment (pays
+     it down). Those were already the two column colours; this puts the same
+     pair on the row, the type chip, the day/month sums and the quick-add
+     buttons, so the statement can be read by shape instead of by number.
+     ⚠ vendor-day-groups.blade.php is ALSO the lazy-loaded month response, so
+     everything here is pure CSS on server-rendered classes — never page-load JS.
+     ========================================================================== */
+
+  /* balance header: state accent + inline pill */
+  .nfhub .bal-head.vs-owes{border-left:4px solid var(--owe)}
+  .nfhub .bal-head.vs-stale{border-left:4px solid var(--out)}
+  .nfhub .bal-head.vs-settled{border-left:4px solid var(--in)}
+  .nfhub .b-label .b-pill{text-transform:none;letter-spacing:0;margin-left:8px;vertical-align:1px}
+
+  /* stat chips coloured by what they measure */
+  .nfhub .stat-chip.sc-owe{background:var(--owe-soft)} .nfhub .stat-chip.sc-owe b{color:var(--owe)}
+  .nfhub .stat-chip.sc-in{background:var(--in-soft)}   .nfhub .stat-chip.sc-in b{color:var(--in)}
+  .nfhub .stat-chip.sc-old{background:var(--out-soft)} .nfhub .stat-chip.sc-old b{color:var(--out)}
+  .nfhub .stat-chip .sc-ago{display:block;font-size:10.5px;font-weight:700;color:var(--ink3);margin-top:1px}
+  .nfhub .stat-chip .sc-ago.fresh{color:var(--in)} .nfhub .stat-chip .sc-ago.old{color:var(--out)}
+
+  /* the two write-actions carry the colour of the column they write into */
+  .nfhub .btn.solid-owe{background:var(--owe);border-color:var(--owe);color:var(--owe-ink)}
+  .nfhub .btn.solid-owe:hover{color:var(--owe-ink);filter:brightness(1.06)}
+  .nfhub .btn.solid-in{background:var(--in);border-color:var(--in);color:var(--in-ink)}
+  .nfhub .btn.solid-in:hover{color:var(--in-ink);filter:brightness(1.06)}
+
+  /* day / month sum pairs */
+  .nfhub .s-pur{color:var(--owe);font-weight:700}
+  .nfhub .s-pay{color:var(--in);font-weight:700}
+  .nfhub .s-pur.z,.nfhub .s-pay.z{color:var(--ink3);font-weight:600}
+
+  /* per-day quick-add buttons, tinted to their target column */
+  .nfhub .mini-btn.tint-owe{color:var(--owe);border-color:color-mix(in srgb,var(--owe) 40%,transparent)}
+  .nfhub .mini-btn.tint-owe:hover{background:var(--owe-soft);border-color:var(--owe);color:var(--owe)}
+  .nfhub .mini-btn.tint-in{color:var(--in);border-color:color-mix(in srgb,var(--in) 40%,transparent)}
+  .nfhub .mini-btn.tint-in:hover{background:var(--in-soft);border-color:var(--in);color:var(--in)}
+
+  /* statement rows: 4px left bar + faint tint, purchase vs payment.
+     Hover is restated per kind because the generic .t-row:hover would otherwise
+     tie on specificity and wipe the tint. */
+  .nfhub tbody tr.t-row.e-purchase > td:first-child{border-left:4px solid var(--owe)}
+  .nfhub tbody tr.t-row.e-payment  > td:first-child{border-left:4px solid var(--in)}
+  .nfhub tbody tr.t-row.e-purchase > td{background:color-mix(in srgb,var(--owe) 4%,var(--surface))}
+  .nfhub tbody tr.t-row.e-payment  > td{background:color-mix(in srgb,var(--in) 4%,var(--surface))}
+  .nfhub tbody tr.t-row.e-purchase:hover > td{background:color-mix(in srgb,var(--owe) 11%,var(--surface))}
+  .nfhub tbody tr.t-row.e-payment:hover  > td{background:color-mix(in srgb,var(--in) 10%,var(--surface))}
+
+  /* entry type chip */
+  .nfhub .type-chip.tc-purchase{background:var(--owe-soft);color:var(--owe)}
+  .nfhub .type-chip.tc-payment{background:var(--in-soft);color:var(--in)}
 
   /* placeholder */
   .nfhub .ph{background:var(--surface);border:1px dashed var(--line);border-radius:var(--radius);

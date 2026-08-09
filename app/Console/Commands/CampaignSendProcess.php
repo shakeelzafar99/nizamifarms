@@ -94,10 +94,30 @@ class CampaignSendProcess extends Command
                 return self::SUCCESS;
             }
 
+            // A hand-picked audience stored on the run row (selection_json).
+            // Null = ordinary whole-campaign send by ranking. A selection run
+            // must NEVER widen to the whole campaign — if the stored selection
+            // cannot be read, stop the run instead of guessing.
+            $selection = null;
+            $rawSelection = $run->selection_json ?? null;
+            if ($rawSelection !== null && $rawSelection !== '') {
+                $decoded = json_decode($rawSelection, true);
+                $selection = is_array($decoded)
+                    ? array_values(array_filter(array_map('intval', $decoded)))
+                    : [];
+                if (empty($selection)) {
+                    $service->finishRun((int) $run->id, 'no_eligible');
+                    $this->markIdle($campaign->id, 'The saved selection could not be read — nobody was messaged. Select and start again.');
+                    $this->warn('Campaign ' . $campaign->id . ' had an unreadable selection; run closed.');
+                    return self::SUCCESS;
+                }
+            }
+
             $budgetMs = max(5, (int) $this->option('budget')) * 1000;
 
             $result = $service->sendBatch((int) $campaign->id, [
                 'limit'          => $sessionLeft,
+                'customer_ids'   => $selection,
                 'include_failed' => false,
                 'mode'           => 'background',
                 'user_id'        => $run->started_by,
@@ -114,7 +134,7 @@ class CampaignSendProcess extends Command
                 $result['stop_reason'] ?? 'unknown'
             ));
 
-            $this->applyOutcome($service, (int) $campaign->id, (int) $run->id, $result);
+            $this->applyOutcome($service, (int) $campaign->id, (int) $run->id, $result, $selection !== null);
 
             return self::SUCCESS;
 
@@ -155,7 +175,7 @@ class CampaignSendProcess extends Command
      * the campaign with a human-readable reason so the operator understands why
      * it stalled instead of assuming it silently died.
      */
-    protected function applyOutcome(CampaignSendService $service, int $campaignId, int $runId, array $result): void
+    protected function applyOutcome(CampaignSendService $service, int $campaignId, int $runId, array $result, bool $hadSelection = false): void
     {
         $reason = $result['stop_reason'] ?? null;
 
@@ -195,7 +215,9 @@ class CampaignSendProcess extends Command
             case 'completed':
             case 'no_eligible':
                 $service->finishRun($runId, $reason);
-                $this->markIdle($campaignId, 'Everyone in this campaign has been messaged.');
+                $this->markIdle($campaignId, $hadSelection
+                    ? 'Everyone in your selection has been messaged.'
+                    : 'Everyone in this campaign has been messaged.');
                 break;
 
             case 'target_reached':

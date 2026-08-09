@@ -19119,7 +19119,9 @@ document.addEventListener('DOMContentLoaded', function() {
 
 <script>
 /* Receipt printout field config modal (operations "More" menu). Self-contained: builds its
-   own modal in JS. Reads/writes /orders/receipt-config/settings. Defaults every field ON
+   own modal in JS. Reads/writes /orders/receipt-print-fields (⚠ renamed from
+   /orders/receipt-config/settings — the host's StackProtect bot filter challenges
+   /settings-shaped URLs before they reach Laravel). Defaults every field ON
    (matches the printer's default), then applies saved values. */
 (function(){
   function csrf(){ var m=document.querySelector('meta[name="csrf-token"]'); return m?m.getAttribute('content'):''; }
@@ -19196,7 +19198,7 @@ document.addEventListener('DOMContentLoaded', function() {
        (files not uploaded) from a 419 (session expired) from a 500 (server error), which cost a
        round of guesswork once already. */
     var st=0;
-    fetch('/orders/receipt-config/settings',{method:'POST',headers:{'Content-Type':'application/json','X-Requested-With':'XMLHttpRequest','X-CSRF-TOKEN':csrf()},body:JSON.stringify(body)})
+    fetch('/orders/receipt-print-fields',{method:'POST',headers:{'Content-Type':'application/json','X-Requested-With':'XMLHttpRequest','X-CSRF-TOKEN':csrf()},body:JSON.stringify(body)})
       .then(function(r){ st=r.status; return r.json(); }).then(function(d){ hide(); alert(d&&d.success?'Receipt settings saved. New prints will use them.':((d&&d.message)||'Could not save settings.')); })
       .catch(function(){ alert('Could not save settings - the server returned '+(st?('HTTP '+st):'no response')+' instead of a result. Tell Claude this number.'); });
   }
@@ -19254,7 +19256,7 @@ document.addEventListener('DOMContentLoaded', function() {
        `config` object; anything else locks Save. */
     var st=0, httpOk=false;
     var snip=function(raw){ return String(raw==null?'':raw).replace(/\s+/g,' ').trim().slice(0,90); };
-    fetch('/orders/receipt-config/settings',{headers:{'X-Requested-With':'XMLHttpRequest'},cache:'no-store'})
+    fetch('/orders/receipt-print-fields',{headers:{'X-Requested-With':'XMLHttpRequest'},cache:'no-store'})
       .then(function(r){ st=r.status; httpOk=r.ok; return r.text(); })
       .then(function(raw){
         var d=null;

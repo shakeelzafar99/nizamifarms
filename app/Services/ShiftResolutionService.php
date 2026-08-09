@@ -340,14 +340,19 @@ class ShiftResolutionService
      */
     public function sumLateOvertimeMinutes(int $userId, string $startDate, string $endDate): array
     {
+        $otSvc = new \App\Services\HR\OvertimeService();
+        $cols = ['attendance_date', 'login_time', 'logout_time',
+                 'expected_shift_start', 'expected_shift_end',
+                 'late_minutes', 'overtime_minutes'];
+        if ($otSvc->hasUnlockColumn()) {
+            $cols[] = 'checkout_unlock_until';   // for the bypass re-base on unsnapshotted rows
+        }
         $rows = DB::table('t_ops_attendance')
             ->where('user_id', $userId)
             ->whereBetween('attendance_date', [$startDate, $endDate])
             ->whereNotNull('login_time')
             ->where('login_time', '!=', '')
-            ->get(['attendance_date', 'login_time', 'logout_time',
-                   'expected_shift_start', 'expected_shift_end',
-                   'late_minutes', 'overtime_minutes']);
+            ->get($cols);
 
         // Half-day dates carry NO lateness and NO overtime (owner's rule). Suppress at read only —
         // the frozen row is never mutated, so undoing the half-day restores the real numbers.
@@ -386,15 +391,14 @@ class ShiftResolutionService
                     }
                     if ($endRaw) {
                         $e = strtotime($date . ' ' . $endRaw);
-                        $o = strtotime($date . ' ' . $r->logout_time);
-                        // Overnight checkout: logout is a bare TIME on the shift's row, so a
-                        // past-midnight OUT reads EARLIER than the login. Roll it to the next
-                        // day — same rule OvertimeService::dailyOvertimeMinutes already applies.
-                        if (!empty($r->login_time) && $o < strtotime($date . ' ' . $r->login_time)) {
-                            $o += 86400;
-                        }
+                        // ⭐ Same bypass re-base as the snapshot stamper (owner ruling
+                        //   Aug-8) — a fallback that disagreed with the snapshot would
+                        //   change a rider's OT depending on WHICH code path rendered it.
+                        //   Normal checkouts keep their real time (midnight roll inside).
+                        $o = $otSvc->otEndTs($userId, $date, $r->login_time, $r->logout_time,
+                                             $r->checkout_unlock_until ?? null);
                         // Truncate seconds to whole minutes — matches legacy TIMESTAMPDIFF(MINUTE).
-                        $ot = ($o > $e) ? (int) (($o - $e) / 60) : 0;
+                        $ot = ($o !== null && $o > $e) ? (int) (($o - $e) / 60) : 0;
                     } else {
                         $ot = 0;
                     }
@@ -538,13 +542,16 @@ class ShiftResolutionService
             $update['overtime_minutes'] = null;
         } elseif (!empty($row->logout_time)) {
             $e = strtotime($date . ' ' . $end);
-            $o = strtotime($date . ' ' . $row->logout_time);
-            // Overnight checkout: a past-midnight OUT reads earlier than the login —
-            // roll to the next day (same rule as OvertimeService::dailyOvertimeMinutes).
-            if (!empty($row->login_time) && $o < strtotime($date . ' ' . $row->login_time)) {
-                $o += 86400;
-            }
-            $update['overtime_minutes'] = ($o > $e) ? (int) (($o - $e) / 60) : 0;
+            // ⭐ OT counts to when the WORK ended, not when the valve was used (owner
+            //   ruling Aug-8): a checkout that rode a manager unlock is re-based to
+            //   the last delivered order (null = nothing provable → 0 OT). A normal
+            //   checkout — office or last drop — keeps its real time, incl. the
+            //   past-midnight roll, exactly as before.
+            $o = (new \App\Services\HR\OvertimeService())->otEndTs(
+                $userId, $date, $row->login_time, $row->logout_time,
+                $row->checkout_unlock_until ?? null
+            );
+            $update['overtime_minutes'] = ($o !== null && $o > $e) ? (int) (($o - $e) / 60) : 0;
         }
 
         DB::table('t_ops_attendance')

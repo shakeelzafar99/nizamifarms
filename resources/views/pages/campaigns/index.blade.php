@@ -2185,10 +2185,12 @@ function openSendDialog(opts = {}) {
     const includeFailed = !!opts.includeFailed;
 
     // Default batch = what this campaign used last time, clamped to what's
-    // actually left and to today's remaining WhatsApp allowance.
+    // actually left and to today's remaining WhatsApp allowance. A hand-picked
+    // selection defaults to the WHOLE selection instead — the remembered limit
+    // once shrank a picked 73 to last wave's 61 and read as a re-send.
     const pool = useSelection ? selectedCustomerIds.length : (includeFailed ? (parseInt((campaignCounts||{}).failed||0)) : campaignEligible);
     const quotaLeft = (waQuota && waQuota.remaining !== null && waQuota.remaining !== undefined) ? waQuota.remaining : pool;
-    const wanted = Math.max(1, Math.min(campaignSessionLimit || 100, pool));
+    const wanted = useSelection ? pool : Math.max(1, Math.min(campaignSessionLimit || 100, pool));
     const proposed = Math.max(1, Math.min(wanted, quotaLeft || pool));
 
     sendDialog = {
@@ -2303,7 +2305,7 @@ function renderSendDialog() {
                 </div>
             </span>
         </label>
-        ${d.useSelection && d.mode === 'background' ? `<div style="margin-top:8px;font-size:11px;color:#92400e;background:#fffbeb;border:1px solid #fde68a;border-radius:6px;padding:8px;">Background sending works through the campaign's own order, not your hand-picked selection. Use "Send now" to message exactly who you ticked.</div>` : ''}
+        ${d.useSelection && d.mode === 'background' ? `<div style="margin-top:8px;font-size:11px;color:#166534;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:6px;padding:8px;">Only your hand-picked selection will be messaged — the server keeps sending after you close this page.</div>` : ''}
     `;
 
     const blocked = effective <= 0;
@@ -2352,13 +2354,17 @@ async function confirmSend() {
     if (btn) { btn.disabled = true; btn.innerHTML = '<span class="camp-spinner"></span> Starting...'; }
 
     if (d.mode === 'background') {
+        const payload = { limit: d.limit };
+        // The worker honours a hand-picked audience via the run row.
+        if (d.useSelection) payload.customer_ids = selectedCustomerIds.slice();
         const data = await apiFetch(`/campaigns/${activeCampaignId}/send-background`, {
             method: 'POST',
-            body: JSON.stringify({ limit: d.limit }),
+            body: JSON.stringify(payload),
         });
         closeSendDialog();
         if (data.success) {
             sendState = 'running';
+            if (d.useSelection) selectedCustomerIds = [];
             alert(data.message || 'Started in the background.');
             loadCampaignDetail(activeCampaignId, customerStatusFilter);
             loadCampaigns();

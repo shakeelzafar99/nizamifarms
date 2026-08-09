@@ -725,7 +725,11 @@ class CampaignWebController extends Controller
     {
         if ($deny = $this->denyIfCannotManage()) return $deny;
 
-        $request->validate(['limit' => 'required|integer|min:1|max:100000']);
+        $request->validate([
+            'limit'          => 'required|integer|min:1|max:100000',
+            'customer_ids'   => 'nullable|array',
+            'customer_ids.*' => 'integer',
+        ]);
 
         $campaign = DB::table('t_crm_campaigns')->where('id', $id)->where('status', 'active')->first();
         if (!$campaign) {
@@ -738,25 +742,60 @@ class CampaignWebController extends Controller
             return response()->json(['success' => false, 'message' => 'This campaign is already sending in the background.'], 409);
         }
 
-        $eligible = $this->sendService->eligibleCount((int) $id);
-        if ($eligible <= 0) {
-            return response()->json(['success' => false, 'message' => 'No one left to send to.'], 422);
+        // ---- Optional hand-picked audience -------------------------------
+        // The selection rides on the run row (selection_json), so the worker
+        // messages exactly who the operator ticked — nobody else. Without the
+        // column we refuse rather than silently fall back to the whole
+        // campaign: sending to the WRONG people is the one failure this
+        // feature exists to prevent.
+        $selection = null;
+        $requested = (array) $request->input('customer_ids', []);
+        if (!empty($requested)) {
+            if (!$this->sendService->supportsRunSelection()) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Background sending to a hand-picked selection needs a small database update that has not been run yet '
+                        . '(selection_json on t_crm_campaign_send_runs). Use "Send now" to message your selection, or run the pending SQL first.',
+                ], 422);
+            }
+            $selection = array_values(array_unique(array_map('intval', $requested)));
+            $eligible = (int) DB::table('t_crm_campaign_customers')
+                ->where('campaign_id', $id)
+                ->whereIn('customer_id', $selection)
+                ->where('status', 'pending')
+                ->count();
+            if ($eligible <= 0) {
+                return response()->json(['success' => false, 'message' => 'No one in your selection is still Pending.'], 422);
+            }
+        } else {
+            $eligible = $this->sendService->eligibleCount((int) $id);
+            if ($eligible <= 0) {
+                return response()->json(['success' => false, 'message' => 'No one left to send to.'], 422);
+            }
         }
 
         $limit = min((int) $request->input('limit'), $eligible);
-        $runId = $this->sendService->startRun((int) $id, $limit, 'background', Auth::id());
+        $runId = $this->sendService->startRun((int) $id, $limit, 'background', Auth::id(), $selection);
 
-        DB::table('t_crm_campaigns')->where('id', $id)->update([
+        $campaignUpdate = [
             'send_state'         => 'running',
             'send_mode'          => 'background',
             'active_run_id'      => $runId,
-            'session_limit'      => $limit,
             'send_paused_reason' => null,
             'updated_at'         => now(),
-        ]);
+        ];
+        // The remembered batch size steers the dialog prefill for ordinary
+        // ranking sends. A hand-picked selection is a one-off — remembering
+        // its size would puzzle the next session (it did: 73 selected, 61
+        // offered, read as "re-sending the old 61").
+        if ($selection === null) {
+            $campaignUpdate['session_limit'] = $limit;
+        }
+        DB::table('t_crm_campaigns')->where('id', $id)->update($campaignUpdate);
 
         Log::info('Campaign background send started', [
-            'campaign_id' => $id, 'run_id' => $runId, 'target' => $limit, 'user_id' => Auth::id(),
+            'campaign_id' => $id, 'run_id' => $runId, 'target' => $limit,
+            'user_id' => Auth::id(), 'selection' => $selection ? count($selection) : null,
         ]);
 
         return response()->json([
@@ -764,7 +803,8 @@ class CampaignWebController extends Controller
             'run_id'  => $runId,
             'target'  => $limit,
             'message' => "Started in the background — {$limit} message" . ($limit === 1 ? '' : 's')
-                . " will go out over the next few minutes. You can close this page.",
+                . ($selection !== null ? " will go to your selected customers" : " will go out")
+                . " over the next few minutes. You can close this page.",
             'background_enabled' => $this->sendService->backgroundEnabled(),
         ]);
     }
