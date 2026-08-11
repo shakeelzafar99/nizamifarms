@@ -198,6 +198,27 @@ and must not break. But for the values above, please use the explicit
 mapping (especially `processing -> preparing`), otherwise the customer
 sees a vague "In Progress" instead of "Preparing".
 
+#### 4.1a `out_for_delivery` is held until the order is really dispatched (Aug-2026)
+
+NF ops set `out_for_delivery` EARLY — while the order is still being packed and
+loaded, before there is a rider route or an ETA. Announcing that immediately
+gave the customer a live map of a rider parked at the store.
+
+So a status flagged in NF's Order Status Hub as *hold until dispatched*
+(currently `out_for_delivery` only) is **not sent while the order has no
+calculated ETA**. You are shown `processing` instead. When the store presses
+Dispatch, NF pushes the real `out_for_delivery` — and because the ETA now
+exists, that event carries a populated `eta_window`. Live tracking (section 12)
+returns a real fix from that moment, instead of `null`.
+
+Nothing to implement: both values are already in the table above. Notes:
+
+- `previous_status` remains NF's RAW internal status, so it can name a step the
+  customer never saw. Code your UI against `status`, as stated above.
+- `delivered` / `cancelled` / `refunded` are unaffected.
+- Cancelling and re-pressing Dispatch does NOT resend `out_for_delivery`.
+- Full write-up: `CUSTOMER-APP-OFD-HELD-UNTIL-DISPATCH-AUG2026.md`.
+
 ### 4.2 Matching our order number to yours (read this — easy to get wrong)
 
 - We send `order_number` as the **bare Shopify order number** (e.g.
@@ -516,9 +537,11 @@ Authorization: Bearer <CUSTOMER_APP_INBOUND_TOKEN>
   }
 }
 
-// 200 — no live fix yet (not out-for-delivery, no fresh GPS, or no
-// customer pin). Your app falls back to the timeline.
-{ "success": true, "tracking": null }
+// 200 — no live fix yet (not out-for-delivery, not dispatched yet, no fresh
+// GPS, or no customer pin). Your app falls back to the timeline.
+// `reason` is diagnostic: not_out_for_delivery | not_dispatched | gps_stale |
+// no_rider_assigned | no_destination. Treat an unknown value as "no fix".
+{ "success": true, "tracking": null, "reason": "not_dispatched" }
 
 // 404 — unknown order.
 { "success": false, "tracking": null }

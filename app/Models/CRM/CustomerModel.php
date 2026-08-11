@@ -31,6 +31,9 @@ class CustomerModel extends BaseModel
         'last_name',
         'company',
         'customer_type',
+        // Aug-2026: remembered payment choice ('cash'|'online'|null) applied as
+        // the pre-selection on both order forms. See normalizePaymentMethod().
+        'default_payment_method',
         // Mobile-app migration tag: set once the customer places an app-origin
         // order (Shopify source_name ios_app/android_app). Drives campaign
         // exclusion + the HQ order-source split. See [[shopify source channel]].
@@ -106,6 +109,43 @@ class CustomerModel extends BaseModel
     public function isShop(): bool
     {
         return $this->customer_type === self::TYPE_SHOP;
+    }
+
+    // The two payment choices the pickers offer, and the only values
+    // default_payment_method ever stores. Everything else in the system
+    // (cash_on_delivery, bank_transfer, card, free text from Shopify) folds
+    // into one of these two — see normalizePaymentMethod().
+    public const PAYMENT_CASH   = 'cash';
+    public const PAYMENT_ONLINE = 'online';
+
+    /**
+     * Aug-2026 — fold any payment_method string down to 'cash' | 'online',
+     * or null when there is nothing to fold (no default set).
+     *
+     * ⭐ This is deliberately NOT a new rule. The cash-vs-online question is
+     * already answered in exactly one place — PaymentChangeInvoiceHandler::
+     * isOnline() — which is what the WhatsApp invoice templates and the
+     * payment-change automation judge by, and what the orders page mirrors in
+     * JS as waClassifyPayment(). Delegating here keeps a customer's remembered
+     * default and the order's own method agreeing forever; a second copy of
+     * "does this string mean cash?" is how they would drift apart.
+     *
+     * Note the asymmetry that makes this safe: an ORDER stores whichever
+     * historical value its form has always written ('cash_on_delivery' on the
+     * regular NF path, 'cash' on the qurbani path), while this column stores
+     * the canonical choice. Reading is lossless in the direction that matters
+     * — the forms expand 'cash'/'online' back to their own values.
+     */
+    public static function normalizePaymentMethod($value): ?string
+    {
+        $pm = strtolower(trim((string) $value));
+        if ($pm === '') {
+            return null;
+        }
+
+        return \App\Services\WhatsApp\Automation\Handlers\PaymentChangeInvoiceHandler::isOnline($pm)
+            ? self::PAYMENT_ONLINE
+            : self::PAYMENT_CASH;
     }
 
     // Verified-pin lock (Jul-2026). Once a customer HAS a verified pin, riders

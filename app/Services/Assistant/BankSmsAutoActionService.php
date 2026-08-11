@@ -4,6 +4,7 @@ namespace App\Services\Assistant;
 
 use App\Models\FIN\PaymentSignal;
 use App\Services\Payments\Signals\PaymentSignalMatcher;
+use App\Services\Payments\Signals\PayerNameResolver;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
@@ -91,8 +92,11 @@ class BankSmsAutoActionService
             }
 
             $signal = $this->createSignal($sms, (int) $rule->entity_id);
-            $onlyIds = app(AssistantDraftService::class)->approvalsQueueOrderIds((int) $rule->entity_id);
-            $this->matcher->match($signal, $onlyIds);
+            // A mapped account is a deliberate human teaching, so identity is
+            // certain — but the invoice may not exist yet (it is created at
+            // DELIVERY, often minutes after the customer pays). Fall through to
+            // their still-open orders rather than dead-ending on an empty queue.
+            $this->matchWithinCustomer($signal, (int) $rule->entity_id, null);
             $signal->refresh();
 
             if (in_array($signal->status, [PaymentSignal::STATUS_MATCHED, PaymentSignal::STATUS_AMOUNT_MISMATCH], true)) {
@@ -127,6 +131,29 @@ class BankSmsAutoActionService
             ];
         }
 
+        // ⭐⭐ NAME ATTACH — ask WHO paid before falling back to "who owes this
+        // exact figure". The bank tells us a payer name on most credits, and
+        // until now nothing in the SMS path ever read it: identity was only
+        // ever taken from a mapped account, so an unmapped-but-named payer went
+        // straight to a blind amount guess. That is how a Rs 7,600 credit from
+        // "HAFIZ NOUMAN SIDDIQUE" landed on a stranger's Rs 7,533 invoice while
+        // Nouman's own Rs 7,400 order sat untouched (his figure was Rs 200 off,
+        // so only the NAME could have found it).
+        //
+        // Name-first also PREVENTS wrong amount guesses, not just enables right
+        // ones: on the Aug-2026 backlog it rescued three credits the amount-only
+        // rule would have assigned to the wrong customer outright.
+        //
+        // The resolved customer's own orders are the whole candidate set, queue
+        // first then open — so this can only ever move money toward the person
+        // the bank named, never toward a stranger.
+        if ($signal->status !== PaymentSignal::STATUS_DUPLICATE) {
+            $named = $this->attachByPayerName($sms, $signal);
+            if ($named) {
+                return $named;
+            }
+        }
+
         // AMOUNT-UNIQUE ATTACH (owner ruling Jul-2026): no proof to pair and no
         // identity — but if EXACTLY ONE order in the whole approvals queue has
         // this outstanding balance, that's ~certain in practice. Attach the
@@ -137,12 +164,12 @@ class BankSmsAutoActionService
         // Zero or several amount-matches → nothing (ambiguity = the Rs-36
         // lesson); the SMS just holds as before.
         if ($signal->status !== PaymentSignal::STATUS_DUPLICATE) {
-            $unique = $this->uniqueQueueOrderByAmount((float) $sms->amount);
+            $unique = $this->uniqueQueueOrderByAmount((float) $sms->amount, $sms->sms_at ?? null);
             if ($unique) {
                 $signal->matched_order_id    = $unique['order_id'];
                 $signal->matched_customer_id = $unique['customer_id'];
                 $signal->status              = PaymentSignal::STATUS_MATCHED;
-                $signal->match_reason        = 'amount_unique_sms';
+                $signal->match_reason        = PaymentSignal::REASON_AMOUNT_UNIQUE;
                 $signal->match_confidence    = 0.50;
                 $signal->save();
 
@@ -166,18 +193,169 @@ class BankSmsAutoActionService
     }
 
     /**
+     * Attach a credit to a customer someone/something else identified (today:
+     * the AI payer-name arbiter, during a resweep). Same order-picking as every
+     * other path — queue first, then their open orders — and the same guess
+     * semantics, so it stays retractable and never reads as verified.
+     *
+     * @return array|null  API-shaped summary, or null if nothing fitted.
+     */
+    public function attachResolvedCustomer(object $sms, int $customerId, string $guessReason): ?array
+    {
+        $signal = $sms->linked_signal_id ? PaymentSignal::find($sms->linked_signal_id) : null;
+        if ($signal && ($signal->paired_signal_id || $signal->matched_order_id)) {
+            return null; // already settled — don't touch it
+        }
+        if (!$signal) {
+            $signal = $this->createSignal($sms, $customerId);
+        }
+
+        if (!$this->matchWithinCustomer($signal, $customerId, $guessReason)) {
+            // Leave the fresh signal behind as the held record of this credit,
+            // exactly as the normal ladder would.
+            DB::table('t_ai_bank_sms')->where('id', $sms->id)->update([
+                'linked_signal_id' => $signal->id,
+                'updated_at'       => now(),
+            ]);
+            return null;
+        }
+
+        $signal->refresh();
+        DB::table('t_ai_bank_sms')->where('id', $sms->id)->update([
+            'linked_signal_id' => $signal->id,
+            'updated_at'       => now(),
+        ]);
+
+        return [
+            'action'       => 'ai_name_attach',
+            'order_number' => $this->orderNumber($signal->matched_order_id),
+            'verified'     => (bool) $signal->paired_signal_id,
+        ];
+    }
+
+    /**
+     * Resolve the payer's NAME to a customer and try to attach the credit to
+     * one of THEIR orders. Returns the API summary on success, null to fall
+     * through to the amount rules.
+     *
+     * ⚠⚠ A name hit alone is not a match. If the resolved customer has nothing
+     * outstanding, we fall through instead of suppressing the amount rules —
+     * during design, "A.CHAUDHRY" resolved to a customer literally named
+     * "Mrs Chaudhry" who owed nothing, and suppressing on the bare name would
+     * have killed the CORRECT amount match to Shaista Jahangir (whose learned
+     * alias "Awais Chaudhry" is the real explanation). Identity must produce an
+     * order to earn the right to override.
+     */
+    private function attachByPayerName(object $sms, PaymentSignal $signal): ?array
+    {
+        $resolved = app(PayerNameResolver::class)->resolve(
+            $sms->counterparty ?? null,
+            (float) $sms->amount,
+            $sms->sms_at ?: null
+        );
+        if (!$resolved) {
+            return null;
+        }
+
+        if (!$this->matchWithinCustomer($signal, $resolved['customer_id'], PaymentSignal::REASON_NAME_AMOUNT)) {
+            return null; // named, but they owe nothing that fits — not a match
+        }
+
+        $signal->refresh();
+        DB::table('t_ai_bank_sms')->where('id', $sms->id)->update([
+            'linked_signal_id' => $signal->id,
+            'updated_at'       => now(),
+        ]);
+
+        return [
+            'action'       => 'name_attach',
+            'customer'     => $resolved['customer_name'],
+            'order_number' => $this->orderNumber($signal->matched_order_id),
+            'verified'     => (bool) $signal->paired_signal_id,
+        ];
+    }
+
+    /**
+     * Attach a credit to the orders of ONE customer — every order of theirs
+     * that still owes money, queued for approval or not, in a SINGLE pass.
+     *
+     * Including the un-queued ones is the pay-before-delivery fix: invoices
+     * enter the approvals queue at DELIVERY — a mean of 21 hours after the
+     * order is placed on this data — so a customer paying at or before
+     * delivery routinely beats their own invoice into the queue. Stopping at
+     * the queue is what left those credits homeless.
+     *
+     * ONE pass, not queue-then-open, on purpose. The matcher's ladder ends
+     * with "nothing fits — attach to the newest order and flag the
+     * difference", so a queue-scoped first pass would CONSUME the credit
+     * there and the wider pass would never run: a customer with a queued
+     * Rs 5,000 invoice and an open Rs 7,400 order would get a Rs 7,400
+     * credit mismatch-flagged onto the 5,000 invoice while its exact fit sat
+     * one scope away. A single pass lets the ladder do its own prioritising —
+     * exact fit first, then a COMBINED set (one transfer settling several
+     * orders, which may mix queued and unqueued ones), and the flagged
+     * fallback only when every real fit has been ruled out.
+     *
+     * @param  string|null $guessReason  null when identity is established (a
+     *   mapped account); a GUESS_REASON when it was inferred from the name.
+     * @return bool  true if the signal now points at an order.
+     */
+    private function matchWithinCustomer(PaymentSignal $signal, int $customerId, ?string $guessReason): bool
+    {
+        $signal->matched_customer_id = $customerId;
+        $signal->matched_order_id    = null;
+        $signal->match_reason        = null;
+        $signal->match_confidence    = null;
+        $signal->status              = PaymentSignal::STATUS_NEW;
+        $signal->save();
+
+        $this->matcher->match($signal, null, $guessReason);
+        $signal->refresh();
+
+        if ($signal->matched_order_id) {
+            return true;
+        }
+
+        // Nothing fitted. Tidy the signal so downstream steps read it
+        // honestly — EXCEPT a duplicate verdict, which must survive: masking
+        // it would let the amount-unique step attach a credit that is already
+        // recorded elsewhere.
+        if ($signal->status !== PaymentSignal::STATUS_DUPLICATE) {
+            $signal->status           = PaymentSignal::STATUS_UNMATCHED;
+            $signal->match_reason     = 'bank_credit_unidentified';
+            $signal->match_confidence = null;
+            // An identity that was itself a guess goes too; a mapped account's
+            // identity is a fact and stays.
+            if ($guessReason !== null) {
+                $signal->matched_customer_id = null;
+            }
+            $signal->save();
+        }
+
+        return false;
+    }
+
+    /**
      * EXACTLY ONE approvals-queue order whose outstanding balance equals this
      * amount (within the invoice tolerance) — else null. Mirrors
      * AssistantWorkspaceController::suggestOrderByAmount (the inbox chip), so
      * what the approver sees attached and what Taimur is asked to confirm are
      * always the same order.
      */
-    private function uniqueQueueOrderByAmount(float $amount): ?array
+    private function uniqueQueueOrderByAmount(float $amount, $paidAt = null): ?array
     {
         if ($amount <= 0) {
             return null;
         }
         $tol = \App\Services\Payments\Signals\PaymentProofStatusService::amountTolerance();
+
+        // ⭐ The order must have EXISTED when the money was sent. This never
+        // mattered while the guess was only ever made in the same second the
+        // SMS arrived; the resweep now revisits held credits days later, and
+        // without a bound a week-old credit could drift onto an invoice raised
+        // long after it. The forward edge is a full day because genuine
+        // pre-payment happens — see PaymentSignalMatcher::guessOrderDateBounds().
+        [$from, $to] = PaymentSignalMatcher::guessOrderDateBounds($paidAt);
 
         $hits = DB::table('t_fin_ledger as l')
             ->join('t_crm_prod_order as o', 'o.id', '=', 'l.order_id')
@@ -186,6 +364,7 @@ class BankSmsAutoActionService
             ->whereIn('l.approval_status', ['pending', 'pending_l1', 'pending_l2'])
             ->whereRaw('ABS((o.total_price - COALESCE(o.total_paid,0)) - ?) <= ?', [$amount, $tol])
             ->whereRaw('(o.total_price - COALESCE(o.total_paid,0)) > 0.01')
+            ->whereBetween('o.order_date', [$from, $to])
             ->distinct()
             ->limit(2)
             ->get(['o.id as order_id', 'o.order_number', 'o.customer_id', 'c.first_name', 'c.last_name']);
@@ -195,17 +374,18 @@ class BankSmsAutoActionService
         }
         $h = $hits->first();
 
-        // If the order ALREADY has a screenshot proof, the proof flow is in
-        // progress and PAIRING (with its same-bank gate) is the correct joiner
-        // — an amount-only attach could weld a different bank's credit onto it
-        // (e.g. a Meezan SMS onto an HBL-proofed order). Attach is only for
-        // orders with NO proof yet (the no-screenshot case it was built for).
-        $hasProof = PaymentSignal::query()
+        // ⭐⭐ NO STACKING — an order that already carries ANY payment signal is
+        // spoken for. This used to look only for WhatsApp screenshots, on the
+        // reasoning that a screenshot means "pairing will join these properly".
+        // But it left the door open to the worse case: a SECOND bank guess
+        // piling onto the same invoice. Aug-2026 found SH-20443 wearing both a
+        // Rs 7,500 and a Rs 7,600 credit — one invoice cannot be paid twice by
+        // two strangers, and neither approver could tell which was real.
+        $occupied = PaymentSignal::query()
             ->where('matched_order_id', $h->order_id)
-            ->where('source', PaymentSignal::SOURCE_WHATSAPP)
             ->whereIn('status', [PaymentSignal::STATUS_MATCHED, PaymentSignal::STATUS_AMOUNT_MISMATCH])
             ->exists();
-        if ($hasProof) {
+        if ($occupied) {
             return null;
         }
 

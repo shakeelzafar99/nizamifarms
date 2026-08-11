@@ -134,6 +134,41 @@ class FirebaseService
     }
 
     /**
+     * A store/manager has ASKED the warehouse to send stock.
+     *
+     * Sent immediately (unlike the batched store-transfer alert further down): a
+     * request is a person waiting on an answer, not a stock movement that has
+     * already happened, so debouncing it would only add delay. Volume is low —
+     * one per product per shelf gap, and edits deliberately do NOT re-push.
+     *
+     * ⚠ Reuses the EXISTING 'khaas_planning' Android channel on purpose. Android
+     * channels are created at app install; a brand-new channel id would not exist
+     * on any APK already out there and the notification would be dropped silently.
+     * Targets access_khaas_mode — the warehouse side, i.e. whoever can fulfil it.
+     */
+    public function notifyTransferRequest($transferRequest): void
+    {
+        $productName = $transferRequest->product?->title
+            ?? \App\Models\CRM\ProductModel::where('id', $transferRequest->product_id)->value('title')
+            ?? 'an item';
+        $requesterName = $transferRequest->requester?->fullname
+            ?? \App\Models\User::where('id', $transferRequest->requested_by)->value('fullname')
+            ?? 'The store';
+
+        $this->sendToPermissionGroup('access_khaas_mode', [
+            'title' => 'Store needs stock',
+            'body' => "{$requesterName} requested {$transferRequest->quantity} × {$productName} — tap to send.",
+        ], [
+            'type' => 'khaas_transfer_request',
+            'request_id' => (string) $transferRequest->id,
+            'product_id' => (string) $transferRequest->product_id,
+        ], 'khaas_planning',
+            // The manager who asked often holds access_khaas_mode himself —
+            // never buzz the actor about their own action.
+            (int) $transferRequest->requested_by);
+    }
+
+    /**
      * Combined (debounced) store-transfer alerts. Instead of one push per moved
      * item, this batches all pending Warehouse->Store transfers per store into ONE
      * push once the batch has SETTLED (no new move for 5 min) or CAPPED (oldest is

@@ -837,6 +837,82 @@ class CampaignWebController extends Controller
         ]);
     }
 
+    /**
+     * Put never-delivered recipients back into Pending so they can be sent
+     * again. Meta's marketing frequency cap ("healthy ecosystem engagement",
+     * error 131049) drops some deliveries by recipient-side policy — the
+     * customer never received the message, so a later resend is a retry, not
+     * a repeat. Dedup already agrees: the delivery-failure webhook writes
+     * t_wa_messages.status='failed', which customersRecentlySentTemplate()
+     * excludes, so a requeued row is not dedup-skipped on the next send.
+     *
+     * Scope: rows with status='sent' AND undelivered_at set (send accepted,
+     * receipt came back failed). Optional customer_ids narrows to the
+     * per-row button; without it, the whole Undelivered list is requeued.
+     */
+    public function requeueUndelivered(Request $request, $id)
+    {
+        if ($deny = $this->denyIfCannotManage()) return $deny;
+
+        $request->validate([
+            'customer_ids'   => 'nullable|array',
+            'customer_ids.*' => 'integer',
+        ]);
+
+        $q = DB::table('t_crm_campaign_customers')
+            ->where('campaign_id', $id)
+            ->where('status', 'sent')
+            ->whereNotNull('undelivered_at');
+
+        $requested = (array) $request->input('customer_ids', []);
+        if (!empty($requested)) {
+            $q->whereIn('customer_id', array_map('intval', $requested));
+        }
+
+        // Back to a clean Pending row. The old attempt's story stays in
+        // t_wa_messages; clearing wa_message_id stops a late receipt for the
+        // OLD message from stamping the NEW attempt.
+        $update = [
+            'status'         => 'pending',
+            'claimed_at'     => null,
+            'sent_at'        => null,
+            'sent_by'        => null,
+            'delivered_at'   => null,
+            'read_at'        => null,
+            'undelivered_at' => null,
+            'error_message'  => null,
+        ];
+        if (Schema::hasColumn('t_crm_campaign_customers', 'wa_message_id')) {
+            $update['wa_message_id'] = null;
+        }
+        if (Schema::hasColumn('t_crm_campaign_customers', 'sent_via')) {
+            $update['sent_via'] = null;
+        }
+
+        $n = $q->update($update);
+
+        if ($n > 0) {
+            // The denormalised sent counter just shrank.
+            DB::table('t_crm_campaigns')->where('id', $id)->update([
+                'sent_count' => DB::raw('(SELECT COUNT(*) FROM t_crm_campaign_customers WHERE campaign_id = ' . (int) $id . " AND status = 'sent')"),
+                'updated_at' => now(),
+            ]);
+        }
+
+        Log::info('Campaign requeued undelivered', [
+            'campaign_id' => $id, 'rows' => $n, 'user_id' => Auth::id(),
+        ]);
+
+        return response()->json([
+            'success'  => true,
+            'requeued' => $n,
+            'message'  => $n > 0
+                ? "{$n} moved back to Pending. Tip: waiting a day or two before resending improves the odds WhatsApp delivers them this time."
+                : 'Nothing to requeue.',
+            'counts'   => $this->statsService->counts((int) $id),
+        ]);
+    }
+
     /** Live progress for a background run — polled by the detail panel. */
     public function sendStatus(Request $request, $id)
     {

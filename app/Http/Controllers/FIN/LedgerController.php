@@ -1636,16 +1636,32 @@ class LedgerController extends Controller
             }
 
             // ⭐ Generate full image URL if bill_image exists (using public-storage proxy like attendance)
-            $billImageUrl = null;
-            if ($transaction->bill_image) {
-                // If already a full URL, use as-is
-                if (str_starts_with($transaction->bill_image, 'http')) {
-                    $billImageUrl = $transaction->bill_image;
-                } else {
-                    // Use public-storage proxy endpoint (works for both web and mobile)
-                    $base = request()->getSchemeAndHttpHost();
-                    $billImageUrl = rtrim($base, '/') . '/public-storage/' . ltrim($transaction->bill_image, '/');
+            $toUrl = function ($path) {
+                if (!$path) {
+                    return null;
                 }
+                if (str_starts_with($path, 'http')) {
+                    return $path;
+                }
+                // Use public-storage proxy endpoint (works for both web and mobile)
+                $base = request()->getSchemeAndHttpHost();
+                return rtrim($base, '/') . '/public-storage/' . ltrim($path, '/');
+            };
+            $billImageUrl = $toUrl($transaction->bill_image);
+
+            // ⭐ ALL attached images (Aug-2026 multi-image). `bill_image` above stays the FIRST
+            // one — that is what the currently-installed APK and older surfaces read. Before the
+            // t_fin_ledger_images SQL runs this degrades to a one-entry list built from the column.
+            $billImages = [];
+            if (\App\Models\FIN\LedgerImageModel::ready()) {
+                $billImages = \App\Models\FIN\LedgerImageModel::forLedger((int) $transaction->id)
+                    ->map(function ($img) use ($toUrl) {
+                        return ['id' => $img->id, 'url' => $toUrl($img->image_path)];
+                    })
+                    ->values()
+                    ->toArray();
+            } elseif ($billImageUrl) {
+                $billImages = [['id' => null, 'url' => $billImageUrl]];
             }
 
             return response()->json([
@@ -1660,6 +1676,12 @@ class LedgerController extends Controller
                     'amount' => (float) $transaction->amount, // Ensure numeric
                     'adjustment_amount' => (float) ($transaction->adjustment_amount ?? 0), // For weighted purchases
                     'bill_image' => $billImageUrl, // ⭐ Full URL using public-storage proxy
+                    'bill_images' => $billImages, // ⭐ [{id, url}] — every attached image, display order
+                    // ⭐ For the bank re-tag UI: raw mode + current bank tag, and a plain flag
+                    // (transaction_type above is prettified for display, so it can't be tested).
+                    'mode' => $transaction->mode,
+                    'receiving_account_id' => $transaction->receiving_account_id,
+                    'is_vendor_payment' => $transaction->transaction_type === LedgerModel::TYPE_VENDOR_PAYMENT,
                     'line_items' => $lineItems,
                     'from_account' => $transaction->fromAccount ? $transaction->fromAccount->account_name : '-',
                     'from_account_id' => $transaction->from_account_id,
@@ -1710,17 +1732,38 @@ class LedgerController extends Controller
             $newAmount = $request->amount;
             $amountDifference = $newAmount - $oldAmount;
 
-            // Handle bill image upload
+            // Handle bill image upload. Aug-2026: a ledger row's images now live in
+            // t_fin_ledger_images with bill_image as a MIRROR of the first (see
+            // vendor_multi_bill_images_aug2026.sql). This single-file edit keeps its
+            // replace semantics, but must replace the first TABLE row too — updating
+            // only the column would leave the gallery pointing at the file deleted
+            // below, and the two stores disagreeing.
             if ($request->hasFile('bill_image')) {
                 // Delete old image if exists
                 if ($transaction->bill_image && \Storage::disk('public')->exists($transaction->bill_image)) {
                     \Storage::disk('public')->delete($transaction->bill_image);
                 }
-                
+
                 $file = $request->file('bill_image');
-                $filename = 'vendor_' . time() . '_edit.' . $file->getClientOriginalExtension();
+                $filename = 'vendor_' . time() . '_' . uniqid() . '_edit.' . $file->getClientOriginalExtension();
                 $billImagePath = $file->storeAs('vendor_bills', $filename, 'public');
                 $transaction->bill_image = $billImagePath;
+
+                if (\App\Models\FIN\LedgerImageModel::ready()) {
+                    $first = \App\Models\FIN\LedgerImageModel::where('ledger_id', $transaction->id)
+                        ->orderBy('sort_order')->orderBy('id')->first();
+                    if ($first) {
+                        $first->image_path = $billImagePath;
+                        $first->save();
+                    } else {
+                        \App\Models\FIN\LedgerImageModel::create([
+                            'ledger_id' => $transaction->id,
+                            'image_path' => $billImagePath,
+                            'sort_order' => 0,
+                            'created_by' => auth()->id(),
+                        ]);
+                    }
+                }
             }
 
             // Update transaction

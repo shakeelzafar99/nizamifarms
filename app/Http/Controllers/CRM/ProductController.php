@@ -2364,6 +2364,7 @@ class ProductController extends Controller
                 'is_lean' => 'nullable|boolean',
                 'is_active' => 'nullable|boolean',
                 'weight_factor' => 'nullable|numeric|min:0.01',
+                'unit_weight_kg' => 'nullable|numeric|min:0.001|max:99999',
                 'czerlop_product_id' => 'nullable|integer|min:1|max:99999',
                 'business_unit_id' => 'nullable|exists:t_fin_business_units,id',
 
@@ -2527,6 +2528,7 @@ class ProductController extends Controller
                 'is_lean' => 'nullable|boolean',
                 'is_active' => 'nullable|boolean',
                 'weight_factor' => 'nullable|numeric|min:0.01',
+                'unit_weight_kg' => 'nullable|numeric|min:0.001|max:99999',
                 'czerlop_product_id' => 'nullable|integer|min:1|max:99999',
                 'business_unit_id' => 'nullable|exists:t_fin_business_units,id',
 
@@ -2563,9 +2565,25 @@ class ProductController extends Controller
                 }
             }
 
+            // ⭐ Preserve fields the client did not send. The mobile app's product-edit
+            //    payload omits unit_weight_kg (older APKs always will), and the formatter
+            //    below defaults absent fields — without this line, ANY mobile product save
+            //    would silently reset a 0.5 (500g pack) back to 1.000.
+            // Key-ABSENT only: a web form that clears the field still sends the key
+            // (empty string → null), and that must keep meaning "clear/reset".
+            if (!array_key_exists('unit_weight_kg', $validated)) {
+                $validated['unit_weight_kg'] = $product->unit_weight_kg ?? 1.000;
+            }
+            // Same trap, discovered in the same review: mobile never sends czerlop_product_id,
+            // and the formatter maps an absent value to NULL — so every mobile product save
+            // was wiping the scale PLU (breaking barcode-qty for that product).
+            if (!array_key_exists('czerlop_product_id', $validated)) {
+                $validated['czerlop_product_id'] = $product->czerlop_product_id;
+            }
+
             // Format data to match API structure
             $productData = $this->formatManualProductData($validated);
-            
+
             // For updates, we need to include the existing product ID
             $productData['existing_product_id'] = $product->id;
             
@@ -2696,6 +2714,9 @@ class ProductController extends Controller
             'track_inventory' => filter_var($validated['track_inventory'] ?? true, FILTER_VALIDATE_BOOLEAN),
             'is_lean' => filter_var($validated['is_lean'] ?? false, FILTER_VALIDATE_BOOLEAN),
             'weight_factor' => $validated['weight_factor'] ?? 1.00,
+            // ⭐ Kg per ONE qty unit (0.5 = a 500g pack). Display-only: it feeds the Weight
+            //    column on Open Order Quantities and never changes a stored quantity.
+            'unit_weight_kg' => $validated['unit_weight_kg'] ?? 1.000,
             // ⭐ Czerlop scale PLU (barcode-qty feature). Null = not on the scale / untagged.
             'czerlop_product_id' => isset($validated['czerlop_product_id']) && $validated['czerlop_product_id'] !== ''
                 ? (int) $validated['czerlop_product_id']

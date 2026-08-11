@@ -100,7 +100,8 @@ class OrderStatusController extends Controller
                 'auto_prepares' => 'nullable|boolean',
                 'lane' => 'nullable|in:journey,offtrack,legacy',
                 'send_to_customer_app' => 'nullable|boolean',
-                'customer_app_alias' => 'nullable|string|max:50'
+                'customer_app_alias' => 'nullable|string|max:50',
+                'customer_app_hold_until_dispatch' => 'nullable|boolean'
             ]);
 
             // Convert simple color name to CSS class if needed
@@ -120,11 +121,14 @@ class OrderStatusController extends Controller
             $validated['auto_prepares'] = $validated['auto_prepares'] ?? false;
             $validated['lane'] = $validated['lane'] ?? 'journey';
             $validated['send_to_customer_app'] = $validated['send_to_customer_app'] ?? false;
-            
+            $validated['customer_app_hold_until_dispatch'] = $validated['customer_app_hold_until_dispatch'] ?? false;
+
             // Convert empty array to null for visible_to_roles (null = all roles)
             if (isset($validated['visible_to_roles']) && empty($validated['visible_to_roles'])) {
                 $validated['visible_to_roles'] = null;
             }
+
+            $validated = $this->dropColumnsNotYetMigrated($validated);
 
             $result = $this->statusService->createStatus($validated);
 
@@ -167,18 +171,21 @@ class OrderStatusController extends Controller
                 'auto_prepares' => 'nullable|boolean',
                 'lane' => 'nullable|in:journey,offtrack,legacy',
                 'send_to_customer_app' => 'nullable|boolean',
-                'customer_app_alias' => 'nullable|string|max:50'
+                'customer_app_alias' => 'nullable|string|max:50',
+                'customer_app_hold_until_dispatch' => 'nullable|boolean'
             ]);
-            
+
             // Convert simple color name to CSS class if needed
             if (isset($validated['color_class']) && !str_starts_with($validated['color_class'], 'bg-')) {
                 $validated['color_class'] = 'bg-' . $validated['color_class'] . '-100';
             }
-            
+
             // Convert empty array to null for visible_to_roles (null = all roles)
             if (isset($validated['visible_to_roles']) && empty($validated['visible_to_roles'])) {
                 $validated['visible_to_roles'] = null;
             }
+
+            $validated = $this->dropColumnsNotYetMigrated($validated);
 
             $result = $this->statusService->updateStatus($id, $validated);
 
@@ -583,5 +590,26 @@ class OrderStatusController extends Controller
                 'message' => 'Failed to fetch timeline: ' . $e->getMessage()
             ], 500);
         }
+    }
+
+    /**
+     * Drop any Hub column whose migration has not been run on this environment yet.
+     *
+     * Production is deployed by hand, so a file upload can land before its SQL does.
+     * Without this, saving ANY status on such a box would fail with "unknown column"
+     * — the save form would simply stop working until the SQL was remembered.
+     * Stripping the key makes the upload order irrelevant: the toggle is quietly
+     * inert until the column exists, then starts saving.
+     */
+    private function dropColumnsNotYetMigrated(array $data): array
+    {
+        foreach (['customer_app_hold_until_dispatch'] as $column) {
+            if (array_key_exists($column, $data)
+                && !\Schema::hasColumn('t_crm_order_status_master', $column)) {
+                unset($data[$column]);
+            }
+        }
+
+        return $data;
     }
 }

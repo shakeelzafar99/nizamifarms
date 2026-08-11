@@ -752,6 +752,19 @@ window.editCustomer = function(id) {
                         </div>
                     </div>
                     <div style="margin-bottom: 16px;">
+                        {{-- Aug-2026 — remembered payment choice. Pre-selects the payment
+                             method on the Create-Order form (web AND mobile) for this
+                             customer. Shopify orders are unaffected: they carry the method
+                             the customer picked at checkout. --}}
+                        <label style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 8px;">Default Payment Method</label>
+                        <select name="default_payment_method" style="width: 100%; padding: 8px; border: 1px solid #d1d5db; border-radius: 4px; font-size: 14px;">
+                            <option value="" ${!customer.default_payment_method ? 'selected' : ''}>No default</option>
+                            <option value="cash" ${customer.default_payment_method === 'cash' ? 'selected' : ''}>💵 Cash</option>
+                            <option value="online" ${customer.default_payment_method === 'online' ? 'selected' : ''}>🏦 Online</option>
+                        </select>
+                        <p style="margin: 4px 0 0 0; font-size: 11px; color: #6b7280;">Pre-selected when creating a new order for this customer (web &amp; mobile). Not applied to Shopify orders.</p>
+                    </div>
+                    <div style="margin-bottom: 16px;">
                         <label style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 8px;">Address Line 1</label>
                         <input type="text" name="address1" value="${customer.address1 || ''}" style="width: 100%; padding: 8px; border: 1px solid #d1d5db; border-radius: 4px; font-size: 14px;">
                     </div>
@@ -3726,10 +3739,27 @@ function buildCustomerAddress(customer) {
     return addressParts.length > 0 ? addressParts.join(', ') : 'No address provided';
 }
 
+// Aug-2026 — ONE rule for which payment method a NEW order starts on.
+// Priority: the customer's remembered default -> shop customers settle
+// online -> cash. (The orders page carries the same function with the extra
+// Qurbani-admin-default step; this page has no qurbani mode.)
+//
+// ⚠ Mirrored in pages/orders/index.blade.php and the mobile app's New Order
+// sheet (CustomersScreen.js). Change all three or they drift apart.
+function resolveNewOrderPaymentMethod(customer) {
+    var pm = (customer && customer.default_payment_method) || '';
+    if (pm === 'cash' || pm === 'online') return pm;
+    if (customer && customer.customer_type === 'shop') return 'online';
+    return 'cash';
+}
+
 function openCreateOrderModal(customer = null) {
     const modal = document.getElementById('createOrderModal');
     const content = document.getElementById('createOrderContent');
-    
+
+    // Pre-select the payment method for this customer (still changeable below).
+    const preselectedPm = resolveNewOrderPaymentMethod(customer);
+
     // Load the order creation form (simplified version)
     content.innerHTML = `
         <form id="createOrderForm">
@@ -3776,15 +3806,24 @@ function openCreateOrderModal(customer = null) {
                             <label style="display: block; font-size: 12px; font-weight: 500; color: #6b7280; margin-bottom: 4px;">Payment Method</label>
                             <select name="payment_method" style="width: 100%; padding: 8px; border: 1px solid #d1d5db; border-radius: 4px; font-size: 14px;">
                                 <option value="">Select Payment Method</option>
-                                <option value="cash" selected>Cash</option>
+                                <option value="cash" ${preselectedPm === 'cash' ? 'selected' : ''}>Cash</option>
                                 <option value="bank_transfer">Bank Transfer</option>
                                 <option value="card">Card</option>
-                                <option value="online">Online Payment</option>
+                                <option value="online" ${preselectedPm === 'online' ? 'selected' : ''}>Online Payment</option>
                             </select>
+                            <!-- Aug-2026 — remember this choice on the customer so the next
+                                 order (web or mobile) starts on it, without opening Edit
+                                 Customer. Only shown when a customer is actually selected. -->
+                            ${customer ? `
+                            <label style="display: flex; align-items: center; gap: 6px; margin-top: 6px; font-size: 12px; color: #6b7280; cursor: pointer;">
+                                <input type="checkbox" name="set_default_payment_method" value="1" style="cursor: pointer;">
+                                Set as default for this customer
+                            </label>
+                            ` : ''}
                         </div>
                     </div>
                 </div>
-                
+
                 <div>
                     <h4 style="font-weight: 600; color: #374151; margin: 0 0 16px 0;">Pricing</h4>
                     <div style="background-color: #f9fafb; padding: 16px; border-radius: 8px;">
@@ -4365,6 +4404,8 @@ function saveNewOrder() {
         shipping_total: parseFloat(formData.get('shipping_total')) || 0,
         total_price: parseFloat(formData.get('total_price')) || 0,
         payment_method: formData.get('payment_method'),
+        // Aug-2026 — tick means "remember this method on the customer".
+        set_default_payment_method: formData.get('set_default_payment_method') ? 1 : 0,
         note: formData.get('note'),
         items: items,
         discounts: discounts // NEW: Include discounts array

@@ -57,6 +57,8 @@ class ProductModel extends BaseModel
         'is_lean',
         'is_lean_override',
         'weight_factor',
+        'unit_weight_kg', // ⭐ Kg per ONE qty unit (0.5 = 500g pack). Display-only, drives the
+                          //    Weight column on Open Order Quantities. NOT the weighing divisor.
         'czerlop_product_id', // ⭐ Scale PLU embedded in the weight barcode (barcode-qty feature)
         'seo_title',
         'seo_description',
@@ -84,6 +86,7 @@ class ProductModel extends BaseModel
         'track_inventory' => 'boolean',
         'is_active' => 'boolean',
         'weight_factor' => 'decimal:2',
+        'unit_weight_kg' => 'decimal:3',
         'czerlop_product_id' => 'integer',
         'images' => 'json',
         'tags' => 'json',
@@ -242,6 +245,7 @@ class ProductModel extends BaseModel
         'product_type' => ['type' => ProductChangeHistory::TYPE_CATEGORY_CHANGE, 'label' => 'Product Type'],
         'status' => ['type' => ProductChangeHistory::TYPE_STATUS_CHANGE, 'label' => 'Status'],
         'weight_factor' => ['type' => ProductChangeHistory::TYPE_WEIGHT_FACTOR_CHANGE, 'label' => 'Weight Factor'],
+        'unit_weight_kg' => ['type' => ProductChangeHistory::TYPE_UNIT_WEIGHT_CHANGE, 'label' => 'Unit Weight (kg)'],
         'is_lean' => ['type' => ProductChangeHistory::TYPE_LEAN_STATUS_CHANGE, 'label' => 'Lean Product'],
         'czerlop_product_id' => ['type' => ProductChangeHistory::TYPE_CZERLOP_CHANGE, 'label' => 'Czerlop Product ID'],
     ];

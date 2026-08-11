@@ -301,6 +301,231 @@ class PaymentSignalsController extends Controller
         return response()->json(['success' => true, 'changed' => count($allIds)]);
     }
 
+    /**
+     * POST /admin/payments/signal/{signalId}/unmark
+     *
+     * "This isn't this customer's payment." The approver's escape hatch for a
+     * match the SYSTEM inferred — an amount coincidence, a resolved payer name,
+     * an AI reading. The credit is detached, the money returns to the assistant
+     * money inbox as an open question, and the invoice goes back to showing no
+     * proof (so it can be approved on its own merits, or wait for the real one).
+     *
+     * Three deliberate properties:
+     *  • ONLY guesses can be unmarked. A pair-verified proof (the customer's own
+     *    screenshot corroborated by the bank) is evidence, not an opinion — the
+     *    button is not offered for those and the server refuses them too.
+     *  • It UNLEARNS. Whatever this tag taught about the payer is deleted, so
+     *    the correction sticks instead of being re-made next time (see
+     *    CustomerBankAliasService::unlearn).
+     *  • It is FINAL for the automation: the reason is recorded as
+     *    `guess_dismissed`, which the resweeper is built to skip. Without that,
+     *    the very next page load would helpfully put the wrong tag straight
+     *    back and the approver would be arguing with a machine.
+     */
+    public function unmark(Request $request, int $signalId)
+    {
+        $signal = PaymentSignal::find($signalId);
+        if (!$signal) {
+            return response()->json(['success' => false, 'message' => 'That payment record no longer exists.'], 404);
+        }
+        if (!$signal->matched_order_id) {
+            return response()->json(['success' => false, 'message' => 'That payment is not attached to any order.'], 422);
+        }
+
+        $wasGuess = $signal->isGuess();
+
+        // ⭐⭐ A VERIFIED PAIR IS REMOVABLE TOO. Pairing proves the customer's
+        // screenshot and the bank's alert describe ONE REAL TRANSFER — it says
+        // nothing about WHOSE INVOICE that transfer settles. A proof can be
+        // genuinely verified and still sit on the wrong order: the screenshot
+        // may have matched the wrong invoice of the right customer, a manager
+        // may have recorded it against the wrong name, or two same-amount
+        // payments minutes apart may have been welded to each other. Refusing
+        // to remove those left the approver staring at a green badge they knew
+        // was wrong with no way to act — so the escape hatch covers every
+        // attached signal, and the wording downstream carries the weight.
+        //
+        // Both sides of a pair are detached together (removing one would leave
+        // the other still painting the badge), but the PAIR BOND IS KEPT: they
+        // really are the same transaction, so re-pointing one later can carry
+        // the verification to the correct order.
+        $partner = $signal->paired_signal_id ? PaymentSignal::find($signal->paired_signal_id) : null;
+
+        try {
+            \DB::transaction(function () use ($signal, $partner, $wasGuess) {
+                $aliases = app(\App\Services\Payments\Signals\CustomerBankAliasService::class);
+                $reason  = $wasGuess
+                    ? PaymentSignal::REASON_GUESS_DISMISSED
+                    : PaymentSignal::REASON_PROOF_DETACHED;
+
+                foreach (array_filter([$signal, $partner]) as $s) {
+                    // Whatever this tag taught about the payer rested on it
+                    // being right — see CustomerBankAliasService::unlearn.
+                    $aliases->unlearnFromSignal($s);
+
+                    \DB::table('t_fin_payment_signal_order')->where('signal_id', $s->id)->delete();
+
+                    $s->matched_order_id    = null;
+                    $s->matched_customer_id = null;
+                    $s->status              = PaymentSignal::STATUS_UNMATCHED;
+                    $s->match_reason        = $reason;
+                    $s->match_confidence    = null;
+                    $s->save();
+
+                    // Any bank SMS behind this returns to the money inbox, so
+                    // the credit is visibly unresolved rather than quietly
+                    // closed — that inbox is where it gets re-pointed.
+                    \DB::table('t_ai_bank_sms')
+                        ->where('linked_signal_id', $s->id)
+                        ->update(['status' => 'new', 'auto_reason' => null, 'updated_at' => now()]);
+                }
+            });
+        } catch (\Throwable $e) {
+            \Log::error('Payment proof unmark failed', ['signal_id' => $signalId, 'error' => $e->getMessage()]);
+            return response()->json(['success' => false, 'message' => 'Could not remove that payment.'], 500);
+        }
+
+        \Log::info('Payment proof detached by an approver', [
+            'signal_id' => $signalId,
+            'partner_id' => $partner?->id,
+            'was_guess' => $wasGuess,
+            'by'        => auth()->id(),
+        ]);
+
+        return response()->json([
+            'success' => true,
+            'message' => $partner
+                ? 'Removed from this order — both the screenshot and the bank confirmation were detached. The payment is back in the NF Assistant money inbox to be pointed at the right order.'
+                : 'Removed. The payment is back in the NF Assistant money inbox to be matched properly.',
+        ]);
+    }
+
+    /**
+     * POST /admin/payments/approval-check   { order_ids: [...] }
+     *
+     * "Before you approve these — are any of them attached to a payment we're
+     * not sure about?" Returns ONLY the rows worth a second of the approver's
+     * attention, so the approvals screen can ask a short, rare question instead
+     * of a long, constant one.
+     *
+     * ⭐ WHAT COUNTS AS UNSURE (deliberately narrow):
+     *   • the match was INFERRED by the system (a guess reason), AND
+     *   • no screenshot/bank pair has since confirmed it, AND
+     *   • the payer is a stranger to this customer — no learned alias ties them
+     *     together and the two names share nothing.
+     *
+     * Everything else stays silent. A verified pair, a payment from a name we
+     * recognise, a payer already confirmed once — those are not questions, and
+     * asking about them is what makes people stop reading the questions. In
+     * practice this fires on a handful of credits a week, and each confirmation
+     * teaches the payer permanently, so it gets quieter over time.
+     *
+     * ⚠ Name mismatch alone is NEVER treated as wrong — 16% of payments here
+     * come from a relative or colleague. It only means "worth a glance".
+     */
+    public function approvalCheck(Request $request)
+    {
+        $ids = collect($request->input('order_ids', []))
+            ->map(fn ($i) => (int) $i)->filter()->unique()->take(200)->values();
+        if ($ids->isEmpty()) {
+            return response()->json(['success' => true, 'items' => []]);
+        }
+
+        $resolver = app(\App\Services\Payments\Signals\PayerNameResolver::class);
+
+        $signals = PaymentSignal::query()
+            ->whereIn('matched_order_id', $ids)
+            ->whereIn('status', [PaymentSignal::STATUS_MATCHED, PaymentSignal::STATUS_AMOUNT_MISMATCH])
+            ->whereIn('match_reason', PaymentSignal::GUESS_REASONS)
+            ->whereNull('paired_signal_id')
+            ->get();
+
+        if ($signals->isEmpty()) {
+            return response()->json(['success' => true, 'items' => []]);
+        }
+
+        $orders = \DB::table('t_crm_prod_order as o')
+            ->join('t_crm_prod_customer as c', 'c.id', '=', 'o.customer_id')
+            ->whereIn('o.id', $signals->pluck('matched_order_id')->unique())
+            ->get(['o.id', 'o.order_number', 'o.total_price', 'o.total_paid', 'c.first_name', 'c.last_name'])
+            ->keyBy('id');
+
+        $items = [];
+        foreach ($signals as $s) {
+            $o = $orders->get($s->matched_order_id);
+            if (!$o) {
+                continue;
+            }
+            $customerName = trim(($o->first_name ?? '') . ' ' . ($o->last_name ?? ''));
+            $payer = (string) ($s->extracted_sender_name ?? '');
+
+            // Already known to belong together, or plainly the same person —
+            // not a question.
+            if ($payer !== '' && $s->matched_customer_id) {
+                if ($resolver->aliasExists($payer, (int) $s->matched_customer_id)
+                    || $resolver->namesResemble($payer, $customerName)) {
+                    continue;
+                }
+            }
+
+            $balance = round((float) $o->total_price - (float) ($o->total_paid ?? 0), 2);
+            $items[] = [
+                'signal_id'     => (int) $s->id,
+                'order_id'      => (int) $o->id,
+                'order_number'  => $o->order_number,
+                'customer_id'   => (int) ($s->matched_customer_id ?? 0),
+                'customer_name' => $customerName,
+                'payer_name'    => $payer !== '' ? $payer : null,
+                'amount'        => (float) $s->extracted_amount,
+                'balance'       => $balance,
+                'how'           => match ($s->match_reason) {
+                    PaymentSignal::REASON_NAME_AI     => 'Payer name read by AI',
+                    PaymentSignal::REASON_NAME_AMOUNT => 'Matched by payer name',
+                    default                           => 'Matched by amount only',
+                },
+            ];
+        }
+
+        return response()->json(['success' => true, 'items' => $items]);
+    }
+
+    /**
+     * POST /admin/payments/signal/{signalId}/confirm-payer
+     *
+     * "Yes, this really is their payment." Promotes an inferred match to a
+     * human-confirmed one and teaches the payer name permanently, so this
+     * person is never asked about again — the mechanism by which the approval
+     * check gets quieter the more it is used.
+     */
+    public function confirmPayer(Request $request, int $signalId)
+    {
+        $signal = PaymentSignal::find($signalId);
+        if (!$signal || !$signal->matched_customer_id) {
+            return response()->json(['success' => false, 'message' => 'That payment record no longer exists.'], 404);
+        }
+
+        $signal->match_reason     = PaymentSignal::REASON_MANUAL_CONFIRMED;
+        $signal->match_confidence = 1.00;
+        $signal->status           = PaymentSignal::STATUS_MATCHED;
+        $signal->save();
+
+        if ($signal->extracted_sender_name) {
+            app(\App\Services\Payments\Signals\CustomerBankAliasService::class)->learnFromConfirmation(
+                (int) $signal->matched_customer_id,
+                $signal->extracted_sender_name,
+                $signal->extracted_sender_account_masked,
+                auth()->id() ? (int) auth()->id() : null
+            );
+        }
+
+        // The credit is answered — close its inbox row so the same question is
+        // not waiting on the assistant screen too.
+        \DB::table('t_ai_bank_sms')->where('linked_signal_id', $signal->id)
+            ->update(['status' => 'matched', 'auto_reason' => 'payer_confirmed', 'updated_at' => now()]);
+
+        return response()->json(['success' => true]);
+    }
+
     // ─────────────────────────────────────────────────────────────────────────
     // Phase 2 — one-time "balancing discount" (Jun-2026)
     // When a matched/combined proof is SHORT by a small (within-tolerance) amount,

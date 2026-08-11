@@ -1061,6 +1061,12 @@ class ApprovalController extends Controller
             ->whereRaw('LOWER(urole_name) = ?', ['taimur'])
             ->exists();
         
+        // Held bank credits get another look at invoices that appeared after
+        // they arrived — this screen is exactly where that money is judged, so
+        // it is the right place to keep the matching current. Runs after the
+        // response, throttled site-wide; the page never waits for it.
+        \App\Services\Payments\Signals\HeldCreditResweeper::scheduleAfterResponse();
+
         return view('approvals.online', compact(
             'summaries',
             'hasLevel1Rights',

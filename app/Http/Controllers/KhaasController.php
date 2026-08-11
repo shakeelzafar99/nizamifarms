@@ -14,6 +14,7 @@ use App\Models\CRM\ProductVariantModel;
 use App\Models\CRM\WarehouseInventoryModel;
 use App\Models\CRM\WarehouseInventoryLogModel;
 use App\Models\CRM\WarehouseTransferModel;
+use App\Models\CRM\WarehouseTransferRequestModel;
 use App\Models\Request\RequestModel;
 
 class KhaasController extends Controller
@@ -153,6 +154,204 @@ class KhaasController extends Controller
     }
 
     /**
+     * Statuses that mean an order is DONE and no longer needs stock.
+     *
+     * This is the canonical "open orders" definition used across the app (web orders
+     * page, store-mode open orders, delivery regions). It is a copy-pasted literal in
+     * ~10 places and has no shared constant; named here so the demand figure provably
+     * matches the Open Orders board the manager already reads.
+     *
+     * ⚠ Deliberately NOT OrderStatusRuleService::quantitiesExcluded() — that is the
+     * configurable Open-Quantities set (prod currently excludes 'pending' and INCLUDES
+     * delivered), which answers a different question.
+     */
+    private const DEMAND_CLOSED_STATUSES = ['delivered', 'completed', 'cancelled', 'refunded'];
+
+    /**
+     * Line items in the Shopify APPROVAL QUEUE that still need stock.
+     *
+     * ⚠⚠ Staging line items store SHOPIFY'S OWN product/variant ids as strings
+     * (e.g. 8913415962913) — NOT local CRM ids. The only reliable link to a local
+     * product is the SKU. The variant lookup is pre-grouped so that a SKU which ever
+     * maps to two variants cannot fan out and double the SUM.
+     *
+     * ⚠ "Still pending approval" is `converted IS NULL OR converted = 0` — NOT
+     * order_status, which merely mirrors Shopify's PAYMENT status (a brand-new
+     * unapproved order usually reads 'completed' because it is paid). converted = 1
+     * means accepted into the live table (counted by the open-orders arm instead),
+     * and 2 means ignored/rejected.
+     */
+    private function stagingDemandQuery(int $khaasBuId)
+    {
+        return DB::table('t_crm_shopify_order_line_item as li')
+            ->join('t_crm_shopify_order as so', 'so.id', '=', 'li.order_id')
+            ->join(DB::raw('(SELECT sku, MIN(product_id) AS product_id
+                             FROM t_crm_prod_product_variant
+                             WHERE sku IS NOT NULL AND sku <> \'\'
+                             GROUP BY sku) as v'), 'v.sku', '=', 'li.sku')
+            ->join('t_crm_prod_product as p', 'p.id', '=', 'v.product_id')
+            ->where(function ($q) {
+                $q->whereNull('so.converted')->orWhere('so.converted', 0);
+            })
+            ->whereNotNull('li.sku')
+            ->where('li.sku', '<>', '')
+            ->where('p.business_unit_id', $khaasBuId)
+            ->where(function ($q) {
+                $q->whereNull('p.attribute_1')->orWhereRaw('LOWER(p.attribute_1) <> ?', ['qurbani']);
+            });
+    }
+
+    /**
+     * Line items on OPEN LIVE orders that have not yet consumed store stock.
+     *
+     * ⭐⭐ `inventory_deducted = 0` is the whole point (owner ruling): store stock is
+     * deducted when an item is PREPARED (or auto-prepared on out-for-delivery), so a
+     * prepared line has ALREADY come out of the Store number on the card. Counting it
+     * as outstanding demand would double-count and make the manager over-request.
+     *
+     * Matching on li.product_id joined to a BU-filtered product is the same shape the
+     * Khaas sales report uses. Verified Aug-11 against variant_id matching across the
+     * entire line-item table: identical results, zero rows disagreeing either way.
+     */
+    private function openOrderDemandQuery(int $khaasBuId)
+    {
+        return DB::table('t_crm_prod_order_line_item as li')
+            ->join('t_crm_prod_order as o', 'o.id', '=', 'li.order_id')
+            ->join('t_crm_prod_product as p', 'p.id', '=', 'li.product_id')
+            ->whereNotIn('o.order_status', self::DEMAND_CLOSED_STATUSES)
+            ->whereRaw('COALESCE(li.inventory_deducted, 0) = 0')
+            ->where('p.business_unit_id', $khaasBuId)
+            ->where(function ($q) {
+                $q->whereNull('p.attribute_1')->orWhereRaw('LOWER(p.attribute_1) <> ?', ['qurbani']);
+            });
+    }
+
+    /**
+     * Outstanding order demand per product: [product_id => [shopify, open, total]].
+     *
+     * Two sources, deliberately aggregated separately and merged in PHP — staging and
+     * live order ids OVERLAP as unrelated orders, so they must never be joined or
+     * unioned on a raw order_id.
+     */
+    private function pendingOrderDemandByProduct(int $khaasBuId): array
+    {
+        $demand = [];
+
+        try {
+            // NOTE: selectRaw + get, not pluck(DB::raw(...)) — pluck cannot read a raw
+            // aggregate as a key/value pair and silently returns zeros for every row.
+            $staging = $this->stagingDemandQuery($khaasBuId)
+                ->groupBy('p.id')
+                ->selectRaw('p.id as product_id, SUM(li.quantity) as qty')
+                ->get();
+
+            foreach ($staging as $row) {
+                $demand[(int) $row->product_id]['shopify'] = (int) round((float) $row->qty);
+            }
+
+            $open = $this->openOrderDemandQuery($khaasBuId)
+                ->groupBy('p.id')
+                ->selectRaw('p.id as product_id, SUM(li.quantity) as qty')
+                ->get();
+
+            foreach ($open as $row) {
+                $demand[(int) $row->product_id]['open'] = (int) round((float) $row->qty);
+            }
+        } catch (\Throwable $e) {
+            // Demand is decoration on an inventory page — never let it blank the grid.
+            \Log::warning('Khaas pending-order demand failed', ['error' => $e->getMessage()]);
+            return [];
+        }
+
+        foreach ($demand as $productId => $row) {
+            $shopify = $row['shopify'] ?? 0;
+            $openQty = $row['open'] ?? 0;
+            $demand[$productId] = [
+                'shopify' => $shopify,
+                'open' => $openQty,
+                'total' => $shopify + $openQty,
+            ];
+        }
+
+        return $demand;
+    }
+
+    /**
+     * GET /khaas/products/{productId}/pending-orders
+     *
+     * The per-order breakdown behind the card's "Pending orders" number: exactly the
+     * rows that were counted, so the popup total always reconciles with the card.
+     * Also served to mobile if it ever wants it — same access rule as the store log.
+     */
+    public function pendingOrdersBreakdown(Request $request, $productId)
+    {
+        $user = auth()->user();
+        $canAccess = $this->hasKhaasAccess()
+            || ($user && $user->hasMobilePermission('view_khaas_store_inventory'))
+            || ($user && $user->hasMobilePermission('access_store_mode'));
+        if (!$canAccess) {
+            return response()->json(['success' => false, 'message' => 'No access'], 403);
+        }
+
+        $khaasBU = $this->getKhaasBU();
+        if (!$khaasBU) {
+            return response()->json(['success' => false, 'message' => 'Khaas BU not found'], 404);
+        }
+
+        $product = ProductModel::find($productId);
+        if (!$product || (int) $product->business_unit_id !== (int) $khaasBU->id) {
+            return response()->json(['success' => false, 'message' => 'Product not found'], 404);
+        }
+
+        try {
+            // One row per ORDER (a product can appear on several lines of one order).
+            $shopify = $this->stagingDemandQuery($khaasBU->id)
+                ->where('p.id', $productId)
+                ->groupBy('so.id', 'so.order_number', 'so.name', 'so.order_date')
+                ->selectRaw('so.id as order_id, so.order_number, so.name as customer_name,
+                             so.order_date, SUM(li.quantity) as qty')
+                ->orderBy('so.order_date')
+                ->get()
+                ->map(fn($r) => [
+                    'order_number' => $r->order_number ?: ('#' . $r->order_id),
+                    'customer_name' => $r->customer_name ?: '—',
+                    'date' => $r->order_date ? date('M d', strtotime($r->order_date)) : '',
+                    'age_days' => $r->order_date ? (int) floor((time() - strtotime($r->order_date)) / 86400) : 0,
+                    'qty' => (int) round((float) $r->qty),
+                ]);
+
+            $open = $this->openOrderDemandQuery($khaasBU->id)
+                ->where('p.id', $productId)
+                ->groupBy('o.id', 'o.order_number', 'o.name', 'o.order_date', 'o.order_status')
+                ->selectRaw('o.id as order_id, o.order_number, o.name as customer_name,
+                             o.order_date, o.order_status, SUM(li.quantity) as qty')
+                ->orderBy('o.order_date')
+                ->get()
+                ->map(fn($r) => [
+                    'order_number' => $r->order_number ?: ('#' . $r->order_id),
+                    'customer_name' => $r->customer_name ?: '—',
+                    'status' => $r->order_status,
+                    'date' => $r->order_date ? date('M d', strtotime($r->order_date)) : '',
+                    'age_days' => $r->order_date ? (int) floor((time() - strtotime($r->order_date)) / 86400) : 0,
+                    'qty' => (int) round((float) $r->qty),
+                ]);
+
+            return response()->json([
+                'success' => true,
+                'product_name' => $product->title,
+                'shopify' => $shopify,
+                'open' => $open,
+                'shopify_total' => $shopify->sum('qty'),
+                'open_total' => $open->sum('qty'),
+                'total' => $shopify->sum('qty') + $open->sum('qty'),
+            ]);
+        } catch (\Throwable $e) {
+            \Log::error('Pending orders breakdown failed', ['error' => $e->getMessage()]);
+            return response()->json(['success' => false, 'message' => 'Failed to load orders'], 500);
+        }
+    }
+
+    /**
      * Khaas Products - with store vs warehouse inventory comparison
      */
     public function products(Request $request)
@@ -234,9 +433,40 @@ class KhaasController extends Controller
         // "Counted by" picker options for the Pending Transfer Approvals banner.
         $countedByUsers = $this->activeUsersForCountedBy();
 
+        // ⭐ Outstanding order demand per product, so the manager can see how much is
+        // already spoken for before deciding what to request.
+        $orderDemand = $this->pendingOrderDemandByProduct($khaasBU->id);
+
+        // Open transfer requests: keyed by product for the card badge, plus the full
+        // records for the banner. Both are empty collections until the SQL is run.
+        $pendingRequestsByProduct = WarehouseTransferRequestModel::pendingByProduct($khaasBU->id);
+
+        $pendingRequestRecords = collect();
+        $declinedRequestRecords = collect();
+        if (WarehouseTransferRequestModel::supported()) {
+            $pendingRequestRecords = WarehouseTransferRequestModel::where('business_unit_id', $khaasBU->id)
+                ->where('status', WarehouseTransferRequestModel::STATUS_PENDING)
+                ->with(['product:id,title', 'variant:id,title,sku', 'requester:id,fullname'])
+                ->orderBy('created_at', 'asc')
+                ->get();
+
+            // Recently declined — web gets no push, so without this a manager would
+            // never learn his request was refused; it would just silently vanish.
+            $declinedRequestRecords = WarehouseTransferRequestModel::where('business_unit_id', $khaasBU->id)
+                ->where('status', WarehouseTransferRequestModel::STATUS_DECLINED)
+                ->where('declined_at', '>=', now()->subDays(7))
+                ->with(['product:id,title', 'requester:id,fullname', 'decliner:id,fullname'])
+                ->orderBy('declined_at', 'desc')
+                ->limit(10)
+                ->get();
+        }
+
+        $canFulfilRequests = optional(auth()->user())->hasMobilePermission('access_khaas_mode') ?? false;
+
         return view('khaas.products', compact(
             'khaasBU', 'products', 'warehouseInventory', 'pendingTransfers', 'pendingTransferRecords', 'categories',
-            'countedByUsers'
+            'countedByUsers', 'orderDemand', 'pendingRequestsByProduct', 'pendingRequestRecords',
+            'declinedRequestRecords', 'canFulfilRequests'
         ));
     }
 
@@ -606,6 +836,103 @@ class KhaasController extends Controller
             DB::rollBack();
             return back()->with('error', 'Failed to approve transfer: ' . $e->getMessage());
         }
+    }
+
+    // ═════════════════════════════════════════════════════════════════════════
+    // TRANSFER REQUESTS (web doors)
+    //
+    // ⭐ These deliberately hold NO logic. Each one shapes a Request and hands it
+    // to WarehouseController — the same delegation KhaasController::createDemand
+    // already uses — so the web and the mobile app can never drift apart. The
+    // permission checks, the locking, the one-open-request rule and the stock
+    // movement all live in exactly one place.
+    // ═════════════════════════════════════════════════════════════════════════
+
+    /** Ask the warehouse for stock (or edit the open ask for that product). */
+    public function createTransferRequest(Request $request)
+    {
+        if (!$this->hasKhaasAccess()) {
+            abort(403, 'You do not have access to Khaas mode.');
+        }
+
+        $khaasBU = $this->getKhaasBU();
+        if (!$khaasBU) {
+            return back()->with('error', 'Khaas business unit not found.');
+        }
+
+        $apiRequest = new Request([
+            'product_id' => $request->input('product_id'),
+            'product_variant_id' => $request->input('product_variant_id'),
+            'business_unit_id' => $khaasBU->id,
+            'quantity' => $request->input('quantity'),
+            'notes' => $request->input('notes'),
+        ]);
+
+        return $this->flashFromApi(
+            app(\App\Http\Controllers\CRM\WarehouseController::class)->createTransferRequest($apiRequest),
+            'Failed to send request.'
+        );
+    }
+
+    public function cancelTransferRequest(Request $request, $id)
+    {
+        if (!$this->hasKhaasAccess()) {
+            abort(403, 'You do not have access to Khaas mode.');
+        }
+
+        return $this->flashFromApi(
+            app(\App\Http\Controllers\CRM\WarehouseController::class)->cancelTransferRequest(new Request(), $id),
+            'Failed to cancel request.'
+        );
+    }
+
+    /**
+     * Accept a request from the web.
+     *
+     * The warehouse incharge works on mobile, but both users can use either
+     * surface — so the same door exists here rather than forcing a phone.
+     * Quantity is editable exactly as on mobile (nothing has moved yet).
+     */
+    public function acceptTransferRequest(Request $request, $id)
+    {
+        if (!$this->hasKhaasAccess()) {
+            abort(403, 'You do not have access to Khaas mode.');
+        }
+
+        $apiRequest = new Request(['quantity' => $request->input('quantity')]);
+
+        return $this->flashFromApi(
+            app(\App\Http\Controllers\CRM\WarehouseController::class)->acceptTransferRequest($apiRequest, $id),
+            'Failed to accept request.'
+        );
+    }
+
+    public function declineTransferRequest(Request $request, $id)
+    {
+        if (!$this->hasKhaasAccess()) {
+            abort(403, 'You do not have access to Khaas mode.');
+        }
+
+        $apiRequest = new Request(['reason' => $request->input('reason')]);
+
+        return $this->flashFromApi(
+            app(\App\Http\Controllers\CRM\WarehouseController::class)->declineTransferRequest($apiRequest, $id),
+            'Failed to decline request.'
+        );
+    }
+
+    /**
+     * Turn a JSON API response from WarehouseController into the redirect-with-flash
+     * that the web pages expect. Keeps the four methods above to one line each.
+     */
+    private function flashFromApi($response, string $fallbackError)
+    {
+        $data = json_decode($response->getContent(), true);
+
+        if ($data['success'] ?? false) {
+            return back()->with('success', $data['message'] ?? 'Done.');
+        }
+        return back()->with('error', $data['message'] ?? $fallbackError);
     }
 
     public function rejectTransfer(Request $request, $id)
@@ -1301,16 +1628,29 @@ class KhaasController extends Controller
         $events = collect();
 
         // ─── 1) Approved transfers TO store (INFLOW) ───
+        // ⭐ `counted_by` is eager-loaded only when the column exists: the relation selects
+        // counted_by, so loading it before BATCH-16 has run would blow up the whole log.
+        $supportsCountedBy = WarehouseTransferModel::supportsCountedBy();
         $transfers = WarehouseTransferModel::where('product_id', $productId)
             ->where('status', 'approved')
             ->where('to_location', 'store')
             ->with('approver:id,fullname')
             ->with('requester:id,fullname')
+            ->when($supportsCountedBy, fn($q) => $q->with('counter:id,fullname'))
             ->orderBy('approved_at', 'desc')
             ->limit($limit * 2) // fetch more to have enough after merge
             ->get();
 
         foreach ($transfers as $t) {
+            // Who physically counted the stock, appended to the existing "Requested by" line.
+            // Appended rather than given its own field so BOTH renderers (web store-log modal
+            // and the mobile log modal, which already print sub_detail) show it without an
+            // APK change. Absent => the line reads exactly as it did before.
+            $subDetail = 'Requested by ' . ($t->requester->fullname ?? 'N/A');
+            if ($supportsCountedBy && $t->counter) {
+                $subDetail .= ' · 🔢 Counted by ' . $t->counter->fullname;
+            }
+
             $events->push([
                 'date' => $t->approved_at ?? $t->updated_at ?? $t->created_at,
                 'type' => 'transfer_in',
@@ -1318,7 +1658,7 @@ class KhaasController extends Controller
                 'change' => +$t->quantity,
                 'quantity' => $t->quantity,
                 'detail' => 'Approved by ' . ($t->approver->fullname ?? 'System'),
-                'sub_detail' => 'Requested by ' . ($t->requester->fullname ?? 'N/A'),
+                'sub_detail' => $subDetail,
                 'reference' => 'Transfer #' . $t->id,
                 'icon' => '📥',
                 'color' => 'green',

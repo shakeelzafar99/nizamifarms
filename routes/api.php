@@ -345,6 +345,11 @@ Route::middleware('auth:sanctum')->group(function () {
         // Jun-2026 — Phase 2: one-time "balancing discount" (same controller as web).
         Route::post('/order/{orderId}/balance-discount', [\App\Http\Controllers\FIN\PaymentSignalsController::class, 'applyBalanceDiscount']);
         Route::post('/order/{orderId}/balance-discount/remove', [\App\Http\Controllers\FIN\PaymentSignalsController::class, 'removeBalanceDiscount']);
+        // Aug-2026 — "Wrong customer — remove": detach a payment from an order.
+        // SAME controller method as the web proof panel, so the two surfaces can
+        // never disagree about what removal means.
+        Route::post('/signal/{signalId}/unmark', [\App\Http\Controllers\FIN\PaymentSignalsController::class, 'unmark'])
+            ->whereNumber('signalId');
     });
     
     // Mobile Permissions
@@ -447,6 +452,10 @@ Route::middleware('auth:sanctum')->group(function () {
     
     // Store Mode - Open Order Quantities
     Route::get('/store/open-quantities', [\App\Http\Controllers\API\RiderController::class, 'getOpenOrderQuantities']);
+    // Per-user display sort preferences (sorting happens on the phone; the tree
+    // endpoint below never reads these). Static paths — keep above any dynamic ones.
+    Route::get('/store/open-quantities/sort-prefs', [\App\Http\Controllers\API\RiderController::class, 'getQuantitiesSortPrefs']);
+    Route::post('/store/open-quantities/sort-prefs', [\App\Http\Controllers\API\RiderController::class, 'saveQuantitiesSortPrefs']);
     Route::get('/store/open-quantities-tree', [\App\Http\Controllers\API\RiderController::class, 'getOpenOrderQuantitiesTree']);
     // Fixed 3-level hierarchy (attribute_1 -> attribute_2 -> attribute_3 -> product -> orders) for mobile
     Route::get(
@@ -812,6 +821,17 @@ Route::middleware('auth:sanctum')->group(function () {
         // /rider/users/active, which is every active account and excludes self.
         Route::get('/counted-by-users', [\App\Http\Controllers\CRM\WarehouseController::class, 'getCountedByUsers']);
         Route::get('/product-history', [\App\Http\Controllers\CRM\WarehouseController::class, 'getProductHistory']);
+
+        // ⭐ Aug-2026 TRANSFER REQUESTS — "please send me stock", the step BEFORE a
+        // transfer. A request moves NO inventory; only /accept does, and it runs the
+        // same initiation code a direct /transfer does. Note the singular
+        // 'transfer-request' prefix, distinct from the plural 'transfers' above:
+        // requests and transfers are different objects and must not be confused.
+        Route::get('/transfer-requests/pending', [\App\Http\Controllers\CRM\WarehouseController::class, 'getPendingTransferRequests']);
+        Route::post('/transfer-request', [\App\Http\Controllers\CRM\WarehouseController::class, 'createTransferRequest']);
+        Route::post('/transfer-request/{id}/accept', [\App\Http\Controllers\CRM\WarehouseController::class, 'acceptTransferRequest']);
+        Route::post('/transfer-request/{id}/decline', [\App\Http\Controllers\CRM\WarehouseController::class, 'declineTransferRequest']);
+        Route::post('/transfer-request/{id}/cancel', [\App\Http\Controllers\CRM\WarehouseController::class, 'cancelTransferRequest']);
         
         // ⭐ Batch Production Tracking
         Route::get('/batch/active', [\App\Http\Controllers\CRM\WarehouseController::class, 'getActiveBatches']);
@@ -994,6 +1014,8 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::post('/sms/ingest', [\App\Http\Controllers\API\AssistantSmsController::class, 'ingest']);
         Route::post('/sms/{id}/draft', [\App\Http\Controllers\API\AssistantSmsController::class, 'draft']);
         Route::post('/sms/{id}/match-credit', [\App\Http\Controllers\API\AssistantSmsController::class, 'matchCredit']);
+        Route::get('/sms/{id}/targets', [\App\Http\Controllers\API\AssistantSmsController::class, 'targets']);
+        Route::post('/sms/{id}/attach', [\App\Http\Controllers\API\AssistantSmsController::class, 'attach']);
         Route::post('/sms/{id}/ignore', [\App\Http\Controllers\API\AssistantSmsController::class, 'ignore']);
         Route::post('/sms/{id}/teach-sender', [\App\Http\Controllers\API\AssistantSmsController::class, 'teachSender']);
         Route::post('/sms/{id}/save-map', [\App\Http\Controllers\API\AssistantSmsController::class, 'saveMap']);

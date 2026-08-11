@@ -260,7 +260,7 @@ class DayChecksService
      *
      * @param array  $ctx  login_time, logout_time, role_name, company_bike, meter_start, meter_end,
      *                     meter_distance, road_distance_km, gps_distance, checkout_info, home_journey,
-     *                     work_journey, checkout_unlock, meter_start_recorded_at,
+     *                     work_journey, checkout_unlock, checkout_counted, meter_start_recorded_at,
      *                     home_meter_recorded_at, meter_start_source
      * @param array  $readings the rider's GPS readings for the date (may be empty)
      */
@@ -291,8 +291,18 @@ class DayChecksService
             elseif (($hj['state'] ?? '') === 'unlocked') { $chips[] = ['label' => 'home meter unlocked', 'tone' => 'amber']; $meterIssues[] = 'Home meter unlocked by manager'; }
             elseif (!empty($hj['breach'])) { $meterIssues[] = 'Home meter recorded with a breach'; }
         }
-        // Checkout bypass (any rider) + off-pin / back-at-office exceptions.
-        if (is_array($cu) && !empty($cu['used'])) { $chips[] = ['label' => 'checkout bypassed', 'tone' => 'amber']; $meterIssues[] = 'Checkout bypassed'; }
+        // Checkout bypass (any rider) + off-pin / back-at-office exceptions. When the OT
+        // engine re-based the day (checkout_counted present), say WHAT it counted to —
+        // the chip alone left the manager to guess where the hours/OT numbers came from.
+        if (is_array($cu) && !empty($cu['used'])) {
+            $cc = $g('checkout_counted');
+            $lbl = 'checkout bypassed';
+            if (is_array($cc)) {
+                $lbl .= !empty($cc['time']) ? (' · counted ' . $cc['time']) : ' · nothing counted';
+            }
+            $chips[] = ['label' => $lbl, 'tone' => 'amber'];
+            $meterIssues[] = 'Checkout bypassed';
+        }
         if (is_array($checkoutInfo) && !empty($checkoutInfo['office_exception'])) { $chips[] = ['label' => 'back at office after delivering', 'tone' => 'amber']; }
         if (is_array($checkoutInfo) && !empty($checkoutInfo['pin_away'])) { $chips[] = ['label' => 'checkout off pin', 'tone' => 'amber']; }
 

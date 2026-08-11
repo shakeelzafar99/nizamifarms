@@ -626,10 +626,27 @@
                     </div>
                 </div>
                 <div class="flex items-center gap-2 bg-white px-3 py-2 rounded-lg border border-gray-200">
+                    <div class="text-2xl">⚖️</div>
+                    <div>
+                        <div class="text-lg font-bold" style="color: #7c3aed;" id="total-weight">-</div>
+                        <div class="text-xs text-gray-500">Weight (kg)</div>
+                    </div>
+                </div>
+                <div class="flex items-center gap-2 bg-white px-3 py-2 rounded-lg border border-gray-200">
                     <div class="text-2xl">🏷️</div>
                     <div>
                         <div class="text-lg font-bold text-gray-900" id="category-count">-</div>
                         <div class="text-xs text-gray-500">Categories</div>
+                    </div>
+                </div>
+                {{-- Shown only when THIS user has set a custom order for the level on
+                     screen (set from the mobile Quantities screen). Without it the
+                     changed row order would look like a bug. --}}
+                <div id="sort-indicator" style="display: none;" class="flex items-center gap-2 px-3 py-2 rounded-lg" title="Your personal display order for this level — set it on the mobile app. It does not change any quantity.">
+                    <div class="text-2xl">⇅</div>
+                    <div>
+                        <div class="text-lg font-bold" style="color: #7c3aed;" id="sort-indicator-mode">-</div>
+                        <div class="text-xs text-gray-500">Your order</div>
                     </div>
                 </div>
             </div>
@@ -998,6 +1015,10 @@ function startAutoRefresh() {
     autoRefreshInterval = setInterval(() => {
         // Silent refresh - no loading spinner
         const requestStartedAt = Date.now();
+        // ⭐ Capture the navigation sequence at send time: if the user drills
+        //    down/up while this poll is in flight, loadData() bumps the token
+        //    and this response must be discarded, not rendered over the new level.
+        const seqAtSend = window.openQtyState.reqSeq || 0;
         const params = new URLSearchParams();
         params.append('level', window.openQtyState.currentLevel);
 
@@ -1015,6 +1036,9 @@ function startAutoRefresh() {
         })
         .then(response => response.json())
         .then(data => {
+            if ((window.openQtyState.reqSeq || 0) !== seqAtSend) {
+                return; // user navigated while this poll was in flight
+            }
             if (data.success && data.data) {
                 // A manager can change the levels while this page is open. Adopt them
                 // and start over from the root instead of repainting rows that were
@@ -1096,6 +1120,14 @@ async function loadData() {
     try {
         showLoading();
 
+        // ⭐ Request token: every navigation (drill down/up, breadcrumb, filter)
+        //    bumps the sequence. A response is only allowed to render if it is
+        //    still the LATEST request — otherwise a slow response for the level
+        //    you just left would overwrite the level you're on (the classic
+        //    "drilled fast and the page went blank" bug).
+        window.openQtyState.reqSeq = (window.openQtyState.reqSeq || 0) + 1;
+        const mySeq = window.openQtyState.reqSeq;
+
         const requestStartedAt = Date.now();
 
         // Note: hierarchy and excluded_statuses are now read from database by backend
@@ -1114,6 +1146,11 @@ async function loadData() {
         });
 
         const result = await response.json();
+
+        // Superseded while in flight (user drilled again) — discard silently.
+        if (mySeq !== window.openQtyState.reqSeq) {
+            return;
+        }
 
         // Debug logging
         console.log('API Response:', result);
@@ -1148,7 +1185,29 @@ async function loadData() {
 function updateSummaryCards(summary) {
     document.getElementById('total-orders').textContent = summary.total_orders.toLocaleString();
     document.getElementById('total-quantity').textContent = summary.total_quantity.toLocaleString();
+    // Guarded: an older server build won't send total_weight, and calling
+    // toLocaleString() on undefined would throw and blank the whole card row.
+    const weightEl = document.getElementById('total-weight');
+    if (weightEl) {
+        weightEl.textContent = Number(summary.total_weight || 0).toLocaleString(undefined, {maximumFractionDigits: 2});
+    }
     document.getElementById('category-count').textContent = summary.category_count.toLocaleString();
+
+    // Personal sort indicator. summary.sort_mode is null unless this user set an
+    // order for the level being shown; older server builds omit it entirely.
+    const sortWrap = document.getElementById('sort-indicator');
+    if (sortWrap) {
+        const mode = summary.sort_mode || null;
+        if (mode) {
+            const labels = {alpha: 'A → Z', custom: 'Custom', qty_desc: 'Quantity'};
+            document.getElementById('sort-indicator-mode').textContent = labels[mode] || mode;
+            sortWrap.style.display = 'flex';
+            sortWrap.style.background = '#f5f3ff';
+            sortWrap.style.border = '1px solid #ddd6fe';
+        } else {
+            sortWrap.style.display = 'none';
+        }
+    }
 }
 
 // Render data table
@@ -1215,6 +1274,10 @@ function renderTable(data, summary) {
                 <div>Total</div>
                 <div style="font-size: 10px; font-weight: normal; color: #6b7280;">Qty</div>
             </th>
+            <th class="text-right" style="min-width: 80px;">
+                <div style="color: #7c3aed;">Weight</div>
+                <div style="font-size: 10px; font-weight: normal; color: #6b7280;">kg</div>
+            </th>
             <th class="text-right" style="min-width: 70px;">
                 <div style="color: #059669;">Lean</div>
             </th>
@@ -1241,6 +1304,10 @@ function renderTable(data, summary) {
                 <div>Total</div>
                 <div style="font-size: 10px; font-weight: normal; color: #6b7280;">Qty</div>
             </th>
+            <th class="text-right" style="min-width: 80px;">
+                <div style="color: #7c3aed;">Weight</div>
+                <div style="font-size: 10px; font-weight: normal; color: #6b7280;">kg</div>
+            </th>
             <th class="text-right" style="min-width: 70px;">
                 <div style="color: #059669;">Lean</div>
             </th>
@@ -1266,6 +1333,9 @@ function renderTable(data, summary) {
             const leanQty = parseFloat(item.lean_quantity || 0);
             const nonLeanQty = parseFloat(item.non_lean_quantity || 0);
             const processingQty = parseFloat(item.processing_quantity || 0);
+            // ⭐ Read-only kg total from the server (qty × each product's unit weight).
+            //    Defaults to 0 if an older server build doesn't send it yet.
+            const totalWeight = parseFloat(item.total_weight || 0);
             // ⭐ Prepared items are now excluded from query - no need to track preparing_quantity
             
             return `
@@ -1286,6 +1356,9 @@ function renderTable(data, summary) {
                     </td>
                     <td class="text-right">
                         <div style="font-size: 16px; font-weight: 700; color: #111827;">${totalQty.toLocaleString()}</div>
+                    </td>
+                    <td class="text-right">
+                        <div style="font-size: 16px; font-weight: 700; color: #7c3aed;">${totalWeight.toLocaleString(undefined, {maximumFractionDigits: 2})}</div>
                     </td>
                     <td class="text-right">
                         <div style="font-size: 16px; font-weight: 700; color: #059669;">${leanQty.toLocaleString()}</div>
@@ -1313,6 +1386,9 @@ function renderTable(data, summary) {
             const leanQty = parseFloat(item.lean_quantity || 0);
             const nonLeanQty = parseFloat(item.non_lean_quantity || 0);
             const processingQty = parseFloat(item.processing_quantity || 0);
+            // ⭐ Read-only kg total from the server (qty × each product's unit weight).
+            //    Defaults to 0 if an older server build doesn't send it yet.
+            const totalWeight = parseFloat(item.total_weight || 0);
             // ⭐ Prepared items are now excluded from query - no need to track preparing_quantity
             
             return `
@@ -1328,6 +1404,9 @@ function renderTable(data, summary) {
                     </td>
                     <td class="text-right">
                         <div style="font-size: 18px; font-weight: 700; color: #111827;">${totalQty.toLocaleString()}</div>
+                    </td>
+                    <td class="text-right">
+                        <div style="font-size: 18px; font-weight: 700; color: #7c3aed;">${totalWeight.toLocaleString(undefined, {maximumFractionDigits: 2})}</div>
                     </td>
                     <td class="text-right">
                         <div style="font-size: 18px; font-weight: 700; color: #059669;">${leanQty.toLocaleString()}</div>

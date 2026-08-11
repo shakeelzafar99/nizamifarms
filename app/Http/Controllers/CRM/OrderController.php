@@ -2576,6 +2576,10 @@ class OrderController extends Controller
                 'total_price' => 'required|numeric',
                 'coupon_code' => 'nullable|string',
                 'payment_method' => 'nullable|string',
+                // Aug-2026 — the "Set as default for this customer" tick next to
+                // the payment picker on BOTH order forms. Not an order column;
+                // stripped out below before the order is built.
+                'set_default_payment_method' => 'nullable|boolean',
                 'note' => 'nullable|string',
                 'items' => 'required|array',
                 'items.*.name' => 'required|string',
@@ -2844,8 +2848,11 @@ class OrderController extends Controller
                 'updated_by' => auth()->id()
             ]);
             
-            // Remove customer creation fields from order data
-            $customerFields = ['customer_phone', 'customer_first_name', 'customer_last_name', 'customer_company', 'customer_address1', 'customer_address2', 'customer_city', 'customer_province', 'customer_postal_code', 'customer_country'];
+            // Remove customer creation fields from order data.
+            // ⚠ set_default_payment_method belongs on the CUSTOMER, not the order —
+            // it must be stripped here or it rides array_merge($validated, ...) all
+            // the way into storeOrderFromApi() as a phantom order column.
+            $customerFields = ['customer_phone', 'customer_first_name', 'customer_last_name', 'customer_company', 'customer_address1', 'customer_address2', 'customer_city', 'customer_province', 'customer_postal_code', 'customer_country', 'set_default_payment_method'];
             foreach ($customerFields as $field) {
                 unset($orderData[$field]);
             }
@@ -2948,6 +2955,42 @@ class OrderController extends Controller
                 ]);
             }
             
+            // Aug-2026 — "Set as default for this customer" tick next to the
+            // payment picker (web Create-Order modal + mobile New Order sheet).
+            //
+            // Written from $order->customer_id rather than the request's
+            // customer_id on purpose: on the create-a-new-customer path the
+            // request has no id at all and storeOrderFromApi() is what resolves
+            // (or creates) the customer, so this is the only value that is
+            // right in BOTH cases.
+            //
+            // Normalized down to 'cash'/'online' so the two forms' different
+            // stored values ('cash_on_delivery' vs 'cash') land as one choice.
+            // Non-fatal by design: remembering a preference must never be the
+            // reason an order fails to save.
+            if ($order->customer_id
+                && filter_var($request->input('set_default_payment_method', false), FILTER_VALIDATE_BOOLEAN)) {
+                try {
+                    $defaultPm = \App\Models\CRM\CustomerModel::normalizePaymentMethod(
+                        $validated['payment_method'] ?? null
+                    );
+                    if ($defaultPm !== null) {
+                        \App\Models\CRM\CustomerModel::where('id', $order->customer_id)
+                            ->update(['default_payment_method' => $defaultPm]);
+                        \Log::info('Customer default payment method set from order create', [
+                            'customer_id' => $order->customer_id,
+                            'order_id' => $order->id,
+                            'default_payment_method' => $defaultPm,
+                            'user_id' => auth()->id(),
+                        ]);
+                    }
+                } catch (\Throwable $e) {
+                    \Log::warning('Failed to set customer default payment method (non-fatal)', [
+                        'customer_id' => $order->customer_id, 'error' => $e->getMessage(),
+                    ]);
+                }
+            }
+
             // ⭐ AUTO-GEOCODE: give this stop a location so dispatch can time it.
             // Note: geocoded_latitude/longitude is separate from latitude/longitude (verified location)
             //
@@ -4440,12 +4483,12 @@ class OrderController extends Controller
             $excludedStatuses = ['delivered', 'completed', 'cancelled', 'refunded'];
             
             // Get open orders grouped by rider with status breakdown
-            $riderCounts = \DB::table('t_crm_prod_order as o')
+            $riderCountsQuery = \DB::table('t_crm_prod_order as o')
                 ->leftJoin('t_sys_user as u', 'u.id', '=', 'o.assigned_rider_user_id')
                 ->select([
                     'o.assigned_rider_user_id as rider_id',
                     'u.fullname as rider_name',
-                    \DB::raw("CASE 
+                    \DB::raw("CASE
                         WHEN o.order_status IN ('on-hold','on hold') THEN 'on_hold'
                         WHEN o.order_status = 'completed' THEN 'delivered'
                         WHEN o.order_status IN ('out-for-delivery','out for delivery') THEN 'out_for_delivery'
@@ -4459,8 +4502,17 @@ class OrderController extends Controller
                 })
                 ->whereNotIn('o.order_status', $excludedStatuses)
                 ->groupBy('o.assigned_rider_user_id', 'u.fullname', 'normalized_status')
-                ->orderBy('u.fullname')
-                ->get();
+                ->orderBy('u.fullname');
+
+            // NF (Aug-2026): hide qurbani here TOO — the same exclusion total_open_count
+            // and assigned_count below already apply, and the same one the Open Orders
+            // list applies to the rows themselves. Qurbani completion is tracked on the
+            // line items and never rolls up to order_status, so those orders sit "open"
+            // for months; counted here they made the per-rider numbers disagree with the
+            // very table they are used to filter (a rider showing "14 orders" whose
+            // filter selects nothing). Totals and rows now come from one definition.
+            $this->applyNonQurbaniFilterDb($riderCountsQuery, 'o');
+            $riderCounts = $riderCountsQuery->get();
 
             // Organize data by rider
             $ridersData = [];
@@ -4851,6 +4903,10 @@ class OrderController extends Controller
                             TRIM(CONCAT(COALESCE(o.address_first_name, ""), " ", COALESCE(o.address_last_name, "")))
                         ) as customer_full_name'),
                         \DB::raw('SUM(li.quantity) as total_quantity'),
+                        // ⭐ Read-only kg figure: qty * the product's unit_weight_kg (0.5 for a
+                        //    500g pack). COALESCE because the products join is a LEFT JOIN and
+                        //    unmatched line items legitimately have no product row.
+                        \DB::raw('SUM(li.quantity * COALESCE(p.unit_weight_kg, 1)) as total_weight'),
                         \DB::raw('SUM(CASE WHEN p.is_lean = 1 THEN li.quantity ELSE 0 END) as lean_quantity'),
                         \DB::raw('SUM(CASE WHEN p.is_lean = 0 THEN li.quantity ELSE 0 END) as non_lean_quantity'),
                         \DB::raw('SUM(CASE WHEN o.order_status = "processing" THEN li.quantity ELSE 0 END) as processing_quantity'),
@@ -4867,6 +4923,7 @@ class OrderController extends Controller
                     'li.name as group_name',
                     \DB::raw('GROUP_CONCAT(DISTINCT COALESCE(li.product_id, p.id)) as product_ids'),
                     \DB::raw('SUM(li.quantity) as total_quantity'),
+                    \DB::raw('SUM(li.quantity * COALESCE(p.unit_weight_kg, 1)) as total_weight'),
                     \DB::raw('SUM(CASE WHEN p.is_lean = 1 THEN li.quantity ELSE 0 END) as lean_quantity'),
                     \DB::raw('SUM(CASE WHEN p.is_lean = 0 THEN li.quantity ELSE 0 END) as non_lean_quantity'),
                     \DB::raw('SUM(CASE WHEN o.order_status = "processing" THEN li.quantity ELSE 0 END) as processing_quantity'),
@@ -4880,6 +4937,7 @@ class OrderController extends Controller
                 $query->select([
                     \DB::raw("COALESCE(p.{$currentField}, 'Uncategorized') as group_name"),
                     \DB::raw('SUM(li.quantity) as total_quantity'),
+                    \DB::raw('SUM(li.quantity * COALESCE(p.unit_weight_kg, 1)) as total_weight'),
                     \DB::raw('SUM(CASE WHEN p.is_lean = 1 THEN li.quantity ELSE 0 END) as lean_quantity'),
                     \DB::raw('SUM(CASE WHEN p.is_lean = 0 THEN li.quantity ELSE 0 END) as non_lean_quantity'),
                     \DB::raw('SUM(CASE WHEN o.order_status = "processing" THEN li.quantity ELSE 0 END) as processing_quantity'),
@@ -4903,9 +4961,18 @@ class OrderController extends Controller
             $results = $query
                 ->orderByDesc('total_quantity')
                 ->get();
-            
+
+            // ⭐ Per-USER display order (the same preference the mobile Quantities
+            //    screen uses — one row per user, keyed by hierarchy FIELD name).
+            //    When this user has set an order for THIS level it wins; otherwise
+            //    nothing below changes and the page behaves exactly as before.
+            //    getPrefs() never throws (missing table on prod = default order).
+            $sortService = app(\App\Services\CRM\QuantitiesSortService::class);
+            $userSortPrefs = $sortService->getPrefs(auth()->id());
+            $userSortMode = $sortService->modeFor($userSortPrefs, $currentField);
+
             // Apply priority-based sorting for attribute levels
-            if (in_array($currentField, ['attribute_1', 'attribute_2', 'attribute_3'])) {
+            if (!$userSortMode && in_array($currentField, ['attribute_1', 'attribute_2', 'attribute_3'])) {
                 $attributeKey = (int)str_replace('attribute_', '', $currentField);
                 $priorityMap = $this->getAttributePriorityMap($attributeKey);
                 
@@ -4939,7 +5006,19 @@ class OrderController extends Controller
                     ]);
                 }
             }
-            
+
+            // The user's own order for this level, applied last so it is the final word.
+            // Never runs at the 'orders' level (modeFor() returns null there).
+            if ($userSortMode) {
+                $results = collect($sortService->sortRows(
+                    $results->all(),
+                    $currentField,
+                    $userSortPrefs,
+                    fn ($row) => $row->group_name ?? '',
+                    fn ($row) => (float) ($row->total_quantity ?? 0)
+                ))->values();
+            }
+
             // Get sample line item data to understand the join
             $sampleLineItems = \DB::table('t_crm_prod_order_line_item as li')
                 ->join('t_crm_prod_order as o', 'li.order_id', '=', 'o.id')
@@ -4958,6 +5037,7 @@ class OrderController extends Controller
 
             // Calculate totals for summary
             $totalQuantity = $results->sum('total_quantity');
+            $totalWeight = round((float) $results->sum('total_weight'), 2);
             $totalOrders = \DB::table('t_crm_prod_order')
                 ->where(function($q) {
                     $q->where('external_source', '!=', 'shopify')
@@ -4977,6 +5057,8 @@ class OrderController extends Controller
                 'data' => $results,
                 'summary' => [
                     'total_quantity' => $totalQuantity,
+                    'total_weight' => $totalWeight,
+                    'sort_mode' => $userSortMode, // null = default order (quantity)
                     'total_orders' => $totalOrders,
                     'category_count' => $results->count(),
                     'current_level' => $level,

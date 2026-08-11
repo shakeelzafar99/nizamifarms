@@ -1576,6 +1576,32 @@ class RiderController extends Controller
                         'eta_calculated_by' => $user->id, // attribution: who dispatched (rider or store)
                     ]);
 
+                // 🛎 CUSTOMER APP — THIS is the moment the order becomes "out for
+                // delivery" for the CUSTOMER. Ops sets that status early (while the
+                // order is still being loaded), so the webhook emitter has been
+                // masking it as `processing`; now there is a real rider, a real route
+                // and a real ETA, so the true status is released — carrying the
+                // delivery window. No-op unless the Status Hub flags the status as
+                // held and this is an SH- order.
+                //
+                // Only on a stop's FIRST dispatch: $previousEtas (snapshotted before
+                // the writes above) is exactly the "this stop was already promised a
+                // time" test, so a re-time never re-announces a status the customer
+                // already has. Emitted BEFORE the ETA event below so the outbox —
+                // drained in id order — delivers status-then-ETA. Non-fatal; never
+                // affects ETA calculation.
+                if (!isset($previousEtas[(int) $order->id])) {
+                    try {
+                        app(\App\Services\CustomerAppWebhookEmitter::class)
+                            ->emitDispatchStatus((int) $order->id, $order->order_number, 'out_for_delivery', $estimatedAt);
+                    } catch (\Throwable $e) {
+                        \Log::error('CustomerApp emitDispatchStatus hook failed (non-fatal)', [
+                            'order_id' => $order->id,
+                            'error'    => $e->getMessage(),
+                        ]);
+                    }
+                }
+
                 // Phase 2 (customer app) — push the refreshed ETA + delivery
                 // window. No-op unless config emit_eta_updates is ON and this
                 // is an SH- order. Self-contained + non-fatal; never affects
@@ -15225,12 +15251,18 @@ class RiderController extends Controller
                     'p.attribute_1',
                     'p.attribute_2',
                     'p.attribute_3',
-                    DB::raw('COALESCE(p.is_lean, 0) as is_lean')
+                    DB::raw('COALESCE(p.is_lean, 0) as is_lean'),
+                    // ⭐ Kg represented by ONE qty unit (0.5 for a 500g pack). Read-only:
+                    //    every node carries weight = SUM(qty * unit_weight_kg) alongside qty.
+                    //    NOT weight_factor (that is the weighing/scan divisor). Column comes
+                    //    from the product row already joined above — no extra join or filter.
+                    DB::raw('COALESCE(p.unit_weight_kg, 1) as unit_weight_kg')
                 ])
                 ->orderBy('o.order_date', 'desc')
                 ->get();
 
             $totalQuantity = 0.0;
+            $totalWeight = 0.0;
             $totalLineItems = 0;
             $uniqueOrderIds = [];
             $orderStatusesByOrder = [];
@@ -15240,6 +15272,7 @@ class RiderController extends Controller
 
             $addMetrics = function (&$node, $row) {
                 $qty = (float) ($row->line_item_quantity ?? 0);
+                $unitWeight = (float) ($row->unit_weight_kg ?? 1);
                 $isLean = (int) ($row->is_lean ?? 0) === 1;
                 $orderStatus = strtolower((string) ($row->order_status ?? ''));
                 $lineStatus = strtolower((string) ($row->line_item_status ?? ''));
@@ -15247,6 +15280,9 @@ class RiderController extends Controller
                 // ✅ Defensive initialization to avoid \"Undefined array key\" issues
                 if (!isset($node['quantity'])) {
                     $node['quantity'] = 0.0;
+                }
+                if (!isset($node['weight'])) {
+                    $node['weight'] = 0.0;
                 }
                 if (!isset($node['lean_quantity'])) {
                     $node['lean_quantity'] = 0.0;
@@ -15262,6 +15298,7 @@ class RiderController extends Controller
                 }
 
                 $node['quantity'] += $qty;
+                $node['weight'] += $qty * $unitWeight;
                 if ($isLean) {
                     $node['lean_quantity'] += $qty;
                 } else {
@@ -15278,6 +15315,7 @@ class RiderController extends Controller
             foreach ($rows as $row) {
                 $qty = (float) ($row->line_item_quantity ?? 0);
                 $totalQuantity += $qty;
+                $totalWeight += $qty * (float) ($row->unit_weight_kg ?? 1);
                 $totalLineItems++;
                 $uniqueOrderIds[$row->order_id] = true;
 
@@ -15307,6 +15345,7 @@ class RiderController extends Controller
                                 'field' => 'orders',
                                 'level' => $levelIndex,
                                 'quantity' => 0,
+                                'weight' => 0,
                                 'lean_quantity' => 0,
                                 'non_lean_quantity' => 0,
                                 'processing_quantity' => 0,
@@ -15336,12 +15375,16 @@ class RiderController extends Controller
                         $qtyBefore = $currentMap[$orderKey]['quantity'];
                         
                         // Add metrics directly to the map entry
+                        // ⚠️ This block is a DUPLICATE of $addMetrics (order nodes do not go
+                        //    through it). Any new accumulator must be added in BOTH places.
                         $qty = (float) ($row->line_item_quantity ?? 0);
+                        $unitWeight = (float) ($row->unit_weight_kg ?? 1);
                         $isLean = (int) ($row->is_lean ?? 0) === 1;
                         $orderStatus = strtolower((string) ($row->order_status ?? ''));
                         $lineStatus = strtolower((string) ($row->line_item_status ?? ''));
-                        
+
                         $currentMap[$orderKey]['quantity'] += $qty;
+                        $currentMap[$orderKey]['weight'] = ($currentMap[$orderKey]['weight'] ?? 0) + ($qty * $unitWeight);
                         if ($isLean) {
                             $currentMap[$orderKey]['lean_quantity'] += $qty;
                         } else {
@@ -15368,6 +15411,7 @@ class RiderController extends Controller
                         foreach ($currentList as $idx => &$listItem) {
                             if (isset($listItem['order_id']) && $listItem['order_id'] == $row->order_id) {
                                 $listItem['quantity'] = $currentMap[$orderKey]['quantity'];
+                                $listItem['weight'] = $currentMap[$orderKey]['weight'];
                                 $listItem['lean_quantity'] = $currentMap[$orderKey]['lean_quantity'];
                                 $listItem['non_lean_quantity'] = $currentMap[$orderKey]['non_lean_quantity'];
                                 $listItem['processing_quantity'] = $currentMap[$orderKey]['processing_quantity'];
@@ -15411,6 +15455,7 @@ class RiderController extends Controller
                             'field' => $field,
                             'level' => $levelIndex,
                             'quantity' => 0,
+                            'weight' => 0,
                             'lean_quantity' => 0,
                             'non_lean_quantity' => 0,
                             'processing_quantity' => 0,
@@ -15484,6 +15529,9 @@ class RiderController extends Controller
             $finalizeNode = function (&$node) use (&$finalizeNode) {
                 $node['order_count'] = count($node['_order_ids']);
                 $node['product_count'] = count(array_filter(array_keys($node['_product_ids'])));
+
+                // Kill float drift (0.5 * 21 style sums) before the value leaves the server.
+                $node['weight'] = round((float) ($node['weight'] ?? 0), 2);
 
                 unset($node['_order_ids'], $node['_product_ids'], $node['_children_map']);
 
@@ -15735,6 +15783,7 @@ class RiderController extends Controller
                     'total_orders' => count($uniqueOrderIds),
                     'total_line_items' => $totalLineItems,
                     'total_quantity' => round($totalQuantity, 2),
+                    'total_weight' => round($totalWeight, 2),
                 ],
                 'order_status_counts' => $orderStatusCounts,
                 'tree' => $treeClean,
@@ -15753,11 +15802,71 @@ class RiderController extends Controller
         }
     }
 
+    /**
+     * Per-user display sort preferences for the Open Order Quantities screen.
+     *
+     * Stored per authenticated user in t_crm_open_quantities_user_sort, keyed by
+     * hierarchy FIELD name (attribute_1, product_name, ...) — never by level
+     * index, so a hierarchy change can't misapply an old preference.
+     * Shape: {"attribute_1":{"mode":"custom","sequence":["Chicken","Beef"]}}
+     * Modes: qty_desc (default when a field is absent) | alpha | custom.
+     *
+     * ⭐ Sorting itself happens ON THE PHONE at display time. These endpoints only
+     *    store/return the preference — the tree endpoint is deliberately untouched
+     *    (same payload, same speed, no per-request preference lookup).
+     */
+    public function getQuantitiesSortPrefs()
+    {
+        try {
+            $user = Auth::user();
+            if (!$user->hasMobilePermission('view_open_quantities')) {
+                return response()->json(['success' => false, 'message' => 'Permission denied'], 403);
+            }
+
+            $prefs = app(\App\Services\CRM\QuantitiesSortService::class)->getPrefs($user->id);
+
+            return response()->json([
+                'success' => true,
+                'prefs' => empty($prefs) ? (object) [] : $prefs,
+            ]);
+        } catch (\Exception $e) {
+            Log::error('Failed to load quantities sort prefs', ['user_id' => Auth::id(), 'error' => $e->getMessage()]);
+            return response()->json(['success' => false, 'message' => 'Failed to load sort preferences'], 500);
+        }
+    }
+
+    public function saveQuantitiesSortPrefs(Request $request)
+    {
+        try {
+            $user = Auth::user();
+            if (!$user->hasMobilePermission('view_open_quantities')) {
+                return response()->json(['success' => false, 'message' => 'Permission denied'], 403);
+            }
+
+            $raw = $request->input('prefs');
+            if (is_string($raw)) {
+                $raw = json_decode($raw, true);
+            }
+            if (!is_array($raw)) {
+                return response()->json(['success' => false, 'message' => 'prefs must be an object'], 422);
+            }
+
+            // Sanitizing + persisting lives in the service so the web page and the
+            // app can never drift apart on what a valid preference is.
+            $clean = app(\App\Services\CRM\QuantitiesSortService::class)->savePrefs($user->id, $raw);
+
+            return response()->json(['success' => true, 'prefs' => empty($clean) ? (object) [] : $clean]);
+        } catch (\Exception $e) {
+            Log::error('Failed to save quantities sort prefs', ['user_id' => Auth::id(), 'error' => $e->getMessage()]);
+            return response()->json(['success' => false, 'message' => 'Failed to save sort preferences'], 500);
+        }
+    }
+
     public function getOpenOrderQuantities(Request $request)
     {
         try {
             $user = Auth::user();
-            
+
             // Check permission
             if (!$user->hasMobilePermission('view_open_quantities')) {
                 return response()->json([
@@ -15801,28 +15910,44 @@ class RiderController extends Controller
             $statusRules = app(\App\Services\CRM\OrderStatusRuleService::class);
             $excludedStatuses = $statusRules->quantitiesExcluded();
 
-            // Build base query - same as webapp with SKU-primary matching
+            // Build base query — joins MIRROR getOpenOrderQuantitiesTree exactly.
+            // ⭐ Aligned Aug-2026: this endpoint previously used a plain OR chain here,
+            //    which let one line item match several variants (row fan-out that
+            //    inflated every SUM on this fallback path). Keep the two endpoints'
+            //    joins identical or their numbers drift apart again.
             $query = DB::table('t_crm_prod_order_line_item as li')
                 ->join('t_crm_prod_order as o', 'li.order_id', '=', 'o.id')
                 ->leftJoin('t_crm_prod_product_variant as pv', function($join) {
+                    // EXCLUSIVE matching: SKU match OR (fallbacks only when no SKU)
                     $join->where(function($q) {
-                        // PRIORITY 1: SKU match (most reliable)
+                        // PRIORITY 1: SKU match (most reliable) - when SKU exists
                         $q->where(function($skuMatch) {
                             $skuMatch->whereNotNull('li.sku')
                                      ->where('li.sku', '!=', '')
                                      ->whereColumn('li.sku', 'pv.sku');
                         })
-                        // PRIORITY 2-5: Fallbacks for manual orders without SKU
-                          ->orWhereColumn('li.variant_id', 'pv.shopify_variant_id')
-                          ->orWhereColumn('li.variant_id', 'pv.id')
-                          ->orWhereColumn('li.product_id', 'pv.shopify_variant_id')
-                          ->orWhereColumn('li.product_id', 'pv.id');
+                        // PRIORITY 2-5: Fallbacks ONLY when no valid SKU exists
+                        ->orWhere(function($fallback) {
+                            $fallback->where(function($noSku) {
+                                $noSku->whereNull('li.sku')
+                                      ->orWhere('li.sku', '');
+                            })
+                            ->where(function($idMatch) {
+                                $idMatch->whereColumn('li.variant_id', 'pv.shopify_variant_id')
+                                        ->orWhereColumn('li.variant_id', 'pv.id')
+                                        ->orWhereColumn('li.product_id', 'pv.shopify_variant_id')
+                                        ->orWhereColumn('li.product_id', 'pv.id');
+                            });
+                        });
                     });
                 })
                 ->leftJoin('t_crm_prod_product as p', function($join) {
+                    // Product match: via variant (covers SKU match) or name fallback for
+                    // legacy rows — same as the tree. The old extra arm `li.product_id = p.id`
+                    // was removed: li.product_id is an EXTERNAL id for synced orders and can
+                    // collide with an unrelated internal p.id (mis-categorised, double rows).
                     $join->where(function($q) {
                         $q->whereColumn('pv.product_id', 'p.id')
-                          ->orWhereColumn('li.product_id', 'p.id')
                           // PRIORITY 7: Name fallback for legacy orders without SKU/IDs
                           ->orWhere(function($nameFallback) {
                               $nameFallback->whereNull('li.sku')
@@ -15861,6 +15986,16 @@ class RiderController extends Controller
             if ($preparedOnly) {
                 $query->where('li.preparation_status', 'preparing')
                       ->whereNotIn('o.order_status', $statusRules->outTheDoor());
+            } else {
+                // ⭐ Aligned Aug-2026 (mirrors the tree endpoint): the default view must
+                //    EXCLUDE line items already marked 'preparing'. Without this, and with
+                //    delivered/completed absent from excluded_statuses, this fallback
+                //    counted every fulfilled order in the 20-day window — numbers ~30x
+                //    the tree's for the same level.
+                $query->where(function($q) {
+                    $q->whereNull('li.preparation_status')
+                      ->orWhere('li.preparation_status', '!=', 'preparing');
+                });
             }
 
             // Default: Only show orders from last 20 days for performance
@@ -15933,6 +16068,7 @@ class RiderController extends Controller
                     DB::raw("CONCAT('Order #', o.order_number, ' - ', COALESCE(o.name, CONCAT(o.address_first_name, ' ', o.address_last_name))) as name"),
                     'o.order_status as status',
                     DB::raw('SUM(li.quantity) as quantity'),
+                    DB::raw('SUM(li.quantity * COALESCE(p.unit_weight_kg, 1)) as weight'),
                     DB::raw('SUM(CASE WHEN p.is_lean = 1 THEN li.quantity ELSE 0 END) as lean_quantity'),
                     DB::raw('SUM(CASE WHEN p.is_lean = 0 THEN li.quantity ELSE 0 END) as non_lean_quantity'),
                     DB::raw('SUM(CASE WHEN o.order_status = "processing" THEN li.quantity ELSE 0 END) as processing_quantity'),
@@ -15948,6 +16084,7 @@ class RiderController extends Controller
                     'li.name as name',
                     DB::raw('GROUP_CONCAT(DISTINCT COALESCE(li.product_id, p.id)) as product_ids'),
                     DB::raw('SUM(li.quantity) as quantity'),
+                    DB::raw('SUM(li.quantity * COALESCE(p.unit_weight_kg, 1)) as weight'),
                     DB::raw('SUM(CASE WHEN p.is_lean = 1 THEN li.quantity ELSE 0 END) as lean_quantity'),
                     DB::raw('SUM(CASE WHEN p.is_lean = 0 THEN li.quantity ELSE 0 END) as non_lean_quantity'),
                     DB::raw('SUM(CASE WHEN o.order_status = "processing" THEN li.quantity ELSE 0 END) as processing_quantity'),
@@ -15963,6 +16100,7 @@ class RiderController extends Controller
                 $results = $query->select([
                     DB::raw("COALESCE(p.{$currentField}, 'Uncategorized') as name"),
                     DB::raw('SUM(li.quantity) as quantity'),
+                    DB::raw('SUM(li.quantity * COALESCE(p.unit_weight_kg, 1)) as weight'),
                     DB::raw('SUM(CASE WHEN p.is_lean = 1 THEN li.quantity ELSE 0 END) as lean_quantity'),
                     DB::raw('SUM(CASE WHEN p.is_lean = 0 THEN li.quantity ELSE 0 END) as non_lean_quantity'),
                     DB::raw('SUM(CASE WHEN o.order_status = "processing" THEN li.quantity ELSE 0 END) as processing_quantity'),
@@ -16010,6 +16148,9 @@ class RiderController extends Controller
                 $result = [
                     'name' => $item->name ?? 'Uncategorized',
                     'quantity' => (float) ($item->quantity ?? 0),
+                    // ⭐ Read-only kg figure (qty * product unit_weight_kg). Must stay in this
+                    //    whitelist or it never reaches the app — same as the tree's node keys.
+                    'weight' => round((float) ($item->weight ?? 0), 2),
                     'lean_quantity' => (float) ($item->lean_quantity ?? 0),
                     'non_lean_quantity' => (float) ($item->non_lean_quantity ?? 0),
                     'processing_quantity' => (float) ($item->processing_quantity ?? 0),
@@ -17829,6 +17970,9 @@ class RiderController extends Controller
                             $cuByUser[$u2->user_id] = [
                                 'active'  => strtotime((string) $u2->checkout_unlock_until) >= time(),
                                 'until'   => substr((string) $u2->checkout_unlock_until, 11, 5),
+                                // Raw timestamp — the tight "did the checkout actually RIDE the
+                                // unlock" test needs it (feeds the counted-checkout chip below).
+                                'until_raw' => (string) $u2->checkout_unlock_until,
                                 'used'    => !empty($u2->logout_time),
                                 'reason'  => $u2->checkout_unlock_reason,
                                 'by_name' => $u2->checkout_unlock_by ? ($unames[$u2->checkout_unlock_by] ?? 'manager') : null,
@@ -18097,11 +18241,19 @@ class RiderController extends Controller
             //    from the web. Additive field → old APKs ignore it. Non-fatal.
             try {
                 $dcSvc = new \App\Services\Riders\DayChecksService();
+                $otSvc = new \App\Services\HR\OvertimeService(); // counted-checkout payload (one instance → memoized)
                 $warnKm = (float) (DB::table('t_fin_config')->where('config_key', 'ATTENDANCE_METER_GPS_WARN_KM')->value('config_value') ?? 10);
                 $gpsGrouped = $allGpsReadings ?? collect();
                 foreach ($formattedData as &$employee) {
                     if (empty($employee['login_time'])) { continue; }
                     $rd = isset($gpsGrouped[$employee['user_id']]) ? $gpsGrouped[$employee['user_id']]->values()->all() : [];
+                    // Same counted-checkout payload the web attendance page shows (owner ruling
+                    // Aug-8): a bypassed checkout is counted to the last delivered order.
+                    $cuRow = $employee['checkout_unlock'];
+                    $counted = (is_array($cuRow) && !empty($cuRow['used']))
+                        ? $otSvc->countedCheckout((int) $employee['user_id'], $selectedDate,
+                            $employee['login_time'], $employee['logout_time'], $cuRow['until_raw'] ?? null)
+                        : null;
                     $employee['day_checks'] = $dcSvc->build([
                         'login_time' => $employee['login_time'], 'logout_time' => $employee['logout_time'],
                         'role_name' => $employee['role_name'] ?? null, 'company_bike' => !empty($employee['is_company_bike']),
@@ -18110,6 +18262,7 @@ class RiderController extends Controller
                         'road_distance_km' => $employee['road_distance_km'], 'gps_distance' => $employee['gps_distance'],
                         'checkout_info' => $employee['checkout_info'], 'home_journey' => $employee['home_journey'],
                         'work_journey' => $employee['work_journey'], 'checkout_unlock' => $employee['checkout_unlock'],
+                        'checkout_counted' => $counted,
                         'meter_start_recorded_at' => $employee['meter_start_recorded_at'],
                         'home_meter_recorded_at' => $employee['home_meter_recorded_at'],
                         'meter_start_source' => $employee['meter_start_source'],

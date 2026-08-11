@@ -38,6 +38,64 @@ class PaymentSignal extends Model
     public const STATUS_DUPLICATE       = 'duplicate';
     public const STATUS_IRRELEVANT      = 'irrelevant';
 
+    /**
+     * ⭐ THE GUESS REASONS — a match the system INFERRED about an unidentified
+     * payer, never evidence the payer themselves supplied. Every one of these:
+     *   • shows blue "Bank confirmed" / amber, NEVER green "Verified";
+     *   • may be overruled by any stronger evidence (a screenshot pairing, the
+     *     approver re-tagging, an Ignore, or displacement by a real proof);
+     *   • never teaches a permanent alias on its own.
+     *
+     * ⚠⚠ ADDING A REASON HERE IS NOT OPTIONAL PLUMBING — the retract/override
+     * sites all key off this list (PaymentSignalMatcher::retractAmountGuess +
+     * displaceGuessesOn, AssistantSmsController::match/ignore,
+     * AssistantWorkspaceController::proofBackedMatch). A guess reason missing
+     * from this list is a guess that survives being disproven.
+     */
+    public const REASON_AMOUNT_UNIQUE = 'amount_unique_sms';  // lone queue invoice at this amount
+    public const REASON_NAME_AMOUNT   = 'name_amount_sms';    // payer name resolved -> their order
+    public const REASON_NAME_AI       = 'name_ai_sms';        // Gemini picked from a shortlist
+
+    public const GUESS_REASONS = [
+        self::REASON_AMOUNT_UNIQUE,
+        self::REASON_NAME_AMOUNT,
+        self::REASON_NAME_AI,
+    ];
+
+    /** A human said "this is the one" — outranks every guess, never auto-retracted. */
+    public const REASON_MANUAL_CONFIRMED = 'manual_confirmed';
+
+    /** A human rejected an INFERRED match. */
+    public const REASON_GUESS_DISMISSED = 'guess_dismissed';
+
+    /**
+     * A human detached a match backed by real evidence — including a
+     * screenshot⇄bank VERIFIED pair. The pair itself is not in doubt (both
+     * sources describe one true transfer); what was wrong is the ORDER it was
+     * attached to. Being verified proves the payment HAPPENED, never whose
+     * invoice it settles, so this must remain removable.
+     */
+    public const REASON_PROOF_DETACHED = 'proof_detached';
+
+    /**
+     * ⚠⚠ A HUMAN HAS RULED — automation must never re-attach these. Every
+     * re-matching entry point (HeldCreditResweeper, PaymentSignalMatcher::
+     * rematch, PaymentSignalReconciler by way of rematch) checks this list.
+     * Miss one and the correction is silently undone on the next page load,
+     * which reads to the user as the software arguing with them.
+     */
+    public const TERMINAL_REASONS = [
+        self::REASON_GUESS_DISMISSED,
+        self::REASON_PROOF_DETACHED,
+        'combined_dismissed',
+    ];
+
+    /** Is this signal's match an inferred guess rather than payer-supplied evidence? */
+    public function isGuess(): bool
+    {
+        return in_array((string) $this->match_reason, self::GUESS_REASONS, true);
+    }
+
     protected $fillable = [
         'source',
         'wa_message_id',

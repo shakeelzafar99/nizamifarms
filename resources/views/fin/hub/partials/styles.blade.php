@@ -476,6 +476,44 @@
     border-radius:99px;background:var(--surface2);border:1px solid var(--line);font-size:11.5px}
   .drawer .d-bank b{font-weight:800;color:var(--ink);letter-spacing:.01em}
 
+  /* image manager (edit surfaces): current images as thumbs, ✕ toggles removal-on-save */
+  .nfhub .img-mgr{display:flex;flex-wrap:wrap;gap:8px;margin:4px 0 8px}
+  .nfhub .img-mgr .im-th{position:relative;display:inline-block}
+  .nfhub .img-mgr .im-th img{width:64px;height:64px;object-fit:cover;border-radius:8px;
+    border:1px solid var(--line);display:block}
+  .nfhub .img-mgr .im-th .im-x{position:absolute;top:-6px;right:-6px;width:20px;height:20px;
+    border-radius:50%;border:1px solid var(--line);background:var(--surface);color:var(--ink2);
+    font-size:11px;line-height:1;cursor:pointer;display:flex;align-items:center;justify-content:center;
+    box-shadow:0 1px 3px rgba(0,0,0,.15)}
+  .nfhub .img-mgr .im-th .im-x:hover{background:var(--out-soft);color:var(--out);border-color:var(--out)}
+  .nfhub .img-mgr .im-th.rm img{opacity:.3;outline:2px dashed var(--out);outline-offset:-2px}
+  .nfhub .img-mgr .im-th.rm .im-x{background:var(--out);color:#fff;border-color:var(--out)}
+  /* drawer view gallery */
+  .drawer .d-gallery{display:flex;flex-wrap:wrap;gap:8px}
+  .drawer .d-gallery img{width:84px;height:84px;object-fit:cover;border-radius:9px;
+    border:1px solid var(--line);display:block}
+
+  /* drawer: inline quick edit (vendor statement rows only) */
+  .drawer .d-edit{display:flex;flex-direction:column;gap:10px}
+  .drawer .d-edit label{display:flex;flex-direction:column;gap:4px;font-size:11px;font-weight:700;
+    letter-spacing:.04em;text-transform:uppercase;color:var(--ink3)}
+  .drawer .d-edit input,.drawer .d-edit textarea{width:100%;border:1px solid var(--line);border-radius:8px;
+    background:var(--surface);color:var(--ink);padding:8px 10px;font:inherit;font-size:13px;
+    text-transform:none;letter-spacing:0;font-weight:500}
+  .drawer .d-edit textarea{resize:vertical;min-height:52px}
+  .drawer .d-edit input:focus,.drawer .d-edit textarea:focus{outline:none;border-color:var(--accent)}
+  .drawer .d-edit input[type=file]{padding:6px 8px;font-size:12px}
+  .drawer .d-edit-opt{text-transform:none;letter-spacing:0;font-weight:500;color:var(--ink3);font-size:10.5px}
+  .drawer .d-edit-note{font-size:11px;color:var(--ink3);line-height:1.45}
+  .drawer .d-edit-err{display:none;background:var(--out-soft);color:var(--out);border-radius:8px;
+    padding:8px 12px;font-size:12.5px;font-weight:600;margin-bottom:10px}
+  /* bank re-tag chips inside the drawer (the .bankchip rules above are .hubmodal-scoped) */
+  .drawer .bankchips{display:flex;gap:6px;flex-wrap:wrap;margin:4px 0 2px}
+  .drawer .bankchip{padding:5px 11px;border-radius:8px;border:1px solid var(--line);background:var(--surface);
+    font-size:12px;font-weight:700;cursor:pointer;color:var(--ink2)}
+  .drawer .bankchip.on{border-color:var(--accent);background:var(--accent-soft);color:var(--accent)}
+  /* .foot-btns (flex row, equal-width buttons) is already defined above — reused as is. */
+
   /* drawer: balance before → after for a statement row */
   .drawer .d-bal{display:flex;align-items:center;gap:12px}
   .drawer .d-bal > div{flex:1;display:flex;flex-direction:column;gap:2px;background:var(--surface2);

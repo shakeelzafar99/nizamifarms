@@ -174,6 +174,17 @@ class LedgerModel extends BaseModel
         return $this->belongsTo(OnlineReceivingAccountModel::class, 'receiving_account_id', 'id');
     }
 
+    /**
+     * All attached bill/receipt images (t_fin_ledger_images). `bill_image` on this
+     * row stays a MIRROR of the first — see LedgerImageModel for the contract.
+     * Guard queries with LedgerImageModel::ready() until the table's SQL has run.
+     */
+    public function images()
+    {
+        return $this->hasMany(LedgerImageModel::class, 'ledger_id')
+            ->orderBy('sort_order')->orderBy('id');
+    }
+
     public function createdBy(): BelongsTo
     {
         return $this->belongsTo(UserModel::class, 'created_by', 'id');

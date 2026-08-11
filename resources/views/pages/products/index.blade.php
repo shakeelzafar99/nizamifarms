@@ -1073,6 +1073,7 @@ const availableColumns = {
     'variants_count': { label: 'Variants', width: 'w-[70px]', order: 11, cssClass: 'col-variants' },
     'total_inventory': { label: 'Inventory', width: 'w-[85px]', order: 12, cssClass: 'col-inventory' },
     'weight_factor': { label: 'Weight Factor', width: 'w-[95px]', order: 13, cssClass: 'col-weight-factor' },
+    'unit_weight_kg': { label: 'Unit Weight (kg)', width: 'w-[105px]', order: 13.2, cssClass: 'col-unit-weight' },
     'czerlop_id': { label: 'Czerlop ID', width: 'w-[90px]', order: 13.5, cssClass: 'col-czerlop' },
     'business_unit': { label: 'Business Unit', width: 'w-[110px]', order: 14, cssClass: 'col-bu' },
     'is_lean': { label: 'Lean', width: 'w-[75px]', order: 15, cssClass: 'col-lean' },
@@ -1092,7 +1093,7 @@ let quickEditPricesEnabled = false;
 const defaultColumns = ['checkbox', 'image', 'title', 'skus', 'status', 'vendor', 'price_range', 'variants_count', 'total_inventory', 'czerlop_id', 'is_lean', 'last_synced_at', 'actions'];
 
 // All available columns (including attributes for column selector)
-const allColumns = ['checkbox', 'image', 'title', 'skus', 'status', 'vendor', 'product_type', 'attribute_1', 'attribute_2', 'attribute_3', 'price_range', 'variants_count', 'total_inventory', 'weight_factor', 'czerlop_id', 'business_unit', 'is_lean', 'last_synced_at', 'actions'];
+const allColumns = ['checkbox', 'image', 'title', 'skus', 'status', 'vendor', 'product_type', 'attribute_1', 'attribute_2', 'attribute_3', 'price_range', 'variants_count', 'total_inventory', 'weight_factor', 'unit_weight_kg', 'czerlop_id', 'business_unit', 'is_lean', 'last_synced_at', 'actions'];
 
 // Load column settings from localStorage with migration support for new columns
 let visibleColumns = JSON.parse(localStorage.getItem('products_visible_columns') || 'null');
@@ -1864,6 +1865,13 @@ function getCellContent(columnKey, product) {
             const weightFactor = parseFloat(product.weight_factor || 1.00).toFixed(2);
             const isDefaultFactor = weightFactor === '1.00';
             return `<span class="${isDefaultFactor ? 'text-gray-500' : 'font-semibold text-blue-600'}">${weightFactor}</span>`;
+
+        // Kg per ONE qty unit (0.5 = 500g pack) — feeds the Weight column on Open Order
+        // Quantities. Highlighted only when it differs from the 1.000 default.
+        case 'unit_weight_kg':
+            const unitWeight = parseFloat(product.unit_weight_kg ?? 1).toFixed(3).replace(/0+$/, '').replace(/\.$/, '');
+            const isDefaultUnitWeight = parseFloat(product.unit_weight_kg ?? 1) === 1;
+            return `<span class="${isDefaultUnitWeight ? 'text-gray-500' : 'font-semibold'}" style="${isDefaultUnitWeight ? '' : 'color:#7c3aed;'}">${unitWeight} kg</span>`;
 
         case 'czerlop_id':
             if (product.czerlop_product_id) {
@@ -3560,6 +3568,7 @@ function getChangeIcon(changeType) {
         'status_change': '🔄',
         'inventory_change': '📦',
         'weight_factor_change': '⚖️',
+        'unit_weight_change': '📦',
         'lean_status_change': '🥗',
         'product_created': '🆕',
         'variant_created': '➕',
@@ -3730,6 +3739,12 @@ function renderProductDetails(product) {
                             <span style="color: #6b7280; font-size: 14px;">Weight Factor:</span>
                             <span style="color: ${(parseFloat(product.weight_factor || 1.00) !== 1.00) ? '#2563eb' : '#111827'}; font-size: 14px; font-weight: ${(parseFloat(product.weight_factor || 1.00) !== 1.00) ? '600' : '500'};">
                                 ${parseFloat(product.weight_factor || 1.00).toFixed(2)}
+                            </span>
+                        </div>
+                        <div style="display: flex; justify-content: space-between;">
+                            <span style="color: #6b7280; font-size: 14px;">Unit Weight:</span>
+                            <span style="color: ${(parseFloat(product.unit_weight_kg ?? 1) !== 1) ? '#7c3aed' : '#111827'}; font-size: 14px; font-weight: ${(parseFloat(product.unit_weight_kg ?? 1) !== 1) ? '600' : '500'};">
+                                ${parseFloat(product.unit_weight_kg ?? 1)} kg
                             </span>
                         </div>
                         <div style="display: flex; justify-content: space-between;">

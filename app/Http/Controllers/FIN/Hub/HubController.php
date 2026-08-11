@@ -1079,13 +1079,18 @@ class HubController extends Controller
         }
         $hasRange = $startDate && $endDate;
 
-        $all = LedgerModel::with(['fromAccount', 'createdBy', 'receivingAccount'])
+        $allQuery = LedgerModel::with(['fromAccount', 'createdBy', 'receivingAccount'])
             ->where(function ($q) use ($account) {
                 $q->where('to_account_id', $account->id)->orWhere('from_account_id', $account->id);
             })
             ->whereIn('transaction_type', [LedgerModel::TYPE_VENDOR_PURCHASE, LedgerModel::TYPE_VENDOR_PAYMENT])
-            ->orderBy('transaction_date', 'asc')->orderBy('created_at', 'asc')->orderBy('id', 'asc')
-            ->get();
+            ->orderBy('transaction_date', 'asc')->orderBy('created_at', 'asc')->orderBy('id', 'asc');
+        // images_count feeds the statement's 📎 ×N chip. Guarded: before the
+        // multi-image SQL runs the blade falls back to bill_image (one 📎).
+        if (\App\Models\FIN\LedgerImageModel::ready()) {
+            $allQuery->withCount('images');
+        }
+        $all = $allQuery->get();
 
         $running = $opening;
         foreach ($all as $r) {

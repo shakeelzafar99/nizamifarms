@@ -632,12 +632,11 @@ class VendorController extends Controller
      */
     public function recordPurchase(Request $request, $id)
     {
-        $request->validate([
+        $request->validate(array_merge([
             'amount' => 'required|numeric|min:0.01',
             'description' => 'nullable|string|max:500',
             'transaction_date' => 'required|date',
-            'bill_image' => 'nullable|image|mimes:jpeg,png,jpg,gif|max:5120' // Max 5MB
-        ]);
+        ], $this->imageValidationRules('bill_image')));
 
         try {
             DB::beginTransaction();
@@ -649,10 +648,11 @@ class VendorController extends Controller
                 throw new \Exception("Purchase expense account not found");
             }
 
-            // Handle bill image upload (web or mobile)
-            $billImagePath = $this->handleImageUpload($request, 'bill_image', $vendor);
+            // All attached bill images (plural fields + the legacy single field).
+            $imagePaths = $this->collectImageUploads($request, 'bill_image', $vendor);
 
-            // Create ledger entry
+            // Create ledger entry. bill_image is written by attachImages() below
+            // (mirror of the first image — the legacy-reader contract).
             $ledger = LedgerModel::create([
                 'transaction_date' => $request->transaction_date,
                 'transaction_type' => LedgerModel::TYPE_VENDOR_PURCHASE,
@@ -662,10 +662,10 @@ class VendorController extends Controller
                 'amount' => $request->amount,
                 'mode' => LedgerModel::MODE_CASH,
                 'approval_status' => LedgerModel::STATUS_APPROVED,
-                'bill_image' => $billImagePath,
                 'business_unit_id' => $vendor->business_unit_id ?? 1, // ⭐ Use vendor's BU
                 'created_by' => auth()->id()
             ]);
+            $this->attachImages($ledger, $imagePaths);
 
             // Apply via the canonical engine (vendor_purchase: purchases/expense +, vendor owed +),
             // row-locked; sets balance_updated. Same net move as the old inline code.
@@ -706,7 +706,7 @@ class VendorController extends Controller
      */
     public function recordPayment(Request $request, $id)
     {
-        $request->validate([
+        $request->validate(array_merge([
             'amount' => 'required|numeric|min:0.01',
             'payment_source_account_id' => 'nullable|exists:t_fin_accounts,id',
             // Which of OUR banks an ONLINE vendor payment is made from —
@@ -715,8 +715,7 @@ class VendorController extends Controller
             'description' => 'nullable|string|max:500',
             'transaction_date' => 'required|date',
             'posted_date' => 'nullable|date', // Date when entry is posted to ledger
-            'receipt_image' => 'nullable|image|mimes:jpeg,png,jpg,gif|max:5120' // Receipt image
-        ]);
+        ], $this->imageValidationRules('receipt_image')));
 
         try {
             DB::beginTransaction();
@@ -752,8 +751,8 @@ class VendorController extends Controller
                 throw new \Exception("Payment amount cannot exceed vendor balance");
             }
 
-            // Handle receipt image upload (web or mobile)
-            $receiptImagePath = $this->handleImageUpload($request, 'receipt_image', $vendor);
+            // All attached receipt images (plural fields + the legacy single field).
+            $receiptImagePaths = $this->collectImageUploads($request, 'receipt_image', $vendor);
 
             // Check approval configuration for vendor payments
             $vendorPaymentCategory = \App\Models\Request\RequestCategoryModel::getByCode('vendor_payment');
@@ -831,7 +830,8 @@ class VendorController extends Controller
                 'approval_date' => ($approvalStatus === LedgerModel::STATUS_APPROVED) ? now() : null,
                 'business_unit_id' => $vendor->business_unit_id ?? 1, // ⭐ Use vendor's BU
                 'approved_by' => ($approvalStatus === LedgerModel::STATUS_APPROVED) ? auth()->id() : null,
-                'bill_image' => $receiptImagePath, // Store receipt image in bill_image field
+                // bill_image is written by attachImages() below (mirror of the first
+                // receipt — receipts live in the same field/table as purchase bills).
                 'created_by' => auth()->id(),
                 'comments' => "Paid from: {$paymentAccount->account_name}"
                     . ($selfApproved
@@ -839,6 +839,7 @@ class VendorController extends Controller
                             ->auditNote(LedgerModel::TYPE_VENDOR_PAYMENT, auth()->id())
                         : '')
             ]);
+            $this->attachImages($ledger, $receiptImagePaths);
 
             // Apply via the canonical engine when approved (vendor_payment: vendor owed −, till/bank −),
             // row-locked; sets balance_updated. A pending payment stays flag=0 and is applied later by
@@ -886,10 +887,9 @@ class VendorController extends Controller
      */
     public function recordWeightedPurchase(Request $request, $id)
     {
-        $request->validate([
+        $request->validate(array_merge([
             'transaction_date' => 'required|date',
             'description' => 'nullable|string|max:500',
-            'bill_image' => 'nullable|image|mimes:jpeg,png,jpg,gif|max:5120', // Max 5MB
             'adjustment_amount' => 'nullable|numeric', // Can be positive or negative
             'items' => 'required|array|min:1',
             'items.*.product_id' => 'required|exists:t_fin_vendor_products,id',
@@ -897,7 +897,7 @@ class VendorController extends Controller
             'items.*.rate' => 'required|numeric|min:0.01',
             'items.*.unit' => 'required|string|max:50',
             'items.*.product_name' => 'required|string|max:255'
-        ]);
+        ], $this->imageValidationRules('bill_image')));
 
         try {
             DB::beginTransaction();
@@ -909,8 +909,8 @@ class VendorController extends Controller
                 throw new \Exception("Purchase expense account not found");
             }
 
-            // Handle bill image upload (web or mobile) - use helper method
-            $billImagePath = $this->handleImageUpload($request, 'bill_image', $vendor);
+            // All attached bill images (plural fields + the legacy single field).
+            $imagePaths = $this->collectImageUploads($request, 'bill_image', $vendor);
 
             // Calculate grand total from line items
             $itemsTotal = 0;
@@ -935,7 +935,8 @@ class VendorController extends Controller
             }
             $comments = implode(', ', $itemsSummary);
 
-            // Create ledger entry
+            // Create ledger entry. bill_image is written by attachImages() below
+            // (mirror of the first image — the legacy-reader contract).
             $ledger = LedgerModel::create([
                 'transaction_date' => $request->transaction_date,
                 'transaction_type' => LedgerModel::TYPE_VENDOR_PURCHASE,
@@ -946,11 +947,11 @@ class VendorController extends Controller
                 'adjustment_amount' => $adjustmentAmount,
                 'mode' => LedgerModel::MODE_CASH,
                 'approval_status' => LedgerModel::STATUS_APPROVED,
-                'bill_image' => $billImagePath,
                 'business_unit_id' => $vendor->business_unit_id ?? 1, // ⭐ Use vendor's BU
                 'created_by' => auth()->id(),
                 'comments' => $comments
             ]);
+            $this->attachImages($ledger, $imagePaths);
 
             // Create line items
             foreach ($request->items as $item) {
@@ -1218,6 +1219,18 @@ class VendorController extends Controller
                 \App\Models\FIN\VendorPurchaseItemModel::where('ledger_id', $transaction->id)->delete();
             }
 
+            // Delete attached images — rows AND files (the old code left the file orphaned).
+            if (\App\Models\FIN\LedgerImageModel::ready()) {
+                foreach (\App\Models\FIN\LedgerImageModel::where('ledger_id', $transaction->id)->get() as $img) {
+                    if ($img->image_path && \Storage::disk('public')->exists($img->image_path)) {
+                        \Storage::disk('public')->delete($img->image_path);
+                    }
+                    $img->delete();
+                }
+            } elseif ($transaction->bill_image && \Storage::disk('public')->exists($transaction->bill_image)) {
+                \Storage::disk('public')->delete($transaction->bill_image);
+            }
+
             // Delete the transaction
             $transaction->delete();
 
@@ -1251,7 +1264,15 @@ class VendorController extends Controller
             'amount' => 'nullable|numeric|min:0.01',
             'adjustment_amount' => 'nullable|numeric', // Can be positive or negative
             'description' => 'nullable|string|max:500',
-            'bill_image' => 'nullable|image|mimes:jpeg,png,jpg,gif|max:5120',
+            // Which of OUR banks an ONLINE payment left from — a re-TAG only (see below).
+            'receiving_account_id' => 'nullable|integer|exists:t_fin_online_receiving_accounts,id',
+            'bill_image' => 'nullable|image|mimes:jpeg,png,jpg,gif|max:5120', // legacy: replace first
+            'new_images' => 'nullable|array|max:10',
+            'new_images.*' => 'image|mimes:jpeg,png,jpg,gif|max:5120',
+            'new_images_base64' => 'nullable|array|max:10',
+            'new_images_base64.*' => 'string',
+            'remove_image_ids' => 'nullable|array',
+            'remove_image_ids.*' => 'integer',
             'items' => 'nullable|array',
             'items.*.product_id' => 'required_with:items|exists:t_fin_vendor_products,id',
             'items.*.quantity' => 'required_with:items|numeric|min:0.001',
@@ -1308,8 +1329,12 @@ class VendorController extends Controller
                 
                 $transaction->amount = $newAmount;
                 $transaction->adjustment_amount = $adjustmentAmount;
-            } elseif ($request->has('amount')) {
-                // Simple transaction - use provided amount
+            } elseif ($request->filled('amount')) {
+                // Simple transaction - use provided amount.
+                // filled(), not has(): ConvertEmptyStringsToNull turns a blank amount field into
+                // NULL with the key still PRESENT, so has() was true and this assigned NULL to a
+                // NOT NULL column — the save threw and the whole edit failed with a 500. An empty
+                // amount now means "leave it alone", which is what every caller actually intends.
                 $newAmount = $request->amount;
                 $transaction->amount = $newAmount;
             } else {
@@ -1318,7 +1343,7 @@ class VendorController extends Controller
 
             // Update basic fields
             $transaction->transaction_date = $request->transaction_date;
-            if ($request->has('posted_date')) {
+            if ($request->filled('posted_date')) {
                 $transaction->posted_date = $request->posted_date;
             } elseif (!$transaction->posted_date) {
                 // If no posted_date exists, default to transaction_date
@@ -1328,18 +1353,149 @@ class VendorController extends Controller
                 $transaction->description = $request->description;
             }
 
-            // Handle bill image update
-            if ($request->hasFile('bill_image')) {
-                // Delete old image if exists
-                if ($transaction->bill_image && \Storage::disk('public')->exists($transaction->bill_image)) {
-                    \Storage::disk('public')->delete($transaction->bill_image);
+            // ---- Bank re-tag (Aug-2026) -----------------------------------------------------
+            // receiving_account_id says which of OUR banks an ONLINE payment left from. It is a
+            // TAG: per-bank balances are DERIVED from it (BankBalanceService sums tagged
+            // movement), and the ledger legs stay ONLINE→vendor either way — so switching it
+            // moves the payment between banks without touching any stored balance. Three rules:
+            //   * payments only, and only rows that are already online (mode, or an existing
+            //     tag). A cash payment has no bank and a purchase never carries one — for those
+            //     the field is silently ignored, mirroring how the record flow scopes it.
+            //   * the tag can be SWITCHED, never cleared — recording requires it for online
+            //     payments and a bare online payment would fall out of every bank's balance.
+            //   * the description carries the bank baked in ("· via MBL-4237"): swap exactly
+            //     the OLD bank's token. Never a blanket "via X" replace — descriptions also say
+            //     "via NF Assistant".
+            if (!$isPurchase && $request->filled('receiving_account_id')) {
+                $newBankId = (int) $request->receiving_account_id;
+                $oldBankId = (int) ($transaction->receiving_account_id ?? 0);
+                $isOnlineRow = $transaction->mode === LedgerModel::MODE_ONLINE || $oldBankId;
+                if ($isOnlineRow && $newBankId !== $oldBankId) {
+                    $newBank = \App\Models\FIN\OnlineReceivingAccountModel::find($newBankId);
+                    $oldShort = $oldBankId
+                        ? \App\Models\FIN\OnlineReceivingAccountModel::find($oldBankId)?->short_code
+                        : null;
+                    $transaction->receiving_account_id = $newBankId;
+
+                    $desc = (string) $transaction->description;
+                    if ($newBank?->short_code) {
+                        if ($oldShort && str_contains($desc, "· via {$oldShort}")) {
+                            $desc = str_replace("· via {$oldShort}", "· via {$newBank->short_code}", $desc);
+                        } elseif (!str_contains($desc, "· via {$newBank->short_code}")) {
+                            $desc = trim($desc) !== '' ? ($desc . " · via {$newBank->short_code}") : "· via {$newBank->short_code}";
+                        }
+                        $transaction->description = $desc;
+                    }
                 }
-                
-                // Upload new image
+            }
+
+            // ---- Images -------------------------------------------------------------------
+            // Three independent operations, all optional on any one edit:
+            //   remove_image_ids[] — take specific images off this row (rows + files);
+            //   new_images[] (+ new_images_base64[] from mobile) — append more;
+            //   bill_image (legacy single) — REPLACE the first image, the pre-multi behaviour
+            //                                the current APK and the old page edit still post.
+            // Everything funnels through t_fin_ledger_images and ends with syncMirror(), so the
+            // ledger's bill_image column always points at the first remaining image. When the
+            // images table hasn't been created yet, only the legacy replace runs — byte-identical
+            // to the old code.
+            $imagesReady = \App\Models\FIN\LedgerImageModel::ready();
+
+            if ($imagesReady && $request->filled('remove_image_ids')) {
+                $ids = array_filter((array) $request->input('remove_image_ids'), 'is_numeric');
+                if ($ids) {
+                    // Scoped to THIS ledger row — a stray id can never touch another row's images.
+                    $victims = \App\Models\FIN\LedgerImageModel::where('ledger_id', $transaction->id)
+                        ->whereIn('id', $ids)->get();
+                    foreach ($victims as $img) {
+                        if ($img->image_path && \Storage::disk('public')->exists($img->image_path)) {
+                            \Storage::disk('public')->delete($img->image_path);
+                        }
+                        $img->delete();
+                    }
+                }
+            }
+
+            if ($imagesReady) {
+                $newPaths = [];
+                if ($request->hasFile('new_images')) {
+                    $files = $request->file('new_images');
+                    foreach (is_array($files) ? $files : [$files] as $file) {
+                        if (!$file || !$file->isValid()) {
+                            continue;
+                        }
+                        $filename = 'vendor_bill_' . $transaction->id . '_' . time() . '_' . uniqid() . '.' . $file->getClientOriginalExtension();
+                        $newPaths[] = $file->storeAs('vendor_bills', $filename, 'public');
+                    }
+                }
+                $b64List = $request->input('new_images_base64');
+                if (is_array($b64List)) {
+                    foreach ($b64List as $b64) {
+                        if (!is_string($b64) || $b64 === '') {
+                            continue;
+                        }
+                        $image = base64_decode(preg_replace('#^data:image/\w+;base64,#i', '', $b64));
+                        if ($image === false || $image === '') {
+                            continue;
+                        }
+                        $filename = 'vendor_bill_' . $transaction->id . '_' . time() . '_' . uniqid() . '.jpg';
+                        \Storage::disk('public')->put('vendor_bills/' . $filename, $image);
+                        $newPaths[] = 'vendor_bills/' . $filename;
+                    }
+                }
+                if ($newPaths) {
+                    $nextSort = (int) \App\Models\FIN\LedgerImageModel::where('ledger_id', $transaction->id)->max('sort_order') + 1;
+                    foreach ($newPaths as $i => $path) {
+                        \App\Models\FIN\LedgerImageModel::create([
+                            'ledger_id' => $transaction->id,
+                            'image_path' => $path,
+                            'sort_order' => $nextSort + $i,
+                            'created_by' => auth()->id(),
+                        ]);
+                    }
+                }
+            }
+
+            // Legacy single-image replace (old APK / old page edit form).
+            if ($request->hasFile('bill_image')) {
                 $file = $request->file('bill_image');
-                $filename = 'vendor_bill_' . $transaction->id . '_' . time() . '.' . $file->getClientOriginalExtension();
+                $filename = 'vendor_bill_' . $transaction->id . '_' . time() . '_' . uniqid() . '.' . $file->getClientOriginalExtension();
                 $billImagePath = $file->storeAs('vendor_bills', $filename, 'public');
-                $transaction->bill_image = $billImagePath;
+
+                if ($imagesReady) {
+                    // Replace the FIRST image in the table (that is what bill_image mirrored),
+                    // leaving any further images untouched.
+                    $first = \App\Models\FIN\LedgerImageModel::where('ledger_id', $transaction->id)
+                        ->orderBy('sort_order')->orderBy('id')->first();
+                    if ($first) {
+                        if ($first->image_path && \Storage::disk('public')->exists($first->image_path)) {
+                            \Storage::disk('public')->delete($first->image_path);
+                        }
+                        $first->image_path = $billImagePath;
+                        $first->save();
+                    } else {
+                        \App\Models\FIN\LedgerImageModel::create([
+                            'ledger_id' => $transaction->id,
+                            'image_path' => $billImagePath,
+                            'sort_order' => 0,
+                            'created_by' => auth()->id(),
+                        ]);
+                    }
+                } else {
+                    // Pre-SQL behaviour, unchanged: delete old file, point the column at the new.
+                    if ($transaction->bill_image && \Storage::disk('public')->exists($transaction->bill_image)) {
+                        \Storage::disk('public')->delete($transaction->bill_image);
+                    }
+                    $transaction->bill_image = $billImagePath;
+                }
+            }
+
+            if ($imagesReady) {
+                // One authoritative pass: bill_image = first remaining image (or NULL).
+                // Assigned on the model (not via the raw mirror update) because the
+                // save() below would otherwise overwrite it with the stale in-memory value.
+                $transaction->bill_image = \App\Models\FIN\LedgerImageModel::where('ledger_id', $transaction->id)
+                    ->orderBy('sort_order')->orderBy('id')->value('image_path');
             }
 
             $transaction->save();
@@ -1424,25 +1580,124 @@ class VendorController extends Controller
         // Check for traditional file upload (web)
         if ($request->hasFile($fieldName)) {
             $file = $request->file($fieldName);
-            $filename = 'vendor_' . $vendor->id . '_' . time() . '.' . $file->getClientOriginalExtension();
+            // uniqid, not bare time(): two images stored in the same second used to get the SAME
+            // filename and storeAs silently overwrote the first with the second.
+            $filename = 'vendor_' . $vendor->id . '_' . time() . '_' . uniqid() . '.' . $file->getClientOriginalExtension();
             return $file->storeAs('vendor_bills', $filename, 'public');
         }
-        
+
         // Check for base64 upload (mobile)
         $base64Field = $fieldName . '_base64';
         if ($request->has($base64Field) && $request->input($base64Field)) {
             $base64Image = $request->input($base64Field);
-            
+
             // Remove data:image prefix if present
             $image = base64_decode(preg_replace('#^data:image/\w+;base64,#i', '', $base64Image));
-            
-            $filename = 'vendor_' . $vendor->id . '_' . time() . '.jpg';
+
+            $filename = 'vendor_' . $vendor->id . '_' . time() . '_' . uniqid() . '.jpg';
             Storage::disk('public')->put('vendor_bills/' . $filename, $image);
-            
+
             return 'vendor_bills/' . $filename;
         }
-        
+
         return null;
+    }
+
+    /**
+     * Collect EVERY image on a record request, in the order they should display:
+     * the plural fields first (`{$fieldName}s[]` files, `{$fieldName}s_base64[]`),
+     * then the legacy single fields via handleImageUpload() — so the current APK
+     * and any old form keep working unchanged. Returns an array of stored paths.
+     */
+    private function collectImageUploads(Request $request, string $fieldName, $vendor): array
+    {
+        $paths = [];
+
+        // Plural file uploads: bill_images[] / receipt_images[]
+        $plural = $fieldName . 's';
+        if ($request->hasFile($plural)) {
+            $files = $request->file($plural);
+            foreach (is_array($files) ? $files : [$files] as $file) {
+                if (!$file || !$file->isValid()) {
+                    continue;
+                }
+                $filename = 'vendor_' . $vendor->id . '_' . time() . '_' . uniqid() . '.' . $file->getClientOriginalExtension();
+                $paths[] = $file->storeAs('vendor_bills', $filename, 'public');
+            }
+        }
+
+        // Plural base64 (mobile): bill_images_base64[]
+        $b64List = $request->input($plural . '_base64');
+        if (is_array($b64List)) {
+            foreach ($b64List as $b64) {
+                if (!is_string($b64) || $b64 === '') {
+                    continue;
+                }
+                $image = base64_decode(preg_replace('#^data:image/\w+;base64,#i', '', $b64));
+                if ($image === false || $image === '') {
+                    continue;
+                }
+                $filename = 'vendor_' . $vendor->id . '_' . time() . '_' . uniqid() . '.jpg';
+                Storage::disk('public')->put('vendor_bills/' . $filename, $image);
+                $paths[] = 'vendor_bills/' . $filename;
+            }
+        }
+
+        // Legacy single field (current APK, old forms) — appended, not replaced.
+        $single = $this->handleImageUpload($request, $fieldName, $vendor);
+        if ($single) {
+            $paths[] = $single;
+        }
+
+        return $paths;
+    }
+
+    /**
+     * Persist a record-time image list for a new ledger row: rows in
+     * t_fin_ledger_images (the truth) + the ledger's bill_image mirrored to the
+     * first (the contract every legacy reader depends on). When the images table
+     * has not been created yet, degrades to exactly the old single-image write.
+     */
+    private function attachImages(LedgerModel $ledger, array $paths): void
+    {
+        if (empty($paths)) {
+            return;
+        }
+
+        if (!\App\Models\FIN\LedgerImageModel::ready()) {
+            // SQL not applied yet — keep the first image so behaviour matches today.
+            $ledger->bill_image = $paths[0];
+            $ledger->save();
+            return;
+        }
+
+        foreach (array_values($paths) as $i => $path) {
+            \App\Models\FIN\LedgerImageModel::create([
+                'ledger_id' => $ledger->id,
+                'image_path' => $path,
+                'sort_order' => $i,
+                'created_by' => auth()->id(),
+            ]);
+        }
+        \App\Models\FIN\LedgerImageModel::syncMirror($ledger->id);
+    }
+
+    /**
+     * Shared validation rules for the image fields on record/update requests.
+     * The plural base64 strings are intentionally NOT max-length-capped here:
+     * a 5MB image is ~6.8M base64 characters and 'max:' on strings counts
+     * characters, so a cap either blocks legit photos or means nothing.
+     */
+    private function imageValidationRules(string $fieldName): array
+    {
+        $plural = $fieldName . 's';
+        return [
+            $fieldName => 'nullable|image|mimes:jpeg,png,jpg,gif|max:5120',
+            $plural => 'nullable|array|max:10',
+            $plural . '.*' => 'image|mimes:jpeg,png,jpg,gif|max:5120',
+            $plural . '_base64' => 'nullable|array|max:10',
+            $plural . '_base64.*' => 'string',
+        ];
     }
 }
 

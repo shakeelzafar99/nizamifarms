@@ -1506,7 +1506,10 @@ function renderAttendanceTable(data) {
 
   // ── Row renderer (unchanged content) — used for all three groups below.
   const renderRow = (r) => {
-    const hours = calculateHours(r.login_time, r.logout_time);
+    // Bypassed checkout (owner ruling Aug-8): the day's hours read to the COUNTED end
+    // (last delivered order), not the bypass timestamp; nothing counted → no figure.
+    const cc = r.checkout_counted;
+    const hours = (cc && !cc.time) ? '-' : calculateHours(r.login_time, (cc && cc.time) ? cc.time : r.logout_time);
     // Prefer server-computed late/overtime (per-date + frozen-snapshot aware). Fall
     // back to local calc only if the server didn't send them (older cached responses).
     const fmtMins = (n) => { const h = Math.floor(n / 60), m = n % 60; return h > 0 ? `${h}h ${m}m` : `${m}m`; };
@@ -2821,7 +2824,7 @@ function buildFullTimeline(r, lateBy, locationBadge) {
     const co = checkoutChipSpan(r.checkout_info);
     lines.push(
       `<div style="display:flex;align-items:baseline;gap:6px;flex-wrap:wrap;">${tlLabel('OUT')}` +
-      `<span style="font-size:13px;font-weight:600;color:#111827;">${r.logout_time}</span>${co}</div>`);
+      `<span style="font-size:13px;font-weight:600;color:#111827;">${r.logout_time}</span>${co}${countedNote(r)}</div>`);
   } else if (r.login_time) {
     lines.push(`<div style="display:flex;align-items:baseline;gap:3px;">${tlLabel('OUT')}<span style="font-size:12px;color:#9CA3AF;">still in</span></div>`);
   }
@@ -2985,6 +2988,18 @@ function getMeterFlags(record) {
   return `<div class="flex flex-wrap gap-1 mt-1">${chips.join('')}</div>`;
 }
 
+// The COUNTED end of a bypassed day (owner ruling Aug-8), as an inline OUT-line note:
+// "counted 23:05 · last delivery". The checkout timestamp is when the manager's valve was
+// used, not when the work ended — this shows the manager what the hours/OT actually read to.
+function countedNote(r) {
+  const cc = r.checkout_counted;
+  if (!cc) return '';
+  if (cc.time) {
+    return `<span style="font-size:10.5px;font-weight:700;color:#B45309;" title="Checkout used a manager bypass, so its timestamp isn't when the work ended — this day's hours and overtime are counted up to the last delivered order at ${cc.time}.">⏱ counted ${cc.time} · last delivery</span>`;
+  }
+  return `<span style="font-size:10.5px;font-weight:700;color:#B45309;" title="Checkout used a manager bypass and no orders were delivered this day — nothing past the shift is counted.">⏱ nothing counted · no deliveries</span>`;
+}
+
 // Bypass chip: while a rider is still checked in → a subtle 🔓 opener (amber while a
 // checkout unlock is active); after a bypassed checkout → an audit chip.
 function getBypassChip(record, isRider) {
@@ -3000,7 +3015,15 @@ function getBypassChip(record, isRider) {
     return `<span ${open} style="${base}background:#F3F4F6;color:#6B7280;border:1px solid #E5E7EB;" title="Rider bypasses — allow checkout from anywhere (forgot to check out), unlock the home meter, etc.">🔓 bypass</span>`;
   }
   if (cu && cu.used) {
-    return `<span ${open} style="${base}background:#FEF3C7;color:#92400E;border:1px solid #FDE68A;" title="Checked out via manager bypass (${cu.by_name || 'manager'}${cu.reason ? ': ' + String(cu.reason).replace(/"/g, '&quot;') : ''})">🔓 bypassed checkout</span>`;
+    // When the OT engine re-based the day, the chip says WHAT it counted to — the manager
+    // shouldn't have to reconcile "bypassed" with hours/OT numbers that don't match the OUT time.
+    const cc = record.checkout_counted;
+    const extra = cc ? (cc.time ? ` · counted ${cc.time}` : ' · nothing counted') : '';
+    const ccTitle = cc
+      ? (cc.time ? ` — day counted up to the last delivered order at ${cc.time}, not the checkout time`
+                 : ' — no orders delivered, nothing past the shift is counted')
+      : '';
+    return `<span ${open} style="${base}background:#FEF3C7;color:#92400E;border:1px solid #FDE68A;" title="Checked out via manager bypass (${cu.by_name || 'manager'}${cu.reason ? ': ' + String(cu.reason).replace(/"/g, '&quot;') : ''})${ccTitle}">🔓 bypassed checkout${extra}</span>`;
   }
   return '';
 }
@@ -3849,8 +3872,10 @@ function calculateHours(login, logout) {
   const [oh, om] = logout.split(':').map(Number);
   const loginM = lh * 60 + lm;
   const logoutM = oh * 60 + om;
-  const diff = logoutM - loginM;
-  if (diff < 0) return '-';
+  let diff = logoutM - loginM;
+  // Logout past midnight rolls to the next day — the same rule the OT engine
+  // (OvertimeService) applies. A 10:52 → 00:05 day used to show no hours at all.
+  if (diff < 0) diff += 1440;
   const h = Math.floor(diff / 60);
   const m = diff % 60;
   return `${h}h ${m}m`;
@@ -4218,6 +4243,14 @@ function renderEmployeeDetailRows() {
 
       const loginTime = day.login_time || '-';
       const logoutTime = day.logout_time || '-';
+      // Bypassed checkout (owner ruling Aug-8): show WHAT the day was counted to, right
+      // under the logout it re-bases — hours + overtime on this row read from that end.
+      const cc = day.checkout_counted;
+      const countedSub = cc
+        ? (cc.time
+            ? `<div style="font-size:10px;font-weight:700;color:#B45309;margin-top:2px;white-space:nowrap;" title="Checkout used a manager bypass, so its timestamp isn't when the work ended — this day's hours and overtime are counted up to the last delivered order at ${cc.time}.">🔓 counted ${cc.time}</div>`
+            : `<div style="font-size:10px;font-weight:700;color:#B45309;margin-top:2px;white-space:nowrap;" title="Checkout used a manager bypass and no orders were delivered this day — nothing past the shift is counted.">🔓 nothing counted</div>`)
+        : '';
       const hours = day.hours_worked ? day.hours_worked.toFixed(1) + 'h' : '-';
       const lateBy = day.late_minutes > 0 ? day.late_minutes + ' min' : '-';
       const overtime = day.overtime_minutes > 0 ? day.overtime_minutes + ' min' : '-';
@@ -4297,7 +4330,7 @@ function renderEmployeeDetailRows() {
             </span>
           </td>
           <td style="padding: 12px 16px; font-size: 13px; color: #111827; border-bottom: 1px solid #e5e7eb;">${loginTime}</td>
-          <td style="padding: 12px 16px; font-size: 13px; color: #111827; border-bottom: 1px solid #e5e7eb;">${logoutTime}</td>
+          <td style="padding: 12px 16px; font-size: 13px; color: #111827; border-bottom: 1px solid #e5e7eb;">${logoutTime}${countedSub}</td>
           <td style="padding: 12px 16px; font-size: 13px; color: #111827; text-align: center; border-bottom: 1px solid #e5e7eb;">${hours}</td>
           <td style="padding: 12px 16px; font-size: 13px; color: ${day.late_minutes > 0 ? '#dc2626' : '#9ca3af'}; font-weight: ${day.late_minutes > 0 ? '600' : '400'}; text-align: center; border-bottom: 1px solid #e5e7eb;">${lateBy}</td>
           <td style="padding: 12px 16px; font-size: 13px; color: ${day.overtime_minutes > 0 ? '#16a34a' : '#9ca3af'}; font-weight: ${day.overtime_minutes > 0 ? '600' : '400'}; text-align: center; border-bottom: 1px solid #e5e7eb;">${overtime}</td>

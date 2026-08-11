@@ -1435,6 +1435,68 @@ class AssistantDraftService
             ->all();
     }
 
+    /**
+     * ⭐ Every order this customer could plausibly have been paying, for the
+     * "whose payment is this?" picker: the approvals queue first, then orders
+     * that still owe money, then ones already approved in the last month.
+     *
+     * That last group is why this exists. The queue-only rule (Jul-2026) is
+     * right for AUTOMATIC matching, but it made manual correction impossible in
+     * exactly the case where correction matters most: a credit tagged to the
+     * wrong customer, whose real owner's invoice has since been approved. The
+     * picker offered no orders at all and the approver was stuck with a wrong
+     * tag they could see but not fix.
+     *
+     * Attaching a proof to a settled order is pure record-keeping — no money
+     * moves, no balance changes — so a zero balance is not a reason to refuse.
+     *
+     * @return array<int, array{id:int, order_number:string, balance:float, group:string, order_date:string}>
+     */
+    public function proofTargetOrders(int $customerId, int $approvedWithinDays = 30): array
+    {
+        $queueIds = $this->approvalsQueueOrderIds($customerId);
+
+        $rows = DB::table('t_crm_prod_order as o')
+            ->leftJoin('t_fin_ledger as l', function ($j) {
+                $j->on('l.order_id', '=', 'o.id')->where('l.transaction_type', '=', 'invoice');
+            })
+            ->where('o.customer_id', $customerId)
+            ->where('o.order_status', '!=', 'cancelled')
+            ->where(function ($w) use ($queueIds, $approvedWithinDays) {
+                if ($queueIds) {
+                    $w->orWhereIn('o.id', $queueIds);
+                }
+                // Still owed for — includes orders with no invoice row yet,
+                // which is the pay-before-delivery case.
+                $w->orWhere(function ($q) {
+                    $q->whereIn('o.payment_status', ['unpaid', 'partial'])
+                      ->whereRaw('(o.total_price - COALESCE(o.total_paid,0)) > 0.01');
+                });
+                // Recently approved — settled, but a credit can still belong here.
+                $w->orWhere(function ($q) use ($approvedWithinDays) {
+                    $q->where('l.approval_status', 'approved')
+                      ->where('l.approval_date', '>=', now()->subDays($approvedWithinDays)->toDateString());
+                });
+            })
+            ->distinct()
+            ->orderByDesc('o.order_date')
+            ->limit(40)
+            ->get(['o.id', 'o.order_number', 'o.total_price', 'o.total_paid', 'o.order_date', 'l.approval_status']);
+
+        return $rows->map(function ($o) use ($queueIds) {
+            $balance = round((float) $o->total_price - (float) ($o->total_paid ?? 0), 2);
+            return [
+                'id'           => (int) $o->id,
+                'order_number' => $o->order_number,
+                'balance'      => $balance,
+                'order_date'   => (string) $o->order_date,
+                'group'        => in_array((int) $o->id, $queueIds, true)
+                    ? 'awaiting_approval'
+                    : (($o->approval_status ?? null) === 'approved' ? 'already_approved' : 'open'),
+            ];
+        })->values()->all();
+    }
+
     /** Where a previewed proof would land, for the confirmation card. */
     private function describeProofTarget(array $preview): string
     {

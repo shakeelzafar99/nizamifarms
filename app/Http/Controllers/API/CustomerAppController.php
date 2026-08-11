@@ -57,6 +57,9 @@ class CustomerAppController extends Controller
                     'assigned_rider_user_id',
                     'delivery_priority',
                     'estimated_delivery_at',
+                    // "Has this order actually been dispatched?" — see the hold-until-
+                    // dispatch gate below.
+                    'eta_calculated_at',
                 ])
                 ->first();
 
@@ -69,6 +72,9 @@ class CustomerAppController extends Controller
                 ], 404);
             }
 
+            $rules        = app(\App\Services\CRM\OrderStatusRuleService::class);
+            $isDispatched = !empty($order->eta_calculated_at);
+
             // Only meaningful while out for delivery. Anything else -> no fix.
             // ⭐ `reason` lets the customer-app dev distinguish WHY tracking is null
             // (previously every case returned an identical {tracking:null}).
@@ -77,9 +83,28 @@ class CustomerAppController extends Controller
                     'success'  => true,
                     'tracking' => null,
                     'reason'   => 'not_out_for_delivery',
-                    // Status Hub: mask aliased statuses here too (gate above stays on RAW status).
-                    'order_status' => app(\App\Services\CRM\OrderStatusRuleService::class)
-                                        ->customerAlias($order->order_status) ?? $order->order_status,
+                    // Status Hub: mask aliased/held statuses here too (gate above stays on RAW status).
+                    'order_status' => $rules->customerFacingStatus(
+                        $order->order_number, $order->order_status, $isDispatched
+                    ),
+                ], 200);
+            }
+
+            // ⭐ Out for delivery on OUR side, but not yet dispatched — ops set the
+            // status early and the order is still being loaded at the store. There is
+            // no route, no ETA, and the rider is standing at the shop, so a live map
+            // would be actively misleading. The customer app is told the held-back
+            // status (`processing`) and falls back to the timeline, exactly as it does
+            // for any other pre-delivery step. Deliberately keyed on the RAW status +
+            // the Hub flag, not on the aliased value.
+            if ($rules->masksUntilDispatch($order->order_number, $order->order_status, $isDispatched)) {
+                return response()->json([
+                    'success'      => true,
+                    'tracking'     => null,
+                    'reason'       => 'not_dispatched',
+                    'order_status' => $rules->customerFacingStatus(
+                        $order->order_number, $order->order_status, $isDispatched
+                    ),
                 ], 200);
             }
 
@@ -184,10 +209,11 @@ class CustomerAppController extends Controller
                 'address_country',
             ];
 
-            // Live order first — it carries estimated_delivery_at for the ETA window.
+            // Live order first — it carries estimated_delivery_at for the ETA window
+            // and eta_calculated_at for the hold-until-dispatch rule.
             $order = DB::table('t_crm_prod_order')
                 ->where('order_number', $nfOrderNumber)
-                ->select(array_merge($snapshotCols, ['estimated_delivery_at']))
+                ->select(array_merge($snapshotCols, ['estimated_delivery_at', 'eta_calculated_at']))
                 ->first();
             $isHistory = false;
 
@@ -224,9 +250,15 @@ class CustomerAppController extends Controller
                 'order_number'    => $this->stripShopifyPrefix($order->order_number),
                 'nf_order_number' => $order->order_number,
                 'source'          => $this->sourceFromOrderNumber($order->order_number),
-                // Status Hub: mask any status the owner has aliased for the customer app.
+                // Status Hub: mask any status the owner has aliased or held back until
+                // dispatch. A historical order is treated as dispatched — it is finished
+                // business and never carries a live ETA stamp.
                 'status'          => app(\App\Services\CRM\OrderStatusRuleService::class)
-                                        ->customerAlias($order->order_status) ?? $order->order_status,
+                                        ->customerFacingStatus(
+                                            $order->order_number,
+                                            $order->order_status,
+                                            $isHistory || !empty($order->eta_calculated_at)
+                                        ),
                 'eta_window'      => $isHistory ? null : $this->etaWindowFor($order),
                 'placed_at'       => $order->order_date
                     ? \Carbon\Carbon::parse($order->order_date)->toIso8601String() : null,
@@ -309,13 +341,16 @@ class CustomerAppController extends Controller
             // endpoint decoupled from the analytics view. `id` is NOT unique
             // across the two tables, so every per-order lookup below is keyed on
             // (source_type, id), never id alone.
+            // eta_calculated_at rides along for the hold-until-dispatch rule. The
+            // history table has no such column, so it is selected as a literal NULL —
+            // the column COUNT and ORDER must match on both sides of a UNION.
             $cols  = ['id', 'order_number', 'order_status', 'order_date', 'total_price', 'currency'];
             $prodQ = DB::table('t_crm_prod_order')
                 ->where('customer_id', $customerId)
-                ->select(array_merge([DB::raw("'production' as source_type")], $cols));
+                ->select(array_merge([DB::raw("'production' as source_type")], $cols, ['eta_calculated_at']));
             $histQ = DB::table('t_crm_history_order')
                 ->where('customer_id', $customerId)
-                ->select(array_merge([DB::raw("'history' as source_type")], $cols));
+                ->select(array_merge([DB::raw("'history' as source_type")], $cols, [DB::raw('NULL as eta_calculated_at')]));
             $orders = $prodQ->unionAll($histQ)
                 ->orderByDesc('order_date')
                 ->orderByDesc('id')
@@ -355,14 +390,19 @@ class CustomerAppController extends Controller
             $collectLineMeta('t_crm_prod_order_line_item', $orders->where('source_type', 'production')->pluck('id')->all(), 'production');
             $collectLineMeta('t_crm_history_order_line_item', $orders->where('source_type', 'history')->pluck('id')->all(), 'history');
 
-            // Status Hub: mask any status the owner has aliased for the customer app.
+            // Status Hub: mask any status the owner has aliased or held back until
+            // dispatch. Historical rows are treated as dispatched (finished business).
             $statusRules = app(\App\Services\CRM\OrderStatusRuleService::class);
 
             $rows = $orders->map(fn ($o) => [
                 'order_number'    => $this->stripShopifyPrefix($o->order_number),
                 'nf_order_number' => $o->order_number,
                 'source'          => $this->sourceFromOrderNumber($o->order_number),
-                'status'          => $statusRules->customerAlias($o->order_status) ?? $o->order_status,
+                'status'          => $statusRules->customerFacingStatus(
+                    $o->order_number,
+                    $o->order_status,
+                    $o->source_type === 'history' || !empty($o->eta_calculated_at)
+                ),
                 'placed_at'       => $o->order_date
                     ? \Carbon\Carbon::parse($o->order_date)->toIso8601String() : null,
                 'total'           => (float) $o->total_price,
@@ -862,9 +902,13 @@ class CustomerAppController extends Controller
                 return response()->json([
                     'success'      => false,
                     'message'      => 'Payment method can no longer be changed for this order.',
-                    // Status Hub: mask aliased statuses (the $blocked gate stays on RAW status).
+                    // Status Hub: mask aliased/held statuses (the $blocked gate stays on RAW status).
                     'order_status' => app(\App\Services\CRM\OrderStatusRuleService::class)
-                                        ->customerAlias($order->order_status) ?? $order->order_status,
+                                        ->customerFacingStatus(
+                                            $order->order_number,
+                                            $order->order_status,
+                                            !empty($order->eta_calculated_at)
+                                        ),
                 ], 422);
             }
 

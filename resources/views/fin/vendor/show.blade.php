@@ -128,6 +128,9 @@
     }
 }
 </style>
+
+{{-- The report renderer, shared with the Ledger Hub vendor page so the two can't drift. --}}
+@include('fin.partials.vendor-report-render')
 <div class="max-w-7xl mx-auto p-6">
     <div class="flex justify-between items-center mb-6">
         <h1 class="text-2xl font-semibold text-gray-900">{{ $vendor->vendor_name }}</h1>
@@ -481,14 +484,14 @@
                                   class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-red-500 focus:border-transparent text-sm">Entry by {{ auth()->user()->fullname ?? 'User' }}</textarea>
                     </div>
                     
-                    <!-- Bill Image Upload -->
+                    <!-- Bill Images Upload (Aug-2026: several allowed; recordPurchase reads bill_images[]) -->
                     <div>
-                        <label class="block text-sm font-medium text-gray-700 mb-1.5">Bill Image 📷</label>
-                        <input type="file" name="bill_image" accept="image/*"
+                        <label class="block text-sm font-medium text-gray-700 mb-1.5">Bill Images 📷</label>
+                        <input type="file" name="bill_images[]" accept="image/*" multiple
                                class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-red-500 focus:border-transparent text-sm file:mr-4 file:py-2 file:px-4 file:rounded-md file:border-0 file:text-sm file:font-semibold file:bg-red-50 file:text-red-700 hover:file:bg-red-100">
-                        <p class="text-xs text-gray-500 mt-1">📸 Upload vendor's bill/receipt (optional)</p>
+                        <p class="text-xs text-gray-500 mt-1">📸 Upload the vendor's bill/receipt photos (optional — pick several)</p>
                     </div>
-                    
+
                     <!-- Warning -->
                     <div style="padding: 12px; background: #fef2f2; border: 2px solid #fecaca; border-radius: 8px;">
                         <p style="font-size: 12px; color: #991b1b; font-weight: 600; margin: 0;">
@@ -566,14 +569,14 @@
                                   class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500 focus:border-transparent text-sm">Entry by {{ auth()->user()->fullname ?? 'User' }}</textarea>
                     </div>
                     
-                    <!-- Bill Image Upload -->
+                    <!-- Bill Images Upload (Aug-2026: several allowed; recordWeightedPurchase reads bill_images[]) -->
                     <div>
-                        <label class="block text-sm font-medium text-gray-700 mb-1.5">Bill Image 📷</label>
-                        <input type="file" name="bill_image" accept="image/*"
+                        <label class="block text-sm font-medium text-gray-700 mb-1.5">Bill Images 📷</label>
+                        <input type="file" name="bill_images[]" accept="image/*" multiple
                                class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500 focus:border-transparent text-sm file:mr-4 file:py-2 file:px-4 file:rounded-md file:border-0 file:text-sm file:font-semibold file:bg-orange-50 file:text-orange-700 hover:file:bg-orange-100">
-                        <p class="text-xs text-gray-500 mt-1">📸 Upload vendor's bill/receipt (optional)</p>
+                        <p class="text-xs text-gray-500 mt-1">📸 Upload the vendor's bill/receipt photos (optional — pick several)</p>
                     </div>
-                    
+
                     <!-- Hidden adjustment field (synced with visible input in footer) -->
                     <input type="hidden" name="adjustment_amount" id="hiddenAdjustmentAmount" value="0">
                 </div>
@@ -1293,29 +1296,36 @@ function showTransactionModal(transaction) {
         `;
     }
     
-    if (transaction.bill_image && transaction.bill_image !== '' && transaction.bill_image !== null) {
-        console.log('Displaying bill image:', transaction.bill_image); // DEBUG
-        // Use same pattern as attendance: /storage/ first (symlink - faster), /public-storage/ as fallback
-        const primaryUrl = `/storage/${transaction.bill_image}`;
-        const fallbackUrl = `/public-storage/${transaction.bill_image}`;
+    // Aug-2026: EVERY attached image (bill_images from the details endpoint — full URLs).
+    // Fallback to the single bill_image for a not-yet-updated backend. NOTE: the endpoint
+    // returns FULL URLs; the old code prepended /storage/ to one, which double-prefixed it.
+    const galleryImages = (transaction.bill_images && transaction.bill_images.length)
+        ? transaction.bill_images.map(im => im.url)
+        : (transaction.bill_image ? [transaction.bill_image] : []);
+    if (galleryImages.length) {
+        const galleryHtml = galleryImages.map(u => {
+            const url = /^https?:\/\//.test(u) ? u : ('/storage/' + u);
+            const fb = url.replace('/public-storage/', '/storage/');
+            return `
+                <img src="${url}"
+                     alt="Bill Image"
+                     style="width: 100%; max-height: 400px; object-fit: contain; border-radius: 4px; cursor: pointer; margin-bottom: 8px;"
+                     onclick="window.open(this.src, '_blank')"
+                     onerror="
+                        if (!this.dataset.triedFallback) {
+                            this.dataset.triedFallback = 'true';
+                            this.src = '${fb}';
+                        } else {
+                            this.style.display = 'none';
+                        }
+                     ">`;
+        }).join('');
         html += `
             <div style="margin-top: 20px;">
-                <label style="display: block; font-size: 12px; font-weight: 600; color: #6b7280; margin-bottom: 8px;">📎 Bill Image</label>
+                <label style="display: block; font-size: 12px; font-weight: 600; color: #6b7280; margin-bottom: 8px;">📎 Bill Image${galleryImages.length > 1 ? 's · ' + galleryImages.length : ''}</label>
                 <div style="border: 2px solid #e5e7eb; border-radius: 8px; padding: 8px; background: #f9fafb;" id="billImageContainer">
-                    <img src="${primaryUrl}" 
-                         alt="Bill Image" 
-                         style="width: 100%; max-height: 400px; object-fit: contain; border-radius: 4px; cursor: pointer;"
-                         onclick="window.open(this.src, '_blank')"
-                         onerror="
-                            if (!this.dataset.triedFallback) { 
-                                this.dataset.triedFallback = 'true';
-                                this.src = '${fallbackUrl}'; 
-                            } else { 
-                                this.style.display = 'none';
-                                this.parentElement.innerHTML = '<p style=\\'color: #9ca3af; text-align: center; padding: 20px;\\'>📷 Image not available<br><small style=\\'font-size: 10px;\\'>File may not exist in this environment</small></p>'; 
-                            }
-                         ">
-                    <p style="text-align: center; font-size: 11px; color: #6b7280; margin-top: 4px;">Click image to view full size</p>
+                    ${galleryHtml}
+                    <p style="text-align: center; font-size: 11px; color: #6b7280; margin-top: 4px;">Click an image to view full size</p>
                 </div>
             </div>
         `;
@@ -1372,13 +1382,20 @@ function openEditTransactionModal(transactionId) {
                 document.getElementById('edit_amount').value = transaction.amount;
                 document.getElementById('edit_description').value = transaction.description || '';
                 
-                // Handle existing bill image - same pattern as attendance: /storage/ first, /public-storage/ as fallback
+                // Handle existing bill image. The endpoint returns a FULL URL — use it as-is
+                // (the old /storage/ prefixing double-prefixed it and always fell to "not
+                // available"). Relative paths (older payloads) keep the prefix fallback chain.
                 if (transaction.bill_image) {
                     document.getElementById('currentImageSection').style.display = 'block';
                     const imgEl = document.getElementById('currentBillImage');
-                    const fallbackUrl = '/public-storage/' + transaction.bill_image;
+                    const isAbs = /^https?:\/\//.test(transaction.bill_image);
+                    const primary = isAbs ? transaction.bill_image : ('/storage/' + transaction.bill_image);
+                    const fallbackUrl = isAbs
+                        ? transaction.bill_image.replace('/public-storage/', '/storage/')
+                        : ('/public-storage/' + transaction.bill_image);
                     imgEl.dataset.triedFallback = '';
-                    imgEl.src = '/storage/' + transaction.bill_image;
+                    imgEl.style.display = '';
+                    imgEl.src = primary;
                     imgEl.onerror = function() {
                         if (!this.dataset.triedFallback) {
                             this.dataset.triedFallback = 'true';
@@ -1386,11 +1403,10 @@ function openEditTransactionModal(transactionId) {
                         } else {
                             // Image not available in either location
                             this.style.display = 'none';
-                            this.parentElement.innerHTML = '<p style="color: #9ca3af; text-align: center; padding: 15px;">📷 Image not available in this environment</p>';
                         }
                     };
-                    document.getElementById('billImageLabel').textContent = 'Replace Bill Image 📷';
-                    document.getElementById('billImageHint').textContent = 'Upload a new image to replace the current one (optional)';
+                    document.getElementById('billImageLabel').textContent = 'Replace Bill Image 📷 (first image)';
+                    document.getElementById('billImageHint').textContent = 'Uploading replaces the FIRST image; use the Ledger Hub to manage several.';
                 } else {
                     document.getElementById('currentImageSection').style.display = 'none';
                     document.getElementById('billImageLabel').textContent = 'Bill Image 📷';
@@ -2104,335 +2120,25 @@ function generateVendorReport() {
         });
 }
 
+// Aug-2026: the ~330-line renderer that used to live here now lives in
+// fin/partials/vendor-report-render.blade.php, so the Ledger Hub's vendor report
+// prints byte-identical markup instead of its own thinner version. The output here
+// is unchanged: same table, same colours, same totals — the Tailwind classes were
+// translated to their literal values so the markup no longer depends on this page's
+// CSS (the hub writes it into a blank popup window that has none).
+// rootId keeps this page's @media print rules (#printableVendorReport) working.
 function displayVendorReport(report) {
     const reportContent = document.getElementById('vendorReportContent');
     const showPayments = document.getElementById('vendor_show_payments').checked;
-    
-    // Extract vendor data (should be only one vendor since we're filtering by vendor_id)
-    const vendor = report.vendors && report.vendors.length > 0 ? report.vendors[0] : null;
-    
-    if (!vendor) {
+    const html = window.nfVendorReportHtml(report, {
+        vendorName: vendorName,
+        showPayments: showPayments,
+        rootId: 'printableVendorReport'
+    });
+    if (!html) {
         reportContent.innerHTML = '<div class="text-center py-8 text-red-600">No data found for this period</div>';
         return;
     }
-    
-    // Track overall product totals across all transactions
-    const overallProductTotals = {};
-    let totalAdjustments = 0;
-    
-    // Helper function to group and sort line items by product
-    function groupAndSortByProduct(lineItems) {
-        // Group items by product name
-        const grouped = {};
-        lineItems.forEach(item => {
-            const key = item.product_name;
-            if (!grouped[key]) {
-                grouped[key] = {
-                    product_name: item.product_name,
-                    unit: item.unit,
-                    rate_per_unit: item.rate_per_unit,
-                    items: [],
-                    total_quantity: 0,
-                    total_amount: 0
-                };
-            }
-            grouped[key].items.push(item);
-            grouped[key].total_quantity += parseFloat(item.quantity);
-            grouped[key].total_amount += parseFloat(item.line_total || (item.quantity * item.rate_per_unit));
-        });
-        // Sort by product name and return array
-        return Object.values(grouped).sort((a, b) => a.product_name.localeCompare(b.product_name));
-    }
-    
-    let html = `
-        <div id="printableVendorReport" class="bg-white">
-            <!-- Vendor Name Header for Print -->
-            <div style="text-align: center; margin-bottom: 20px; padding: 20px 0; border-bottom: 3px solid #7c3aed;">
-                <h1 style="font-size: 28px; font-weight: bold; color: #111827; margin: 0 0 8px 0;">${vendorName}</h1>
-                <p style="font-size: 14px; color: #6b7280; margin: 0;">Report Period: ${report.date_from} to ${report.date_to}</p>
-            </div>
-            
-            <div style="padding: 0 20px;">
-                <div class="overflow-x-auto">
-                    <table class="w-full text-sm border-collapse">
-                        <thead>
-                            <tr class="bg-purple-100 print:bg-purple-200">
-                                <th class="border border-gray-300 px-2 py-2 text-left font-semibold text-gray-700" style="width: 120px;">Date</th>
-                                <th class="border border-gray-300 px-2 py-2 text-left font-semibold text-gray-700" style="width: 100px;">Type</th>
-                                <th class="border border-gray-300 px-2 py-2 text-left font-semibold text-gray-700">Product</th>
-                                <th class="border border-gray-300 px-2 py-2 text-right font-semibold text-gray-700" style="width: 80px;">Qty</th>
-                                <th class="border border-gray-300 px-2 py-2 text-right font-semibold text-gray-700" style="width: 90px;">Rate</th>
-                                <th class="border border-gray-300 px-2 py-2 text-right font-semibold text-gray-700" style="width: 110px;">Amount</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-    `;
-    
-    // Loop through each day and transaction
-    vendor.daily_summary.forEach(day => {
-        // Calculate rows for this day - items grouped by product + subtotal rows + adjustment
-        let dayRowSpan = 0;
-        day.transactions.forEach(txn => {
-            if (txn.line_items && txn.line_items.length > 0) {
-                const hasAdjustment = txn.adjustment_amount && parseFloat(txn.adjustment_amount) !== 0;
-                const productGroups = groupAndSortByProduct(txn.line_items);
-                // Each item + one subtotal row per product group + adjustment if any
-                let rowCount = 0;
-                productGroups.forEach(group => {
-                    rowCount += group.items.length + 1; // items + subtotal row
-                });
-                dayRowSpan += rowCount + (hasAdjustment ? 1 : 0);
-            } else {
-                dayRowSpan += 1;
-            }
-        });
-        
-        let isFirstRowOfDay = true;
-        
-        day.transactions.forEach(txn => {
-            const isPayment = txn.type === 'payment';
-            const amountColor = isPayment ? 'text-green-700' : 'text-red-700';
-            const bgColor = isPayment ? 'bg-green-50' : 'bg-red-50';
-            const adjustmentAmount = parseFloat(txn.adjustment_amount || 0);
-            const hasAdjustment = adjustmentAmount !== 0;
-            
-            if (hasAdjustment) {
-                totalAdjustments += adjustmentAmount;
-            }
-            
-            if (txn.line_items && txn.line_items.length > 0) {
-                // Group and sort items by product
-                const productGroups = groupAndSortByProduct(txn.line_items);
-                
-                // Track overall product totals
-                productGroups.forEach(group => {
-                    const key = group.product_name;
-                    if (!overallProductTotals[key]) {
-                        overallProductTotals[key] = {
-                            product_name: group.product_name,
-                            unit: group.unit,
-                            total_quantity: 0,
-                            total_amount: 0
-                        };
-                    }
-                    overallProductTotals[key].total_quantity += group.total_quantity;
-                    overallProductTotals[key].total_amount += group.total_amount;
-                });
-                
-                // Calculate total rows for this transaction
-                let totalRowsForThisTxn = 0;
-                productGroups.forEach(group => {
-                    totalRowsForThisTxn += group.items.length + 1;
-                });
-                totalRowsForThisTxn += hasAdjustment ? 1 : 0;
-                
-                let isFirstItemOfTxn = true;
-                
-                // Render each product group
-                productGroups.forEach((group, groupIndex) => {
-                    // Render individual items in this group
-                    group.items.forEach((item, itemIndex) => {
-                    html += `<tr class="${bgColor} print:bg-white">`;
-                    
-                    // Date column (only on first row of the day)
-                    if (isFirstRowOfDay) {
-                            html += `<td class="border border-gray-300 px-2 py-2 align-top font-medium text-gray-900" rowspan="${dayRowSpan}">${day.date}</td>`;
-                        isFirstRowOfDay = false;
-                    }
-                    
-                        // Type column (only on first item of transaction)
-                        if (isFirstItemOfTxn) {
-                        html += `
-                                <td class="border border-gray-300 px-2 py-2 align-top" rowspan="${totalRowsForThisTxn}">
-                                    <div class="font-medium ${amountColor}">📦 Purchase</div>
-                                <div class="text-xs text-gray-500 mt-0.5">${txn.transaction_id}</div>
-                            </td>
-                        `;
-                            isFirstItemOfTxn = false;
-                    }
-                    
-                        // Product column
-                        html += `<td class="border border-gray-300 px-2 py-2 text-gray-800">${item.product_name}</td>`;
-                        
-                        // Qty column
-                        html += `<td class="border border-gray-300 px-2 py-2 text-right text-gray-700">${Number(item.quantity).toFixed(3)} ${item.unit}</td>`;
-                        
-                        // Rate column
-                        html += `<td class="border border-gray-300 px-2 py-2 text-right text-gray-700">Rs. ${Number(item.rate_per_unit).toLocaleString('en-PK', {minimumFractionDigits: 2})}</td>`;
-                    
-                        // Amount column (only on first item of transaction)
-                        if (groupIndex === 0 && itemIndex === 0) {
-                        html += `
-                                <td class="border border-gray-300 px-2 py-2 text-right align-top font-bold ${amountColor}" rowspan="${totalRowsForThisTxn}">
-                                Rs. ${Number(txn.amount).toLocaleString('en-PK', {minimumFractionDigits: 2, maximumFractionDigits: 2})}
-                            </td>
-                        `;
-                    }
-                    
-                    html += `</tr>`;
-                });
-                    
-                    // Subtotal row for this product group (spans Product, Qty, Rate columns)
-                    html += `<tr class="print:bg-white" style="background: linear-gradient(90deg, #dbeafe 0%, #eff6ff 100%);">`;
-                    html += `
-                        <td class="border border-gray-300 px-2 py-1 text-xs text-blue-600 font-medium">↳ Subtotal</td>
-                        <td class="border border-gray-300 px-2 py-1 text-right text-xs text-blue-700 font-bold">${Number(group.total_quantity).toFixed(3)} ${group.unit}</td>
-                        <td class="border border-gray-300 px-2 py-1 text-right text-xs text-blue-700 font-bold">Rs. ${Number(group.total_amount).toLocaleString('en-PK', {minimumFractionDigits: 2})}</td>
-                    `;
-                    html += `</tr>`;
-                });
-                
-                // Adjustment row if exists (spans Product, Qty, Rate columns)
-                if (hasAdjustment) {
-                    const adjPrefix = adjustmentAmount > 0 ? '+' : '';
-                    const adjColor = adjustmentAmount < 0 ? 'text-green-700' : 'text-orange-700';
-                    const adjBg = adjustmentAmount < 0 ? '#d1fae5' : '#ffedd5';
-                    html += `<tr class="print:bg-white" style="background: ${adjBg};">`;
-                    html += `
-                        <td class="border border-gray-300 px-2 py-2 font-medium ${adjColor}" colspan="2">📊 Adjustment/Discount</td>
-                        <td class="border border-gray-300 px-2 py-2 text-right font-bold ${adjColor}">${adjPrefix}Rs. ${Number(adjustmentAmount).toLocaleString('en-PK', {minimumFractionDigits: 2})}</td>
-                    `;
-                    html += `</tr>`;
-                }
-            } else {
-                // Simple transaction (payment or flat purchase)
-                html += `<tr class="${bgColor} print:bg-white">`;
-                
-                // Date column (only on first row of the day)
-                if (isFirstRowOfDay) {
-                    html += `<td class="border border-gray-300 px-2 py-2 align-top font-medium text-gray-900" rowspan="${dayRowSpan}">${day.date}</td>`;
-                    isFirstRowOfDay = false;
-                }
-                
-                // Type column
-                html += `
-                    <td class="border border-gray-300 px-2 py-2">
-                        <div class="font-medium ${amountColor}">${isPayment ? '💰 Payment' : '📦 Purchase'}</div>
-                        <div class="text-xs text-gray-500 mt-0.5">${txn.transaction_id}</div>
-                        ${isPayment && txn.payment_mode ? `<div class="text-xs text-blue-600 mt-1">${txn.payment_mode}</div>` : ''}
-                    </td>
-                `;
-                
-                // Details column (spans Product, Qty, Rate columns for payments/flat purchases)
-                html += `
-                    <td class="border border-gray-300 px-2 py-2 text-gray-700" colspan="3">
-                        ${txn.description || '-'}
-                    </td>
-                `;
-                
-                // Amount column
-                html += `
-                    <td class="border border-gray-300 px-2 py-2 text-right font-bold ${amountColor}">
-                        Rs. ${Number(txn.amount).toLocaleString('en-PK', {minimumFractionDigits: 2, maximumFractionDigits: 2})}
-                    </td>
-                `;
-                
-                html += `</tr>`;
-            }
-        });
-    });
-    
-    // Calculate payment mode totals
-    let vendorTotalPaymentsOnline = 0;
-    let vendorTotalPaymentsCash = 0;
-    vendor.daily_summary.forEach(day => {
-        vendorTotalPaymentsOnline += day.total_payments_online || 0;
-        vendorTotalPaymentsCash += day.total_payments_cash || 0;
-    });
-    
-    // Vendor Summary Row
-    const adjustmentDisplay = totalAdjustments !== 0 
-        ? `<span class="${totalAdjustments < 0 ? 'text-green-600' : 'text-orange-600'} ml-2 text-xs">(Adj: ${totalAdjustments > 0 ? '+' : ''}Rs. ${Number(totalAdjustments).toLocaleString('en-PK', {minimumFractionDigits: 2})})</span>` 
-        : '';
-    
-    html += `
-                            <tr class="bg-purple-100 font-bold print:bg-purple-200">
-                                <td colspan="5" class="border border-gray-300 px-2 py-2 text-right">
-                                    <span class="text-gray-700">Vendor Total:</span>
-                                    <span class="text-red-600 ml-4">Purchases: Rs. ${Number(vendor.total_purchases).toLocaleString('en-PK', {minimumFractionDigits: 2})}</span>
-                                    ${adjustmentDisplay}
-                                    ${showPayments ? `
-                                        <span class="text-green-600 ml-4">Payments: Rs. ${Number(vendor.total_payments).toLocaleString('en-PK', {minimumFractionDigits: 2})}</span>
-                                        ${vendorTotalPaymentsOnline > 0 ? `<span class="text-blue-600 ml-2 text-xs">(Online: Rs. ${Number(vendorTotalPaymentsOnline).toLocaleString('en-PK', {minimumFractionDigits: 2})})</span>` : ''}
-                                        ${vendorTotalPaymentsCash > 0 ? `<span class="text-orange-600 ml-2 text-xs">(Cash: Rs. ${Number(vendorTotalPaymentsCash).toLocaleString('en-PK', {minimumFractionDigits: 2})})</span>` : ''}
-                                    ` : ''}
-                                </td>
-                                <td class="border border-gray-300 px-2 py-2 text-right ${(vendor.total_purchases - vendor.total_payments) > 0 ? 'text-red-600' : 'text-green-600'}">
-                                    Rs. ${Number(vendor.total_purchases - vendor.total_payments).toLocaleString('en-PK', {minimumFractionDigits: 2, maximumFractionDigits: 2})}
-                                </td>
-                            </tr>
-                        </tbody>
-                    </table>
-                </div>
-    `;
-    
-    // Add Overall Product-wise Totals section
-    const productTotalsArray = Object.values(overallProductTotals);
-    if (productTotalsArray.length > 0) {
-        html += `
-                <div style="margin-top: 24px; padding: 16px; background: linear-gradient(135deg, #fef3c7 0%, #fde68a 100%); border: 2px solid #f59e0b; border-radius: 8px;">
-                    <h3 style="font-size: 16px; font-weight: bold; color: #92400e; margin: 0 0 12px 0;">📦 Overall Product-wise Summary</h3>
-                    <table class="w-full text-sm border-collapse">
-                        <thead>
-                            <tr style="background: rgba(245, 158, 11, 0.2);">
-                                <th style="padding: 8px 12px; text-align: left; font-weight: 600; color: #92400e; border-bottom: 1px solid #f59e0b;">Product</th>
-                                <th style="padding: 8px 12px; text-align: right; font-weight: 600; color: #92400e; border-bottom: 1px solid #f59e0b;">Total Qty</th>
-                                <th style="padding: 8px 12px; text-align: right; font-weight: 600; color: #92400e; border-bottom: 1px solid #f59e0b;">Total Amount</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-        `;
-        
-        let grandTotalQtyValue = 0;
-        let grandTotalAmountValue = 0;
-        
-        productTotalsArray.forEach(product => {
-            grandTotalAmountValue += product.total_amount;
-            html += `
-                            <tr style="border-bottom: 1px solid rgba(245, 158, 11, 0.3);">
-                                <td style="padding: 8px 12px; color: #78350f; font-weight: 500;">${product.product_name}</td>
-                                <td style="padding: 8px 12px; text-align: right; color: #78350f; font-weight: 600;">${Number(product.total_quantity).toFixed(3)} ${product.unit}</td>
-                                <td style="padding: 8px 12px; text-align: right; color: #78350f; font-weight: 600;">Rs. ${Number(product.total_amount).toLocaleString('en-PK', {minimumFractionDigits: 2})}</td>
-                            </tr>
-            `;
-        });
-        
-        // Grand total row
-        html += `
-                            <tr style="background: rgba(245, 158, 11, 0.3); font-weight: bold;">
-                                <td style="padding: 10px 12px; color: #92400e;">GRAND TOTAL</td>
-                                <td style="padding: 10px 12px; text-align: right; color: #92400e;">-</td>
-                                <td style="padding: 10px 12px; text-align: right; color: #92400e;">Rs. ${Number(grandTotalAmountValue).toLocaleString('en-PK', {minimumFractionDigits: 2})}</td>
-                            </tr>
-        `;
-        
-        if (totalAdjustments !== 0) {
-            html += `
-                            <tr style="background: rgba(245, 158, 11, 0.2);">
-                                <td style="padding: 8px 12px; color: ${totalAdjustments < 0 ? '#059669' : '#ea580c'}; font-weight: 500;">Total Adjustments</td>
-                                <td style="padding: 8px 12px; text-align: right;">-</td>
-                                <td style="padding: 8px 12px; text-align: right; color: ${totalAdjustments < 0 ? '#059669' : '#ea580c'}; font-weight: 600;">${totalAdjustments > 0 ? '+' : ''}Rs. ${Number(totalAdjustments).toLocaleString('en-PK', {minimumFractionDigits: 2})}</td>
-                            </tr>
-                            <tr style="background: rgba(245, 158, 11, 0.4); font-weight: bold;">
-                                <td style="padding: 10px 12px; color: #92400e;">NET TOTAL (After Adjustments)</td>
-                                <td style="padding: 10px 12px; text-align: right; color: #92400e;">-</td>
-                                <td style="padding: 10px 12px; text-align: right; color: #92400e;">Rs. ${Number(grandTotalAmountValue + totalAdjustments).toLocaleString('en-PK', {minimumFractionDigits: 2})}</td>
-                            </tr>
-            `;
-        }
-        
-        html += `
-                        </tbody>
-                    </table>
-                </div>
-        `;
-    }
-    
-    html += `
-            </div>
-        </div>
-    `;
-    
     reportContent.innerHTML = html;
 }
 

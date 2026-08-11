@@ -1699,7 +1699,7 @@ async function changeCampaignSort(value) {
 function renderReceiptBadge(cu) {
     if (cu.campaign_status !== 'sent') return '';
     if (cu.undelivered_at) {
-        return '<span class="camp-status-badge camp-status-failed" title="WhatsApp could not deliver this — usually a dead or blocked number.">Undelivered</span>';
+        return '<span class="camp-status-badge camp-status-failed" title="WhatsApp could not deliver this — a dead/blocked number, or WhatsApp\'s marketing frequency cap (the per-row reason says which). Frequency-capped people can be requeued and resent later.">Undelivered</span>';
     }
     if (cu.read_at) {
         return '<span class="camp-status-badge" style="background:#ede9fe;color:#5b21b6;" title="Opened by the customer">Read</span>';
@@ -1749,7 +1749,7 @@ function renderFunnelStrip(counts) {
             ${cell('Delivered', delivered, pct(delivered), '#0891b2', 'Reached the customer\'s phone, confirmed by WhatsApp.')}
             ${cell('Read', readCount, pct(readCount), '#7c3aed', 'Opened by the customer. This is a minimum — anyone who turns read receipts off never reports a read, so the real number is higher.')}
             ${cell('Replied', replied, pct(replied), '#2563eb', 'Sent us a WhatsApp message back within the tracking window.')}
-            ${undelivered > 0 ? cell('Undelivered', undelivered, pct(undelivered), '#dc2626', 'WhatsApp accepted the message but could not deliver it — usually a dead or blocked number. Worth cleaning these up.') : ''}
+            ${undelivered > 0 ? cell('Undelivered', undelivered, pct(undelivered), '#dc2626', 'WhatsApp accepted the message but could not deliver it — a dead/blocked number, or WhatsApp\'s marketing frequency cap protecting busy inboxes. Check the reason on each row; frequency-capped ones can be requeued.') : ''}
         </div>
     </div>`;
 }
@@ -1896,6 +1896,7 @@ function renderCampaignDetail() {
     ${renderSendStateBanner()}
     <div class="camp-actions-bar">
         ${filterBtns}
+        ${customerStatusFilter === 'undelivered' && (counts.undelivered || 0) > 0 && !isEnded ? `<button class="camp-btn camp-btn-secondary" style="margin-left:6px;" onclick="requeueAllUndelivered(${counts.undelivered})" title="Move every undelivered recipient back to Pending so a normal send can reach them again.">Requeue all ${counts.undelivered}</button>` : ''}
     </div>`;
 
     // Info strip shown only while the Excluded tab is active, so the
@@ -2062,6 +2063,9 @@ function renderCampaignDetail() {
                         <button class="camp-btn camp-btn-primary" onclick="retrySingle(${cu.customer_id}, '${esc(name)}')">Retry</button>
                         <button class="camp-btn camp-btn-secondary" onclick="skipCustomer(${cu.customer_id})">Skip</button>
                     ` : ''}
+                    ${cu.campaign_status === 'sent' && cu.undelivered_at && !isEnded ? `
+                        <button class="camp-btn camp-btn-secondary" onclick="requeueSingle(${cu.customer_id}, '${esc(name)}')" title="Put them back in Pending so they can be sent again. WhatsApp refused the last delivery — they never received it, so a resend is a retry, not a repeat.">Requeue</button>
+                    ` : ''}
                 </div>
             </div>`;
         });
@@ -2130,6 +2134,35 @@ function toggleSelectAll(checked) {
 function clearSelection() {
     selectedCustomerIds = [];
     renderCampaignDetail();
+}
+
+async function requeueSingle(customerId, name) {
+    if (!confirm(`Put ${name} back in Pending so they can be sent again?\n\nWhatsApp refused the last delivery — they never received the message, so this is a retry, not a repeat.`)) return;
+    const data = await apiFetch(`/campaigns/${activeCampaignId}/requeue-undelivered`, {
+        method: 'POST',
+        body: JSON.stringify({ customer_ids: [customerId] }),
+    });
+    if (data.success) {
+        loadCampaignDetail(activeCampaignId, customerStatusFilter);
+        loadCampaigns();
+    } else {
+        alert(data.message || 'Could not requeue.');
+    }
+}
+
+async function requeueAllUndelivered(count) {
+    if (!confirm(`Put all ${count} undelivered back in Pending?\n\nTip: waiting a day or two before resending improves the odds WhatsApp delivers them this time.`)) return;
+    const data = await apiFetch(`/campaigns/${activeCampaignId}/requeue-undelivered`, {
+        method: 'POST',
+        body: JSON.stringify({}),
+    });
+    if (data.success) {
+        alert(data.message || 'Done.');
+        loadCampaignDetail(activeCampaignId, customerStatusFilter);
+        loadCampaigns();
+    } else {
+        alert(data.message || 'Could not requeue.');
+    }
 }
 
 async function sendSingle(customerId, name) {
@@ -2646,7 +2679,7 @@ function renderFunnelBlock(f, windowDays, trackingType) {
 
     if (f.undelivered > 0) {
         html += `<div style="margin-bottom:14px;padding:8px 10px;background:#fef2f2;border:1px solid #fecaca;border-radius:6px;font-size:11px;color:#991b1b;">
-            <b>${f.undelivered} could not be delivered</b> (${f.rates.undelivered}%) — usually numbers that no longer use WhatsApp. Open the <b>Undelivered</b> tab to review and clean them up.
+            <b>${f.undelivered} could not be delivered</b> (${f.rates.undelivered}%) — dead numbers, or WhatsApp's marketing frequency cap. Open the <b>Undelivered</b> tab to review, requeue, or clean them up.
         </div>`;
     }
 

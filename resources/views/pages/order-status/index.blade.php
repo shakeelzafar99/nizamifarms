@@ -603,6 +603,10 @@
                     </datalist>
                     <p class="text-xs text-gray-500 mt-1">Pick a value the customer app already understands (its approved list) — anything else shows as a vague "In Progress".</p>
                 </div>
+                <div class="setting-row mt-2">
+                    <div class="txt"><b>Hold from the customer until dispatched</b><span>For steps we set early. The customer keeps seeing "Preparing" until Dispatch is pressed and the ETA exists — then they get this status with the delivery window and the live map.</span></div>
+                    <label class="switch"><input type="checkbox" id="holdUntilDispatch" name="customer_app_hold_until_dispatch"><span class="slider"></span></label>
+                </div>
             </div>
         </form>
         
@@ -911,10 +915,13 @@ function statusRowHtml(status, draggable) {
     const stateCell = isFinal ? '<span class="tpill tp-gray">Closed</span>' : '<span class="tpill tp-green">Open</span>';
     let staffCell   = inMobile ? '<span class="tpill tp-green">Visible</span>' : '<span class="tpill tp-orange">Hidden</span>';
     if (inMobile && hasRoles) staffCell = `<span class="tpill tp-orange">🔒 ${status.visible_to_roles.length} roles</span>`;
+    const holds   = !!status.customer_app_hold_until_dispatch;
     let custCell;
     if (!sends) custCell = '<span class="tpill tp-red">Not sent</span>';
     else if (alias) custCell = `<span class="tpill tp-blue">→ ${alias}</span>`;
     else custCell = '<span class="tpill tp-gray tp-dim">as-is</span>';
+    // Held statuses reach the customer LATER than they happen here, so the cell says so.
+    if (sends && holds) custCell += ' <span class="tpill tp-amber" title="The customer keeps seeing Preparing until Dispatch is pressed — then this status is sent with the delivery window">⏸ after dispatch</span>';
 
     const handle = draggable
         ? '<div class="drag-handle"><i class="ki-filled ki-menu text-lg"></i></div>'
@@ -1064,6 +1071,7 @@ function openCreateStatusModal() {
     document.getElementById('laneSelect').value = 'journey';
     document.getElementById('sendToCustomerApp').checked = false;
     document.getElementById('customerAppAlias').value = '';
+    document.getElementById('holdUntilDispatch').checked = false;
     populateRoleCheckboxes([]);  // Clear role selections
     updateStatusPreview();
     document.getElementById('statusModal').style.display = 'flex';
@@ -1091,6 +1099,7 @@ function editStatus(statusId) {
     document.getElementById('laneSelect').value = status.lane || 'journey';
     document.getElementById('sendToCustomerApp').checked = !!status.send_to_customer_app;
     document.getElementById('customerAppAlias').value = status.customer_app_alias || '';
+    document.getElementById('holdUntilDispatch').checked = !!status.customer_app_hold_until_dispatch;
 
     // Role visibility - parse if string, otherwise use as-is
     let selectedRoles = status.visible_to_roles || [];
@@ -1164,6 +1173,7 @@ function generateCustomerAppDoc() {
     L.push('- Only orders whose number starts with "SH-" emit status webhooks.');
     L.push('- The FIRST event for an order is always sent as `accepted` (order accepted), whatever the status.');
     L.push('- "Not sent" = we fire no webhook for that step; the customer keeps seeing the previous status.');
+    L.push('- "After dispatch" = we set that status early internally, so you are shown `processing` until the order is really dispatched; you then get the status with `eta_window` filled in and live tracking works immediately.');
     L.push('- Map each value we send to the stage shown. Keep an `in_progress` catch-all for anything unrecognised.');
     L.push('');
     L.push('| NF status | We send | Your stage | Notes |');
@@ -1180,6 +1190,9 @@ function generateCustomerAppDoc() {
             sendVal = '`' + v + '`';
             stage = customerStageFor(v);
             if (alias) note = 'alias of "' + s.status_code + '"';
+            if (s.customer_app_hold_until_dispatch) {
+                note = (note ? note + '; ' : '') + 'sent only AFTER dispatch — until then you see `processing`';
+            }
         }
         if (s.lane === 'legacy') note = (note ? note + '; ' : '') + 'legacy — only appears on old orders';
         L.push('| ' + s.status_name + ' (`' + s.status_code + '`) | ' + sendVal + ' | ' + stage + ' | ' + note + ' |');
@@ -1242,7 +1255,8 @@ async function saveStatus() {
     const lane = document.getElementById('laneSelect').value;
     const sendToCustomerApp = document.getElementById('sendToCustomerApp').checked;
     const customerAppAlias = document.getElementById('customerAppAlias').value.trim();
-    
+    const holdUntilDispatch = document.getElementById('holdUntilDispatch').checked;
+
     // Validate
     if (!statusCode) {
         showAlert('Status code is required', 'error');
@@ -1279,7 +1293,8 @@ async function saveStatus() {
             auto_prepares: autoPrepares,
             lane: lane,
             send_to_customer_app: sendToCustomerApp,
-            customer_app_alias: customerAppAlias || null
+            customer_app_alias: customerAppAlias || null,
+            customer_app_hold_until_dispatch: holdUntilDispatch
         };
         
         const response = await fetch(url, {

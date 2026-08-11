@@ -56,6 +56,13 @@
                             // fullname, not name — UserModel has no `name`, so ->name is always NULL
                             'by' => optional($r->createdBy)->fullname ?? '—', 'pending' => false,
                             'entered' => $r->created_at ? $r->created_at->format('M d, Y · g:i A') : null,
+                            // Turns on the drawer's inline quick edit. Set ONLY here: the drawer is
+                            // shared with the Accounts / Banks / Overview pages, where the vendor
+                            // edit endpoints and modals do not exist. Whether the row needs the
+                            // simple or the line-item editor is decided in the drawer, from the
+                            // fetched transaction — not guessed from the vendor's purchase method,
+                            // because a by-weight vendor can still hold plain purchases.
+                            'editable' => !$readOnly,
                         ];
                     @endphp
                     {{-- t-row + data-d must stay: the drawer binds a delegated listener to
@@ -63,7 +70,12 @@
                     <tr class="t-row {{ $isP ? 'e-purchase' : 'e-payment' }}" data-d='{{ json_encode($d, JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_TAG | JSON_HEX_AMP) }}'>
                         <td class="cell-date num">{{ $r->created_at ? $r->created_at->format('H:i') : '' }}</td>
                         <td><span class="type-chip {{ $isP ? 'tc-purchase' : 'tc-payment' }}">{{ $isP ? 'Purchase' : 'Payment' }}</span></td>
-                        <td class="desc" title="{{ $desc }}">{{ $desc !== '' ? \Illuminate\Support\Str::limit($desc, 46) : '—' }}@if($r->bill_image) <button class="bill-chip" type="button" onclick="event.stopPropagation();hubViewBill(@json($r->bill_image))" title="View the attached bill / receipt image">📎</button>@endif</td>
+                        @php
+                            // 📎 chip: images_count when the multi-image table is live (withCount
+                            // in vendorLedger), else presence of the legacy mirror column.
+                            $imgN = $r->images_count ?? ($r->bill_image ? 1 : 0);
+                        @endphp
+                        <td class="desc" title="{{ $desc }}">{{ $desc !== '' ? \Illuminate\Support\Str::limit($desc, 46) : '—' }}@if($imgN > 0) <button class="bill-chip" type="button" onclick="event.stopPropagation();hubViewImages({{ $r->id }}, @json($r->bill_image))" title="View the attached bill / receipt image{{ $imgN > 1 ? 's' : '' }}">📎{{ $imgN > 1 ? '×' . $imgN : '' }}</button>@endif</td>
                         <td class="r">@if($isP)<span class="amt owe num">{{ number_format($r->amount, 2) }}</span>@else <span style="color:var(--ink3)">–</span>@endif</td>
                         <td class="r">@if(!$isP)<span class="amt in num">{{ number_format($r->amount, 2) }}</span>@else <span style="color:var(--ink3)">–</span>@endif</td>
                         <td class="r num" style="color:{{ $it['running'] > 0.5 ? 'var(--owe)' : 'var(--ink2)' }}">{{ number_format($it['running'], 2) }}</td>

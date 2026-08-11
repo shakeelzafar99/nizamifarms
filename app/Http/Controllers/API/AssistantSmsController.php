@@ -254,6 +254,134 @@ class AssistantSmsController extends Controller
      * Online-Approvals orders, confirm-card first, and NEVER auto-verified —
      * verification still needs the matcher's bank pairing.
      */
+    /**
+     * GET /assistant/sms/{id}/targets?customer_id=N — the orders this credit
+     * could be attached to, for the "whose payment is this?" picker.
+     *
+     * Grouped so the UI can label them honestly: awaiting approval, still open,
+     * or already approved. The last group is what makes a wrong tag fixable at
+     * all — see AssistantDraftService::proofTargetOrders().
+     */
+    public function targets(Request $request, $id)
+    {
+        $user = Auth::user();
+        if (!$this->allowed($user)) {
+            return response()->json(['success' => false, 'message' => 'No permission'], 403);
+        }
+        $request->validate(['customer_id' => 'required|integer']);
+
+        $customerId = (int) $request->input('customer_id');
+        $c = DB::table('t_crm_prod_customer')->where('id', $customerId)
+            ->first(['id', 'first_name', 'last_name', 'customer_type']);
+        if (!$c) {
+            return response()->json(['success' => false, 'message' => 'Customer not found'], 404);
+        }
+
+        return response()->json([
+            'success'  => true,
+            'customer' => [
+                'id'      => (int) $c->id,
+                'name'    => trim(($c->first_name ?? '') . ' ' . ($c->last_name ?? '')),
+                'is_shop' => ($c->customer_type ?? 'regular') === 'shop',
+            ],
+            'orders' => $this->drafts->proofTargetOrders($customerId),
+        ]);
+    }
+
+    /**
+     * POST /assistant/sms/{id}/attach — the approver picked an exact order.
+     *
+     * A DIRECT link, with no matching ladder involved: a human naming the order
+     * outranks every rule the system has, so no amount tolerance, no queue
+     * scoping, and a zero balance is fine (attaching proof to a settled order
+     * is record-keeping — it moves no money). Recorded as `manual_confirmed`,
+     * which is not a guess and so is never auto-retracted or reswept.
+     */
+    public function attach(Request $request, $id)
+    {
+        $user = Auth::user();
+        if (!$this->allowed($user)) {
+            return response()->json(['success' => false, 'message' => 'No permission'], 403);
+        }
+        $request->validate([
+            'customer_id' => 'required|integer',
+            'order_id'    => 'required|integer',
+        ]);
+
+        // Same ownership scope as matchCredit — an assistant user only ever
+        // acts on the SMS rows of their own phone.
+        $sms = DB::table('t_ai_bank_sms')->where('id', $id)->where('user_id', $user->id)->first();
+        if (!$sms || $sms->direction !== 'credit') {
+            return response()->json(['success' => false, 'message' => 'That credit is no longer here.'], 404);
+        }
+
+        $customerId = (int) $request->input('customer_id');
+        $orderId    = (int) $request->input('order_id');
+
+        $order = DB::table('t_crm_prod_order')->where('id', $orderId)
+            ->where('customer_id', $customerId)
+            ->first(['id', 'order_number']);
+        if (!$order) {
+            return response()->json(['success' => false, 'message' => 'That order does not belong to this customer.'], 422);
+        }
+
+        $signal = $sms->linked_signal_id ? \App\Models\FIN\PaymentSignal::find($sms->linked_signal_id) : null;
+        if (!$signal) {
+            return response()->json([
+                'success' => false,
+                'message' => 'This credit has no payment record to attach — use "Match to customer" instead.',
+            ], 422);
+        }
+
+        // Re-pointing away from a previous guess retracts what it taught.
+        if ($signal->isGuess() && (int) $signal->matched_customer_id !== $customerId) {
+            app(\App\Services\Payments\Signals\CustomerBankAliasService::class)->unlearnFromSignal($signal);
+        }
+
+        DB::table('t_fin_payment_signal_order')->where('signal_id', $signal->id)->delete();
+        $signal->matched_order_id    = $orderId;
+        $signal->matched_customer_id = $customerId;
+        $signal->status              = \App\Models\FIN\PaymentSignal::STATUS_MATCHED;
+        $signal->match_reason        = \App\Models\FIN\PaymentSignal::REASON_MANUAL_CONFIRMED;
+        $signal->match_confidence    = 1.00;
+        $signal->save();
+
+        // Carry the other half of a pair along. The screenshot and the bank
+        // alert describe ONE transfer, so if a human says that transfer belongs
+        // to this order, both sides belong to it — and the order regains its
+        // "Verified" badge rather than the weaker "Bank confirmed".
+        if ($signal->paired_signal_id) {
+            $mate = \App\Models\FIN\PaymentSignal::find($signal->paired_signal_id);
+            if ($mate && (int) $mate->paired_signal_id === (int) $signal->id) {
+                DB::table('t_fin_payment_signal_order')->where('signal_id', $mate->id)->delete();
+                $mate->matched_order_id    = $orderId;
+                $mate->matched_customer_id = $customerId;
+                $mate->status              = \App\Models\FIN\PaymentSignal::STATUS_MATCHED;
+                $mate->match_reason        = \App\Models\FIN\PaymentSignal::REASON_MANUAL_CONFIRMED;
+                $mate->match_confidence    = 1.00;
+                $mate->save();
+            }
+        }
+
+        // A human naming the payer is the strongest lesson available.
+        if (!empty($sms->counterparty)) {
+            app(\App\Services\Payments\Signals\CustomerBankAliasService::class)
+                ->learnFromConfirmation($customerId, $sms->counterparty, $sms->counterparty_account ?? null,
+                    $user ? (int) $user->id : null);
+        }
+
+        DB::table('t_ai_bank_sms')->where('id', $id)->update([
+            'status'      => 'matched',
+            'auto_reason' => 'manual_attach',
+            'updated_at'  => now(),
+        ]);
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Attached to ' . $order->order_number . '.',
+        ]);
+    }
+
     public function matchCredit(Request $request, $id)
     {
         $user = Auth::user();
@@ -309,9 +437,15 @@ class AssistantSmsController extends Controller
         if ($sms->linked_signal_id) {
             $guess = \App\Models\FIN\PaymentSignal::find($sms->linked_signal_id);
             if ($guess && $guess->source === \App\Models\FIN\PaymentSignal::SOURCE_BANK_SMS
-                && $guess->match_reason === 'amount_unique_sms'
+                && $guess->isGuess()
                 && !$guess->paired_signal_id
                 && (int) $guess->matched_customer_id !== $customerId) {
+                // ONE-STRIKE UNLEARN: whatever this wrong tag may have taught
+                // about the payer goes with it, so the same mistake cannot be
+                // repeated the next time this person pays.
+                app(\App\Services\Payments\Signals\CustomerBankAliasService::class)
+                    ->unlearnFromSignal($guess);
+
                 DB::table('t_fin_payment_signal_order')->where('signal_id', $guess->id)->delete();
                 $guess->matched_order_id = null;
                 $guess->matched_customer_id = null;
@@ -320,6 +454,17 @@ class AssistantSmsController extends Controller
                 $guess->match_confidence = null;
                 $guess->save();
             }
+        }
+
+        // The human just named the payer — the gold-standard lesson. Recorded
+        // whether or not the guess above needed retracting, so every correction
+        // AND every plain confirmation teaches. Shop customers are excluded:
+        // their money never travels the proof road, so an alias there could
+        // only ever misdirect a future credit.
+        if (!empty($sms->counterparty) && !$isShop) {
+            app(\App\Services\Payments\Signals\CustomerBankAliasService::class)
+                ->learnFromConfirmation($customerId, $sms->counterparty, $sms->counterparty_account ?? null,
+                    $user ? (int) $user->id : null);
         }
 
         // Out of the "needs action" pile while a card is live; a cancel/expiry
@@ -368,7 +513,12 @@ class AssistantSmsController extends Controller
             $held = \App\Models\FIN\PaymentSignal::find($sms->linked_signal_id);
             if ($held && $held->source === \App\Models\FIN\PaymentSignal::SOURCE_BANK_SMS
                 && !$held->paired_signal_id
-                && (!$held->matched_order_id || $held->match_reason === 'amount_unique_sms')) {
+                && (!$held->matched_order_id || $held->isGuess())) {
+                // "Not a customer payment" also retracts whatever the guess
+                // taught — see CustomerBankAliasService::unlearn.
+                app(\App\Services\Payments\Signals\CustomerBankAliasService::class)
+                    ->unlearnFromSignal($held);
+
                 DB::table('t_fin_payment_signal_order')->where('signal_id', $held->id)->delete();
                 $held->delete();
                 DB::table('t_ai_bank_sms')->where('id', $id)->update(['linked_signal_id' => null]);

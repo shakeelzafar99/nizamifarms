@@ -346,6 +346,9 @@ class CustomerController extends Controller
                     'phone' => $customer->phone_original,
                     'notes' => $customer->notes,
                     'customer_type' => $customer->customer_type, // regular | shop (drives default online payment)
+                    // Aug-2026 — remembered payment choice, so the Create-Order
+                    // form can pre-select it the moment this customer is picked.
+                    'default_payment_method' => $customer->default_payment_method,
                     'address' => [
                         'first_name' => $customer->first_name,
                         'last_name' => $customer->last_name,
@@ -1120,6 +1123,9 @@ class CustomerController extends Controller
             'phone' => 'required|string|max:20',
             'company' => 'nullable|string|max:255',
             'customer_type' => 'nullable|string|in:regular,shop',
+            // Aug-2026 — remembered payment choice. '' is the "No default"
+            // option in the edit form and clears the column.
+            'default_payment_method' => 'nullable|string|in:cash,online',
             'address1' => 'nullable|string|max:255',
             'address2' => 'nullable|string|max:255',
             'city' => 'nullable|string|max:100',
@@ -1192,6 +1198,17 @@ class CustomerController extends Controller
                 $payload['phone'] = $newNormalized;
                 $payload['phone_normalized'] = $newNormalized;
                 $payload['phone_original'] = $newOriginal;
+            }
+
+            // Aug-2026 — the "No default" option posts an empty string. Store a
+            // real NULL for it, otherwise '' would sit in the column and the
+            // order forms would read it as "a default exists" and pre-select
+            // nothing. Only touched when the caller actually sent the field, so
+            // every other update path (mobile, geocode, merge) is unaffected.
+            if ($request->has('default_payment_method')) {
+                $payload['default_payment_method'] = CustomerModel::normalizePaymentMethod(
+                    $request->input('default_payment_method')
+                );
             }
 
             // Snapshot the address BEFORE the write so we can tell whether it moved.

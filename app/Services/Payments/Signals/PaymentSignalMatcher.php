@@ -29,14 +29,30 @@ use Carbon\Carbon;
 class PaymentSignalMatcher
 {
     /**
+     * Set for the duration of one match when the CUSTOMER behind the payment was
+     * itself inferred (resolved from the payer's name) rather than established.
+     * The order-picking below is unchanged and still runs on real balances — but
+     * its verdict inherits the uncertainty of that identity, so the match is
+     * recorded under the given guess reason and is never allowed to displace
+     * anyone else's guess. Reset after every match; see match().
+     */
+    private ?string $guessReason = null;
+
+    /**
      * @param array|null $onlyOrderIds  When non-null, restrict candidate orders
      *   to this set (the assistant scopes a forwarded proof to the customer's
      *   Online-Approvals-queue orders). Null = every open order, the existing
      *   behaviour for WhatsApp/email proofs — untouched.
+     * @param string|null $guessReason  One of PaymentSignal::GUESS_REASONS when
+     *   the payer's identity was inferred. Any resulting match is stamped with
+     *   it, so the UI explains how we got here and every retraction path can
+     *   undo it. Null (the default) = identity is established; behaviour is
+     *   exactly as before.
      */
-    public function match(PaymentSignal $signal, ?array $onlyOrderIds = null): PaymentSignal
+    public function match(PaymentSignal $signal, ?array $onlyOrderIds = null, ?string $guessReason = null): PaymentSignal
     {
         try {
+            $this->guessReason = $guessReason;
             return $this->doMatch($signal, $onlyOrderIds);
         } catch (\Throwable $e) {
             Log::error('PaymentSignalMatcher failed', [
@@ -44,6 +60,8 @@ class PaymentSignalMatcher
                 'error'     => $e->getMessage(),
             ]);
             return $signal;
+        } finally {
+            $this->guessReason = null;
         }
     }
 
@@ -61,7 +79,10 @@ class PaymentSignalMatcher
     public function rematch(PaymentSignal $signal): PaymentSignal
     {
         try {
-            if ($signal->match_reason === 'combined_dismissed') {
+            // ⚠⚠ A human already ruled on this one — re-matching it would undo
+            // their correction behind their back. Covers a dismissed bulk set,
+            // a rejected guess, and a detached proof alike.
+            if (in_array((string) $signal->match_reason, PaymentSignal::TERMINAL_REASONS, true)) {
                 return $signal;
             }
 
@@ -237,8 +258,41 @@ class PaymentSignalMatcher
         // same amount — we don't auto-pick one; the proof panel shows the open
         // invoices so the manager can decide.)
         $ambiguousBulk = is_array($combined) && !empty($combined['ambiguous']);
+
+        // ⭐ PLAUSIBILITY BOUND (bank-side only). A bank credit that dwarfs the
+        // order it would land on is not that order's payment — it is capital,
+        // a loan, or someone else's business. Aug-2026: a held Rs 400,000
+        // credit resolved by payer name to a customer whose open orders were
+        // Rs 1k–35k; attaching it would have painted a nonsense "proof" on a
+        // small invoice. Historically only 17 of 1,114 matched signals exceed
+        // 2x their order's balance, so a 3x ceiling costs nothing real.
+        //
+        // WhatsApp screenshots are EXEMPT: the customer deliberately sent that
+        // image about their own account, so the approver should see it in
+        // context even when the figure is odd. The dumping-ground risk there
+        // was the zero-balance order, already fixed in candidateOrders().
+        if ($latest && in_array($signal->source, PaymentSignal::BANK_SIDE_SOURCES, true)) {
+            $maxRatio = (float) config('payment_signals.mismatch_attach_max_ratio', 3.0);
+            $latestBal = $this->balance($latest);
+            if ($maxRatio > 0 && $latestBal > 0.01 && $amount > $maxRatio * $latestBal) {
+                $signal->status = PaymentSignal::STATUS_UNMATCHED;
+                $signal->match_reason = 'amount_far_from_balance';
+                $signal->match_confidence = null;
+                $signal->matched_order_id = null;
+                $signal->save();
+                $this->clearLinks($signal->id);
+                $this->pair($signal);
+                return $signal;
+            }
+        }
+
         $signal->status = PaymentSignal::STATUS_AMOUNT_MISMATCH;
-        $signal->match_reason = $ambiguousBulk ? 'bulk_ambiguous' : 'amount_differs';
+        // Guess context: this is the Nouman shape — we believe WHO paid, and
+        // their own order is the only sensible home even though the figure is
+        // off by a little. Keep the guess reason so it stays retractable and
+        // the approver is told the difference rather than sold a clean match.
+        $signal->match_reason = $this->guessReason
+            ?: ($ambiguousBulk ? 'bulk_ambiguous' : 'amount_differs');
         $signal->match_confidence = $ambiguousBulk ? 0.30 : 0.20;
         $signal->matched_order_id = $latest?->id;
         $signal->save();
@@ -251,14 +305,23 @@ class PaymentSignalMatcher
     private function link(PaymentSignal $signal, $order, float $confidence, string $reason): PaymentSignal
     {
         $signal->matched_order_id = $order->id;
-        $signal->match_confidence = $confidence;
-        $signal->match_reason = $reason;
+        // An inferred identity keeps its own reason/confidence: the ORDER was
+        // picked by balance, but who paid is still only our best reading.
+        $signal->match_confidence = $this->guessReason ? min($confidence, 0.60) : $confidence;
+        $signal->match_reason = $this->guessReason ?: $reason;
         $signal->status = PaymentSignal::STATUS_MATCHED;
         $signal->save();
 
-        // Touch the alias' usefulness counter when an email matched via alias.
-        if ($signal->source === PaymentSignal::SOURCE_EMAIL && $signal->extracted_sender_name) {
+        // Touch the alias' usefulness counter when a bank-side signal matched
+        // via a learned payer name (email always did; bank SMS now does too).
+        if ($signal->extracted_sender_name
+            && in_array($signal->source, PaymentSignal::BANK_SIDE_SOURCES, true)) {
             $this->bumpAliasUsage($signal);
+        }
+
+        // Evidence about the payer evicts any stranger's guess on this order.
+        if (!$signal->isGuess()) {
+            $this->displaceGuessesOn((int) $order->id, (int) $signal->id);
         }
 
         $this->pair($signal);
@@ -334,6 +397,16 @@ class PaymentSignalMatcher
             ->where('customer_id', $customerId)
             ->whereIn('payment_status', $openStatuses)
             ->where('order_status', '!=', 'cancelled')
+            // ⭐⭐ MUST STILL OWE MONEY. `payment_status` alone is not enough:
+            // a Rs 0 order (or one whose total_paid already covers it) stays
+            // 'unpaid' forever, and because candidates are ordered newest-first
+            // such a row becomes `$latest` — the step-6 mismatch fallback then
+            // welds EVERY unexplained proof for that customer onto it. Aug-2026
+            // audit: NF-18759 (total_price 0.00) had accumulated NINE unrelated
+            // signals (4,640 / 11,950 / 3,420 / 14,350 …), and 111 zero-value
+            // orders were live proof targets. Nothing is owed on them, so they
+            // are never the answer.
+            ->whereRaw('(total_price - COALESCE(total_paid, 0)) > 0.01')
             ->where('order_date', '>=', $since)
             ->where('order_date', '<=', $until);
 
@@ -341,6 +414,26 @@ class PaymentSignalMatcher
         // Empty set → match nothing rather than everything.
         if ($onlyOrderIds !== null) {
             $query->whereIn('id', $onlyOrderIds ?: [0]);
+        }
+
+        // ⭐⭐ NO STACKING. An order already carrying a payment signal has its
+        // answer; a second INFERRED credit landing on it would be claiming the
+        // same invoice was paid twice by different people. Aug-2026: SH-20443
+        // (Sameeha, Rs 7,533) had accumulated BOTH a Rs 7,500 and a Rs 7,600
+        // credit, because the old guard only looked for WhatsApp screenshots
+        // and so never saw another bank guess sitting there.
+        //
+        // Only guesses are held to this. Real evidence may still land on an
+        // occupied order — that is how a customer's own screenshot arrives to
+        // correct a wrong guess, and displaceGuessesOn() then clears the squatter.
+        if ($this->guessReason) {
+            $query->whereNotExists(function ($q) use ($signal) {
+                $q->select(DB::raw(1))
+                  ->from('t_fin_payment_signal as ps')
+                  ->whereColumn('ps.matched_order_id', 't_crm_prod_order.id')
+                  ->where('ps.id', '!=', (int) $signal->id)
+                  ->whereIn('ps.status', [PaymentSignal::STATUS_MATCHED, PaymentSignal::STATUS_AMOUNT_MISMATCH]);
+            });
         }
 
         // The screenshot/email proves an online payment, so the order's recorded
@@ -354,6 +447,35 @@ class PaymentSignalMatcher
             ->orderByDesc('order_date')
             ->orderByDesc('id')
             ->get(['id', 'order_number', 'total_price', 'total_paid', 'order_date']);
+    }
+
+    /**
+     * ⭐ The order_date window an INFERRED match may consider for money that
+     * arrived at $paidAt, as [from, to] datetime strings.
+     *
+     * An order that did not exist when the money was sent cannot be what the
+     * money paid for. This never mattered while guesses were only made at the
+     * instant the SMS arrived; the resweep re-runs them days later, so without
+     * a bound a credit could drift onto an order raised long after it.
+     *
+     * ⚠⚠ The forward edge is a DAY, not an hour or two. Customers really do pay
+     * before the order exists — of 1,089 matched signals, 1,080 had the order
+     * first but 8 of the remaining 9 were paid within 24h of it (one paid 06:26
+     * for an order placed 09:55). A tight bound would reject genuine
+     * pre-payment, which is exactly the behaviour this whole project exists to
+     * support. A date-only payment time (midnight) is naturally covered because
+     * the edge lands at the END of the following day.
+     */
+    public static function guessOrderDateBounds($paidAt): array
+    {
+        $anchor = $paidAt ? Carbon::parse($paidAt) : Carbon::now();
+        $graceDays = (int) config('payment_signals.match_future_grace_days', 1);
+        $backDays  = (int) config('payment_signals.guess_lookback_days', 60);
+
+        return [
+            $anchor->copy()->subDays($backDays)->startOfDay()->toDateTimeString(),
+            $anchor->copy()->addDays($graceDays)->endOfDay()->toDateTimeString(),
+        ];
     }
 
     private function balance($order): float
@@ -473,15 +595,22 @@ class PaymentSignalMatcher
     {
         $newest = $orders[0];
         $signal->matched_order_id = $newest->id;
-        $signal->match_confidence = $confidence;
-        $signal->match_reason     = $reason;
+        $signal->match_confidence = $this->guessReason ? min($confidence, 0.60) : $confidence;
+        $signal->match_reason     = $this->guessReason ?: $reason;
         $signal->status           = PaymentSignal::STATUS_MATCHED;
         $signal->save();
 
         $this->writeLinks($signal, $orders);
 
-        if ($signal->source === PaymentSignal::SOURCE_EMAIL && $signal->extracted_sender_name) {
+        if ($signal->extracted_sender_name
+            && in_array($signal->source, PaymentSignal::BANK_SIDE_SOURCES, true)) {
             $this->bumpAliasUsage($signal);
+        }
+
+        if (!$signal->isGuess()) {
+            foreach ($orders as $covered) {
+                $this->displaceGuessesOn((int) $covered->id, (int) $signal->id);
+            }
         }
 
         $this->pair($signal);
@@ -639,19 +768,90 @@ class PaymentSignalMatcher
      */
     private function retractAmountGuess(PaymentSignal $a, PaymentSignal $b): void
     {
-        $guess = $a->match_reason === 'amount_unique_sms' ? $a
-               : ($b->match_reason === 'amount_unique_sms' ? $b : null);
+        // Any INFERRED match yields to the payer's own evidence — not just the
+        // original amount-unique one (see PaymentSignal::GUESS_REASONS).
+        $guess = $a->isGuess() ? $a : ($b->isGuess() ? $b : null);
         if (!$guess) {
             return;
         }
 
+        $this->releaseGuess($guess, 'amount_guess_retracted');
+    }
+
+    /**
+     * Strip an inferred match off a signal and hand the money back to the
+     * humans: no order, no customer, status unmatched, and — when the guess
+     * came from a bank SMS — that SMS returns to the money inbox so it is
+     * visibly unresolved again rather than silently closed.
+     *
+     * The audit trail stays: the reason records WHY it was released.
+     */
+    private function releaseGuess(PaymentSignal $guess, string $reason): void
+    {
         $this->clearLinks($guess->id);
         $guess->matched_order_id    = null;
         $guess->matched_customer_id = null;
         $guess->status              = PaymentSignal::STATUS_UNMATCHED;
-        $guess->match_reason        = 'amount_guess_retracted';
+        $guess->match_reason        = $reason;
         $guess->match_confidence    = null;
         $guess->save();
+
+        try {
+            DB::table('t_ai_bank_sms')
+                ->where('linked_signal_id', $guess->id)
+                ->whereIn('status', ['matched', 'recorded'])
+                ->update(['status' => 'new', 'auto_reason' => null, 'updated_at' => now()]);
+        } catch (\Throwable $e) {
+            // Inbox bookkeeping only — never let it break the retraction.
+        }
+    }
+
+    /**
+     * ⭐⭐ DISPLACEMENT — real evidence evicts a stranger's guess.
+     *
+     * When a match backed by the payer's OWN evidence (their screenshot, a
+     * corroborated pair, an approver's explicit pick) lands on order O, any
+     * OTHER signal sitting on O purely because the system INFERRED it must let
+     * go: the premise of every guess is "nothing better explains this order",
+     * and that premise just died. The guess goes back to unmatched and its SMS
+     * reopens in the money inbox, where the resweep re-places it — usually
+     * correctly, because by then the name ladder has more to work with.
+     *
+     * This is the missing half of retractAmountGuess(): that one fires when the
+     * guessed signal is itself the one being paired; this fires when the truth
+     * arrives about the ORDER the guess was squatting on. Aug-2026 case: a
+     * Rs 7,600 credit from an unrelated payer sat on SH-20443 (Sameeha) — the
+     * moment Sameeha's own Rs 7,533 proof lands, the stranger's credit leaves.
+     *
+     * Never touches a paired signal (that verification is real), and never the
+     * signal doing the displacing.
+     */
+    private function displaceGuessesOn(?int $orderId, int $exceptSignalId): void
+    {
+        if (!$orderId) {
+            return;
+        }
+
+        try {
+            $squatters = PaymentSignal::query()
+                ->where('matched_order_id', $orderId)
+                ->where('id', '!=', $exceptSignalId)
+                ->whereNull('paired_signal_id')
+                ->whereIn('match_reason', PaymentSignal::GUESS_REASONS)
+                ->get();
+
+            foreach ($squatters as $squatter) {
+                // A guess that was approved may have taught a name — that
+                // lesson rested on this same broken premise, so it goes too.
+                app(CustomerBankAliasService::class)->unlearnFromSignal($squatter);
+                $this->releaseGuess($squatter, 'guess_displaced');
+            }
+        } catch (\Throwable $e) {
+            Log::warning('displaceGuessesOn failed', [
+                'order_id' => $orderId,
+                'error'    => $e->getMessage(),
+            ]);
+        }
     }
 
     /**

@@ -1694,6 +1694,17 @@ button[onclick*="switchToShopifyApprovals"] { display: none !important; }
 #nfRiderCardsRow{flex-direction:column !important;gap:0 !important;flex-wrap:nowrap !important;justify-content:flex-start !important;max-height:190px;overflow-y:auto}
 #nfRiderCards .nfrc-row{display:flex;align-items:center;gap:9px;padding:7px 12px;border-bottom:1px solid #f3f4f6;cursor:pointer;transition:background .12s}
 #nfRiderCards .nfrc-row:last-child{border-bottom:0}
+/* Off duty = holds open orders but has NOT checked in today. Deliberately the
+   QUIETEST row style, and deliberately declared BEFORE :hover/.nfrc-sel/.nfrc-red/
+   .nfrc-amber (same specificity, later wins) so hover, selection and the two alert
+   colours all still out-rank it — an off-duty rider who left without dispatching
+   must stay red. */
+#nfRiderCards .nfrc-row.nfrc-off{background:#fcfcfd}
+/* The off-duty tag costs ~55px of a row that is already tight at the panel's 300px
+   minimum, so give those rows a shorter name cell (it already ellipsises) rather
+   than let a row run past the panel edge. */
+#nfRiderCards .nfrc-row.nfrc-off .nfrc-nm{color:#64748b;font-weight:600;max-width:96px}
+#nfRiderCards .nfrc-offtag{font-size:8.5px;font-weight:800;letter-spacing:.03em;text-transform:uppercase;color:#64748b;background:#f1f5f9;border:1px solid #e2e8f0;border-radius:999px;padding:1px 5px;flex:none;line-height:1.5}
 #nfRiderCards .nfrc-row:hover{background:#f8fafc}
 #nfRiderCards .nfrc-row.nfrc-sel{background:#eff4ff;box-shadow:inset 3px 0 0 #2563eb}
 #nfRiderCards .nfrc-row.nfrc-red{background:#fef2f2;box-shadow:inset 3px 0 0 #ef4444}
@@ -1746,7 +1757,19 @@ button[onclick*="switchToShopifyApprovals"] { display: none !important; }
     if(gps && gps.is_fresh){ dot = '#10b981'; }
     else if(ageMin != null && ageMin <= 60){ dot = '#f59e0b'; }
 
-    var st = 'No active dispatch', cls = '';
+    // Aug-2026: the panel now lists riders who have NOT checked in (loadRiderLiveBoard
+    // keeps them when they hold open orders), so every row states which it is.
+    // is_checked_in is set there; the `=== false` test means "known to be off duty"
+    // and leaves anything rendered without the flag looking exactly as before.
+    var offDuty = (rider.is_checked_in === false);
+    var open = rider.total_count || 0;
+
+    // Opening line for a rider with NO dispatch entry — i.e. nothing of his is out
+    // for delivery, so the tracker has nothing to say about him. The old blanket
+    // "No active dispatch" was true but useless; these three say why he is listed.
+    var st = offDuty ? (open + ' order' + (open === 1 ? '' : 's') + ' waiting')
+           : (open > 0 ? ('📋 ' + open + ' assigned') : '✓ On duty · free');
+    var cls = '';
     var gpsLost = (typeof riderGpsLostMidDelivery === 'function') && riderGpsLostMidDelivery(gps, disp);
     if(status === 'left_without_dispatch'){ st = '⚠ Left w/o dispatch · ' + (disp.undispatched_count||0); cls = 'nfrc-red'; }
     else if(gpsLost){ st = '📍 GPS lost · ' + (disp.dispatched_count||0) + ' left'; cls = 'nfrc-amber'; dot = '#ef4444'; }
@@ -1756,9 +1779,17 @@ button[onclick*="switchToShopifyApprovals"] { display: none !important; }
     else if(status === 'at_office'){ st = '🏠 At office'; }
 
     var selCls = (String(window.__nfRiderFilter) === String(id)) ? ' nfrc-sel' : '';
-    return '<div class="nfrc-row '+cls+selCls+'" data-rider="'+id+'" onclick="nfFilterTableByRider('+id+", '"+safe+"')\" title=\"Click to show only "+esc(name)+"'s orders\">"
+    // nfrc-off is kept SEPARATE from cls: a rider can be off duty AND mid-alert
+    // (dispatch tracking keys off out_for_delivery orders, not attendance), and
+    // that combination — out delivering without checking in — is the one you most
+    // need to see. So the alert colour and the off-duty tag stack, never replace.
+    var offCls = offDuty ? ' nfrc-off' : '';
+    var offTag = offDuty ? '<span class="nfrc-offtag" title="No attendance check-in today">off duty</span>' : '';
+    var rowTitle = 'Click to show only ' + name + "'s orders" + (offDuty ? ' — not checked in today' : '');
+    return '<div class="nfrc-row '+cls+offCls+selCls+'" data-rider="'+id+'" onclick="nfFilterTableByRider('+id+", '"+safe+"')\" title=\""+esc(rowTitle)+"\">"
       + '<span class="nfrc-dot" style="background:'+dot+'"></span>'
       + '<span class="nfrc-nm" title="'+esc(name)+'">'+esc(name)+'</span>'
+      + offTag
       + '<span class="nfrc-st">'+esc(st)+'</span>'
       + '<button class="nfrc-f" title="Dispatch details + map" onclick="event.stopPropagation(); openRiderDispatchPopup('+id+", '"+safe+"')\">"
       + '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 21s-7-6.5-7-11a7 7 0 0114 0c0 4.5-7 11-7 11z"/><circle cx="12" cy="10" r="2.5"/></svg></button>'
@@ -8756,6 +8787,10 @@ async function saveOrderChanges(orderId) {
         orderData.order_status = formData.get('order_status');
         orderData.contact_email = formData.get('contact_email');
         orderData.payment_method = formData.get('payment_method');
+        // Aug-2026 — "Set as default for this customer" tick beside the payment
+        // picker. Create-only on purpose: editing an existing order must not
+        // silently rewrite the customer's standing preference.
+        orderData.set_default_payment_method = formData.get('set_default_payment_method') ? 1 : 0;
         orderData.customer_phone = formData.get('customer_phone');
         orderData.customer_first_name = formData.get('customer_first_name');
         orderData.customer_last_name = formData.get('customer_last_name');
@@ -12749,6 +12784,14 @@ function createNewOrder() {
                                 <option value="card">Card</option>
                                 <option value="online">Online Payment</option>
                             </select>
+                            <!-- Aug-2026 — remember this choice on the customer so the next
+                                 order (web or mobile) starts on it. Saves opening Edit
+                                 Customer just to set a preference. Unticked by default and
+                                 reset every time a different customer is picked. -->
+                            <label style="display: flex; align-items: center; gap: 6px; margin-top: 6px; font-size: 12px; color: #6b7280; cursor: pointer;">
+                                <input type="checkbox" name="set_default_payment_method" id="setDefaultPaymentMethod" value="1" style="cursor: pointer;">
+                                Set as default for this customer
+                            </label>
                         </div>
                     </div>
                 </div>
@@ -13021,6 +13064,9 @@ function saveNewOrder() {
         shipping_total: parseFloat(formData.get('shipping_total')) || 0,
         total_price: parseFloat(formData.get('total_price')) || 0,
         payment_method: formData.get('payment_method'),
+        // Aug-2026 — tick means "remember this method on the customer". Sent as a
+        // real boolean; the server ignores it when no customer resolves.
+        set_default_payment_method: formData.get('set_default_payment_method') ? 1 : 0,
         note: formData.get('note'),
         items: items,
         discounts: discounts, // NEW: Include discounts array
@@ -13687,6 +13733,35 @@ function showCustomerResults(customers) {
 }
 
 // New function that accepts customer data object directly
+// Aug-2026 — ONE rule for which payment method a NEW order starts on.
+// Priority: the customer's remembered default -> the Qurbani admin default
+// (qurbani mode only) -> shop customers settle online -> cash.
+//
+// The customer's own default wins deliberately: it is the most specific
+// statement anyone has made about this customer, and it is set by a human
+// (Edit Customer, or the tick on this form) rather than inferred. The last
+// three steps are exactly the behaviour that existed before this function,
+// so a customer with no default set sees no change at all.
+//
+// ⚠ Mirrored in the mobile app's New Order sheet (CustomersScreen.js,
+// resolveNewOrderPaymentMethod). Change both or they drift apart.
+function resolveNewOrderPaymentMethod(customerData) {
+    var pm = (customerData && customerData.default_payment_method) || '';
+    if (pm === 'cash' || pm === 'online') return pm;
+
+    try {
+        var urlParams = new URLSearchParams(window.location.search);
+        if (urlParams.get('qurbani_mode') === '1'
+            && typeof qurbaniDefaultPaymentMethod !== 'undefined'
+            && (qurbaniDefaultPaymentMethod === 'cash' || qurbaniDefaultPaymentMethod === 'online')) {
+            return qurbaniDefaultPaymentMethod;
+        }
+    } catch (e) { /* non-fatal — fall through to the customer-type rule */ }
+
+    if (customerData && customerData.customer_type === 'shop') return 'online';
+    return 'cash';
+}
+
 function selectCustomerFromData(customerData) {
     const searchInput = document.getElementById('customerSearch');
     const hiddenId = document.getElementById('selectedCustomerId');
@@ -13699,23 +13774,26 @@ function selectCustomerFromData(customerData) {
     // Show detailed customer information after selection
     showSelectedCustomerDetails(customerData);
 
-    // ⭐ Shop customers settle online — default the Create-Order payment method
-    // to "online" when a shop customer is picked (user can still change it).
-    if (customerData.customer_type === 'shop') {
-        try {
-            // Scope to the form holding the customer search (the Create-Order form)
-            // so we don't touch unrelated/hidden payment_method selects.
-            const scope = (searchInput && searchInput.closest('form')) || document;
-            const pmSelect = scope.querySelector('select[name="payment_method"]');
-            if (pmSelect) {
-                const opt = Array.from(pmSelect.options).find(o => o.value === 'online');
-                if (opt) {
-                    pmSelect.value = 'online';
-                    Array.from(pmSelect.options).forEach(o => { o.selected = (o.value === 'online'); });
-                }
+    // ⭐ Pre-select the payment method for this customer (user can still change it).
+    try {
+        // Scope to the form holding the customer search (the Create-Order form)
+        // so we don't touch unrelated/hidden payment_method selects.
+        const scope = (searchInput && searchInput.closest('form')) || document;
+        const pmSelect = scope.querySelector('select[name="payment_method"]');
+        const method = resolveNewOrderPaymentMethod(customerData);
+        if (pmSelect) {
+            const opt = Array.from(pmSelect.options).find(o => o.value === method);
+            if (opt) {
+                pmSelect.value = method;
+                Array.from(pmSelect.options).forEach(o => { o.selected = (o.value === method); });
             }
-        } catch (e) { /* non-fatal */ }
-    }
+        }
+        // Untick "set as default" whenever the customer changes — the tick means
+        // "remember this for THIS customer", so carrying it across a customer
+        // switch would silently write a preference onto the wrong person.
+        const setDefaultBox = scope.querySelector('input[name="set_default_payment_method"]');
+        if (setDefaultBox) setDefaultBox.checked = false;
+    } catch (e) { /* non-fatal */ }
 
     // Pre-fill address fields if visible
     if (customerData.address) {
@@ -15396,25 +15474,64 @@ function startRiderBoardAutoRefresh() {
     }, 30000);
 }
 
+/* Delivery-rider roster (t_ops_rider_profile.active), cached for the page.
+   Why it is needed: t_ops_attendance covers EVERY member of staff, so "checked in
+   today" on its own would put office and store people on a riders board. The roster
+   is what makes a check-in mean "a rider is on duty". It only changes when someone
+   ticks Delivery Rider in Attendance → People, so one fetch per page load is plenty
+   — and caching on success only means a failed fetch simply retries on the next poll
+   instead of poisoning the cache. Fail-soft: no roster ⇒ the board still lists every
+   rider holding open orders, it just can't add the idle on-duty ones. */
+let _riderRosterCache = null;
+async function riderRosterList() {
+    if (_riderRosterCache) return _riderRosterCache;
+    try {
+        const res = await fetch('/riders/active', { headers: {'Accept':'application/json','X-Requested-With':'XMLHttpRequest'}, credentials:'same-origin' });
+        const j = await res.json();
+        if (j && j.success && Array.isArray(j.data)) _riderRosterCache = j.data;
+    } catch (e) { /* fail-soft — see above */ }
+    return _riderRosterCache || [];
+}
+
 async function loadRiderLiveBoard() {
     const body = document.getElementById('riderLiveBoardBody');
     const meta = document.getElementById('riderLiveBoardMeta');
     if (!body) return;
     try {
-        const [countsRes, liveRes] = await Promise.all([
+        const [countsRes, liveRes, roster] = await Promise.all([
             fetch('/orders/rider-counts', { headers: {'Accept':'application/json','X-Requested-With':'XMLHttpRequest'}, credentials:'same-origin' }),
             fetch('/orders/riders-map/live-status', { headers: {'Accept':'application/json','X-Requested-With':'XMLHttpRequest'}, credentials:'same-origin' }),
+            riderRosterList(),   // cached after the first call, so this is free from poll 2 on
         ]);
         const counts = await countsRes.json();
         const live = await liveRes.json();
         if (!counts || !counts.success) { body.innerHTML = '<div class="px-3 py-3 text-xs text-gray-400">No rider data.</div>'; return; }
         const gps = (live && live.gps) || {};
         const disp = (live && live.dispatch) || {};
-        // Only show riders who are CHECKED IN today (keeps the list short and relevant).
         const checkedIn = new Set((live && live.checked_in ? live.checked_in : []).map(String));
-        let riders = (counts.riders || []).filter(r => checkedIn.has(String(r.rider_id)));
+
+        // Aug-2026 — who the board lists. It used to be the INTERSECTION (checked in
+        // AND holding an order), which quietly dropped the case that matters most: a
+        // rider who never checked in but has orders sitting in the table below. It is
+        // now the union of two rules:
+        //   1. holds ≥1 open order  — counts.riders IS that list, so no filter at all;
+        //   2. is a delivery rider who checked in today, even with nothing assigned,
+        //      so you can see who is free (roster ∩ checked-in — attendance alone is
+        //      not enough, it covers all staff).
+        // Every row carries is_checked_in so the renderers can mark the off-duty ones.
+        // A rider in (1) but not on the roster still shows — he is holding real work.
+        let riders = (counts.riders || []).slice();
+        const listed = new Set(riders.map(r => String(r.rider_id)));
+        (roster || []).forEach(u => {
+            const rid = String(u.id);
+            if (listed.has(rid) || !checkedIn.has(rid)) return;
+            listed.add(rid);
+            riders.push({ rider_id: u.id, rider_name: u.fullname, total_count: 0, status_breakdown: {} });
+        });
+        riders.forEach(r => { r.is_checked_in = checkedIn.has(String(r.rider_id)); });
+
         if (riders.length === 0) {
-            body.innerHTML = '<div class="px-3 py-3 text-xs text-gray-400">No riders checked in right now.</div>';
+            body.innerHTML = '<div class="px-3 py-3 text-xs text-gray-400">No riders on duty or holding orders.</div>';
             if (meta) meta.textContent = '';
             if (window.nfRenderRiderCards) nfRenderRiderCards([], {}, {}); // S3: keep the new cards row in sync (shows just the Unassigned card)
             return;
@@ -15422,10 +15539,14 @@ async function loadRiderLiveBoard() {
         // Sort so the riders that need attention surface first:
         //   0 = left office without dispatching, 1 = lost GPS while mid-delivery,
         //   then the normal flow (waiting → returning → on route → at office).
+        // Off duty is only the TIE-BREAKER, never the primary key: a rider out
+        // delivering without having checked in must not be buried at the bottom.
         const sorted = riders.slice().sort((a, b) => {
             const pa = riderBoardPriority(gps[a.rider_id], disp[a.rider_id]);
             const pb = riderBoardPriority(gps[b.rider_id], disp[b.rider_id]);
-            return pa - pb;
+            if (pa !== pb) return pa - pb;
+            if (a.is_checked_in !== b.is_checked_in) return a.is_checked_in ? -1 : 1;
+            return 0;
         });
         body.innerHTML = sorted.map(r => renderRiderBoardRow(r, gps[r.rider_id], disp[r.rider_id])).join('');
         if (window.nfRenderRiderCards) nfRenderRiderCards(sorted, gps, disp); // S3: feed the new full-width cards from the SAME data (no extra fetch)
@@ -15471,9 +15592,21 @@ function renderRiderBoardRow(rider, gps, dispatch) {
     // A rider who dropped GPS while delivering gets a red GPS cell so it's obvious.
     if (gpsLost) { dotColor = '#ef4444'; gpsTxt = (ageMin === null) ? 'GPS lost' : ('lost · ' + (gps.age_text || (ageMin + 'm ago'))); }
 
+    // Off duty = listed because he holds open orders, but no attendance check-in
+    // today. Same flag and same wording as the cards (nfRiderCardHtml) — this board
+    // is CSS-hidden on the orders page but still rendered, so it must not disagree.
+    const offDuty = (rider.is_checked_in === false);
+    const openCount = rider.total_count || 0;
+
     // Status column (without the return-ETA — that gets its own column)
     let statusHtml = dispatch ? formatBoardStatus(dispatch) : '';
-    if (!statusHtml) statusHtml = '<span style="color:#9ca3af;">No active dispatch</span>';
+    if (!statusHtml) {
+        statusHtml = offDuty
+            ? `<span style="color:#64748b;">${openCount} order${openCount === 1 ? '' : 's'} waiting</span>`
+            : (openCount > 0
+                ? `<span style="color:#6b7280;">📋 ${openCount} assigned</span>`
+                : '<span style="color:#9ca3af;">✓ On duty · free</span>');
+    }
 
     // Back-to-office column
     const rto = dispatch && dispatch.return_to_office;
@@ -15481,16 +15614,22 @@ function renderRiderBoardRow(rider, gps, dispatch) {
         ? `🏠 ${rto.arrival_display}<div style="font-size:9px;font-weight:500;color:#94a3b8;">~${rto.minutes} min</div>`
         : '<span style="color:#cbd5e1;">—</span>';
 
-    // Row highlight: red for left-without-dispatch, amber for lost-GPS.
+    // Row highlight: red for left-without-dispatch, amber for lost-GPS. Off duty is
+    // checked LAST so neither alert can be softened by it.
     let rowStyle = '', nameStyle = '';
     if (leftNoDispatch) { rowStyle = 'background:#fef2f2;box-shadow:inset 3px 0 0 #ef4444;'; nameStyle = 'color:#b91c1c;font-weight:700;'; }
     else if (gpsLost) { rowStyle = 'background:#fff7ed;box-shadow:inset 3px 0 0 #f59e0b;'; nameStyle = 'color:#b45309;font-weight:700;'; }
+    else if (offDuty) { rowStyle = 'background:#fcfcfd;'; nameStyle = 'color:#64748b;'; }
+
+    const offTag = offDuty
+        ? '<span title="No attendance check-in today" style="font-size:8.5px;font-weight:800;letter-spacing:.03em;text-transform:uppercase;color:#64748b;background:#f1f5f9;border:1px solid #e2e8f0;border-radius:999px;padding:1px 5px;margin-left:5px;">off duty</span>'
+        : '';
 
     return `
       <div class="riderboard-row riderboard-data" style="${rowStyle}" onclick="openRiderDispatchPopup(${id}, '${safeName}')" title="Open dispatch tracker">
         <div class="riderboard-cell-name">
           <span class="riderboard-dot" style="background:${dotColor};"></span>
-          <span class="nm" style="${nameStyle}">${name}</span>
+          <span class="nm" style="${nameStyle}">${name}</span>${offTag}
         </div>
         <div class="riderboard-gps"${gpsLost ? ' style="color:#ef4444;font-weight:600;"' : ''}>${gpsTxt}</div>
         <div class="riderboard-status">${statusHtml}</div>

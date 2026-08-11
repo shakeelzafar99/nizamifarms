@@ -70,6 +70,111 @@
         </form>
     </div>
 
+    {{-- ⭐ Aug-2026 TRANSFER REQUESTS — "the store is asking for stock".
+         Sits ABOVE the transfer-approvals banner on purpose: a request is the
+         EARLIER step (nothing has moved yet), so reading the page top-to-bottom
+         follows the real sequence — asked → in transit → received. --}}
+    @if($pendingRequestRecords->count() > 0)
+    <div class="bg-white border rounded-xl mb-6 overflow-hidden" style="border-color:#93c5fd; background-color:#eff6ff;">
+        <div class="px-5 py-3 border-b flex items-center justify-between" style="border-color:#bfdbfe; background:linear-gradient(to right,#eff6ff,#dbeafe);">
+            <div class="flex items-center gap-2">
+                <span class="text-lg">📨</span>
+                <h3 class="font-semibold text-gray-900 text-sm">Transfer Requests</h3>
+                <span class="px-2 py-0.5 rounded-full text-xs font-bold" style="background-color:#2563eb; color:#ffffff;">{{ $pendingRequestRecords->count() }}</span>
+            </div>
+            <span class="text-[11px]" style="color:#1d4ed8;">Stock the store has asked for — nothing has moved yet</span>
+        </div>
+        <div class="divide-y" style="border-color:#dbeafe;">
+            @foreach($pendingRequestRecords as $tr)
+            @php
+                // Same ageing rule as the approvals banner below, but the meaning is
+                // different: here nobody is waiting on stock in transit, someone is
+                // waiting on an ANSWER. Amber past 24h, red past 48h.
+                // (int): Carbon 3 diffInHours returns a float — uncast the chip prints "waiting 2.33333h"
+                $trAgeHours = $tr->created_at ? (int) abs($tr->created_at->diffInHours(now())) : 0;
+                $trIsOld = $trAgeHours >= 48;
+                $trIsAging = !$trIsOld && $trAgeHours >= 24;
+                $trRowStyle = $trIsOld
+                    ? 'border-left: 3px solid #dc2626; background-color: #fef2f2;'
+                    : ($trIsAging ? 'border-left: 3px solid #f59e0b;' : '');
+                $trWarehouseQty = $warehouseInventory[$tr->product_id]['warehouse_qty'] ?? 0;
+                $trShort = $trWarehouseQty < $tr->quantity;
+            @endphp
+            <div class="px-5 py-3 flex items-center justify-between gap-4" style="{{ $trRowStyle }}">
+                <div class="flex items-center gap-3 flex-1 min-w-0">
+                    <div class="w-9 h-9 rounded-lg flex items-center justify-center text-sm font-bold shrink-0" style="background-color:#dbeafe; color:#1e40af;">
+                        {{ strtoupper(substr($tr->product ? $tr->product->title : '?', 0, 1)) }}
+                    </div>
+                    <div class="flex-1 min-w-0">
+                        <div class="text-sm font-semibold text-gray-900 truncate">
+                            {{ $tr->product ? $tr->product->title : 'Product #' . $tr->product_id }}
+                            @if($tr->variant)
+                                <span class="text-[10px] px-1 py-0.5 bg-gray-100 text-gray-500 rounded ml-1">{{ $tr->variant->title }}</span>
+                            @endif
+                        </div>
+                        <div class="flex items-center flex-wrap gap-2 text-xs text-gray-500 mt-0.5">
+                            <span class="font-medium" style="color:#1d4ed8;">asked for {{ $tr->quantity }} units</span>
+                            <span>· by {{ $tr->requester ? $tr->requester->fullname : '—' }}</span>
+                            <span>· {{ $tr->created_at->format('M d, h:i A') }}</span>
+                            {{-- Live warehouse stock right here: the whole decision is
+                                 "can I send this?", and making him leave the row to find
+                                 out is how a request sits unanswered for two days. --}}
+                            <span class="px-1.5 py-0.5 rounded font-medium text-[10px]"
+                                  style="{{ $trShort ? 'background-color:#fee2e2; color:#991b1b;' : 'background-color:#f3f4f6; color:#4b5563;' }}">
+                                🏭 warehouse has {{ $trWarehouseQty }}{{ $trShort ? ' — not enough' : '' }}
+                            </span>
+                            @if($trIsOld || $trIsAging)
+                                <span class="px-1.5 py-0.5 rounded font-bold text-[10px]"
+                                      style="{{ $trIsOld ? 'background-color:#fee2e2; color:#991b1b;' : 'background-color:#fef3c7; color:#92400e;' }}">
+                                    ⏱ waiting {{ $trAgeHours }}h
+                                </span>
+                            @endif
+                        </div>
+                        @if($tr->notes)
+                            <div class="text-[10px] text-gray-400 mt-0.5 truncate">📝 {{ $tr->notes }}</div>
+                        @endif
+                    </div>
+                </div>
+                <div class="flex items-center gap-2 shrink-0">
+                    @if($canFulfilRequests)
+                        <button type="button"
+                            onclick="openAcceptRequestModal({{ $tr->id }}, '{{ $tr->product ? addslashes($tr->product->title) : '' }}', {{ $tr->quantity }}, {{ $trWarehouseQty }})"
+                            class="px-3 py-1.5 text-xs font-medium rounded-lg shadow-sm" style="background-color:#16a34a; color:#ffffff;" onmouseover="this.style.backgroundColor='#15803d'" onmouseout="this.style.backgroundColor='#16a34a'">✓ Send</button>
+                        <button type="button"
+                            onclick="openDeclineRequestModal({{ $tr->id }}, '{{ $tr->product ? addslashes($tr->product->title) : '' }}', {{ $tr->quantity }})"
+                            class="px-3 py-1.5 text-xs font-medium rounded-lg" style="background-color:#fef2f2; color:#dc2626; border:1px solid #fecaca;" onmouseover="this.style.backgroundColor='#fee2e2'" onmouseout="this.style.backgroundColor='#fef2f2'">✕ Decline</button>
+                    @endif
+                    <form method="POST" action="{{ url('khaas/transfer-requests') }}/{{ $tr->id }}/cancel" onsubmit="return confirm('Cancel this request?');" style="display:inline;">
+                        @csrf
+                        <button type="submit" class="px-2 py-1.5 text-xs font-medium rounded-lg" style="background-color:#ffffff; color:#6b7280; border:1px solid #e5e7eb;" title="Withdraw this request">Cancel</button>
+                    </form>
+                </div>
+            </div>
+            @endforeach
+        </div>
+    </div>
+    @endif
+
+    {{-- Recently declined. The web has no push, so without this a manager's request
+         would simply vanish and he would never learn it was refused. --}}
+    @if($declinedRequestRecords->count() > 0)
+    <div class="rounded-xl mb-6 px-5 py-3" style="background-color:#f9fafb; border:1px solid #e5e7eb;">
+        <div class="text-xs font-semibold text-gray-500 mb-2">Recently declined requests (last 7 days)</div>
+        <div class="flex flex-col gap-1">
+            @foreach($declinedRequestRecords as $dr)
+            <div class="text-xs text-gray-500">
+                <span class="font-medium text-gray-700">{{ $dr->product ? $dr->product->title : 'Product #' . $dr->product_id }}</span>
+                — {{ $dr->quantity }} units declined by {{ $dr->decliner ? $dr->decliner->fullname : '—' }}
+                <span class="text-gray-400">· {{ $dr->declined_at ? $dr->declined_at->format('M d, h:i A') : '' }}</span>
+                @if($dr->decline_reason)
+                    <span class="text-gray-400">· “{{ $dr->decline_reason }}”</span>
+                @endif
+            </div>
+            @endforeach
+        </div>
+    </div>
+    @endif
+
     <!-- ⭐ Pending Transfer Approvals (inline on products page) -->
     @if($pendingTransferRecords->count() > 0)
     <div class="bg-white border border-amber-300 rounded-xl mb-6 overflow-hidden" style="background-color: #fffbeb;">
@@ -86,7 +191,8 @@
             @php
                 // Aging: stock has already left the warehouse, so a transfer sitting here is
                 // stock nobody can sell. Amber past 24h, red past 48h.
-                $ptrAgeHours = $ptr->created_at ? abs($ptr->created_at->diffInHours(now())) : 0;
+                // (int): same Carbon-3 float issue as the requests banner above.
+                $ptrAgeHours = $ptr->created_at ? (int) abs($ptr->created_at->diffInHours(now())) : 0;
                 $ptrIsOld = $ptrAgeHours >= 48;
                 $ptrIsAging = !$ptrIsOld && $ptrAgeHours >= 24;
                 $ptrRowStyle = $ptrIsOld
@@ -153,6 +259,23 @@
             $unit = $whData['unit'] ?? 'pcs';
             $minStock = $whData['min_stock_level'] ?? 0;
             $isLowStock = $minStock > 0 && $warehouseQty <= $minStock;
+
+            // ⭐ Outstanding order demand — units already sold that have NOT yet come
+            // out of the Store figure above (prepared items are excluded server-side,
+            // because those have already been deducted and counting them would make
+            // the manager request twice as much as he needs).
+            $demandRow = $orderDemand[$product->id] ?? null;
+            $demandTotal = $demandRow['total'] ?? 0;
+            $demandShopify = $demandRow['shopify'] ?? 0;
+            $demandOpen = $demandRow['open'] ?? 0;
+
+            $openRequest = $pendingRequestsByProduct[$product->id] ?? null;
+            $requestedQty = $openRequest ? (int) $openRequest->quantity : 0;
+
+            // What is genuinely missing: demand the store cannot currently cover, after
+            // counting what it holds, what is already on its way, and what has already
+            // been asked for. This is the number pre-filled into the request box.
+            $shortfall = max(0, $demandTotal - $storeQty - $pendingQty - $requestedQty);
         @endphp
         <div class="bg-white border {{ $isLowStock ? 'border-red-300' : 'border-gray-200' }} rounded-xl overflow-hidden hover:shadow-md transition-shadow">
             <!-- Product Header -->
@@ -219,21 +342,72 @@
                     <span class="text-sm font-bold" style="color:#92400e;">{{ $pendingQty }} {{ $unit }}</span>
                 </div>
                 @endif
+
+                {{-- Pending order demand. Clickable: the number alone invites "says who?",
+                     so the popup lists the exact orders behind it. Hidden entirely at 0
+                     to keep cards clean. --}}
+                @if($demandTotal > 0)
+                <div class="mt-1 rounded-lg px-3 py-2" style="background-color:#faf5ff; border:1px solid #e9d5ff;">
+                    <div class="flex items-center justify-between cursor-pointer group"
+                         onclick="openPendingOrdersModal({{ $product->id }}, '{{ addslashes($product->title) }}')"
+                         title="Click to see which orders need this">
+                        <span class="text-xs" style="color:#6b21a8;">
+                            🛒 Pending orders
+                            <span class="text-[10px] opacity-0 group-hover:opacity-100 transition-opacity">📋</span>
+                        </span>
+                        <span class="text-sm font-bold group-hover:underline" style="color:#6b21a8;">{{ $demandTotal }} {{ $unit }}</span>
+                    </div>
+                    <div class="flex items-center justify-between mt-0.5">
+                        <span class="text-[10px]" style="color:#7e22ce;">
+                            @if($demandShopify > 0)Shopify {{ $demandShopify }}@endif
+                            @if($demandShopify > 0 && $demandOpen > 0) · @endif
+                            @if($demandOpen > 0)Open orders {{ $demandOpen }}@endif
+                        </span>
+                        @if($shortfall > 0)
+                            <span class="px-1.5 py-0.5 rounded text-[10px] font-bold" style="background-color:#fee2e2; color:#991b1b;">Short by {{ $shortfall }}</span>
+                        @endif
+                    </div>
+                </div>
+                @endif
+
+                {{-- An open request: shown as its own row rather than a tile badge, because
+                     it is neither stock nor in transit — it is a question awaiting an answer. --}}
+                @if($openRequest)
+                <div class="mt-1 rounded-lg px-3 py-2 flex items-center justify-between cursor-pointer"
+                     style="background-color:#eff6ff; border:1px solid #bfdbfe;"
+                     onclick="openRequestModal({{ $product->id }}, '{{ addslashes($product->title) }}', {{ $firstVariant->id ?? 'null' }}, {{ $warehouseQty }}, {{ $demandTotal }}, {{ $storeQty }}, {{ $pendingQty }}, {{ $shortfall }}, {{ $requestedQty }})"
+                     title="Click to change or withdraw this request">
+                    <span class="text-xs" style="color:#1e40af;">📨 Requested <span class="text-[10px]" style="color:#2563eb;">(awaiting warehouse)</span></span>
+                    <span class="text-sm font-bold" style="color:#1e40af;">{{ $requestedQty }} {{ $unit }}</span>
+                </div>
+                @endif
             </div>
 
             <!-- Actions -->
-            <div class="px-4 py-3 border-t border-gray-100 bg-gray-50 flex items-center gap-2">
-                <button onclick="openStockModal({{ $product->id }}, '{{ addslashes($product->title) }}', {{ $firstVariant->id ?? 'null' }}, {{ $warehouseQty }})"
-                    class="flex-1 px-2 py-1.5 bg-white border border-gray-300 text-gray-700 text-xs font-medium rounded-lg hover:bg-gray-100 transition-colors text-center">
-                    📥 Warehouse
-                </button>
-                <button onclick="openStoreStockModal({{ $product->id }}, '{{ addslashes($product->title) }}', {{ $firstVariant->id ?? 'null' }}, {{ $storeQty }})"
-                    class="flex-1 px-2 py-1.5 bg-blue-50 border border-blue-300 text-blue-700 text-xs font-medium rounded-lg hover:bg-blue-100 transition-colors text-center">
-                    🏪 Store Adjust
-                </button>
-                <button onclick="openTransferModal({{ $product->id }}, '{{ addslashes($product->title) }}', {{ $firstVariant->id ?? 'null' }}, {{ $warehouseQty }})"
-                    class="flex-1 px-2 py-1.5 border text-xs font-medium rounded-lg transition-colors text-center" style="background-color: #fef3c7; color: #92400e; border-color: #fbbf24;" onmouseover="this.style.backgroundColor='#fde68a'" onmouseout="this.style.backgroundColor='#fef3c7'">
-                    🔄 Transfer
+            <div class="px-4 py-3 border-t border-gray-100 bg-gray-50">
+                <div class="flex items-center gap-2">
+                    <button onclick="openStockModal({{ $product->id }}, '{{ addslashes($product->title) }}', {{ $firstVariant->id ?? 'null' }}, {{ $warehouseQty }})"
+                        class="flex-1 px-2 py-1.5 bg-white border border-gray-300 text-gray-700 text-xs font-medium rounded-lg hover:bg-gray-100 transition-colors text-center">
+                        📥 Warehouse
+                    </button>
+                    <button onclick="openStoreStockModal({{ $product->id }}, '{{ addslashes($product->title) }}', {{ $firstVariant->id ?? 'null' }}, {{ $storeQty }})"
+                        class="flex-1 px-2 py-1.5 bg-blue-50 border border-blue-300 text-blue-700 text-xs font-medium rounded-lg hover:bg-blue-100 transition-colors text-center">
+                        🏪 Store Adjust
+                    </button>
+                    <button onclick="openTransferModal({{ $product->id }}, '{{ addslashes($product->title) }}', {{ $firstVariant->id ?? 'null' }}, {{ $warehouseQty }})"
+                        class="flex-1 px-2 py-1.5 border text-xs font-medium rounded-lg transition-colors text-center" style="background-color: #fef3c7; color: #92400e; border-color: #fbbf24;" onmouseover="this.style.backgroundColor='#fde68a'" onmouseout="this.style.backgroundColor='#fef3c7'">
+                        🔄 Transfer
+                    </button>
+                </div>
+                {{-- Request lives on its own row rather than as a fourth cramped button:
+                     the three above ACT on stock directly, this one asks someone else to.
+                     "Transfer" is deliberately kept for everyone (owner ruling) — this is
+                     an additional path, not a replacement. --}}
+                <button onclick="openRequestModal({{ $product->id }}, '{{ addslashes($product->title) }}', {{ $firstVariant->id ?? 'null' }}, {{ $warehouseQty }}, {{ $demandTotal }}, {{ $storeQty }}, {{ $pendingQty }}, {{ $shortfall }}, {{ $requestedQty }})"
+                    class="w-full mt-2 px-2 py-1.5 border text-xs font-medium rounded-lg transition-colors text-center"
+                    style="background-color:{{ $openRequest ? '#dbeafe' : '#eff6ff' }}; color:#1e40af; border-color:#93c5fd;"
+                    onmouseover="this.style.backgroundColor='#bfdbfe'" onmouseout="this.style.backgroundColor='{{ $openRequest ? '#dbeafe' : '#eff6ff' }}'">
+                    📨 {{ $openRequest ? 'Change request (' . $requestedQty . ')' : 'Request from warehouse' }}
                 </button>
             </div>
         </div>
@@ -626,6 +800,188 @@
         </form>
     </div>
 </div>
+{{-- ⭐ Aug-2026 REQUEST modal — ask the warehouse to send stock. Nothing moves here.
+     Doubles as the EDIT modal for the product's existing open request (owner ruling:
+     one open request per product, a second ask REPLACES the first), which is why the
+     title, button label and prefilled quantity are all set in JS rather than markup.
+     ⚠️ Inline-styled shell — see the note on invLogModal below. --}}
+<div id="requestModal" class="hidden fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4" style="z-index: 999999; top:0; right:0; bottom:0; left:0; background-color:rgba(0,0,0,0.5); padding:1rem;" onclick="if(event.target===this)closeRequestModal()">
+    <div class="w-full max-w-lg bg-white rounded-2xl shadow-2xl text-left overflow-hidden" style="width:100%; max-width:32rem; max-height:90vh; display:flex; flex-direction:column; background:#fff; border-radius:1rem; overflow:hidden; box-shadow:0 20px 25px -5px rgba(0,0,0,0.10), 0 10px 10px -5px rgba(0,0,0,0.04);" onclick="event.stopPropagation()">
+        <div class="px-6 py-4 border-b border-gray-100" style="background: linear-gradient(to right, #eff6ff, #dbeafe); flex-shrink:0;">
+            <div class="flex items-center justify-between">
+                <div class="flex items-center gap-3">
+                    <div class="w-10 h-10 rounded-xl flex items-center justify-center" style="background-color:#dbeafe;"><span class="text-xl">📨</span></div>
+                    <div>
+                        <h3 id="request_modal_title" class="text-lg font-bold text-gray-900">Request from Warehouse</h3>
+                        <p class="text-xs text-gray-500 mt-0.5">Ask the warehouse to send stock to the store</p>
+                    </div>
+                </div>
+                <button onclick="closeRequestModal()" class="w-8 h-8 rounded-lg flex items-center justify-center text-gray-400 hover:text-gray-600 hover:bg-gray-100 transition-colors">
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+                </button>
+            </div>
+        </div>
+        <form method="POST" action="{{ route('khaas.transfer-requests.create') }}">
+            @csrf
+            <input type="hidden" name="product_id" id="request_product_id">
+            <input type="hidden" name="product_variant_id" id="request_variant_id">
+            <div class="px-6 py-4 space-y-4" style="flex:1 1 auto; min-height:0; overflow-y:auto; overscroll-behavior:contain;">
+                <div class="flex items-center gap-3 p-3 bg-gray-50 rounded-xl border border-gray-100">
+                    <div class="w-10 h-10 rounded-lg flex items-center justify-center text-lg font-bold" style="background-color:#dbeafe; color:#1d4ed8;" id="request_product_initial">—</div>
+                    <div class="flex-1">
+                        <div id="request_product_name" class="text-sm font-semibold text-gray-900"></div>
+                        <div id="request_warehouse_hint" class="text-xs text-gray-500 mt-0.5"></div>
+                    </div>
+                </div>
+
+                {{-- The four numbers behind the suggestion, so the manager can sanity-check
+                     it instead of trusting a black box. --}}
+                <div class="grid grid-cols-4 gap-2" id="request_context_strip">
+                    <div class="rounded-lg px-2 py-2 text-center" style="background-color:#faf5ff; border:1px solid #e9d5ff;">
+                        <div class="text-[10px]" style="color:#7e22ce;">Pending orders</div>
+                        <div class="text-sm font-bold" style="color:#6b21a8;" id="request_ctx_demand">0</div>
+                    </div>
+                    <div class="rounded-lg px-2 py-2 text-center" style="background-color:#eff6ff; border:1px solid #bfdbfe;">
+                        <div class="text-[10px]" style="color:#2563eb;">In store</div>
+                        <div class="text-sm font-bold" style="color:#1e40af;" id="request_ctx_store">0</div>
+                    </div>
+                    <div class="rounded-lg px-2 py-2 text-center" style="background-color:#fffbeb; border:1px solid #fde68a;">
+                        <div class="text-[10px]" style="color:#b45309;">In transit</div>
+                        <div class="text-sm font-bold" style="color:#92400e;" id="request_ctx_transit">0</div>
+                    </div>
+                    <div class="rounded-lg px-2 py-2 text-center" style="background-color:#f0fdf4; border:1px solid #bbf7d0;">
+                        <div class="text-[10px]" style="color:#15803d;">Suggested</div>
+                        <div class="text-sm font-bold" style="color:#166534;" id="request_ctx_short">0</div>
+                    </div>
+                </div>
+
+                <div>
+                    <label class="block text-sm font-semibold text-gray-700 mb-1.5">Quantity to request</label>
+                    <input type="number" name="quantity" id="request_qty" min="1" required placeholder="Enter quantity..."
+                        class="w-full px-4 py-2.5 border-2 border-gray-200 rounded-xl text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-colors">
+                    <p class="text-xs text-gray-400 mt-1" id="request_qty_hint"></p>
+                </div>
+
+                <div>
+                    <label class="block text-sm font-semibold text-gray-700 mb-1.5">Note <span class="font-normal text-gray-400">(optional)</span></label>
+                    <textarea name="notes" id="request_notes" rows="2" placeholder="e.g. needed for tomorrow morning..."
+                        class="w-full px-4 py-2.5 border-2 border-gray-200 rounded-xl text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-colors resize-none"></textarea>
+                </div>
+
+                <div class="flex items-start gap-2 p-2.5 rounded-xl" style="background-color:#eff6ff; border:1px solid #dbeafe;">
+                    <span class="text-sm mt-0.5">💡</span>
+                    <p class="text-[11px] leading-relaxed" style="color:#1d4ed8;">
+                        <strong>No stock moves yet.</strong> The warehouse sees this request and can send the
+                        full amount, a smaller amount, or decline it. Stock only leaves the warehouse when they accept.
+                    </p>
+                </div>
+            </div>
+            <div class="px-6 py-3 border-t border-gray-100 bg-gray-50 flex items-center justify-end gap-3" style="flex-shrink:0; display:flex; align-items:center; justify-content:flex-end; gap:0.75rem;">
+                <button type="button" onclick="closeRequestModal()" class="px-5 py-2.5 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-xl hover:bg-gray-50 transition-colors">Cancel</button>
+                <button type="submit" id="request_submit_btn" class="px-5 py-2.5 text-sm font-medium text-white rounded-xl shadow-sm transition-colors" style="background-color: #2563eb;" onmouseover="this.style.backgroundColor='#1d4ed8'" onmouseout="this.style.backgroundColor='#2563eb'">
+                    📨 Send request
+                </button>
+            </div>
+        </form>
+    </div>
+</div>
+
+{{-- Accept a request: the ONE place a transfer quantity can be edited. Safe precisely
+     because nothing has moved yet — once the transfer exists the quantity is locked. --}}
+<div id="acceptRequestModal" class="hidden fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4" style="z-index: 999999; top:0; right:0; bottom:0; left:0; background-color:rgba(0,0,0,0.5); padding:1rem;" onclick="if(event.target===this)closeAcceptRequestModal()">
+    <div class="w-full max-w-md bg-white rounded-2xl shadow-2xl text-left overflow-hidden" style="width:100%; max-width:28rem; max-height:90vh; display:flex; flex-direction:column; background:#fff; border-radius:1rem; overflow:hidden; box-shadow:0 20px 25px -5px rgba(0,0,0,0.10), 0 10px 10px -5px rgba(0,0,0,0.04);" onclick="event.stopPropagation()">
+        <div class="px-6 py-4 border-b border-gray-100" style="background: linear-gradient(to right, #f0fdf4, #dcfce7); flex-shrink:0;">
+            <div class="flex items-center gap-3">
+                <div class="w-10 h-10 rounded-xl flex items-center justify-center" style="background-color:#dcfce7;"><span class="text-xl">✅</span></div>
+                <div>
+                    <h3 class="text-lg font-bold text-gray-900">Send Stock to Store</h3>
+                    <p class="text-xs text-gray-500" id="acceptRequestInfo"></p>
+                </div>
+            </div>
+        </div>
+        <form id="acceptRequestForm" method="POST">
+            @csrf
+            <div class="px-6 py-5 space-y-4" style="flex:1 1 auto; min-height:0; overflow-y:auto;">
+                <div>
+                    <label class="block text-sm font-semibold text-gray-700 mb-1.5">Quantity to send</label>
+                    <input type="number" name="quantity" id="acceptRequestQty" min="1" required
+                        class="w-full px-4 py-2.5 border-2 border-gray-200 rounded-xl text-sm focus:ring-2 focus:ring-green-500 focus:border-green-500 transition-colors">
+                    <p class="text-xs text-gray-400 mt-1" id="acceptRequestHint"></p>
+                </div>
+                <div class="flex items-start gap-2 p-2.5 rounded-xl" style="background-color:#fffbeb; border:1px solid #fde68a;">
+                    <span class="text-sm mt-0.5">⚠️</span>
+                    <p class="text-[11px] leading-relaxed" style="color:#92400e;">
+                        This <strong>deducts stock from the warehouse now</strong> and creates a transfer.
+                        The store still has to confirm receipt before it becomes shop stock.
+                    </p>
+                </div>
+            </div>
+            <div class="px-6 py-4 border-t border-gray-100 bg-gray-50 flex items-center justify-end gap-3" style="flex-shrink:0; display:flex; align-items:center; justify-content:flex-end; gap:0.75rem;">
+                <button type="button" onclick="closeAcceptRequestModal()" class="px-5 py-2.5 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-xl hover:bg-gray-50">Cancel</button>
+                <button type="submit" class="px-5 py-2.5 text-sm font-medium text-white rounded-xl shadow-sm" style="background-color: #16a34a;" onmouseover="this.style.backgroundColor='#15803d'" onmouseout="this.style.backgroundColor='#16a34a'">✓ Send stock</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+{{-- Decline a request. Touches no stock — it only stamps the row. --}}
+<div id="declineRequestModal" class="hidden fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4" style="z-index: 999999; top:0; right:0; bottom:0; left:0; background-color:rgba(0,0,0,0.5); padding:1rem;" onclick="if(event.target===this)closeDeclineRequestModal()">
+    <div class="w-full max-w-md bg-white rounded-2xl shadow-2xl text-left overflow-hidden" style="width:100%; max-width:28rem; max-height:90vh; display:flex; flex-direction:column; background:#fff; border-radius:1rem; overflow:hidden; box-shadow:0 20px 25px -5px rgba(0,0,0,0.10), 0 10px 10px -5px rgba(0,0,0,0.04);" onclick="event.stopPropagation()">
+        <div class="px-6 py-4 border-b border-gray-100" style="background: linear-gradient(to right, #fef2f2, #fee2e2); flex-shrink:0;">
+            <div class="flex items-center gap-3">
+                <div class="w-10 h-10 rounded-xl bg-red-100 flex items-center justify-center text-xl">✕</div>
+                <div>
+                    <h3 class="text-lg font-bold text-gray-900">Decline Request</h3>
+                    <p class="text-xs text-gray-500" id="declineRequestInfo"></p>
+                </div>
+            </div>
+        </div>
+        <form id="declineRequestForm" method="POST">
+            @csrf
+            <div class="px-6 py-5" style="flex:1 1 auto; min-height:0; overflow-y:auto;">
+                <label class="block text-sm font-semibold text-gray-700 mb-2">Reason</label>
+                {{-- Preset buttons, because a reason typed at 6am is usually one of three
+                     things and an empty box gets skipped. Free text still allowed. --}}
+                <div class="flex flex-wrap gap-2 mb-2">
+                    <button type="button" onclick="setDeclineReason('Not enough stock in warehouse')" class="px-2.5 py-1 text-xs rounded-lg" style="background-color:#f3f4f6; color:#374151; border:1px solid #e5e7eb;">Not enough stock</button>
+                    <button type="button" onclick="setDeclineReason('Will send later today')" class="px-2.5 py-1 text-xs rounded-lg" style="background-color:#f3f4f6; color:#374151; border:1px solid #e5e7eb;">Will send later</button>
+                    <button type="button" onclick="setDeclineReason('Still in production')" class="px-2.5 py-1 text-xs rounded-lg" style="background-color:#f3f4f6; color:#374151; border:1px solid #e5e7eb;">Still in production</button>
+                </div>
+                <textarea name="reason" id="declineRequestReason" rows="3" class="w-full px-4 py-3 border-2 border-gray-200 rounded-xl text-sm focus:ring-2 focus:ring-red-500 focus:border-red-500 resize-none" placeholder="Tell the store why..." required></textarea>
+            </div>
+            <div class="px-6 py-4 border-t border-gray-100 bg-gray-50 flex items-center justify-end gap-3" style="flex-shrink:0; display:flex; align-items:center; justify-content:flex-end; gap:0.75rem;">
+                <button type="button" onclick="closeDeclineRequestModal()" class="px-5 py-2.5 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-xl hover:bg-gray-50">Cancel</button>
+                <button type="submit" class="px-5 py-2.5 text-sm font-medium text-white rounded-xl shadow-sm" style="background-color: #dc2626;" onmouseover="this.style.backgroundColor='#b91c1c'" onmouseout="this.style.backgroundColor='#dc2626'">Decline</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+{{-- The orders behind the "Pending orders" number on a card. Read-only. --}}
+<div id="pendingOrdersModal" class="hidden fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4" style="z-index: 999999; top:0; right:0; bottom:0; left:0; background-color:rgba(0,0,0,0.5); padding:1rem;" onclick="if(event.target===this)closePendingOrdersModal()">
+    <div class="w-full max-w-xl bg-white rounded-2xl shadow-2xl text-left overflow-hidden" style="width:100%; max-width:36rem; max-height:85vh; display:flex; flex-direction:column; background:#fff; border-radius:1rem; box-shadow:0 20px 25px -5px rgba(0,0,0,0.10), 0 10px 10px -5px rgba(0,0,0,0.04);" onclick="event.stopPropagation()">
+        <div class="px-6 py-4 border-b border-gray-100" style="background: linear-gradient(to right, #faf5ff, #f3e8ff); flex-shrink:0;">
+            <div class="flex items-center justify-between">
+                <div class="flex items-center gap-3">
+                    <div class="w-10 h-10 rounded-xl flex items-center justify-center" style="background-color:#f3e8ff;"><span class="text-xl">🛒</span></div>
+                    <div>
+                        <h3 id="pendingOrdersTitle" class="text-base font-bold text-gray-900">Pending Orders</h3>
+                        <p id="pendingOrdersSubtitle" class="text-xs text-gray-500 mt-0.5">Orders still waiting on this product</p>
+                    </div>
+                </div>
+                <button onclick="closePendingOrdersModal()" class="w-8 h-8 rounded-lg flex items-center justify-center text-gray-400 hover:text-gray-600 hover:bg-gray-100 transition-colors">
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+                </button>
+            </div>
+        </div>
+        <div id="pendingOrdersBody" class="px-0 py-0" style="flex:1 1 auto; min-height:0; overflow-y:auto; overscroll-behavior:contain;"></div>
+        <div class="px-6 py-3 border-t border-gray-100 bg-gray-50 flex items-center justify-between" style="flex-shrink:0;">
+            <span id="pendingOrdersFooter" class="text-xs text-gray-500"></span>
+            <button onclick="closePendingOrdersModal()" class="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-xl hover:bg-gray-50">Close</button>
+        </div>
+    </div>
+</div>
+
 {{-- Inventory Transaction Log Modal — shared by BOTH the Store tile and the Warehouse tile.
      One modal, two modes (see openStoreLogModal / openWarehouseLogModal below).
      ⚠️ The shell is inline-styled on purpose: the purged styles.css drops inset-0 / max-h /
@@ -713,6 +1069,151 @@ function openTransferModal(productId, productName, variantId, currentQty) {
 function closeTransferModal() {
     var modal = document.getElementById('transferModal');
     modal.classList.add('hidden');
+    document.body.style.overflow = '';
+}
+
+// ═══ Aug-2026 TRANSFER REQUESTS ═══════════════════════════════════════════
+// One modal serves both "ask" and "change the ask": there is at most one open
+// request per product (enforced in the DB), so a second Request on the same
+// product must edit the first rather than queue a rival row.
+function openRequestModal(productId, productName, variantId, warehouseQty, demandTotal, storeQty, transitQty, shortfall, existingQty) {
+    document.getElementById('request_product_id').value = productId;
+    document.getElementById('request_variant_id').value = variantId || '';
+    document.getElementById('request_product_name').textContent = productName;
+    document.getElementById('request_product_initial').textContent = productName.charAt(0).toUpperCase();
+    document.getElementById('request_warehouse_hint').textContent = 'Warehouse currently holds ' + warehouseQty + ' units';
+
+    document.getElementById('request_ctx_demand').textContent = demandTotal;
+    document.getElementById('request_ctx_store').textContent = storeQty;
+    document.getElementById('request_ctx_transit').textContent = transitQty;
+    document.getElementById('request_ctx_short').textContent = shortfall;
+
+    var isEdit = existingQty > 0;
+    document.getElementById('request_modal_title').textContent = isEdit ? 'Change Request' : 'Request from Warehouse';
+    document.getElementById('request_submit_btn').innerHTML = isEdit ? '📨 Update request' : '📨 Send request';
+
+    // Prefill: the current ask when editing, otherwise the shortfall. Deliberately NOT
+    // capped to warehouse stock — asking for more than is on hand is legitimate (the
+    // warehouse can send what it has and produce the rest), and silently shrinking the
+    // number would hide the real need.
+    var prefill = isEdit ? existingQty : (shortfall > 0 ? shortfall : '');
+    document.getElementById('request_qty').value = prefill;
+    document.getElementById('request_notes').value = '';
+
+    var hint = document.getElementById('request_qty_hint');
+    if (isEdit) {
+        hint.textContent = 'Currently requested: ' + existingQty + ' units. Saving replaces that request.';
+    } else if (shortfall > 0) {
+        hint.textContent = 'Suggested ' + shortfall + ' = ' + demandTotal + ' pending orders − ' + storeQty + ' in store − ' + transitQty + ' in transit.';
+    } else if (demandTotal > 0) {
+        hint.textContent = 'The store can already cover its ' + demandTotal + ' pending units.';
+    } else {
+        hint.textContent = 'No pending orders for this product right now.';
+    }
+
+    document.getElementById('requestModal').classList.remove('hidden');
+    document.body.style.overflow = 'hidden';
+}
+function closeRequestModal() {
+    document.getElementById('requestModal').classList.add('hidden');
+    document.body.style.overflow = '';
+}
+
+function openAcceptRequestModal(requestId, productName, askedQty, warehouseQty) {
+    var form = document.getElementById('acceptRequestForm');
+    form.action = '{{ url("khaas/transfer-requests") }}/' + requestId + '/accept';
+    document.getElementById('acceptRequestInfo').textContent = productName + ' — asked for ' + askedQty;
+    var qty = document.getElementById('acceptRequestQty');
+    qty.value = askedQty;
+    qty.max = warehouseQty;
+    document.getElementById('acceptRequestHint').textContent =
+        warehouseQty < askedQty
+            ? '⚠ Warehouse only has ' + warehouseQty + '. Send what you can, or decline.'
+            : 'Warehouse has ' + warehouseQty + '. Change this if you are sending a different amount.';
+    document.getElementById('acceptRequestModal').classList.remove('hidden');
+    document.body.style.overflow = 'hidden';
+}
+function closeAcceptRequestModal() {
+    document.getElementById('acceptRequestModal').classList.add('hidden');
+    document.body.style.overflow = '';
+}
+
+function openDeclineRequestModal(requestId, productName, askedQty) {
+    var form = document.getElementById('declineRequestForm');
+    form.action = '{{ url("khaas/transfer-requests") }}/' + requestId + '/decline';
+    document.getElementById('declineRequestInfo').textContent = productName + ' — asked for ' + askedQty;
+    document.getElementById('declineRequestReason').value = '';
+    document.getElementById('declineRequestModal').classList.remove('hidden');
+    document.body.style.overflow = 'hidden';
+}
+function closeDeclineRequestModal() {
+    document.getElementById('declineRequestModal').classList.add('hidden');
+    document.body.style.overflow = '';
+}
+function setDeclineReason(text) {
+    document.getElementById('declineRequestReason').value = text;
+}
+
+// ═══ Pending-orders breakdown ═════════════════════════════════════════════
+// Lists exactly the rows the card number counted, so the total always reconciles.
+function openPendingOrdersModal(productId, productName) {
+    var modal = document.getElementById('pendingOrdersModal');
+    var body = document.getElementById('pendingOrdersBody');
+    document.getElementById('pendingOrdersTitle').textContent = productName;
+    document.getElementById('pendingOrdersSubtitle').textContent = 'Orders still waiting on this product';
+    document.getElementById('pendingOrdersFooter').textContent = '';
+    body.innerHTML = '<div class="px-6 py-10 text-center text-sm text-gray-400">Loading…</div>';
+    modal.classList.remove('hidden');
+    document.body.style.overflow = 'hidden';
+
+    fetch('{{ url("khaas/products") }}/' + productId + '/pending-orders', { headers: { 'Accept': 'application/json' } })
+        .then(function(r) { return r.json(); })
+        .then(function(d) {
+            if (!d || !d.success) {
+                body.innerHTML = '<div class="px-6 py-10 text-center text-sm text-gray-400">Could not load orders.</div>';
+                return;
+            }
+            var html = '';
+            html += renderPendingOrderSection('⏳ Shopify approval queue', 'Not yet accepted into orders', d.shopify, d.shopify_total, '#faf5ff', '#6b21a8');
+            html += renderPendingOrderSection('🛒 Open orders', 'Accepted, not yet prepared', d.open, d.open_total, '#eff6ff', '#1e40af');
+            if (!d.total) {
+                html = '<div class="px-6 py-10 text-center text-sm text-gray-400">Nothing pending for this product.</div>';
+            }
+            body.innerHTML = html;
+            document.getElementById('pendingOrdersFooter').textContent =
+                'Total pending: ' + d.total + ' units · already-prepared items are excluded';
+        })
+        .catch(function() {
+            body.innerHTML = '<div class="px-6 py-10 text-center text-sm text-gray-400">Could not load orders.</div>';
+        });
+}
+function renderPendingOrderSection(title, subtitle, rows, total, bg, color) {
+    if (!rows || !rows.length) return '';
+    var html = '<div class="px-6 py-2 flex items-center justify-between" style="background-color:' + bg + ';">'
+             + '<div><span class="text-xs font-bold" style="color:' + color + ';">' + title + '</span>'
+             + '<span class="text-[10px] text-gray-500 ml-2">' + subtitle + '</span></div>'
+             + '<span class="text-xs font-bold" style="color:' + color + ';">' + total + ' units</span></div>';
+    rows.forEach(function(r) {
+        // An order sitting unfulfilled for weeks is usually stuck, not real demand —
+        // flag it so a high number can be explained rather than blindly requested.
+        var stale = r.age_days >= 14
+            ? '<span class="text-[10px] px-1 py-0.5 rounded ml-1" style="background-color:#fee2e2; color:#991b1b;">⚠ ' + r.age_days + 'd old</span>'
+            : '';
+        var status = r.status
+            ? '<span class="text-[10px] px-1.5 py-0.5 rounded ml-1" style="background-color:#f3f4f6; color:#4b5563;">' + escInvLog(r.status) + '</span>'
+            : '';
+        html += '<div class="px-6 py-2.5 border-b border-gray-50 flex items-center justify-between gap-3">'
+              + '<div class="min-w-0 flex-1">'
+              + '<div class="text-xs font-semibold text-gray-800 truncate">' + escInvLog(r.order_number) + status + stale + '</div>'
+              + '<div class="text-[10px] text-gray-400 mt-0.5">' + escInvLog(r.customer_name) + ' · ' + escInvLog(r.date) + '</div>'
+              + '</div>'
+              + '<span class="text-sm font-bold shrink-0" style="color:' + color + ';">' + r.qty + '</span>'
+              + '</div>';
+    });
+    return html;
+}
+function closePendingOrdersModal() {
+    document.getElementById('pendingOrdersModal').classList.add('hidden');
     document.body.style.overflow = '';
 }
 function updateStockRadioStyles() {
@@ -1259,7 +1760,13 @@ document.addEventListener('keydown', function(e) {
         closeStoreStockModal();
         closeTransferModal();
         closeProductRejectModal();
+        // Was missing: the approve modal could only be dismissed with the mouse.
+        closeProductApproveModal();
         closeInvLogModal();
+        closeRequestModal();
+        closeAcceptRequestModal();
+        closeDeclineRequestModal();
+        closePendingOrdersModal();
     }
 });
 </script>

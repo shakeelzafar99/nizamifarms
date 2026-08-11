@@ -39,10 +39,11 @@
             <h4>Products</h4>
             <div class="d-items" id="nfhubDItems"></div>
         </div>
-        {{-- The attached bill / receipt photo, same lazy load. --}}
+        {{-- The attached bill / receipt photos, same lazy load. Multi-image (Aug-2026):
+             a thumbnail per image; single-image rows look the same as before. --}}
         <div class="d-section" id="nfhubDImgWrap" style="display:none">
-            <h4>Bill / receipt</h4>
-            <a id="nfhubDImgLink" href="#" target="_blank" rel="noopener"><img id="nfhubDImg" alt="Attached bill or receipt"></a>
+            <h4 id="nfhubDImgTitle">Bill / receipt</h4>
+            <div class="d-gallery" id="nfhubDGallery"></div>
         </div>
         <div class="d-section">
             <h4>Details</h4>
@@ -58,12 +59,47 @@
                 <dt>Created by</dt><dd id="nfhubDBy">—</dd>
             </dl>
         </div>
+        {{-- Quick edit, in place. Only ever shown for rows flagged `editable` (vendor statement
+             rows, non-read-only) AND only once the transaction has actually been fetched — every
+             field below is prefilled from that fetch, never from the row's display strings, so
+             saving an untouched form cannot overwrite anything with a rounded or reformatted
+             value. Weighted purchases never reach this form; see nfhubStartEdit(). --}}
+        <div class="d-section" id="nfhubDEditWrap" style="display:none">
+            <h4>Quick edit</h4>
+            <div class="d-edit-err" id="nfhubDEditErr"></div>
+            <div class="d-edit">
+                <label>Amount (Rs.)
+                    <input type="number" step="0.01" min="0.01" id="nfhubDEAmount">
+                </label>
+                <label>Date
+                    <input type="date" id="nfhubDEDate">
+                </label>
+                <label>Description
+                    <textarea id="nfhubDEDesc" rows="2"></textarea>
+                </label>
+                {{-- ONLINE payments only: which of OUR banks it left from (re-tag; the
+                     description's "· via XX" token follows the change server-side). --}}
+                <div id="nfhubDEBankWrap" style="display:none">
+                    <label>🏦 Paid from bank</label>
+                    <div class="bankchips" id="nfhubDEBankChips"></div>
+                </div>
+                <label>Images <span class="d-edit-opt">✕ a thumbnail to remove it · pick files to add — applied on save</span></label>
+                <div class="img-mgr" id="nfhubDEImgs" style="display:none"></div>
+                <input type="file" id="nfhubDEBill" accept="image/*" multiple>
+                <div class="d-edit-note" id="nfhubDENote"></div>
+            </div>
+        </div>
         <div class="d-section">
             <h4>History</h4>
             <div style="font-size:12px;color:var(--ink3)">Corrections are append-only — a change shows here as a new row; nothing is edited in place.</div>
         </div>
     </div>
     <div class="drawer-foot">
+        <div class="foot-btns" id="nfhubDEditBar" style="display:none">
+            <button class="btn" type="button" onclick="nfhubCancelEdit()">Cancel</button>
+            <button class="btn primary" type="button" id="nfhubDESave" onclick="nfhubSaveEdit()">Save changes</button>
+        </div>
+        <button class="btn" type="button" id="nfhubDEditBtn" onclick="nfhubStartEdit()" style="display:none;justify-content:center">✏ Edit this entry</button>
         <a class="btn primary" id="nfhubDAction" href="#" style="justify-content:center">Open full details ↗</a>
         <div class="d-hint">Approve / reject opens the full review page.</div>
     </div>
@@ -83,6 +119,12 @@
     // uses. `seq` guards against a slow response landing in a drawer the user has already moved on
     // from. Any failure just leaves the base peek intact — it never blocks the drawer.
     var seq = 0;
+    // The row currently in the drawer, plus the transaction the fetch below returned for it.
+    // `txn` stays null until that lands, and the Edit button stays disabled until it does —
+    // editing off the row's display strings ("Rs. 40,000.00", "Aug 08, 2026") would post a
+    // reformatted amount and an unparseable date.
+    var cur = {d: null, txn: null};
+
     function loadExtras(d) {
         show('nfhubDItemsWrap', false);
         show('nfhubDImgWrap', false);
@@ -96,6 +138,8 @@
             .then(function (j) {
                 if (mine !== seq || !j || !j.success || !j.transaction) return;
                 var t = j.transaction;
+                cur.txn = t;
+                refreshEditBtn();
 
                 var items = t.line_items || [];
                 if (items.length) {
@@ -109,12 +153,23 @@
                     show('nfhubDItemsWrap', true);
                 }
 
-                if (t.bill_image) {
-                    var img = document.getElementById('nfhubDImg');
-                    img.src = t.bill_image;
+                // Gallery: every attached image. Older payloads (backend not yet updated) have
+                // no bill_images — degrade to the single bill_image, exactly the old behaviour.
+                var gallery = (t.bill_images && t.bill_images.length)
+                    ? t.bill_images
+                    : (t.bill_image ? [{id: null, url: t.bill_image}] : []);
+                if (gallery.length) {
+                    var box = document.getElementById('nfhubDGallery');
+                    box.innerHTML = gallery.map(function (im) {
+                        return '<a href="' + im.url + '" target="_blank" rel="noopener">'
+                            + '<img src="' + im.url + '" alt="Attached bill or receipt"></a>';
+                    }).join('');
                     // /public-storage is the proxy; fall back to the /storage symlink if it 404s.
-                    img.onerror = function () { img.onerror = null; img.src = t.bill_image.replace('/public-storage/', '/storage/'); };
-                    document.getElementById('nfhubDImgLink').href = t.bill_image;
+                    box.querySelectorAll('img').forEach(function (img) {
+                        img.onerror = function () { img.onerror = null; img.src = img.src.replace('/public-storage/', '/storage/'); };
+                    });
+                    var ttl = document.getElementById('nfhubDImgTitle');
+                    if (ttl) ttl.textContent = gallery.length > 1 ? ('Bill / receipt · ' + gallery.length + ' images') : 'Bill / receipt';
                     show('nfhubDImgWrap', true);
                 }
 
@@ -133,11 +188,144 @@
             .catch(function () { /* base peek stands */ });
     }
 
+    // ---- Quick edit ---------------------------------------------------------------------
+    // Deliberately thin: it collects values and hands them to hubSaveVendorTxn(), the SAME
+    // function the vendor Edit modal posts through, so the two surfaces cannot validate or post
+    // differently. That function lives in fin.hub.partials.vendor-op-modals, which is only on the
+    // vendor detail page — hence the feature detect below rather than an assumption.
+    function canEdit() {
+        return !!(cur.d && cur.d.editable && typeof window.hubSaveVendorTxn === 'function');
+    }
+    function editing() {
+        return document.getElementById('nfhubDEditWrap').style.display !== 'none';
+    }
+    function refreshEditBtn() {
+        var btn = document.getElementById('nfhubDEditBtn');
+        if (!btn) return;
+        if (!canEdit() || editing()) { btn.style.display = 'none'; return; }
+        btn.style.display = '';
+        // Until the fetch lands we do not know the real amount/date, nor whether the row has line
+        // items — both decide what a save would do, so the button waits rather than guessing.
+        var ready = !!cur.txn;
+        btn.disabled = !ready;
+        btn.style.opacity = ready ? '' : '.55';
+        btn.textContent = ready ? '✏ Edit this entry' : '✏ Loading…';
+    }
+    function editErr(msg) {
+        var e = document.getElementById('nfhubDEditErr');
+        e.textContent = msg || '';
+        e.style.display = msg ? 'block' : 'none';
+    }
+    function closeEdit() {
+        show('nfhubDEditWrap', false);
+        show('nfhubDEditBar', false);
+        editErr('');
+        var f = document.getElementById('nfhubDEBill'); if (f) f.value = '';
+        if (window.hubImgMgr) window.hubImgMgr.clear('nfhubDEImgs');
+        if (window.hubBankChips) window.hubBankChips.clear('nfhubDEBankChips');
+        var bw = document.getElementById('nfhubDEBankWrap'); if (bw) bw.style.display = 'none';
+        footLink(true);
+        refreshEditBtn();
+    }
+    // The footer's "open the old page" link and its hint belong to the read view — while the
+    // quick-edit form is up they would sit under Save and read as a second, competing action.
+    function footLink(on) {
+        var act = document.getElementById('nfhubDAction');
+        if (act) act.style.display = on ? '' : 'none';
+        var foot = act ? act.closest('.drawer-foot') : null;
+        var hint = foot ? foot.querySelector('.d-hint') : null;
+        if (hint) hint.style.display = on ? '' : 'none';
+    }
+
+    window.nfhubStartEdit = function () {
+        if (!canEdit() || !cur.txn) return;
+        var t = cur.txn;
+
+        // ⚠ A weighted purchase's amount is the SUM of its line items (+ adjustment). The update
+        // endpoint only recomputes that when items[] is posted, so editing the amount here would
+        // silently detach the total from the lines. Hand those to the line-item editor instead —
+        // detected from the fetched items, not from the vendor's purchase method, because a
+        // by-weight vendor can still record a plain purchase. If that editor is somehow absent,
+        // do NOTHING: falling through to the simple form is never an acceptable fallback here.
+        if ((t.line_items || []).length) {
+            if (typeof window.hubOpenWeightedEdit === 'function') {
+                window.nfhubCloseDrawer();
+                window.hubOpenWeightedEdit(t.id);
+            }
+            return;
+        }
+
+        editErr('');
+        // Prefilled from the fetch: the amount is the raw number, the date is already Y-m-d, and
+        // the description is the stored text. Saving without touching anything is a no-op.
+        document.getElementById('nfhubDEAmount').value = t.amount;
+        document.getElementById('nfhubDEDate').value = (t.transaction_date && t.transaction_date !== '-') ? t.transaction_date : '';
+        document.getElementById('nfhubDEDesc').value = t.description || '';
+        document.getElementById('nfhubDEBill').value = '';
+        // Current images, each removable — hubImgMgr ships with the vendor modals, which are
+        // guaranteed present wherever canEdit() passed (same file defines hubSaveVendorTxn).
+        if (window.hubImgMgr) window.hubImgMgr.render('nfhubDEImgs', t.bill_images || []);
+        // Bank re-tag row — ONLINE vendor payments only (cash rows have no bank; purchases
+        // never carry one; the backend ignores the field for both anyway).
+        var bankWrap = document.getElementById('nfhubDEBankWrap');
+        var offerBank = !!(window.hubBankChips && t.is_vendor_payment
+            && (t.mode === 'online' || t.receiving_account_id));
+        bankWrap.style.display = offerBank ? '' : 'none';
+        if (offerBank) window.hubBankChips.render('nfhubDEBankChips', t.receiving_account_id);
+        else if (window.hubBankChips) window.hubBankChips.clear('nfhubDEBankChips');
+
+        // Say plainly what this form does NOT touch, so nobody edits here expecting more. These
+        // are exactly the fields the vendor Edit modal leaves alone too.
+        var notes = ['Posting date and payment source are unchanged — use “Open in old ledger” for those.'];
+        if (Number(t.adjustment_amount)) {
+            notes.push('This entry carries an adjustment of ' + money(t.adjustment_amount) + ', which stays as it is.');
+        }
+        document.getElementById('nfhubDENote').textContent = notes.join(' ');
+
+        show('nfhubDEditWrap', true);
+        show('nfhubDEditBar', true);
+        document.getElementById('nfhubDEditBtn').style.display = 'none';
+        footLink(false); // one primary action at a time
+        document.getElementById('nfhubDEAmount').focus();
+    };
+
+    window.nfhubCancelEdit = function () { closeEdit(); };
+
+    window.nfhubSaveEdit = async function () {
+        if (!cur.txn) return;
+        var btn = document.getElementById('nfhubDESave');
+        editErr('');
+        btn.disabled = true;
+        var label = btn.textContent;
+        btn.textContent = 'Saving…';
+        var res = await window.hubSaveVendorTxn({
+            id: cur.txn.id,
+            transaction_date: document.getElementById('nfhubDEDate').value,
+            amount: document.getElementById('nfhubDEAmount').value,
+            description: document.getElementById('nfhubDEDesc').value,
+            newFiles: document.getElementById('nfhubDEBill').files,
+            removeImageIds: window.hubImgMgr ? window.hubImgMgr.removeIds('nfhubDEImgs') : [],
+            receivingAccountId: window.hubBankChips ? window.hubBankChips.value('nfhubDEBankChips') : null,
+        });
+        if (res.ok) {
+            if (window.hubToast) window.hubToast('Transaction updated');
+            // Reload for the same reason every other Hub write does: the running balance, the day
+            // and month totals and the header KPIs are all server-computed.
+            setTimeout(function () { location.reload(); }, 800);
+            return;
+        }
+        btn.disabled = false;
+        btn.textContent = label;
+        editErr(res.message || 'Could not update.');
+    };
+
     document.addEventListener('click', function (e) {
         var row = e.target.closest ? e.target.closest('.t-row[data-d]') : null;
         if (!row) return;
         var d;
         try { d = JSON.parse(row.getAttribute('data-d')); } catch (err) { return; }
+        cur = {d: d, txn: null};
+        closeEdit();
         set('nfhubDTitle', d.title || 'Transaction');
         set('nfhubDSub', d.sub || '—');
         var amt = document.getElementById('nfhubDAmount');
@@ -198,7 +386,15 @@
     window.nfhubCloseDrawer = function () {
         drawer.classList.remove('on');
         scrim.classList.remove('on');
+        // Never leave a half-filled form behind for the next row that opens here.
+        closeEdit();
     };
-    document.addEventListener('keydown', function (e) { if (e.key === 'Escape') window.nfhubCloseDrawer(); });
+    // Escape backs out of the edit form first and only closes the drawer on a second press —
+    // one reflex keystroke should not throw away what was typed.
+    document.addEventListener('keydown', function (e) {
+        if (e.key !== 'Escape') return;
+        if (drawer.classList.contains('on') && editing()) { closeEdit(); return; }
+        window.nfhubCloseDrawer();
+    });
 })();
 </script>

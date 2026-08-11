@@ -34,6 +34,12 @@ class AssistantWorkspaceController extends Controller
         $this->revertOrphanedSms((int) $user->id);
         $this->closeCorroboratedSms((int) $user->id);
         $this->reconcileRecordedDebits((int) $user->id);
+        // Give held bank credits another look at the invoice that had not yet
+        // been raised when they arrived (invoices appear at DELIVERY, ~21h
+        // after the order on average, while customers pay at delivery). Runs
+        // AFTER this response is sent and is throttled site-wide, so opening
+        // the inbox never waits on it.
+        \App\Services\Payments\Signals\HeldCreditResweeper::scheduleAfterResponse();
         $done = $this->doneToday((int) $user->id);
 
         // The strip now mirrors the two inbox boxes exactly: how much money OUT
@@ -83,6 +89,12 @@ class AssistantWorkspaceController extends Controller
         $this->revertOrphanedSms((int) $user->id);
         $this->closeCorroboratedSms((int) $user->id);
         $this->reconcileRecordedDebits((int) $user->id);
+        // Give held bank credits another look at the invoice that had not yet
+        // been raised when they arrived (invoices appear at DELIVERY, ~21h
+        // after the order on average, while customers pay at delivery). Runs
+        // AFTER this response is sent and is throttled site-wide, so opening
+        // the inbox never waits on it.
+        \App\Services\Payments\Signals\HeldCreditResweeper::scheduleAfterResponse();
         $done = $this->doneToday((int) $user->id);
 
         return response()->json([
@@ -625,7 +637,11 @@ class AssistantWorkspaceController extends Controller
                     \App\Models\FIN\PaymentSignal::STATUS_AMOUNT_MISMATCH,
                 ])
                 ->when($sms->linked_signal_id, fn($q) => $q->where('id', '<>', $sms->linked_signal_id))
-                ->where(fn($q) => $q->whereNull('match_reason')->orWhere('match_reason', '<>', 'amount_unique_sms'))
+                // Independent means NOT inferred — every guess reason is
+                // excluded here, not just the original amount-only one. (A NULL
+                // reason still counts as independent, as it always has.)
+                ->where(fn($q) => $q->whereNull('match_reason')
+                    ->orWhereNotIn('match_reason', \App\Models\FIN\PaymentSignal::GUESS_REASONS))
                 ->exists();
         } catch (\Throwable $e) {
             return null;
@@ -966,7 +982,7 @@ class AssistantWorkspaceController extends Controller
             ->where('s.status', 'new')
             ->where('s.direction', 'credit')
             ->where('p.source', \App\Models\FIN\PaymentSignal::SOURCE_BANK_SMS)
-            ->where('p.match_reason', 'amount_unique_sms')
+            ->whereIn('p.match_reason', \App\Models\FIN\PaymentSignal::GUESS_REASONS)
             ->whereNotNull('p.matched_order_id')
             ->where('l.transaction_type', 'invoice')
             ->whereIn('l.approval_status', ['pending_l2', 'approved'])

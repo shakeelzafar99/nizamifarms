@@ -133,6 +133,31 @@ class OvertimeService
         return min($last, $o);                // never later than the actual logout
     }
 
+    /**
+     * ⭐ DISPLAY payload for a checkout the OT engine RE-BASED (owner ruling Aug-8) —
+     * so every screen can SHOW the end the day was actually counted to, instead of
+     * leaving the manager to reconcile a "bypassed" chip with an OT number that
+     * doesn't match the logout. ONE brain: today view, the employee-detail modal
+     * and the mobile day-checks chip all read this.
+     *
+     * null  = the checkout kept its real time (normal checkout, or an unlock that
+     *         expired before a regular checkout) → show nothing extra.
+     * time  = 'H:i' of the counted end (the last delivered order, clamped to the
+     *         real logout); null time with basis 'no_deliveries' = bypassed day
+     *         with nothing delivered → nothing past the shift is counted.
+     */
+    public function countedCheckout(int $userId, string $date, ?string $login, ?string $logout, $unlockUntil): ?array
+    {
+        if (!$this->bypassedCheckout($date, $login, $logout, $unlockUntil)) {
+            return null;
+        }
+        $end = $this->otEndTs($userId, $date, $login, $logout, $unlockUntil);
+        return [
+            'time'  => $end !== null ? date('H:i', $end) : null,
+            'basis' => $end !== null ? 'last_delivery' : 'no_deliveries',
+        ];
+    }
+
     private function targetHours(): float
     {
         if ($this->targetHoursMemo === null) {

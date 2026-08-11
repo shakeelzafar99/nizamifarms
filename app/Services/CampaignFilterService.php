@@ -685,9 +685,11 @@ class CampaignFilterService
             ->where('m.direction', 'outbound')
             ->where('m.template_name', $templateName)
             ->where('m.created_at', '>=', $cutoff)
-            // "failed" here = send API call failed outright. Webhook
-            // delivery failures (status=delivered-then-undelivered)
-            // still count as "the customer saw it in WhatsApp".
+            // "failed" covers BOTH a rejected send API call AND a webhook
+            // delivery failure — the status handler writes status='failed'
+            // for undelivered receipts too. So a message the customer never
+            // actually received does not count as "already sent", and a
+            // requeued Undelivered row can be resent without being deduped.
             ->where(function ($q) {
                 $q->whereNull('m.status')->orWhere('m.status', '!=', 'failed');
             })

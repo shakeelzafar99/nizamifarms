@@ -24,7 +24,9 @@ use Illuminate\Support\Facades\Log;
  */
 class OrderStatusRuleService
 {
-    private const CACHE_KEY = 'order_status_rules_v1';
+    // v2 (Aug-2026): the cached array gained `hold_map`. Bumping the key means a
+    // running server never reads a v1 array that is missing it.
+    private const CACHE_KEY = 'order_status_rules_v2';
     private const CACHE_TTL = 60; // seconds
 
     /** Historical hardcoded fallbacks — used verbatim when the new schema/config is absent. */
@@ -80,6 +82,79 @@ class OrderStatusRuleService
         return $map[$statusCode] ?? null;
     }
 
+    /**
+     * Does this status stay hidden from the customer until the order is actually
+     * dispatched? Default false when the column (or the row) is absent, so nothing
+     * changes for a status nobody has flagged in the Hub.
+     */
+    public function holdsUntilDispatch(string $statusCode): bool
+    {
+        $map = $this->rules()['hold_map'] ?? [];
+        return array_key_exists($statusCode, $map) ? (bool) $map[$statusCode] : false;
+    }
+
+    /**
+     * Is THIS order's status being held back from the customer right now? Three
+     * things must all be true: the status carries the hold flag, the order has not
+     * been dispatched yet, and the order is one the customer app knows about.
+     *
+     * $isDispatched is the caller's own reading of eta_calculated_at — the same test
+     * the "Dispatch Next" wave uses. Every path that un-dispatches an order already
+     * clears that stamp, so this needs no bookkeeping of its own.
+     */
+    public function masksUntilDispatch(?string $orderNumber, string $statusCode, bool $isDispatched): bool
+    {
+        if ($isDispatched) {
+            return false;
+        }
+        if (!$this->holdsUntilDispatch($statusCode)) {
+            return false;
+        }
+        return $this->inCustomerAppScope($orderNumber);
+    }
+
+    /**
+     * THE customer-facing status for one order.
+     *
+     * Every customer-app surface — the outbound webhook and all pull endpoints —
+     * goes through this one method, so push and pull can never disagree about what
+     * the customer is being told. Order matters: hold-substitution first, then the
+     * alias map (so aliasing the substitute status keeps working).
+     */
+    public function customerFacingStatus(?string $orderNumber, string $statusCode, bool $isDispatched): string
+    {
+        if ($this->masksUntilDispatch($orderNumber, $statusCode, $isDispatched)) {
+            $statusCode = (string) config('customer_app.hold_until_dispatch_status', 'processing');
+        }
+
+        return $this->customerAlias($statusCode) ?? $statusCode;
+    }
+
+    /**
+     * Only orders the customer app actually knows about can be masked — the same
+     * prefix set the webhook emitter filters on (SH-).
+     *
+     * ⚠ This is deliberate, not an oversight: QURBANI dispatches through its own
+     * qurbani_eta_calculated_at columns and never stamps the order-level one, so a
+     * genuinely-dispatched QUR order would look "never dispatched" and be masked to
+     * processing on the history/snapshot endpoints. Scoping to the push prefixes
+     * keeps NF- and QUR orders byte-identical to today.
+     */
+    private function inCustomerAppScope(?string $orderNumber): bool
+    {
+        if (empty($orderNumber)) {
+            return false;
+        }
+
+        foreach ((array) config('customer_app.order_prefixes', ['SH-']) as $prefix) {
+            if ($prefix !== '' && str_starts_with($orderNumber, $prefix)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     /** Call after the Hub saves changes so the next read is fresh. */
     public function bustCache(): void
     {
@@ -102,6 +177,7 @@ class OrderStatusRuleService
                     'out_the_door'        => $this->outDoorFromColumn(),
                     'send_map'            => $customer['send'],
                     'alias_map'           => $customer['alias'],
+                    'hold_map'            => $customer['hold'],
                 ];
             });
         } catch (\Throwable $e) {
@@ -112,6 +188,7 @@ class OrderStatusRuleService
                 'out_the_door'        => self::FALLBACK_OUT_DOOR,
                 'send_map'            => [],   // empty => sendToCustomerApp() defaults to true
                 'alias_map'           => [],   // empty => customerAlias() defaults to null
+                'hold_map'            => [],   // empty => holdsUntilDispatch() defaults to false
             ];
         }
     }
@@ -157,25 +234,38 @@ class OrderStatusRuleService
     }
 
     /**
-     * Builds the per-status customer-app maps (send flag + alias) from the Hub columns.
-     * Absent columns => empty maps => callers default to "send raw" (today's behaviour).
+     * Builds the per-status customer-app maps (send flag + alias + hold) from the Hub
+     * columns. Absent columns => empty maps => callers default to "send raw, never
+     * hold" (today's behaviour).
      */
     private function customerMapsFromColumn(): array
     {
         $send = [];
         $alias = [];
+        $hold = [];
 
         if (Schema::hasColumn('t_crm_order_status_master', 'send_to_customer_app')) {
-            $rows = DB::table('t_crm_order_status_master')
-                ->get(['status_code', 'send_to_customer_app', 'customer_app_alias']);
+            // The hold column (Aug-2026) ships later than send/alias, so it is only
+            // selected when present — the file stays uploadable before its SQL is run.
+            $hasHold = Schema::hasColumn('t_crm_order_status_master', 'customer_app_hold_until_dispatch');
+
+            $columns = ['status_code', 'send_to_customer_app', 'customer_app_alias'];
+            if ($hasHold) {
+                $columns[] = 'customer_app_hold_until_dispatch';
+            }
+
+            $rows = DB::table('t_crm_order_status_master')->get($columns);
 
             foreach ($rows as $row) {
                 $send[$row->status_code] = (bool) $row->send_to_customer_app;
                 $trimmed = is_string($row->customer_app_alias) ? trim($row->customer_app_alias) : '';
                 $alias[$row->status_code] = $trimmed !== '' ? $trimmed : null;
+                $hold[$row->status_code] = $hasHold
+                    ? (bool) $row->customer_app_hold_until_dispatch
+                    : false;
             }
         }
 
-        return ['send' => $send, 'alias' => $alias];
+        return ['send' => $send, 'alias' => $alias, 'hold' => $hold];
     }
 }

@@ -641,6 +641,7 @@ class AttendanceController extends Controller
         $monthStart = date('Y-m-01', strtotime($selectedDate));
         $checkoutClassifier = new \App\Services\Riders\CheckoutClassifierService();
         $dcSvc = new \App\Services\Riders\DayChecksService(); // shared web+mobile day-checks brain
+        $otSvc = new \App\Services\HR\OvertimeService();      // ONE instance → last-delivery lookups memoize
         // Config reads hoisted ONCE — the loop below runs per rider, per refresh poll.
         $meterGpsWarnKm = (float) $this->attendanceConfig('ATTENDANCE_METER_GPS_WARN_KM', 10);
         $stuckMins = (int) $this->attendanceConfig('CHECKOUT_STUCK_ALERT_MINS', 25);
@@ -694,6 +695,13 @@ class AttendanceController extends Controller
             $row->work_journey = $workByUser[$row->user_id] ?? null;
             // Checkout-unlock state (the "forgot to check out" bypass); null = never granted today.
             $row->checkout_unlock = $unlockByUser[$row->user_id] ?? null;
+            // ⭐ What the day was COUNTED to when the checkout rode the unlock (owner ruling
+            //   Aug-8): the last delivered order, or nothing when none delivered. null for a
+            //   normal checkout — including one made AFTER the unlock expired (real time keeps).
+            $row->checkout_counted = (is_array($row->checkout_unlock) && !empty($row->checkout_unlock['used']))
+                ? $otSvc->countedCheckout((int) $row->user_id, $selectedDate, $row->login_time,
+                    $row->logout_time, $row->checkout_unlock_until ?? null)
+                : null;
 
             // HALF-DAY: the day counts as present with no lateness/overtime (owner's rule). Suppress
             // the per-row numbers so the pill shows "½ day", never "Late"; the frozen row is untouched.
@@ -741,6 +749,7 @@ class AttendanceController extends Controller
                 'road_distance_km' => $row->road_distance_km, 'gps_distance' => $row->gps_distance,
                 'checkout_info' => $row->checkout_info, 'home_journey' => $row->home_journey,
                 'work_journey' => $row->work_journey, 'checkout_unlock' => $row->checkout_unlock,
+                'checkout_counted' => $row->checkout_counted,
                 'meter_start_recorded_at' => $row->meter_start_recorded_at ?? null,
                 'home_meter_recorded_at' => $row->home_meter_recorded_at ?? null,
                 'meter_start_source' => $row->meter_start_source ?? null,
@@ -2751,6 +2760,14 @@ class AttendanceController extends Controller
                     DB::raw("COALESCE(d.last_delivery_time, '-') as last_delivery_time")
                 )
                 ->orderByDesc('a.attendance_date');
+
+            // ⭐ The bypass tell — lets the day rows show "counted HH:MM" on a re-based
+            //   checkout and compute hours from the SAME end the OT engine counted.
+            //   Guarded — dev DBs may lag the column.
+            $otSvc = new \App\Services\HR\OvertimeService();
+            if ($otSvc->hasUnlockColumn()) {
+                $query->addSelect('a.checkout_unlock_until');
+            }
             
             // Log the SQL query for debugging
             $sql = $query->toSql();
@@ -2829,7 +2846,6 @@ class AttendanceController extends Controller
             // dead zero sat beside the Month tab's real number and looked like a contradiction.
             // Computed once for the range; the per-day map below feeds the day rows and the
             // "Overtime" tile filter, so tile, list and Month tab cannot disagree.
-            $otSvc      = new \App\Services\HR\OvertimeService();
             $otRange    = $otSvc->overtimeForRange($userId, $startDate, $endDate);
             $otByDate   = $otRange['dates'] ?? [];
             $otMinutes  = (int) ($otRange['total'] ?? 0);
@@ -2838,11 +2854,24 @@ class AttendanceController extends Controller
             foreach ($records as $record) {
                 $recDate = substr((string) $record->attendance_date, 0, 10);
                 $record->is_half_day = isset($halfDaySet[$recDate]);
-                // Calculate hours worked
+                // ⭐ Bypass display payload (owner ruling Aug-8): a checkout that rode a
+                //   manager unlock is counted to the LAST DELIVERED order (nothing when
+                //   none delivered); null for a real checkout — including one made after
+                //   the unlock expired, which keeps its real time.
+                $record->checkout_counted = ($record->logout_time && !empty($record->checkout_unlock_until))
+                    ? $otSvc->countedCheckout($userId, $recDate, $record->login_time,
+                        $record->logout_time, $record->checkout_unlock_until)
+                    : null;
+                // Hours worked — from the SAME end the OT engine counts (otEndTs), which
+                // also rolls a past-midnight logout forward. The old bare-TIME subtraction
+                // had no rollover, so a 10:52 → 00:05 day read -10.8h and dragged the
+                // Total-hours tile down with it.
                 if ($record->login_time && $record->logout_time) {
-                    $login = strtotime($record->login_time);
-                    $logout = strtotime($record->logout_time);
-                    $hours = ($logout - $login) / 3600;
+                    $endTs = $otSvc->otEndTs($userId, $recDate, $record->login_time,
+                        $record->logout_time, $record->checkout_unlock_until ?? null);
+                    $loginTs = strtotime($recDate . ' ' . $record->login_time);
+                    $hours = ($endTs !== null && $loginTs !== false && $endTs > $loginTs)
+                        ? ($endTs - $loginTs) / 3600 : 0;
                     $totalHours += $hours;
                     $record->hours_worked = round($hours, 1);
                 } else {

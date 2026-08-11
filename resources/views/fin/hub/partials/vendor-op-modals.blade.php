@@ -5,6 +5,9 @@
     $venBanks = $receivingBanks;
 @endphp
 
+{{-- The report renderer shared with the old vendor page — same markup, same print. --}}
+@include('fin.partials.vendor-report-render')
+
 {{-- ===== Purchase (by_total) ===== --}}
 <div class="hubmodal" id="hubPurchase" onclick="if(event.target===this)hubClose('hubPurchase')">
   <div class="hubmodal-box">
@@ -17,7 +20,7 @@
           <div class="fld"><label>Date</label><input type="date" name="transaction_date" value="{{ now()->format('Y-m-d') }}"></div>
         </div>
         <div class="fld"><label>Description</label><textarea name="description" rows="2" placeholder="Entry by {{ auth()->user()->fullname ?? '' }}">Entry by {{ auth()->user()->fullname ?? '' }}</textarea></div>
-        <div class="fld"><label>Bill image (optional)</label><input type="file" name="bill_image" accept="image/*"></div>
+        <div class="fld"><label>Bill images (optional — pick several)</label><input type="file" name="bill_images[]" accept="image/*" multiple></div>
       </form>
     </div>
     <div class="hubmodal-foot"><button class="btn" type="button" onclick="hubClose('hubPurchase')">Cancel</button><button class="btn primary" type="button" onclick="hubSubmitPurchase()">Record purchase</button></div>
@@ -38,7 +41,12 @@
         <div class="fld"><label>Date</label><input type="date" id="hubWtDate" value="{{ now()->format('Y-m-d') }}"></div>
       </div>
       <div class="fld"><label>Description</label><input type="text" id="hubWtDesc" placeholder="Entry by {{ auth()->user()->fullname ?? '' }}" value="Entry by {{ auth()->user()->fullname ?? '' }}"></div>
-      <div class="fld"><label id="hubWtBillLabel">Bill image (optional) <a href="#" id="hubWtBillView" style="display:none;font-weight:600;text-transform:none;letter-spacing:0" onclick="event.preventDefault();hubViewBill(this.dataset.bill)">📎 view current</a></label><input type="file" id="hubWtBill" accept="image/*"></div>
+      <div class="fld">
+        <label id="hubWtBillLabel">Bill images (optional — pick several) </label>
+        {{-- Editing: current images render here with per-image remove (hubImgMgr). --}}
+        <div class="img-mgr" id="hubWtImgs" style="display:none"></div>
+        <input type="file" id="hubWtBill" accept="image/*" multiple>
+      </div>
       <div class="inv-total"><span>Grand total</span><span class="num" id="hubWtGrand">Rs. 0.00</span></div>
     </div>
     <div class="hubmodal-foot"><button class="btn" type="button" onclick="hubClose('hubWeighted')">Cancel</button><button class="btn primary" type="button" id="hubWtSubmit" onclick="hubSubmitWeighted()" disabled>Record purchase</button></div>
@@ -73,7 +81,7 @@
           <div class="fld"><label>Posted date</label><input type="date" name="posted_date" value="{{ now()->format('Y-m-d') }}"></div>
         </div>
         <div class="fld"><label>Description (optional)</label><textarea name="description" rows="2"></textarea></div>
-        <div class="fld"><label>Receipt image (optional)</label><input type="file" name="receipt_image" accept="image/*"></div>
+        <div class="fld"><label>Receipt images (optional — pick several)</label><input type="file" name="receipt_images[]" accept="image/*" multiple></div>
       </form>
     </div>
     <div class="hubmodal-foot"><button class="btn" type="button" onclick="hubClose('hubPay')">Cancel</button><button class="btn primary" type="button" onclick="hubSubmitPayment()">Record payment</button></div>
@@ -115,10 +123,19 @@
           <div class="fld"><label>Date</label><input type="date" id="hubEtDate"></div>
         </div>
         <div class="fld"><label>Description</label><textarea id="hubEtDesc" rows="2"></textarea></div>
+        {{-- Only for ONLINE payments: which of OUR banks it left from. Re-tag only — per-bank
+             balances are derived from this tag, and the description's "· via XX" follows it. --}}
+        <div class="fld" id="hubEtBankWrap" style="display:none">
+          <label>🏦 Paid from bank</label>
+          <div class="bankchips" id="hubEtBankChips"></div>
+        </div>
         <div class="fld">
-          <label>Replace bill image (optional) <a href="#" id="hubEtBillView" style="display:none;font-weight:600;text-transform:none;letter-spacing:0" onclick="event.preventDefault();hubViewBill(this.dataset.bill)">📎 view current</a></label>
-          <input type="file" id="hubEtBill" accept="image/*">
-          <span class="hint">Leave empty to keep the existing image.</span>
+          <label>Bill / receipt images</label>
+          {{-- Current images with per-image ✕ (fetched on open; falls back to the plain
+               "replace" input below if that fetch fails). --}}
+          <div class="img-mgr" id="hubEtImgs" style="display:none"></div>
+          <input type="file" id="hubEtBill" accept="image/*" multiple>
+          <span class="hint" id="hubEtBillHint">Pick files to ADD images; ✕ a thumbnail to remove it. Nothing changes until you save.</span>
         </div>
       </form>
     </div>
@@ -159,6 +176,117 @@
         probe.src=u;
     };
 
+    // Multi-image viewer for a row's 📎 chip. Renders an in-page overlay rather than opening
+    // tabs: the fetch makes any window.open() async, and popup blockers kill async opens — the
+    // second image would silently never appear. Click an image inside the overlay (a direct
+    // user gesture) to open it full-size. Falls back to the legacy single-path viewer if the
+    // fetch fails, so the chip never dead-ends.
+    window.hubViewImages = function(ledgerId, fallbackPath){
+        fetch('/finance/ledger/transaction/'+ledgerId, {headers:{'Accept':'application/json'}})
+            .then(function(r){ return r.json(); })
+            .then(function(j){
+                var imgs = (j && j.success && j.transaction && j.transaction.bill_images) || [];
+                if(!imgs.length){ if(fallbackPath) hubViewBill(fallbackPath); return; }
+                if(imgs.length === 1){ window.open(imgs[0].url, '_blank'); return; }
+                var ov = document.getElementById('hubImgOverlay');
+                if(!ov){
+                    ov = document.createElement('div');
+                    ov.id = 'hubImgOverlay';
+                    ov.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,.82);z-index:12000;'
+                        + 'overflow-y:auto;padding:28px;cursor:zoom-out';
+                    ov.onclick = function(e){ if(e.target === ov) ov.style.display = 'none'; };
+                    document.body.appendChild(ov);
+                    document.addEventListener('keydown', function(e){ if(e.key === 'Escape') ov.style.display = 'none'; });
+                }
+                ov.innerHTML = '<div style="max-width:760px;margin:0 auto;display:flex;flex-direction:column;gap:14px">'
+                    + '<div style="color:#e2e8f0;font-size:13px;display:flex;justify-content:space-between;align-items:center">'
+                    + '<span>' + imgs.length + ' attached images — click one for full size, click outside to close</span>'
+                    + '<button type="button" style="background:none;border:0;color:#e2e8f0;font-size:20px;cursor:pointer" '
+                    + 'onclick="document.getElementById(\'hubImgOverlay\').style.display=\'none\'">✕</button></div>'
+                    + imgs.map(function(im){
+                        return '<a href="' + im.url + '" target="_blank" rel="noopener" style="cursor:zoom-in">'
+                            + '<img src="' + im.url + '" alt="Attached bill or receipt" '
+                            + 'style="width:100%;border-radius:10px;display:block;background:#fff"></a>';
+                    }).join('')
+                    + '</div>';
+                ov.style.display = 'block';
+            })
+            .catch(function(){ if(fallbackPath) hubViewBill(fallbackPath); });
+    };
+
+    // ---------- Image manager (edit surfaces) ----------
+    // Renders a row's CURRENT images as thumbnails, each with a ✕ that toggles it for removal
+    // (dimmed until save — nothing is deleted before the form is submitted). One state entry per
+    // host container, so the Edit modal, the weighted editor and the drawer can't collide.
+    var imgMgrState = {};
+    window.hubImgMgr = {
+        render: function(hostId, images){
+            var host = document.getElementById(hostId);
+            if(!host) return;
+            imgMgrState[hostId] = {removed: {}};
+            var list = images || [];
+            if(!list.length){ host.style.display='none'; host.innerHTML=''; return; }
+            host.style.display='';
+            host.innerHTML = list.map(function(im){
+                return '<span class="im-th" data-img-id="'+im.id+'">'
+                    + '<a href="'+im.url+'" target="_blank" rel="noopener"><img src="'+im.url+'" alt="Attached image"></a>'
+                    + '<button type="button" class="im-x" title="Remove this image (applies when you save)">✕</button>'
+                    + '</span>';
+            }).join('');
+            host.querySelectorAll('.im-x').forEach(function(btn){
+                btn.onclick = function(){
+                    var th = btn.closest('.im-th');
+                    var id = th.getAttribute('data-img-id');
+                    var st = imgMgrState[hostId];
+                    st.removed[id] = !st.removed[id];
+                    th.classList.toggle('rm', !!st.removed[id]);
+                    btn.title = st.removed[id] ? 'Removal pending — click to keep it' : 'Remove this image (applies when you save)';
+                };
+            });
+        },
+        removeIds: function(hostId){
+            var st = imgMgrState[hostId];
+            if(!st) return [];
+            return Object.keys(st.removed).filter(function(k){ return st.removed[k] && k !== 'null'; });
+        },
+        clear: function(hostId){
+            var host = document.getElementById(hostId);
+            if(host){ host.innerHTML=''; host.style.display='none'; }
+            delete imgMgrState[hostId];
+        }
+    };
+
+    // ---------- Bank chip picker (edit surfaces) ----------
+    // Same chips the payment modal records with, for RE-tagging which bank an online payment
+    // left from. Selection state lives per host; value() returns the picked id (string) or null.
+    // A pick can be switched but never cleared — clicking the selected chip keeps it selected,
+    // matching the backend rule that an online payment always carries a bank.
+    var bankPickState = {};
+    window.hubBankChips = {
+        render: function(hostId, selectedId){
+            var host = document.getElementById(hostId);
+            if(!host) return;
+            bankPickState[hostId] = selectedId != null ? String(selectedId) : null;
+            host.innerHTML = BANKS.map(function(b){
+                var on = String(b.id) === bankPickState[hostId];
+                return '<span class="bankchip'+(on?' on':'')+'" data-bank="'+b.id+'">'+(b.short_code||b.name)+'</span>';
+            }).join('');
+            host.querySelectorAll('.bankchip').forEach(function(chip){
+                chip.onclick = function(){
+                    bankPickState[hostId] = chip.getAttribute('data-bank');
+                    host.querySelectorAll('.bankchip').forEach(function(c){ c.classList.remove('on'); });
+                    chip.classList.add('on');
+                };
+            });
+        },
+        value: function(hostId){ return bankPickState[hostId] || null; },
+        clear: function(hostId){
+            var host = document.getElementById(hostId);
+            if(host) host.innerHTML='';
+            delete bankPickState[hostId];
+        }
+    };
+
     // ---------- Purchase (by_total) ----------
     // Optional date: the day-header ＋ buttons prefill the day they sit on.
     window.hubOpenPurchase = function(date){
@@ -192,10 +320,11 @@
         document.getElementById('hubWtTitle').textContent = editing ? 'Edit purchase' : 'Purchase by weight';
         document.getElementById('hubWtSub').textContent = VNAME + (editing ? ' · editing line items' : ' · line items');
         document.getElementById('hubWtSubmit').textContent = editing ? 'Save changes' : 'Record purchase';
-        // Replacing the bill on an edit is optional; the existing image stays if nothing is picked.
-        // firstChild: the label's TEXT node only — the "view current" link stays intact beside it.
-        document.getElementById('hubWtBillLabel').firstChild.textContent = (editing ? 'Replace bill image (optional) ' : 'Bill image (optional) ');
-        document.getElementById('hubWtBillView').style.display = 'none';
+        // Editing shows the current images with per-image remove; picked files ADD images in
+        // both modes. hubImgMgr.render() is called from hubOpenWeightedEdit once the fetch lands.
+        document.getElementById('hubWtBillLabel').firstChild.textContent =
+            (editing ? 'Images — ✕ removes, picking files adds ' : 'Bill images (optional — pick several) ');
+        hubImgMgr.clear('hubWtImgs');
     }
 
     window.hubOpenWeighted = async function(date){
@@ -242,10 +371,7 @@
         document.getElementById('hubWtDate').value = t.transaction_date;
         document.getElementById('hubWtDesc').value = t.description || '';
         document.getElementById('hubWtAdj').value = t.adjustment_amount || 0;
-        if(t.bill_image){
-            var bv = document.getElementById('hubWtBillView');
-            bv.dataset.bill = t.bill_image; bv.style.display = '';
-        }
+        hubImgMgr.render('hubWtImgs', t.bill_images || []);
         lines.forEach(function(li){ hubWtAddLine(li); });
         hubWtTotal();
     };
@@ -309,7 +435,15 @@
         fd.append('transaction_date', document.getElementById('hubWtDate').value);
         fd.append('description', document.getElementById('hubWtDesc').value);
         fd.append('adjustment_amount', document.getElementById('hubWtAdj').value||'0');
-        var bill=document.getElementById('hubWtBill').files[0]; if(bill) fd.append('bill_image', bill);
+        // Images: picked files ADD (recording → bill_images[], editing → new_images[]);
+        // ✕-marked thumbnails from the edit view are removed on save.
+        var billFiles = document.getElementById('hubWtBill').files;
+        for(var bi=0; bi<billFiles.length; bi++){
+            fd.append(wtEditId ? 'new_images[]' : 'bill_images[]', billFiles[bi]);
+        }
+        if(wtEditId){
+            hubImgMgr.removeIds('hubWtImgs').forEach(function(id){ fd.append('remove_image_ids[]', id); });
+        }
         var i=0, ok=false;
         document.querySelectorAll('#hubWtLines .wt-line').forEach(function(r){
             var o=r.querySelector('.wt-prod').selectedOptions[0]; var q=parseFloat(r.querySelector('.wt-qty').value)||0; var rate=parseFloat(r.querySelector('.wt-rate').value)||0;
@@ -390,30 +524,30 @@
             var j=await r.json();
             if(!j.success) return errShow('hubRepErr', j.message||'Could not generate.');
             reportData=j.report; hubRenderReport(j.report);
-            document.getElementById('hubRepPrint').style.display=''; document.getElementById('hubRepCsv').style.display='';
+            // Nothing in the range = nothing to print or export; leave both hidden.
+            var has = !!reportHtml;
+            document.getElementById('hubRepPrint').style.display = has ? '' : 'none';
+            document.getElementById('hubRepCsv').style.display = has ? '' : 'none';
         }catch(e){ errShow('hubRepErr','Network error.'); }
     };
+    // Aug-2026: this used to be its own thin renderer, which is why the hub's print
+    // came out as unstyled text while the old vendor page printed a proper statement.
+    // Both now build the SAME markup via nfVendorReportHtml() (fin/partials/vendor-
+    // report-render), which is self-contained — it carries its own CSS, so it survives
+    // being written into a blank popup window that has none of this page's styles.
+    var reportHtml = '';
     function hubRenderReport(rep){
-        var v=(rep.vendors||[])[0];
-        var html='<div id="hubRepPrintable"><h3 style="margin:0 0 4px">'+VNAME+'</h3><div style="color:var(--ink3);font-size:12px;margin-bottom:10px">'+rep.date_from+' → '+rep.date_to+'</div>';
-        if(!v){ html+='<div class="empty">No activity in this range.</div></div>'; document.getElementById('hubRepOut').innerHTML=html; return; }
-        (v.daily_summary||[]).forEach(function(d){
-            html+='<div class="day-head" style="margin-top:8px"><b>'+d.date+'</b><span>📦 '+fmt2(d.total_purchases)+' · 💵 '+fmt2(d.total_payments)+'</span></div>';
-            html+='<table style="width:100%;border-collapse:collapse;margin-bottom:4px"><tbody>';
-            (d.transactions||[]).forEach(function(t){
-                html+='<tr><td style="padding:4px 8px;font-size:12px">'+(t.type==='purchase'?'📦 ':'💵 ')+(t.description||t.type)+(t.payment_mode?(' · '+t.payment_mode):'')+'</td><td style="padding:4px 8px;text-align:right;font-size:12px" class="num">'+fmt2(t.amount)+'</td></tr>';
-            });
-            html+='</tbody></table>';
+        reportHtml = window.nfVendorReportHtml(rep, {
+            vendorName: VNAME,
+            showPayments: document.getElementById('hubRepPay').checked
         });
-        html+='<div class="inv-total"><span>Purchases</span><span class="num">Rs. '+fmt2(v.total_purchases)+'</span></div>';
-        html+='<div class="inv-total" style="border-top:none;margin-top:0"><span>Payments</span><span class="num">Rs. '+fmt2(v.total_payments)+'</span></div>';
-        html+='<div class="inv-total" style="border-top:none;margin-top:0"><span>Balance now</span><span class="num">Rs. '+fmt2(v.current_balance)+'</span></div></div>';
-        document.getElementById('hubRepOut').innerHTML=html;
+        var out = document.getElementById('hubRepOut');
+        if(!reportHtml){ out.innerHTML = '<div class="empty">No activity in this range.</div>'; return; }
+        out.innerHTML = reportHtml;
     }
     window.hubReportPrint = function(){
-        var w=window.open('','_blank'); var c=document.getElementById('hubRepPrintable');
-        w.document.write('<html><head><title>'+VNAME+' report</title><style>body{font-family:Arial;padding:20px}table{width:100%;border-collapse:collapse}td{border-bottom:1px solid #eee}</style></head><body>'+(c?c.innerHTML:'')+'<div style="margin-top:20px;color:#888;font-size:11px">Nizami Farms</div></body></html>');
-        w.document.close(); w.focus(); setTimeout(function(){ w.print(); }, 300);
+        if(!reportHtml) return;
+        window.nfVendorReportPrint(reportHtml, VNAME + ' report');
     };
     window.hubReportCsv = function(){
         if(!reportData) return; var v=(reportData.vendors||[])[0]; if(!v) return;
@@ -433,25 +567,81 @@
         document.getElementById('hubEtDesc').value=t.desc||'';
         document.getElementById('hubEtTitle').textContent='Edit '+t.label;
         document.getElementById('hubEtBill').value='';
-        // Existing bill image — viewable while editing, kept unless a new file is picked.
-        var v=document.getElementById('hubEtBillView');
-        if(t.bill){ v.dataset.bill=t.bill; v.style.display=''; } else { v.style.display='none'; }
+        hubImgMgr.clear('hubEtImgs');
+        hubBankChips.clear('hubEtBankChips');
+        document.getElementById('hubEtBankWrap').style.display='none';
         open('hubEditTxn');
+        // Current images + bank tag arrive async (images carry the ids removal needs; the bank
+        // row only shows for ONLINE payments). A failed fetch leaves both off — the base edit
+        // still works, per-image removal and re-tagging simply aren't offered.
+        fetch('/finance/ledger/transaction/'+t.id, {headers:{'Accept':'application/json'}})
+            .then(function(r){ return r.json(); })
+            .then(function(j){
+                // Guard against the response landing after the user moved to ANOTHER row's edit.
+                if(String(document.getElementById('hubEtId').value) !== String(t.id)) return;
+                if(!(j && j.success && j.transaction)) return;
+                var tx = j.transaction;
+                hubImgMgr.render('hubEtImgs', tx.bill_images || []);
+                if(tx.is_vendor_payment && (tx.mode === 'online' || tx.receiving_account_id) && BANKS.length){
+                    hubBankChips.render('hubEtBankChips', tx.receiving_account_id);
+                    document.getElementById('hubEtBankWrap').style.display='';
+                }
+            })
+            .catch(function(){});
     };
+    // ⭐ ONE save path for a SIMPLE (no line items) vendor transaction. The Edit modal and the
+    // drawer's quick edit both go through this, so validation, the endpoint and the guards can
+    // never drift apart between the two surfaces.
+    //   fields: {id, transaction_date, amount, description,
+    //            newFiles: FileList|array (ADD these images),
+    //            removeImageIds: array    (take these off the row),
+    //            billFile: File|null      (legacy single REPLACE — old callers only)}
+    // Returns {ok:true} or {ok:false, message} — the caller decides where to show the message.
+    //
+    // ⚠ Never call this for a purchase that HAS line items: updateTransaction only recomputes the
+    // amount from items when items[] is posted, so a bare amount here would detach the stored
+    // total from its lines. Callers must route those to hubOpenWeightedEdit instead.
+    window.hubSaveVendorTxn = async function(fields){
+        if(!fields.transaction_date) return {ok:false, message:'Pick a date.'};
+        // Guarded on the client too, so a cleared box reads as an error rather than a 500: an
+        // empty amount reaches PHP as NULL and the column is NOT NULL.
+        if(!(parseFloat(fields.amount) > 0)) return {ok:false, message:'Enter an amount greater than zero.'};
+
+        var fd=new FormData(); fd.append('_token',csrf);
+        fd.append('transaction_date', fields.transaction_date);
+        fd.append('amount', fields.amount);
+        // Always sent, and every caller must PREFILL it: updateTransaction overwrites the
+        // description whenever the key is present, so posting a blank one wipes what was there.
+        fd.append('description', fields.description == null ? '' : fields.description);
+        var nf = fields.newFiles || [];
+        for(var i=0;i<nf.length;i++){ fd.append('new_images[]', nf[i]); }
+        (fields.removeImageIds || []).forEach(function(id){ fd.append('remove_image_ids[]', id); });
+        // Legacy single replacement — updateTransaction swaps the FIRST image for this file.
+        if(fields.billFile) fd.append('bill_image', fields.billFile);
+        // Bank re-tag (ONLINE payments only — callers only set this when chips were offered).
+        // The backend ignores it on purchases/cash rows and swaps the description's bank token.
+        if(fields.receivingAccountId) fd.append('receiving_account_id', fields.receivingAccountId);
+        try{
+            var r=await post('/finance/vendors/transaction/'+fields.id+'/update', fd, true);
+            if(r.status===422){ var j=await r.json(); return {ok:false, message: Object.values(j.errors||{}).flat()[0]||'Check the form.'}; }
+            var j2=await r.json();
+            return j2.success ? {ok:true} : {ok:false, message: j2.message||'Could not update.'};
+        }catch(e){ return {ok:false, message:'Network error.'}; }
+    };
+
     window.hubSubmitEditTxn = async function(){
         errHide('hubEtErr');
-        var fd=new FormData(); fd.append('_token',csrf);
-        fd.append('transaction_date', document.getElementById('hubEtDate').value);
-        fd.append('amount', document.getElementById('hubEtAmount').value);
-        fd.append('description', document.getElementById('hubEtDesc').value);
-        // Optional replacement — updateTransaction deletes the old file and stores the new one.
-        var etBill=document.getElementById('hubEtBill').files[0]; if(etBill) fd.append('bill_image', etBill);
-        try{
-            var r=await post('/finance/vendors/transaction/'+document.getElementById('hubEtId').value+'/update', fd, true);
-            if(r.status===422){ var j=await r.json(); return errShow('hubEtErr', Object.values(j.errors||{}).flat()[0]||'Check the form.'); }
-            var j2=await r.json(); if(j2.success) return done('Transaction updated');
-            errShow('hubEtErr', j2.message||'Could not update.');
-        }catch(e){ errShow('hubEtErr','Network error.'); }
+        var res = await window.hubSaveVendorTxn({
+            id: document.getElementById('hubEtId').value,
+            transaction_date: document.getElementById('hubEtDate').value,
+            amount: document.getElementById('hubEtAmount').value,
+            description: document.getElementById('hubEtDesc').value,
+            newFiles: document.getElementById('hubEtBill').files,
+            removeImageIds: hubImgMgr.removeIds('hubEtImgs'),
+            receivingAccountId: hubBankChips.value('hubEtBankChips'),
+        });
+        if(res.ok) return done('Transaction updated');
+        errShow('hubEtErr', res.message);
     };
     window.hubDeleteTxn = async function(id){
         if(!confirm('Delete this transaction?\n\nIt reverses the balances and removes the row. This cannot be undone.')) return;

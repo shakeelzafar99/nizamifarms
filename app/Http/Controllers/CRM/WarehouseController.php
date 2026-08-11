@@ -9,6 +9,7 @@ use Illuminate\Support\Facades\DB;
 use App\Models\CRM\WarehouseInventoryModel;
 use App\Models\CRM\WarehouseInventoryLogModel;
 use App\Models\CRM\WarehouseTransferModel;
+use App\Models\CRM\WarehouseTransferRequestModel;
 use App\Models\CRM\ProductModel;
 use App\Models\CRM\ProductVariantModel;
 use App\Models\CRM\ProductBatchModel;
@@ -315,6 +316,72 @@ class WarehouseController extends Controller
     }
 
     /**
+     * ⭐ THE ONE PLACE stock actually leaves the warehouse for the store.
+     *
+     * Extracted from initiateTransfer() so that accepting a transfer REQUEST goes
+     * through exactly the same steps — stock check, transfer row, warehouse ledger
+     * debit — instead of growing a second copy that can drift. Behaviour is
+     * byte-identical to what initiateTransfer did before the extraction.
+     *
+     * ⚠ Deliberately does NOT open its own DB transaction: the caller owns it, so
+     * accepting a request can stamp the request row and create the transfer
+     * atomically. Callers MUST wrap this in one.
+     *
+     * Returns ['ok' => false, 'message' => …, 'available' => int] when the warehouse
+     * is short (caller rolls back and answers 400), otherwise
+     * ['ok' => true, 'transfer' => Model, 'warehouse_qty_after' => int].
+     */
+    private function performTransferInitiation(int $productId, ?int $variantId, int $businessUnitId, int $quantity, ?string $notes, int $userId): array
+    {
+        // ⭐ Always resolve variant_id to the product's first variant if not provided
+        if (!$variantId) {
+            $firstVariant = ProductVariantModel::where('product_id', $productId)->first();
+            if ($firstVariant) {
+                $variantId = $firstVariant->id;
+            }
+        }
+
+        // Check warehouse has enough stock
+        $inventory = WarehouseInventoryModel::getOrCreate($productId, $variantId, $businessUnitId);
+
+        if ($inventory->quantity < $quantity) {
+            return [
+                'ok' => false,
+                'message' => "Insufficient warehouse stock. Available: {$inventory->quantity}, Requested: {$quantity}",
+                'available' => (int) $inventory->quantity,
+            ];
+        }
+
+        // Create the pending transfer record FIRST so the warehouse log row can carry
+        // its id in reference_id — that is what lets the warehouse ledger view show
+        // "Transfer #12 · accepted by X". (Historical rows were logged before the
+        // transfer existed and have reference_id = NULL; the ledger endpoint falls back
+        // to an unambiguous quantity+timestamp match for those.)
+        $transfer = WarehouseTransferModel::create([
+            'product_id' => $productId,
+            'product_variant_id' => $variantId,
+            'business_unit_id' => $businessUnitId,
+            'from_location' => 'warehouse',
+            'to_location' => 'store',
+            'quantity' => $quantity,
+            'status' => WarehouseTransferModel::STATUS_PENDING,
+            'requested_by' => $userId,
+            'notes' => $notes,
+        ]);
+
+        // Deduct from warehouse immediately
+        $inventory->adjustQuantity(-$quantity, 'transfer',
+            "Transfer to store (pending approval): {$quantity} units",
+            'transfer_to_store', $transfer->id);
+
+        return [
+            'ok' => true,
+            'transfer' => $transfer,
+            'warehouse_qty_after' => (int) $inventory->quantity,
+        ];
+    }
+
+    /**
      * Initiate a transfer from warehouse to store (requires approval)
      */
     public function initiateTransfer(Request $request)
@@ -327,56 +394,24 @@ class WarehouseController extends Controller
                 'quantity' => 'required|integer|min:1',
                 'notes' => 'nullable|string|max:500',
             ]);
-            
-            $productId = $request->input('product_id');
-            $variantId = $request->input('product_variant_id');
-            $businessUnitId = $request->input('business_unit_id');
-            $quantity = $request->input('quantity');
-            $notes = $request->input('notes');
-            
-            // ⭐ Always resolve variant_id to the product's first variant if not provided
-            if (!$variantId) {
-                $firstVariant = ProductVariantModel::where('product_id', $productId)->first();
-                if ($firstVariant) {
-                    $variantId = $firstVariant->id;
-                }
-            }
-            
-            DB::beginTransaction();
-            
-            // Check warehouse has enough stock
-            $inventory = WarehouseInventoryModel::getOrCreate($productId, $variantId, $businessUnitId);
-            
-            if ($inventory->quantity < $quantity) {
-                DB::rollBack();
-                return response()->json([
-                    'success' => false,
-                    'message' => "Insufficient warehouse stock. Available: {$inventory->quantity}, Requested: {$quantity}"
-                ], 400);
-            }
-            
-            // Create the pending transfer record FIRST so the warehouse log row can carry
-            // its id in reference_id — that is what lets the warehouse ledger view show
-            // "Transfer #12 · accepted by X". (Historical rows were logged before the
-            // transfer existed and have reference_id = NULL; the ledger endpoint falls back
-            // to an unambiguous quantity+timestamp match for those.)
-            // Same transaction, same checks, same rollback path — only the order changed.
-            $transfer = WarehouseTransferModel::create([
-                'product_id' => $productId,
-                'product_variant_id' => $variantId,
-                'business_unit_id' => $businessUnitId,
-                'from_location' => 'warehouse',
-                'to_location' => 'store',
-                'quantity' => $quantity,
-                'status' => WarehouseTransferModel::STATUS_PENDING,
-                'requested_by' => auth()->id(),
-                'notes' => $notes,
-            ]);
 
-            // Deduct from warehouse immediately
-            $inventory->adjustQuantity(-$quantity, 'transfer',
-                "Transfer to store (pending approval): {$quantity} units",
-                'transfer_to_store', $transfer->id);
+            $quantity = (int) $request->input('quantity');
+
+            DB::beginTransaction();
+
+            $result = $this->performTransferInitiation(
+                (int) $request->input('product_id'),
+                $request->input('product_variant_id') ? (int) $request->input('product_variant_id') : null,
+                (int) $request->input('business_unit_id'),
+                $quantity,
+                $request->input('notes'),
+                (int) auth()->id()
+            );
+
+            if (!$result['ok']) {
+                DB::rollBack();
+                return response()->json(['success' => false, 'message' => $result['message']], 400);
+            }
 
             DB::commit();
 
@@ -390,13 +425,13 @@ class WarehouseController extends Controller
                 'success' => true,
                 'message' => "Transfer of {$quantity} units initiated. Pending admin approval.",
                 'transfer' => [
-                    'id' => $transfer->id,
-                    'quantity' => $transfer->quantity,
-                    'status' => $transfer->status,
-                    'warehouse_qty_after' => $inventory->quantity,
+                    'id' => $result['transfer']->id,
+                    'quantity' => $result['transfer']->quantity,
+                    'status' => $result['transfer']->status,
+                    'warehouse_qty_after' => $result['warehouse_qty_after'],
                 ]
             ]);
-            
+
         } catch (\Exception $e) {
             DB::rollBack();
             \Log::error('Failed to initiate transfer', ['error' => $e->getMessage()]);
@@ -556,6 +591,427 @@ class WarehouseController extends Controller
             DB::rollBack();
             \Log::error('Failed to reject transfer', ['error' => $e->getMessage()]);
             return response()->json(['success' => false, 'message' => 'Failed to reject: ' . $e->getMessage()], 500);
+        }
+    }
+
+    // ═════════════════════════════════════════════════════════════════════════
+    // TRANSFER REQUESTS — "please send me stock", the step BEFORE a transfer.
+    //
+    // These are the ONE implementation. The web (KhaasController) delegates into
+    // the very same methods rather than keeping its own copy — the same pattern
+    // KhaasController::createDemand already uses for production demands. That is
+    // deliberate: t_crm_warehouse_transfer grew FIVE approve surfaces with two
+    // divergent implementations, and this avoids repeating that.
+    //
+    // ⭐ Requests move NO stock. Only acceptTransferRequest() does, and it does so
+    // by calling performTransferInitiation() — the same code a direct transfer
+    // uses. Declining/cancelling can never touch inventory.
+    // ═════════════════════════════════════════════════════════════════════════
+
+    /**
+     * Who may ASK for stock: the frozen manager (khaas mode) and store staff.
+     *
+     * Store users are included on purpose — the frozen inventory screen in store
+     * mode is deliberately open to ALL store users (they are the ones who notice
+     * the shelf is empty), and many of them do NOT hold access_khaas_mode. This is
+     * the same triple check KhaasController::getStoreInventoryLog uses, so the
+     * people who can SEE the stock are exactly the people who can ask for more.
+     */
+    private function canRequestTransfer($user): bool
+    {
+        if (!$user) {
+            return false;
+        }
+        return $user->hasMobilePermission('access_khaas_mode')
+            || $user->hasMobilePermission('access_store_mode')
+            || $user->hasMobilePermission('view_khaas_store_inventory');
+    }
+
+    /**
+     * Who may ACCEPT/DECLINE a request: the warehouse side only (khaas mode).
+     * Accepting physically moves stock out of the warehouse, so it is NOT opened
+     * up to store users the way transfer *approval* (receiving) is.
+     */
+    private function canFulfilTransferRequest($user): bool
+    {
+        return $user && $user->hasMobilePermission('access_khaas_mode');
+    }
+
+    /**
+     * Shape one request row for both the mobile list and the web banner.
+     */
+    private function formatTransferRequest($r, array $warehouseQtyByProduct = []): array
+    {
+        // (int): Carbon 3's diffInHours returns a FLOAT (1.5000005…) — uncast, the
+        // mobile chip would read "waiting 25.4166667h".
+        $ageHours = $r->created_at ? (int) abs($r->created_at->diffInHours(now())) : 0;
+
+        return [
+            'id' => $r->id,
+            'product_id' => $r->product_id,
+            'product_variant_id' => $r->product_variant_id,
+            'product_name' => $r->product?->title ?? 'Unknown',
+            'variant_name' => $r->variant?->title ?? null,
+            'sku' => $r->variant?->sku ?? null,
+            'quantity' => (int) $r->quantity,
+            'notes' => $r->notes,
+            'requested_by' => $r->requester?->fullname ?? 'Unknown',
+            'requested_by_id' => $r->requested_by,
+            'created_at' => $r->created_at?->format('Y-m-d H:i'),
+            'created_at_label' => $r->created_at?->format('M d, h:i A'),
+            'updated_at_label' => $r->updated_at?->format('M d, h:i A'),
+            'was_edited' => $r->updated_at && $r->created_at && $r->updated_at->gt($r->created_at->copy()->addSeconds(5)),
+            'age_hours' => $ageHours,
+            // Live warehouse stock, so the person accepting sees what he can actually
+            // send without leaving the screen.
+            'warehouse_qty' => $warehouseQtyByProduct[$r->product_id] ?? null,
+        ];
+    }
+
+    /**
+     * GET /api/warehouse/transfer-requests/pending
+     * Open requests for a BU — the warehouse incharge's work list.
+     */
+    public function getPendingTransferRequests(Request $request)
+    {
+        try {
+            if (!WarehouseTransferRequestModel::supported()) {
+                return response()->json(['success' => true, 'requests' => [], 'count' => 0]);
+            }
+
+            $businessUnitId = $request->input('business_unit_id');
+
+            $query = WarehouseTransferRequestModel::where('status', WarehouseTransferRequestModel::STATUS_PENDING)
+                ->with(['product:id,title', 'variant:id,title,sku', 'requester:id,fullname'])
+                ->orderBy('created_at', 'asc');
+
+            if ($businessUnitId) {
+                $query->where('business_unit_id', $businessUnitId);
+            }
+
+            $requests = $query->get();
+
+            // One query for the live warehouse numbers rather than one per row.
+            // BU scope comes from the requests themselves, so the no-param call
+            // (the floating banner omits business_unit_id) gets real numbers too.
+            $warehouseQty = [];
+            if ($requests->isNotEmpty()) {
+                $warehouseQty = WarehouseInventoryModel::whereIn('business_unit_id', $requests->pluck('business_unit_id')->unique())
+                    ->whereIn('product_id', $requests->pluck('product_id')->unique())
+                    ->where('is_active', true)
+                    ->get()
+                    ->groupBy('product_id')
+                    ->map(fn($rows) => (int) $rows->sum('quantity'))
+                    ->toArray();
+            }
+
+            $payload = $requests->map(fn($r) => $this->formatTransferRequest($r, $warehouseQty))->values();
+
+            return response()->json([
+                'success' => true,
+                'requests' => $payload,
+                'count' => $payload->count(),
+            ]);
+
+        } catch (\Exception $e) {
+            \Log::error('Failed to get pending transfer requests', ['error' => $e->getMessage()]);
+            return response()->json(['success' => false, 'message' => 'Failed to load requests'], 500);
+        }
+    }
+
+    /**
+     * POST /api/warehouse/transfer-request
+     * Create a request, or EDIT the existing open one for the same product.
+     *
+     * ⭐ Owner ruling: one open request per product. Pressing "Request" again on a
+     * product that already has one UPDATES it (the quantity changed) rather than
+     * queuing a second ask — otherwise the warehouse incharge would see two rows
+     * for one shelf gap and have to guess which is current. created_at (and so the
+     * ageing chip) is preserved, and requested_by stays the ORIGINAL asker.
+     */
+    public function createTransferRequest(Request $request)
+    {
+        try {
+            if (!WarehouseTransferRequestModel::supported()) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Transfer requests are not enabled yet. Please run the pending database update.',
+                ], 400);
+            }
+
+            if (!$this->canRequestTransfer(Auth::user())) {
+                return response()->json(['success' => false, 'message' => 'You do not have access to request transfers'], 403);
+            }
+
+            $request->validate([
+                'product_id' => 'required|integer|exists:t_crm_prod_product,id',
+                'product_variant_id' => 'nullable|integer',
+                'business_unit_id' => 'required|integer',
+                'quantity' => 'required|integer|min:1',
+                'notes' => 'nullable|string|max:500',
+            ]);
+
+            $productId = (int) $request->input('product_id');
+            $businessUnitId = (int) $request->input('business_unit_id');
+            $quantity = (int) $request->input('quantity');
+            $variantId = $request->input('product_variant_id') ? (int) $request->input('product_variant_id') : null;
+
+            if (!$variantId) {
+                $variantId = ProductVariantModel::where('product_id', $productId)->value('id');
+            }
+
+            $isEdit = false;
+
+            DB::beginTransaction();
+            try {
+                // Lock the open row (if any) so a simultaneous accept can't slip
+                // between the check and the update.
+                $existing = WarehouseTransferRequestModel::where('product_id', $productId)
+                    ->where('business_unit_id', $businessUnitId)
+                    ->where('status', WarehouseTransferRequestModel::STATUS_PENDING)
+                    ->lockForUpdate()
+                    ->first();
+
+                if ($existing) {
+                    $isEdit = true;
+                    $existing->update([
+                        'quantity' => $quantity,
+                        'notes' => $request->input('notes'),
+                        'product_variant_id' => $variantId ?: $existing->product_variant_id,
+                    ]);
+                    $req = $existing;
+                } else {
+                    $req = WarehouseTransferRequestModel::create([
+                        'product_id' => $productId,
+                        'product_variant_id' => $variantId,
+                        'business_unit_id' => $businessUnitId,
+                        'quantity' => $quantity,
+                        'status' => WarehouseTransferRequestModel::STATUS_PENDING,
+                        'notes' => $request->input('notes'),
+                        'requested_by' => (int) Auth::id(),
+                    ]);
+                }
+
+                DB::commit();
+            } catch (\Illuminate\Database\UniqueConstraintViolationException $e) {
+                // uq_wtr_one_pending fired: someone created the open request in the
+                // instant between our SELECT and INSERT. Report it as the edit it
+                // should have been rather than a scary 500.
+                DB::rollBack();
+                return response()->json([
+                    'success' => false,
+                    'message' => 'A request for this product was just created by someone else. Reload to see it.',
+                ], 409);
+            }
+
+            // Push only on CREATE. An edit surfaces through the 30s poll — re-pushing
+            // on every typo correction would train people to ignore the alert.
+            if (!$isEdit) {
+                try {
+                    app(\App\Services\FirebaseService::class)->notifyTransferRequest($req);
+                } catch (\Throwable $e) {
+                    // A failed push must never fail the request itself.
+                    \Log::warning('Transfer request push failed', ['error' => $e->getMessage()]);
+                }
+            }
+
+            return response()->json([
+                'success' => true,
+                'message' => $isEdit
+                    ? "Request updated to {$quantity} units."
+                    : "Request for {$quantity} units sent to the warehouse.",
+                'was_edit' => $isEdit,
+                'request' => ['id' => $req->id, 'quantity' => $req->quantity, 'status' => $req->status],
+            ]);
+
+        } catch (\Illuminate\Validation\ValidationException $e) {
+            throw $e;
+        } catch (\Exception $e) {
+            \Log::error('Failed to create transfer request', ['error' => $e->getMessage()]);
+            return response()->json(['success' => false, 'message' => 'Failed to send request: ' . $e->getMessage()], 500);
+        }
+    }
+
+    /**
+     * POST /api/warehouse/transfer-request/{id}/accept   {quantity?, notes?}
+     *
+     * ⭐ THE quantity may be edited here — and ONLY here. Once a transfer exists the
+     * quantity is locked (as it always has been), because by then the stock has
+     * physically left the warehouse. Editing at accept time is safe precisely
+     * because nothing has moved yet.
+     */
+    public function acceptTransferRequest(Request $request, $requestId)
+    {
+        try {
+            if (!WarehouseTransferRequestModel::supported()) {
+                return response()->json(['success' => false, 'message' => 'Transfer requests are not enabled yet'], 400);
+            }
+
+            if (!$this->canFulfilTransferRequest(Auth::user())) {
+                return response()->json(['success' => false, 'message' => 'Only frozen/warehouse users can accept requests'], 403);
+            }
+
+            $request->validate([
+                'quantity' => 'nullable|integer|min:1',
+            ]);
+
+            DB::beginTransaction();
+
+            $req = WarehouseTransferRequestModel::where('id', $requestId)->lockForUpdate()->first();
+
+            if (!$req) {
+                DB::rollBack();
+                return response()->json(['success' => false, 'message' => 'Request not found'], 404);
+            }
+
+            // Re-checked INSIDE the lock: the requester may have cancelled, or another
+            // warehouse user may have accepted, while this screen sat open.
+            if ($req->status !== WarehouseTransferRequestModel::STATUS_PENDING) {
+                DB::rollBack();
+                return response()->json([
+                    'success' => false,
+                    'message' => "This request was already {$req->status}.",
+                ], 400);
+            }
+
+            $quantity = $request->filled('quantity') ? (int) $request->input('quantity') : (int) $req->quantity;
+
+            // Provenance on the transfer itself, so the store — and the warehouse
+            // ledger — can see it came from a request and what was originally asked.
+            $askedNote = "Per request #{$req->id} by " . ($req->requester?->fullname ?? 'staff');
+            if ($quantity !== (int) $req->quantity) {
+                $askedNote .= " (asked {$req->quantity}, sending {$quantity})";
+            }
+            $transferNotes = $req->notes ? ($askedNote . ' — ' . $req->notes) : $askedNote;
+
+            $result = $this->performTransferInitiation(
+                (int) $req->product_id,
+                $req->product_variant_id ? (int) $req->product_variant_id : null,
+                (int) $req->business_unit_id,
+                $quantity,
+                $transferNotes,
+                // The ACCEPTER is the transfer's requester: he is the one physically
+                // moving the stock, and the store's "Requested by" line should name
+                // whoever it can chase about the packet. The original asker stays on
+                // the request row.
+                (int) Auth::id()
+            );
+
+            if (!$result['ok']) {
+                DB::rollBack();
+                return response()->json([
+                    'success' => false,
+                    'message' => $result['message'],
+                    'available' => $result['available'] ?? null,
+                ], 400);
+            }
+
+            $req->update([
+                'status' => WarehouseTransferRequestModel::STATUS_ACCEPTED,
+                'accepted_by' => (int) Auth::id(),
+                'accepted_at' => now(),
+                'accepted_quantity' => $quantity,
+                'transfer_id' => $result['transfer']->id,
+            ]);
+
+            DB::commit();
+
+            return response()->json([
+                'success' => true,
+                'message' => "{$quantity} units sent to the store. Awaiting store confirmation.",
+                'transfer' => [
+                    'id' => $result['transfer']->id,
+                    'quantity' => $quantity,
+                    'warehouse_qty_after' => $result['warehouse_qty_after'],
+                ],
+            ]);
+
+        } catch (\Illuminate\Validation\ValidationException $e) {
+            DB::rollBack();
+            throw $e;
+        } catch (\Exception $e) {
+            DB::rollBack();
+            \Log::error('Failed to accept transfer request', ['error' => $e->getMessage()]);
+            return response()->json(['success' => false, 'message' => 'Failed to accept request: ' . $e->getMessage()], 500);
+        }
+    }
+
+    /**
+     * POST /api/warehouse/transfer-request/{id}/decline  {reason?}
+     * Stamps the row and nothing else — no inventory, no ledger, by construction.
+     */
+    public function declineTransferRequest(Request $request, $requestId)
+    {
+        try {
+            if (!WarehouseTransferRequestModel::supported()) {
+                return response()->json(['success' => false, 'message' => 'Transfer requests are not enabled yet'], 400);
+            }
+
+            if (!$this->canFulfilTransferRequest(Auth::user())) {
+                return response()->json(['success' => false, 'message' => 'Only frozen/warehouse users can decline requests'], 403);
+            }
+
+            $req = WarehouseTransferRequestModel::find($requestId);
+            if (!$req) {
+                return response()->json(['success' => false, 'message' => 'Request not found'], 404);
+            }
+            if ($req->status !== WarehouseTransferRequestModel::STATUS_PENDING) {
+                return response()->json(['success' => false, 'message' => "This request was already {$req->status}."], 400);
+            }
+
+            $req->update([
+                'status' => WarehouseTransferRequestModel::STATUS_DECLINED,
+                'declined_by' => (int) Auth::id(),
+                'declined_at' => now(),
+                'decline_reason' => $request->input('reason') ?: 'No reason given',
+            ]);
+
+            return response()->json(['success' => true, 'message' => 'Request declined.']);
+
+        } catch (\Exception $e) {
+            \Log::error('Failed to decline transfer request', ['error' => $e->getMessage()]);
+            return response()->json(['success' => false, 'message' => 'Failed to decline: ' . $e->getMessage()], 500);
+        }
+    }
+
+    /**
+     * POST /api/warehouse/transfer-request/{id}/cancel
+     * The asker changed their mind. Also allowed for khaas users so a stale request
+     * nobody wants can be cleared without hunting down its author.
+     */
+    public function cancelTransferRequest(Request $request, $requestId)
+    {
+        try {
+            if (!WarehouseTransferRequestModel::supported()) {
+                return response()->json(['success' => false, 'message' => 'Transfer requests are not enabled yet'], 400);
+            }
+
+            $req = WarehouseTransferRequestModel::find($requestId);
+            if (!$req) {
+                return response()->json(['success' => false, 'message' => 'Request not found'], 404);
+            }
+
+            $user = Auth::user();
+            $isOwner = (int) $req->requested_by === (int) Auth::id();
+            if (!$isOwner && !$this->canFulfilTransferRequest($user)) {
+                return response()->json(['success' => false, 'message' => 'You can only cancel your own requests'], 403);
+            }
+
+            if ($req->status !== WarehouseTransferRequestModel::STATUS_PENDING) {
+                return response()->json(['success' => false, 'message' => "This request was already {$req->status}."], 400);
+            }
+
+            $req->update([
+                'status' => WarehouseTransferRequestModel::STATUS_CANCELLED,
+                'cancelled_by' => (int) Auth::id(),
+                'cancelled_at' => now(),
+            ]);
+
+            return response()->json(['success' => true, 'message' => 'Request cancelled.']);
+
+        } catch (\Exception $e) {
+            \Log::error('Failed to cancel transfer request', ['error' => $e->getMessage()]);
+            return response()->json(['success' => false, 'message' => 'Failed to cancel: ' . $e->getMessage()], 500);
         }
     }
 
@@ -1184,13 +1640,24 @@ class WarehouseController extends Controller
                 ->where('status', 'submitted')
                 ->count();
 
+            // Products tab: stock the store has asked for and nobody has sent yet.
+            // Gated on the table existing so an APK polling this before the SQL is
+            // run just sees zero instead of a 500 that would blank all three badges.
+            $pendingRequests = 0;
+            if (WarehouseTransferRequestModel::supported()) {
+                $pendingRequests = WarehouseTransferRequestModel::where('business_unit_id', $businessUnitId)
+                    ->where('status', WarehouseTransferRequestModel::STATUS_PENDING)
+                    ->count();
+            }
+
             return response()->json([
                 'success' => true,
                 'pending_receive' => $pendingReceive,
                 'pending_demand' => $pendingDemand,
+                'pending_transfer_requests' => $pendingRequests,
             ]);
         } catch (\Exception $e) {
-            return response()->json(['success' => true, 'pending_receive' => 0, 'pending_demand' => 0]);
+            return response()->json(['success' => true, 'pending_receive' => 0, 'pending_demand' => 0, 'pending_transfer_requests' => 0]);
         }
     }
 

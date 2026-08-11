@@ -39,6 +39,12 @@ use Illuminate\Support\Str;
  *    can safely deploy this code with the master switch off and
  *    inspect what would be queued via t_app_webhook_events.)
  *
+ * 5. Held until dispatched (Aug-2026) — a status the Status Hub
+ *    flags with `customer_app_hold_until_dispatch` is masked as
+ *    `processing` while the order has no calculated ETA, and the
+ *    real status is released by emitDispatchStatus() when Dispatch
+ *    is pressed. Applies to customer-app-scope (SH-) orders only.
+ *
  * Hook point: call emitStatusChange() at the very end of
  * OrderModel::changeStatus(), AFTER the DB transaction has
  * committed. See OrderModel::changeStatus() for the wiring.
@@ -76,7 +82,7 @@ class CustomerAppWebhookEmitter
                 return;
             }
 
-            $isFirstEvent  = $this->isFirstEventForOrder($order);
+            $isFirstEvent  = $this->isFirstEventForOrder((int) $order->id);
             $rawNfStatus   = $order->order_status;
             $rules         = app(\App\Services\CRM\OrderStatusRuleService::class);
 
@@ -87,10 +93,18 @@ class CustomerAppWebhookEmitter
                 return;
             }
 
+            // Status Hub (Aug-2026) — hold until dispatched. `out_for_delivery` is set early,
+            // while the order is still being loaded, so a status flagged in the Hub is masked
+            // (customer keeps seeing `processing`) until an ETA exists. The real status is
+            // pushed by emitDispatchStatus() the moment Dispatch is pressed.
+            $isDispatched = $this->orderIsDispatched($order);
+            $isHeldBack   = !$isFirstEvent
+                && $rules->masksUntilDispatch($order->order_number, $rawNfStatus, $isDispatched);
+
             // Otherwise send the alias if one is configured, else the raw code (as before).
             $customerStatus = $isFirstEvent
                 ? config('customer_app.first_event_status_override', 'accepted')
-                : ($rules->customerAlias($rawNfStatus) ?? $rawNfStatus);
+                : $rules->customerFacingStatus($order->order_number, $rawNfStatus, $isDispatched);
 
             // previous_status must not leak internal steps either: alias it, and if the
             // previous status was itself hidden from the customer app, send null (from the
@@ -100,6 +114,14 @@ class CustomerAppWebhookEmitter
                 $customerPrevious = $rules->sendToCustomerApp($previousNfStatus)
                     ? ($rules->customerAlias($previousNfStatus) ?? $previousNfStatus)
                     : null;
+            }
+
+            // A masked step that lands on the status the customer is ALREADY seeing tells
+            // them nothing (e.g. on_van -> out_for_delivery, both shown as `processing`), so
+            // it is dropped rather than queued as a no-change event. Deliberately scoped to
+            // the masked path only: unmasked flows keep emitting exactly what they do today.
+            if ($isHeldBack && $customerStatus === $customerPrevious) {
+                return;
             }
 
             $payload = $this->buildPayload($order, $customerStatus, $customerPrevious, $isFirstEvent);
@@ -167,12 +189,32 @@ class CustomerAppWebhookEmitter
      * so a temporarily-down customer app doesn't cause us to misclassify
      * the next emit as "first" once it recovers.
      */
-    private function isFirstEventForOrder(OrderModel $order): bool
+    private function isFirstEventForOrder(int $orderId): bool
     {
         return !DB::table('t_app_webhook_events')
-            ->where('order_id', $order->id)
+            ->where('order_id', $orderId)
             ->where('target', 'customer_app')
             ->exists();
+    }
+
+    /**
+     * Has this order actually been dispatched — i.e. has a route ETA been calculated
+     * for it? Read fresh from the row rather than the in-memory model, because
+     * changeStatus() may have just rewritten the stamp and a stale attribute would
+     * mis-classify the order.
+     *
+     * Fails OPEN (true = "dispatched" = no masking): if we cannot tell, the customer
+     * app gets exactly what it got before this feature existed.
+     */
+    private function orderIsDispatched(OrderModel $order): bool
+    {
+        try {
+            return !empty(
+                DB::table('t_crm_prod_order')->where('id', $order->id)->value('eta_calculated_at')
+            );
+        } catch (\Throwable $e) {
+            return true;
+        }
     }
 
     /**
@@ -211,6 +253,139 @@ class CustomerAppWebhookEmitter
                 'eta_window'      => $this->buildEtaWindowForOrder($order),
             ],
         ];
+    }
+
+    /**
+     * The order has just been DISPATCHED — release the status the customer app has
+     * been held back from (Aug-2026).
+     *
+     * Called from RiderController::calculateDeliveryEtas once per stop, right after
+     * `estimated_delivery_at` is written and ONLY on that stop's first dispatch.
+     * This is the moment `out_for_delivery` becomes true for the customer: ops set
+     * the status early (order still being loaded), the emitter masked it as
+     * `processing`, and now there is a real rider, a real route and a real ETA.
+     *
+     * Emitted BEFORE the eta_updated event for the same order so the outbox — drained
+     * in id order — delivers status-then-ETA.
+     *
+     * Unlike emitEtaUpdate() this is a STATUS event, so it is NOT gated by
+     * `emit_eta_updates`; it is gated by the Hub's hold flag instead. If the flag is
+     * off, the real status already went out at status-change time and emitting here
+     * would duplicate it — so this becomes a no-op. Same non-fatal contract as
+     * everything else in this class.
+     *
+     * @param int    $orderId
+     * @param string $orderNumber          NF order_number (e.g. SH-1234).
+     * @param string $rawNfStatus          The order's current raw NF status.
+     * @param mixed  $estimatedDeliveryAt  The ETA just calculated for this stop.
+     */
+    public function emitDispatchStatus(
+        int $orderId,
+        string $orderNumber,
+        string $rawNfStatus,
+        $estimatedDeliveryAt
+    ): void {
+        try {
+            if (!config('customer_app.enabled', true)) {
+                return;
+            }
+            if (!$this->orderNumberInScope($orderNumber)) {
+                return;
+            }
+
+            $rules = app(\App\Services\CRM\OrderStatusRuleService::class);
+
+            // Was this status being held from the customer (i.e. pre-dispatch)? If not,
+            // they already have the real status and there is nothing to release.
+            if (!$rules->masksUntilDispatch($orderNumber, $rawNfStatus, false)) {
+                return;
+            }
+            if (!$rules->sendToCustomerApp($rawNfStatus)) {
+                return;
+            }
+
+            // Preserve the contract's "the first thing you ever hear about an order is
+            // 'accepted'" invariant, even in the pathological case where no earlier event
+            // was ever queued for this order.
+            $isFirstEvent = $this->isFirstEventForOrder($orderId);
+
+            $customerStatus = $isFirstEvent
+                ? (string) config('customer_app.first_event_status_override', 'accepted')
+                : ($rules->customerAlias($rawNfStatus) ?? $rawNfStatus);
+
+            // What they have been seeing all this time (the masked value).
+            $customerPrevious = $isFirstEvent
+                ? null
+                : $rules->customerFacingStatus($orderNumber, $rawNfStatus, false);
+
+            if ($customerPrevious === $customerStatus) {
+                return; // nothing would change on their timeline
+            }
+
+            // Idempotence, independent of the caller. The dispatch loop already skips
+            // stops it is merely re-timing, but "cancel dispatch" CLEARS eta_calculated_at
+            // — so pressing Dispatch again looks like a first dispatch and would announce
+            // out_for_delivery a second time, duplicating a row on the customer's
+            // timeline. If the last thing we told them was already this status, stay quiet.
+            $lastStatusPayload = DB::table('t_app_webhook_events')
+                ->where('order_id', $orderId)
+                ->where('target', 'customer_app')
+                ->where('event_type', self::EVENT_STATUS_CHANGED)
+                ->orderByDesc('id')
+                ->value('payload');
+
+            if (!empty($lastStatusPayload)) {
+                $lastStatus = json_decode($lastStatusPayload, true)['data']['status'] ?? null;
+                if ($lastStatus === $customerStatus) {
+                    return;
+                }
+            }
+
+            $stripPrefix = (string) config('customer_app.strip_prefix_for_payload', 'SH-');
+            $bareNumber  = $stripPrefix !== '' && Str::startsWith($orderNumber, $stripPrefix)
+                ? substr($orderNumber, strlen($stripPrefix))
+                : $orderNumber;
+
+            $payload = [
+                'event_uuid'  => (string) Str::uuid(),
+                'event_type'  => self::EVENT_STATUS_CHANGED,
+                'occurred_at' => now()->toIso8601String(),
+                'data' => [
+                    'order_number'    => $bareNumber,
+                    'nf_order_number' => $orderNumber,
+                    'status'          => $customerStatus,
+                    'previous_status' => $customerPrevious,
+                    'changed_at'      => now()->toIso8601String(),
+                    // Unlike the early status event, the ETA EXISTS by now — so this
+                    // event carries the delivery window the customer actually wants.
+                    'eta_window'      => config('customer_app.eta_window_enabled', true)
+                        ? $this->buildEtaWindow($estimatedDeliveryAt)
+                        : null,
+                ],
+            ];
+
+            DB::table('t_app_webhook_events')->insert([
+                'event_uuid'      => $payload['event_uuid'],
+                'event_type'      => $payload['event_type'],
+                'order_id'        => $orderId,
+                'order_number'    => $orderNumber,
+                'payload'         => json_encode($payload, JSON_UNESCAPED_SLASHES),
+                'target'          => 'customer_app',
+                'status'          => 'pending',
+                'attempts'        => 0,
+                'next_attempt_at' => null,
+                'created_at'      => now(),
+            ]);
+
+            $this->scheduleDrain($orderNumber);
+        } catch (\Throwable $e) {
+            Log::error('CustomerAppWebhookEmitter::emitDispatchStatus failed (non-fatal)', [
+                'order_id'     => $orderId,
+                'order_number' => $orderNumber,
+                'raw_status'   => $rawNfStatus,
+                'error'        => $e->getMessage(),
+            ]);
+        }
     }
 
     /**

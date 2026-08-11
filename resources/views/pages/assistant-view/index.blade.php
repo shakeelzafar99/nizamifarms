@@ -194,6 +194,8 @@
     cancel:  id => '{{ url('assistant-view/cancel') }}/'+id,
     choose:  id => '{{ url('assistant-view/draft') }}/'+id+'/choose',
     smsMatch:  id => '{{ url('assistant-view/sms') }}/'+id+'/match-credit',
+    smsTargets:id => '{{ url('assistant-view/sms') }}/'+id+'/targets',
+    smsAttach: id => '{{ url('assistant-view/sms') }}/'+id+'/attach',
     smsIgnore: id => '{{ url('assistant-view/sms') }}/'+id+'/ignore',
     smsRestore:id => '{{ url('assistant-view/sms') }}/'+id+'/restore',
     smsDraft:  id => '{{ url('assistant-view/sms') }}/'+id+'/draft',
@@ -639,6 +641,52 @@
     return r;
   }
 
+  /**
+   * The customer has NOTHING awaiting approval, so a proof card can't be
+   * drafted — but the money is still theirs. Show their real orders (still
+   * open, or approved in the last month, labelled honestly) and attach the
+   * credit to the one the human picks. A direct pick is recorded as
+   * manual_confirmed — the strongest match there is — and teaches the payer's
+   * bank name, so this person auto-matches next time.
+   *
+   * This is the Nouman-cleanup path: his order was approved before anyone
+   * could re-point the credit, and the old flow just said "nothing to attach
+   * to" and gave up.
+   */
+  async function showOrderTargets(smsId, custId){
+    const r = await api(U.smsTargets(smsId)+'?customer_id='+custId);
+    if(!r.ok || !r.data.orders){ toast(r.data.message||'Could not load their orders'); return; }
+    const cust = r.data.customer||{};
+    if(cust.is_shop){ toast((cust.name||'This customer')+' is a SHOP — record shop money from the chat, not as a proof.'); return; }
+    const orders = r.data.orders;
+    if(!orders.length){ toast((cust.name||'They')+' have no orders in the last month to attach this to.'); return; }
+
+    const label = {awaiting_approval:'awaiting approval', open:'open', already_approved:'already approved'};
+    const tint  = {awaiting_approval:'#B45309', open:'#1D4ED8', already_approved:'#047857'};
+    const rows = orders.map(o =>
+      '<div class="ord-target" data-oid="'+o.id+'" style="display:flex;justify-content:space-between;gap:10px;padding:9px 10px;border:1px solid #E5E7EB;border-radius:9px;margin-bottom:6px;cursor:pointer;background:#fff;">'
+      +'<div><b>'+esc(o.order_number)+'</b> <span style="color:#6B7280;font-size:12px;">'+esc((o.order_date||'').slice(0,10))+'</span></div>'
+      +'<div style="text-align:right;"><span style="font-size:12px;color:'+(tint[o.group]||'#6B7280')+';">'+(label[o.group]||o.group)+'</span> '
+      +'<b>'+(o.balance>0.01?money(o.balance):'settled')+'</b></div></div>').join('');
+
+    const ov = document.createElement('div');
+    ov.id='ordTargetsOverlay';
+    ov.style.cssText='position:fixed;inset:0;background:rgba(17,24,39,.5);z-index:9000;display:flex;align-items:center;justify-content:center;padding:14px;';
+    ov.innerHTML = '<div style="background:#fff;border-radius:13px;max-width:460px;width:100%;max-height:80vh;overflow:auto;padding:16px;">'
+      +'<div style="display:flex;justify-content:space-between;margin-bottom:4px;"><b>Which order is this payment for?</b><span id="ordTargetsClose" style="cursor:pointer;color:#9CA3AF;font-size:18px;">✕</span></div>'
+      +'<div style="font-size:12.5px;color:#6B7280;margin-bottom:10px;">'+esc(cust.name||'')+' has nothing awaiting approval — pick from their recent orders. Attaching to an approved order is record-keeping only; no money moves.</div>'
+      +rows+'</div>';
+    ov.addEventListener('click', async ev=>{
+      if(ev.target===ov || ev.target.id==='ordTargetsClose'){ ov.remove(); return; }
+      const row = ev.target.closest('.ord-target'); if(!row) return;
+      row.style.opacity='.5';
+      const a = await api(U.smsAttach(smsId),{method:'POST',body:{customer_id:custId, order_id:Number(row.dataset.oid)}});
+      toast(a.data.message||(a.ok?'Attached.':'Failed'));
+      if(a.ok){ ov.remove(); await loadBox(); loadChat(); } else { row.style.opacity='1'; }
+    });
+    document.body.appendChild(ov);
+  }
+
   $('#nfaBox').addEventListener('click', async e=>{
     const b = e.target.closest('[data-act]'); if(!b) return;
     const id=b.dataset.id, act=b.dataset.act;
@@ -662,8 +710,15 @@
       else if(act==='ignore-credit'){ if(await ignoreSms(id, b.dataset.cp, false)===null){ busy[id]=0; b.disabled=false; return; } }
       else if(act==='restore'){ const r=await api(U.smsRestore(id),{method:'POST',body:{}}); toast(r.ok?'Restored to the inbox':(r.data.message||'Failed')); }
       else if(act==='restore-forget'){ const r=await api(U.smsRestore(id),{method:'POST',body:{forget:true}}); toast(r.ok?'Restored — rule removed, future SMS will show again':(r.data.message||'Failed')); }
-      else if(act==='match'){ const r=await api(U.smsMatch(id),{method:'POST',body:{customer_id:Number(b.dataset.cust)}}); toast(r.data.message||(r.ok?'Card prepared — see chat':'Failed')); if(r.ok) loadChat(); }
-      else if(act==='match-picked'){ const r=await api(U.smsMatch(id),{method:'POST',body:{customer_id:Number(b.dataset.cust)}}); toast(r.data.message||(r.ok?'Card prepared — see chat':'Failed')); if(r.ok){ closePicker(); loadChat(); } }
+      else if(act==='match'){ const r=await api(U.smsMatch(id),{method:'POST',body:{customer_id:Number(b.dataset.cust)}});
+        // Customer has nothing awaiting approval (their invoice may already be
+        // approved, or not raised yet) — the old dead-end. Offer their actual
+        // orders instead, including recently-approved ones, for a direct attach.
+        if(!r.ok && /no (open )?invoice/i.test(r.data.message||'')){ await showOrderTargets(id, Number(b.dataset.cust)); }
+        else { toast(r.data.message||(r.ok?'Card prepared — see chat':'Failed')); if(r.ok) loadChat(); } }
+      else if(act==='match-picked'){ const r=await api(U.smsMatch(id),{method:'POST',body:{customer_id:Number(b.dataset.cust)}});
+        if(!r.ok && /no (open )?invoice/i.test(r.data.message||'')){ closePicker(); await showOrderTargets(id, Number(b.dataset.cust)); }
+        else { toast(r.data.message||(r.ok?'Card prepared — see chat':'Failed')); if(r.ok){ closePicker(); loadChat(); } } }
       // In TAG mode the same pickers save a rule instead of preparing a card.
       else if(act==='draft-vendor' || act==='vend-picked'){
         if(picker && picker.tag) await saveMap(id,'vendor',b.dataset.vid,null);

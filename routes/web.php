@@ -113,6 +113,10 @@ Route::middleware(['auth'])->group(function () {
         Route::post('/draft/{draft}/choose', [\App\Http\Controllers\API\AssistantController::class, 'choose'])->name('choose');
         Route::post('/new-topic', [\App\Http\Controllers\API\AssistantController::class, 'newTopic'])->name('new-topic');
         Route::post('/sms/{id}/match-credit', [\App\Http\Controllers\API\AssistantSmsController::class, 'matchCredit'])->name('sms.match');
+        // Aug-2026 — re-point a credit at an EXACT order (incl. already-approved
+        // ones), so a wrong tag is always fixable.
+        Route::get('/sms/{id}/targets', [\App\Http\Controllers\API\AssistantSmsController::class, 'targets'])->name('sms.targets');
+        Route::post('/sms/{id}/attach', [\App\Http\Controllers\API\AssistantSmsController::class, 'attach'])->name('sms.attach');
         Route::post('/sms/{id}/ignore', [\App\Http\Controllers\API\AssistantSmsController::class, 'ignore'])->name('sms.ignore');
         Route::post('/sms/{id}/restore', [\App\Http\Controllers\API\AssistantSmsController::class, 'restore'])->name('sms.restore');
         Route::post('/sms/{id}/teach-sender', [\App\Http\Controllers\API\AssistantSmsController::class, 'teachSender'])->name('sms.teach');
@@ -798,6 +802,10 @@ Route::middleware(['auth'])->group(function () {
         Route::post('/{id}/send-background', [\App\Http\Controllers\Web\CampaignWebController::class, 'sendBackground']);
         Route::post('/{id}/send-pause', [\App\Http\Controllers\Web\CampaignWebController::class, 'sendPause']);
         Route::get('/{id}/send-status', [\App\Http\Controllers\Web\CampaignWebController::class, 'sendStatus']);
+        // Aug-2026 — put never-delivered recipients back in Pending so they can
+        // be resent (Meta's marketing frequency cap drops some deliveries; the
+        // customer never received the message, so a resend is a retry, not spam).
+        Route::post('/{id}/requeue-undelivered', [\App\Http\Controllers\Web\CampaignWebController::class, 'requeueUndelivered']);
         // Legacy alias — the old chunked client posted here. Kept so a stale
         // browser tab mid-send doesn't 404 after the upload.
         Route::post('/{id}/send-bulk', [\App\Http\Controllers\Web\CampaignWebController::class, 'send']);
@@ -998,6 +1006,20 @@ Route::middleware(['auth'])->group(function () {
         ->whereNumber('orderId')
         ->name('payments.order-uncombine');
 
+    // Aug-2026 — "Wrong match — remove": detach a SYSTEM-GUESSED payment from an
+    // order, unlearn what it taught, and send the credit back to the money inbox.
+    Route::post('/admin/payments/signal/{signalId}/unmark', [\App\Http\Controllers\FIN\PaymentSignalsController::class, 'unmark'])
+        ->whereNumber('signalId')
+        ->name('payments.signal-unmark');
+
+    // Aug-2026 — pre-approval payer check: which of these orders carry a payment
+    // the system only GUESSED at, from a payer we don't recognise?
+    Route::post('/admin/payments/approval-check', [\App\Http\Controllers\FIN\PaymentSignalsController::class, 'approvalCheck'])
+        ->name('payments.approval-check');
+    Route::post('/admin/payments/signal/{signalId}/confirm-payer', [\App\Http\Controllers\FIN\PaymentSignalsController::class, 'confirmPayer'])
+        ->whereNumber('signalId')
+        ->name('payments.signal-confirm-payer');
+
     // Jun-2026 — Phase 2: one-time "balancing discount" (apply / remove).
     Route::post('/admin/payments/order/{orderId}/balance-discount', [\App\Http\Controllers\FIN\PaymentSignalsController::class, 'applyBalanceDiscount'])
         ->whereNumber('orderId')->name('payments.balance-discount');
@@ -1083,6 +1105,13 @@ Route::middleware(['auth'])->group(function () {
         Route::get('/sales-report', [\App\Http\Controllers\KhaasController::class, 'salesReport'])->name('sales-report');
         Route::get('/sales-report/daily-ajax', [\App\Http\Controllers\KhaasController::class, 'salesReportDailyWeb'])->name('sales-report.daily-ajax');
         Route::get('/sales-report/product/{productId}/daily', [\App\Http\Controllers\KhaasController::class, 'productDailyBreakdown'])->name('sales-report.product-daily');
+        // ⭐ Aug-2026 transfer REQUESTS — asking the warehouse for stock. Distinct from
+        // /transfers/* above: a request moves nothing until it is accepted.
+        Route::post('/transfer-requests', [\App\Http\Controllers\KhaasController::class, 'createTransferRequest'])->name('transfer-requests.create');
+        Route::post('/transfer-requests/{id}/cancel', [\App\Http\Controllers\KhaasController::class, 'cancelTransferRequest'])->name('transfer-requests.cancel');
+        Route::post('/transfer-requests/{id}/accept', [\App\Http\Controllers\KhaasController::class, 'acceptTransferRequest'])->name('transfer-requests.accept');
+        Route::post('/transfer-requests/{id}/decline', [\App\Http\Controllers\KhaasController::class, 'declineTransferRequest'])->name('transfer-requests.decline');
+        Route::get('/products/{productId}/pending-orders', [\App\Http\Controllers\KhaasController::class, 'pendingOrdersBreakdown'])->name('products.pending-orders');
         Route::get('/products/{productId}/store-log', [\App\Http\Controllers\KhaasController::class, 'getStoreInventoryLog'])->name('products.store-log');
         Route::get('/products/{productId}/warehouse-log', [\App\Http\Controllers\KhaasController::class, 'getWarehouseInventoryLog'])->name('products.warehouse-log');
         // Last N movements in/out of one of this BU's payment accounts (Operations → Expenses).

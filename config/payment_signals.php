@@ -81,6 +81,65 @@ return [
     // producing a bogus "Rs 36 short — apply discount" prompt on NF-18447.)
     'pair_amount_tolerance' => env('PAYMENT_SIGNALS_PAIR_AMOUNT_TOLERANCE', 1.00),
 
+    // How far BACK an inferred/guessed match may reach for a candidate order.
+    // Deliberately much shorter than match_window_days (200): that generous
+    // window is for evidence the customer supplied about their own account,
+    // where an ancient unpaid invoice is a legitimate answer. A guess about an
+    // UNIDENTIFIED payer has no such backing, so it only considers recent
+    // trading. Pairs with match_future_grace_days on the forward side — see
+    // PaymentSignalMatcher::guessOrderDateBounds().
+    'guess_lookback_days' => env('PAYMENT_SIGNALS_GUESS_LOOKBACK_DAYS', 60),
+
+    // Plausibility ceiling for the "nothing fits — attach to the newest open
+    // order and flag it" fallback, applied to BANK-side signals only (email /
+    // credit SMS). A credit larger than this multiple of the order's balance is
+    // not that order's payment (Aug-2026: a Rs 400,000 credit vs Rs 1k–35k
+    // orders), so it stays unattached and visible in the money inbox instead of
+    // painting a nonsense proof. Historically only 17 of 1,114 matched signals
+    // exceeded 2x, so 3x rejects only the absurd. Set 0 to disable the check.
+    // WhatsApp screenshots are exempt — the customer sent that image on purpose.
+    'mismatch_attach_max_ratio' => env('PAYMENT_SIGNALS_MISMATCH_MAX_RATIO', 3.0),
+
+    // Held bank credits are re-evaluated (the "resweep") because the invoice
+    // they belong to is usually created AT DELIVERY — minutes to hours AFTER
+    // the customer paid — so the first attempt at ingest often had nothing to
+    // match against. Only credits younger than this are retried, and the sweep
+    // itself is throttled so it costs a page-load nothing.
+    'resweep_days'          => env('PAYMENT_SIGNALS_RESWEEP_DAYS', 7),
+    'resweep_max_per_run'   => env('PAYMENT_SIGNALS_RESWEEP_MAX', 30),
+    'resweep_throttle_mins' => env('PAYMENT_SIGNALS_RESWEEP_THROTTLE_MINS', 5),
+
+    // How far an order's balance may sit from the credit and still be offered
+    // to the AI payer-name arbiter as a CANDIDATE. Wider than amount_tolerance
+    // on purpose: the arbiter only ever runs on credits the exact rules already
+    // failed, which are precisely the ones a little off the invoice (the Nouman
+    // case was Rs 200 over a Rs 7,400 order). The AI still only picks a NAME —
+    // it never decides that an amount is close enough.
+    'ai_arbiter_amount_slack' => env('PAYMENT_SIGNALS_AI_SLACK', 500),
+
+    // Payer-name resolution (bank credit -> customer). Names shorter than
+    // min_token_len are ignored as tokens, and a token-based match needs at
+    // least min_tokens of them to agree — one shared surname ("chaudhry",
+    // "khan", "ali") is never enough to name a payer in a 6,800-customer book
+    // where 1,580 customers share a name with someone else.
+    'name_min_tokens'   => env('PAYMENT_SIGNALS_NAME_MIN_TOKENS', 2),
+    'name_min_token_len' => env('PAYMENT_SIGNALS_NAME_MIN_TOKEN_LEN', 3),
+
+    // Bank-statement noise that is NOT a payer name. These arrive as the
+    // "sender name" on some credit alerts and email bodies, and would otherwise
+    // be learned as an alias for whoever happened to be approved that day —
+    // "at the above address" had been attached to 125 different customers.
+    'name_blacklist' => [
+        'at the above address',
+        'above address',
+        'ca payroll account',
+        'saadiq saver plus lcy',
+        'ibft',
+        'funds transfer',
+        'cash deposit',
+        'credit',
+    ],
+
     // Order payment methods we consider "online" for matching purposes.
     'online_payment_methods' => ['online', 'bank_transfer'],
 

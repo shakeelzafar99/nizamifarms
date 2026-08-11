@@ -253,6 +253,29 @@
                     @enderror
                 </div>
 
+                <!-- Unit Weight (kg) — display-only multiplier for Open Order Quantities -->
+                <div class="flex flex-col gap-2 mt-5 p-4 bg-violet-50 border border-violet-200 rounded-lg">
+                    <label class="form-label text-sm font-medium flex items-center gap-2">
+                        📦 Unit Weight (kg)
+                        <span class="text-xs text-gray-500 font-normal">(How many kg is ONE unit of this product?)</span>
+                    </label>
+                    <input type="number" step="0.001" min="0.001" name="unit_weight_kg" class="form-control"
+                           value="{{ old('unit_weight_kg', '1.000') }}"
+                           style="max-width: 200px;"
+                           placeholder="1.000">
+                    <div class="text-xs text-gray-600 mt-1">
+                        Set <strong>0.5</strong> for a 500-gram pack, <strong>1</strong> for a per-kg product.
+                        Open Order Quantities uses it to show a Weight (kg) column beside the quantity —
+                        e.g. 21 packs × 0.5 = 10.5 kg. <strong>It never changes any saved quantity, price or invoice.</strong>
+                    </div>
+                    <div class="text-xs text-gray-500">
+                        This is <strong>not</strong> the Weight Factor above — that one divides weighed/scanned input.
+                    </div>
+                    @error('unit_weight_kg')
+                        <span class="form-hint text-danger">{{ $message }}</span>
+                    @enderror
+                </div>
+
                 <!-- Czerlop Product ID (scale barcode) -->
                 <div class="flex flex-col gap-2 mt-5 p-4 bg-amber-50 border border-amber-200 rounded-lg">
                     <label class="form-label text-sm font-medium flex items-center gap-2">

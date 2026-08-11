@@ -142,6 +142,30 @@ return [
     'first_event_status_override' => 'accepted',
 
     /*
+    |--------------------------------------------------------------------------
+    | Hold-until-dispatch substitute status
+    |--------------------------------------------------------------------------
+    |
+    | A status flagged `customer_app_hold_until_dispatch` in the Status Hub is
+    | not shown to the customer until the order is really dispatched (an ETA
+    | has been calculated). Until then the customer app is told THIS value
+    | instead.
+    |
+    | Why it exists: ops sets `out_for_delivery` early, while the order is
+    | still being loaded at the store. Announcing that immediately gave the
+    | customer a live map of a rider parked at the shop and no ETA. Now they
+    | keep seeing `processing` until Dispatch is pressed, at which point NF
+    | pushes the real status WITH the delivery window.
+    |
+    | Must be a value the customer app already understands (see §4.1 of
+    | CUSTOMER_APP_INTEGRATION.md) — `processing` maps to their "preparing"
+    | stage. It is passed through the alias map like any other status, so
+    | aliasing `processing` later keeps working.
+    |
+    */
+    'hold_until_dispatch_status' => env('CUSTOMER_APP_HOLD_UNTIL_DISPATCH_STATUS', 'processing'),
+
+    /*
     |==========================================================================
     | PHASE 2 — ETA window + live rider tracking
     |==========================================================================

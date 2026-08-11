@@ -31,6 +31,7 @@ class OrderStatusMaster extends BaseModel
         'lane',                     // journey | offtrack | legacy (Hub organisation)
         'send_to_customer_app',     // Whether a status change is pushed to the customer app
         'customer_app_alias',       // What the customer app should show instead of the raw code
+        'customer_app_hold_until_dispatch', // Customer sees a held-back status until the order is dispatched
         'created_by',
         'updated_by'
     ];
@@ -43,7 +44,8 @@ class OrderStatusMaster extends BaseModel
         'sequence_order' => 'integer',
         'counts_in_quantities' => 'boolean',
         'auto_prepares' => 'boolean',
-        'send_to_customer_app' => 'boolean'
+        'send_to_customer_app' => 'boolean',
+        'customer_app_hold_until_dispatch' => 'boolean'
     ];
 
     // Relationships

@@ -1999,6 +1999,44 @@ async function removeBalanceDiscount(orderId) {
     if (!confirm('Remove the balancing discount (restores the invoice total)?')) return;
     await balanceDiscountRequest(`/admin/payments/order/${orderId}/balance-discount/remove`, orderId, 'Could not remove the discount.');
 }
+/**
+ * "Wrong customer — remove". Detaches a payment from this order, forgets what
+ * the match taught about the payer, and returns the credit to the NF Assistant
+ * money inbox to be pointed at the right order.
+ *
+ * Available on EVERY attached proof, verified pairs included: being verified
+ * proves the transfer is real, not whose invoice it settles. A verified pair
+ * gets a heavier confirmation because BOTH sides come off together — leaving
+ * one behind would keep the badge lit.
+ */
+async function unmarkProofSignal(signalId, orderId, isPaired) {
+    const msg = isPaired
+        ? 'Remove this VERIFIED payment from the order?\n\nBoth the customer\'s screenshot and the bank confirmation will be detached together.\n\nOnly do this if the payment belongs to a different customer or order — being verified means the bank and the customer agree the transfer happened, not that it belongs here.\n\nNothing is deleted and no money moves; the credit returns to the NF Assistant money inbox.'
+        : 'Remove this payment from the order?\n\nThe credit goes back to the NF Assistant money inbox to be matched to the right customer. Nothing is deleted and no money moves.';
+    if (!confirm(msg)) return;
+    try {
+        const res = await fetch(`/admin/payments/signal/${signalId}/unmark`, {
+            method: 'POST',
+            headers: {
+                'X-Requested-With': 'XMLHttpRequest',
+                'Accept': 'application/json',
+                'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').content,
+            },
+        });
+        const data = await res.json();
+        if (data && data.success) {
+            showToast(data.message || 'Removed.', 'success');
+            const overlay = document.getElementById('proofPanelOverlay');
+            if (overlay) overlay.remove();
+            loadData();
+        } else {
+            alert((data && data.message) || 'Could not remove that payment.');
+        }
+    } catch (e) {
+        alert('Could not remove that payment.');
+    }
+}
+
 async function balanceDiscountRequest(url, orderId, errMsg) {
     try {
         const res = await fetch(url, {
@@ -2108,13 +2146,32 @@ function buildProofPanelHtml(data) {
                 Captured automatically from the bank's credit alert SMS — no manual entry.</div>`;
         }
 
-        // Amount-unique attach: the bank credit matched this order ONLY because
-        // it was the single approvals invoice with this exact balance. Real
-        // money, likely this order — but the payer is unconfirmed until Taimur
-        // confirms (money inbox chip) or a screenshot pairs. Say so plainly.
-        if (isSms && s.match_reason === 'amount_unique_sms') {
+        // ⭐ HOW DID THIS PAYMENT GET HERE? Every match the system INFERRED says
+        // so plainly, in its own words, and offers the way out. Real money,
+        // probably this order — but the payer is unconfirmed until someone says
+        // so or a screenshot pairs. A pair-verified proof shows none of this.
+        const GUESS_REASONS = ['amount_unique_sms', 'name_amount_sms', 'name_ai_sms'];
+        if (GUESS_REASONS.includes(s.match_reason) && !s.paired) {
+            const payer = s.sender_name ? escapeHtml(s.sender_name) : 'an unnamed account';
+            const explain = {
+                amount_unique_sms:
+                    `⚠ Matched by AMOUNT only — this was the single open invoice with this balance. The payer (${payer}) is unconfirmed.`,
+                name_amount_sms:
+                    `⚠ Matched by PAYER NAME — the bank's sender (${payer}) resolves to this customer, and this was their order that fits. The amount alone didn't decide it.`,
+                name_ai_sms:
+                    `⚠ Payer name read by AI — "${payer}" was matched to this customer from a shortlist of open orders. A best reading, not a confirmation.`,
+            }[s.match_reason];
+
             html += `<div style="background:#FFFBEB; border:1px solid #FCD34D; color:#92400E; border-radius:8px; padding:8px 10px; font-size:12px; margin-bottom:10px;">
-                ⚠ Matched by AMOUNT only — this was the single open invoice with this balance. Confirm the payer once (NF Assistant money inbox) or wait for the customer's screenshot; approving is your call.</div>`;
+                <div>${explain} Confirm it in the NF Assistant money inbox, or wait for the customer's screenshot — approving is your call.</div>
+            </div>`;
+        }
+
+        // A human said outright who paid. Not a guess, so no way out is offered
+        // — undoing it means re-pointing the credit in the money inbox.
+        if (s.match_reason === 'manual_confirmed') {
+            html += `<div style="background:#ECFDF5; border:1px solid #A7F3D0; color:#065F46; border-radius:8px; padding:8px 10px; font-size:12px; margin-bottom:10px;">
+                ✓ Payer confirmed by a manager — this bank name is now remembered for this customer.</div>`;
         }
 
         if (isWa && s.image_url) {
@@ -2133,6 +2190,19 @@ function buildProofPanelHtml(data) {
 
         if (!isWa && s.email_body) {
             html += `<details style="margin-top:8px;"><summary style="cursor:pointer; color:#2563EB; font-size:12px;">${isSms ? 'Show the SMS' : 'Show raw email'}</summary><pre style="white-space:pre-wrap; font-size:11px; color:#374151; background:#F9FAFB; padding:8px; border-radius:6px; margin-top:6px;">${escapeHtml(s.email_body)}</pre></details>`;
+        }
+
+        // ⭐ THE ESCAPE HATCH — on EVERY attached proof, including a Verified
+        // pair. Pairing proves the transfer is real; it never proves whose
+        // invoice it settles, so an approver who can see a payment is on the
+        // wrong customer must always be able to take it off. The strength of
+        // the evidence changes the WARNING, not the availability.
+        if (s.id) {
+            html += `<div style="margin-top:10px; padding-top:9px; border-top:1px dashed #E5E7EB; text-align:right;">
+                <button onclick="unmarkProofSignal(${s.id}, ${data.order_id}, ${s.paired ? 'true' : 'false'})"
+                        style="background:#fff; color:#B91C1C; border:1px solid #FECACA; border-radius:8px; padding:5px 11px; font-size:12px; font-weight:600; cursor:pointer;"
+                        title="Detach this payment from this order">Wrong customer — remove</button>
+            </div>`;
         }
         html += `</div>`;
     });
@@ -2363,12 +2433,17 @@ function selectBankAccount(btn, bankId) {
 
 async function confirmApprove() {
     if (!window.pendingApprovalItem) return;
+    // Same payer check as bulk — the Review modal is its own approve path
+    // (it calls doApprove directly, not doBulkApprove), so without this the
+    // one-at-a-time flow would silently skip the question the batch flow asks.
+    if (!(await runPayerCheck([window.pendingApprovalItem]))) return;
     await doApprove(window.pendingApprovalItem.id, 'full');
     closeModal();
 }
 
 async function confirmL1Only() {
     if (!window.pendingApprovalItem) return;
+    if (!(await runPayerCheck([window.pendingApprovalItem]))) return;
     await doApprove(window.pendingApprovalItem.id, 'l1_only');
     closeModal();
 }
@@ -2802,6 +2877,144 @@ function updateBulkAssignBankBtn() {
     }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Pre-approval payer check (Aug-2026)
+//
+// Runs on EVERY approval path — the per-customer ✓Full / →L1 buttons and the
+// bulk selection buttons all funnel through doBulkApprove — but only actually
+// shows itself when the batch contains a payment matched by guesswork from an
+// unrecognised payer. Zero such rows (the usual case) = no dialog at all.
+//
+// The three answers map to the three things that can be true: it's right
+// (confirm, and remember the payer forever), it's wrong (detach it, approve the
+// invoice clean), or don't-ask-me-now (skip all — approve exactly as before).
+// ─────────────────────────────────────────────────────────────────────────────
+async function runPayerCheck(items) {
+    let flagged = [];
+    try {
+        const orderIds = [...new Set(items.map(i => i.order_id).filter(Boolean))];
+        if (orderIds.length === 0) return true;
+
+        const res = await fetch('/admin/payments/approval-check', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]')?.content || '',
+                'Accept': 'application/json',
+            },
+            body: JSON.stringify({ order_ids: orderIds }),
+        });
+        if (!res.ok) return true;              // never block approving on this
+        const data = await res.json();
+        flagged = (data && data.items) || [];
+    } catch (e) {
+        return true;                            // ditto — the check is advisory
+    }
+
+    if (flagged.length === 0) return true;
+    return await showPayerCheckDialog(flagged);
+}
+
+function showPayerCheckDialog(rows) {
+    return new Promise(resolve => {
+        const overlay = document.createElement('div');
+        overlay.style.cssText = 'position:fixed; inset:0; background:rgba(17,24,39,.55); z-index:10000; display:flex; align-items:center; justify-content:center; padding:16px;';
+
+        const rowHtml = rows.map(r => `
+            <div class="payer-check-row" data-signal="${r.signal_id}" style="border:1px solid #E5E7EB; border-radius:10px; padding:12px; margin-bottom:10px;">
+                <div style="display:flex; justify-content:space-between; gap:12px; flex-wrap:wrap;">
+                    <div style="min-width:220px;">
+                        <div style="font-weight:600; color:#111827;">Rs ${numberFormat(r.amount)} from <span style="color:#B45309;">${escapeHtml(r.payer_name || 'an unnamed account')}</span></div>
+                        <div style="font-size:12.5px; color:#6B7280; margin-top:2px;">
+                            tagged to <b>${escapeHtml(r.customer_name)}</b> · ${escapeHtml(r.order_number)} · ${escapeHtml(r.how)}
+                        </div>
+                    </div>
+                    <div class="payer-check-actions" style="display:flex; gap:6px; align-items:flex-start;">
+                        <button type="button" data-act="confirm" style="background:#ECFDF5; color:#065F46; border:1px solid #A7F3D0; border-radius:8px; padding:6px 12px; font-size:12.5px; font-weight:600; cursor:pointer;">✓ Correct</button>
+                        <button type="button" data-act="wrong" style="background:#FEF2F2; color:#B91C1C; border:1px solid #FECACA; border-radius:8px; padding:6px 12px; font-size:12.5px; font-weight:600; cursor:pointer;">✗ Not theirs</button>
+                    </div>
+                </div>
+                <div class="payer-check-state" style="display:none; font-size:12px; margin-top:8px;"></div>
+            </div>`).join('');
+
+        overlay.innerHTML = `
+            <div style="background:#fff; border-radius:14px; max-width:640px; width:100%; max-height:86vh; overflow:auto; box-shadow:0 20px 45px rgba(0,0,0,.25);">
+                <div style="padding:16px 18px 10px;">
+                    <div style="font-size:16px; font-weight:700; color:#111827;">Quick check before approving</div>
+                    <div style="font-size:13px; color:#6B7280; margin-top:4px;">
+                        ${rows.length === 1 ? 'One payment in this batch was' : rows.length + ' payments in this batch were'}
+                        matched by the system from a payer name we don't recognise.
+                        Confirming teaches it permanently — you won't be asked about that payer again.
+                    </div>
+                </div>
+                <div style="padding:0 18px 4px;">${rowHtml}</div>
+                <div style="padding:12px 18px 16px; border-top:1px solid #F3F4F6; display:flex; justify-content:space-between; gap:10px; flex-wrap:wrap;">
+                    <button type="button" id="payerCheckCancel" style="background:#fff; color:#6B7280; border:1px solid #E5E7EB; border-radius:8px; padding:8px 14px; font-size:13px; cursor:pointer;">Cancel approval</button>
+                    <button type="button" id="payerCheckSkip" style="background:#4F46E5; color:#fff; border:none; border-radius:8px; padding:8px 16px; font-size:13px; font-weight:600; cursor:pointer;">Skip all &amp; approve</button>
+                </div>
+            </div>`;
+
+        const close = (result) => { overlay.remove(); resolve(result); };
+
+        overlay.addEventListener('click', async (e) => {
+            if (e.target === overlay) return;               // ignore backdrop clicks
+            const btn = e.target.closest('button');
+            if (!btn) return;
+
+            if (btn.id === 'payerCheckSkip')   return close(true);
+            if (btn.id === 'payerCheckCancel') return close(false);
+
+            const row = btn.closest('.payer-check-row');
+            if (!row) return;
+            const signalId = row.getAttribute('data-signal');
+            const act = btn.getAttribute('data-act');
+            const state = row.querySelector('.payer-check-state');
+            const actions = row.querySelector('.payer-check-actions');
+
+            const url = act === 'confirm'
+                ? `/admin/payments/signal/${signalId}/confirm-payer`
+                : `/admin/payments/signal/${signalId}/unmark`;
+
+            actions.style.opacity = '.5';
+            try {
+                const res = await fetch(url, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]')?.content || '',
+                        'Accept': 'application/json',
+                    },
+                });
+                const data = await res.json().catch(() => ({}));
+                if (res.ok && data.success) {
+                    actions.style.display = 'none';
+                    state.style.display = 'block';
+                    state.style.color = act === 'confirm' ? '#065F46' : '#B91C1C';
+                    state.textContent = act === 'confirm'
+                        ? '✓ Confirmed — this payer is now remembered.'
+                        : '✗ Removed — the credit is back in the money inbox. The invoice still approves.';
+                } else {
+                    actions.style.opacity = '1';
+                    state.style.display = 'block';
+                    state.style.color = '#B91C1C';
+                    state.textContent = data.message || 'Could not update that one.';
+                }
+            } catch (err) {
+                actions.style.opacity = '1';
+                state.style.display = 'block';
+                state.style.color = '#B91C1C';
+                state.textContent = 'Network error — approving is unaffected.';
+            }
+
+            // All rows answered → get out of the way and continue approving.
+            const pending = overlay.querySelectorAll('.payer-check-actions:not([style*="display: none"])');
+            if (pending.length === 0) setTimeout(() => close(true), 550);
+        });
+
+        document.body.appendChild(overlay);
+    });
+}
+
 // Execute bulk approval with progress tracking
 async function doBulkApprove(items, approvalType) {
     console.log('=== doBulkApprove started ===');
@@ -2822,6 +3035,14 @@ async function doBulkApprove(items, approvalType) {
         showToast(`Nothing auto-approvable — ${skipped.length} item(s) need a bank. Use 🏦 Assign bank, or open each and pick one.`, 'error');
         return;
     }
+
+    // ⭐ PAYER CHECK — the ONE question this screen may ask, and only about
+    // payments the system guessed at from a payer nobody recognises. Silent
+    // otherwise (which is the normal case), and always skippable in one click:
+    // approving is the job, and a check that slows every batch would just be
+    // clicked through blindly, teaching us nothing and costing time.
+    const proceed = await runPayerCheck(approvable);
+    if (!proceed) return;
 
     const total = approvable.length;
     let successCount = 0;
