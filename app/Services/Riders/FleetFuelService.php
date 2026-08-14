@@ -3,6 +3,7 @@
 namespace App\Services\Riders;
 
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 use Carbon\Carbon;
 
 /**
@@ -53,6 +54,12 @@ class FleetFuelService
         $meters   = $this->meterAggregates($from, $to);
         $claims   = $this->claimAggregates($from, $to);
 
+        // ⭐⭐ MACHINE-KEYED KILOMETRES (Aug-2026). Where the registry can say which
+        //    bike produced a reading, its answer replaces the rider-keyed chain —
+        //    that is the whole point of the engine. Riders it has never tracked are
+        //    simply absent from the overlay and keep the older answer untouched.
+        $engine = $this->machineOverlay($month);
+
         // ⭐ The ACTIVE ROSTER is always in the list, activity or not. The ids used
         //    to come only from the month's meters + claims, so a fresh month (or
         //    one where a rider hadn't ridden yet) returned an empty table — and
@@ -81,15 +88,46 @@ class FleetFuelService
             // NOTE: $isCompany is a bool (or null when the rider has no profile).
             // Compare it as a bool — `=== 1` is always false and silently blanked
             // the off-duty column when this was first written.
-            $isCompany = $p ? ((int) $p->company_bike === 1) : null;
+            $e = $engine[$uid] ?? null;
+
+            // ⭐ WHICH BIKE, not just which KIND of bike. The active machine is the
+            //   OPEN assignment (what he is on right now), while `machines` is every
+            //   one the month touched — the two answer different questions and the
+            //   table shows both.
+            $active = $e['active'] ?? null;
+            $isCompany = $active !== null
+                ? (bool) $active['is_company']
+                : ($p ? ((int) $p->company_bike === 1) : null);
             $classified = $p !== null && ($isCompany === true || (int) $p->meter_required === 1);
+
+            // Machine-keyed kilometres replace the rider-keyed chain wherever the
+            // registry can speak. `shared` and `transfer` belong to NO rider, so
+            // they never enter work or off-duty — the blame fix, in one line.
+            if ($e) {
+                $m = [
+                    'days'            => $e['days_counted'],
+                    'work_km'         => $e['work_km'],
+                    'offduty_km'      => $e['offduty_km'],
+                    'unattributed_km' => $e['unattributed_km'],
+                    // Handover days are excluded — see MachineAttribution's rollup.
+                    'no_meter_days'   => $e['no_meter_days'],
+                    'open_days'       => $m['open_days'] ?? 0,
+                    'incl_ride_home_days' => $m['incl_ride_home_days'] ?? 0,
+                ];
+            }
 
             // Every kilometre the bike actually covered. Unattributed km ARE part of
             // it — we could not tell whether they were work or commute, but the bike
             // moved them and we bought the petrol. Leaving them out would make the
             // strip fail to add up (work + off-duty + unattributed ≠ total) and would
             // overstate the running cost by dividing real fuel by fewer kilometres.
-            $totalKm = $m['work_km'] + $m['offduty_km'] + ($m['unattributed_km'] ?? 0);
+            // Kilometres that belong to nobody: the handover day whose split cannot
+            // be known, and the bike travelling between two riders.
+            $sharedKm   = $e['shared_km'] ?? 0;
+            $transferKm = $e['transfer_km'] ?? 0;
+
+            $totalKm = $m['work_km'] + $m['offduty_km'] + ($m['unattributed_km'] ?? 0)
+                     + $sharedKm + $transferKm;
 
             // ⭐ COST PER PRODUCTIVE KILOMETRE — always SHIFT km, both bike types.
             //
@@ -139,13 +177,39 @@ class FleetFuelService
                 'name'          => $names[$uid] ?? 'Unknown',
                 'bike'          => $isCompany === null ? 'unknown' : ($isCompany ? 'company' : 'own'),
                 'classified'    => $classified,
+                // ⭐ THE MACHINE ITSELF — the plate, not just the kind. Null for a
+                //   rider the registry has never tracked, whose row is unchanged.
+                'vehicle_id'    => $active['vehicle_id'] ?? null,
+                'vehicle_label' => $active['label'] ?? null,
+                'machines'      => $e['machines'] ?? [],
+                'machine_count' => $e ? count($e['machines']) : 0,
+                // false = the plate above is a bike he rode this month but has since
+                // handed back, so the chip reads as history rather than as "he is on
+                // it now". Riders outside the registry send null (no opinion).
+                'holds_now'     => $e['holds_now'] ?? null,
+                // ⚠ false = a machine he rode has a hole in its odometer chain this
+                //   month. His duty km still stand (they come from within-day pairs);
+                //   the stretches between days do not, and the screen says so.
+                'chain_ok'      => $e['reconciles'] ?? true,
                 'days'          => $m['days'],
                 'work_km'       => $m['work_km'],
                 'offduty_km'    => $isCompany === true ? $m['offduty_km'] : null,
                 'total_km'      => $isCompany === true ? $totalKm : null,
-                // Km across stretches containing a worked-but-unmetered day —
-                // neither work nor commute, and honest about not knowing.
-                'unattributed_km' => $isCompany === true ? ($m['unattributed_km'] ?? 0) : null,
+                // ⚠⚠ COMPATIBILITY CONTRACT — `unattributed_km` keeps its ORIGINAL
+                //   meaning, "kilometres this rider is not credited with", so an old
+                //   APK that renders it as one number stays correct. The engine's
+                //   three separate reasons live in their own keys beside it; only
+                //   surfaces that understand them should use those.
+                'unattributed_km' => $isCompany === true
+                    ? ($m['unattributed_km'] ?? 0) + $sharedKm + $transferKm : null,
+                // Km on a day this machine changed hands: real, measured, and
+                // unsplittable — so it is named on BOTH riders and charged to neither.
+                'shared_km'     => $sharedKm ?: null,
+                // The bike travelling between two people.
+                'transfer_km'   => $transferKm ?: null,
+                // Stretches spanning a day he worked and left unread. The only one of
+                // the three that is really "we cannot tell".
+                'unaccounted_km' => $isCompany === true ? ($m['unattributed_km'] ?? 0) : null,
                 // Past days he checked in and never checked out. Left as
                 // "in progress" by owner ruling — the team must go and close them —
                 // but surfaced here so they are visible instead of invisible.
@@ -213,7 +277,224 @@ class FleetFuelService
 
         usort($riders, fn ($a, $b) => $b['basis_km'] <=> $a['basis_km']);
 
-        return ['month' => $month, 'riders' => $riders, 'totals' => $this->totals($riders, $offRoster)];
+        $totals = $this->totals($riders, $offRoster);
+
+        // ⚠⚠ COUNT A SHARED LEG ONCE. Every shared/transit kilometre is deliberately
+        //   named on BOTH riders — that is the point, neither is charged and both can
+        //   see it. Summing the rider rows to get a fleet figure therefore DOUBLES it
+        //   (the live page read "1,046 km" for 523 real kilometres). The fleet-wide
+        //   number has to come from the machines, where each leg exists exactly once.
+        $totals['shared_km'] = 0;
+        $totals['transfer_km'] = 0;
+        try {
+            if (strtoupper((string) $this->cfg('MACHINE_ATTRIBUTION', 'Y')) === 'Y') {
+                foreach ((new MachineAttribution())->month($month)['vehicles'] ?? [] as $v) {
+                    $totals['shared_km']   += $v['totals']['shared'];
+                    $totals['transfer_km'] += $v['totals']['transfer'];
+                }
+            }
+        } catch (\Throwable $e) {
+            $totals['shared_km'] = 0;
+            $totals['transfer_km'] = 0;
+        }
+
+        return ['month' => $month, 'riders' => $riders, 'totals' => $totals];
+    }
+
+    /**
+     * ⭐⭐ THE ENGINE'S ANSWER, SHAPED FOR A RIDER ROW.
+     *
+     * Returns [user_id => [...]] for every rider the registry can speak for, and
+     * NOTHING for anyone else — an absent entry is the signal to keep the older
+     * rider-keyed answer, which is what makes this safe to ship: a rider with no
+     * assignment history cannot notice that this code exists.
+     *
+     * `active` is the machine he holds RIGHT NOW (the open assignment), not the one
+     * he rode most — a manager looking at the table wants to know where the bike is
+     * today. `machines` is every machine the month touched, busiest first.
+     */
+    private function machineOverlay(string $month): array
+    {
+        try {
+            // ⭐ ROLLBACK LEVER, NOT A FEATURE FLAG. Defaults to ON and needs no SQL
+            //   row to work; inserting `MACHINE_ATTRIBUTION = 'N'` puts every rider
+            //   back on the rider-keyed chain instantly, without a code change or an
+            //   upload. It is also how the regression suite proves the before/after.
+            if (strtoupper((string) $this->cfg('MACHINE_ATTRIBUTION', 'Y')) !== 'Y') return [];
+
+            $engine = (new MachineAttribution())->month($month);
+            if (empty($engine['available']) || empty($engine['riders'])) return [];
+
+            $resolver = new VehicleResolver();
+            $out = [];
+
+            foreach ($engine['riders'] as $uid => $r) {
+                $active = null;
+                $activeId = $resolver->currentVehicleFor((int) $uid);
+                foreach ($r['machines'] as $mm) {
+                    if ($activeId !== null && $mm['vehicle_id'] === $activeId) $active = $mm;
+                }
+                // He holds something the month never saw him ride (a fresh handover):
+                // still name it, with no kilometres behind it.
+                if ($active === null && $activeId !== null) {
+                    $v = $engine['vehicles'][$activeId] ?? null;
+                    if ($v) {
+                        $active = ['vehicle_id' => $activeId, 'label' => $v['label'],
+                                   'is_company' => $v['is_company'], 'work_km' => 0,
+                                   'offduty_km' => 0, 'shared_km' => 0, 'transfer_km' => 0,
+                                   'unattributed_km' => 0, 'days' => 0, 'fuel_rs' => 0.0,
+                                   'maint_rs' => 0.0, 'fuel_pending_rs' => 0.0,
+                                   'maint_pending_rs' => 0.0, 'reconciles' => true];
+                    }
+                }
+
+                // ⭐ He rode something this month but holds nothing now (a bike handed
+                //   back, a rider between machines). Naming the bike he actually rode
+                //   beats printing a bare "company" — the table's job is to say WHICH
+                //   machine — so the busiest one stands in, flagged as no longer his.
+                $holdsNow = $activeId !== null;
+                if ($active === null && !empty($r['machines'])) $active = $r['machines'][0];
+
+                $daysCounted = 0;
+                foreach ($r['machines'] as $mm) $daysCounted += $mm['days'];
+
+                $out[(int) $uid] = [
+                    'holds_now'       => $holdsNow,
+                    'work_km'         => $r['work_km'],
+                    'offduty_km'      => $r['offduty_km'],
+                    'shared_km'       => $r['shared_km'],
+                    'transfer_km'     => $r['transfer_km'],
+                    'unattributed_km' => $r['unattributed_km'],
+                    'no_meter_days'   => $r['no_meter_days'],
+                    'days_counted'    => $daysCounted,
+                    'machines'        => $this->shapeMachines($r['machines']),
+                    'active'          => $active,
+                    'reconciles'      => $r['reconciles'],
+                ];
+            }
+            return $out;
+        } catch (\Throwable $e) {
+            // The engine is an improvement, never a dependency: if it cannot answer,
+            // every rider falls back to the chain this screen has always used.
+            Log::warning('machineOverlay unavailable', ['month' => $month, 'error' => $e->getMessage()]);
+            return [];
+        }
+    }
+
+    /**
+     * ⭐ THE DRILL-DOWN'S DAY ROWS, RE-CUT BY MACHINE.
+     *
+     * Everything the engine knows about this rider's month, laid over the day rows
+     * the rider-keyed walk produced. Days the engine has no opinion on are left
+     * exactly as they were, which is what keeps an untracked rider's drill-down
+     * byte-identical to the one he has always had.
+     */
+    private function overlayRiderDays(int $userId, string $month, array $days, $isCompany): array
+    {
+        $blank = ['days' => $days, 'machines' => []];
+        try {
+            if (strtoupper((string) $this->cfg('MACHINE_ATTRIBUTION', 'Y')) !== 'Y') return $blank;
+
+            $eng   = new MachineAttribution();
+            $rider = $eng->forRider($userId, $month);
+            if (!$rider) return $blank;
+
+            $legs = $eng->legsForRider($userId, $month);
+            $names = [];
+
+            // 1. the machine each day was ridden on, and who wrote the reading down
+            foreach ($rider['days'] as $date => $rows) {
+                foreach ($rows as $row) {
+                    if (!isset($days[$date])) {
+                        $days[$date] = [
+                            'date' => $date, 'meter_start' => null, 'meter_end' => null,
+                            'work_km' => null, 'offduty_km' => null, 'offduty_since' => null,
+                            'meter_ok' => false, 'status' => 'no_attendance',
+                            'detail' => 'no_attendance', 'incl_ride_home' => false, 'claims' => [],
+                        ];
+                    }
+                    $days[$date]['vehicle_id']    = $row['vehicle_id'];
+                    $days[$date]['vehicle_label'] = $row['vehicle_label'];
+                    // 'manager' / 'home' / 'checkin' — shown when the reading was not
+                    // his own doing, which is the whole point on a handover day.
+                    $days[$date]['start_source']  = $row['start_source'] ?? null;
+                    // He has a reading at one end of the day only: the normal shape
+                    // when a bike changes hands, NOT a missed meter.
+                    $days[$date]['partial_day']   = !empty($row['partial']);
+                }
+            }
+
+            // 2. the legs — his own, and the ones he merely shares
+            foreach ($days as $date => $_) {
+                $days[$date]['shared_km']       = null;
+                $days[$date]['shared_with']     = null;
+                $days[$date]['transfer_km']     = null;
+                $days[$date]['handover']        = false;
+                if ($isCompany === true) {
+                    $days[$date]['offduty_km']      = null;
+                    $days[$date]['unattributed_km'] = null;
+                }
+            }
+
+            foreach ($legs as $date => $list) {
+                if (!isset($days[$date])) continue;
+                foreach ($list as $l) {
+                    if ($l['kind'] === 'on_duty') continue;      // already in work_km
+                    if ($l['kind'] === 'off_duty' && $l['user_id'] === $userId) {
+                        $days[$date]['offduty_km'] = ($days[$date]['offduty_km'] ?? 0) + $l['km'];
+                        $days[$date]['offduty_since'] = $l['since'] ?? ($days[$date]['offduty_since'] ?? null);
+                    } elseif ($l['kind'] === 'unaccounted' && $l['user_id'] === $userId) {
+                        $days[$date]['unattributed_km'] = ($days[$date]['unattributed_km'] ?? 0) + $l['km'];
+                        $days[$date]['offduty_since'] = $l['since'] ?? ($days[$date]['offduty_since'] ?? null);
+                    } elseif ($l['kind'] === 'shared') {
+                        $days[$date]['shared_km'] = ($days[$date]['shared_km'] ?? 0) + $l['km'];
+                        $days[$date]['handover']  = true;
+                        $other = $l['from_user'] === $userId ? $l['to_user'] : $l['from_user'];
+                        $days[$date]['shared_with'] = $this->riderName($other, $names);
+                        $days[$date]['shared_direction'] = $l['from_user'] === $userId ? 'to' : 'from';
+                    } elseif ($l['kind'] === 'transfer') {
+                        $days[$date]['transfer_km'] = ($days[$date]['transfer_km'] ?? 0) + $l['km'];
+                        $other = $l['from_user'] === $userId ? $l['to_user'] : $l['from_user'];
+                        $days[$date]['transfer_with'] = $this->riderName($other, $names);
+                    }
+                }
+            }
+
+            ksort($days);
+            return ['days' => $days, 'machines' => $this->shapeMachines($rider['machines'])];
+        } catch (\Throwable $e) {
+            Log::warning('overlayRiderDays failed', ['user' => $userId, 'error' => $e->getMessage()]);
+            return $blank;
+        }
+    }
+
+    /** Names for the "shared with X" lines, resolved once per request. */
+    private function riderName(?int $uid, array &$cache): ?string
+    {
+        if ($uid === null) return null;
+        if (!array_key_exists($uid, $cache)) {
+            $cache[$uid] = DB::table('t_sys_user')->where('id', $uid)->value('fullname') ?: null;
+        }
+        return $cache[$uid];
+    }
+
+    /** Per-machine rows for the rider's "his machines this month" strip. */
+    private function shapeMachines(array $machines): array
+    {
+        $out = [];
+        foreach ($machines as $m) {
+            $withHim = $m['work_km'] + $m['offduty_km'] + $m['shared_km']
+                     + $m['transfer_km'] + $m['unattributed_km'];
+            $out[] = array_merge($m, [
+                'km_with_him' => $withHim,
+                // His own running cost ON THIS BIKE. Fuel he filed ÷ every kilometre
+                // it moved under him — the same shape as `rs_per_fuelled_km` on the
+                // row above, so the two can be read together.
+                'rs_per_km'   => $withHim > 0 && $m['fuel_rs'] > 0
+                    ? round($m['fuel_rs'] / $withHim, 2) : null,
+            ]);
+        }
+        return $out;
     }
 
     private function emptyClaims(): array
@@ -258,6 +539,60 @@ class FleetFuelService
             $fuel += $r['fuel_rs'];
             $maint += $r['maint_rs'];
             $dupes += $r['dupe_flags'];
+
+            // ⭐⭐ POOL BY THE MACHINE THAT TURNED THE WHEELS (owner ruling Aug-13),
+            //    not by a flag on the man. The same rider can spend half a month on
+            //    a company bike and half on his own — pooling him whole puts real
+            //    company kilometres in the "own" column and back again on the next
+            //    handover. Where the registry knows the machine, each stretch and
+            //    each claim goes to the pool its own bike belongs to; where it does
+            //    not, the profile flag decides exactly as before.
+            if (!empty($r['machines'])) {
+                $placed = false;
+                foreach ($r['machines'] as $mm) {
+                    $mk = $mm['is_company'] ? 'company' : 'own';
+                    $spend = $mm['fuel_rs'] + $mm['maint_rs'];
+
+                    // Same rule as ever: money with no kilometres behind it cannot
+                    // enter a per-km figure. It stays in the headline and is named.
+                    if ($mm['work_km'] <= 0) {
+                        if ($spend > 0) {
+                            $unattributed += $spend;
+                            $unattributedWho[] = $r['name'];
+                        }
+                        continue;
+                    }
+                    $acc[$mk]['km']          += $mm['work_km'];
+                    $acc[$mk]['fuel']        += $mm['fuel_rs'];
+                    $acc[$mk]['maint']       += $mm['maint_rs'];
+                    $acc[$mk]['offduty']     += (int) $mm['offduty_km'];
+                    // ⚠⚠ FUELLED KM IS A MONEY FIGURE, AND THE TWO BIKE TYPES ARE NOT
+                    //   SYMMETRIC (Jul-28 owner ruling, nearly lost here). On a COMPANY
+                    //   machine we buy the petrol for every kilometre it turns, commute
+                    //   included. On an OWN bike we fund SHIFT km only — the rider pays
+                    //   for his own commute. Feeding his off-duty km in here inflates
+                    //   the own denominator and makes own bikes look artificially cheap,
+                    //   which is the exact distortion the whole comparison exists to
+                    //   avoid. Caught on the live page: own read 5.53 vs company 10.05.
+                    $acc[$mk]['fuelled']     += $mm['is_company']
+                        ? (int) $mm['km_with_him']
+                        : (int) $mm['work_km'];
+                    $acc[$mk]['unattrib_km'] += (int) ($mm['unattributed_km']
+                                                + $mm['shared_km'] + $mm['transfer_km']);
+                    $placed = true;
+                }
+                if ($placed) $acc[$r['bike'] === 'own' ? 'own' : 'company']['riders']++;
+
+                // Anything he filed that no machine could be found for.
+                $onMachines = 0.0;
+                foreach ($r['machines'] as $mm) $onMachines += $mm['fuel_rs'] + $mm['maint_rs'];
+                $loose = round(($r['fuel_rs'] + $r['maint_rs']) - $onMachines, 2);
+                if ($loose > 0.01) {
+                    $unattributed += $loose;
+                    $unattributedWho[] = $r['name'];
+                }
+                continue;
+            }
 
             $k = $r['bike'] === 'company' ? 'company' : ($r['bike'] === 'own' ? 'own' : null);
 
@@ -846,6 +1181,14 @@ class FleetFuelService
             if ($sane) { $prevEnd = (int) $a->meter_end; $prevDate = $date; }
         }
 
+        // ⭐⭐ THE MACHINE'S VERSION OF THE SAME DAYS. Where the registry can say
+        //    which bike a reading came from, its legs replace the rider-keyed ones
+        //    computed above — so a handover day reads "187 km shared with Danish"
+        //    instead of adding 187 km to a column with Waseem's name on it.
+        $machineDays = $this->overlayRiderDays($userId, $month, $days, $isCompany);
+        $days        = $machineDays['days'];
+        $riderMachines = $machineDays['machines'];
+
         // --- attach claims (a claim can land on a day with no attendance row) ---
         // Resolved once for the whole month rather than per claim row.
         $maintTypes = app(\App\Services\Riders\MaintenanceTypeService::class);
@@ -933,6 +1276,9 @@ class FleetFuelService
                         'km'    => $d['offduty_km'],
                         'from'  => null,                   // filled below
                         'to'    => $d['meter_start'],
+                        // Which bike he was on that night. A rider who changed
+                        // machines mid-month would otherwise read as one long chain.
+                        'vehicle_label' => $d['vehicle_label'] ?? null,
                     ];
                 }
             }
@@ -949,6 +1295,9 @@ class FleetFuelService
             'name'    => $name,
             'bike'    => $isCompany === null ? 'unknown' : ($isCompany ? 'company' : 'own'),
             'month'   => $month,
+            // ⭐ Every machine he rode this month, busiest first — the strip that
+            //   makes "which bike was he on?" answerable without leaving the row.
+            'machines' => $riderMachines,
             'days'    => array_values($days),
             'off_nights' => $offNights,
             'service' => ($this->serviceState([$userId])[$userId] ?? null),

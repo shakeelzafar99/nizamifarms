@@ -158,6 +158,17 @@ class OvertimeService
         ];
     }
 
+    /** A stored time ('10:52:41', or a full datetime) → 'H:i'. null when unreadable. */
+    private function hm(?string $t): ?string
+    {
+        if ($t === null || $t === '') { return null; }
+        // First H:MM in the string — works for a bare TIME and for a datetime alike.
+        if (preg_match('/(\d{1,2}):(\d{2})/', (string) $t, $m)) {
+            return str_pad($m[1], 2, '0', STR_PAD_LEFT) . ':' . $m[2];
+        }
+        return null;
+    }
+
     private function targetHours(): float
     {
         if ($this->targetHoursMemo === null) {
@@ -191,13 +202,56 @@ class OvertimeService
     }
 
     /**
-     * Overtime across [$start,$end]. Returns ['total'=>minutes, 'dates'=>[ 'Y-m-d'=>minutes ]].
-     * Only days with BOTH a login and a logout count (you can't measure OT without a checkout).
+     * Per-day delivery stats for a range: ['Y-m-d' => ['orders'=>n, 'first'=>'H:i', 'last'=>'H:i']].
+     * Context for "was this day busy enough to have earned overtime?".
+     *
+     * ⭐ Deliberately the SAME attribution as lastDeliveryTs() — `t_crm_prod_order`
+     * `.assigned_rider_user_id` — because on a BYPASSED day the drill prints "counted <time> ·
+     * last delivery" right beside these numbers. Sourcing them differently would let the block
+     * contradict itself (measured on the replica: `t_ops_order_rider_history` disagrees on ~3%
+     * of days, once by 1h40m on the last-delivery time, and can miss an order entirely).
+     * One query for the whole range.
      */
-    public function overtimeForRange(int $userId, string $start, string $end): array
+    public function deliveryStatsForRange(int $userId, string $start, string $end): array
+    {
+        $out = [];
+        try {
+            $rows = DB::table('t_crm_order_status_history as h')
+                ->join('t_crm_prod_order as o', 'o.id', '=', 'h.order_id')
+                ->where('o.assigned_rider_user_id', $userId)
+                ->where('h.status_code', 'delivered')
+                ->whereBetween(DB::raw('DATE(h.changed_at)'), [$start, $end])
+                ->groupBy(DB::raw('DATE(h.changed_at)'))
+                ->selectRaw('DATE(h.changed_at) as d, COUNT(DISTINCT h.order_id) as orders,'
+                    . ' MIN(h.changed_at) as first_at, MAX(h.changed_at) as last_at')
+                ->get();
+            foreach ($rows as $r) {
+                $out[substr((string) $r->d, 0, 10)] = [
+                    'orders' => (int) $r->orders,
+                    'first'  => $this->hm($r->first_at),
+                    'last'   => $this->hm($r->last_at),
+                ];
+            }
+        } catch (\Throwable $e) { /* context only — never break the figure it decorates */ }
+        return $out;
+    }
+
+    /**
+     * Overtime across [$start,$end]. Returns
+     *   ['total'=>minutes, 'dates'=>['Y-m-d'=>minutes], 'details'=>['Y-m-d'=>[...]]].
+     * Only days with BOTH a login and a logout count (you can't measure OT without a checkout).
+     *
+     * ⭐ `details` is built in the SAME loop as `dates` — so the times a drill-down shows can
+     * never disagree with the minutes beside them. Per day it carries the check-in, the
+     * checkout AS RECORDED, the `counted` payload when that checkout rode a manager bypass
+     * (see countedCheckout), and the worked/target minutes the OT figure came from.
+     * Additive: existing callers read only 'total'/'dates' and are unaffected.
+     */
+    public function overtimeForRange(int $userId, string $start, string $end, bool $withDeliveries = false): array
     {
         $total = 0;
         $dates = [];
+        $details = [];
         try {
             $cols = ['attendance_date', 'login_time', 'logout_time'];
             if ($this->hasUnlockColumn()) {
@@ -218,8 +272,8 @@ class OvertimeService
                 // ⭐ The day ends when the WORK ended (owner ruling Aug-8): a checkout
                 //   that rode a manager unlock is re-based to the last delivered order;
                 //   a normal checkout keeps its real time. null = nothing countable.
-                $endTs = $this->otEndTs($userId, $date, $r->login_time, $r->logout_time,
-                                        $r->checkout_unlock_until ?? null);
+                $unlock = $r->checkout_unlock_until ?? null;
+                $endTs = $this->otEndTs($userId, $date, $r->login_time, $r->logout_time, $unlock);
                 if ($endTs === null) { continue; }
                 $l = strtotime($date . ' ' . $r->login_time);
                 if ($l === false || $endTs <= $l) { continue; }
@@ -229,11 +283,36 @@ class OvertimeService
                 if ($ot > 0) {
                     $total += $ot;
                     $dates[$date] = $ot;
+                    // The evidence behind this number, for the drill-downs. `counted` is null
+                    // for a normal checkout (incl. one made after the unlock expired, which
+                    // keeps its real time) — the tight bypassedCheckout test decides.
+                    $details[$date] = [
+                        'minutes'        => $ot,
+                        'login'          => $this->hm($r->login_time),
+                        'logout'         => $this->hm($r->logout_time),
+                        'counted'        => $this->countedCheckout($userId, $date, $r->login_time, $r->logout_time, $unlock),
+                        'worked_minutes' => (int) round($workedMin),
+                        'target_minutes' => (int) round($targetMin),
+                    ];
                 }
             }
             ksort($dates);
+            ksort($details);
+
+            // How busy the day was — opt-in, because the payroll/attendance TOTALS call this
+            // per employee and would pay for a query they never read. Only the drill-downs,
+            // which actually show the numbers, ask for them.
+            if ($withDeliveries && $details) {
+                $deliv = $this->deliveryStatsForRange($userId, $start, $end);
+                foreach ($details as $d => $meta) {
+                    $s = $deliv[$d] ?? null;
+                    $details[$d]['orders'] = $s['orders'] ?? 0;
+                    $details[$d]['first_delivery'] = $s['first'] ?? null;
+                    $details[$d]['last_delivery'] = $s['last'] ?? null;
+                }
+            }
         } catch (\Throwable $e) { /* no data → zero */ }
-        return ['total' => $total, 'dates' => $dates];
+        return ['total' => $total, 'dates' => $dates, 'details' => $details];
     }
 
     /** Just the total minutes across [$start,$end]. */

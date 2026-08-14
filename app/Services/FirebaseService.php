@@ -9,6 +9,14 @@ use Illuminate\Support\Facades\Cache;
 
 class FirebaseService
 {
+    /**
+     * Audience for service-due pushes. ⚠ Deliberately NOT
+     * `receive_bike_meter_alerts` — a machine needing work and a rider forgetting
+     * a reading are different duties with different people responsible.
+     * Mirrors BikeServiceAlerts::PERMISSION.
+     */
+    public const SERVICE_ALERT_PERMISSION = 'receive_service_alerts';
+
     protected string $projectId;
     protected ?string $credentialsPath;
 
@@ -286,6 +294,60 @@ class FirebaseService
             'type'          => 'home_meter_missed',
             'attendance_id' => (string) $attendanceId,
         ], 'shift_notifications');
+    }
+
+    /**
+     * 🛢 A scheduled service is DUE on a machine (Aug-2026).
+     *
+     * ⚠⚠ NOT the same as notifyHomeMeterMissed — that is about a RIDER forgetting
+     *    a reading; this is about a MACHINE needing work. Separate audience key
+     *    (`receive_service_alerts`) on purpose, so silencing one never silences the
+     *    other.
+     *
+     * TWO audiences, both told (owner ruling Aug-12):
+     *   • the managers who hold the permission — every machine;
+     *   • the rider actually holding THIS machine — because he is the one who has
+     *     to take it in, and he qualifies by holding it, not by permission.
+     *     `notifyUser` is safe if he holds no key at all.
+     *
+     * Called once per service cycle — BikeServiceAlerts owns that dedupe.
+     */
+    public function notifyServiceDue(array $alert): void
+    {
+        $title = ($alert['state'] ?? '') === 'overdue'
+            ? '🛢 Service overdue'
+            : '🛢 Service due soon';
+        $body  = (string) ($alert['message'] ?? 'A bike is due for service.');
+
+        $data = [
+            'type'       => 'bike_service_due',
+            'vehicle_id' => (string) ($alert['vehicle_id'] ?? ''),
+            'type_id'    => (string) ($alert['type_id'] ?? ''),
+            'alert_key'  => (string) ($alert['alert_key'] ?? ''),
+        ];
+
+        // Managers first — the whole fleet is their problem.
+        $this->sendToPermissionGroup(self::SERVICE_ALERT_PERMISSION,
+            ['title' => $title, 'body' => $body], $data, 'shift_notifications');
+
+        // …then the man holding it. Worded for him: he does not need the plate he
+        // is sitting on, he needs to know his own bike is due.
+        $keeper = $alert['keeper_user_id'] ?? null;
+        if ($keeper) {
+            $his = ($alert['state'] ?? '') === 'overdue'
+                ? 'Your bike is ' . number_format(abs((int) ($alert['due_in_km'] ?? 0)))
+                    . ' km overdue for its ' . ($alert['type_name'] ?? 'service') . '.'
+                : 'Your bike is due for its ' . ($alert['type_name'] ?? 'service') . ' in '
+                    . number_format((int) ($alert['due_in_km'] ?? 0)) . ' km.';
+            try {
+                $this->notifyUser((int) $keeper, ['title' => $title, 'body' => $his],
+                                  $data, 'shift_notifications');
+            } catch (\Throwable $e) {
+                Log::warning('service-due push to keeper failed', [
+                    'user_id' => $keeper, 'error' => $e->getMessage(),
+                ]);
+            }
+        }
     }
 
     /**

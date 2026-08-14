@@ -244,6 +244,12 @@ class LeavePolicyService
             return DB::table('t_hr_leave_grant as g')
                 ->leftJoin('t_sys_user as u', 'u.id', '=', 'g.created_by')
                 ->where('g.user_id', $userId)
+                // A 0-day row is not an adjustment — it is payroll's record of a WAIVED leave
+                // action (see PayrollService::recordLeaveDecision), occupying the dedupe key so
+                // the decision can't drift back to "pending". It moves no balance, and listing
+                // it here would print "+0 leave" on every history surface (web, both mobile
+                // sheets, the rider's own screen — including already-shipped APKs).
+                ->where('g.days', '!=', 0)
                 ->whereRaw('COALESCE(g.effective_date, DATE(g.created_at)) BETWEEN ? AND ?', [$cycle['start'], $cycle['end']])
                 ->orderByRaw('COALESCE(g.effective_date, DATE(g.created_at)) DESC')
                 ->orderBy('g.id', 'desc')

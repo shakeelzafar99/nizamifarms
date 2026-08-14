@@ -7804,6 +7804,15 @@ function openQuickPaymentMethodChange(orderId, currentMethod) {
                             <option value="cash">Cash</option>
                             <option value="online">Online</option>
                         </select>
+                        <!-- Aug-2026 — the customer's standing default and who set it,
+                             shown before anyone overwrites it. Filled by the timeline
+                             fetch (which already runs on open) and left hidden when the
+                             customer has no default. -->
+                        <div id="quickPaymentDefaultNote" style="display:none;font-size:12px;font-weight:600;"></div>
+                        <label style="display:flex;align-items:center;gap:8px;font-size:12px;color:#6b7280;cursor:pointer;">
+                            <input type="checkbox" id="quickPaymentSetDefault" style="cursor:pointer;">
+                            <span id="quickPaymentSetDefaultLabel">Set as default for this customer</span>
+                        </label>
                         <textarea id="quickPaymentMethodNotes" placeholder="Reason for change (optional)" style="width:100%;min-height:70px;padding:8px;border:1px solid #d1d5db;border-radius:6px;resize:vertical;"></textarea>
                         <div style="display:flex;gap:8px;justify-content:flex-end;">
                             <button onclick="document.getElementById('quickPaymentMethodModal').remove()" style="padding:8px 12px;border:1px solid #d1d5db;background:#fff;border-radius:6px;cursor:pointer;">Cancel</button>
@@ -7834,7 +7843,41 @@ function openQuickPaymentMethodChange(orderId, currentMethod) {
         // Set select value
         const selectEl = document.getElementById('quickPaymentMethodSelect');
         selectEl.value = displayCurrent.toLowerCase();
-        
+
+        // Aug-2026 — reset the default controls for THIS order. The modal element is
+        // reused across orders, so anything left from the previous one would be a lie
+        // (and a ticked box would write a default onto the wrong customer).
+        window._quickPaymentCustomerDefault = null;
+        const setDefaultBox = document.getElementById('quickPaymentSetDefault');
+        if (setDefaultBox) setDefaultBox.checked = false;
+        const defaultNote = document.getElementById('quickPaymentDefaultNote');
+        if (defaultNote) { defaultNote.style.display = 'none'; defaultNote.textContent = ''; }
+        const setDefaultLabel = document.getElementById('quickPaymentSetDefaultLabel');
+        if (setDefaultLabel) setDefaultLabel.textContent = 'Set as default for this customer';
+
+        // Confirm before overwriting a default someone already recorded — the
+        // attribution moves to whoever ticks this (owner's ruling). Same rule as the
+        // mobile store Edit modal: confirm whenever a default EXISTS, because
+        // re-recording the same value still moves the name.
+        if (setDefaultBox) {
+            setDefaultBox.onclick = function(e) {
+                const existing = window._quickPaymentCustomerDefault;
+                if (!this.checked || !existing) return;
+                const newLabel = selectEl.value === 'online' ? 'Online' : 'Cash';
+                const who = existing.set_by_name || 'someone else';
+                const when = existing.set_at_short ? (' on ' + existing.set_at_short) : '';
+                const ok = confirm(
+                    `This customer's default is ${existing.label}, set by ${who}${when}.\n\n` +
+                    `Save ${newLabel} as the new default and record it under your name?`
+                );
+                if (!ok) { this.checked = false; e.preventDefault(); }
+            };
+        }
+
+        // Repaint the provenance line whenever the picked method changes, so
+        // "differs from the default" is visible before saving, not after.
+        selectEl.onchange = function() { renderQuickPaymentDefaultNote(); };
+
         // Load timeline
         loadQuickPaymentMethodTimeline(orderId);
         
@@ -7859,6 +7902,9 @@ function openQuickPaymentMethodChange(orderId, currentMethod) {
                         order_id: orderId,
                         payment_method: newMethod,
                         notes: notes,
+                        // Aug-2026 — "also remember this for the customer".
+                        set_default_payment_method:
+                            document.getElementById('quickPaymentSetDefault')?.checked ? 1 : 0,
                         // Carry the page's source context so the backend can refuse
                         // Shopify-queue ids (they collide with production ids).
                         source: currentOrderSource() || undefined
@@ -7895,6 +7941,32 @@ function openQuickPaymentMethodChange(orderId, currentMethod) {
     }
 }
 
+// Aug-2026 — paint "the customer's default is X, set by Y" inside the quick-change
+// modal. Green when the picked method matches that default, amber when it differs —
+// diverging from a recorded preference is the case worth noticing before saving.
+// Hidden entirely when the customer has no default.
+function renderQuickPaymentDefaultNote() {
+    const note = document.getElementById('quickPaymentDefaultNote');
+    const label = document.getElementById('quickPaymentSetDefaultLabel');
+    const sel = document.getElementById('quickPaymentMethodSelect');
+    if (!note) return;
+    const info = window._quickPaymentCustomerDefault;
+    if (!info) {
+        note.style.display = 'none';
+        note.textContent = '';
+        if (label) label.textContent = 'Set as default for this customer';
+        return;
+    }
+    if (label) label.textContent = 'Update default for this customer';
+    const matches = sel && sel.value === info.method;
+    note.style.display = 'block';
+    note.style.color = matches ? '#15803d' : '#b45309';
+    note.textContent = (matches ? '⭐ ' : '⚠️ ')
+        + 'Customer default: ' + info.label
+        + (info.set_by_name ? ' — set by ' + info.set_by_name : '')
+        + (info.set_at_short ? ' · ' + info.set_at_short : '');
+}
+
 async function loadQuickPaymentMethodTimeline(orderId) {
     try {
         const response = await fetch(`/orders/${orderId}/payment-method/timeline`, {
@@ -7902,7 +7974,13 @@ async function loadQuickPaymentMethodTimeline(orderId) {
         });
         const data = await response.json();
         const timeline = document.getElementById('quickPaymentMethodTimeline');
-        
+
+        // Aug-2026 — the customer's standing default rides this same response, so
+        // the modal costs no extra request. Stashed for the tick's confirm dialog
+        // and the provenance line.
+        window._quickPaymentCustomerDefault = data.customer_default || null;
+        renderQuickPaymentDefaultNote();
+
         if (data.success && data.data && data.data.length > 0) {
             timeline.innerHTML = data.data.slice(0, 5).map(h => {
                 const d = new Date(h.changed_at);
@@ -12788,9 +12866,12 @@ function createNewOrder() {
                                  order (web or mobile) starts on it. Saves opening Edit
                                  Customer just to set a preference. Unticked by default and
                                  reset every time a different customer is picked. -->
+                            <!-- Provenance of the customer's existing default, filled by
+                                 selectCustomerFromData once a customer is picked. -->
+                            <div id="createOrderDefaultPmNote" style="display:none; margin-top:6px; font-size:11px; font-weight:600;"></div>
                             <label style="display: flex; align-items: center; gap: 6px; margin-top: 6px; font-size: 12px; color: #6b7280; cursor: pointer;">
                                 <input type="checkbox" name="set_default_payment_method" id="setDefaultPaymentMethod" value="1" style="cursor: pointer;">
-                                Set as default for this customer
+                                <span id="setDefaultPaymentMethodLabel">Set as default for this customer</span>
                             </label>
                         </div>
                     </div>
@@ -13793,6 +13874,42 @@ function selectCustomerFromData(customerData) {
         // switch would silently write a preference onto the wrong person.
         const setDefaultBox = scope.querySelector('input[name="set_default_payment_method"]');
         if (setDefaultBox) setDefaultBox.checked = false;
+
+        // Aug-2026 — show whose choice the existing default is, and confirm before
+        // overwriting it (same rule as the quick-change and mobile modals).
+        const info = customerData.default_payment_info || null;
+        window._createOrderCustomerDefault = info;
+        const note = document.getElementById('createOrderDefaultPmNote');
+        const lbl = document.getElementById('setDefaultPaymentMethodLabel');
+        if (note) {
+            if (info) {
+                note.style.display = 'block';
+                note.style.color = '#15803d';
+                note.textContent = '⭐ Customer default: ' + info.label
+                    + (info.set_by_name ? ' — set by ' + info.set_by_name : '')
+                    + (info.set_at_short ? ' · ' + info.set_at_short : '');
+            } else {
+                note.style.display = 'none';
+                note.textContent = '';
+            }
+        }
+        if (lbl) lbl.textContent = info ? 'Update default for this customer' : 'Set as default for this customer';
+        if (setDefaultBox && !setDefaultBox._nfDefaultGuard) {
+            setDefaultBox._nfDefaultGuard = true;
+            setDefaultBox.addEventListener('click', function (e) {
+                const existing = window._createOrderCustomerDefault;
+                if (!this.checked || !existing) return;
+                const pm = scope.querySelector('select[name="payment_method"]');
+                const picked = pm && pm.value === 'online' ? 'Online' : 'Cash';
+                const who = existing.set_by_name || 'someone else';
+                const when = existing.set_at_short ? (' on ' + existing.set_at_short) : '';
+                if (!confirm(`This customer's default is ${existing.label}, set by ${who}${when}.\n\n`
+                        + `Save ${picked} as the new default and record it under your name?`)) {
+                    this.checked = false;
+                    e.preventDefault();
+                }
+            });
+        }
     } catch (e) { /* non-fatal */ }
 
     // Pre-fill address fields if visible

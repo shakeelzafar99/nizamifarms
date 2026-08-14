@@ -1,0 +1,1077 @@
+<?php
+
+namespace App\Services\Riders;
+
+use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
+use Carbon\Carbon;
+
+/**
+ * ⭐⭐ THE ONE ATTRIBUTION ENGINE (Aug-2026) — every kilometre this month, walked
+ *     MACHINE-FIRST and labelled with who owns it.
+ *
+ * WHY IT EXISTS
+ * The Bikes page had two lenses that could not agree. The Riders view chained a
+ * rider's own attendance readings and never asked which bike produced them; the
+ * Vehicles view chained the machine but had no idea a day had been shared. On a
+ * handover both were wrong in opposite directions — Waseem carried 563 km of
+ * DCR-799's August as "unattributed" (i.e. as suspicion) while 40 of those km were
+ * Danish's overnight and 494 were days the two of them split. One walk, two lenses,
+ * and the blame lands where the evidence actually points.
+ *
+ * ⭐ THE FIVE LEGS. Every stretch of odometer between two readings is exactly one:
+ *
+ *   on_duty      check-in → day close, one rider, his kilometres
+ *   off_duty     between readings with nobody on shift — SAME rider both ends,
+ *                so it is genuinely his (the commute, the evening errand)
+ *   shared       a handover DAY: the morning reading is one rider's and the
+ *                evening reading is the other's. The run is real, the split is
+ *                unknowable, so it is charged to NEITHER man and named on both.
+ *   transfer     a stretch whose two ends belong to different riders across a
+ *                handover — the bike travelling between them. Nobody's fault.
+ *   unaccounted  a stretch spanning a day someone WORKED with no usable reading:
+ *                part work, part commute, unsplittable, credited to no one.
+ *
+ * ⭐⭐ THE INVARIANT, PER MACHINE:
+ *        on_duty + off_duty + shared + transfer + unaccounted == the month's span
+ *     `reconciles` reports it honestly rather than printing a total that disagrees
+ *     with the header. Real August: DCR-799 = 674 + 40 + 494 + 29 + 0 = 1,237. ✓
+ *
+ * ⚠⚠ THREE RULES THAT LOOK LIKE DETAILS AND ARE NOT
+ *
+ * R-A  ONE MACHINE PER RIDER-DAY, decided by `VehicleResolver`. The older code
+ *      pulled each keeper's attendance per assignment WINDOW, so a rider holding
+ *      two machines across one day (Farooq: van in the morning, EDN-198 from the
+ *      8th) had the SAME readings ingested into BOTH chains. Worse, a same-day
+ *      assign/release slip put DCR-799's 25,223 into Danish's own bike's ~24,500
+ *      chain as ~700 phantom km. The resolver already answers this question for the
+ *      live gates; the analytics must ask it too, or the two disagree.
+ *
+ * R-B  PLAUSIBILITY IS RELATIVE TO THE MACHINE'S OWN CHAIN — never an absolute
+ *      floor. The old rule refused any reading under 1,000 km as a dropped digit,
+ *      which is right for a 47,000 km bike and catastrophic for a NEW one: every
+ *      reading EDN-198 has ever produced (0–429) was discarded, which is precisely
+ *      why the live page says "Rs 3,800 could not be tied to any kilometres —
+ *      Farooq". Typos are caught by the chain instead (backwards, or a jump beyond
+ *      MAX_GAP_KM), which is strictly stronger: it also catches a typo of 45,000 on
+ *      a bike that reads 400, which no floor ever would.
+ *
+ * R-C  A SAME-DAY ASSIGN+RELEASE BLIP IS INVISIBLE. It never wins the resolver for
+ *      a day that has readings, so it contributes nothing here — no special case is
+ *      needed, which is the point. (The UI hides such rows from month views and
+ *      keeps them in the audit history.)
+ *
+ * ⚠ SCOPE. This is a READ. It writes nothing, and no gate, fuel rule or alert
+ *   consults it. Riders the registry has never tracked are simply absent from the
+ *   output, and their callers keep the rider-keyed answer they have always had.
+ */
+class MachineAttribution
+{
+    /** A day's on-duty distance beyond this is a typo, not a ride. */
+    public const MAX_DAY_KM = 500;
+
+    /** A single unwitnessed stretch beyond this is a typo'd meter, not a distance. */
+    public const MAX_GAP_KM = 2000;
+
+    /** The ride home cannot plausibly exceed this. */
+    public const MAX_HOME_KM = 700;
+
+    private const TTL = 120;
+
+    /**
+     * Everything, for one month, cached. Shape:
+     *
+     *   vehicles[vid] = ['legs'=>[], 'days'=>[], 'totals'=>[], 'span'=>?int,
+     *                    'opens_at'=>?int, 'closes_at'=>?int, 'reconciles'=>bool]
+     *   riders[uid]   = ['work_km','offduty_km','shared_km','transfer_km',
+     *                    'unattributed_km','machines'=>[vid=>[...]], 'days'=>[date=>[...]]]
+     */
+    public function month(string $month, bool $fresh = false): array
+    {
+        $key = 'machine_attr:' . $month;
+        if ($fresh) Cache::forget($key);
+
+        return Cache::remember($key, self::TTL, function () use ($month) {
+            try {
+                return $this->build($month);
+            } catch (\Throwable $e) {
+                Log::warning('MachineAttribution build failed', [
+                    'month' => $month, 'error' => $e->getMessage(),
+                ]);
+                return ['vehicles' => [], 'riders' => [], 'available' => false];
+            }
+        });
+    }
+
+    /** One machine's month, or null when the engine has nothing for it. */
+    public function forVehicle(int $vehicleId, string $month, bool $fresh = false): ?array
+    {
+        return $this->month($month, $fresh)['vehicles'][$vehicleId] ?? null;
+    }
+
+    /** One rider's month across every machine he touched, or null. */
+    public function forRider(int $userId, string $month, bool $fresh = false): ?array
+    {
+        return $this->month($month, $fresh)['riders'][$userId] ?? null;
+    }
+
+    /**
+     * Every leg this rider is named on, grouped by date — his own stretches AND
+     * the shared/transfer ones he is merely a party to. The drill-down reads this
+     * to say, on the day itself, "187 km shared with Danish" instead of quietly
+     * adding it to a number with his name on top.
+     */
+    public function legsForRider(int $userId, string $month, bool $fresh = false): array
+    {
+        $out = [];
+        foreach ($this->month($month, $fresh)['vehicles'] ?? [] as $v) {
+            foreach ($v['legs'] as $l) {
+                $mine = $l['user_id'] === $userId
+                     || $l['from_user'] === $userId || $l['to_user'] === $userId;
+                if (!$mine) continue;
+                $out[$l['date']][] = $l + ['vehicle_label' => $v['label']];
+            }
+        }
+        ksort($out);
+        return $out;
+    }
+
+    public function flush(string $month): void
+    {
+        Cache::forget('machine_attr:' . $month);
+    }
+
+    // =================================================================
+    // THE BUILD
+    // =================================================================
+
+    private function build(string $month): array
+    {
+        $out = ['vehicles' => [], 'riders' => [], 'available' => false];
+
+        $vs = new VehicleService();
+        if (!$vs->available()) return $out;
+        $out['available'] = true;
+
+        $start = Carbon::parse($month . '-01')->startOfMonth();
+        $end   = $start->copy()->endOfMonth();
+        $from  = $start->format('Y-m-d');
+        $to    = $end->format('Y-m-d');
+
+        $vehicles = DB::table(VehicleService::T_VEHICLE)->get(['id', 'reg_no', 'nickname', 'vtype', 'is_company']);
+        if ($vehicles->isEmpty()) return $out;
+
+        // --- who the registry can speak for: anyone with an assignment, ever ---
+        $riderIds = DB::table(VehicleService::T_ASSIGN)->distinct()->pluck('user_id')
+            ->map(fn ($v) => (int) $v)->all();
+        if (!$riderIds) return $out;
+
+        $resolver = new VehicleResolver();
+        $dayMap   = $resolver->vehiclesForDays($riderIds, $from, $to);
+
+        $names = DB::table('t_sys_user')->whereIn('id', $riderIds)
+            ->pluck('fullname', 'id')->toArray();
+
+        // --- one query for the month's attendance, then split it by machine ---
+        $att = DB::table('t_ops_attendance')
+            ->whereIn('user_id', $riderIds)
+            ->whereBetween('attendance_date', [$from, $to])
+            ->orderBy('attendance_date')
+            ->get(['user_id', 'attendance_date', 'meter_start', 'meter_end', 'meter_home',
+                   'meter_start_source', 'login_time', 'logout_time', 'leave_type',
+                   // ⭐ WHEN the reading was written down. The day card orders its
+                   //   lines by real time, so a handover recorded at 22:49 sits
+                   //   after a 21:42 close instead of being guessed into place.
+                   'meter_start_recorded_at', 'home_meter_recorded_at']);
+
+        $rowsByVehicle = [];
+        foreach ($att as $a) {
+            $uid = (int) $a->user_id;
+            $d   = substr((string) $a->attendance_date, 0, 10);
+            $vid = $dayMap[$uid . '|' . $d] ?? null;
+            if (!$vid) continue;                       // held nothing that day
+            $rowsByVehicle[$vid][] = [
+                'date'         => $d,
+                'user_id'      => $uid,
+                'keeper'       => $names[$uid] ?? null,
+                'meter_start'  => $this->reading($a->meter_start),
+                'meter_end'    => $this->reading($a->meter_end),
+                'meter_home'   => $this->reading($a->meter_home),
+                'start_source' => $a->meter_start_source ?: null,
+                'leave'        => $a->leave_type ?: null,
+                'worked'       => $a->login_time !== null,
+                'closed'       => $a->logout_time !== null,
+                'start_at'     => $this->clock($a->meter_start_recorded_at ?? null),
+                'end_at'       => $this->clock($a->home_meter_recorded_at ?? null),
+            ];
+        }
+
+        $handovers = $this->handoverMeters($from, $to);
+
+        foreach ($vehicles as $v) {
+            $vid = (int) $v->id;
+            $out['vehicles'][$vid] = $this->walk(
+                $vid,
+                $this->labelFor($v),
+                (int) $v->is_company === 1,
+                $rowsByVehicle[$vid] ?? [],
+                $vs,
+                $month, $from, $to,
+                $handovers[$vid] ?? []
+            );
+        }
+
+        $out['riders'] = $this->rollUpRiders($out['vehicles'], $names);
+        return $out;
+    }
+
+    /**
+     * ONE MACHINE, START TO FINISH.
+     *
+     * The chain is a list of reading POINTS in odometer order, each owned by the
+     * rider whose attendance row (or claim) carried it. Between every consecutive
+     * pair sits exactly one leg, and which leg it is depends only on who owns the
+     * two ends and what happened in between.
+     */
+    private function walk(int $vehicleId, string $label, bool $isCompany, array $rows,
+                          VehicleService $vs, string $month, string $from, string $to,
+                          array $handoverByDate): array
+    {
+        $totals = ['on_duty' => 0, 'off_duty' => 0, 'shared' => 0,
+                   'transfer' => 0, 'unaccounted' => 0, 'total' => 0,
+                   'days_counted' => 0, 'no_meter_days' => 0];
+        $out = [
+            'vehicle_id' => $vehicleId, 'label' => $label, 'is_company' => $isCompany,
+            'month' => $month, 'legs' => [], 'days' => [], 'totals' => $totals,
+            'span' => null, 'opens_at' => null, 'closes_at' => null, 'reconciles' => true,
+            'boundary_dates' => [], 'keepers' => [], 'spend' => [], 'spend_total' => null,
+            'events' => [], 'day_cards' => [],
+        ];
+
+        $boundary = $this->boundaryDates($vehicleId);
+        $out['boundary_dates'] = array_keys($boundary);
+
+        $claims = $vs->claimsForVehicle($vehicleId, $from, $to);
+
+        // ⭐ WHAT THIS MACHINE COST, AND WHO FILED IT. Kept here rather than left to
+        //   the callers because both lenses need the same split: the rider strip
+        //   ("his fuel on this bike") and the vehicle profile ("who spent what on
+        //   it") must never be two different sums of the same claims.
+        $out['spend'] = $this->spendByUser($claims);
+        $out['spend_total'] = $this->spendTotals($claims);
+
+        // --- group the month's evidence by date ------------------------------
+        $byDate = [];
+        foreach ($rows as $r) {
+            $byDate[$r['date']]['rows'][] = $r;
+        }
+        foreach ($claims as $c) {
+            $byDate[$c['date']]['claims'][] = $c;
+        }
+        if (!$byDate) {
+            $out['days'] = [];
+            return $out;
+        }
+        ksort($byDate);
+
+        // --- where the month opens: the last reading before it, else the first
+        //     reading inside it (a machine's FIRST month has nothing behind it) ---
+        $win  = $vs->meterWindowFor($vehicleId, $from);
+        $prev = $win['floor'] ?? null;
+        $prevOwner = null;
+        $prevDate  = null;
+        $dirty = false;
+        $days  = [];
+        $legs  = [];
+
+        foreach ($byDate as $d => $bundle) {
+            $dayRows   = $bundle['rows']   ?? [];
+            $dayClaims = $bundle['claims'] ?? [];
+            $isBoundary = isset($boundary[$d]);
+
+            // Each rider-day becomes a point (or a pair of points on a full day).
+            $points = [];
+            $dayOut = [];
+
+            foreach ($dayRows as $r) {
+                $p = $this->pointsForRow($r);
+                $dayOut[] = [
+                    'date' => $d, 'user_id' => $r['user_id'], 'keeper' => $r['keeper'],
+                    'meter_start' => $r['meter_start'], 'meter_end' => $r['meter_end'],
+                    'meter_home' => $r['meter_home'], 'start_source' => $r['start_source'],
+                    'start_at' => $r['start_at'] ?? null, 'end_at' => $r['end_at'] ?? null,
+                    'work_km' => $p['work'], 'home_km' => $p['home'],
+                    // ⚠⚠ 'half' — ONE reading on a day the machine CHANGED HANDS — is
+                    //   the correct shape and must not be scolded for. Off a handover
+                    //   day, one reading is a genuine miss and still counts as one:
+                    //   excusing every single-reading day would quietly forgive real
+                    //   lapses (Kanan's June) while fixing the false accusations.
+                    'status' => $p['broken'] ? 'unusable'
+                        : ($p['work'] !== null ? 'ok'
+                        : ($r['leave'] ? 'leave'
+                        : ($r['worked']
+                            ? (($p['opens'] !== null && $isBoundary) ? 'half'
+                                : ($this->readingWasDue($r) ? 'no_meter' : 'in_progress'))
+                        : 'no_attendance'))),
+                    'partial' => $p['opens'] !== null && $p['work'] === null,
+                    'handover_day' => $isBoundary,
+                    'gap_km' => null, 'gap_kind' => null, 'gap_since' => null,
+                    'gap_from_user' => null, 'gap_to_user' => null, 'gap_user_id' => null,
+                    'claims' => [],
+                ];
+                if ($p['opens'] !== null) {
+                    $points[] = ['v' => $p['opens'], 'user_id' => $r['user_id'],
+                                 'keeper' => $r['keeper'], 'kind' => 'open',
+                                 'work' => $p['work'], 'closes' => $p['closes'],
+                                 'home' => $p['home'], 'idx' => count($dayOut) - 1];
+                }
+            }
+
+            // A claim on a day with no attendance row still proves the machine was
+            // read that day — the only reading such a day leaves behind.
+            if (!$points && $dayClaims) {
+                $meters = array_values(array_filter(array_map(
+                    fn ($c) => $this->reading($c['meter'] ?? null), $dayClaims)));
+                if ($meters) {
+                    $uid = $dayClaims[0]['by_user_id'] ?? null;
+                    $dayOut[] = [
+                        'date' => $d, 'user_id' => $uid, 'keeper' => $dayClaims[0]['by_name'] ?? null,
+                        'meter_start' => null, 'meter_end' => null, 'meter_home' => null,
+                        'start_source' => null, 'work_km' => null, 'home_km' => null,
+                        'status' => 'claim_only', 'partial' => false, 'handover_day' => $isBoundary,
+                        'gap_km' => null, 'gap_kind' => null, 'gap_since' => null,
+                        'gap_from_user' => null, 'gap_to_user' => null, 'gap_user_id' => null,
+                        'claims' => [],
+                    ];
+                    $points[] = ['v' => min($meters), 'user_id' => $uid,
+                                 'keeper' => $dayClaims[0]['by_name'] ?? null, 'kind' => 'claim',
+                                 'work' => null, 'closes' => max($meters), 'home' => null,
+                                 'idx' => count($dayOut) - 1];
+                }
+            }
+
+            // Attach the day's claims to the first row of that rider, else the first row.
+            foreach ($dayClaims as $c) {
+                $slot = null;
+                foreach ($dayOut as $i => $row) {
+                    if ($row['user_id'] === ($c['by_user_id'] ?? null)) { $slot = $i; break; }
+                }
+                if ($slot === null && $dayOut) $slot = 0;
+                if ($slot === null) {
+                    $dayOut[] = [
+                        'date' => $d, 'user_id' => $c['by_user_id'] ?? null,
+                        'keeper' => $c['by_name'] ?? null,
+                        'meter_start' => null, 'meter_end' => null, 'meter_home' => null,
+                        'start_source' => null, 'work_km' => null, 'home_km' => null,
+                        'status' => 'claim_only', 'partial' => false, 'handover_day' => $isBoundary,
+                        'gap_km' => null, 'gap_kind' => null, 'gap_since' => null,
+                        'gap_from_user' => null, 'gap_to_user' => null, 'gap_user_id' => null,
+                        'claims' => [],
+                    ];
+                    $slot = count($dayOut) - 1;
+                }
+                $dayOut[$slot]['claims'][] = $c;
+            }
+
+            // Handover halves order by odometer: the morning reading is lower.
+            usort($points, fn ($a, $b) => $a['v'] <=> $b['v']);
+
+            foreach ($points as $pt) {
+                // ---- the stretch BEFORE this point -------------------------
+                if ($prev !== null) {
+                    $gap = $pt['v'] - $prev;
+                    if ($gap < 0) {
+                        $dayOut[$pt['idx']]['anomaly'] = 'meter_back';
+                    } elseif ($gap > self::MAX_GAP_KM) {
+                        $dayOut[$pt['idx']]['anomaly'] = 'implausible';
+                    } elseif ($gap > 0) {
+                        $made = $this->classifyGap(
+                            $gap, $prev, $pt, $prevOwner, $prevDate, $d,
+                            $dirty, $isBoundary, $handoverByDate[$d] ?? null, $vehicleId);
+                        $legs = array_merge($legs, $made);
+
+                        // Stamp the stretch onto the row it arrived at, so the
+                        // machine's day list can render it without re-deriving
+                        // anything — one computation, both lenses.
+                        $lead = $made[0];
+                        $dayOut[$pt['idx']]['gap_km']   = $gap;
+                        $dayOut[$pt['idx']]['gap_kind'] = count($made) > 1 ? 'split' : $lead['kind'];
+                        $dayOut[$pt['idx']]['gap_since'] = $lead['since'] ?? null;
+                        $dayOut[$pt['idx']]['gap_from_user'] = $lead['from_user'] ?? null;
+                        $dayOut[$pt['idx']]['gap_to_user']   = $lead['to_user'] ?? null;
+                        $dayOut[$pt['idx']]['gap_user_id']   = $lead['user_id'] ?? null;
+                    }
+                }
+
+                // ---- the day's own riding ---------------------------------
+                if ($pt['work'] !== null) {
+                    $legs[] = $this->leg('on_duty', $pt['work'], $d, $vehicleId, $pt['user_id']);
+                    $totals['days_counted']++;
+                }
+                if ($pt['home']) {
+                    $legs[] = $this->leg('off_duty', $pt['home'], $d, $vehicleId, $pt['user_id'], ['home' => true]);
+                }
+
+                $close = $pt['closes'] ?? $pt['v'];
+                if ($prev === null || $close >= $prev) {
+                    $prev = $close; $prevOwner = $pt['user_id']; $prevDate = $d;
+                } elseif ($pt['work'] !== null) {
+                    // A self-consistent day re-anchors a chain a typo knocked over,
+                    // so one bad row poisons only itself (the kmSinceLastFill rule).
+                    $prev = $close; $prevOwner = $pt['user_id']; $prevDate = $d;
+                }
+            }
+
+            // A day worked with no usable reading dirties the NEXT stretch — unless
+            // the machine changed hands, where a single reading is the normal shape.
+            foreach ($dayOut as $row) {
+                if ($row['status'] === 'no_meter' && !$isBoundary) {
+                    $dirty = true;
+                    $totals['no_meter_days']++;
+                } elseif ($row['status'] === 'ok') {
+                    $dirty = false;
+                }
+            }
+
+            foreach ($dayOut as $row) $days[] = $row;
+        }
+
+        // --- the tail: last reading of the month → where the next month opens ---
+        $closeWin = $vs->meterWindowFor($vehicleId, Carbon::parse($to)->addDay()->format('Y-m-d'));
+        $closesOn = $closeWin['floor'] ?? null;
+        if ($prev !== null && $closesOn !== null && $closesOn > $prev
+            && ($closesOn - $prev) <= self::MAX_GAP_KM) {
+            $legs[] = $this->leg($dirty ? 'unaccounted' : 'off_duty', $closesOn - $prev,
+                $to, $vehicleId, $dirty ? null : $prevOwner, ['tail' => true]);
+            $prev = $closesOn;
+        }
+
+        foreach ($legs as $l) {
+            $totals[$l['kind']] = ($totals[$l['kind']] ?? 0) + $l['km'];
+        }
+        $totals['total'] = $totals['on_duty'] + $totals['off_duty'] + $totals['shared']
+                         + $totals['transfer'] + $totals['unaccounted'];
+
+        $out['legs']   = $legs;
+        $out['days']   = $days;
+        $out['totals'] = $totals;
+        $out['opens_at'] = $win['floor'] ?? ($days ? $this->firstReading($days) : null);
+        $out['closes_at'] = $prev;
+        $out['span'] = ($out['opens_at'] !== null && $prev !== null && $prev >= $out['opens_at'])
+            ? $prev - $out['opens_at'] : null;
+
+        // The honesty check: the legs must equal the odometer's own movement.
+        $out['reconciles'] = $out['span'] === null
+            ? $totals['total'] === 0
+            : $out['span'] === $totals['total'];
+
+        $out['keepers'] = $this->keepersOf($days);
+        $out['events']  = $this->handoverEvents($vehicleId, $from, $to, $days);
+        $out['day_cards'] = $this->dayCards($days, $legs, $out['events']);
+        return $out;
+    }
+
+    /**
+     * ⭐ THE MANAGER CHANGING THE RIDER, as a visible event.
+     *
+     * Assignments have always been invisible in the day list — a bike simply had a
+     * different name against it the next morning with nothing saying why. These are
+     * the "🔁 handover → Waseem · Shabib ne record ki · 22:49" lines.
+     *
+     * ⚠ `created_at` is when it was RECORDED, which is not always the day it covers
+     *   (a backdated correction). The time is offered only when the two agree —
+     *   printing 22:49 against a day recorded a week later would be a lie.
+     * ⚠ Blips (same-day assign+release that never won a reading) stay hidden here
+     *   exactly as they are hidden everywhere else — R-C, owner ruling Q5.
+     */
+    private function handoverEvents(int $vehicleId, string $from, string $to, array $days): array
+    {
+        $out = [];
+        try {
+            $cols = ['a.id', 'a.user_id', 'a.assigned_on', 'a.released_on', 'a.created_at',
+                     'a.note', 'u.fullname as rider', 'b.fullname as by_name'];
+            if ($this->hasHandoverMeter()) $cols[] = 'a.handover_meter';
+
+            $rows = DB::table(VehicleService::T_ASSIGN . ' as a')
+                ->leftJoin('t_sys_user as u', 'u.id', '=', 'a.user_id')
+                ->leftJoin('t_sys_user as b', 'b.id', '=', 'a.assigned_by')
+                ->where('a.vehicle_id', $vehicleId)
+                ->whereBetween('a.assigned_on', [$from, $to])
+                ->orderBy('a.assigned_on')->orderBy('a.id')
+                ->get($cols);
+
+            // Which (rider, date) pairs actually produced something on this machine —
+            // a paper shuffle that never carried a reading is not an event.
+            $seen = [];
+            foreach ($days as $d) {
+                if ($d['user_id'] !== null) $seen[$d['user_id'] . '|' . $d['date']] = true;
+            }
+
+            foreach ($rows as $r) {
+                $date = substr((string) $r->assigned_on, 0, 10);
+                $uid  = (int) $r->user_id;
+                $blip = $r->released_on
+                    && substr((string) $r->released_on, 0, 10) === $date
+                    && !isset($seen[$uid . '|' . $date]);
+                if ($blip) continue;
+
+                $recordedOn = substr((string) $r->created_at, 0, 10);
+                $out[] = [
+                    'date'    => $date,
+                    'to'      => $r->rider,
+                    'to_user' => $uid,
+                    'by_name' => $r->by_name,
+                    // Only when the record was made on the day it covers.
+                    'time'    => $recordedOn === $date ? $this->clock($r->created_at) : null,
+                    'recorded_on' => $recordedOn === $date ? null : $recordedOn,
+                    'meter'   => isset($r->handover_meter) && $r->handover_meter
+                        ? (int) $r->handover_meter : null,
+                    'note'    => $r->note ?: null,
+                ];
+            }
+        } catch (\Throwable $e) {
+            Log::warning('handoverEvents failed', ['vehicle' => $vehicleId, 'error' => $e->getMessage()]);
+            return [];
+        }
+        return $out;
+    }
+
+    /**
+     * ⭐⭐ ONE CARD PER DATE — the day read top to bottom, the way it happened
+     *     (owner review, Aug-13).
+     *
+     * The old list printed a separate block per RIDER, so a handover date arrived as
+     * two fragments and the manager assembled the story himself. A date is one thing
+     * that happened to one machine: it opens on a meter, things occur, it closes on a
+     * meter. That is the card.
+     *
+     * ⭐ LINE ORDER IS DERIVED, NOT ASSUMED. Meters and handovers carry a clock;
+     *   claims usually do not — but they carry an ODOMETER, which places them
+     *   physically between the open and the close. So a fill at 25,479 lands between
+     *   a 25,420 start and a 25,595 close without anyone recording a time for it.
+     *   Verified against the real August cards (see test_day_cards.php).
+     */
+    private function dayCards(array $days, array $legs, array $events): array
+    {
+        $byDate = [];
+        foreach ($days as $d) $byDate[$d['date']][] = $d;
+        foreach ($events as $e) {
+            if (!isset($byDate[$e['date']])) $byDate[$e['date']] = [];
+        }
+        ksort($byDate);
+
+        $legsByDate = [];
+        foreach ($legs as $l) $legsByDate[$l['date']][] = $l;
+
+        $cards = [];
+        foreach ($byDate as $date => $rows) {
+            // The day's two anchors, whoever recorded them.
+            $open = null; $close = null;
+            foreach ($rows as $r) {
+                if ($r['meter_start'] !== null && $open === null) {
+                    $open = ['value' => $r['meter_start'], 'who' => $r['keeper'],
+                             'user_id' => $r['user_id'], 'at' => $r['start_at'] ?? null,
+                             'source' => $r['start_source'] ?? null];
+                }
+                $endVal = $r['meter_end'] ?? null;
+                if ($endVal === null && $r['meter_home'] !== null) $endVal = $r['meter_home'];
+                if ($endVal !== null) {
+                    $close = ['value' => $endVal, 'who' => $r['keeper'],
+                              'user_id' => $r['user_id'], 'at' => $r['end_at'] ?? null];
+                }
+            }
+
+            $openPos  = $this->seconds($open['at'] ?? null, 0);
+            $closePos = $this->seconds($close['at'] ?? null, 86400);
+
+            $lines = [];
+
+            // 1. the stretch that ARRIVED at this day, before anything else.
+            // ⚠⚠ NEVER the shared/split run: `classifyGap` only calls a stretch
+            //   'shared' when both its ends fall on THIS date, so that distance is
+            //   the day's own run — already the card's headline. Printing it here
+            //   too would show the same kilometres twice, which is exactly what the
+            //   owner said must not happen.
+            foreach ($rows as $r) {
+                if (!$r['gap_km']) continue;
+                if (in_array($r['gap_kind'], ['shared', 'split'], true)) continue;
+                $lines[] = ['pos' => -1, 'rank' => 0, 'type' => 'gap',
+                            'kind' => $r['gap_kind'], 'km' => $r['gap_km'],
+                            'since' => $r['gap_since'] ?? null,
+                            'who' => $r['gap_kind'] === 'off_duty' || $r['gap_kind'] === 'unaccounted'
+                                ? $r['keeper'] : null,
+                            'from' => $this->nameFor($r['gap_from_user'] ?? null, $rows, $events),
+                            'to' => $this->nameFor($r['gap_to_user'] ?? null, $rows, $events)];
+            }
+
+            if ($open) {
+                $lines[] = ['pos' => $openPos, 'rank' => 1, 'type' => 'meter_start'] + $open;
+            }
+
+            // 2. claims, placed by where the odometer says they happened
+            foreach ($rows as $r) {
+                foreach ($r['claims'] as $c) {
+                    $lines[] = [
+                        'pos'  => $this->claimPos($c['meter'] ?? null, $open, $close, $openPos, $closePos),
+                        'rank' => 2, 'type' => 'claim',
+                        'kind' => $c['kind'], 'amount' => $c['amount'], 'meter' => $c['meter'] ?? null,
+                        'who'  => $c['by_name'] ?? null, 'pending' => !empty($c['is_pending']),
+                        'id'   => $c['id'] ?? null,
+                    ];
+                }
+            }
+
+            // 3. the manager handing the machine over
+            foreach ($events as $e) {
+                if ($e['date'] !== $date) continue;
+                $lines[] = ['pos' => $this->seconds($e['time'], 86400 - 1), 'rank' => 3,
+                            'type' => 'handover'] + $e;
+            }
+
+            if ($close) {
+                $lines[] = ['pos' => $closePos, 'rank' => 4, 'type' => 'meter_end'] + $close;
+            }
+
+            usort($lines, fn ($a, $b) => [$a['pos'], $a['rank']] <=> [$b['pos'], $b['rank']]);
+
+            $cards[] = [
+                'date'    => $date,
+                'summary' => $this->cardSummary($date, $rows, $open, $close, $legsByDate[$date] ?? []),
+                'lines'   => array_values($lines),
+            ];
+        }
+
+        usort($cards, fn ($a, $b) => strcmp($b['date'], $a['date']));   // newest first
+        return $cards;
+    }
+
+    /**
+     * The day's verdict, exactly as a manager reads it: the machine opened on one
+     * meter and closed on another, and WHO took those two readings decides whether
+     * the distance belongs to one man or to neither.
+     */
+    private function cardSummary(string $date, array $rows, ?array $open, ?array $close, array $legs): array
+    {
+        $km = ($open && $close && $close['value'] >= $open['value'])
+            ? $close['value'] - $open['value'] : null;
+
+        $split = array_values(array_filter($legs, fn ($l) => !empty($l['from_handover'])));
+        if ($split) {
+            return ['km' => $km, 'kind' => 'split', 'riders' => array_values(array_unique(
+                array_filter(array_map(fn ($l) => $this->nameFor($l['user_id'], $rows, []), $split)))),
+                'parts' => array_map(fn ($l) => ['km' => $l['km'],
+                    'who' => $this->nameFor($l['user_id'], $rows, [])], $split)];
+        }
+
+        if ($open && $close) {
+            $shared = $open['user_id'] !== null && $close['user_id'] !== null
+                   && $open['user_id'] !== $close['user_id'];
+            return ['km' => $km, 'kind' => $shared ? 'shared' : 'on_duty',
+                    'riders' => $shared ? [$open['who'], $close['who']] : [$close['who']]];
+        }
+
+        // No pair to measure. Say which of the honest reasons it is.
+        $status = 'no_meter';
+        foreach ($rows as $r) {
+            if (in_array($r['status'], ['leave', 'claim_only', 'half', 'in_progress'], true)) {
+                $status = $r['status'];
+                break;
+            }
+        }
+        return ['km' => null, 'kind' => $status,
+                'riders' => array_values(array_unique(array_filter(array_column($rows, 'keeper'))))];
+    }
+
+    /**
+     * Where in the day a claim sits — interpolated from its odometer between the
+     * day's open and close. A fill at 25,250 on a day running 25,248 → 25,380
+     * happened almost immediately after the start, and the card shows it there.
+     */
+    private function claimPos(?int $meter, ?array $open, ?array $close, int $openPos, int $closePos): float
+    {
+        if ($meter === null || !$open || !$close) return $openPos + 0.5;
+        $span = $close['value'] - $open['value'];
+        if ($span <= 0) return $openPos + 0.5;
+        $frac = ($meter - $open['value']) / $span;
+        $frac = max(0, min(1, $frac));
+        return $openPos + $frac * ($closePos - $openPos);
+    }
+
+    /** 'HH:MM' from a datetime, or null. */
+    private function clock($ts): ?string
+    {
+        if (!$ts) return null;
+        $s = (string) $ts;
+        return strlen($s) >= 16 ? substr($s, 11, 5) : null;
+    }
+
+    private function seconds(?string $hhmm, int $fallback): int
+    {
+        if (!$hhmm || !str_contains($hhmm, ':')) return $fallback;
+        [$h, $m] = array_map('intval', explode(':', $hhmm));
+        return $h * 3600 + $m * 60;
+    }
+
+    private function nameFor(?int $uid, array $rows, array $events): ?string
+    {
+        if ($uid === null) return null;
+        foreach ($rows as $r) {
+            if ($r['user_id'] === $uid) return $r['keeper'];
+        }
+        foreach ($events as $e) {
+            if (($e['to_user'] ?? null) === $uid) return $e['to'];
+        }
+        return null;
+    }
+
+    /** Has SQL-BIKES-HANDOVER-METER-AUG2026 been run? */
+    private function hasHandoverMeter(): bool
+    {
+        static $ok = null;
+        if ($ok !== null) return $ok;
+        try {
+            $ok = \Illuminate\Support\Facades\Schema::hasColumn(VehicleService::T_ASSIGN, 'handover_meter');
+        } catch (\Throwable $e) {
+            $ok = false;
+        }
+        return $ok;
+    }
+
+    /**
+     * WHOSE STRETCH IS THIS? The whole blame question, in one place.
+     *
+     * Same rider at both ends  → his (off duty, or unaccounted when a day he worked
+     *                            went unread and we cannot tell work from commute)
+     * Different riders, same day → SHARED — the handover day itself, split unknown
+     * Different riders, across   → TRANSFER — the bike moving between them
+     *
+     * ⭐ A recorded handover odometer turns the unknowable split into two exact
+     *    stretches, which is the whole reason the field exists.
+     */
+    private function classifyGap(int $gap, int $prev, array $pt, ?int $prevOwner,
+                                 ?string $prevDate, string $date, bool $dirty,
+                                 bool $isBoundary, ?int $handoverMeter, int $vehicleId): array
+    {
+        $owner = $pt['user_id'];
+        $meta  = ['since' => ($prevDate !== null && $prevDate !== $date) ? $prevDate : null];
+
+        // Same man both ends — it is simply his.
+        if ($prevOwner !== null && $owner !== null && $prevOwner === $owner) {
+            return [$this->leg($dirty ? 'unaccounted' : 'off_duty', $gap, $date,
+                $vehicleId, $dirty ? null : $owner, $meta)];
+        }
+
+        // Two riders. Did anyone write down the odometer at the moment of handover?
+        if ($handoverMeter !== null && $handoverMeter > $prev && $handoverMeter < $pt['v']
+            && $prevOwner !== null && $owner !== null) {
+            return [
+                $this->leg('on_duty', $handoverMeter - $prev, $date, $vehicleId, $prevOwner,
+                    $meta + ['from_handover' => true]),
+                $this->leg('on_duty', $pt['v'] - $handoverMeter, $date, $vehicleId, $owner,
+                    $meta + ['from_handover' => true]),
+            ];
+        }
+
+        // The handover DAY itself: one man's morning, the other's evening.
+        if ($prevDate === $date && $prevOwner !== null && $owner !== null) {
+            return [$this->leg('shared', $gap, $date, $vehicleId, null,
+                $meta + ['from_user' => $prevOwner, 'to_user' => $owner])];
+        }
+
+        // The bike travelling between two people — nobody's personal kilometres.
+        if ($prevOwner !== null && $owner !== null) {
+            return [$this->leg('transfer', $gap, $date, $vehicleId, null,
+                $meta + ['from_user' => $prevOwner, 'to_user' => $owner])];
+        }
+
+        // One end unknown (a claim-only day, the opening anchor): treat as before.
+        return [$this->leg($dirty ? 'unaccounted' : 'off_duty', $gap, $date,
+            $vehicleId, $dirty ? null : $owner, $meta)];
+    }
+
+    private function leg(string $kind, int $km, string $date, int $vehicleId,
+                         ?int $userId, array $meta = []): array
+    {
+        return array_merge([
+            'kind' => $kind, 'km' => $km, 'date' => $date,
+            'vehicle_id' => $vehicleId, 'user_id' => $userId,
+            'from_user' => null, 'to_user' => null, 'since' => null,
+        ], $meta);
+    }
+
+    /**
+     * A rider-day's reading points.
+     *
+     * ⭐ A HALF-DAY IS EVIDENCE, NOT A FAILURE. On a handover the outgoing rider
+     *   leaves only a morning reading and the incoming one only an evening reading;
+     *   the older code required BOTH and therefore threw away exactly the readings
+     *   that bracket the shared run.
+     *
+     * ⚠ A row carrying both readings that disagree with each other (backwards, or
+     *   a day beyond MAX_DAY_KM) is a typo and contributes NOTHING — this is what
+     *   keeps Arslan's 26,261 → 56,403 row out of the chain.
+     */
+    private function pointsForRow(array $r): array
+    {
+        $s = $r['meter_start'];
+        $e = $r['meter_end'];
+        $h = $r['meter_home'];
+
+        if ($s !== null && $e !== null) {
+            if ($e < $s || ($e - $s) > self::MAX_DAY_KM) {
+                return ['opens' => null, 'closes' => null, 'work' => null, 'home' => null, 'broken' => true];
+            }
+            $home = ($h !== null && $h > $e && ($h - $e) <= self::MAX_HOME_KM) ? $h - $e : null;
+            return ['opens' => $s, 'closes' => max($e, $home ? $h : $e),
+                    'work' => $e - $s, 'home' => $home, 'broken' => false];
+        }
+
+        $known = array_values(array_filter([$s, $e, $h], fn ($x) => $x !== null));
+        if (!$known) {
+            return ['opens' => null, 'closes' => null, 'work' => null, 'home' => null, 'broken' => false];
+        }
+        return ['opens' => min($known), 'closes' => max($known),
+                'work' => null, 'home' => null, 'broken' => false];
+    }
+
+    /** Every rider's month, summed from the legs that name him. */
+    private function rollUpRiders(array $vehicles, array $names): array
+    {
+        $riders = [];
+        $touch = function (&$riders, $uid, $vid, $label, $isCompany) use ($names) {
+            if (!isset($riders[$uid])) {
+                $riders[$uid] = [
+                    'user_id' => $uid, 'name' => $names[$uid] ?? null,
+                    'work_km' => 0, 'offduty_km' => 0, 'shared_km' => 0,
+                    'transfer_km' => 0, 'unattributed_km' => 0, 'no_meter_days' => 0,
+                    'machines' => [], 'days' => [],
+                ];
+            }
+            if ($vid !== null && !isset($riders[$uid]['machines'][$vid])) {
+                $riders[$uid]['machines'][$vid] = [
+                    'vehicle_id' => $vid, 'label' => $label, 'is_company' => $isCompany,
+                    'work_km' => 0, 'offduty_km' => 0, 'shared_km' => 0,
+                    'transfer_km' => 0, 'unattributed_km' => 0, 'days' => 0,
+                    'fuel_rs' => 0.0, 'maint_rs' => 0.0,
+                    'fuel_pending_rs' => 0.0, 'maint_pending_rs' => 0.0,
+                    // ⚠ false = this machine's odometer chain has a hole this month
+                    //   (readings from a bike nobody recorded him on). His DUTY km are
+                    //   still sound — they come from within-day pairs — but the
+                    //   between-days stretches cannot be trusted, and the UI says so
+                    //   rather than printing a confident wrong number.
+                    'reconciles' => true,
+                ];
+            }
+        };
+
+        foreach ($vehicles as $vid => $v) {
+            foreach ($v['legs'] as $l) {
+                $map = [
+                    'on_duty'     => 'work_km',
+                    'off_duty'    => 'offduty_km',
+                    'unaccounted' => 'unattributed_km',
+                ];
+                if (isset($map[$l['kind']]) && $l['user_id'] !== null) {
+                    $uid = $l['user_id'];
+                    $touch($riders, $uid, $vid, $v['label'], $v['is_company']);
+                    $riders[$uid][$map[$l['kind']]] += $l['km'];
+                    $riders[$uid]['machines'][$vid][$map[$l['kind']]] += $l['km'];
+                    continue;
+                }
+                // Shared and transfer name BOTH men and are charged to neither.
+                if ($l['kind'] === 'shared' || $l['kind'] === 'transfer') {
+                    $field = $l['kind'] === 'shared' ? 'shared_km' : 'transfer_km';
+                    foreach ([$l['from_user'], $l['to_user']] as $uid) {
+                        if ($uid === null) continue;
+                        $touch($riders, $uid, $vid, $v['label'], $v['is_company']);
+                        $riders[$uid][$field] += $l['km'];
+                        $riders[$uid]['machines'][$vid][$field] += $l['km'];
+                    }
+                }
+            }
+
+            foreach ($v['days'] as $row) {
+                $uid = $row['user_id'];
+                if ($uid === null) continue;
+                $touch($riders, $uid, $vid, $v['label'], $v['is_company']);
+                $riders[$uid]['days'][$row['date']][] = array_merge($row, [
+                    'vehicle_id' => $vid, 'vehicle_label' => $v['label'],
+                    'is_company' => $v['is_company'],
+                ]);
+                if ($row['work_km'] !== null) $riders[$uid]['machines'][$vid]['days']++;
+                $riders[$uid]['machines'][$vid]['reconciles'] = $v['reconciles'];
+                // ⭐ A HANDOVER DAY IS NOT A MISSED READING. `status` is already
+                //   'half' on those days (he recorded his end of it; the other man
+                //   recorded the other), so counting only 'no_meter' here stops the
+                //   drill-down scolding a rider for the three days he did nothing
+                //   wrong — the last place that accusation survived.
+                if ($row['status'] === 'no_meter') $riders[$uid]['no_meter_days']++;
+            }
+
+            // His money on this machine — even on a bike he only borrowed, and even
+            // when he never produced a usable reading on it (that is exactly the
+            // Farooq case the red banner was complaining about).
+            foreach ($v['spend'] as $uid => $s) {
+                $touch($riders, $uid, $vid, $v['label'], $v['is_company']);
+                $riders[$uid]['machines'][$vid]['reconciles'] = $v['reconciles'];
+                foreach (['fuel_rs', 'maint_rs', 'fuel_pending_rs', 'maint_pending_rs'] as $k) {
+                    $riders[$uid]['machines'][$vid][$k] += $s[$k];
+                }
+            }
+        }
+
+        foreach ($riders as &$r) {
+            ksort($r['days']);
+            $r['reconciles'] = true;
+            foreach ($r['machines'] as $m) {
+                if (!$m['reconciles']) $r['reconciles'] = false;
+            }
+            $r['machines'] = array_values($r['machines']);
+            // The bike he did most of his riding on reads as his main one.
+            usort($r['machines'], fn ($a, $b) =>
+                ($b['work_km'] + $b['shared_km']) <=> ($a['work_km'] + $a['shared_km']));
+        }
+        unset($r);
+
+        return $riders;
+    }
+
+    // =================================================================
+    // SMALL HELPERS
+    // =================================================================
+
+    /**
+     * ⭐ R-B: a reading is anything above zero. Zero is how this system spells
+     *   "not recorded" (a `meter_end = 0` row is the known poisoned shape), and
+     *   there is no upper or lower bound here on purpose — the CHAIN judges
+     *   plausibility, so a genuinely new bike reading 342 km is data, not a typo.
+     */
+    /** Fuel and maintenance on this machine, per person who filed it. */
+    private function spendByUser(array $claims): array
+    {
+        $out = [];
+        foreach ($claims as $c) {
+            $uid = $c['by_user_id'] ?? null;
+            if ($uid === null) continue;
+            if (!isset($out[$uid])) {
+                $out[$uid] = ['fuel_rs' => 0.0, 'maint_rs' => 0.0,
+                              'fuel_pending_rs' => 0.0, 'maint_pending_rs' => 0.0, 'claims' => 0];
+            }
+            $isFuel  = $c['category'] === 'Petrol';
+            $pending = !empty($c['is_pending']);
+            $key = ($isFuel ? 'fuel' : 'maint') . ($pending ? '_pending_rs' : '_rs');
+            $out[$uid][$key] += (float) $c['amount'];
+            $out[$uid]['claims']++;
+        }
+        return $out;
+    }
+
+    private function spendTotals(array $claims): array
+    {
+        $t = ['fuel_rs' => 0.0, 'maint_rs' => 0.0, 'fuel_pending_rs' => 0.0,
+              'maint_pending_rs' => 0.0, 'claims' => count($claims)];
+        foreach ($claims as $c) {
+            $key = ($c['category'] === 'Petrol' ? 'fuel' : 'maint')
+                 . (!empty($c['is_pending']) ? '_pending_rs' : '_rs');
+            $t[$key] += (float) $c['amount'];
+        }
+        return $t;
+    }
+
+    /**
+     * ⭐ WAS A READING ACTUALLY DUE ON THIS DAY?
+     *
+     * The start becomes due once he CHECKS IN, the end once he CHECKS OUT. A rider
+     * still on shift has no end meter yet and must never be counted as having missed
+     * one — the attendance screen applies exactly this rule, and the two screens have
+     * to agree about the same date. (Days left open are surfaced separately as
+     * `open_days`, deliberately, so they are visible without being an accusation.)
+     */
+    private function readingWasDue(array $r): bool
+    {
+        if ($r['worked'] && $r['meter_start'] === null) return true;
+        if (!empty($r['closed']) && $r['meter_end'] === null) return true;
+        return false;
+    }
+
+    private function reading($v): ?int
+    {
+        if ($v === null || $v === '') return null;
+        $n = (int) $v;
+        return $n > 0 ? $n : null;
+    }
+
+    /** Dates on which this machine started or ended an assignment. */
+    private function boundaryDates(int $vehicleId): array
+    {
+        $out = [];
+        try {
+            foreach (DB::table(VehicleService::T_ASSIGN)
+                        ->where('vehicle_id', $vehicleId)
+                        ->get(['assigned_on', 'released_on']) as $a) {
+                $out[substr((string) $a->assigned_on, 0, 10)] = true;
+                if ($a->released_on) $out[substr((string) $a->released_on, 0, 10)] = true;
+            }
+        } catch (\Throwable $e) {
+            return [];
+        }
+        return $out;
+    }
+
+    /**
+     * The odometer written down at the moment a machine changed hands, as
+     * [vehicle_id][date] => meter. Absent column (SQL not yet run) = absent
+     * readings = every handover day stays "shared", which is the old behaviour.
+     */
+    private function handoverMeters(string $from, string $to): array
+    {
+        $out = [];
+        try {
+            if (!\Illuminate\Support\Facades\Schema::hasColumn(VehicleService::T_ASSIGN, 'handover_meter')) {
+                return [];
+            }
+            foreach (DB::table(VehicleService::T_ASSIGN)
+                        ->whereNotNull('handover_meter')
+                        ->where('handover_meter', '>', 0)
+                        ->whereBetween('assigned_on', [$from, $to])
+                        ->get(['vehicle_id', 'assigned_on', 'handover_meter']) as $a) {
+                $out[(int) $a->vehicle_id][substr((string) $a->assigned_on, 0, 10)]
+                    = (int) $a->handover_meter;
+            }
+        } catch (\Throwable $e) {
+            return [];
+        }
+        return $out;
+    }
+
+    private function firstReading(array $days): ?int
+    {
+        foreach ($days as $d) {
+            foreach (['meter_start', 'meter_end', 'meter_home'] as $k) {
+                if ($d[$k] !== null) return $d[$k];
+            }
+        }
+        return null;
+    }
+
+    /** Who appeared on this machine this month, in first-seen order. */
+    private function keepersOf(array $days): array
+    {
+        $out = [];
+        foreach ($days as $d) {
+            if ($d['user_id'] === null || isset($out[$d['user_id']])) continue;
+            $out[$d['user_id']] = ['user_id' => $d['user_id'], 'name' => $d['keeper']];
+        }
+        return array_values($out);
+    }
+
+    private function labelFor($v): string
+    {
+        $reg = trim((string) ($v->reg_no ?? ''));
+        if ($reg !== '') return $reg;
+        $nick = trim((string) ($v->nickname ?? ''));
+        if ($nick !== '') return $nick;
+        return ($v->vtype === 'van' ? 'Van #' : 'Vehicle #') . $v->id;
+    }
+}

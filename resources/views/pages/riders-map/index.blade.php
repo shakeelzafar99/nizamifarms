@@ -2766,4 +2766,8 @@ function openDispatchDetail(userId){
     }, 150);
 }
 </script>
+
+{{-- 🛢 Service-due banners. ⚠ INSIDE the section — anything after @endsection is
+     never rendered. The Bikes page is exactly where a manager can act on them. --}}
+@include('partials.service-alerts')
 @endsection

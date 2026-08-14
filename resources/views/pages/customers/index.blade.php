@@ -762,6 +762,10 @@ window.editCustomer = function(id) {
                             <option value="cash" ${customer.default_payment_method === 'cash' ? 'selected' : ''}>💵 Cash</option>
                             <option value="online" ${customer.default_payment_method === 'online' ? 'selected' : ''}>🏦 Online</option>
                         </select>
+                        ${data.default_payment_info ? `
+                        <p style="margin: 4px 0 0 0; font-size: 11px; font-weight: 600; color: #15803d;">
+                            ⭐ Currently ${data.default_payment_info.label}${data.default_payment_info.set_by_name ? ' — set by ' + data.default_payment_info.set_by_name : ''}${data.default_payment_info.set_at_short ? ' · ' + data.default_payment_info.set_at_short : ''}. Saving re-records it under your name.
+                        </p>` : ''}
                         <p style="margin: 4px 0 0 0; font-size: 11px; color: #6b7280;">Pre-selected when creating a new order for this customer (web &amp; mobile). Not applied to Shopify orders.</p>
                     </div>
                     <div style="margin-bottom: 16px;">
@@ -3618,7 +3622,10 @@ window.createOrderForCustomer = function(customerId) {
     .then(response => response.json())
     .then(data => {
         if (data.success) {
-            openCreateOrderModal(data.customer);
+            // default_payment_info is a SIBLING key in the response (it needs the
+            // set-by name resolved server-side), so fold it onto the customer the
+            // modal receives.
+            openCreateOrderModal({...data.customer, default_payment_info: data.default_payment_info || null});
         } else {
             console.error('Failed to fetch customer details');
             openCreateOrderModal();
@@ -3753,12 +3760,42 @@ function resolveNewOrderPaymentMethod(customer) {
     return 'cash';
 }
 
+// Aug-2026 — confirm before overwriting a default someone already recorded; the
+// attribution moves to whoever ticks it (owner's ruling). Confirms whenever a
+// default EXISTS, because re-recording the same value still moves the name.
+// Returns false to cancel the tick.
+function confirmCustomerDefaultOverwrite(box) {
+    const existing = window._createOrderCustomerDefault;
+    if (!box.checked || !existing) return true;
+    const pm = document.querySelector('#createOrderForm select[name="payment_method"]');
+    const picked = pm && pm.value === 'online' ? 'Online' : 'Cash';
+    const who = existing.set_by_name || 'someone else';
+    const when = existing.set_at_short ? (' on ' + existing.set_at_short) : '';
+    if (!confirm(`This customer's default is ${existing.label}, set by ${who}${when}.\n\n`
+            + `Save ${picked} as the new default and record it under your name?`)) {
+        box.checked = false;
+        return false;
+    }
+    return true;
+}
+
 function openCreateOrderModal(customer = null) {
     const modal = document.getElementById('createOrderModal');
     const content = document.getElementById('createOrderContent');
 
     // Pre-select the payment method for this customer (still changeable below).
     const preselectedPm = resolveNewOrderPaymentMethod(customer);
+    // Provenance of the existing default (null when there is none). Stashed for
+    // the tick's confirm dialog, which is bound inline on the checkbox.
+    const customerDefaultInfo = (customer && customer.default_payment_method)
+        ? {
+            label: customer.default_payment_method === 'online' ? 'Online' : 'Cash',
+            method: customer.default_payment_method,
+            set_by_name: (customer.default_payment_info && customer.default_payment_info.set_by_name) || null,
+            set_at_short: (customer.default_payment_info && customer.default_payment_info.set_at_short) || null,
+        }
+        : null;
+    window._createOrderCustomerDefault = customerDefaultInfo;
 
     // Load the order creation form (simplified version)
     content.innerHTML = `
@@ -3814,10 +3851,14 @@ function openCreateOrderModal(customer = null) {
                             <!-- Aug-2026 — remember this choice on the customer so the next
                                  order (web or mobile) starts on it, without opening Edit
                                  Customer. Only shown when a customer is actually selected. -->
+                            ${customer && customerDefaultInfo ? `
+                            <div style="margin-top:6px; font-size:11px; font-weight:600; color:#15803d;">
+                                ⭐ Customer default: ${customerDefaultInfo.label}${customerDefaultInfo.set_by_name ? ' — set by ' + customerDefaultInfo.set_by_name : ''}${customerDefaultInfo.set_at_short ? ' · ' + customerDefaultInfo.set_at_short : ''}
+                            </div>` : ''}
                             ${customer ? `
                             <label style="display: flex; align-items: center; gap: 6px; margin-top: 6px; font-size: 12px; color: #6b7280; cursor: pointer;">
-                                <input type="checkbox" name="set_default_payment_method" value="1" style="cursor: pointer;">
-                                Set as default for this customer
+                                <input type="checkbox" name="set_default_payment_method" value="1" onclick="return confirmCustomerDefaultOverwrite(this)" style="cursor: pointer;">
+                                ${customerDefaultInfo ? 'Update default for this customer' : 'Set as default for this customer'}
                             </label>
                             ` : ''}
                         </div>

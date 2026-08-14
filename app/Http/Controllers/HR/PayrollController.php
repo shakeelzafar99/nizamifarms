@@ -77,6 +77,10 @@ class PayrollController extends Controller
             'month' => $month,
             'month_label' => date('F Y', strtotime($month . '-01')),
             'rows' => $rows,
+            // Ships with the grid rather than as a second request: the rows above already
+            // warmed the per-request compute cache, so this costs almost nothing here,
+            // whereas a separate call would recompute the whole month from scratch.
+            'leave_actions' => $svc->leaveActionsMonth($month),
             'funding' => $svc->fundingOptions(),
             'schedule_available' => $svc->scheduleTaggingAvailable(),
             'khaas_available' => $svc->khaasTaggingAvailable() && $this->canViewKhaas(),
@@ -288,6 +292,64 @@ class PayrollController extends Controller
         ]);
     }
 
+    // ── Leave actions (overtime bonus / late penalty) ────────────────────────
+    //
+    // Read by BOTH the payroll Leave-actions panel and the Attendance month banner, and
+    // gated by the same `manage_payroll` key on every call: a bonus/penalty leave changes
+    // what an employee can take off and feeds the salary rules, so the authority to decide
+    // it must not be wider on Attendance than it is on Payroll.
+
+    /** The month's leave actions: what's recommended, what's decided, and why. */
+    public function leaveActions(Request $request)
+    {
+        if ($deny = $this->denyIfNotAllowed()) return $deny;
+        $month = (string) $request->input('month', now()->format('Y-m'));
+        if (!preg_match('/^\d{4}-\d{2}$/', $month)) {
+            $month = now()->format('Y-m');
+        }
+        try {
+            $data = (new PayrollService())->leaveActionsMonth($month);
+        } catch (\Throwable $e) {
+            \Log::error('Leave actions failed', ['month' => $month, 'error' => $e->getMessage()]);
+            return response()->json(['success' => false, 'message' => 'Could not load the leave actions for this month.'], 500);
+        }
+        return response()->json(['success' => true] + $data);
+    }
+
+    /** Give/deduct or waive ONE employee's leave action for a month. */
+    public function decideLeaveAction(Request $request)
+    {
+        if ($deny = $this->denyIfNotAllowed()) return $deny;
+        $v = Validator::make($request->all(), [
+            'user_id'  => 'required|integer',
+            'month'    => ['required', 'regex:/^\d{4}-\d{2}$/'],
+            'kind'     => 'required|in:overtime,late_penalty',
+            'decision' => 'required|in:apply,waive',
+        ]);
+        if ($v->fails()) {
+            return response()->json(['success' => false, 'message' => $v->errors()->first()], 422);
+        }
+        $res = (new PayrollService())->decideLeaveAction(
+            (int) $request->user_id, (string) $request->month,
+            (string) $request->kind, (string) $request->decision, (int) auth()->id()
+        );
+        return response()->json($res, !empty($res['success']) ? 200 : 422);
+    }
+
+    /** Apply every still-pending recommendation for the month (never touches a decided one). */
+    public function applyAllLeaveActions(Request $request)
+    {
+        if ($deny = $this->denyIfNotAllowed()) return $deny;
+        $v = Validator::make($request->all(), [
+            'month' => ['required', 'regex:/^\d{4}-\d{2}$/'],
+        ]);
+        if ($v->fails()) {
+            return response()->json(['success' => false, 'message' => $v->errors()->first()], 422);
+        }
+        $res = (new PayrollService())->applyAllPendingLeaveActions((string) $request->month, (int) auth()->id());
+        return response()->json($res, !empty($res['success']) ? 200 : 422);
+    }
+
     /**
      * APPROVE an employee's advance request AND pay it now. Same money authority as
      * "+ advance" (both are gated by `manage_payroll`), so the funding account is chosen
@@ -365,6 +427,7 @@ class PayrollController extends Controller
             'items.*.net_override' => 'nullable|numeric|min:0',
             'items.*.skip_overtime' => 'nullable|boolean',
             'items.*.skip_late_leave' => 'nullable|boolean',
+            'items.*.defer_leave_actions' => 'nullable|boolean',
         ]);
         if ($v->fails()) {
             return response()->json(['success' => false, 'message' => $v->errors()->first()], 422);

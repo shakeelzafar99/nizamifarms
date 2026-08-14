@@ -303,6 +303,10 @@ Route::middleware(['auth'])->group(function () {
     Route::get('/orders/riders-map/fleet/vehicles/{id}', [\App\Http\Controllers\CRM\VehicleController::class, 'show'])->name('orders.riders-map.fleet.vehicles.show');
     // The month's kilometres day by day — lazy, only when a manager asks for it.
     Route::get('/orders/riders-map/fleet/vehicles/{id}/days', [\App\Http\Controllers\CRM\VehicleController::class, 'days'])->name('orders.riders-map.fleet.vehicles.days');
+    // 🛢 Service-due banner (dismissable). Audience is decided inside the service,
+    // not by a route permission — see BikeServiceAlerts::forUser().
+    Route::get('/orders/riders-map/fleet/service-alerts', [\App\Http\Controllers\CRM\VehicleController::class, 'serviceAlerts'])->name('orders.riders-map.fleet.service-alerts');
+    Route::post('/orders/riders-map/fleet/service-alerts/dismiss', [\App\Http\Controllers\CRM\VehicleController::class, 'dismissServiceAlert'])->name('orders.riders-map.fleet.service-alerts.dismiss');
     Route::get('/orders/riders-map/fleet/vehicles/{id}/preview-assign', [\App\Http\Controllers\CRM\VehicleController::class, 'previewAssign'])->name('orders.riders-map.fleet.vehicles.preview-assign');
     // Who loses this machine if it is taken back — feeds the "and what about him?" prompt.
     Route::get('/orders/riders-map/fleet/vehicles/{id}/preview-release', [\App\Http\Controllers\CRM\VehicleController::class, 'releasePreview'])->name('orders.riders-map.fleet.vehicles.preview-release');
@@ -1145,6 +1149,18 @@ Route::middleware(['auth'])->group(function () {
         Route::get('/daily-summary', [\App\Http\Controllers\CRM\OvernightStorageController::class, 'getDailySummary'])->name('daily-summary');
     });
 
+    // 🐔 La Carne (chicken supplier board — open / out-for-delivery / delivered
+    // chicken quantities for a date, plus the dated supplier invoice photos).
+    // Same controller methods are mounted on /api/rider/store/lacarne/* for the
+    // mobile app, so web and phone can never disagree about the numbers or the
+    // permission rules.
+    Route::prefix('lacarne')->name('lacarne.')->group(function () {
+        Route::get('/', [\App\Http\Controllers\CRM\LaCarneController::class, 'index'])->name('index');
+        Route::get('/board', [\App\Http\Controllers\CRM\LaCarneController::class, 'board'])->name('board');
+        Route::post('/photos', [\App\Http\Controllers\CRM\LaCarneController::class, 'addPhotos'])->name('photos.add');
+        Route::post('/photos/{photoId}/delete', [\App\Http\Controllers\CRM\LaCarneController::class, 'deletePhoto'])->name('photos.delete');
+    });
+
     // Finance & Ledger Routes
     Route::prefix('finance')->name('fin.')->group(function () {
         
@@ -1399,6 +1415,11 @@ Route::middleware(['auth'])->group(function () {
             Route::post('/approve-request', [\App\Http\Controllers\HR\PayrollController::class, 'approveRequest'])->name('approve-request');
             Route::post('/reject-request', [\App\Http\Controllers\HR\PayrollController::class, 'rejectRequest'])->name('reject-request');
             Route::post('/pay', [\App\Http\Controllers\HR\PayrollController::class, 'pay'])->name('pay');
+            // Leave actions (overtime bonus / late penalty) — also consumed by the Attendance
+            // month tab, which shows and settles the same pending items.
+            Route::get('/leave-actions', [\App\Http\Controllers\HR\PayrollController::class, 'leaveActions'])->name('leave-actions');
+            Route::post('/leave-actions/decide', [\App\Http\Controllers\HR\PayrollController::class, 'decideLeaveAction'])->name('leave-actions.decide');
+            Route::post('/leave-actions/apply-all', [\App\Http\Controllers\HR\PayrollController::class, 'applyAllLeaveActions'])->name('leave-actions.apply-all');
             // Custom-schedule employees (date-range / weekly salaries)
             Route::get('/custom-data', [\App\Http\Controllers\HR\PayrollController::class, 'customData'])->name('custom-data');
             Route::post('/custom-preview', [\App\Http\Controllers\HR\PayrollController::class, 'customPreview'])->name('custom-preview');

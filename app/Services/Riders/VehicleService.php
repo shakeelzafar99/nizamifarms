@@ -798,11 +798,22 @@ class VehicleService
      *    rules are switched on.
      */
     public function assign(int $vehicleId, int $userId, ?string $onDate = null,
-                           ?int $actorId = null, ?string $note = null): array
+                           ?int $actorId = null, ?string $note = null,
+                           ?int $handoverMeter = null): array
     {
         if (!$this->available()) return $this->fail('Vehicles are not set up yet (SQL batch 13).');
 
         $date = $this->safeDate($onDate);
+
+        // ⭐ THE ODOMETER AT THE MOMENT OF HANDOVER (owner ruling Aug-13). Optional
+        //   everywhere: with it, that day's run splits exactly between the two
+        //   riders; without it, the day stays "shared" and is charged to neither.
+        // ⚠⚠ SOFT-VALIDATED ON PURPOSE. A handover is a physical event that has
+        //   already happened — refusing to record it because a digit looks wrong
+        //   would leave the register lying about who has the bike. Implausible
+        //   values are stored and reported, never rejected, and the engine ignores
+        //   any reading that falls outside the day it is supposed to split.
+        $handoverMeter = ($handoverMeter !== null && $handoverMeter > 0) ? $handoverMeter : null;
 
         try {
             $v = DB::table(self::T_VEHICLE)->where('id', $vehicleId)->first();
@@ -819,7 +830,9 @@ class VehicleService
             }
 
             $newId = null;
-            DB::transaction(function () use ($vehicleId, $userId, $date, $actorId, $note, $v, &$newId) {
+            $hasHandoverCol = $this->hasHandoverMeter();
+            DB::transaction(function () use ($vehicleId, $userId, $date, $actorId, $note, $v,
+                                             $handoverMeter, $hasHandoverCol, &$newId) {
                 // ⚠ RE-READ INSIDE THE TRANSACTION, and lock the rows. The check
                 //   above ran outside it, so two managers pressing Assign on the
                 //   same bike within the same second would each see "no change
@@ -852,7 +865,7 @@ class VehicleService
                 }
 
                 // 4. the new assignment
-                $newId = (int) DB::table(self::T_ASSIGN)->insertGetId([
+                $row = [
                     'vehicle_id'  => $vehicleId,
                     'user_id'     => $userId,
                     'assigned_on' => $date,
@@ -860,7 +873,13 @@ class VehicleService
                     'note'        => $note ? mb_substr($note, 0, 255) : null,
                     'created_at'  => now(),
                     'updated_at'  => now(),
-                ]);
+                ];
+                // Guarded so an upload that lands before the SQL simply ignores the
+                // field rather than throwing on every handover.
+                if ($hasHandoverCol && $handoverMeter !== null) {
+                    $row['handover_meter'] = $handoverMeter;
+                }
+                $newId = (int) DB::table(self::T_ASSIGN)->insertGetId($row);
 
                 // 5. the mirror — `default_vehicle_id` ONLY. That column is new and
                 //    nothing in the live rules reads it yet, so this stays inert.
@@ -1265,6 +1284,21 @@ class VehicleService
         ];
         if (!$this->available()) return $out;
 
+        // ⭐⭐ Aug-2026 — THE WALK NOW LIVES IN `MachineAttribution`, and this method
+        //    reshapes its answer into the payload both front ends already read.
+        //
+        //    Two reasons it had to move. First, the rider view and this view were two
+        //    different walks over the same odometer and could disagree about the same
+        //    day. Second, the walk below keyed its rows by DATE ALONE — so on the day
+        //    a bike changed hands the incoming rider's row OVERWROTE the outgoing
+        //    one, and the machine's chain silently lost the morning half of exactly
+        //    the day that needed explaining.
+        //
+        //    The old walk is kept below as the fallback for when the engine cannot
+        //    answer (rollback lever off, a build failure); it is byte-compatible.
+        $viaEngine = $this->monthDaysFromEngine($vehicleId, $month);
+        if ($viaEngine !== null) return $viaEngine;
+
         try {
             $start = Carbon::parse($month . '-01')->startOfMonth();
             $end   = $start->copy()->endOfMonth();
@@ -1484,6 +1518,210 @@ class VehicleService
         }
     }
 
+    /**
+     * The engine's month, reshaped into this method's long-standing contract.
+     *
+     * Returns null when the engine has no opinion, which is the caller's signal to
+     * run the original walk — so a rollback needs no code change.
+     *
+     * ⭐ ONE VISIBLE DIFFERENCE, AND IT IS THE POINT: a handover day now yields TWO
+     *   rows (the outgoing rider's morning, the incoming rider's evening) instead of
+     *   one row that silently discarded the first half.
+     */
+    private function monthDaysFromEngine(int $vehicleId, string $month): ?array
+    {
+        try {
+            if (strtoupper((string) $this->cfg('MACHINE_ATTRIBUTION', 'Y')) !== 'Y') return null;
+
+            $v = (new MachineAttribution())->forVehicle($vehicleId, $month);
+            if ($v === null) return null;
+
+            $names = [];
+            $days  = [];
+            foreach ($v['days'] as $row) {
+                $days[] = [
+                    'date'           => $row['date'],
+                    'keeper'         => $row['keeper'],
+                    'keeper_user_id' => $row['user_id'],
+                    'assumed'        => false,
+                    'overridden'     => false,
+                    'meter_start'    => $row['meter_start'],
+                    'meter_end'      => $row['meter_end'],
+                    'work_km'        => $row['work_km'],
+                    'gap_km'         => $row['gap_km'],
+                    // 'off_duty' | 'unaccounted' | 'shared' | 'transfer' | 'split'
+                    'gap_kind'       => $row['gap_kind'],
+                    'gap_since'      => $row['gap_since'],
+                    // Who the stretch was between, when it belongs to neither of them.
+                    'gap_from'       => $this->nameOf($row['gap_from_user'] ?? null, $names),
+                    'gap_to'         => $this->nameOf($row['gap_to_user'] ?? null, $names),
+                    'home_km'        => $row['home_km'] ?: null,
+                    'status'         => $row['status'],
+                    // A single reading on a day the bike changed hands is the NORMAL
+                    // shape, not a missed meter — the day list must not scold for it.
+                    'handover_day'   => !empty($row['handover_day']),
+                    'partial'        => !empty($row['partial']),
+                    'anomaly'        => $row['anomaly'] ?? null,
+                    'claims'         => $row['claims'],
+                ];
+            }
+            usort($days, fn ($a, $b) => strcmp($b['date'], $a['date']));   // newest first
+
+            $t = $v['totals'];
+            return [
+                'month'      => $month,
+                'days'       => $days,
+                'reconciles' => $v['reconciles'],
+                'month_km'   => $v['span'],
+                'totals'     => [
+                    'on_duty'      => $t['on_duty'],
+                    'off_duty'     => $t['off_duty'],
+                    'unaccounted'  => $t['unaccounted'],
+                    'shared'       => $t['shared'],
+                    'transfer'     => $t['transfer'],
+                    'total'        => $t['total'],
+                    'days_counted' => $t['days_counted'],
+                    'no_meter_days' => $t['no_meter_days'],
+                ],
+                // ⭐ WHO RODE IT THIS MONTH — the machine's mirror of the rider view's
+                //   "his machines" strip. Same engine, so the two can never disagree.
+                'riders'     => $this->ridersOfMonth($vehicleId, $month),
+                // ⭐⭐ ONE CARD PER DATE (owner review, Aug-13) — the day read top to
+                //   bottom. ADDITIVE: the flat `days` array above is untouched
+                //   because the CURRENT APK renders it, and an app in the field must
+                //   not break the moment this uploads.
+                'day_cards'  => $v['day_cards'],
+                'events'     => $v['events'],
+            ];
+        } catch (\Throwable $e) {
+            Log::warning('monthDaysFromEngine failed', ['vehicle' => $vehicleId, 'error' => $e->getMessage()]);
+            return null;
+        }
+    }
+
+    /**
+     * Everyone who rode this machine this month, with their own share of it.
+     * Shared and transit kilometres are listed once, on their own line, because
+     * they belong to the MACHINE and to neither rider.
+     */
+    public function ridersOfMonth(int $vehicleId, string $month): array
+    {
+        try {
+            $eng = new MachineAttribution();
+            $v = $eng->forVehicle($vehicleId, $month);
+            if ($v === null) return [];
+
+            $per = [];
+            foreach ($v['legs'] as $l) {
+                if ($l['user_id'] === null) continue;
+                $uid = $l['user_id'];
+                if (!isset($per[$uid])) {
+                    $per[$uid] = ['user_id' => $uid, 'name' => null, 'work_km' => 0,
+                                  'offduty_km' => 0, 'unaccounted_km' => 0, 'shared_days' => 0,
+                                  'fuel_rs' => 0.0, 'maint_rs' => 0.0];
+                }
+                $map = ['on_duty' => 'work_km', 'off_duty' => 'offduty_km',
+                        'unaccounted' => 'unaccounted_km'];
+                if (isset($map[$l['kind']])) $per[$uid][$map[$l['kind']]] += $l['km'];
+            }
+
+            // Days each man was a party to a handover.
+            foreach ($v['legs'] as $l) {
+                if ($l['kind'] !== 'shared') continue;
+                foreach ([$l['from_user'], $l['to_user']] as $uid) {
+                    if ($uid === null) continue;
+                    if (!isset($per[$uid])) {
+                        $per[$uid] = ['user_id' => $uid, 'name' => null, 'work_km' => 0,
+                                      'offduty_km' => 0, 'unaccounted_km' => 0, 'shared_days' => 0,
+                                      'fuel_rs' => 0.0, 'maint_rs' => 0.0];
+                    }
+                    $per[$uid]['shared_days']++;
+                }
+            }
+
+            foreach ($v['spend'] as $uid => $s) {
+                if (!isset($per[$uid])) {
+                    $per[$uid] = ['user_id' => $uid, 'name' => null, 'work_km' => 0,
+                                  'offduty_km' => 0, 'unaccounted_km' => 0, 'shared_days' => 0,
+                                  'fuel_rs' => 0.0, 'maint_rs' => 0.0];
+                }
+                $per[$uid]['fuel_rs']  += $s['fuel_rs'];
+                $per[$uid]['maint_rs'] += $s['maint_rs'];
+            }
+
+            $names = [];
+            foreach ($per as $uid => &$row) $row['name'] = $this->nameOf($uid, $names);
+            unset($row);
+
+            usort($per, fn ($a, $b) => $b['work_km'] <=> $a['work_km']);
+
+            return [
+                'riders'      => array_values($per),
+                'shared_km'   => $v['totals']['shared'],
+                'transfer_km' => $v['totals']['transfer'],
+            ];
+        } catch (\Throwable $e) {
+            return [];
+        }
+    }
+
+    /**
+     * ⭐ THE MACHINE'S SERVICE RECORD (owner ask, Aug-13).
+     *
+     * The multi-month "past services" list only ever existed on the RIDER's
+     * drill-down, keyed to `requester_user_id` — so handing a bike over split its
+     * own history between two people and neither list was the bike's. This is the
+     * same list, attributed to the machine through `claimsForVehicle`, which means
+     * stamped rows, window attribution, day overrides and the pre-registry backfill
+     * all count here exactly as they count in the money view.
+     *
+     * Deliberately NOT limited to clock-resetting types: a manager reading a bike's
+     * history wants the punctures and the brake shoes too.
+     */
+    public function serviceHistoryFor(int $vehicleId, int $limit = 24): array
+    {
+        if (!$this->available()) return [];
+
+        try {
+            // Far enough back to be a history, cheap enough to stay one query set.
+            $from = Carbon::now()->subMonths(24)->startOfMonth()->format('Y-m-d');
+            $to   = Carbon::now()->endOfMonth()->format('Y-m-d');
+
+            $rows = array_values(array_filter(
+                $this->claimsForVehicle($vehicleId, $from, $to),
+                fn ($c) => $c['category'] === 'Maintenance'
+            ));
+
+            $out = array_map(fn ($c) => [
+                'date'     => $c['date'],
+                'amount'   => $c['amount'],
+                'status'   => $c['status'],
+                'kind'     => $c['kind'],
+                'type'     => $c['maintenance_type_id'],
+                'meter'    => $c['meter'],
+                'by_name'  => $c['by_name'],
+                // false = attributed by who held the bike, not stamped at filing.
+                'stamped'  => $c['stamped'],
+                'assumed'  => $c['assumed'],
+            ], $rows);
+
+            return array_slice($out, 0, $limit);
+        } catch (\Throwable $e) {
+            Log::warning('serviceHistoryFor failed', ['vehicle' => $vehicleId, 'error' => $e->getMessage()]);
+            return [];
+        }
+    }
+
+    /** One name lookup per user id per request. */
+    private function nameOf(?int $uid, array &$cache): ?string
+    {
+        if ($uid === null) return null;
+        if (!array_key_exists($uid, $cache)) {
+            $cache[$uid] = DB::table('t_sys_user')->where('id', $uid)->value('fullname') ?: null;
+        }
+        return $cache[$uid];
+    }
+
     /** Names for every keeper in these windows — one query, not one per row. */
     private function keeperNames(array $windows): array
     {
@@ -1628,6 +1866,19 @@ class VehicleService
      * apply inside the same MAX/MIN the odometer window already runs, and a set
      * would mean pulling every row into memory to filter it.
      */
+    /** Has SQL-BIKES-HANDOVER-METER-AUG2026 been run? */
+    private function hasHandoverMeter(): bool
+    {
+        static $ok = null;
+        if ($ok !== null) return $ok;
+        try {
+            $ok = Schema::hasColumn(self::T_ASSIGN, 'handover_meter');
+        } catch (\Throwable $e) {
+            $ok = false;
+        }
+        return $ok;
+    }
+
     private function hasDayOverride(): bool
     {
         static $ok = null;
@@ -1744,6 +1995,11 @@ class VehicleService
             'keeper_user_id' => $r->keeper_user_id ? (int) $r->keeper_user_id : null,
             'keeper_name'    => $r->keeper_name,
             'assigned_on'    => $r->assigned_on ? substr((string) $r->assigned_on, 0, 10) : null,
+            // ⚠ Two consumers (VehicleController::forUser and the mobile fleet card)
+            //   have always read `keeper_since`, which this shape never produced — so
+            //   the app's "since <date>" line silently rendered nothing. Same value,
+            //   under the name they ask for.
+            'keeper_since'   => $r->assigned_on ? substr((string) $r->assigned_on, 0, 10) : null,
             'assignment_id'  => $r->assignment_id ? (int) $r->assignment_id : null,
 
             'current_meter' => $meter,

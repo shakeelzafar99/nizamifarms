@@ -2971,12 +2971,13 @@ class OrderController extends Controller
             if ($order->customer_id
                 && filter_var($request->input('set_default_payment_method', false), FILTER_VALIDATE_BOOLEAN)) {
                 try {
-                    $defaultPm = \App\Models\CRM\CustomerModel::normalizePaymentMethod(
-                        $validated['payment_method'] ?? null
+                    // ONE writer for value + attribution — see CustomerModel::setDefaultPaymentMethod.
+                    $defaultPm = \App\Models\CRM\CustomerModel::setDefaultPaymentMethod(
+                        $order->customer_id,
+                        $validated['payment_method'] ?? null,
+                        auth()->id()
                     );
-                    if ($defaultPm !== null) {
-                        \App\Models\CRM\CustomerModel::where('id', $order->customer_id)
-                            ->update(['default_payment_method' => $defaultPm]);
+                    if ($defaultPm !== null && $defaultPm !== false) {
                         \Log::info('Customer default payment method set from order create', [
                             'customer_id' => $order->customer_id,
                             'order_id' => $order->id,
@@ -4922,6 +4923,9 @@ class OrderController extends Controller
                 $query->select([
                     'li.name as group_name',
                     \DB::raw('GROUP_CONCAT(DISTINCT COALESCE(li.product_id, p.id)) as product_ids'),
+                    // Internal p.id only — the list above is mixed (li.product_id is an
+                    // EXTERNAL id on synced orders) and must not be used to look up stock.
+                    \DB::raw('GROUP_CONCAT(DISTINCT p.id) as internal_product_ids'),
                     \DB::raw('SUM(li.quantity) as total_quantity'),
                     \DB::raw('SUM(li.quantity * COALESCE(p.unit_weight_kg, 1)) as total_weight'),
                     \DB::raw('SUM(CASE WHEN p.is_lean = 1 THEN li.quantity ELSE 0 END) as lean_quantity'),
@@ -5004,6 +5008,42 @@ class OrderController extends Controller
                     Log::debug('Priority Sorting Result:', [
                         'results_after_sort' => $results->pluck('group_name')->toArray()
                     ]);
+                }
+            }
+
+            // ⭐ Chiller/freezer stock (what is physically in storage right now), the
+            //    same figures the mobile screen shows. Category rows are matched on
+            //    their attribute path and therefore include stocked products with no
+            //    open orders; product rows are matched on exact internal ids.
+            //    Never throws if the overnight tables are absent.
+            $stockService = app(\App\Services\CRM\OvernightStockService::class);
+            $isCategoryLevel = in_array($currentField, \App\Services\CRM\OvernightStockService::CATEGORY_FIELDS, true);
+
+            if ($currentField === 'product_name') {
+                $stockMap = $stockService->map();
+                if (!empty($stockMap)) {
+                    foreach ($results as $row) {
+                        $storage = $stockService->sumFor(
+                            $stockMap,
+                            $stockService->idsFromConcat($row->internal_product_ids ?? null)
+                        );
+                        if ($storage !== null) {
+                            $row->storage = $storage;
+                        }
+                    }
+                }
+            } elseif ($isCategoryLevel) {
+                $stockCatalog = $stockService->catalog();
+                if (!empty($stockCatalog)) {
+                    foreach ($results as $row) {
+                        $storage = $stockService->sumForCategory(
+                            $stockCatalog,
+                            array_merge($filters, [$currentField => $row->group_name ?? ''])
+                        );
+                        if ($storage !== null) {
+                            $row->storage = $storage;
+                        }
+                    }
                 }
             }
 
@@ -6025,7 +6065,11 @@ class OrderController extends Controller
             $validated = $request->validate([
                 'order_id' => 'required|integer|exists:t_crm_prod_order,id',
                 'payment_method' => 'required|string|in:cash,online',
-                'notes' => 'nullable|string|max:500'
+                'notes' => 'nullable|string|max:500',
+                // Aug-2026 — "also remember this for the customer" tick in the
+                // quick-change modal. Same flag name and meaning as the one on
+                // both create-order forms and the mobile store Edit modal.
+                'set_default_payment_method' => 'nullable|boolean',
             ]);
 
             // ⚠️ Shopify-approval-queue guard (Jul-2026): this endpoint resolves the
@@ -6082,10 +6126,39 @@ class OrderController extends Controller
                 'user_id' => auth()->id()
             ]);
 
+            // Aug-2026 — remember it on the CUSTOMER as well, when ticked.
+            // Resolved from the order's own customer_id (never a client-supplied
+            // id) and written through the single helper, so this surface stamps
+            // attribution exactly like the other three. Non-fatal: remembering a
+            // preference must never fail a payment-method change.
+            $defaultSaved = null;
+            if ($order->customer_id
+                && filter_var($request->input('set_default_payment_method', false), FILTER_VALIDATE_BOOLEAN)) {
+                try {
+                    $stored = \App\Models\CRM\CustomerModel::setDefaultPaymentMethod(
+                        $order->customer_id, $mappedMethod, auth()->id()
+                    );
+                    if ($stored !== false) {
+                        $defaultSaved = $stored;
+                        \Log::info('Customer default payment method set from quick change', [
+                            'customer_id' => $order->customer_id,
+                            'order_id' => $order->id,
+                            'default_payment_method' => $stored,
+                            'user_id' => auth()->id(),
+                        ]);
+                    }
+                } catch (\Throwable $e) {
+                    \Log::warning('Failed to set customer default from quick change (non-fatal)', [
+                        'customer_id' => $order->customer_id, 'error' => $e->getMessage(),
+                    ]);
+                }
+            }
+
             return response()->json([
                 'success' => true,
                 'message' => 'Payment method updated successfully',
-                'order' => $order
+                'order' => $order,
+                'default_payment_method_saved' => $defaultSaved,
             ]);
 
         } catch (\Exception $e) {
@@ -6102,26 +6175,58 @@ class OrderController extends Controller
      */
     public function getPaymentMethodTimeline($orderId)
     {
+        // ⚠⚠ t_crm_order_payment_method_history DOES NOT EXIST on every environment
+        // — it is absent on the local replica, and changePaymentMethod() is written
+        // with "no history table dependency" for exactly that reason. Until now the
+        // missing table threw and dropped this WHOLE method into its catch, so the
+        // endpoint always answered success:false with no data. The history query is
+        // therefore optional on its own; a missing table simply means "no history".
+        //
+        // That isolation is load-bearing for the block below: the customer default
+        // must still reach the modal on an environment that has no history table,
+        // which is every environment we can currently see.
+        $history = [];
         try {
-            $history = \DB::table('t_crm_order_payment_method_history')
-                ->where('order_id', $orderId)
-                ->orderBy('changed_at', 'desc')
-                ->limit(10)
-                ->get();
-
-            return response()->json([
-                'success' => true,
-                'data' => $history
-            ]);
-
-        } catch (\Exception $e) {
-            \Log::error('Failed to get payment method timeline: ' . $e->getMessage());
-            return response()->json([
-                'success' => false,
-                'message' => 'Failed to load timeline',
-                'data' => []
-            ]);
+            if (\Schema::hasTable('t_crm_order_payment_method_history')) {
+                $history = \DB::table('t_crm_order_payment_method_history')
+                    ->where('order_id', $orderId)
+                    ->orderBy('changed_at', 'desc')
+                    ->limit(10)
+                    ->get();
+            }
+        } catch (\Throwable $e) {
+            \Log::debug('Payment method timeline unavailable: ' . $e->getMessage());
         }
+
+        // Aug-2026 — the quick-change modal also shows "the customer's default is X,
+        // set by Y" before you overwrite anything. It rides THIS response rather
+        // than a second request, because the modal already awaits this one on open.
+        //
+        // ⚠ Resolved against the PRODUCTION order table only. A Shopify-queue id
+        // would collide with an unrelated live order, so when the caller says it is
+        // in Shopify mode we return no default rather than a stranger's.
+        // changePaymentMethod() refuses those ids outright, so the modal is never
+        // usable there anyway — this is the matching read-side guard.
+        $customerDefault = null;
+        try {
+            if (strtolower((string) request()->input('source', '')) !== 'shopify') {
+                $order = OrderModel::find($orderId);
+                if ($order && $order->customer_id) {
+                    $customer = \App\Models\CRM\CustomerModel::find($order->customer_id);
+                    if ($customer) {
+                        $customerDefault = \App\Models\CRM\CustomerModel::defaultPaymentMethodInfo($customer);
+                    }
+                }
+            }
+        } catch (\Throwable $e) {
+            \Log::warning('Customer default lookup failed for timeline: ' . $e->getMessage());
+        }
+
+        return response()->json([
+            'success' => true,
+            'data' => $history,
+            'customer_default' => $customerDefault,
+        ]);
     }
     
     /**

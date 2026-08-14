@@ -43,6 +43,8 @@ class VehicleResolver
     /** Per-process memo. These are asked the same question repeatedly in one render. */
     private static array $dayCache = [];
     private static array $vehicleCache = [];
+    /** [vehicleId => [date => true]] — the days that machine changed hands. */
+    private static array $transferCache = [];
 
     public function available(): bool
     {
@@ -256,6 +258,105 @@ class VehicleResolver
     }
 
     /**
+     * ⭐⭐ AUG-2026 — `vehicleForDay` FOR A WHOLE MONTH AT ONCE, as
+     *    ['userId|Y-m-d' => vehicleId].
+     *
+     * The attribution engine has to answer "which machine was this rider on?" for
+     * every rider on every day of a month. Asking `vehicleForDay` per day is ~250
+     * round trips for one page; this loads the assignment table (a few dozen rows)
+     * and the month's overrides once and resolves in memory.
+     *
+     * ⚠⚠ IT MUST AGREE WITH `vehicleForDay` ROW FOR ROW. Both now sort candidate
+     *   assignments through the SAME comparator (`assignmentRank`) — do not
+     *   re-implement the precedence here or the machine's chain and the rider's
+     *   chip will disagree on exactly the days that matter (handovers).
+     *   `test_attribution.php` asserts bulk == per-day across the live data.
+     */
+    public function vehiclesForDays(array $userIds, string $from, string $to): array
+    {
+        $out = [];
+        $userIds = array_values(array_unique(array_map('intval', $userIds)));
+        if (!$userIds) return $out;
+
+        try {
+            if (!$this->available()) return $out;
+
+            // Every assignment that can touch the range, grouped per rider.
+            $byUser = [];
+            foreach (DB::table(VehicleService::T_ASSIGN)
+                        ->whereIn('user_id', $userIds)
+                        ->where('assigned_on', '<=', $to)
+                        ->where(function ($q) use ($from) {
+                            $q->whereNull('released_on')->orWhere('released_on', '>=', $from);
+                        })
+                        ->get(['id', 'user_id', 'vehicle_id', 'assigned_on', 'released_on']) as $a) {
+                $byUser[(int) $a->user_id][] = [
+                    'id'         => (int) $a->id,
+                    'vehicle_id' => (int) $a->vehicle_id,
+                    'from'       => substr((string) $a->assigned_on, 0, 10),
+                    'to'         => $a->released_on ? substr((string) $a->released_on, 0, 10) : null,
+                ];
+            }
+
+            // His usual machine — step 3, only when no assignment covers the day.
+            $defaults = [];
+            try {
+                $defaults = DB::table('t_ops_rider_profile')
+                    ->whereIn('user_id', $userIds)
+                    ->whereNotNull('default_vehicle_id')
+                    ->pluck('default_vehicle_id', 'user_id')->toArray();
+            } catch (\Throwable $e) {
+                $defaults = [];
+            }
+
+            $cursor = \Carbon\Carbon::parse($from)->startOfDay();
+            $last   = \Carbon\Carbon::parse($to)->startOfDay();
+            $dates  = [];
+            while ($cursor->lte($last)) { $dates[] = $cursor->format('Y-m-d'); $cursor->addDay(); }
+
+            foreach ($userIds as $uid) {
+                foreach ($dates as $d) {
+                    $cands = [];
+                    foreach ($byUser[$uid] ?? [] as $a) {
+                        if ($a['from'] <= $d && ($a['to'] === null || $a['to'] >= $d)) $cands[] = $a;
+                    }
+                    if ($cands) {
+                        usort($cands, fn ($x, $y) => self::assignmentRank($y) <=> self::assignmentRank($x));
+                        $out[$uid . '|' . $d] = $cands[0]['vehicle_id'];
+                    } elseif (!empty($defaults[$uid])) {
+                        $out[$uid . '|' . $d] = (int) $defaults[$uid];
+                    }
+                }
+            }
+
+            // Step 1 outranks everything: the manager's explicit day override.
+            foreach (DB::table('t_ops_attendance')
+                        ->whereIn('user_id', $userIds)
+                        ->whereBetween('attendance_date', [$from, $to])
+                        ->whereNotNull('vehicle_id')
+                        ->get(['user_id', 'attendance_date', 'vehicle_id']) as $o) {
+                $out[(int) $o->user_id . '|' . substr((string) $o->attendance_date, 0, 10)]
+                    = (int) $o->vehicle_id;
+            }
+        } catch (\Throwable $e) {
+            Log::warning('vehiclesForDays failed', ['error' => $e->getMessage()]);
+        }
+
+        return $out;
+    }
+
+    /**
+     * The ONE precedence rule for "which of these assignments wins this date":
+     * an OPEN row first, then the latest `assigned_on`, then the highest id —
+     * the SQL ordering `vehicleForDay` uses, expressed as a sortable key so the
+     * bulk resolver cannot drift from it.
+     */
+    private static function assignmentRank(array $a): array
+    {
+        return [$a['to'] === null ? 1 : 0, $a['from'], $a['id']];
+    }
+
+    /**
      * ⭐ PHASE D — everyone holding ANY machine on that DATE (windows + overrides),
      *    as [user_id => vehicle_id]. The set form of `vehicleForDay`, for the
      *    sheets and reports that judge a whole roster per day: the attendance
@@ -332,11 +433,24 @@ class VehicleResolver
         $date = substr($date, 0, 10);
         try {
             if (!$this->available()) return false;
-            return DB::table(VehicleService::T_ASSIGN)
-                ->where('vehicle_id', $vehicleId)
-                ->where(function ($q) use ($date) {
-                    $q->whereDate('assigned_on', $date)->orWhereDate('released_on', $date);
-                })->exists();
+
+            // ⭐ Memoized per VEHICLE, not per (vehicle, date). Callers ask about a
+            //   whole month of days for one machine — a per-date cache would still
+            //   be ~30 queries. Assignment rows per vehicle are a handful.
+            // ⚠ Held on the CLASS, not in a function static, so `flush()` clears it
+            //   after an assign/release — a stale answer here would mean the sheet
+            //   excusing (or accusing) the wrong day.
+            if (!array_key_exists($vehicleId, self::$transferCache)) {
+                $days = [];
+                foreach (DB::table(VehicleService::T_ASSIGN)
+                            ->where('vehicle_id', $vehicleId)
+                            ->get(['assigned_on', 'released_on']) as $a) {
+                    if ($a->assigned_on) $days[substr((string) $a->assigned_on, 0, 10)] = true;
+                    if ($a->released_on) $days[substr((string) $a->released_on, 0, 10)] = true;
+                }
+                self::$transferCache[$vehicleId] = $days;
+            }
+            return isset(self::$transferCache[$vehicleId][$date]);
         } catch (\Throwable $e) {
             return false;
         }
@@ -553,5 +667,6 @@ class VehicleResolver
     {
         self::$dayCache = [];
         self::$vehicleCache = [];
+        self::$transferCache = [];
     }
 }

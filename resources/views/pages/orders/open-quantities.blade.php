@@ -1210,6 +1210,21 @@ function updateSummaryCards(summary) {
     }
 }
 
+// Overnight-storage figure for a row: "🧊 2 pkt · 5 kg   ❄️ 6 pkt · 50.63 kg".
+// kg and pcs are never added together (the overnight unit is a kg|pcs enum).
+function formatStorageLine(storage) {
+    if (!storage) return '';
+    const section = (label, s) => {
+        if (!s || !s.packets) return null;
+        const bits = [];
+        if (s.kg > 0) bits.push(`${Math.round(s.kg * 100) / 100} kg`);
+        if (s.pcs > 0) bits.push(`${Math.round(s.pcs * 100) / 100} pcs`);
+        return `${label} ${s.packets} pkt${bits.length ? ' · ' + bits.join(' + ') : ''}`;
+    };
+    const parts = [section('🧊', storage.chiller), section('❄️', storage.freezer)].filter(Boolean);
+    return parts.join('&nbsp;&nbsp;&nbsp;');
+}
+
 // Render data table
 function renderTable(data, summary) {
     const tbody = document.getElementById('table-body');
@@ -1336,6 +1351,10 @@ function renderTable(data, summary) {
             // ⭐ Read-only kg total from the server (qty × each product's unit weight).
             //    Defaults to 0 if an older server build doesn't send it yet.
             const totalWeight = parseFloat(item.total_weight || 0);
+            // ⭐ What is physically in overnight storage for this row's product(s).
+            //    Empty when there is none. On a category row this counts every stocked
+            //    product in the category, including ones with no open orders today.
+            const storageLine = formatStorageLine(item.storage);
             // ⭐ Prepared items are now excluded from query - no need to track preparing_quantity
             
             return `
@@ -1389,6 +1408,10 @@ function renderTable(data, summary) {
             // ⭐ Read-only kg total from the server (qty × each product's unit weight).
             //    Defaults to 0 if an older server build doesn't send it yet.
             const totalWeight = parseFloat(item.total_weight || 0);
+            // ⭐ What is physically in overnight storage for this row's product(s).
+            //    Empty when there is none. On a category row this counts every stocked
+            //    product in the category, including ones with no open orders today.
+            const storageLine = formatStorageLine(item.storage);
             // ⭐ Prepared items are now excluded from query - no need to track preparing_quantity
             
             return `
@@ -1401,6 +1424,7 @@ function renderTable(data, summary) {
                             </span>` :
                             `<strong>${escapeHtml(item.group_name || 'Unknown')}</strong>`
                         }
+                        ${storageLine ? `<div style="font-size: 11px; font-weight: 600; color: #0369a1; margin-top: 3px;" title="In overnight storage right now. Category rows include stocked products that have no open orders.">${storageLine}</div>` : ''}
                     </td>
                     <td class="text-right">
                         <div style="font-size: 18px; font-weight: 700; color: #111827;">${totalQty.toLocaleString()}</div>

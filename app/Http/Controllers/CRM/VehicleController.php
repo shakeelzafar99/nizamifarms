@@ -64,6 +64,8 @@ class VehicleController extends Controller
                 'vehicles'   => $svc->all($request->boolean('include_retired')),
                 'riders'     => $this->roster(),
                 'can_manage' => $this->canManage(),
+                // Photos are a separate, wider right — see canAddPhotos().
+                'can_add_photos' => $this->canAddPhotos(),
                 'transfer_grace_km' => $svc->transferGraceKm(),
                 'rules_enabled'     => $svc->rulesEnabled(),
             ]);
@@ -108,6 +110,8 @@ class VehicleController extends Controller
                 'vehicle'    => $v,
                 'riders'     => $this->roster(),
                 'can_manage' => $this->canManage(),
+                // Photos are a separate, wider right — see canAddPhotos().
+                'can_add_photos' => $this->canAddPhotos(),
                 'transfer_grace_km' => $svc->transferGraceKm(),
                 'month'      => $m->format('Y-m'),
                 'claims'     => $claims,
@@ -123,6 +127,10 @@ class VehicleController extends Controller
                 //   Aug-6) — anchored on the same current meter the header shows.
                 'service_schedule' => $svc->serviceScheduleFor((int) $id,
                     isset($v['current_meter']) && $v['current_meter'] !== null ? (int) $v['current_meter'] : null),
+                // ⭐ The machine's own service RECORD (owner ask, Aug-13). The list
+                //   existed only on the rider's drill-down, so a handover split a
+                //   bike's history between two people and neither list was the bike's.
+                'service_history' => $svc->serviceHistoryFor((int) $id),
             ]);
         } catch (\Throwable $e) {
             Log::error('VehicleController show failed', ['id' => $id, 'error' => $e->getMessage()]);
@@ -248,9 +256,14 @@ class VehicleController extends Controller
                 'success'   => true,
                 'available' => true,
                 'vehicles'  => $svc->all(false),
-                // Mobile never writes to the registry — say so, so the app can't
-                // render an action it has no endpoint for.
+                // Assigning/releasing/editing still belong to the web — the phone
+                // has no endpoint for them, so it must not offer them.
                 'can_manage' => false,
+                // ⭐ …but condition photos CAN now be added from the phone
+                //   (apiAddPhotos). Separate flag on purpose: it is the only
+                //   write the app has, and conflating it with can_manage would
+                //   light up buttons that would 404.
+                'can_add_photos' => $this->canAddPhotos(),
             ]);
         } catch (\Throwable $e) {
             Log::error('VehicleController apiIndex failed', ['error' => $e->getMessage()]);
@@ -292,12 +305,118 @@ class VehicleController extends Controller
                 // same per-type schedule the web profile shows.
                 'service_schedule' => $svc->serviceScheduleFor((int) $id,
                     isset($v['current_meter']) && $v['current_meter'] !== null ? (int) $v['current_meter'] : null),
+                // May this manager record a condition photo from the phone?
+                'can_add_photos' => $this->canAddPhotos(),
                 'months'       => $this->recentMonths(),
             ]);
         } catch (\Throwable $e) {
             Log::error('VehicleController apiShow failed', ['id' => $id, 'error' => $e->getMessage()]);
             return response()->json(['success' => false, 'message' => 'Failed to load that vehicle'], 500);
         }
+    }
+
+    /**
+     * ⭐ ADD CONDITION PHOTOS FROM THE PHONE (owner ask, Aug-12).
+     *
+     * The handover happens in the yard, not at a desk — so the photo has to be
+     * takeable where the bike is. Same store, same table, same validation as the
+     * web door: this only adds a second entrance, never a second rulebook.
+     *
+     * ⚠⚠ TWO GATES, BOTH REQUIRED, AND THEY MEAN DIFFERENT THINGS:
+     *   • mobileAllowed()  — may he open Bikes on the phone at all
+     *                        (`view_bike_costs`, the MOBILE key);
+     *   • canAddPhotos()   — may he RECORD CONDITION (`assign_vehicles` OR
+     *                        `manage_bike_service`, WEB keys — `hasPermission()`
+     *                        reads the web permission table and works identically
+     *                        under Sanctum, so one grant governs both surfaces and
+     *                        a manager can never be allowed on web but refused on
+     *                        the phone). It also refuses read-only accounts, which
+     *                        is why the mobile key alone is not enough.
+     *
+     * ⚠ NOT canManage(): assigning/releasing/editing stay web-only and are a
+     *   narrower right. See canAddPhotos() for why the two were separated.
+     *
+     * Deliberately NOT a new permission key: a key that exists only in SQL stays
+     * invisible on the Roles screen, and nobody would remember to tick it.
+     */
+    public function apiAddPhotos(Request $request, VehicleService $svc, $id)
+    {
+        if (!$this->mobileAllowed($request)) {
+            return response()->json(['success' => false, 'message' => 'Not authorised'], 403);
+        }
+        if (!$this->canAddPhotos()) {
+            return response()->json([
+                'success' => false,
+                'message' => 'You can view the fleet but not record photos — '
+                    . 'ask for the bike-service or vehicle-assignment right.',
+            ], 403);
+        }
+
+        $request->validate([
+            'photos'   => 'required|array|max:8',
+            'photos.*' => 'image|max:' . self::MAX_PHOTO_KB,
+            'context'  => 'nullable|string|max:16',
+            'note'     => 'nullable|string|max:255',
+            'date'     => 'nullable|date',
+        ]);
+
+        if (!$svc->find((int) $id)) {
+            return response()->json(['success' => false, 'message' => 'That vehicle no longer exists.'], 404);
+        }
+
+        // storePhotos streams each file (putFileAs) — a phone sends full-size
+        // photos, and reading 8 of them into memory would exhaust PHP's limit.
+        $note = $this->storePhotos($request, $svc, (int) $id,
+                                   $request->input('context', 'condition'),
+                                   $request->input('date'), null, $request->input('note'));
+
+        return response()->json([
+            'success' => true,
+            'message' => $note ?: 'Nothing was uploaded.',
+            'vehicle' => $svc->find((int) $id),
+        ]);
+    }
+
+    /**
+     * 🛢 SERVICE ALERTS — the dismissable banner list for whoever is asking.
+     *
+     * ONE method serves web and mobile because the audience rule lives in the
+     * service, not here: a manager holding `receive_service_alerts` gets the whole
+     * fleet, the rider holding a machine gets that machine, anyone else gets an
+     * empty list (so the banner never renders rather than being hidden client-side).
+     *
+     * ⚠ NO view permission is checked. That is deliberate — a rider has no fleet
+     *   access at all, yet must be told his own bike is due. `forUser()` is the gate.
+     *
+     * Also the piggyback point for the push sweep: prod has no scheduler, so the
+     * act of a manager or rider opening the app is what drives notifications
+     * (throttled to ~once every 30 min, deferred so this response is not slowed).
+     */
+    public function serviceAlerts(Request $request)
+    {
+        try {
+            $svc = new \App\Services\Riders\BikeServiceAlerts();
+            $alerts = $svc->forUser($request->user() ?: auth()->user());
+            $svc->fireFromRequest();
+            return response()->json(['success' => true, 'alerts' => $alerts]);
+        } catch (\Throwable $e) {
+            // A broken banner must never break the screen it sits on.
+            Log::warning('serviceAlerts failed', ['error' => $e->getMessage()]);
+            return response()->json(['success' => true, 'alerts' => []]);
+        }
+    }
+
+    /** Wave one away — per user, per service cycle (see BikeServiceAlerts::keyFor). */
+    public function dismissServiceAlert(Request $request)
+    {
+        $data = $request->validate(['alert_key' => 'required|string|max:64']);
+        $u = $request->user() ?: auth()->user();
+        if (!$u) return response()->json(['success' => false], 401);
+
+        return response()->json([
+            'success' => (new \App\Services\Riders\BikeServiceAlerts())
+                ->dismiss((int) $u->id, $data['alert_key']),
+        ]);
     }
 
     /** The month's kilometres day by day — lazy, exactly as on the web. */
@@ -420,10 +539,17 @@ class VehicleController extends Controller
             // ⭐ PHASE D — what happens to the rider losing this machine.
             'displaced_action'     => 'nullable|in:none,own,vehicle',
             'displaced_vehicle_id' => 'nullable|integer',
+            // ⭐ Aug-2026 — the odometer as the bike changed hands. OPTIONAL, and
+            //   deliberately validated no further than "a number": a handover is a
+            //   thing that already happened, and refusing to record it over a
+            //   questionable digit would leave the register wrong about who has the
+            //   bike. The preview warns; the engine ignores an out-of-range value.
+            'handover_meter'       => 'nullable|integer|min:0|max:9999999',
         ]);
 
         $res = $svc->assign((int) $id, (int) $data['user_id'], $data['date'] ?? null,
-                            (int) auth()->id(), $data['note'] ?? null);
+                            (int) auth()->id(), $data['note'] ?? null,
+                            isset($data['handover_meter']) ? (int) $data['handover_meter'] : null);
         if (!$res['ok']) {
             return response()->json(['success' => false, 'message' => $res['message']], 422);
         }
@@ -613,8 +739,12 @@ class VehicleController extends Controller
     /** Add condition photos on their own (not tied to a handover). */
     public function addPhotos(Request $request, VehicleService $svc, $id)
     {
-        if (!$this->canManage()) {
-            return response()->json(['success' => false, 'message' => 'Not authorised to manage vehicles'], 403);
+        // ⭐ Photos are their OWN right (canAddPhotos) — a bike-service manager may
+        //   record condition without being able to move machines between riders.
+        //   Web and phone must answer this identically or the same man would be
+        //   allowed on one screen and refused on the other.
+        if (!$this->canAddPhotos()) {
+            return response()->json(['success' => false, 'message' => 'Not authorised to record vehicle photos'], 403);
         }
         $request->validate([
             'photos'   => 'required|array|max:8',
@@ -780,23 +910,19 @@ class VehicleController extends Controller
                 ];
             }
 
-            // Transfer days, keyed on the VEHICLE across ALL its keepers — matching
-            // VehicleResolver::isTransferDay exactly. Deriving it from this rider's
-            // own windows would disagree whenever a day was overridden onto a machine
-            // he was never formally assigned. One query for every vehicle on show.
+            // Transfer days, keyed on the VEHICLE across ALL its keepers. Deriving it
+            // from this rider's own windows would disagree whenever a day was
+            // overridden onto a machine he was never formally assigned to.
+            //
+            // ⭐ Aug-2026: this used to be a third hand-written copy of the rule,
+            //   carrying a comment that it "matched VehicleResolver::isTransferDay
+            //   exactly" — which is precisely the kind of promise that quietly stops
+            //   being true. It now ASKS the resolver, which is the one definition.
             $vids = array_values(array_unique(array_filter(array_column($out, 'vehicle_id'))));
             if ($vids) {
-                $marks = [];
-                foreach (DB::table(VehicleService::T_ASSIGN)->whereIn('vehicle_id', $vids)
-                            ->get(['vehicle_id', 'assigned_on', 'released_on']) as $a) {
-                    $marks[$a->vehicle_id . '|' . substr((string) $a->assigned_on, 0, 10)] = true;
-                    if ($a->released_on) {
-                        $marks[$a->vehicle_id . '|' . substr((string) $a->released_on, 0, 10)] = true;
-                    }
-                }
                 foreach ($out as &$row) {
                     if ($row['vehicle_id']) {
-                        $row['transfer'] = isset($marks[$row['vehicle_id'] . '|' . $row['date']]);
+                        $row['transfer'] = $res->isTransferDay((int) $row['vehicle_id'], $row['date']);
                     }
                 }
                 unset($row);
@@ -959,5 +1085,34 @@ class VehicleController extends Controller
         if (!$u) return false;
         if (method_exists($u, 'isReadOnly') && $u->isReadOnly()) return false;
         return (bool) $u->hasPermission('assign_vehicles');
+    }
+
+    /**
+     * ⭐ MAY HE RECORD A CONDITION PHOTO? (owner ask, Aug-12 — photos on mobile)
+     *
+     * Deliberately WIDER than canManage(), and deliberately not the same thing.
+     * `assign_vehicles` is described in the DB as "Assign bikes/van to riders
+     * (and record their condition)" — it bundles two very different powers:
+     * MOVING a machine between riders (consequential; changes whose fuel the
+     * company buys, who is asked for meters) and PHOTOGRAPHING one (evidence,
+     * additive, undoable by ignoring it).
+     *
+     * Qasim runs bike upkeep and holds `manage_bike_service` — "Set bike service
+     * schedules (record a service…)" — but is explicitly denied `assign_vehicles`
+     * (`is_allowed = 0`). Gating photos on assignment alone would have locked the
+     * very manager the owner asked to enable. Widening `canManage()` instead
+     * would have handed him assign/release/edit, which the owner withheld on
+     * purpose. So the photo right is its own question, answered by either key.
+     *
+     * ⚠ Precedent, not invention: `RequestController::store` already falls back
+     *   to `manage_bike_service` for exactly this person and reason.
+     */
+    private function canAddPhotos(): bool
+    {
+        $u = auth()->user();
+        if (!$u) return false;
+        if (method_exists($u, 'isReadOnly') && $u->isReadOnly()) return false;
+        return (bool) ($u->hasPermission('assign_vehicles')
+                    || $u->hasPermission('manage_bike_service'));
     }
 }

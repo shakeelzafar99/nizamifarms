@@ -334,10 +334,58 @@ class WorkJourneyService
         if ($start === null || $start === '') {
             return null;
         }
-        $prev = $this->lastClosingMeter((int) $g('user_id'), substr((string) $g('attendance_date'), 0, 10));
+        $userId = (int) $g('user_id');
+        $date   = substr((string) $g('attendance_date'), 0, 10);
+
+        // ⭐⭐ Aug-2026 — JUDGE THE MACHINE, NOT THE MAN.
+        //
+        // This is the MANAGER-FACING verdict (the attendance sheet's red meter-gap
+        // flag and `workIssues`), and it was the last continuity surface still
+        // chaining a RIDER's own readings. The morning gates were repointed at the
+        // machine in Phase D; this one was not, so the morning after a handover the
+        // sheet compared a rider's first reading on his new bike against his last
+        // reading on the old one and flagged him for a gap that was never his.
+        //
+        // ⚠ DATE-scoped (`vehicleForDay`), because a report judges history — the
+        //   live gates use `currentVehicleFor` for the opposite reason.
+        $prev = null;
+        $label = null;
+        $transferDay = false;
+        try {
+            $resolver = new VehicleResolver();
+            if ($resolver->rulesEnabled() && $resolver->available()) {
+                $vid = $resolver->vehicleForDay($userId, $date);
+                if ($vid) {
+                    // ⭐ A HANDOVER DAY IS NOT A BREACH. He collected the bike from
+                    //   wherever it was — from the other rider's home, from the
+                    //   workshop — and that travel is legitimate. Suppressing here
+                    //   matches what `workIssueDays` and `DayChecksService` already
+                    //   do for the same days; this surface simply never learned it.
+                    $transferDay = $resolver->isTransferDay($vid, $date);
+                    $win   = (new VehicleService())->meterWindowFor($vid, $date);
+                    $floor = $win['floor'] ?? null;
+                    if ($floor !== null) {
+                        $prev  = ['value' => (int) $floor, 'date' => null];
+                        $label = $resolver->labelFor($vid);
+                    }
+                }
+                // He held nothing that day: there is no machine to check against.
+                if (!$vid && $resolver->hasRiderProfile($userId)) return null;
+            }
+        } catch (\Throwable $e) {
+            Log::warning('continuity fell back to the rider chain', [
+                'user' => $userId, 'date' => $date, 'error' => $e->getMessage(),
+            ]);
+            $prev = null;
+        }
+
+        if (!$prev) {
+            $prev = $this->lastClosingMeter($userId, $date);
+        }
         if (!$prev) {
             return null;
         }
+
         $gap = (int) $start - $prev['value'];
         $source = (string) ($g('meter_start_source') ?? '');
         if ($source === 'home') {
@@ -345,7 +393,25 @@ class WorkJourneyService
         } else {
             $breach = $officeGraceKm !== null && $gap > $officeGraceKm;
         }
-        return ['gap' => $gap, 'breach' => $breach, 'prev' => $prev['value'], 'prev_date' => $prev['date']];
+        // ⭐⭐ ACROSS A HANDOVER THERE IS NOTHING TO CHECK — suppressed, not graced.
+        //
+        // A km ALLOWANCE (the 20 km the attendance page adds) is the right shape for
+        // the handover RIDE: he fetches the bike from the other man's house. It is
+        // the wrong shape here, because the baseline reading may be hours or a full
+        // working day old and belong to the OTHER RIDER: Waseem's first reading back
+        // on DCR-799 sat 202 km above the machine's last, and every one of those
+        // kilometres was Danish's. Grace by 20 and he is still accused of 182.
+        //
+        // Continuity asks "did this bike move overnight while HE had it?" — between
+        // two different riders that question has no meaning, so it is not asked. The
+        // distance is not lost: the engine labels it shared/in-transit and shows it
+        // on the day, against nobody.
+        if ($transferDay) $breach = false;
+
+        return ['gap' => $gap, 'breach' => $breach, 'prev' => $prev['value'],
+                'prev_date' => $prev['date'] ?? null,
+                // So the sheet can say WHY it is not complaining.
+                'transfer_day' => $transferDay, 'label' => $label];
     }
 
     /** Is a manager check-in unlock active on this row right now? */
@@ -411,14 +477,23 @@ class WorkJourneyService
                 ->whereNotNull('login_time')
                 ->get(['id', 'user_id', 'attendance_date', 'login_time', 'meter_start', 'meter_start_source',
                        'meter_start_recorded_at', 'work_expected_by', 'work_eta_min', 'work_distance_km']);
+            // ⭐ Days a machine changed hands, per rider. On those days the bike did
+            //   not sleep at his house, so "no home start" describes the handover
+            //   rather than a rider cutting a corner — flagging it is a false
+            //   accusation. ⚠ REPORTING ONLY: `checkinLockVerdict` still refuses a
+            //   missing home start, because removing a demand and removing a LOCK
+            //   are different risks.
+            $swapDays = $this->assignmentBoundaryDays($bikeUsers, $date, $date);
+
             foreach ($rows as $r) {
                 $state = $this->deriveState($r);
                 $cont = $this->continuity($r, $graceByUser[$r->user_id] ?? null);
+                $onSwap = isset($swapDays[$r->user_id . '|' . substr((string) $r->attendance_date, 0, 10)]);
                 $issues = [];
                 if ($state === 'arrived_late') {
                     $issues[] = 'late_vs_eta';
                 }
-                if ($state === 'no_home_start') {
+                if ($state === 'no_home_start' && !$onSwap) {
                     $issues[] = 'no_home_start';
                 }
                 if ($cont && $cont['breach']) {
@@ -528,18 +603,32 @@ class WorkJourneyService
      *
      * ⚠ Both ends matter: the day he GIVES a bike up and the day he TAKES one are
      *   each a day with two odometers in play.
+     *
+     * ⭐ Aug-2026: made PUBLIC and date-bounded so it is the ONE definition of
+     *   "was this a handover day for this rider". `VehicleController::riderDays`
+     *   used to carry its own SQL copy of the same idea, with a comment promising
+     *   it matched — three copies of one rule is how they drift apart.
      */
-    private function assignmentBoundaryDays(array $userIds): array
+    public function assignmentBoundaryDays(array $userIds, ?string $from = null, ?string $to = null): array
     {
         $out = [];
         try {
             $res = new VehicleResolver();
             if (!$res->available() || !$res->rulesEnabled() || empty($userIds)) return $out;
 
-            foreach (DB::table(VehicleService::T_ASSIGN)->whereIn('user_id', $userIds)
-                        ->get(['user_id', 'assigned_on', 'released_on']) as $a) {
+            $q = DB::table(VehicleService::T_ASSIGN)->whereIn('user_id', $userIds);
+            if ($from !== null && $to !== null) {
+                $q->where(function ($w) use ($from, $to) {
+                    $w->whereBetween('assigned_on', [$from, $to])
+                      ->orWhereBetween('released_on', [$from, $to]);
+                });
+            }
+            foreach ($q->get(['user_id', 'assigned_on', 'released_on']) as $a) {
                 foreach ([$a->assigned_on, $a->released_on] as $d) {
-                    if ($d) $out[(int) $a->user_id . '|' . substr((string) $d, 0, 10)] = true;
+                    if (!$d) continue;
+                    $day = substr((string) $d, 0, 10);
+                    if ($from !== null && ($day < $from || $day > $to)) continue;
+                    $out[(int) $a->user_id . '|' . $day] = true;
                 }
             }
         } catch (\Throwable $e) {

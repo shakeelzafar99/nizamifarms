@@ -124,6 +124,24 @@
     </div>
   </div>
 
+  <!-- Payroll leave actions (overtime bonus / late penalty) — the SAME items the Payroll
+       screen shows, decided from here so a manager reviewing the month doesn't have to
+       switch screens. Every call is gated by `manage_payroll` server-side. -->
+  {{-- z-index sits BELOW the date-breakdown modal (10001) on purpose: "see the days" opens
+       that one on top, and closing it drops the manager back onto this list. --}}
+  <div id="leaveActModal" style="display:none;position:fixed;inset:0;z-index:10000;background:rgba(0,0,0,0.5);align-items:center;justify-content:center;padding:16px;" onclick="if(event.target===this)closePayrollLeaveActions()">
+    <div style="background:#ffffff;border-radius:12px;box-shadow:0 20px 40px rgba(0,0,0,0.25);max-width:560px;width:100%;padding:20px 22px;max-height:85vh;display:flex;flex-direction:column;">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:4px;">
+        <div>
+          <h2 id="laTitle" style="font-size:16px;font-weight:700;color:#111827;margin:0;">Leave actions</h2>
+          <div id="laSub" style="font-size:12px;color:#6B7280;margin-top:2px;"></div>
+        </div>
+        <button type="button" onclick="closePayrollLeaveActions()" style="background:none;border:none;font-size:24px;line-height:1;color:#9ca3af;cursor:pointer;">&times;</button>
+      </div>
+      <div id="laBody" style="overflow:auto;margin-top:10px;"></div>
+    </div>
+  </div>
+
   <!-- Attendance Rules Modal (year cycle + meter thresholds) -->
   <div id="attRulesModal" style="display:none;position:fixed;inset:0;z-index:10000;background:rgba(0,0,0,0.5);align-items:center;justify-content:center;padding:16px;" onclick="if(event.target===this)closeAttendanceRules()">
     <div style="background:#ffffff;border-radius:12px;box-shadow:0 20px 40px rgba(0,0,0,0.25);max-width:520px;width:100%;padding:24px;max-height:90vh;overflow:auto;">
@@ -546,6 +564,10 @@
         <button onclick="exportMonthCsv()" class="px-3 py-1.5 bg-white border border-gray-300 rounded-lg text-sm hover:bg-gray-50">📥 CSV</button>
       </div>
     </div>
+    {{-- Payroll leave actions due for this month. Filled by loadPayrollLeaveBanner(); stays
+         hidden for anyone without payroll access (the endpoint 403s) and for months with
+         nothing to settle. --}}
+    <div id="leaveActBanner" style="display:none;" class="mb-4"></div>
     <div class="bg-white border border-gray-200 rounded-lg shadow-sm overflow-x-auto">
       <table class="min-w-full divide-y divide-gray-200">
         <thead class="bg-gray-50">
@@ -1890,6 +1912,156 @@ async function loadMonthTab() {
   } catch (e) {
     body.innerHTML = '<tr><td colspan="10" class="px-4 py-8 text-center text-red-500 text-sm">Failed to load</td></tr>';
   }
+  // Awaited so a caller that reloads the month (after deciding an action) can rely on the
+  // banner data being fresh; it runs after the table is already on screen either way.
+  await loadPayrollLeaveBanner();
+}
+
+// ---- Payroll leave actions on the Attendance month ----
+// The bonus/penalty leaves this month earns or costs. Same server payload the Payroll
+// screen renders, so the two can't disagree, and the same `manage_payroll` authority:
+// a viewer without it simply never sees the banner (the endpoint refuses).
+let PAYROLL_LEAVE_ACT = null;
+
+async function loadPayrollLeaveBanner() {
+  const el = document.getElementById('leaveActBanner');
+  if (!el) return;
+  el.style.display = 'none';
+  try {
+    const res = await fetch('/hr/payroll/leave-actions?month=' + currentMonthValue(), { headers: { 'Accept': 'application/json' } });
+    if (!res.ok) return;                       // 403 = no payroll access → stay hidden
+    const j = await res.json();
+    if (!j.success || !(j.rows || []).length) return;
+    PAYROLL_LEAVE_ACT = j;
+    const s = j.summary || {};
+    const pending = Number(s.pending_count || 0);
+    const open = !j.closed;
+    const bits = [];
+    if (s.give_pending) bits.push(`<b style="color:#047857;">+${s.give_pending}</b> bonus to give`);
+    if (s.deduct_pending) bits.push(`<b style="color:#B45309;">−${s.deduct_pending}</b> to deduct`);
+    if (s.given) bits.push(`<b style="color:#047857;">+${s.given}</b> given`);
+    if (s.deducted) bits.push(`<b style="color:#B45309;">−${s.deducted}</b> deducted`);
+    if (s.waived) bits.push(`${s.waived} waived`);
+
+    // Amber only when something is actually actionable; a running month is a preview and a
+    // settled month is history — neither is a to-do.
+    const amber = pending > 0 && !open;
+    const bg = amber ? '#FFFBEB' : (open ? '#F9FAFB' : '#F0FDF4');
+    const bd = amber ? '#FCD34D' : (open ? '#E5E7EB' : '#A7F3D0');
+    const fg = amber ? '#92400E' : (open ? '#6B7280' : '#047857');
+    const lead = open
+      ? `Leave actions for ${j.month_label} (still counting)`
+      : (amber ? `⏳ Payroll leave actions for ${j.month_label} are due` : `✓ ${j.month_label} leave actions settled`);
+    el.innerHTML = `<div style="background:${bg};border:1px solid ${bd};border-radius:10px;padding:10px 14px;display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;">
+      <div style="font-size:13px;color:${fg};">${lead}${bits.length ? ' — ' + bits.join(' · ') : ''}${amber ? ` · <b>${pending} pending</b>` : ''}</div>
+      <button type="button" onclick="openPayrollLeaveActions()" style="background:#fff;border:1px solid ${bd};color:${fg};border-radius:8px;padding:5px 14px;font-size:12px;font-weight:700;cursor:pointer;white-space:nowrap;">${amber ? 'Review' : 'View'} ›</button>
+    </div>`;
+    el.style.display = '';
+  } catch (e) { /* banner is additive — never break the month tab */ }
+}
+
+// NOTE the name: a DIFFERENT openLeaveActions(userId, name) already exists further down for
+// the Today-row leave chip. Function declarations hoist and the last one wins, so a shared
+// name here would silently hijack that one (or be hijacked by it) with no console error.
+function openPayrollLeaveActions() {
+  if (!PAYROLL_LEAVE_ACT) return;
+  document.getElementById('laTitle').textContent = 'Leave actions — ' + PAYROLL_LEAVE_ACT.month_label;
+  document.getElementById('laSub').textContent = PAYROLL_LEAVE_ACT.closed
+    ? 'Bonus leaves earned and leaves lost to lateness. Money is not changed here.'
+    : PAYROLL_LEAVE_ACT.month_label + ' is still running — these are previews and can be decided once it ends.';
+  document.getElementById('leaveActModal').style.display = 'flex';
+  renderPayrollLeaveActions();
+}
+function closePayrollLeaveActions() { document.getElementById('leaveActModal').style.display = 'none'; }
+
+function renderPayrollLeaveActions() {
+  const j = PAYROLL_LEAVE_ACT, s = j.summary || {}, open = !j.closed;
+  const rows = (j.rows || []).map(r => r.actions.map(a => {
+    const col = a.kind === 'overtime' ? '#047857' : '#B45309';
+    const payload = `${r.user_id},'${String(r.fullname).replace(/'/g, "\\'")}','${a.kind}'`;
+    let acts;
+    if (a.status === 'pending') {
+      const dis = open ? 'disabled style="opacity:.5;cursor:not-allowed;" title="Wait until the month ends"' : '';
+      acts = `<button type="button" onclick="decidePayrollLeaveAction(${payload},'apply')" ${dis}
+          style="background:${a.kind === 'overtime' ? '#ECFDF5' : '#FFFBEB'};border:1px solid ${a.kind === 'overtime' ? '#A7F3D0' : '#FCD34D'};color:${col};border-radius:6px;padding:4px 11px;font-size:11px;font-weight:700;cursor:pointer;">${a.kind === 'overtime' ? 'Give' : 'Deduct'} ${a.headline}</button>
+        <button type="button" onclick="decidePayrollLeaveAction(${payload},'waive')" ${dis}
+          style="background:#F3F4F6;border:1px solid #E5E7EB;color:#6B7280;border-radius:6px;padding:4px 11px;font-size:11px;font-weight:700;cursor:pointer;">${a.kind === 'overtime' ? 'Skip' : 'Keep leave'}</button>`;
+    } else {
+      const applied = Number(a.applied_days || 0);
+      const txt = a.status === 'waived'
+        ? (a.kind === 'overtime' ? '✕ bonus skipped' : '✕ leave kept (waived)')
+        : `✓ ${applied > 0 ? '+' + applied : applied} leave${Math.abs(applied) === 1 ? '' : 's'} ${a.kind === 'overtime' ? 'given' : 'deducted'}`;
+      const who = [a.decided_by ? 'by ' + a.decided_by : '', a.decided_at || ''].filter(Boolean).join(' · ');
+      acts = `<span style="background:${a.status === 'waived' ? '#F3F4F6' : '#ECFDF5'};color:${a.status === 'waived' ? '#6B7280' : '#047857'};border-radius:6px;padding:3px 9px;font-size:11px;font-weight:700;">${txt}</span>`
+        + (who ? `<span style="font-size:10.5px;color:#9CA3AF;">${who}</span>` : '')
+        + (open ? '' : `<button type="button" onclick="decidePayrollLeaveAction(${payload},'${a.status === 'waived' ? 'apply' : 'waive'}',true)"
+            style="background:none;border:none;color:#4F46E5;font-size:11px;font-weight:600;cursor:pointer;text-decoration:underline;text-decoration-style:dotted;margin-left:auto;">change ›</button>`);
+    }
+    const drift = a.changed
+      ? `<div style="font-size:10.5px;color:#B45309;margin-top:3px;">⚠ recommended now: ${a.recommended_days > 0 ? '+' : ''}${a.recommended_days} — settled on a different figure.</div>` : '';
+    return `<div style="padding:11px 2px;border-bottom:1px solid #F3F4F6;">
+      <div style="font-size:13px;font-weight:700;color:#111827;">${r.fullname}${r.paid ? ' <span style="font-size:10px;font-weight:700;color:#6B7280;background:#F3F4F6;border-radius:5px;padding:1px 6px;">salary paid</span>' : ''}</div>
+      <div style="font-size:12.5px;font-weight:700;color:${col};margin-top:1px;">${a.headline}</div>
+      <div style="font-size:11px;color:#6B7280;line-height:1.5;margin-top:2px;">${a.basis}<br>${a.formula}
+        · <button type="button" onclick="showDateBreakdown(${r.user_id},'${String(r.fullname).replace(/'/g, "\\'")}','${a.drill}')"
+            style="background:none;border:none;color:#4F46E5;font-size:11px;font-weight:600;cursor:pointer;text-decoration:underline;text-decoration-style:dotted;padding:0;">see the days ›</button></div>
+      ${drift}
+      <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-top:7px;">${acts}</div>
+    </div>`;
+  }).join('')).join('');
+
+  const cut = s.late_cut_count
+    ? `<div style="font-size:11.5px;color:#B45309;background:#FFFBEB;border-radius:8px;padding:8px 10px;margin-bottom:10px;">⚠ ${s.late_cut_count} employee${s.late_cut_count > 1 ? 's have' : ' has'} a late <b>salary cut</b> of Rs ${Math.round(s.late_cut_total).toLocaleString('en-PK')} this month (too late for a leave penalty). That is money — it is deducted on the Payroll screen when the salary is paid.</div>` : '';
+  const all = (!open && s.pending_count > 0)
+    ? `<div style="margin-bottom:10px;"><button type="button" onclick="applyAllPayrollLeaveActions()"
+         style="background:#ECFDF5;border:1px solid #A7F3D0;color:#047857;border-radius:6px;padding:5px 13px;font-size:12px;font-weight:700;cursor:pointer;">Apply all ${s.pending_count} recommended</button>
+         <span style="font-size:11px;color:#9CA3AF;margin-left:8px;">gives the bonuses and takes the penalties</span></div>` : '';
+  document.getElementById('laBody').innerHTML = cut + all + rows;
+}
+
+async function decidePayrollLeaveAction(userId, name, kind, decision, isChange) {
+  if (isChange && !confirm(`Change this for ${name}?\n\nThe recorded decision will be replaced.`)) return;
+  document.querySelectorAll('#laBody button').forEach(b => b.disabled = true);
+  try {
+    const res = await fetch('/hr/payroll/leave-actions/decide', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').content },
+      body: JSON.stringify({ user_id: userId, month: currentMonthValue(), kind: kind, decision: decision })
+    });
+    const j = await res.json();
+    if (!j.success) throw new Error(j.message || 'Failed');
+    await refreshPayrollLeaveActions();
+  } catch (e) {
+    alert('Could not save that: ' + (e.message || e));
+    renderPayrollLeaveActions();
+  }
+}
+
+async function applyAllPayrollLeaveActions() {
+  const s = (PAYROLL_LEAVE_ACT && PAYROLL_LEAVE_ACT.summary) || {};
+  if (!confirm(`Apply all ${s.pending_count} recommended leave actions for ${PAYROLL_LEAVE_ACT.month_label}?\n\nBonus leaves are given and late penalties are deducted. Anything already decided is left alone.`)) return;
+  document.querySelectorAll('#laBody button').forEach(b => b.disabled = true);
+  try {
+    const res = await fetch('/hr/payroll/leave-actions/apply-all', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').content },
+      body: JSON.stringify({ month: currentMonthValue() })
+    });
+    const j = await res.json();
+    if (!j.success) throw new Error(j.message || 'Failed');
+    await refreshPayrollLeaveActions();
+    alert(j.message || 'Done.');
+  } catch (e) {
+    alert('Could not apply: ' + (e.message || e));
+    renderPayrollLeaveActions();
+  }
+}
+
+// Re-read from the server after a decision: the banner, the open modal and the month's
+// leave balances all move together.
+async function refreshPayrollLeaveActions() {
+  await loadMonthTab();   // reloads the table (leave balances moved) and the banner data
+  if (document.getElementById('leaveActModal').style.display === 'flex') { renderPayrollLeaveActions(); }
 }
 function fmtMinsShort(n) { n = Number(n) || 0; const h = Math.floor(n / 60), m = n % 60; return h > 0 ? `${h}h ${m}m` : `${m}m`; }
 function fmtCycleShort(d) {
@@ -2317,9 +2489,55 @@ const BREAKDOWN_META = {
   year_leave:   { title: 'Leave days',        sub: 'this year cycle', color: '#7C3AED', icon: '🏖' },
   year_absent:  { title: 'Absent days',       sub: 'this year cycle', color: '#B91C1C', icon: '❌' },
   month_overtime: { title: 'Overtime days',   sub: 'this month',      color: '#047857', icon: '⏱' },
+  month_late:     { title: 'Late days',       sub: 'this month',      color: '#B45309', icon: '⏰' },
   month_office_checkout: { title: 'Office checkouts', sub: 'delivered but came back to the office', color: '#92400E', icon: '🏢' },
   month_meter_missed: { title: 'Missed meter readings', sub: 'finished working days only — never absences, leave or future days', color: '#C2410C', icon: '⛽' },
 };
+// The evidence line under a drill-down date — currently only Overtime days sends it
+// (item.meta). Shows the day as WORKED: check-in, the checkout AS RECORDED, and, when that
+// checkout rode a manager bypass, the end the overtime was actually counted to (the last
+// delivered order). Without it a manager sees "3h 13m" beside a 00:05 checkout and cannot
+// tell whether the rider really worked past midnight. Returns '' when no meta — every other
+// breakdown type renders exactly as before.
+function bdDayMeta(m) {
+  if (!m) return '';
+  const num = (v) => String(v).replace(/</g, '&lt;');
+  const strong = (v) => `<b style="color:#111827;font-weight:600;">${num(v)}</b>`;
+  // Late day (month_late): the shift start the check-in was judged against, then the check-in.
+  if (m.shift_start || (m.login && !m.logout)) {
+    const lb = [];
+    if (m.shift_start) lb.push('shift ' + strong(m.shift_start));
+    if (m.login) lb.push('in ' + strong(m.login));
+    return lb.length
+      ? `<div style="font-size:11px;color:#6B7280;margin-top:2px;" title="Checked in at ${num(m.login || '?')} against a ${num(m.shift_start || '?')} shift start.">`
+        + lb.join(' <span style="color:#D1D5DB;">→</span> ') + '</div>'
+      : '';
+  }
+  const bits = [];
+  if (m.login)  bits.push('in ' + strong(m.login));
+  if (m.logout) bits.push('out ' + strong(m.logout));
+  const worked = fmtMinsShort(m.worked_minutes), target = fmtMinsShort(m.target_minutes);
+  const sums = `Counted ${worked} worked against a ${target} target.`;
+  let html = bits.length
+    ? `<div style="font-size:11px;color:#6B7280;margin-top:2px;" title="${sums}">` +
+      bits.join(' <span style="color:#D1D5DB;">→</span> ') + '</div>'
+    : '';
+  const cc = m.counted;
+  if (cc && cc.time) {
+    html += `<div style="font-size:11px;font-weight:700;color:#B45309;margin-top:2px;" ` +
+      `title="This checkout used a manager bypass, so its time is when the valve was used — not when the work ended. The day is counted up to the last delivered order at ${num(cc.time)}. ${sums}">` +
+      `🔓 bypassed · counted ${num(cc.time)} · last delivery</div>`;
+  }
+  // How busy the day actually was — the case for the overtime, beside the hours themselves.
+  if (m.orders) {
+    const span = (m.first_delivery && m.last_delivery)
+      ? ` · ${num(m.first_delivery)} → ${num(m.last_delivery)}` : '';
+    html += `<div style="font-size:11px;color:#6B7280;margin-top:2px;" title="Orders this rider delivered on this day, first to last.">` +
+      `📦 ${num(m.orders)} order${m.orders === 1 ? '' : 's'} delivered${span}</div>`;
+  }
+  return html;
+}
+
 async function showDateBreakdown(userId, name, type) {
   const meta = BREAKDOWN_META[type] || { title: 'Dates', sub: '', color: '#374151', icon: '📅' };
   const modal = document.getElementById('dateBreakdownModal');
@@ -2341,9 +2559,10 @@ async function showDateBreakdown(userId, name, type) {
     const rows = dates.map(item => {
       const d = new Date(item.date + 'T00:00:00');
       const label = `${dow[d.getDay()]}, ${d.getDate()} ${mon[d.getMonth()]} ${d.getFullYear()}`;
-      const tag = item.label ? `<span style="font-size:11px;color:${meta.color};background:${meta.color}14;border-radius:5px;padding:1px 7px;font-weight:600;">${String(item.label).replace(/</g,'&lt;')}</span>` : '';
-      return `<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:8px 4px;border-bottom:1px solid #F3F4F6;">
-        <span style="font-size:13px;color:#111827;">${label}</span>${tag}
+      const tag = item.label ? `<span style="font-size:11px;color:${meta.color};background:${meta.color}14;border-radius:5px;padding:1px 7px;font-weight:600;white-space:nowrap;">${String(item.label).replace(/</g,'&lt;')}</span>` : '';
+      const sub = bdDayMeta(item.meta);
+      return `<div style="display:flex;align-items:${sub ? 'flex-start' : 'center'};justify-content:space-between;gap:10px;padding:8px 4px;border-bottom:1px solid #F3F4F6;">
+        <div style="min-width:0;"><div style="font-size:13px;color:#111827;">${label}</div>${sub}</div>${tag}
       </div>`;
     }).join('');
     bodyEl.innerHTML = `<div style="font-size:12px;color:#6B7280;margin-bottom:8px;">${dates.length} day${dates.length>1?'s':''}</div>${rows}`;
@@ -5164,5 +5383,8 @@ async function saveFuelRateGroups() {
 
 @include('partials.home-meter-alerts')
 @include('partials.checkout-stuck-alerts')
+{{-- 🛢 A MACHINE needing service — separate audience and key from the meter
+     banner above; see partials/service-alerts.blade.php. --}}
+@include('partials.service-alerts')
 
 @endsection

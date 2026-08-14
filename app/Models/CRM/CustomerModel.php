@@ -33,7 +33,10 @@ class CustomerModel extends BaseModel
         'customer_type',
         // Aug-2026: remembered payment choice ('cash'|'online'|null) applied as
         // the pre-selection on both order forms. See normalizePaymentMethod().
+        // The two attribution columns travel WITH it — never written apart.
         'default_payment_method',
+        'default_payment_method_set_by',
+        'default_payment_method_set_at',
         // Mobile-app migration tag: set once the customer places an app-origin
         // order (Shopify source_name ios_app/android_app). Drives campaign
         // exclusion + the HQ order-source split. See [[shopify source channel]].
@@ -146,6 +149,96 @@ class CustomerModel extends BaseModel
         return \App\Services\WhatsApp\Automation\Handlers\PaymentChangeInvoiceHandler::isOnline($pm)
             ? self::PAYMENT_ONLINE
             : self::PAYMENT_CASH;
+    }
+
+    /**
+     * Aug-2026 — THE one writer for a customer's default payment method.
+     *
+     * ⭐ Four surfaces can set this: web Edit Customer, both create-order forms'
+     * tick, the web quick-change modal, and the mobile store Edit modal. They all
+     * come through here so the value and its attribution can never be written
+     * apart, and so "who set this" means the same thing everywhere. Do NOT write
+     * these three columns directly from a controller.
+     *
+     * ⚠ All THREE columns move together. Clearing the default clears the
+     * attribution too — a "set by Taimur" left behind on an empty value would
+     * make the UI claim someone chose "no default", which nobody ever does
+     * explicitly enough to attribute.
+     *
+     * Returns the normalized value that was stored (null when cleared), or false
+     * when the customer id resolves to nothing.
+     *
+     * @param  int|null  $customerId
+     * @param  mixed     $method   anything normalizePaymentMethod() understands
+     * @param  int|null  $userId   actor to credit
+     * @return string|null|false
+     */
+    public static function setDefaultPaymentMethod($customerId, $method, ?int $userId)
+    {
+        if (empty($customerId)) {
+            return false;
+        }
+
+        $normalized = self::normalizePaymentMethod($method);
+
+        $updated = self::where('id', $customerId)->update([
+            'default_payment_method'        => $normalized,
+            // Attribution is meaningless without a value — cleared with it.
+            'default_payment_method_set_by' => $normalized === null ? null : $userId,
+            'default_payment_method_set_at' => $normalized === null ? null : now(),
+        ]);
+
+        return $updated ? $normalized : false;
+    }
+
+    /**
+     * Aug-2026 — ONE payload shape for "who set this default", used by every
+     * surface that has to show it (mobile store Edit modal, mobile New Order,
+     * web quick-change, both web create-order forms, web Edit Customer).
+     *
+     * Returns null when no default is set, so a caller can simply test the key.
+     * `set_by_name` degrades to "User #id" for a deleted user rather than
+     * blanking the line — the same convention as verifierLabel().
+     *
+     * @param  object|array  $customer  anything carrying the three columns
+     */
+    public static function defaultPaymentMethodInfo($customer): ?array
+    {
+        $get = function ($key) use ($customer) {
+            if (is_array($customer)) {
+                return $customer[$key] ?? null;
+            }
+            return $customer->{$key} ?? null;
+        };
+
+        $method = $get('default_payment_method');
+        if ($method === null || $method === '') {
+            return null;
+        }
+
+        $setBy = $get('default_payment_method_set_by');
+        $setAt = $get('default_payment_method_set_at');
+
+        $name = null;
+        if (!empty($setBy)) {
+            $name = \DB::table('t_sys_user')->where('id', $setBy)->value('fullname')
+                ?: ('User #' . $setBy);
+        }
+
+        try {
+            $setAtCarbon = $setAt ? \Illuminate\Support\Carbon::parse($setAt) : null;
+        } catch (\Throwable $e) {
+            $setAtCarbon = null;
+        }
+
+        return [
+            'method'       => $method,
+            'label'        => $method === self::PAYMENT_ONLINE ? 'Online' : 'Cash',
+            'set_by'       => $setBy ? (int) $setBy : null,
+            'set_by_name'  => $name,
+            'set_at'       => $setAtCarbon ? $setAtCarbon->toDateTimeString() : null,
+            'set_at_short' => $setAtCarbon ? $setAtCarbon->format('M d') : null,
+        ];
     }
 
     // Verified-pin lock (Jul-2026). Once a customer HAS a verified pin, riders

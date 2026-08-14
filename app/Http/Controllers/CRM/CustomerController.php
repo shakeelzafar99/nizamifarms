@@ -293,6 +293,9 @@ class CustomerController extends Controller
                 'success' => true,
                 'customer' => $customer,
                 'verified_location' => $verifiedLocation,
+                // Aug-2026 — "the default is Online, set by Taimur". Same payload
+                // shape every surface uses; null when no default is set.
+                'default_payment_info' => \App\Models\CRM\CustomerModel::defaultPaymentMethodInfo($customer),
                 'address_attribution' => $addressAttribution,
                 'profile_attribution' => $profileAttribution,
                 'merged_customers' => $mergedCustomers,
@@ -347,8 +350,10 @@ class CustomerController extends Controller
                     'notes' => $customer->notes,
                     'customer_type' => $customer->customer_type, // regular | shop (drives default online payment)
                     // Aug-2026 — remembered payment choice, so the Create-Order
-                    // form can pre-select it the moment this customer is picked.
+                    // form can pre-select it the moment this customer is picked,
+                    // plus who set it so the form can say so before it's changed.
                     'default_payment_method' => $customer->default_payment_method,
+                    'default_payment_info' => \App\Models\CRM\CustomerModel::defaultPaymentMethodInfo($customer),
                     'address' => [
                         'first_name' => $customer->first_name,
                         'last_name' => $customer->last_name,
@@ -1200,21 +1205,29 @@ class CustomerController extends Controller
                 $payload['phone_original'] = $newOriginal;
             }
 
-            // Aug-2026 — the "No default" option posts an empty string. Store a
-            // real NULL for it, otherwise '' would sit in the column and the
-            // order forms would read it as "a default exists" and pre-select
-            // nothing. Only touched when the caller actually sent the field, so
-            // every other update path (mobile, geocode, merge) is unaffected.
-            if ($request->has('default_payment_method')) {
-                $payload['default_payment_method'] = CustomerModel::normalizePaymentMethod(
-                    $request->input('default_payment_method')
-                );
-            }
+            // Aug-2026 — the default payment method is written by its own helper
+            // (value + attribution together), never through this mass update, so
+            // it is stripped from the payload here and applied after the save.
+            // Only touched when the caller actually sent the field, so every
+            // other update path (mobile, geocode, merge) is unaffected.
+            $setsDefaultPaymentMethod = $request->has('default_payment_method');
+            unset($payload['default_payment_method']);
 
             // Snapshot the address BEFORE the write so we can tell whether it moved.
             $addressBefore = trim(($customer->address1 ?? '') . '|' . ($customer->city ?? ''));
 
             $customer->update($payload);
+
+            // Aug-2026 — "No default" posts an empty string, which the helper
+            // normalizes to NULL and clears the attribution alongside. The
+            // stamped user is whoever saved this form.
+            if ($setsDefaultPaymentMethod) {
+                CustomerModel::setDefaultPaymentMethod(
+                    $customer->id,
+                    $request->input('default_payment_method'),
+                    auth()->id()
+                );
+            }
 
             // ⭐ Address edited → the machine-geocoded pin describes the OLD address
             //    and is now simply wrong. Re-geocode so the pin and the written

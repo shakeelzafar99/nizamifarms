@@ -52,7 +52,12 @@
                     <th>Rider</th>
                     <th>Bike</th>
                     <th class="num">Work km</th>
-                    <th class="num" title="Meter-out at home → next morning's meter-in. Real commuting only.">Off-duty</th>
+                    <th class="num" title="Meter-out at home → next morning's meter-in, on a night he had the bike at both ends. Real commuting only.">Off-duty</th>
+                    {{-- ⭐ Aug-2026: kilometres that belong to NOBODY. A handover day's
+                         run is real but unsplittable, and the bike travelling between
+                         two riders is nobody's personal usage. Before this column they
+                         were dumped on whoever happened to hold the bike. --}}
+                    <th class="num" title="Kilometres on a day the bike changed hands (real, but impossible to split between the two riders) and the bike's own travel between them. Counted against neither man.">Shared / transit</th>
                     {{-- "Costed km" used to show WORK km, while the firm was demonstrably
                          paying for the commute too. Fuelled km = every kilometre whose
                          petrol this company bought. --}}
@@ -70,7 +75,7 @@
                 </tr>
             </thead>
             <tbody id="flBody">
-                <tr><td colspan="11" class="fl-empty">Loading…</td></tr>
+                <tr><td colspan="12" class="fl-empty">Loading…</td></tr>
             </tbody>
         </table>
     </div>
@@ -134,6 +139,26 @@
 .fl-company{background:#e0e7ff;color:#3730a3;}
 .fl-own{background:#f3f4f6;color:#4b5563;}
 .fl-unknown{background:#fee2e2;color:#b91c1c;}
+/* Shared / transit — kilometres charged to nobody. Deliberately its own colour:
+   it must not read as either a warning (the rider did nothing wrong) or as an
+   ordinary figure (it is not his). */
+.fl-shared{background:#e6f7f3;color:#0f766e;}
+.fl-mrow{display:flex;gap:10px;align-items:baseline;flex-wrap:wrap;padding:6px 8px;
+         border:1px solid #e5e7eb;border-radius:8px;background:#fafafa;margin-bottom:6px;}
+.fl-mrow .fl-mkm{font-weight:700;}
+.fl-mlink{color:#1d4ed8;cursor:pointer;font-size:11.5px;font-weight:600;}
+.fl-mlink:hover{text-decoration:underline;}
+.fl-handover{background:#e6f7f3;border-left:3px solid #0f766e;border-radius:6px;
+             padding:4px 8px;margin:3px 0;}
+/* Day cards — one card per date, the day read top to bottom. */
+.fl-dc{border:1px solid #e5e7eb;border-radius:9px;margin-bottom:9px;overflow:hidden;}
+.fl-dc-h{display:flex;justify-content:space-between;align-items:baseline;gap:10px;
+         background:#f8f9fb;border-bottom:1px solid #e5e7eb;padding:6px 11px;
+         font-weight:650;font-size:13px;color:#111827;}
+.fl-dc-b{padding:6px 11px 8px;}
+.fl-dc-l{display:flex;gap:9px;padding:2.5px 0;font-size:12.5px;align-items:baseline;flex-wrap:wrap;}
+.fl-dc-k{min-width:92px;color:#6b7280;font-size:11.5px;flex-shrink:0;}
+.fl-dc-l b{font-size:13px;color:#111827;}
 .fl-ok{background:#dcfce7;color:#15803d;}
 .fl-due{background:#fef3c7;color:#b45309;}
 .fl-over{background:#fee2e2;color:#b91c1c;}
@@ -415,6 +440,23 @@
         </div>
       </div>
 
+      {{-- ⭐ THE ODOMETER AT HANDOVER (owner ruling Aug-13).
+           Without it, the day a bike changes hands shows as "shared" and is charged
+           to neither rider — honest, but blunt. With it, the day splits exactly.
+           ⚠ Optional and never blocking: the warning below is advice, not a gate. --}}
+      <div style="margin-top:10px;">
+        <label style="display:block;font-size:11.5px;font-weight:700;color:#374151;margin-bottom:4px;">
+          Odometer at handover <span style="font-weight:400;color:#9ca3af;">(optional)</span>
+        </label>
+        <input type="number" id="flvAssignMeter" min="0" step="1" oninput="flvMeterHint()"
+               placeholder="e.g. 25780"
+               style="width:100%;border:1px solid #d1d5db;border-radius:8px;padding:7px 9px;font-size:13px;">
+        <div id="flvMeterHint" style="font-size:11.5px;color:#6b7280;margin-top:4px;">
+          If you enter it, this day's kilometres split exactly between the two riders
+          instead of showing as shared. Leave blank if you don't know it.
+        </div>
+      </div>
+
       {{-- Condition photos. Optional by design — a handover with no photo is still a
            handover, and blocking on a camera would just mean the assignment never
            gets recorded at all. --}}
@@ -690,7 +732,7 @@ function flShiftMonth(delta) {
 function flLoad(month, fresh) {
     flMonth = month;
     flCloseDetail();
-    document.getElementById('flBody').innerHTML = '<tr><td colspan="11" class="fl-empty">Loading…</td></tr>';
+    document.getElementById('flBody').innerHTML = '<tr><td colspan="12" class="fl-empty">Loading…</td></tr>';
 
     fetch(FL_BASE + '?month=' + encodeURIComponent(month) + (fresh ? '&fresh=1' : ''))
         .then(r => r.status === 403 ? Promise.reject(new Error('403')) : r.json())
@@ -709,7 +751,7 @@ function flLoad(month, fresh) {
                 ? 'You do not have permission to see fleet costs.'
                 : 'Could not load this month. Please try again.';
             document.getElementById('flBody').innerHTML =
-                '<tr><td colspan="11" class="fl-empty">' + msg + '</td></tr>';
+                '<tr><td colspan="12" class="fl-empty">' + msg + '</td></tr>';
             document.getElementById('flVerdict').style.display = 'none';
             document.getElementById('flNotes').style.display = 'none';
         });
@@ -719,7 +761,7 @@ function flRenderTable(res) {
     const rows = res.riders || [];
     if (!rows.length) {
         document.getElementById('flBody').innerHTML =
-            '<tr><td colspan="11" class="fl-empty">No fuel or distance recorded this month.</td></tr>';
+            '<tr><td colspan="12" class="fl-empty">No fuel or distance recorded this month.</td></tr>';
         document.getElementById('flHeadline').innerHTML = '';
         return;
     }
@@ -739,14 +781,19 @@ function flRenderTable(res) {
 
         return '<tr onclick="flSelectRider(' + r.user_id + ')" id="flRow' + r.user_id + '">' +
             '<td class="fl-name">' + flEsc(r.name) + '</td>' +
-            '<td>' + flBikePill(r.bike) + '</td>' +
+            '<td>' + flBikePill(r) + '</td>' +
             '<td class="num">' + flNum(r.work_km) + '</td>' +
             '<td class="num">' + (r.offduty_km === null ? '<span class="fl-muted">—</span>' : flNum(r.offduty_km)) +
               // Km inside a stretch that contains a worked-but-unmetered day. Shown
               // right here so the commute figure is never read as including them.
-              (r.unattributed_km > 0
-                ? '<div class="fl-maintsplit" style="color:#b45309;" title="Kilometres across a stretch that contains a day he worked with no usable meter — part work, part commute, and impossible to split. Not counted as either.">+' + flNum(r.unattributed_km) + ' unattributed</div>'
+              // ⚠ `unaccounted_km` is the PURE figure; `unattributed_km` also carries
+              // shared + transit for older mobile builds — never show that one here
+              // or the same kilometres appear in two columns.
+              (r.unaccounted_km > 0
+                ? '<div class="fl-maintsplit" style="color:#b45309;" title="Kilometres across a stretch that contains a day he worked with no usable meter — part work, part commute, and impossible to split. Not counted as either.">+' + flNum(r.unaccounted_km) + ' unaccounted</div>'
                 : '') + '</td>' +
+            // ⭐ Shared / transit — named, and charged to no one.
+            '<td class="num">' + flSharedCell(r) + '</td>' +
             '<td class="num fl-strong">' + (r.fuelled_km > 0 ? flNum(r.fuelled_km) : '<span class="fl-muted">—</span>') + '</td>' +
             '<td class="num">' + flRs(r.fuel_rs) + (r.fuel_pending_rs > 0 ? ' <span class="fl-muted" title="Pending approval">+' + flRs(r.fuel_pending_rs) + '</span>' : '') + '</td>' +
             '<td class="num fl-strong">' + (r.rs_per_fuelled_km === null || r.rs_per_fuelled_km === undefined ? '<span class="fl-muted">—</span>' : r.rs_per_fuelled_km.toFixed(2)) + '</td>' +
@@ -772,10 +819,62 @@ function flRenderTable(res) {
         (t.dupe_flags ? ' · <b>⚠ ' + t.dupe_flags + '</b> possible duplicate claims' : '');
 }
 
-function flBikePill(b) {
-    if (b === 'company') return '<span class="fl-pill fl-company">🏢 company</span>';
-    if (b === 'own') return '<span class="fl-pill fl-own">👤 own</span>';
-    return '<span class="fl-pill fl-unknown">❓ unknown</span>';
+/**
+ * ⭐⭐ THE MACHINE, NOT JUST THE KIND OF MACHINE (Aug-2026).
+ *
+ * This used to render a bare 🏢/👤 from a checkbox on the rider's profile, so a
+ * manager could not tell WHICH bike anyone was on — the single biggest gap on this
+ * screen. Now it names the plate he holds right now, keeps the company/own colour
+ * for the at-a-glance read, and says "+N" when the month touched more machines.
+ *
+ * ⚠ Riders the registry has never tracked have no plate to show and fall back to
+ *   the original pill exactly, so nothing regresses for them.
+ */
+function flBikePill(r) {
+    const b = (typeof r === 'string') ? r : r.bike;
+    const label = (typeof r === 'string') ? null : r.vehicle_label;
+    const cls = b === 'company' ? 'fl-company' : (b === 'own' ? 'fl-own' : 'fl-unknown');
+
+    if (!label) {
+        if (b === 'company') return '<span class="fl-pill fl-company">🏢 company</span>';
+        if (b === 'own') return '<span class="fl-pill fl-own">👤 own</span>';
+        return '<span class="fl-pill fl-unknown">❓ unknown</span>';
+    }
+
+    // holds_now === false: he rode it this month but has since handed it back, so
+    // the plate is history. Saying so beats implying he is still on it.
+    const returned = r.holds_now === false;
+    const icon = b === 'company' ? '🏍' : '👤';
+    let out = '<span class="fl-pill ' + cls + '"' +
+        (returned ? ' title="He rode this bike this month but does not hold it now"' : '') +
+        '>' + icon + ' ' + flEsc(label) + (returned ? ' ·&nbsp;handed back' : '') + '</span>';
+
+    const extra = (r.machine_count || 0) - 1;
+    if (extra > 0) {
+        const others = (r.machines || []).filter(m => m.label !== label)
+            .map(m => m.label + ' (' + flNum(m.km_with_him) + ' km)').join(', ');
+        out += ' <span class="fl-pill fl-na" title="Also this month: ' + flEsc(others) + '">+' + extra + '</span>';
+    }
+    return out;
+}
+
+/**
+ * Kilometres that belong to nobody. Two different stories, so two lines:
+ * the handover DAY (shared, and we name who with) and the bike's own travel
+ * between two riders (transit).
+ */
+function flSharedCell(r) {
+    const bits = [];
+    if (r.shared_km) {
+        bits.push('<span class="fl-pill fl-shared" title="Days this bike changed hands: one rider took the morning reading, the other the evening one. The distance is real, the split is not knowable — so it is charged to neither of them.">🔁 ' +
+            flNum(r.shared_km) + ' shared</span>');
+    }
+    if (r.transfer_km) {
+        bits.push('<div class="fl-maintsplit" style="color:#0f766e;" title="The bike travelling between two riders. Nobody\'s personal usage.">+' +
+            flNum(r.transfer_km) + ' in transit</div>');
+    }
+    if (!bits.length) return '<span class="fl-muted">—</span>';
+    return bits.join('');
 }
 
 function flServicePill(s) {
@@ -854,9 +953,20 @@ function flRenderNotes(res) {
     }
     // Moved out of the comparison box to keep that box to figures only. Still has
     // to be stated: these km are neither work nor commute, so no rate claims them.
+    // ⭐ Aug-2026: this used to be one lump. Most of it turned out to be handover
+    //   days and bikes in transit — km with a perfectly good explanation — so the
+    //   two are now counted and worded separately instead of reading as suspicion.
+    // ⚠ From the TOTALS, not by summing rider rows — a shared leg is named on both
+    //   riders on purpose, so adding the rows up counts every such kilometre twice.
+    const shared = (t.shared_km || 0) + (t.transfer_km || 0);
     const unattKm = (t.company && t.company.unattributed_km) || 0;
-    if (unattKm > 0) {
-        notes.push('<b>' + flNum(unattKm) + ' km</b> ran across stretches containing a day worked with no meter — ' +
+    const pureUnacc = Math.max(0, unattKm - shared * 2);
+    if (shared > 0) {
+        notes.push('<b>' + flNum(shared) + ' km</b> ran on days a bike changed hands, or while it was ' +
+            'travelling between riders. Real distance with a known reason — charged to nobody.');
+    }
+    if (pureUnacc > 0) {
+        notes.push('<b>' + flNum(pureUnacc) + ' km</b> ran across stretches containing a day worked with no meter — ' +
             'part work, part commute, counted as neither.');
     }
     if (!notes.length) { el.style.display = 'none'; return; }
@@ -920,7 +1030,7 @@ function flRenderDetail(r) {
         const claims = (d.claims || []).map(c => flClaimRow(c)).join('');
         let km = '';
         if (d.work_km !== null && d.work_km !== undefined) {
-            km = d.meter_start + ' → ' + d.meter_end + ' · <b>' + d.work_km + ' km</b>';
+            km = '<b>' + flNum(d.meter_start) + ' → ' + flNum(d.meter_end) + '</b> · <b>' + d.work_km + ' km</b>';
             if (d.offduty_km !== null && d.offduty_km > 0) {
                 km += d.offduty_since
                     ? ' · <span title="Measured from the last usable reading, not yesterday">+' +
@@ -930,16 +1040,85 @@ function flRenderDetail(r) {
             if (d.incl_ride_home) {
                 km += ' <span class="fl-muted" title="On duty runs to the meter-out at home">🏠 to home</span>';
             }
+        } else if (d.handover) {
+            // ⭐ A handover day is NOT a missing reading — he recorded his end of it.
+            // ⚠ LABELS ARE ENGLISH (owner ruling): "meter start" / "meter end". Only
+            //   the explanations are Roman Urdu, and the same two words are used on
+            //   the machine's day cards so both views speak one language.
+            km = '<span title="His half of a handover day — the other rider recorded the other end. Not a missed reading.">'
+                + (d.meter_start !== null && d.meter_start !== undefined
+                    ? 'meter start <b>' + flNum(d.meter_start) + '</b>'
+                    : (d.meter_end !== null && d.meter_end !== undefined
+                        ? 'meter end <b>' + flNum(d.meter_end) + '</b>'
+                        : '<span class="fl-muted">bike change day</span>'))
+                + '</span>';
         } else {
             // Say WHY. Leave/absent are states, not failures — only a day he
             // actually worked can be "missing" a reading.
             const cls = d.status === 'missing' ? 'fl-daymissing' : 'fl-muted';
             km = '<span class="' + cls + '">' + (FL_DAY_TEXT[d.detail] || FL_DAY_TEXT[d.status] || 'no meter reading') + '</span>';
         }
+
+        // Kilometres nobody is charged for — short on screen, full in the tooltip.
+        let extra = '';
+        if (d.shared_km) {
+            extra += '<div class="fl-handover" title="Bike changed hands this day: one rider took the morning reading, the other the evening one. The distance is real but cannot be split, so it is charged to neither of them.">' +
+                '🔁 <b>' + flNum(d.shared_km) + ' km</b> shared' +
+                (d.shared_with ? ' · ' + flEsc(d.shared_with) + ' ke saath' : '') +
+                ' · <span class="fl-muted">kisi ke naam nahi</span></div>';
+        }
+        if (d.transfer_km) {
+            extra += '<div class="fl-handover" title="The bike travelling between two riders — nobody\'s personal usage.">' +
+                '🔁 <b>' + flNum(d.transfer_km) + ' km</b> transit' +
+                (d.transfer_with ? ' · ' + flEsc(d.transfer_with) + ' ke saath' : '') +
+                ' · <span class="fl-muted">kisi ke naam nahi</span></div>';
+        }
+        if (d.unattributed_km) {
+            extra += '<div class="fl-handover" style="background:#fdf3e0;border-left-color:#b45309;" ' +
+                'title="This stretch spans a day worked with no usable reading, so it cannot be split into work and commute. Counted as neither.">' +
+                '⚠ <b>' + flNum(d.unattributed_km) + ' km</b> unaccounted · ' +
+                '<span class="fl-muted">beech mein aik din meter ke baghair</span></div>';
+        }
+
+        // Whose hand wrote the reading down. ⚠ The MACHINE is deliberately NOT
+        // repeated here — flvDayChip above already owns the per-day vehicle label
+        // (and the manager-override affordance with it), so adding a second chip
+        // printed the plate twice on every row.
+        const marks = [];
+        if (d.start_source === 'manager') {
+            marks.push('<span class="fl-pill fl-warn" title="The morning reading was entered by a manager, not by the rider">✎ manager</span>');
+        }
+
         return '<div class="fl-day"><div class="fl-dayhead">' +
-            '<span class="fl-daydate">' + flDate(d.date) + flvDayChip(r.user_id, d.date) + '</span>' +
-            '<span class="fl-daykm">' + km + '</span></div>' + claims + '</div>';
+            '<span class="fl-daydate">' + flDate(d.date) + flvDayChip(r.user_id, d.date) +
+              (marks.length ? ' ' + marks.join(' ') : '') + '</span>' +
+            '<span class="fl-daykm">' + km + '</span></div>' + extra + claims + '</div>';
     }).join('');
+
+    // ⭐ HIS MACHINES THIS MONTH — the strip that answers "what was he driving?"
+    //   without leaving the row. Each one opens that bike's own profile, so the
+    //   machine's full story stays in one place and is never duplicated here.
+    let machinesHtml = '';
+    if ((r.machines || []).length) {
+        machinesHtml = '<h5 style="margin-top:2px;">His machines this month</h5>' +
+            r.machines.map(m => {
+                const rate = (m.rs_per_km !== null && m.rs_per_km !== undefined)
+                    ? 'Rs ' + m.rs_per_km.toFixed(2) + '/km' : '<span class="fl-muted">no rate</span>';
+                return '<div class="fl-mrow">' +
+                    '<span class="fl-pill ' + (m.is_company ? 'fl-company' : 'fl-own') + '">' +
+                      (m.is_company ? '🏍 ' : '👤 ') + flEsc(m.label) + '</span>' +
+                    '<span class="fl-mkm">' + flNum(m.km_with_him) + ' km</span>' +
+                    '<span class="fl-muted">' + m.days + ' day' + (m.days === 1 ? '' : 's') +
+                      (m.shared_km ? ' · 🔁 ' + flNum(m.shared_km) + ' shared' : '') + '</span>' +
+                    '<span>' + (m.fuel_rs > 0 ? 'Rs ' + flNum(m.fuel_rs) + ' fuel' : '<span class="fl-muted">no fuel</span>') + '</span>' +
+                    '<span>' + rate + '</span>' +
+                    (m.reconciles === false
+                      ? '<span class="fl-pill fl-warn" title="This bike\'s odometer chain has a hole this month — readings exist that nobody recorded a handover for. His duty kilometres still stand; the stretches between days do not.">⚠ chain incomplete</span>'
+                      : '') +
+                    '<span class="fl-mlink" onclick="flOpenVehicle(' + m.vehicle_id + ')">open ' + flEsc(m.label) + ' ▸</span>' +
+                    '</div>';
+            }).join('');
+    }
 
     const svc = r.service;
     let svcHtml = '<h5>Service</h5>';
@@ -1014,13 +1193,35 @@ function flRenderDetail(r) {
         ).join('');
     }
 
+    // The header pill uses the TABLE row, so it names the same machine the row does.
+    const headRow = ((flData && flData.riders) || []).find(x => x.user_id === r.user_id) || r;
+
     document.getElementById('flDetail').innerHTML =
-        '<div class="fl-dhead"><h4>' + flEsc(r.name) + '</h4>' + flBikePill(r.bike) +
+        '<div class="fl-dhead"><h4>' + flEsc(r.name) + '</h4>' + flBikePill(headRow) +
         '<span style="font-size:12px;color:#6b7280;">day by day · ' + flMonthLabel(r.month) + '</span>' +
         '<button class="fl-dclose" onclick="flCloseDetail()" title="Close">&times;</button></div>' +
-        '<div class="fl-dbody"><div class="fl-days">' + flKmSummary(r) +
+        '<div class="fl-dbody"><div class="fl-days">' + flKmSummary(r) + machinesHtml +
         (days || '<div class="fl-empty">Nothing recorded this month.</div>') +
         '</div><div class="fl-side">' + svcHtml + '</div></div>';
+}
+
+/**
+ * ⭐ RIDER → MACHINE. The rider view deliberately shows only his SLICE of a bike;
+ *    the bike's whole story (odometer, service, everyone who rode it) lives in the
+ *    Vehicles view. Rather than duplicate it here, we take the manager there.
+ */
+function flOpenVehicle(vehicleId) {
+    if (!vehicleId) return;
+    flSetMode('vehicles');
+    // The grid may still be loading on first switch; wait for it, then open.
+    let tries = 0;
+    (function open() {
+        if (typeof flvOpen === 'function' && flvData && (flvData.vehicles || []).length) {
+            flvOpen(vehicleId);
+        } else if (tries++ < 40) {
+            setTimeout(open, 100);
+        }
+    })();
 }
 
 /**
@@ -1040,12 +1241,27 @@ function flKmSummary(r) {
         cells += '<div class="fl-kmcell off tap" onclick="flToggleOffNights()" title="Show each night">' +
                  '<b>' + flNum(row.offduty_km) + ' ›</b><span>off duty</span></div>';
     }
+    // Kilometres that belong to nobody get their own cells — putting them inside
+    // "off duty" is exactly the mistake this project exists to undo.
+    if (row.shared_km) {
+        cells += '<div class="fl-kmcell" style="background:#e6f7f3;" title="Days the bike changed hands. Real distance, unsplittable — charged to neither rider.">' +
+                 '<b style="color:#0f766e;">' + flNum(row.shared_km) + '</b><span>🔁 shared</span></div>';
+    }
+    if (row.transfer_km) {
+        cells += '<div class="fl-kmcell" style="background:#e6f7f3;" title="The bike travelling between riders.">' +
+                 '<b style="color:#0f766e;">' + flNum(row.transfer_km) + '</b><span>🔁 in transit</span></div>';
+    }
     if (row.total_km !== null && row.total_km !== undefined) {
         cells += '<div class="fl-kmcell"><b>' + flNum(row.total_km) + '</b><span>total</span></div>';
     }
     cells += '<div class="fl-kmcell"><b>' + counted + '</b><span>days counted</span></div>';
 
     let notes = '';
+    if (row.chain_ok === false) {
+        notes += '<div class="fl-kmnote">⚠ One of these machines has a gap in its odometer history this month — ' +
+                 'readings exist that no handover was recorded for. His duty kilometres still stand; ' +
+                 'the stretches between days cannot be trusted until the days are corrected.</div>';
+    }
     if (row.no_meter_days) {
         notes += '<div class="fl-kmnote">⚠ ' + row.no_meter_days + ' day' + (row.no_meter_days === 1 ? '' : 's') +
                  ' he worked without a usable meter reading — those kilometres are not in the totals above.</div>';
@@ -1063,6 +1279,7 @@ function flKmSummary(r) {
         offList += '<div class="fl-offrow"><span>' + flDate(n.date) +
             (n.since ? ' <span style="color:#9ca3af;">(since ' + flDate(n.since) + ')</span>' : '') +
             ' &nbsp;' + (n.from !== null ? flNum(n.from) + ' → ' + flNum(n.to) : '') +
+            (n.vehicle_label ? ' <span style="color:#9ca3af;">on ' + flEsc(n.vehicle_label) + '</span>' : '') +
             '</span><span>' + flNum(n.km) + ' km</span></div>';
     });
     if (offList) {
@@ -2420,6 +2637,8 @@ function flvDaysHtml(res) {
     const strip = '<div style="display:flex;gap:6px;margin-bottom:8px;flex-wrap:wrap;">'
         + cell(t.on_duty || 0, 'on duty')
         + cell(t.off_duty || 0, 'off duty', (t.off_duty ? '#b45309' : null))
+        + (t.shared ? cell(t.shared, '🔁 shared', '#0f766e') : '')
+        + (t.transfer ? cell(t.transfer, '🔁 in transit', '#0f766e') : '')
         + (t.unaccounted ? cell(t.unaccounted, 'unaccounted', '#b91c1c') : '')
         + cell(t.total || 0, 'total')
         + '</div>';
@@ -2436,67 +2655,210 @@ function flvDaysHtml(res) {
           + (d.month_km === null ? '—' : flNum(d.month_km))
           + ' km. A meter reading in this month looks wrong.</div>';
 
+    // ⭐⭐ ONE CARD PER DATE (owner review, Aug-13). The old list printed a block
+    //    per RIDER, so a handover date arrived as two fragments and the manager had
+    //    to assemble the story. A date is one thing that happened to one machine:
+    //    it opens on a meter, things occur, it closes on a meter.
+    //
+    //    The server decides the ORDER (meters and handovers by clock, claims by
+    //    where their odometer places them), so this is a dumb renderer and mobile
+    //    can show the identical sequence from the identical payload.
+    // ⚠ Falls back to the old flat day list when day_cards is absent.
     let hidden = 0;
-    const rows = (d.days || []).map(day => {
-        const interesting = day.work_km !== null || day.gap_km || day.home_km
-            || (day.claims && day.claims.length) || day.anomaly || day.status === 'no_meter';
-        if (!interesting) { hidden++; return ''; }
+    const cards = d.day_cards || null;
+    const rows = cards ? cards.map(c => {
+        const s = c.summary || {};
+        if (!(c.lines || []).length) { hidden++; return ''; }
 
-        let km = '';
-        if (day.gap_km) {
-            const bad = day.gap_kind === 'unaccounted';
-            km += '<div style="font-size:12px;color:' + (bad ? '#b91c1c' : '#b45309') + ';">'
-                + (bad ? '⚠ ' : '↳ ') + '<b>' + flNum(day.gap_km) + ' km</b> '
-                + (bad ? 'unaccounted' : 'off duty')
-                + (day.gap_since ? ' since ' + flvDate(day.gap_since) : ' before this reading')
-                + (bad ? ' <span style="color:#9ca3af;">(spans a day worked without a reading)</span>' : '')
-                + '</div>';
-        }
-        if (day.work_km !== null) {
-            km += '<div style="font-size:12.5px;color:#374151;">'
-                + flNum(day.meter_start) + ' → ' + flNum(day.meter_end)
-                + ' · <b>' + flNum(day.work_km) + ' km</b> on duty</div>';
-        }
-        if (day.home_km) {
-            km += '<div style="font-size:12px;color:#b45309;">↳ <b>' + flNum(day.home_km)
-                + ' km</b> off duty after the close (ride home)</div>';
-        }
-        if (day.work_km === null && !day.gap_km && day.status === 'no_meter') {
-            km += '<div style="font-size:12px;color:#b45309;">worked, but no usable meter reading — '
-                + 'these kilometres cannot be split</div>';
-        }
-        if (day.status === 'leave' && day.work_km === null) {
-            km += '<div style="font-size:12px;color:#9ca3af;">on leave</div>';
-        }
-        if (day.anomaly) {
-            km += '<div style="font-size:12px;color:#b91c1c;">⚠ '
-                + (day.anomaly === 'meter_back' ? 'the reading went backwards here'
-                                                : 'the jump here is too large to be real')
-                + ' — not counted</div>';
-        }
+        const head = flvCardVerdict(s);
+        const body = c.lines.map(l => flvCardLine(l, s)).join('');
 
-        const claims = (day.claims || []).map(c =>
-              '<div style="font-size:11.5px;color:#6b7280;margin-left:10px;">'
-            + flEsc(c.kind) + ' · <b style="color:#374151;">Rs ' + flNum(c.amount) + '</b>'
-            + (c.meter ? ' · meter ' + flNum(c.meter) : '')
-            + ' · by ' + flEsc(c.by_name || '—')
-            + (c.is_pending ? ' <span class="fl-vchip due">waiting</span>' : '')
-            + '</div>').join('');
+        return '<div class="fl-dc">'
+            + '<div class="fl-dc-h"><span>' + flvDate(c.date) + '</span>' + head + '</div>'
+            + '<div class="fl-dc-b">' + body + '</div></div>';
+    }).join('') : (d.days || []).map(day => flvLegacyDayRow(day, () => hidden++)).join('');
 
-        return '<div style="padding:7px 0;border-bottom:1px solid #f3f4f6;">'
-            + '<div style="display:flex;align-items:baseline;gap:8px;margin-bottom:2px;">'
-            + '<b style="font-size:12.5px;color:#111827;min-width:74px;">'
-            + (day.status === 'tail' ? 'after ' + flvDate(day.gap_since) : flvDate(day.date)) + '</b>'
-            + '<span style="font-size:11.5px;color:#6b7280;">' + flEsc(day.keeper || '—') + '</span>'
-            + (day.assumed ? '<span class="fl-vchip unk" title="Before the registry recorded who had '
-                + 'this machine — credited to its first known keeper">assumed</span>' : '')
-            + '</div>' + km + claims + '</div>';
-    }).join('');
-
-    return strip + note
+    return strip + note + flvWhoRodeIt(d)
         + (rows || '<div style="font-size:12px;color:#9ca3af;">No readings for this machine this month.</div>')
         + (hidden ? '<div style="font-size:11.5px;color:#9ca3af;margin-top:7px;">· ' + hidden
             + ' other day' + (hidden === 1 ? '' : 's') + ' with nothing recorded for this machine</div>' : '');
+}
+
+/**
+ * The day's verdict, right-aligned in the card header. This is the whole question a
+ * manager opens the list to answer: how far did it go, and does that distance belong
+ * to one man or to neither?
+ */
+function flvCardVerdict(s) {
+    const km = s.km === null || s.km === undefined ? null : flNum(s.km);
+    const who = (s.riders || []).filter(Boolean).join(' + ');
+
+    if (s.kind === 'shared') {
+        return '<span style="color:#0f766e;" title="The meter was started by one rider and closed by '
+            + 'another, so this day cannot be split between them — it is charged to neither. '
+            + 'These kilometres are counted ONCE on the machine, never twice.">'
+            + km + ' km · 🔁 shared' + (who ? ' <span style="font-weight:400;color:#6b7280;">' + flEsc(who) + '</span>' : '')
+            + '</span>';
+    }
+    if (s.kind === 'split') {
+        const parts = (s.parts || []).map(p => flNum(p.km) + ' km ' + flEsc(p.who || '—')).join(' + ');
+        return '<span style="color:#15803d;" title="A handover odometer was recorded, so this day '
+            + 'splits exactly between the two riders.">✂ ' + (parts || km + ' km') + '</span>';
+    }
+    if (km !== null) {
+        return '<span>' + km + ' km on duty'
+            + (who ? ' <span style="font-weight:400;color:#6b7280;">' + flEsc(who) + '</span>' : '') + '</span>';
+    }
+    const TEXT = {
+        no_meter: '⚠ meter nahi mila', leave: 'on leave', claim_only: 'sirf claims',
+        half: 'aik hi meter', in_progress: 'din band nahi hua',
+    };
+    return '<span style="font-weight:400;color:#9ca3af;">' + (TEXT[s.kind] || '—') + '</span>';
+}
+
+/**
+ * ONE LINE OF THE DAY. Labels are English on purpose ("meter start" / "meter end" —
+ * owner ruling); only the EXPLANATIONS are Roman Urdu, and the long-form English
+ * lives in the tooltip so nothing is lost for whoever wants it.
+ */
+function flvCardLine(l, s) {
+    const K = v => '<span class="fl-dc-k">' + v + '</span>';
+
+    if (l.type === 'meter_start' || l.type === 'meter_end') {
+        const isStart = l.type === 'meter_start';
+        return '<div class="fl-dc-l">' + K(isStart ? 'meter start' : 'meter end')
+            + '<b>' + flNum(l.value) + '</b>'
+            + '<span class="fl-muted">· ' + flEsc(l.who || '—') + (l.at ? ' · ' + l.at : '') + '</span>'
+            + (isStart && l.source === 'manager'
+                ? ' <span class="fl-vchip unk" title="Entered by a manager, not by the rider">✎ manager ne likha</span>'
+                : '')
+            + '</div>';
+    }
+
+    if (l.type === 'claim') {
+        return '<div class="fl-dc-l">' + K(flEsc(l.kind))
+            + '<span>Rs <b>' + flNum(l.amount) + '</b>'
+            + (l.meter ? ' <span class="fl-muted">· meter ' + flNum(l.meter) + '</span>' : '')
+            + ' <span class="fl-muted">· ' + flEsc(l.who || '—') + '</span></span>'
+            + (l.pending ? ' <span class="fl-vchip due">waiting</span>' : '')
+            + '</div>';
+    }
+
+    if (l.type === 'handover') {
+        return '<div class="fl-dc-l" style="color:#0f766e;">' + K('🔁 handover')
+            + '<span>→ <b>' + flEsc(l.to || '—') + '</b>'
+            + (l.by_name ? ' <span class="fl-muted">· ' + flEsc(l.by_name) + ' ne record ki</span>' : '')
+            + (l.time ? ' <span class="fl-muted">· ' + l.time + '</span>'
+                      : (l.recorded_on ? ' <span class="fl-muted">· ' + flvDate(l.recorded_on) + ' ko likha</span>' : ''))
+            + (l.meter ? ' <span class="fl-muted">· handover meter ' + flNum(l.meter) + '</span>' : '')
+            + '</span></div>';
+    }
+
+    // The stretch that ARRIVED at this day — never the day's own run (the server
+    // keeps shared/split out of here so no kilometre is shown twice).
+    if (l.type === 'gap') {
+        const since = l.since ? ' · ' + flvDate(l.since) + ' se' : '';
+        if (l.kind === 'transfer') {
+            return '<div class="fl-dc-l" style="color:#0f766e;">' + K('🔁 transit')
+                + '<span><b>+' + flNum(l.km) + ' km</b>'
+                + (l.from && l.to ? ' <span class="fl-muted">· ' + flEsc(l.from) + ' → ' + flEsc(l.to) + '</span>' : '')
+                + ' <span class="fl-muted">· kisi ke naam nahi</span></span></div>';
+        }
+        if (l.kind === 'unaccounted') {
+            return '<div class="fl-dc-l" style="color:#b91c1c;">' + K('⚠ unaccounted')
+                + '<span title="This stretch spans a day worked with no usable reading, so it cannot be '
+                + 'split into work and commute."><b>+' + flNum(l.km) + ' km</b>'
+                + '<span class="fl-muted">' + since + ' · beech mein aik din meter ke baghair</span></span></div>';
+        }
+        return '<div class="fl-dc-l" style="color:#b45309;">' + K('↳ off duty')
+            + '<span><b>+' + flNum(l.km) + ' km</b>'
+            + '<span class="fl-muted">' + since + (l.who ? ' (' + flEsc(l.who) + ')' : '') + '</span></span></div>';
+    }
+
+    return '';
+}
+
+/** The pre-day-card row, kept so an older server still renders the list it sends. */
+function flvLegacyDayRow(day, countHidden) {
+    const interesting = day.work_km !== null || day.gap_km || day.home_km
+        || (day.claims && day.claims.length) || day.anomaly || day.partial
+        || day.status === 'no_meter';
+    if (!interesting) { countHidden(); return ''; }
+
+    let km = '';
+    if (day.work_km !== null) {
+        km += '<div style="font-size:12.5px;color:#374151;"><b>' + flNum(day.meter_start)
+            + ' → ' + flNum(day.meter_end) + '</b> · <b>' + flNum(day.work_km) + ' km</b> on duty</div>';
+    }
+    if (day.gap_km) {
+        km += '<div style="font-size:12px;color:#b45309;">↳ <b>' + flNum(day.gap_km) + ' km</b> '
+            + flEsc(day.gap_kind || 'off duty') + '</div>';
+    }
+    const claims = (day.claims || []).map(c =>
+          '<div style="font-size:11.5px;color:#6b7280;margin-left:10px;">'
+        + flEsc(c.kind) + ' · <b style="color:#374151;">Rs ' + flNum(c.amount) + '</b>'
+        + (c.meter ? ' · meter ' + flNum(c.meter) : '')
+        + ' · by ' + flEsc(c.by_name || '—') + '</div>').join('');
+
+    return '<div style="padding:7px 0;border-bottom:1px solid #f3f4f6;">'
+        + '<div style="display:flex;align-items:baseline;gap:8px;margin-bottom:2px;">'
+        + '<b style="font-size:12.5px;color:#111827;min-width:74px;">' + flvDate(day.date) + '</b>'
+        + '<span style="font-size:11.5px;color:#6b7280;">' + flEsc(day.keeper || '—') + '</span>'
+        + '</div>' + km + claims + '</div>';
+}
+
+/**
+ * ⭐⭐ WHO RODE IT THIS MONTH — the machine's mirror of the rider view's "his
+ *     machines" strip, from the SAME engine, so the two lenses cannot disagree.
+ *
+ * Shared and transit kilometres get their own line at the bottom rather than being
+ * divided between the riders: the whole point is that they belong to neither.
+ */
+function flvWhoRodeIt(d) {
+    const r = d.riders;
+    if (!r || !(r.riders || []).length) return '';
+
+    const rows = r.riders.map(p => {
+        const spend = (p.fuel_rs || 0) + (p.maint_rs || 0);
+        return '<div class="fl-mrow" style="margin-bottom:4px;">'
+            + '<span class="fl-mlink" style="min-width:110px;" onclick="flOpenRider(' + p.user_id + ')" '
+            +   'title="Open this rider\'s own month">' + flEsc(p.name || '—') + ' ▸</span>'
+            + '<span class="fl-mkm">' + flNum(p.work_km) + ' km</span>'
+            + '<span style="color:#6b7280;font-size:11.5px;">on duty</span>'
+            + (p.offduty_km ? '<span style="color:#b45309;font-size:11.5px;">+' + flNum(p.offduty_km) + ' off duty</span>' : '')
+            + (p.shared_days ? '<span style="color:#0f766e;font-size:11.5px;">🔁 ' + p.shared_days
+                + ' handover day' + (p.shared_days === 1 ? '' : 's') + '</span>' : '')
+            + (spend > 0 ? '<span style="font-size:11.5px;">Rs ' + flNum(spend) + ' filed</span>' : '')
+            + '</div>';
+    }).join('');
+
+    const nobody = (r.shared_km || r.transfer_km)
+        ? '<div class="fl-mrow" style="background:#e6f7f3;border-color:#c8e9e1;">'
+          + '<span class="fl-pill fl-shared">🔁 nobody\'s</span>'
+          + (r.shared_km ? '<span class="fl-mkm">' + flNum(r.shared_km) + ' km</span>'
+              + '<span style="color:#6b7280;font-size:11.5px;">shared on handover days</span>' : '')
+          + (r.transfer_km ? '<span class="fl-mkm">' + flNum(r.transfer_km) + ' km</span>'
+              + '<span style="color:#6b7280;font-size:11.5px;">in transit between riders</span>' : '')
+          + '</div>'
+        : '';
+
+    return '<h4 style="margin:12px 0 7px;">Who rode it this month</h4>' + rows + nobody;
+}
+
+/** MACHINE → RIDER, the reverse of flOpenVehicle. */
+function flOpenRider(userId) {
+    if (!userId) return;
+    flSetMode('riders');
+    let tries = 0;
+    (function open() {
+        if (document.getElementById('flRow' + userId)) {
+            flSelectRider(userId);
+            const row = document.getElementById('flRow' + userId);
+            if (row && row.scrollIntoView) row.scrollIntoView({block: 'center'});
+        } else if (tries++ < 40) {
+            setTimeout(open, 100);
+        }
+    })();
 }
 
 function flvCloseDetail() {
@@ -2505,6 +2867,12 @@ function flvCloseDetail() {
 }
 
 function flvRenderDetail(v, canManage, res) {
+    // Recording condition is a WIDER right than assigning (see canAddPhotos on the
+    // server): a bike-service manager may photograph a machine he cannot reassign.
+    // Falls back to canManage so an older payload still behaves as before.
+    const canAddPhotos = (res && res.can_add_photos !== undefined)
+        ? !!res.can_add_photos
+        : !!canManage;
     const s = v.service || {};
     const icon = v.vtype === 'van' ? '🚚' : '🏍️';
 
@@ -2605,10 +2973,24 @@ function flvRenderDetail(v, canManage, res) {
       + '<div class="fl-vdbody">'
       +   '<div class="fl-vsec">'
       +     '<h4>Condition</h4>' + photos
-      +     (canManage
-          ? '<div style="margin-top:9px;">'
+      /* ⭐ The condition record is DATED (owner ask, Aug-2026): these photos exist to
+         prove what a machine looked like on the day it changed hands, and a handover
+         is often photographed later than it happened. Until now the upload sent no
+         date at all, so every photo was silently stamped TODAY — which quietly makes
+         the record useless for the one question it exists to answer.
+         Defaults to today, cannot be set in the future (the server clamps too). */
+      /* ⚠ canAddPhotos, NOT canManage — recording condition is its own right, so a
+         bike-service manager can photograph a machine he may not reassign. */
+      +     (canAddPhotos
+          ? '<div style="margin-top:9px;display:flex;gap:8px;align-items:center;flex-wrap:wrap;">'
             + '<input type="file" id="flvMorePhotos" accept="image/*" multiple style="font-size:12px;">'
-            + '<button type="button" class="fl-vbtn" style="margin-left:8px;" onclick="flvUploadMore(' + v.id + ')">Add photos</button>'
+            + '<label style="font-size:11.5px;color:#6b7280;">Taken on '
+            +   '<input type="date" id="flvMoreDate" max="' + flvTodayYmd() + '" value="' + flvTodayYmd() + '" '
+            +     'style="border:1px solid #d1d5db;border-radius:6px;padding:4px 6px;font-size:12px;margin-left:4px;">'
+            + '</label>'
+            + '<input type="text" id="flvMoreNote" maxlength="255" placeholder="note (optional)" '
+            +   'style="border:1px solid #d1d5db;border-radius:6px;padding:4px 8px;font-size:12px;min-width:190px;">'
+            + '<button type="button" class="fl-vbtn" onclick="flvUploadMore(' + v.id + ')">Add photos</button>'
             + '</div>'
           : '')
       +   '</div>'
@@ -2627,6 +3009,7 @@ function flvRenderDetail(v, canManage, res) {
               : '')
       +     '</div>'
       +     flvScheduleHtml(res)
+      +     flvServiceHistoryHtml(res)
       +   '</div>'
       +   '<div class="fl-vsec">'
       +     '<h4>This month</h4>' + spend
@@ -2647,6 +3030,34 @@ function flvRenderDetail(v, canManage, res) {
  * Sorted most-urgent first: overdue → due soon → ok → never recorded. The jobs
  * that need money now are the reason a manager opens this at all.
  */
+/**
+ * ⭐ THE MACHINE'S SERVICE RECORD (owner ask, Aug-13).
+ *
+ * "When was this bike last serviced, and what was done?" used to be answerable only
+ * from the RIDER's drill-down, which meant a handover split one bike's history
+ * across two people. This is the same list, attributed to the machine — so the work
+ * travels with the bike, which is the whole premise of the registry.
+ */
+function flvServiceHistoryHtml(res) {
+    const h = (res && res.service_history) || [];
+    if (!h.length) return '';
+
+    return '<h4 style="margin:14px 0 6px;">Past services</h4>'
+        + h.map(s =>
+            '<div class="fl-vhrow">'
+          +   '<span style="min-width:120px;">' + flvDate(s.date) + '</span>'
+          +   '<span style="flex:1;min-width:0;">' + flEsc(s.kind || 'Maintenance')
+          +     (s.meter ? ' <span style="color:#9ca3af;">at ' + flNum(s.meter) + ' km</span>' : '')
+          +     (s.by_name ? ' <span style="color:#9ca3af;">· by ' + flEsc(s.by_name) + '</span>' : '')
+          +     (s.status === 'pending' ? ' <span class="fl-vchip due">waiting</span>' : '')
+          +     (s.stamped === false
+                  ? ' <span class="fl-vchip unk" title="Attributed by who held this machine on that date, '
+                    + 'rather than recorded against it at the time">from history</span>' : '')
+          +   '</span>'
+          +   '<span>Rs ' + flNum(s.amount) + '</span>'
+          + '</div>').join('');
+}
+
 function flvScheduleHtml(res) {
     const sched = (res && res.service_schedule) || [];
     if (!sched.length) return '';
@@ -2693,6 +3104,8 @@ function flvOpenAssign(vehicleId, preselectUserId) {
         (v.keeper_user_id ? 'Reassign ' : 'Assign ') + v.name;
     document.getElementById('flvAssignNote').value = '';
     document.getElementById('flvAssignPhotos').value = '';
+    const mEl0 = document.getElementById('flvAssignMeter');
+    if (mEl0) { mEl0.value = ''; flvMeterHint(); }
     document.getElementById('flvAssignError').style.display = 'none';
     document.getElementById('flvPreviewBox').innerHTML = '';
     flvClearDisplaced();
@@ -2855,6 +3268,44 @@ function flvDisplacedPick(action) {
     }
 }
 
+/**
+ * ⚠⚠ ADVICE, NOT A GATE. The reading is checked against what we know of this
+ *    machine's odometer and the manager is told when it looks wrong — but the
+ *    handover is never blocked. A bike that has physically changed hands must be
+ *    recordable even when a digit is questionable, or the register starts lying
+ *    about who has the machine, which is far worse than one odd number.
+ */
+function flvMeterHint() {
+    const el = document.getElementById('flvAssignMeter');
+    const hint = document.getElementById('flvMeterHint');
+    if (!el || !hint) return;
+
+    const v = parseInt(el.value, 10);
+    if (el.value === '' || isNaN(v)) {
+        hint.style.color = '#6b7280';
+        hint.innerHTML = 'If you enter it, this day\'s kilometres split exactly between the two riders '
+                       + 'instead of showing as shared. Leave blank if you don\'t know it.';
+        return;
+    }
+
+    const vid = parseInt(document.getElementById('flvAssignVehicleId').value, 10);
+    const veh = ((flvData && flvData.vehicles) || []).find(x => x.id === vid);
+    const now = veh && veh.current_meter ? parseInt(veh.current_meter, 10) : null;
+
+    if (now !== null && v < now) {
+        hint.style.color = '#b45309';
+        hint.innerHTML = '⚠ That is <b>below</b> this machine\'s last known reading ('
+                       + flNum(now) + ' km). It will still be saved — check for a typo.';
+    } else if (now !== null && v - now > 2000) {
+        hint.style.color = '#b45309';
+        hint.innerHTML = '⚠ That is ' + flNum(v - now) + ' km above the last known reading ('
+                       + flNum(now) + ' km). It will still be saved — check for a typo.';
+    } else {
+        hint.style.color = '#15803d';
+        hint.innerHTML = '✓ This day\'s kilometres will be split exactly at ' + flNum(v) + ' km.';
+    }
+}
+
 function flvSaveAssign() {
     const vid  = document.getElementById('flvAssignVehicleId').value;
     const uid  = document.getElementById('flvAssignRider').value;
@@ -2878,6 +3329,11 @@ function flvSaveAssign() {
     fd.append('user_id', uid);
     fd.append('date', document.getElementById('flvAssignDate').value || '');
     fd.append('note', document.getElementById('flvAssignNote').value || '');
+    // Optional. Sent only when typed — an empty box must not be read as "0 km".
+    const mEl = document.getElementById('flvAssignMeter');
+    if (mEl && mEl.value !== '' && !isNaN(parseInt(mEl.value, 10))) {
+        fd.append('handover_meter', parseInt(mEl.value, 10));
+    }
     if (flvDisplaced.action) {
         fd.append('displaced_action', flvDisplaced.action);
         if (flvDisplaced.vehicle_id) fd.append('displaced_vehicle_id', flvDisplaced.vehicle_id);
@@ -3073,6 +3529,14 @@ function flvSaveVehicle() {
     .finally(() => { btn.disabled = false; btn.textContent = 'Save'; });
 }
 
+/** Today as YYYY-MM-DD, LOCAL — never toISOString(), which reads as yesterday
+ *  before 5am PKT and would then also block picking today as `max`. */
+function flvTodayYmd() {
+    const d = new Date();
+    return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0')
+         + '-' + String(d.getDate()).padStart(2, '0');
+}
+
 function flvUploadMore(vehicleId) {
     const input = document.getElementById('flvMorePhotos');
     if (!input || !input.files.length) { alert('Choose one or more photos first.'); return; }
@@ -3080,6 +3544,11 @@ function flvUploadMore(vehicleId) {
     const fd = new FormData();
     for (let i = 0; i < input.files.length && i < 8; i++) fd.append('photos[]', input.files[i]);
     fd.append('context', 'condition');
+    // ⭐ The day the condition was as photographed — not the day it was uploaded.
+    const dEl = document.getElementById('flvMoreDate');
+    const nEl = document.getElementById('flvMoreNote');
+    if (dEl && dEl.value) fd.append('date', dEl.value);
+    if (nEl && nEl.value.trim()) fd.append('note', nEl.value.trim());
 
     fetch(FLV_BASE + '/' + vehicleId + '/photos', {
         method: 'POST',

@@ -11160,14 +11160,27 @@ class RiderController extends Controller
 
             while ($currentDate <= $endDateTime) {
                 $dateStr = $currentDate->format('Y-m-d');
-                $isWorkingDay = $shiftService->isWorkingDay($user->id, $dateStr);
+                // Classify the day with dayKind() — the SAME per-day test the web Month tab,
+                // the salary calc and the year absent-count use. The old isWorkingDay() only
+                // knew weekly off-days + public holidays: it never checked the hire date, so
+                // every pre-joining weekday fell through as a no-login working day and a new
+                // joiner saw a red "Absent" for days before they started (web showed the
+                // correct "Not joined"). It also ignored manager-tagged "not needed" days.
+                // The summary above was ALREADY dayKind-based via the salary service, so the
+                // screen contradicted itself — "Absent 0" in the header, red Absent rows below.
+                // Before-hire / off / holiday days are simply not listed, exactly as off-days
+                // and holidays already weren't, so installed APKs render this correctly as-is.
+                $kind = $shiftService->dayKind($user->id, $dateStr);
+                $isWorkingDay = ($kind !== 'off' && $kind !== 'holiday' && $kind !== 'not_joined');
 
                 if ($isWorkingDay) {
                     if (isset($attendanceRecords[$dateStr])) {
                         $record = $attendanceRecords[$dateStr];
                         
-                        // Determine detailed status: Check leave FIRST, then attendance
-                        $status = 'absent';
+                        // Determine detailed status: Check leave FIRST, then attendance.
+                        // A manager-tagged "not needed" day with no login is paid as present and
+                        // must never read as Absent (same rule as the web filler + salary calc).
+                        $status = ($kind === 'not_needed') ? 'not_needed' : 'absent';
                         $lateMinutes = 0;
 
                         // ✅ FIRST: Check if this date is on leave (even if they have an attendance record)
@@ -11190,7 +11203,8 @@ class RiderController extends Controller
                             }
                             $status = $lateMinutes > 0 ? 'late' : ($record->logout_time ? 'completed' : 'in_progress');
                         }
-                        // else: status remains 'absent' (no login and not on leave)
+                        // else: status stays as initialised above — 'not_needed' on a tagged day,
+                        // otherwise 'absent' (no login and not on leave)
                         
                         $meterStart = $record->meter_start ? (float)$record->meter_start : null;
                         $meterEnd = $record->meter_end ? (float)$record->meter_end : null;
@@ -11234,8 +11248,11 @@ class RiderController extends Controller
                     } else {
                         // No attendance record - check if on leave. (A half-day without any
                         // check-in shouldn't exist — apply blocks it — but if data drifted,
-                        // show it as leave rather than a false Absent.)
-                        $status = (isset($leaveDates[$dateStr]) || isset($halfDates[$dateStr])) ? 'on_leave' : 'absent';
+                        // show it as leave rather than a false Absent.) A tagged "not needed"
+                        // day is paid as present, so it gets its own status, never Absent.
+                        $status = (isset($leaveDates[$dateStr]) || isset($halfDates[$dateStr]))
+                            ? 'on_leave'
+                            : (($kind === 'not_needed') ? 'not_needed' : 'absent');
                         
                         $history[] = [
                             'id' => null,
@@ -13066,7 +13083,12 @@ class RiderController extends Controller
                     // geocode_precision rides along so the board can tell a rooftop
                     // Google pin from an area guess BEFORE dispatch is pressed —
                     // that is what the pin prompts and the Auto Route gate key off.
-                    $q->select('id', 'first_name', 'last_name', 'phone_original', 'latitude', 'longitude', 'geocoded_latitude', 'geocoded_longitude', 'geocode_precision', 'verified_location_url', 'notes', 'verified_location_saved_by', 'verified_location_saved_at', 'merged_into_customer_id', 'delivery_region_id');
+                    // Aug-2026 — the three default_payment_method columns ride this
+                    // existing select so the store Edit modal can say "the customer's
+                    // default is Online, set by Taimur" before anyone overwrites it.
+                    // The actor NAME is resolved once for the whole board below
+                    // (never per row) — see $defaultPmActorMap.
+                    $q->select('id', 'first_name', 'last_name', 'phone_original', 'latitude', 'longitude', 'geocoded_latitude', 'geocoded_longitude', 'geocode_precision', 'verified_location_url', 'notes', 'verified_location_saved_by', 'verified_location_saved_at', 'merged_into_customer_id', 'delivery_region_id', 'default_payment_method', 'default_payment_method_set_by', 'default_payment_method_set_at');
                 }])
                 ->with(['assignedRider' => function($q) {
                     $q->select('id', 'fullname');
@@ -13253,8 +13275,22 @@ class RiderController extends Controller
                 \Log::debug('store open-orders: pin-pending map skipped', ['error' => $e->getMessage()]);
             }
 
+            // ⭐ Aug-2026 — names behind each customer's DEFAULT payment method, so
+            //    the store Edit modal can show "set by Taimur" before anyone
+            //    overwrites it. One batched lookup for the whole board, same shape
+            //    as $dispatchActorMap above — never a per-row query.
+            $defaultPmActorMap = [];
+            $defaultPmActorIds = $orders->pluck('customer.default_payment_method_set_by')
+                ->filter()->unique()->values()->all();
+            if (!empty($defaultPmActorIds)) {
+                $defaultPmActorMap = \DB::table('t_sys_user')
+                    ->whereIn('id', $defaultPmActorIds)
+                    ->pluck('fullname', 'id')
+                    ->toArray();
+            }
+
             // Format for mobile (lightweight)
-            $formattedOrders = $orders->map(function($order) use ($prepSummaries, $khaasOrderIds, $regionMap, $unreadCustomerIds, $hasWaAccess, $paymentProofMap, $dispatchActorMap, $skuCzerlop, $skuWeightFactor, $pinPendingByCustomer) {
+            $formattedOrders = $orders->map(function($order) use ($prepSummaries, $khaasOrderIds, $regionMap, $unreadCustomerIds, $hasWaAccess, $paymentProofMap, $dispatchActorMap, $skuCzerlop, $skuWeightFactor, $pinPendingByCustomer, $defaultPmActorMap) {
                 // Build customer name
                 $customerName = $order->name ?? 'N/A';
                 if (!$order->name && ($order->address_first_name || $order->address_last_name)) {
@@ -13353,6 +13389,22 @@ class RiderController extends Controller
                     'delivery_priority_updated_at' => $order->delivery_priority_updated_at,
                     'expected_packets' => $order->expected_packets, // ⭐ Packet info (from manager)
                     'actual_packets' => $order->actual_packets,     // ⭐ Actual packets (from rider, after delivery)
+                    // ⭐ Aug-2026 — the CUSTOMER's remembered payment choice + who set
+                    //    it, shown in the store Edit modal before anyone overwrites it.
+                    //    null = no default. Deliberately NOT sent to rider mode (the
+                    //    rider only needs this order's own payment_method).
+                    'customer_default_payment' => $order->customer && $order->customer->default_payment_method
+                        ? [
+                            'method' => $order->customer->default_payment_method,
+                            'label' => $order->customer->default_payment_method === 'online' ? 'Online' : 'Cash',
+                            'set_by_name' => $order->customer->default_payment_method_set_by
+                                ? ($defaultPmActorMap[$order->customer->default_payment_method_set_by] ?? null)
+                                : null,
+                            'set_at_short' => $order->customer->default_payment_method_set_at
+                                ? \Carbon\Carbon::parse($order->customer->default_payment_method_set_at)->format('M d')
+                                : null,
+                        ]
+                        : null,
                     // Dispatch package-scan (store hand-over). scanned_count vs expected_packets
                     // drives the progress; dispatch_scanned_at set = "ready to leave" tick.
                     'dispatch_scanned_count' => $order->dispatch_scanned_packets ? count((array) json_decode($order->dispatch_scanned_packets, true)) : 0,
@@ -15043,9 +15095,13 @@ class RiderController extends Controller
             
             $validated = $request->validate([
                 'order_id' => 'required|exists:t_crm_prod_order,id',
-                'payment_type' => 'required|in:cash,online'
+                'payment_type' => 'required|in:cash,online',
+                // Aug-2026 — "Set as default for this customer" tick in the store
+                // Edit modal. Same flag name and meaning as the web quick-change
+                // modal and both create-order forms.
+                'set_default_payment_method' => 'nullable|boolean',
             ]);
-            
+
             $order = OrderModel::findOrFail($validated['order_id']);
             
             // Don't allow editing if already delivered
@@ -15072,11 +15128,46 @@ class RiderController extends Controller
                 'updated_by' => $user->id
             ]);
 
+            // Aug-2026 — remember it on the CUSTOMER as well, when ticked. Written
+            // through the single helper (value + attribution together) so this
+            // surface stamps "set by X" exactly like the web ones. Resolved from
+            // the order's own customer_id, never a client-supplied id.
+            //
+            // Note the modal may call this endpoint with an UNCHANGED payment_type
+            // purely to carry the tick — that is deliberate. Eloquent leaves an
+            // unchanged attribute clean, so no order UPDATE and no payment-change
+            // observer fire in that case; only the customer default is written.
+            //
+            // Non-fatal: remembering a preference must never fail the order edit.
+            $defaultSaved = null;
+            if ($order->customer_id
+                && filter_var($request->input('set_default_payment_method', false), FILTER_VALIDATE_BOOLEAN)) {
+                try {
+                    $stored = \App\Models\CRM\CustomerModel::setDefaultPaymentMethod(
+                        $order->customer_id, $newPaymentMethod, $user->id
+                    );
+                    if ($stored !== false) {
+                        $defaultSaved = $stored;
+                        \Log::info('Customer default payment method set from store Edit modal', [
+                            'customer_id' => $order->customer_id,
+                            'order_id' => $order->id,
+                            'default_payment_method' => $stored,
+                            'user_id' => $user->id,
+                        ]);
+                    }
+                } catch (\Throwable $e) {
+                    \Log::warning('Failed to set customer default from store modal (non-fatal)', [
+                        'customer_id' => $order->customer_id, 'error' => $e->getMessage(),
+                    ]);
+                }
+            }
+
             return response()->json([
                 'success' => true,
                 'message' => 'Payment method updated successfully',
                 'payment_method' => $newPaymentMethod,
-                'payment_type' => $validated['payment_type']
+                'payment_type' => $validated['payment_type'],
+                'default_payment_method_saved' => $defaultSaved,
             ]);
             
         } catch (\Exception $e) {
@@ -15261,6 +15352,18 @@ class RiderController extends Controller
                 ->orderBy('o.order_date', 'desc')
                 ->get();
 
+            // ⭐ Overnight-storage (chiller/freezer) stock per PRODUCT.
+            //    This is product STATE, not order flow: the same product on 10 open
+            //    orders still has ONE physical stock figure. So it is deliberately
+            //    NOT accumulated per line-item row (that would multiply it) — it is
+            //    read once here into a tiny map and attached per node in
+            //    $finalizeNode, against each node's DISTINCT products.
+            //    Never throws: the overnight tables may not exist on a given
+            //    environment yet, and quantities must keep working regardless.
+            $stockService = app(\App\Services\CRM\OvernightStockService::class);
+            $storageMap = $stockService->map();
+            $storageCatalog = $stockService->catalog();
+
             $totalQuantity = 0.0;
             $totalWeight = 0.0;
             $totalLineItems = 0;
@@ -15364,6 +15467,12 @@ class RiderController extends Controller
                                 '_order_ids' => [$row->order_id => true],
                                 '_product_ids' => [],
                                 '_li_product_ids' => [],
+                                // INTERNAL t_crm_prod_product ids only (p.id). Kept apart from
+                                // _product_ids, which also holds li.product_id — an EXTERNAL id
+                                // on synced orders that can collide with an unrelated p.id.
+                                // Overnight stock is keyed by the internal id, so it must never
+                                // be looked up through the mixed set.
+                                '_int_product_ids' => [],
                             ];
 
                             $currentList[] = $orderNode;
@@ -15428,6 +15537,7 @@ class RiderController extends Controller
                         }
                         if ($row->product_id) {
                             $currentMap[$orderKey]['_product_ids'][(int) $row->product_id] = true;
+                            $currentMap[$orderKey]['_int_product_ids'][(int) $row->product_id] = true;
                         }
 
                         break;
@@ -15467,6 +15577,7 @@ class RiderController extends Controller
                             '_children_map' => [],
                             '_order_ids' => [],
                             '_product_ids' => [],
+                            '_int_product_ids' => [], // p.id only — see the order-node note above
                         ];
 
                         if ($field === 'product_name') {
@@ -15490,6 +15601,7 @@ class RiderController extends Controller
                     }
                     if ($row->product_id) {
                         $node['_product_ids'][(int) $row->product_id] = true;
+                        $node['_int_product_ids'][(int) $row->product_id] = true;
                     }
 
                     if ($field === 'product_name') {
@@ -15526,14 +15638,36 @@ class RiderController extends Controller
                 }
             }
 
-            $finalizeNode = function (&$node) use (&$finalizeNode) {
+            // Summed once per node (never per row), so a product on many orders
+            // contributes its physical stock exactly once.
+            //  - CATEGORY nodes count EVERY stocked product in that category, even
+            //    ones with no open orders today (owner's call) — matched on the
+            //    node's full ancestor path, so a shared child label can't leak.
+            //  - PRODUCT / ORDER nodes use the exact internal product ids, which is
+            //    more precise than a name match when titles are duplicated.
+            $sumStorage = function (array $node) use ($stockService, $storageMap, $storageCatalog) {
+                $field = $node['field'] ?? null;
+                if (in_array($field, \App\Services\CRM\OvernightStockService::CATEGORY_FIELDS, true)) {
+                    return $stockService->sumForCategory($storageCatalog, $node['filters'] ?? []);
+                }
+
+                return $stockService->sumFor($storageMap, $node['_int_product_ids'] ?? []);
+            };
+
+            $finalizeNode = function (&$node) use (&$finalizeNode, $sumStorage) {
                 $node['order_count'] = count($node['_order_ids']);
                 $node['product_count'] = count(array_filter(array_keys($node['_product_ids'])));
 
                 // Kill float drift (0.5 * 21 style sums) before the value leaves the server.
                 $node['weight'] = round((float) ($node['weight'] ?? 0), 2);
 
-                unset($node['_order_ids'], $node['_product_ids'], $node['_children_map']);
+                // Physical stock for this node. Key omitted when there is none.
+                $storage = $sumStorage($node);
+                if ($storage !== null) {
+                    $node['storage'] = $storage;
+                }
+
+                unset($node['_order_ids'], $node['_product_ids'], $node['_children_map'], $node['_int_product_ids']);
 
                 if (isset($node['product_ids']) && is_array($node['product_ids'])) {
                     $productIds = array_keys($node['product_ids']);
@@ -16083,6 +16217,9 @@ class RiderController extends Controller
                 $results = $query->select([
                     'li.name as name',
                     DB::raw('GROUP_CONCAT(DISTINCT COALESCE(li.product_id, p.id)) as product_ids'),
+                    // Internal p.id only — the list above is mixed (li.product_id is an
+                    // EXTERNAL id on synced orders) and must not be used to look up stock.
+                    DB::raw('GROUP_CONCAT(DISTINCT p.id) as internal_product_ids'),
                     DB::raw('SUM(li.quantity) as quantity'),
                     DB::raw('SUM(li.quantity * COALESCE(p.unit_weight_kg, 1)) as weight'),
                     DB::raw('SUM(CASE WHEN p.is_lean = 1 THEN li.quantity ELSE 0 END) as lean_quantity'),
@@ -16143,8 +16280,16 @@ class RiderController extends Controller
                 'first_item' => $results->first()
             ]);
             
+            // Chiller/freezer stock for this fallback path, matching the tree:
+            // category rows are matched on their attribute path (no product-id list
+            // needed, so no GROUP_CONCAT truncation risk), product rows on exact ids.
+            $stockService = app(\App\Services\CRM\OvernightStockService::class);
+            $isCategoryLevel = in_array($currentField, \App\Services\CRM\OvernightStockService::CATEGORY_FIELDS, true);
+            $stockMap = $currentField === 'product_name' ? $stockService->map() : [];
+            $stockCatalog = $isCategoryLevel ? $stockService->catalog() : [];
+
             // Format for mobile - keep it simple and light
-            $formattedResults = $results->map(function($item) use ($currentField) {
+            $formattedResults = $results->map(function($item) use ($currentField, $stockService, $stockMap, $stockCatalog, $isCategoryLevel, $filters) {
                 $result = [
                     'name' => $item->name ?? 'Uncategorized',
                     'quantity' => (float) ($item->quantity ?? 0),
@@ -16168,10 +16313,28 @@ class RiderController extends Controller
                 } else {
                     $result['order_count'] = (int) ($item->order_count ?? 0);
                     $result['product_count'] = isset($item->product_count) ? (int) $item->product_count : null;
+
+                    if ($isCategoryLevel) {
+                        // Own value + the ancestor filters = this row's full attribute path.
+                        $storage = $stockService->sumForCategory(
+                            $stockCatalog,
+                            array_merge($filters, [$currentField => $item->name ?? ''])
+                        );
+                        if ($storage !== null) {
+                            $result['storage'] = $storage;
+                        }
+                    }
                     if ($currentField === 'product_name') {
                         $result['product_id'] = $item->product_id ?? null;
                         if (!empty($item->has_instructions)) {
                             $result['has_instructions'] = true;
+                        }
+                        $storage = $stockService->sumFor(
+                            $stockMap,
+                            $stockService->idsFromConcat($item->internal_product_ids ?? null)
+                        );
+                        if ($storage !== null) {
+                            $result['storage'] = $storage;
                         }
                     }
                 }
@@ -18490,6 +18653,9 @@ class RiderController extends Controller
                     // Frozen snapshot (preferred over recomputation)
                     'a.late_minutes as snap_late_minutes',
                     'a.overtime_minutes as snap_overtime_minutes',
+                    // The shift start this day was judged against — so a late row can SHOW
+                    // what the check-in was measured against, like the web drill does.
+                    'a.expected_shift_start',
                     'lr.leave_request_id',
                     'lr.leave_status',
                     'lr.leave_type',
@@ -18584,6 +18750,10 @@ class RiderController extends Controller
             $otSvcDet    = new \App\Services\HR\OvertimeService();
             $otRangeDet  = $otSvcDet->overtimeForRange($userId, $startDate, $endDate);
             $otByDateDet = $otRangeDet['dates'] ?? [];
+            // The EVIDENCE behind each day's figure — check-in, checkout as recorded, and the
+            // counted end when that checkout rode a manager bypass. Built in the same service
+            // loop as the minutes, so the times can never contradict the number beside them.
+            $otDetailsDet = $otRangeDet['details'] ?? [];
             $otMinutesDet = (int) ($otRangeDet['total'] ?? 0);
 
             foreach ($query as $record) {
@@ -18609,7 +18779,8 @@ class RiderController extends Controller
                     $record->late_minutes = (int) $record->snap_late_minutes;
                     if ($record->late_minutes > 0) { $lateDays++; }
                 } else {
-                    $dayStart = $shiftService->getUserShift($userId, $record->attendance_date)['shift_start'] ?? null;
+                    $dayStart = $record->expected_shift_start
+                        ?: ($shiftService->getUserShift($userId, $record->attendance_date)['shift_start'] ?? null);
                     $shiftStart = $dayStart ? strtotime($record->attendance_date . ' ' . $dayStart) : null;
                     $actualLogin = strtotime($record->attendance_date . ' ' . $record->login_time);
                     if ($shiftStart && $actualLogin > $shiftStart) {
@@ -18625,6 +18796,20 @@ class RiderController extends Controller
                 $recDateOtDet = substr((string) $record->attendance_date, 0, 10);
                 $record->overtime_minutes = (int) ($otByDateDet[$recDateOtDet] ?? 0);
                 if ($record->overtime_minutes > 0) { $overtimeDays++; }
+
+                // ── Web-parity evidence for the day row (additive; older app builds ignore it).
+                // Overtime: the day AS WORKED + the re-based end when the checkout used a
+                // manager unlock. Late: the shift start the check-in was measured against —
+                // resolved only when it's actually late, so no extra lookups on normal days.
+                $record->overtime_meta = $otDetailsDet[$recDateOtDet] ?? null;
+                $record->shift_start_time = null;
+                if ($record->late_minutes > 0) {
+                    $ss = $record->expected_shift_start
+                        ?: ($shiftService->getUserShift($userId, $record->attendance_date)['shift_start'] ?? null);
+                    if ($ss && preg_match('/(\d{1,2}):(\d{2})/', (string) $ss, $mm)) {
+                        $record->shift_start_time = str_pad($mm[1], 2, '0', STR_PAD_LEFT) . ':' . $mm[2];
+                    }
+                }
 
                 // Add order count to total
                 $totalOrdersDelivered += $record->total_orders_delivered;

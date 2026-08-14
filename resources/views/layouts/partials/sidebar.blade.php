@@ -713,6 +713,39 @@
                   </div>
                   @endif
 
+                  {{-- ===== G3 · 🐔 La Carne (mobile-permission gated, same pattern as Overnight) ===== --}}
+                  @php
+                      $hasLaCarneAccess = false;
+                      if (auth()->check()) {
+                          $laCarneUser = auth()->user();
+                          if (!$laCarneUser->relationLoaded('roles')) {
+                              $laCarneUser->load(['roles.mobilePermissions']);
+                          }
+                          $hasLaCarneAccess = $laCarneUser->hasMobilePermission('access_lacarne');
+                      }
+                  @endphp
+                  @if($hasLaCarneAccess)
+                  <div class="nf-section" data-nf-sec="lacarne" data-nf-default="collapsed">
+                      <div class="kt-menu-item pt-2.25 pb-px">
+                          <button type="button" class="nf-sec-toggle flex items-center gap-1.5 w-full text-left ps-[10px] pe-[10px] py-0 bg-transparent border-0 cursor-pointer group" aria-expanded="true">
+                              <i class="ki-filled ki-down nf-sec-chev text-[10px] text-amber-500 group-hover:text-amber-700 transition-transform"></i>
+                              <span class="kt-menu-heading uppercase text-xs font-medium text-amber-600 group-hover:text-amber-700 transition-colors flex-1">🐔 La Carne</span>
+                              <span class="nf-sec-rollup"></span>
+                          </button>
+                      </div>
+                      <div class="nf-section-body">
+                          <div class="kt-menu-item" data-kt-menu-item-toggle="accordion" data-kt-menu-item-trigger="click">
+                              <a href="{{ route('lacarne.index') }}">
+                                  <div class="kt-menu-link flex items-center grow cursor-pointer border border-transparent gap-[10px] ps-[10px] pe-[10px] py-[6px] hover:bg-amber-50 rounded-md transition-colors duration-200 group" tabindex="0">
+                                      <span class="kt-menu-icon items-start text-amber-600 group-hover:text-amber-700 w-[20px]"><i class="ki-filled ki-basket text-lg"></i></span>
+                                      <span class="kt-menu-title text-sm font-medium text-gray-900 group-hover:text-amber-700 flex-1">Chicken Board</span>
+                                  </div>
+                              </a>
+                          </div>
+                      </div>
+                  </div>
+                  @endif
+
                   {{-- ===== H · 🌿 Khaas (permission + business-unit gated) ===== --}}
                   @php
                       $hasKhaasAccess = false;

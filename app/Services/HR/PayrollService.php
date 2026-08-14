@@ -109,6 +109,349 @@ class PayrollService
         return self::$profileScheduleColsMemo;
     }
 
+    // =========================================================================
+    //  LEAVE ACTIONS (overtime bonus / late penalty)
+    // =========================================================================
+    //
+    // A month's leave consequences are DECISIONS, not silent side-effects of paying: an
+    // employee can earn +N bonus leaves (overtime) and/or owe −1 leave (lateness), and a
+    // manager either gives/deducts it or waives it. The decision IS the leave-grant row —
+    // there is no second table and no schema change:
+    //
+    //   no row             → pending   (nobody has decided yet)
+    //   row with days ≠ 0  → applied   (given / deducted; days + who + when are on the row)
+    //   row with days = 0  → waived    (an explicit "no", recorded so it can't come back)
+    //
+    // The key is exactly grantOnce()'s dedupe key (user + source + effective_date + reason),
+    // so a decision made on the Leave-actions panel and the one payroll would write at pay
+    // time are the SAME row. Deciding here and then paying (or the reverse) cannot
+    // double-apply, in either order, from either screen.
+
+    /** The two leave consequences a month can carry. */
+    public const LEAVE_KINDS = ['overtime', 'late_penalty'];
+
+    /**
+     * The deterministic reason payroll writes for a month. Part of the dedupe key, so it
+     * must stay byte-identical to what payRow() has always written — a manager's own bonus
+     * adjustment also lands in source='overtime' but carries free text, and that difference
+     * is the only thing separating "this month's payroll decision" from "a manual tweak".
+     */
+    public function leaveActionReason(string $kind, string $month): string
+    {
+        $label = date('M Y', strtotime($month . '-01'));
+        return ($kind === 'overtime' ? 'Overtime bonus ' : 'Late penalty ') . $label;
+    }
+
+    /** month => [user_id => [kind => decision]] — one query per month, dropped on write. */
+    private static array $leaveDecisionMemo = [];
+
+    private function leaveDecisions(string $month): array
+    {
+        if (isset(self::$leaveDecisionMemo[$month])) {
+            return self::$leaveDecisionMemo[$month];
+        }
+        $map = [];
+        try {
+            $rows = DB::table('t_hr_leave_grant as g')
+                ->leftJoin('t_sys_user as u', 'u.id', '=', 'g.created_by')
+                ->whereDate('g.effective_date', $month . '-01')
+                ->whereIn('g.source', self::LEAVE_KINDS)
+                ->get(['g.id', 'g.user_id', 'g.days', 'g.source', 'g.reason',
+                       'g.created_at', 'u.fullname as by_name']);
+            foreach ($rows as $r) {
+                // Only payroll's own deterministic reason counts as this month's decision;
+                // a manager's manual bonus adjustment shares source='overtime' but not this.
+                if ((string) $r->reason !== $this->leaveActionReason($r->source, $month)) {
+                    continue;
+                }
+                $days = (float) $r->days;
+                $map[(int) $r->user_id][$r->source] = [
+                    'days'    => $days,
+                    'status'  => $days == 0.0 ? 'waived' : 'applied',
+                    'by_name' => $r->by_name,
+                    'at'      => $r->created_at ? substr((string) $r->created_at, 0, 10) : null,
+                ];
+            }
+        } catch (\Throwable $e) {
+            $map = [];   // no grant table yet → everything reads as pending
+        }
+        return self::$leaveDecisionMemo[$month] = $map;
+    }
+
+    private function forgetLeaveDecisions(string $month): void
+    {
+        unset(self::$leaveDecisionMemo[$month]);
+    }
+
+    /** Minutes → "12h 10m" / "45m". */
+    private function fmtMins(int $m): string
+    {
+        $m = max(0, $m);
+        $h = intdiv($m, 60);
+        return $h > 0 ? ($h . 'h ' . ($m % 60) . 'm') : ($m . 'm');
+    }
+
+    /**
+     * Is this month finished? A leave action only becomes decidable once it can no longer
+     * change — granting a bonus day on the 20th would silently lose the day the employee
+     * goes on to earn by the 31st (the grant row is deduped per month, so the later,
+     * bigger figure would never be written).
+     */
+    public function monthIsClosed(string $month): bool
+    {
+        return $month < date('Y-m');
+    }
+
+    /**
+     * One decidable item: what the month recommends, what was decided, and the derivation.
+     * `detail` is what the manager reads to understand WHERE the number came from; `drill`
+     * names the existing attendance date-breakdown that lists the underlying days.
+     */
+    private function leaveActionShape(string $kind, int $recommended, ?array $decision, array $detail): array
+    {
+        $signed = $kind === 'overtime' ? $recommended : -$recommended;
+        $status = $decision['status'] ?? 'pending';
+        return [
+            'kind'             => $kind,
+            'recommended_days' => $signed,
+            'status'           => $status,
+            'applied_days'     => $decision ? (float) $decision['days'] : null,
+            'decided_by'       => $decision['by_name'] ?? null,
+            'decided_at'       => $decision['at'] ?? null,
+            // The month was decided on a different figure than it now recommends (e.g. it was
+            // paid mid-month and more overtime accrued afterwards). Surfaced, never auto-fixed.
+            'changed'          => $decision && $status === 'applied'
+                && (float) $decision['days'] !== (float) $signed,
+        ] + $detail;
+    }
+
+    /**
+     * The leave actions for one already-computed payroll row. Returns [] when the month
+     * asks nothing of this employee and nothing was ever decided for them.
+     */
+    public function leaveActionsForRow(array $row, string $month): array
+    {
+        $uid = (int) $row['user_id'];
+        $dec = $this->leaveDecisions($month)[$uid] ?? [];
+        $out = [];
+
+        // ── Overtime → whole bonus days (the divisor lives in OvertimeService).
+        $otRec = (int) $row['bonus_leaves'];
+        $otMin = (int) $row['overtime_minutes'];
+        if ($otRec > 0 || isset($dec['overtime'])) {
+            $per = $this->ot->minutesPerBonusDay();
+            $left = $per > 0 ? $otMin % $per : 0;
+            $out[] = $this->leaveActionShape('overtime', $otRec, $dec['overtime'] ?? null, [
+                'headline' => '+' . $otRec . ' bonus leave' . ($otRec === 1 ? '' : 's'),
+                'basis'    => $this->fmtMins($otMin) . ' worked past the daily target',
+                'formula'  => $this->fmtMins($otMin) . ' ÷ ' . $this->fmtMins($per) . ' = ' . $otRec
+                    . ' whole day' . ($otRec === 1 ? '' : 's')
+                    . ($left > 0 ? ' · ' . $this->fmtMins($left) . ' left over (not carried forward)' : ''),
+                'drill'    => 'month_overtime',
+                'minutes'  => $otMin,
+            ]);
+        }
+
+        // ── Lateness → −1 leave (only in the band between the free buffer and the cut line).
+        // The RAW recommendation, so a settled month still shows what the rule asked for.
+        $lateRec = (int) ($row['late_leave_recommended'] ?? $row['late_leave_deduct']);
+        $lateMin = (int) $row['late_minutes'];
+        if ($lateRec > 0 || isset($dec['late_penalty'])) {
+            $buf = (int) $row['late_buffer_min'];
+            $step = (int) $row['late_step_min'];
+            $out[] = $this->leaveActionShape('late_penalty', $lateRec, $dec['late_penalty'] ?? null, [
+                'headline' => '−' . max(1, $lateRec) . ' leave',
+                'basis'    => $this->fmtMins($lateMin) . ' late across the month',
+                'formula'  => 'over the ' . $this->fmtMins($buf) . ' free buffer, under the '
+                    . $this->fmtMins($step) . ' salary-cut line → −1 leave, no pay cut',
+                'drill'    => 'month_late',
+                'minutes'  => $lateMin,
+            ]);
+        }
+
+        return $out;
+    }
+
+    /**
+     * The whole month's leave actions — the payload behind the Leave-actions card, the
+     * review panel, and the attendance banner. All three read this one method so they can
+     * never disagree about what is pending.
+     */
+    public function leaveActionsMonth(string $month): array
+    {
+        $paid = $this->paidMap($month);
+        $payVis = $this->payrollVisibilityMap();
+        $customIds = $this->customScheduleUserIds();
+        $users = DB::table('t_sys_user')->where('is_active', 1)->orderBy('fullname')->pluck('id');
+
+        $rows = [];
+        $sum = [
+            'give_pending' => 0, 'deduct_pending' => 0,
+            'given' => 0, 'deducted' => 0, 'waived' => 0,
+            'pending_count' => 0, 'settled_count' => 0,
+            'late_cut_total' => 0.0, 'late_cut_count' => 0,
+        ];
+
+        foreach ($users as $uid) {
+            $uid = (int) $uid;
+            if (isset($customIds[$uid])) { continue; }              // custom periods grant nothing
+            if (!($payVis[$uid]['on'] ?? true)) { continue; }
+            try {
+                $row = $this->computeRow($uid, $month);
+            } catch (\Throwable $e) {
+                \Log::warning('Leave actions computeRow failed', ['user_id' => $uid, 'month' => $month, 'error' => $e->getMessage()]);
+                continue;
+            }
+
+            // Money context only — a late SALARY cut is not a leave action and has no button
+            // here; it is deducted when the salary is paid. Shown so the month's total
+            // picture ("what is being added or taken away") is honest.
+            if ((float) $row['late_computed_cut'] > 0) {
+                $sum['late_cut_total'] += (float) $row['late_computed_cut'];
+                $sum['late_cut_count']++;
+            }
+
+            $actions = $this->leaveActionsForRow($row, $month);
+            if (!$actions) { continue; }
+
+            foreach ($actions as $a) {
+                if ($a['status'] === 'pending') {
+                    $sum['pending_count']++;
+                    if ($a['kind'] === 'overtime') { $sum['give_pending'] += (int) $a['recommended_days']; }
+                    else { $sum['deduct_pending'] += abs((int) $a['recommended_days']); }
+                } else {
+                    $sum['settled_count']++;
+                    if ($a['status'] === 'waived') { $sum['waived']++; }
+                    elseif ($a['kind'] === 'overtime') { $sum['given'] += (float) $a['applied_days']; }
+                    else { $sum['deducted'] += abs((float) $a['applied_days']); }
+                }
+            }
+
+            $rows[] = [
+                'user_id'     => $uid,
+                'fullname'    => $row['fullname'],
+                'designation' => $row['designation'],
+                'paid'        => isset($paid[$uid]),
+                'actions'     => $actions,
+            ];
+        }
+
+        $sum['late_cut_total'] = round($sum['late_cut_total'], 2);
+
+        return [
+            'month'       => $month,
+            'month_label' => date('F Y', strtotime($month . '-01')),
+            'closed'      => $this->monthIsClosed($month),
+            'rows'        => $rows,
+            'summary'     => $sum,
+        ];
+    }
+
+    /**
+     * Give / deduct (apply) or waive ONE leave action. Idempotent-safe: re-deciding the same
+     * way changes nothing, and changing your mind rewrites the same row rather than stacking
+     * a second one.
+     */
+    public function decideLeaveAction(int $userId, string $month, string $kind, string $decision, int $actorId): array
+    {
+        if (!in_array($kind, self::LEAVE_KINDS, true)) {
+            return ['success' => false, 'message' => 'Unknown leave action.'];
+        }
+        if (!in_array($decision, ['apply', 'waive'], true)) {
+            return ['success' => false, 'message' => 'Choose to apply or waive.'];
+        }
+        if (!$this->monthIsClosed($month)) {
+            return ['success' => false, 'message' => date('F', strtotime($month . '-01'))
+                . " hasn't finished yet — overtime and lateness can still change. You can decide once the month ends (paying a salary mid-month still works as before)."];
+        }
+
+        try {
+            $row = $this->computeRow($userId, $month);
+        } catch (\Throwable $e) {
+            return ['success' => false, 'message' => 'Could not read this employee’s month.'];
+        }
+        // RAW recommendation — `late_leave_deduct` is already zeroed once a decision exists,
+        // which would make flipping a waive back to "deduct" impossible.
+        $rec = $kind === 'overtime'
+            ? (int) $row['bonus_leaves']
+            : (int) ($row['late_leave_recommended'] ?? $row['late_leave_deduct']);
+        $existing = $this->leaveDecisions($month)[$userId][$kind] ?? null;
+        if ($rec <= 0 && $existing === null) {
+            return ['success' => false, 'message' => 'There is nothing to decide here for this month.'];
+        }
+        // A settled row keeps its own figure when only the decision flips (waive → give),
+        // so re-giving restores exactly what was waived rather than a stale recomputation.
+        if ($rec <= 0 && $existing !== null) {
+            $rec = (int) abs((float) $existing['days']);
+        }
+        if ($decision === 'apply' && $rec <= 0) {
+            return ['success' => false, 'message' => 'There is nothing to give for this month.'];
+        }
+
+        $days = $decision === 'waive' ? 0 : ($kind === 'overtime' ? $rec : -$rec);
+        $reason = $this->leaveActionReason($kind, $month);
+
+        try {
+            $this->recordLeaveDecision($userId, $days, $kind, $reason, $month . '-01', $actorId, true);
+        } catch (\Throwable $e) {
+            \Log::error('decideLeaveAction failed', ['user_id' => $userId, 'month' => $month, 'kind' => $kind, 'error' => $e->getMessage()]);
+            return ['success' => false, 'message' => 'Could not save that: ' . $e->getMessage()];
+        }
+        $this->forgetMonth($month);
+
+        \Log::info('Payroll leave action decided', [
+            'user_id' => $userId, 'month' => $month, 'kind' => $kind,
+            'decision' => $decision, 'days' => $days, 'by' => $actorId,
+        ]);
+
+        $name = $row['fullname'];
+        $label = date('F', strtotime($month . '-01'));
+        if ($decision === 'waive') {
+            $msg = $kind === 'overtime'
+                ? "$name's $label overtime bonus was skipped."
+                : "$name keeps the leave — the $label late penalty was waived.";
+        } else {
+            $msg = $kind === 'overtime'
+                ? "+$rec leave" . ($rec === 1 ? '' : 's') . " given to $name for $label overtime."
+                : "−$rec leave deducted from $name for $label lateness.";
+        }
+        return ['success' => true, 'message' => $msg];
+    }
+
+    /**
+     * Apply every PENDING recommendation for the month in one go (gives bonuses AND takes
+     * late penalties — the recommended outcome). Never touches an already-decided item, so
+     * a waive a manager made deliberately is not silently reversed by this button.
+     */
+    public function applyAllPendingLeaveActions(string $month, int $actorId): array
+    {
+        if (!$this->monthIsClosed($month)) {
+            return ['success' => false, 'message' => date('F', strtotime($month . '-01')) . " hasn't finished yet."];
+        }
+        $data = $this->leaveActionsMonth($month);
+        $given = 0; $deducted = 0; $failed = 0;
+        foreach ($data['rows'] as $r) {
+            foreach ($r['actions'] as $a) {
+                if ($a['status'] !== 'pending' || (int) $a['recommended_days'] === 0) { continue; }
+                $res = $this->decideLeaveAction((int) $r['user_id'], $month, $a['kind'], 'apply', $actorId);
+                if (!empty($res['success'])) {
+                    if ($a['kind'] === 'overtime') { $given += (int) $a['recommended_days']; }
+                    else { $deducted += abs((int) $a['recommended_days']); }
+                } else {
+                    $failed++;
+                }
+            }
+        }
+        if (!$given && !$deducted && !$failed) {
+            return ['success' => true, 'message' => 'Nothing was pending.', 'given' => 0, 'deducted' => 0];
+        }
+        $bits = [];
+        if ($given) { $bits[] = '+' . $given . ' bonus leave' . ($given === 1 ? '' : 's') . ' given'; }
+        if ($deducted) { $bits[] = '−' . $deducted . ' leave' . ($deducted === 1 ? '' : 's') . ' deducted'; }
+        if ($failed) { $bits[] = $failed . ' could not be saved'; }
+        return ['success' => true, 'message' => ucfirst(implode(', ', $bits)) . '.', 'given' => $given, 'deducted' => $deducted];
+    }
+
     // ── Small date helpers for custom periods ────────────────────────────────
     /** Inclusive calendar-day span (0 when the dates are invalid or reversed). */
     private function calendarDays(string $start, string $end): int
@@ -150,6 +493,14 @@ class PayrollService
      */
     public function computeRow(int $userId, string $month, array $overrides = []): array
     {
+        // Per-request memo. One page load now computes the month TWICE (the grid, then the
+        // leave actions), and this is pure computation over ~12 queries per employee. Only
+        // the plain (no-override) call is cached, and every write path drops it.
+        $memoKey = $overrides ? null : ($userId . '|' . $month);
+        if ($memoKey !== null && isset(self::$rowMemo[$memoKey])) {
+            return self::$rowMemo[$memoKey];
+        }
+
         $profile = EmployeeProfileModel::with('user')->where('user_id', $userId)->first();
         $fullname = $profile && $profile->user ? $profile->user->fullname
             : (DB::table('t_sys_user')->where('id', $userId)->value('fullname') ?: 'Employee');
@@ -198,6 +549,14 @@ class PayrollService
         $lateComputedCut = 0.0;    // suggested salary cut (all late hours × per-hour)
         $lateFlag = null;          // 'no_leaves' | 'over_step'
         $remainingLeaves = (float) ($this->leave->balance($userId)['remaining'] ?? 0);
+        // Judge "has a leave to give up?" against the balance BEFORE this month's own penalty.
+        // Once the penalty is taken the balance is one lower, and re-running the rule on that
+        // would flip a settled month to "no leaves left" — i.e. the month would start
+        // recommending a salary cut because of the very leave it just deducted.
+        $lateDecision = $this->leaveDecisions($month)[$userId]['late_penalty'] ?? null;
+        if ($lateDecision !== null) {
+            $remainingLeaves -= (float) $lateDecision['days'];   // days is negative when applied
+        }
         if ($lateMinutes > $step) {
             $lateComputedCut = round($lateHours * $perHour, 2);
             $lateFlag = 'over_step';
@@ -209,6 +568,25 @@ class PayrollService
                 $lateFlag = 'no_leaves';
             }
         }
+
+        // ⭐ A late penalty ALREADY DECIDED for this month (given or waived) must never also
+        // become a salary cut. Deducting the leave drops the balance, and the very next
+        // recompute would see "no leaves left" and take the money too — the employee would
+        // be punished twice for the same lateness, once in leaves and once in cash. (Owner
+        // rule: a waived late costs nothing at all — there is no money fallback.)
+        // `over_step` is excluded: lateness beyond the cut line is a salary cut by policy and
+        // never had a leave to settle in the first place.
+        // The RAW recommendation is kept: it is what the Leave-actions panel shows and what a
+        // manager flipping a waive back to "deduct" must be able to re-apply. Only the
+        // EFFECTIVE figures (what paying would write) collapse to nothing.
+        $lateLeaveRecommended = $lateLeaveDeduct;
+        $lateDecided = $lateDecision !== null;
+        if ($lateDecided && $lateFlag !== 'over_step') {
+            $lateLeaveDeduct = 0;
+            $lateComputedCut = 0.0;
+            $lateFlag = null;
+        }
+
         // The manager may override the salary cut (free-form). Default = computed.
         $lateDeduction = array_key_exists('late_deduction', $overrides) && $overrides['late_deduction'] !== null && $overrides['late_deduction'] !== ''
             ? round((float) $overrides['late_deduction'], 2)
@@ -239,7 +617,7 @@ class PayrollService
         $totalDeductions = round($absentDeduction + $lateDeduction + $advanceTotal, 2);
         $net = round($base + $bonuses + $allowances + $other - $totalDeductions, 2);
 
-        return [
+        $result = [
             'user_id'          => $userId,
             'fullname'         => $fullname,
             'employee_code'    => $profile->employee_code ?? null,
@@ -260,9 +638,11 @@ class PayrollService
             'absent_deduction' => $absentDeduction,
             'late_minutes'     => $lateMinutes,
             'late_leave_deduct' => $lateLeaveDeduct,       // leaves removed (ledger) on approve
+            'late_leave_recommended' => $lateLeaveRecommended, // raw rule output, ignores any decision
             'late_computed_cut' => $lateComputedCut,       // suggested salary cut
             'late_deduction'    => $lateDeduction,          // effective (may be overridden)
             'late_flag'         => $lateFlag,               // null | no_leaves | over_step
+            'late_settled'      => $lateDecided,            // this month's late leave is already decided
             'late_buffer_min'   => $buffer,
             'late_step_min'     => $step,
             'overtime_minutes'  => $otMinutes,
@@ -279,6 +659,25 @@ class PayrollService
             'net_salary'        => max(0, $net),
             'net_raw'           => $net,                    // before the max(0) clamp (for the ⚠ negative case)
         ];
+
+        if ($memoKey !== null) {
+            self::$rowMemo[$memoKey] = $result;
+        }
+        return $result;
+    }
+
+    /** user|month => computed row (per-request; dropped whenever an input changes). */
+    private static array $rowMemo = [];
+
+    /** Drop every cached row for a month (a decision or a payment changed the inputs). */
+    private function forgetMonth(string $month): void
+    {
+        $this->forgetLeaveDecisions($month);
+        foreach (array_keys(self::$rowMemo) as $k) {
+            if (str_ends_with($k, '|' . $month)) {
+                unset(self::$rowMemo[$k]);
+            }
+        }
     }
 
     /** Cash + online-bank options for the "pay from" picker (web modal + mobile). */
@@ -406,6 +805,9 @@ class PayrollService
                 // matching leave-ledger row is NOT written and the receipt records 0 for it.
                 'skip_overtime'  => !empty($item['skip_overtime']),
                 'skip_late_leave' => !empty($item['skip_late_leave']),
+                // Batch-level choice from the pay modal: settle the leave actions with this
+                // payment, or pay the money now and leave them pending for the panel.
+                'defer_leave_actions' => !empty($item['defer_leave_actions']),
                 'actor_id' => $actorId,
             ]);
             if (!empty($res['success'])) {
@@ -507,9 +909,13 @@ class PayrollService
         // receipt so the paid-detail + leave history reflect what was actually applied.
         $appliedLateLeave   = !empty($opts['skip_late_leave']) ? 0 : (int) $row['late_leave_deduct'];
         $appliedBonusLeaves = !empty($opts['skip_overtime'])   ? 0 : (int) $row['bonus_leaves'];
+        // "Pay the money now, settle the leaves later": the salary is paid exactly as normal
+        // but NO leave decision is recorded, so the month stays pending on the Leave-actions
+        // panel (and in Attendance) for someone to decide there.
+        $deferLeave = !empty($opts['defer_leave_actions']);
 
         try {
-            return DB::transaction(function () use ($userId, $month, $row, $net, $funding, $bankId, $actorId, $appliedLateLeave, $appliedBonusLeaves, $manualNet) {
+            return DB::transaction(function () use ($userId, $month, $row, $net, $funding, $bankId, $actorId, $appliedLateLeave, $appliedBonusLeaves, $manualNet, $deferLeave) {
                 // Funding (source) account — NF Cash, or the single ONLINE ledger account tagged per bank.
                 if ($funding === 'online') {
                     $source = \App\Models\FIN\ConfigModel::getOnlineBankAccount();
@@ -595,21 +1001,30 @@ class PayrollService
                 }
 
                 // Leave-ledger side effects (idempotent per user+month+source via effective_date = 1st).
-                // Skipped (bypassed) items apply 0 → no row written.
+                //
+                // A BYPASSED item now writes a 0-day row instead of nothing: the bypass is a
+                // real decision ("waived"), and recording it is what stops the month sitting
+                // on the Leave-actions panel as "pending" forever after it was paid. A month
+                // that recommends nothing writes nothing at all.
                 $effDate = $month . '-01';
-                if ($appliedLateLeave > 0) {
-                    $this->grantOnce($userId, -1 * $appliedLateLeave, 'late_penalty',
-                        'Late penalty ' . date('M Y', strtotime($effDate)), $effDate, $actorId);
-                }
-                if ($appliedBonusLeaves > 0) {
-                    $this->grantOnce($userId, $appliedBonusLeaves, 'overtime',
-                        'Overtime bonus ' . date('M Y', strtotime($effDate)), $effDate, $actorId);
+                if (!$deferLeave) {
+                    if ((int) $row['late_leave_deduct'] > 0) {
+                        $this->grantOnce($userId, -1 * $appliedLateLeave, 'late_penalty',
+                            $this->leaveActionReason('late_penalty', $month), $effDate, $actorId);
+                    }
+                    if ((int) $row['bonus_leaves'] > 0) {
+                        $this->grantOnce($userId, $appliedBonusLeaves, 'overtime',
+                            $this->leaveActionReason('overtime', $month), $effDate, $actorId);
+                    }
                 }
 
                 // Stamp any manager bypass onto the receipt so a paid month explains itself later
                 // (0 bonus_leaves could mean "no overtime" OR "overtime bypassed" — this disambiguates).
                 $noteBits = [];
-                if ((int) $row['bonus_leaves'] > 0 && $appliedBonusLeaves === 0) {
+                if ($deferLeave && ((int) $row['bonus_leaves'] > 0 || (int) $row['late_leave_deduct'] > 0)) {
+                    $noteBits[] = 'Leave actions left pending (decided separately)';
+                }
+                if (!$deferLeave && (int) $row['bonus_leaves'] > 0 && $appliedBonusLeaves === 0) {
                     $noteBits[] = 'OT bonus (+' . (int) $row['bonus_leaves'] . ' leave) bypassed';
                 }
                 if ((int) $row['late_leave_deduct'] > 0 && $appliedLateLeave === 0) {
@@ -657,6 +1072,10 @@ class PayrollService
                     $insert['business_unit_id'] = $row['business_unit_id'];
                 }
                 DB::table('t_hr_payroll_payment')->insert($insert);
+
+                // Decisions just changed — the next computeRow in this same request (a batch
+                // pay walks several) must not read a stale "pending".
+                $this->forgetMonth($month);
 
                 return ['success' => true, 'net' => $net, 'ledger_id' => $ledgerId, 'settled_advances' => $settledIds];
             });
@@ -738,13 +1157,45 @@ class PayrollService
      */
     private function grantOnce(int $userId, int $days, string $source, string $reason, string $effectiveDate, int $actorId): void
     {
-        $exists = DB::table('t_hr_leave_grant')
+        $this->recordLeaveDecision($userId, $days, $source, $reason, $effectiveDate, $actorId, false);
+    }
+
+    /**
+     * ⭐ THE one writer of a payroll leave-grant row — both the pay flow and the
+     * Leave-actions panel go through here, which is what makes the two surfaces incapable
+     * of double-applying the same month.
+     *
+     * `$allowChange` is the difference between them:
+     *   false (pay)   — a row already exists → leave it exactly as it is. Strict idempotency:
+     *                   a retried payment, or a month already settled from the panel, writes
+     *                   nothing and cannot overwrite a manager's deliberate decision.
+     *   true  (panel) — a manager is deciding, so an existing row is UPDATED in place
+     *                   (waive ⇄ give), never duplicated. `created_by` moves to whoever
+     *                   made the current call, because that is who owns the decision now.
+     *
+     * `$days` may legitimately be 0: that is a recorded WAIVE, and it deliberately occupies
+     * the dedupe key so the action reads "waived" instead of drifting back to "pending".
+     */
+    private function recordLeaveDecision(int $userId, int $days, string $source, string $reason, string $effectiveDate, int $actorId, bool $allowChange): string
+    {
+        $existing = DB::table('t_hr_leave_grant')
             ->where('user_id', $userId)->where('source', $source)
             ->whereDate('effective_date', $effectiveDate)
-            ->where('reason', $reason)->exists();
-        if ($exists) {
-            return;
+            ->where('reason', $reason)
+            ->first(['id', 'days']);
+
+        if ($existing) {
+            if (!$allowChange || (float) $existing->days === (float) $days) {
+                return 'unchanged';
+            }
+            DB::table('t_hr_leave_grant')->where('id', $existing->id)->update([
+                'days'       => $days,
+                'created_by' => $actorId,
+                'updated_at' => now(),
+            ]);
+            return 'changed';
         }
+
         DB::table('t_hr_leave_grant')->insert([
             'user_id'        => $userId,
             'days'           => $days,
@@ -755,6 +1206,7 @@ class PayrollService
             'created_at'     => now(),
             'updated_at'     => now(),
         ]);
+        return 'created';
     }
 
     /**
@@ -1215,6 +1667,10 @@ class PayrollService
                     $se = $staffExp[(int) $uid] ?? null;
                     $row['staff_expense_total'] = $se ? (float) $se->total : 0.0;
                     $row['staff_expense_count'] = $se ? (int) $se->cnt : 0;
+                    // This month's leave decisions for the row (from the SAME method the
+                    // Leave-actions panel renders), so the grid's overtime/late cells show a
+                    // settled decision instead of a toggle that would no longer do anything.
+                    $row['leave_actions'] = $this->leaveActionsForRow($row, $month);
                     $rows[] = $row;
                 }
             } catch (\Throwable $e) {

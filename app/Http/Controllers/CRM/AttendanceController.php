@@ -855,19 +855,40 @@ class AttendanceController extends Controller
                 $items[] = ['date' => $a['date'], 'label' => $lbl];
             }
         } elseif ($type === 'month_overtime') {
-            // Days worked beyond the shift length + how much (label = "Xh Ym").
-            $ot = (new \App\Services\HR\OvertimeService())->overtimeForRange($userId, $start, min($end, $today));
+            // Days worked beyond the shift length + how much (label = "Xh Ym"), plus the
+            // EVIDENCE behind each figure in `meta` — check-in, checkout as recorded, and the
+            // counted end when that checkout rode a manager bypass. Same service loop builds
+            // both, so the times can never contradict the minutes. `meta` is additive: the
+            // payroll drill-down reads only date/label and ignores it.
+            $ot = (new \App\Services\HR\OvertimeService())->overtimeForRange($userId, $start, min($end, $today), true);
+            $otDetails = $ot['details'] ?? [];
             $items = [];
             foreach ($ot['dates'] as $d => $mins) {
                 $h = intdiv($mins, 60); $m = $mins % 60;
-                $items[] = ['date' => $d, 'label' => ($h > 0 ? $h . 'h ' . $m . 'm' : $m . 'm')];
+                $items[] = [
+                    'date'  => $d,
+                    'label' => ($h > 0 ? $h . 'h ' . $m . 'm' : $m . 'm'),
+                    'meta'  => $otDetails[$d] ?? null,
+                ];
             }
         } elseif ($type === 'month_late') {
             // Days the rider clocked in late + by how much (label = "Xh Ym late").
+            // Days the rider clocked in late + by how much (label = "Xh Ym late"), plus the
+            // EVIDENCE in `meta`: the shift start the day was judged against and the actual
+            // check-in. Same additive shape as month_overtime, so a manager reading either
+            // drill sees how the figure was reached instead of a bare number.
             $lateDays = $shiftService->lateDaysBreakdown($userId, $start, min($end, $today));
             $items = array_map(function ($d) {
                 $m = (int) $d['minutes']; $h = intdiv($m, 60); $mm = $m % 60;
-                return ['date' => $d['date'], 'label' => ($h > 0 ? $h . 'h ' . $mm . 'm late' : $mm . 'm late')];
+                return [
+                    'date'  => $d['date'],
+                    'label' => ($h > 0 ? $h . 'h ' . $mm . 'm late' : $mm . 'm late'),
+                    'meta'  => [
+                        'login'       => $d['login'] ?? null,
+                        'shift_start' => $d['shift_start'] ?? null,
+                        'late_minutes' => $m,
+                    ],
+                ];
             }, $lateDays);
         } elseif ($type === 'month_office_checkout') {
             // Days a non-bike rider delivered but checked out at the office (R9.1).
@@ -2418,9 +2439,13 @@ class AttendanceController extends Controller
                 
                 // Skip if attendance record exists
                 if (!isset($attendanceDates[$dateStr])) {
-                    // CRITICAL: Only add if this is a WORKING DAY for this user
-                    // This respects shift schedule (e.g., Tuesday off) AND public holidays
-                    if ($shiftService->isWorkingDay($userId, $dateStr)) {
+                    // CRITICAL: Only add a filler row on a genuine WORKING day for this user.
+                    // dayKind() (not the older isWorkingDay()) is the canonical test — it also
+                    // excludes days BEFORE the hire date and manager-tagged "not needed" days,
+                    // which isWorkingDay() knew nothing about. Without it a new joiner picked up
+                    // a red Absent for every weekday before they started.
+                    $fillerKind = $shiftService->dayKind($userId, $dateStr);
+                    if ($fillerKind !== 'off' && $fillerKind !== 'holiday' && $fillerKind !== 'not_joined') {
                         // Shift in effect on THIS date (memoized) for the row display.
                         $fillerShift = $shiftService->getUserShift($userId, $dateStr);
                         // Check if on leave (a half-day date with no attendance shouldn't exist —
@@ -2437,6 +2462,13 @@ class AttendanceController extends Controller
                             ];
                         } else {
                             // This is a working day with no attendance = ABSENT
+                            // NOTE: a manager-tagged "not needed" day still lands here as
+                            // 'absent'. Deliberate for now — the two consumers of this payload
+                            // (attendance/reports.blade.php, hr/salary-slips/create.blade.php)
+                            // derive "absent" from `!login_time && !logout_time`, so a new
+                            // 'not_needed' status would render red anyway. Fix those views
+                            // first, then emit it here. Payroll is unaffected either way: the
+                            // salary calc counts absences from dayKind, not from this list.
                             $userData['daily'][] = [
                                 'attendance_date' => $dateStr,
                                 'login_time' => null,
@@ -2447,7 +2479,7 @@ class AttendanceController extends Controller
                             ];
                         }
                     }
-                    // else: it's a day off or holiday, don't show in the report
+                    // else: day off, holiday, or before the hire date — don't show in the report
                 }
                 
                 $currentDate->modify('+1 day');

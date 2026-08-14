@@ -433,20 +433,40 @@ class ShiftResolutionService
         // A half-day date shows no lateness (matches sumLateOvertimeMinutes' suppression).
         $halfDays = (new \App\Services\HR\LeavePolicyService())->halfDayDates($userId, $startDate, $endDate);
 
+        // First H:MM in a stored time ('09:00:00' or a full datetime) → 'H:i'; null if unreadable.
+        $hm = function ($t) {
+            if ($t === null || $t === '') { return null; }
+            return preg_match('/(\d{1,2}):(\d{2})/', (string) $t, $m)
+                ? (str_pad($m[1], 2, '0', STR_PAD_LEFT) . ':' . $m[2]) : null;
+        };
+
         $out = [];
         foreach ($rows as $r) {
             $date = substr((string) $r->attendance_date, 0, 10);
             if (isset($halfDays[$date])) { continue; }
+            // The shift start this day was judged against — the stored one when present, else the
+            // resolved roster shift. Resolved in BOTH branches (the stored-late_minutes branch
+            // skipped it before) so the drill can always show what the rider was measured against.
+            $start = $r->expected_shift_start
+                ?: (($this->getUserShift($userId, $date)['shift_start'] ?? '09:00') . ':00');
             if (!is_null($r->late_minutes)) {
                 $late = (int) $r->late_minutes;
             } else {
-                $start = $r->expected_shift_start
-                    ?: (($this->getUserShift($userId, $date)['shift_start'] ?? '09:00') . ':00');
                 $s = strtotime($date . ' ' . $start);
                 $l = strtotime($date . ' ' . $r->login_time);
                 $late = ($l > $s) ? (int) (($l - $s) / 60) : 0;
             }
-            if ($late > 0) { $out[] = ['date' => $date, 'minutes' => $late]; }
+            if ($late > 0) {
+                // `login` / `shift_start` are ADDITIVE evidence for the drill-downs — the same
+                // "show the manager how this number was reached" contract OvertimeService's
+                // `details` follows. The only caller reads date/minutes and is unaffected.
+                $out[] = [
+                    'date'        => $date,
+                    'minutes'     => $late,
+                    'login'       => $hm($r->login_time),
+                    'shift_start' => $hm($start),
+                ];
+            }
         }
         return $out;
     }

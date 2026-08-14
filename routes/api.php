@@ -386,6 +386,14 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/store/fleet/vehicles', [\App\Http\Controllers\CRM\VehicleController::class, 'apiIndex']);
     Route::get('/store/fleet/vehicles/{id}', [\App\Http\Controllers\CRM\VehicleController::class, 'apiShow']);
     Route::get('/store/fleet/vehicles/{id}/days', [\App\Http\Controllers\CRM\VehicleController::class, 'apiDays']);
+    // Condition photos from the phone — the handover happens in the yard, not at a
+    // desk. Gated on view_bike_costs (open the screen) AND assign_vehicles (write).
+    Route::post('/store/fleet/vehicles/{id}/photos', [\App\Http\Controllers\CRM\VehicleController::class, 'apiAddPhotos']);
+    // 🛢 Service-due banners. ⚠ NOT under the fleet permission — a RIDER has no
+    // fleet access yet must be told his own machine is due; the audience rule
+    // lives in BikeServiceAlerts::forUser().
+    Route::get('/service-alerts', [\App\Http\Controllers\CRM\VehicleController::class, 'serviceAlerts']);
+    Route::post('/service-alerts/dismiss', [\App\Http\Controllers\CRM\VehicleController::class, 'dismissServiceAlert']);
     Route::post('/store/fleet/mark-serviced', [\App\Http\Controllers\CRM\FleetFuelController::class, 'apiMarkServiced']);
     Route::post('/store/fleet/default-interval', [\App\Http\Controllers\CRM\FleetFuelController::class, 'apiSetDefaultInterval']);
     Route::get('/store/cancelled-orders', [\App\Http\Controllers\API\RiderController::class, 'getStoreCancelledOrders']); // ⭐ Cancelled orders grouped by date
@@ -463,6 +471,16 @@ Route::middleware('auth:sanctum')->group(function () {
         [\App\Http\Controllers\API\OpenQuantitiesFixedController::class, 'getFixedThreeLevelTree']
     );
     
+    // 🐔 La Carne — chicken supplier board. The SAME controller serves the web
+    // page (routes/web.php, prefix 'lacarne'), so both surfaces share one set of
+    // numbers and one permission rule (access_lacarne / manage_lacarne_history).
+    // Tiny poll the rider app uses to decide whether to show the La Carne TAB.
+    // Static path — keep above any dynamic ones.
+    Route::get('/store/lacarne/access', [\App\Http\Controllers\CRM\LaCarneController::class, 'access_check']);
+    Route::get('/store/lacarne/board', [\App\Http\Controllers\CRM\LaCarneController::class, 'board']);
+    Route::post('/store/lacarne/photos', [\App\Http\Controllers\CRM\LaCarneController::class, 'addPhotos']);
+    Route::post('/store/lacarne/photos/{photoId}/delete', [\App\Http\Controllers\CRM\LaCarneController::class, 'deletePhoto']);
+
     // Line Item Status Management (mobile app only - uses token auth)
     Route::post('/orders/{orderId}/line-items/bulk-update-status', [\App\Http\Controllers\API\RiderController::class, 'bulkUpdateLineItemStatus']);
     Route::post('/orders/bulk-mark-prepared', [\App\Http\Controllers\CRM\OrderController::class, 'bulkMarkOrdersAsPrepared']);
