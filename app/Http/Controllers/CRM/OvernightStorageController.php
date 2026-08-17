@@ -496,6 +496,19 @@ class OvernightStorageController extends Controller
      * `source` records HOW it was taken out: 'scan' (the packet's barcode was scanned
      * on the mobile app) or 'manual' (picked from the list). The history shows both
      * who did it and which way.
+     *
+     * ⭐ ACCEPTS A WHOLE `section` AS WELL AS `item_ids` (owner ask, Aug-16 — the
+     *    "Empty Chiller" button). The team was already doing this by hand every
+     *    morning: select all, take out. One named action is fewer taps and, more
+     *    importantly, ATOMIC — a list-driven bulk take-out is capped at 200 ids and
+     *    posts whatever the screen happened to be showing, so a packet added by
+     *    someone else between the load and the tap would silently survive the
+     *    "empty". A section take-out reads the rows inside the transaction, so it
+     *    empties what is ACTUALLY there.
+     *
+     * ⚠ Each row is still logged individually — the history keeps naming every packet
+     *   and its section, so an emptied chiller reads exactly like the hand-picked
+     *   version it replaces. Nothing about the audit trail changes.
      */
     public function takeOutItems(Request $request)
     {
@@ -504,10 +517,17 @@ class OvernightStorageController extends Controller
         }
 
         $validated = $request->validate([
-            'item_ids' => 'required|array|min:1|max:200',
+            'item_ids' => 'nullable|array|min:1|max:200',
             'item_ids.*' => 'integer',
+            'section' => 'nullable|in:chiller,freezer',
             'source' => 'nullable|in:scan,manual',
         ]);
+        if (empty($validated['item_ids']) && empty($validated['section'])) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Nothing to take out — pass item_ids or a section.',
+            ], 422);
+        }
         $source = $validated['source'] ?? 'manual';
 
         $userId = auth()->id();
@@ -515,10 +535,14 @@ class OvernightStorageController extends Controller
         $takenOutItems = [];
 
         DB::transaction(function () use ($validated, $userId, $source, &$takenOut, &$takenOutItems) {
-            $items = OvernightItemModel::whereIn('id', $validated['item_ids'])
-                ->where('status', 'stored')
-                ->lockForUpdate()
-                ->get();
+            $query = OvernightItemModel::where('status', 'stored');
+            if (!empty($validated['item_ids'])) {
+                $query->whereIn('id', $validated['item_ids']);
+            }
+            if (!empty($validated['section'])) {
+                $query->where('section', $validated['section']);
+            }
+            $items = $query->lockForUpdate()->get();
 
             foreach ($items as $item) {
                 $from = $item->section;
@@ -562,7 +586,13 @@ class OvernightStorageController extends Controller
             'taken_out_count' => $takenOut,
             'source' => $source,
             'items' => $takenOutItems,
-            'message' => $takenOut . ' item(s) taken out.',
+            // Name the section when one was emptied — "Chiller emptied — 7 item(s)
+            // taken out" is the confirmation the person actually asked for.
+            'message' => !empty($validated['section'])
+                ? ($takenOut === 0
+                    ? 'The ' . $validated['section'] . ' was already empty.'
+                    : ucfirst($validated['section']) . ' emptied — ' . $takenOut . ' item(s) taken out.')
+                : $takenOut . ' item(s) taken out.',
         ]);
     }
 

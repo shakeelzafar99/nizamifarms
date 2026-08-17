@@ -42,6 +42,19 @@ class PayrollController extends Controller
         return $u && $u->hasPermission('void_salary_advance');
     }
 
+    /**
+     * Whether this user may VOID a custom-salary payment.
+     *
+     * Owner ruling Aug-2026: Taimur AND Shabib (roles 14 + 10), i.e. wider than the
+     * advance void but still narrower than `manage_payroll`. Role-based, so it follows
+     * the role rather than the person.
+     */
+    private function canVoidPayment(): bool
+    {
+        $u = auth()->user();
+        return $u && $u->hasPermission('void_salary_payment');
+    }
+
     /** Whether this manager may see/tag the Khaas business unit (gates the BU toggle). */
     private function canViewKhaas(): bool
     {
@@ -86,6 +99,9 @@ class PayrollController extends Controller
             'khaas_available' => $svc->khaasTaggingAvailable() && $this->canViewKhaas(),
             'khaas_bu_id' => $svc->khaasBuIdValue(),
             'can_void_advance' => $this->canVoidAdvance(),
+            // Drives the "you have something waiting" banner + the strip card. Counts every
+            // pending request, including staff who are not on this grid.
+            'advance_summary' => $svc->pendingAdvanceSummary(),
         ]);
     }
 
@@ -115,7 +131,150 @@ class PayrollController extends Controller
             'khaas_available' => $svc->khaasTaggingAvailable() && $this->canViewKhaas(),
             'khaas_bu_id' => $svc->khaasBuIdValue(),
             'can_void_advance' => $this->canVoidAdvance(),
+            'balance_available' => $svc->balanceTrackingAvailable(),
+            'can_void_payment' => $this->canVoidPayment(),
+            'today' => now()->format('Y-m-d'),
+            // Same banner on this tab — a waiting request must not hide behind a tab choice.
+            'advance_summary' => $svc->pendingAdvanceSummary(),
         ]);
+    }
+
+    // ── Custom running balance ("khata") ─────────────────────────────────────
+    //
+    // Same `manage_payroll` authority as every other money action on this screen;
+    // voiding a payment additionally needs `void_salary_payment`.
+
+    /** One month of an employee's calendar: days, payments and the running balance. */
+    public function balanceCalendar(Request $request)
+    {
+        if ($deny = $this->denyIfNotAllowed()) { return $deny; }
+        $v = Validator::make($request->all(), [
+            'user_id' => 'required|integer|exists:t_sys_user,id',
+            'month'   => ['nullable', 'regex:/^\d{4}-\d{2}$/'],
+        ]);
+        if ($v->fails()) {
+            return response()->json(['success' => false, 'message' => $v->errors()->first()], 422);
+        }
+        try {
+            $data = (new PayrollService())->balanceCalendar(
+                (int) $request->user_id,
+                (string) ($request->month ?: now()->format('Y-m'))
+            );
+        } catch (\Throwable $e) {
+            \Log::error('Balance calendar failed', ['user_id' => $request->user_id, 'error' => $e->getMessage()]);
+            return response()->json(['success' => false, 'message' => 'Could not load the calendar.'], 500);
+        }
+        return response()->json($data + ['can_void_payment' => $this->canVoidPayment(), 'today' => now()->format('Y-m-d')],
+            !empty($data['success']) ? 200 : 422);
+    }
+
+    /** Start a running balance: anchor date + opening balance. */
+    public function balanceEnable(Request $request)
+    {
+        if ($deny = $this->denyIfNotAllowed()) { return $deny; }
+        $v = Validator::make($request->all(), [
+            'user_id'    => 'required|integer|exists:t_sys_user,id',
+            'start_date' => 'required|date',
+            'opening'    => 'nullable|numeric|min:-100000000|max:100000000',
+        ]);
+        if ($v->fails()) {
+            return response()->json(['success' => false, 'message' => $v->errors()->first()], 422);
+        }
+        $res = (new PayrollService())->enableBalanceTracking(
+            (int) $request->user_id,
+            date('Y-m-d', strtotime($request->start_date)),
+            (float) ($request->opening ?? 0),
+            (int) auth()->id()
+        );
+        return response()->json($res, !empty($res['success']) ? 200 : 422);
+    }
+
+    /** Cross a day out (earns nothing) or restore it. Toggle. */
+    public function balanceAbsence(Request $request)
+    {
+        if ($deny = $this->denyIfNotAllowed()) { return $deny; }
+        $v = Validator::make($request->all(), [
+            'user_id' => 'required|integer|exists:t_sys_user,id',
+            'date'    => 'required|date',
+        ]);
+        if ($v->fails()) {
+            return response()->json(['success' => false, 'message' => $v->errors()->first()], 422);
+        }
+        $res = (new PayrollService())->toggleAbsence(
+            (int) $request->user_id, date('Y-m-d', strtotime($request->date)), (int) auth()->id()
+        );
+        return response()->json($res, !empty($res['success']) ? 200 : 422);
+    }
+
+    /** Record money handed to a tracked employee (a normal payroll payment + ledger row). */
+    public function balancePayment(Request $request)
+    {
+        if ($deny = $this->denyIfNotAllowed()) { return $deny; }
+        $v = Validator::make($request->all(), [
+            'user_id' => 'required|integer|exists:t_sys_user,id',
+            'amount'  => 'required|numeric|min:1|max:100000000',
+            'date'    => 'required|date',
+            'funding' => 'required|in:cash,online',
+            'bank_id' => 'nullable|integer',
+            'note'    => 'nullable|string|max:255',
+        ]);
+        if ($v->fails()) {
+            return response()->json(['success' => false, 'message' => $v->errors()->first()], 422);
+        }
+        if ($request->funding === 'online' && !$request->bank_id) {
+            return response()->json(['success' => false, 'message' => 'Choose the bank you are paying from.'], 422);
+        }
+        $res = (new PayrollService())->recordBalancePayment(
+            (int) $request->user_id,
+            (float) $request->amount,
+            date('Y-m-d', strtotime($request->date)),
+            [
+                'funding'  => $request->funding,
+                'bank_id'  => $request->bank_id ? (int) $request->bank_id : null,
+                'note'     => $request->note,
+                'actor_id' => (int) auth()->id(),
+            ]
+        );
+        return response()->json($res, !empty($res['success']) ? 200 : 422);
+    }
+
+    /** Change a tracked employee's rate from a date the manager chooses. */
+    public function balanceRate(Request $request)
+    {
+        if ($deny = $this->denyIfNotAllowed()) { return $deny; }
+        $v = Validator::make($request->all(), [
+            'user_id'        => 'required|integer|exists:t_sys_user,id',
+            'rate'           => 'required|numeric|min:1|max:100000000',
+            'effective_date' => 'required|date',
+        ]);
+        if ($v->fails()) {
+            return response()->json(['success' => false, 'message' => $v->errors()->first()], 422);
+        }
+        $res = (new PayrollService())->changeTrackedRate(
+            (int) $request->user_id, (float) $request->rate,
+            date('Y-m-d', strtotime($request->effective_date)), (int) auth()->id()
+        );
+        return response()->json($res, !empty($res['success']) ? 200 : 422);
+    }
+
+    /** Void a mistaken payment: reverses the ledger and drops it from the balance. */
+    public function balanceVoidPayment(Request $request)
+    {
+        if ($deny = $this->denyIfNotAllowed()) { return $deny; }
+        if (!$this->canVoidPayment()) {
+            return response()->json(['success' => false, 'message' => "You don't have access to void a salary payment."], 403);
+        }
+        $v = Validator::make($request->all(), [
+            'payment_id' => 'required|integer',
+            'reason'     => 'required|string|min:3|max:200',
+        ]);
+        if ($v->fails()) {
+            return response()->json(['success' => false, 'message' => $v->errors()->first()], 422);
+        }
+        $res = (new PayrollService())->voidBalancePayment(
+            (int) $request->payment_id, (string) $request->reason, (int) auth()->id()
+        );
+        return response()->json($res, !empty($res['success']) ? 200 : 422);
     }
 
     /** Live preview of a custom period's amount (days × rate, advances, attendance reference). */
@@ -248,7 +407,16 @@ class PayrollController extends Controller
             return response()->json(['success' => false, 'message' => $v->errors()->first()], 422);
         }
         try {
-            (new PayrollService())->setBaseSalary((int) $request->user_id, (float) $request->base_salary, (int) auth()->id());
+            $svc = new PayrollService();
+            // A running-balance employee's rate needs the date it applies from, so send a
+            // stale page to the right control instead of failing as a server error.
+            if ($svc->isBalanceTracked((int) $request->user_id)) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'This employee is on a running balance — change the rate from their card so you can set the date it applies from.',
+                ], 422);
+            }
+            $svc->setBaseSalary((int) $request->user_id, (float) $request->base_salary, (int) auth()->id());
             return response()->json(['success' => true, 'message' => 'Salary saved.']);
         } catch (\Throwable $e) {
             \Log::error('setSalary failed', ['error' => $e->getMessage()]);

@@ -1021,7 +1021,11 @@ class FleetFuelService
     {
         $profiles = $this->profiles();
         $current  = $this->currentMeters($userIds);
-        $default  = (int) $this->cfg('BIKE_SERVICE_INTERVAL_KM', 3000);
+        // ⚠ 1200, matching VehicleService — this default now feeds the SAME engine as
+        //   the vehicle card, and two literals (this was 3000) would make the chip
+        //   and the card disagree by 1,800 km on the day the config row ever goes
+        //   missing. The config row exists on prod, so today this changes nothing.
+        $default  = (int) $this->cfg('BIKE_SERVICE_INTERVAL_KM', 1200);
 
         // ⭐ Aug-2026: the schedule follows THE WORK LAST DONE. If the bike had the
         // 2,500 km oil+tuning, it is due in 2,500 — not in whatever the bike's
@@ -1033,21 +1037,97 @@ class FleetFuelService
         // service yet, which today is all of them.
         $lastTypeInterval = $this->lastServiceTypeIntervals($userIds);
 
+        // ⭐⭐ Aug-16: THE MACHINE ANSWERS FIRST. This chip used to be computed purely
+        //    from the RIDER's profile stamp, which is one of the three stores of "last
+        //    service" that drifted apart — see VehicleService::overallServiceStateFor.
+        //    When the registry can name the machine this rider is holding, the chip is
+        //    now the SAME derivation the vehicle card, the schedule panel and the
+        //    service alerts read, so a manager and a rider can no longer be shown
+        //    different figures for one bike.
+        //
+        // ⚠ The old profile math is kept verbatim below for anyone the registry
+        //   cannot place — riders with no registered machine (Farooq files flat petrol
+        //   claims and has never held one). Removing their chip would be a regression
+        //   for exactly the people the registry says nothing about.
+        $veh      = new VehicleService();
+        $resolver = new VehicleResolver();
+        $today    = date('Y-m-d');
+
         $out = [];
         foreach ($userIds as $uid) {
             $p = $profiles[$uid] ?? null;
             if (!$p) continue;
 
+            $now = $current[$uid] ?? null;
+
+            try {
+                $vid = $veh->available() ? $resolver->currentVehicleFor($uid, $today) : null;
+                if ($vid) {
+                    // ⚠⚠ THE MACHINE'S ODOMETER, NOT THE RIDER'S. `$now` above is this
+                    //   RIDER's highest reading across every bike he has ever held; the
+                    //   machine's is window-scoped to the days it was actually his.
+                    //   They agree until someone swaps bikes and then diverge — and
+                    //   measuring a machine's service clock with a rider's meter would
+                    //   reintroduce this exact bug on the exact day it matters most.
+                    //   Falls back to the rider's figure only if the machine has none.
+                    $vMeter = $veh->currentMeterFor((int) $vid) ?? $now;
+                    $s = $veh->overallServiceStateFor($vid, $vMeter, null, $uid, $default);
+                    // ⚠ The STORED override rides along beside the DERIVED interval —
+                    //   the "⚙️ This bike's schedule" prompt must pre-fill what is
+                    //   actually saved, or opening it would offer the due job's
+                    //   schedule as this bike's override and save a value nobody set.
+                    // ⚠⚠ THE MACHINE COLUMN ONLY — do NOT fall back to the rider's
+                    //    legacy override here, however tempting.
+                    //
+                    //    This value pre-fills "⚙️ This bike's schedule", and that prompt
+                    //    now WRITES the machine override. A rider-profile override is
+                    //    inert for any bike with typed history (it is consulted only in
+                    //    the legacy fallback), so surfacing it would show a number that
+                    //    is not in force and — the moment the manager pressed OK —
+                    //    materialise it as a real machine override he never chose. That
+                    //    is the same trap as pre-filling the DERIVED interval, one level
+                    //    down. Blank means "this bike has no schedule of its own", which
+                    //    is the truth.
+                    //
+                    //    Riders with NO registered machine take the legacy branches
+                    //    below, which DO report the profile override — there it is the
+                    //    setting actually in force.
+                    $ovr = DB::table(VehicleService::T_VEHICLE)->where('id', $vid)
+                        ->value('service_interval_km');
+                    $out[$uid] = [
+                        'state'              => $s['state'],
+                        'interval_km'        => $s['interval_km'],
+                        'interval_override'  => $ovr !== null ? (int) $ovr : null,
+                        'current_meter'      => $vMeter,
+                        'last_service_meter' => $s['last_service_meter'],
+                        'last_service_at'    => $s['last_service_at'],
+                        'since_km'           => $s['since_km'],
+                        'due_in_km'          => $s['due_in_km'],
+                        // Which job is soonest due — the chip can name it.
+                        'due_type_name'      => $s['due_type_name'] ?? null,
+                        'vehicle_id'         => $vid,
+                    ];
+                    continue;
+                }
+            } catch (\Throwable $e) {
+                // fall through to the profile math — a chip must never break the sheet
+            }
+
             $interval = (int) (($lastTypeInterval[$uid] ?? 0) ?: ($p->service_interval_km ?: $default));
-            $now      = $current[$uid] ?? null;
             $last     = $p->last_service_meter !== null ? (int) $p->last_service_meter : null;
 
+            // ⚠ Both legacy branches carry `due_type_name`/`vehicle_id` as null so the
+            //   row shape is identical whichever path produced it — a consumer must
+            //   never have to know which branch it is reading.
             if ($interval <= 0 || $now === null || $last === null) {
                 $out[$uid] = [
                     'state' => 'unknown', 'interval_km' => $interval,
                     'current_meter' => $now, 'last_service_meter' => $last,
                     'last_service_at' => $p->last_service_at,
                     'since_km' => null, 'due_in_km' => null,
+                    'due_type_name' => null, 'vehicle_id' => null,
+                    'interval_override' => $p->service_interval_km !== null
+                        ? (int) $p->service_interval_km : null,
                 ];
                 continue;
             }
@@ -1062,6 +1142,10 @@ class FleetFuelService
                 'last_service_at'    => $p->last_service_at,
                 'since_km'      => $since,
                 'due_in_km'     => $dueIn,
+                'due_type_name' => null,
+                'vehicle_id'    => null,
+                'interval_override' => $p->service_interval_km !== null
+                    ? (int) $p->service_interval_km : null,
             ];
         }
         return $out;
@@ -1315,14 +1399,38 @@ class FleetFuelService
      * Every scheduled maintenance type, with when this rider's bike last had it
      * and how far it is from being due again.
      *
-     * Derived from approved claims, not stored anywhere — so it self-corrects if a
-     * claim is edited or rejected, and needs no backfill. Only types that carry an
-     * interval appear: "as conditions" work (Chain Set, Misc) has no due date to
-     * count down to and would just be noise on a schedule.
+     * ⚠⚠ THE MACHINE'S ENGINE ANSWERS FIRST (Aug-16). This method is RIDER-keyed and
+     *    predates the machine derivation: no covers rule, `MAX(meter_at_fill)` over
+     *    the RIDER's claims, the RIDER's odometer (which spans every bike he has ever
+     *    held), and it cannot see a per-bike override. The rider drawer renders the
+     *    new headline directly above this list, so leaving it on the old engine
+     *    reproduced the original bug INSIDE ONE PANEL — a headline saying "ok" over a
+     *    row saying "Oil Change 426 km overdue", and a rider drawer disagreeing with
+     *    the vehicle drawer about the same machine.
+     *
+     * ⚠ The rider-keyed body below is KEPT for anyone the registry cannot place — a
+     *   rider with no registered machine still gets his schedule, exactly as before.
      *
      * @return array<int, array<string, mixed>>
      */
     private function serviceSchedule(int $userId): array
+    {
+        try {
+            $veh = new VehicleService();
+            if ($veh->available()) {
+                $vid = (new VehicleResolver())->currentVehicleFor($userId);
+                if ($vid) {
+                    return $veh->serviceScheduleFor((int) $vid, $veh->currentMeterFor((int) $vid));
+                }
+            }
+        } catch (\Throwable $e) {
+            // fall through to the rider-keyed reconstruction below
+        }
+        return $this->serviceScheduleByRider($userId);
+    }
+
+    /** The pre-registry, rider-keyed schedule — see the note on serviceSchedule(). */
+    private function serviceScheduleByRider(int $userId): array
     {
         try {
             if (!\Illuminate\Support\Facades\Schema::hasTable('t_fleet_maintenance_types')) {

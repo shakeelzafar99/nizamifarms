@@ -124,11 +124,23 @@
                         @endif
                         @endif
                     </div>
-                    @if($canVerify)
-                    <button onclick="verifyAll('{{ $secKey }}')" class="px-2.5 py-1 text-[11px] font-bold rounded-lg whitespace-nowrap" style="background:#16A34A; color:#fff;">
-                        ✓ Verify all
-                    </button>
-                    @endif
+                    <div class="flex items-center gap-1.5">
+                        {{-- 🧊 EMPTY CHILLER (owner ask, Aug-16). The morning routine was
+                             already "select all → take out"; this is the same action with
+                             one tap and a named confirmation. CHILLER ONLY — the freezer
+                             is long-term storage and is never emptied wholesale, so
+                             offering the button there would only invite an accident. --}}
+                        @if($secKey === 'chiller')
+                        <button onclick="emptyChiller()" class="px-2.5 py-1 text-[11px] font-bold rounded-lg whitespace-nowrap" style="background:#DC2626; color:#fff;">
+                            🧊 Empty chiller
+                        </button>
+                        @endif
+                        @if($canVerify)
+                        <button onclick="verifyAll('{{ $secKey }}')" class="px-2.5 py-1 text-[11px] font-bold rounded-lg whitespace-nowrap" style="background:#16A34A; color:#fff;">
+                            ✓ Verify all
+                        </button>
+                        @endif
+                    </div>
                 </div>
                 @endif
             </div>
@@ -433,6 +445,24 @@ function verifyAll(section) {
             else { alert(j.message || 'Verify failed'); ovBusy = false; }
         })
         .catch(function () { alert('Network error — nothing was verified.'); ovBusy = false; });
+}
+
+/* 🧊 Empty the chiller in one action — what the team was doing by hand every
+   morning. Sends the SECTION, not a list of ids, so it clears what is actually in
+   there at that moment rather than whatever this page happened to load. */
+function emptyChiller() {
+    if (ovBusy) return;
+    var count = document.querySelectorAll('.ov-check[data-section="chiller"]').length;
+    if (count === 0) { alert('The chiller is already empty.'); return; }
+    if (!confirm('Empty the chiller?\n\nAll ' + count + ' item(s) will be taken out to be used.\n'
+        + 'The freezer is not touched.')) return;
+    ovBusy = true;
+    ovPost(OV_ROUTES.takeOut, { section: 'chiller', source: 'manual' })
+        .then(function (j) {
+            if (j.success) { location.reload(); }
+            else { alert(j.message || 'Could not empty the chiller'); ovBusy = false; }
+        })
+        .catch(function () { alert('Network error — nothing was taken out.'); ovBusy = false; });
 }
 
 function doTakeOut() {

@@ -573,6 +573,46 @@
   </div>
 </div>
 
+{{-- ⚙️ COMPANY SERVICE SCHEDULE.
+     Replaces a window.prompt that claimed "bikes with their own interval are
+     unaffected" without ever naming one — so a manager raising the company schedule
+     had no idea which machines would quietly ignore him. This names them and makes
+     the choice explicit. --}}
+<div id="flDefModal" onclick="if(event.target===this)flCloseDefault()"
+     style="display:none;position:fixed;inset:0;z-index:4300;background:rgba(0,0,0,.5);
+            align-items:center;justify-content:center;padding:16px;">
+  <div style="background:#fff;border-radius:12px;width:100%;max-width:480px;max-height:90vh;
+              display:flex;flex-direction:column;box-shadow:0 18px 60px rgba(0,0,0,.35);">
+    <div style="display:flex;align-items:center;gap:9px;padding:14px 18px;border-bottom:1px solid #e5e7eb;flex:0 0 auto;">
+      <b style="font-size:15px;color:#111827;">🏢 Company service schedule</b>
+      <button type="button" onclick="flCloseDefault()" title="Close"
+              style="margin-left:auto;border:none;background:none;font-size:24px;color:#9ca3af;cursor:pointer;line-height:1;">&times;</button>
+    </div>
+    <div style="padding:16px 18px;overflow-y:auto;flex:1 1 auto;min-height:0;">
+      <label style="display:block;font-size:11.5px;font-weight:700;color:#374151;margin-bottom:4px;">
+        Service every how many km?
+      </label>
+      <input id="flDefKm" type="number" min="100" max="100000" step="100"
+             style="width:100%;border:1px solid #d1d5db;border-radius:8px;padding:9px 11px;font-size:14px;box-sizing:border-box;">
+      <div style="font-size:11.5px;color:#6b7280;margin-top:5px;">
+        This is the schedule every bike follows unless it has one of its own.
+      </div>
+      <div id="flDefOverrides" style="margin-top:14px;"></div>
+      <div id="flDefError" style="display:none;font-size:12px;color:#b91c1c;background:#fef2f2;
+           border:1px solid #fecaca;border-radius:8px;padding:8px 10px;margin-top:10px;"></div>
+    </div>
+    <div style="padding:12px 18px;border-top:1px solid #e5e7eb;background:#f9fafb;display:flex;
+                gap:8px;justify-content:flex-end;flex:0 0 auto;">
+      <button type="button" onclick="flCloseDefault()"
+              style="padding:9px 16px;border:1px solid #d1d5db;background:#fff;border-radius:8px;
+                     font-size:13px;font-weight:600;color:#374151;cursor:pointer;">Cancel</button>
+      <button type="button" id="flDefSave" onclick="flSaveDefault()"
+              style="padding:9px 18px;border:none;background:#4f46e5;color:#fff;border-radius:8px;
+                     font-size:13px;font-weight:700;cursor:pointer;">Save schedule</button>
+    </div>
+  </div>
+</div>
+
 <div id="flNewModal" onclick="if(event.target===this)flCloseNew()"
      style="display:none;position:fixed;inset:0;z-index:4200;background:rgba(0,0,0,.5);
             align-items:center;justify-content:center;padding:16px;">
@@ -594,6 +634,15 @@
              own date — so nobody files against the wrong bike after a handover. --}}
         <div id="flNewWhichBike" style="display:none;font-size:11.5px;color:#0f766e;margin-top:4px;"></div>
       </div>
+
+      {{-- ⭐ WHAT IS ALREADY ON RECORD FOR THIS BIKE (owner ask, Aug-16).
+           "So they know what they are entering and what is already there, when, and
+           by whom." Maintenance only — a petrol claim has its own since-last-fill
+           line and this would just be noise on it. Filled by flNewWhichBike() from
+           the same response that names the machine, so it can never disagree with
+           the label directly above it. --}}
+      <div id="flNewLastMaint" style="display:none;border:1px solid #e5e7eb;border-radius:8px;
+           background:#f9fafb;padding:9px 11px;font-size:11.5px;line-height:1.55;"></div>
 
       {{-- 🔧 What was done. Populated from the manager's own maintenance types
            (grouped Regular / Repair). Falls back to the original two-option list
@@ -1121,7 +1170,11 @@ function flRenderDetail(r) {
     }
 
     const svc = r.service;
-    let svcHtml = '<h5>Service</h5>';
+    // ⚠ These figures are ONE job's story — the most urgent scheduled one, which the
+    //   server names in due_type_name — so the heading names it too. An unnamed
+    //   "last done" reads as the bike's most recent visit, which can be a different,
+    //   larger job on a slower clock.
+    let svcHtml = '<h5>Service' + (svc && svc.due_type_name ? ' — ' + flEsc(svc.due_type_name) : '') + '</h5>';
     if (svc && svc.state !== 'unknown') {
         svcHtml += '<div class="fl-svc"><span>Status</span><span>' + flServicePill(svc) + '</span></div>' +
             '<div class="fl-svc"><span>Since last service</span><span>' + flNum(svc.since_km) + ' km</span></div>' +
@@ -1140,8 +1193,11 @@ function flRenderDetail(r) {
             // button — one resets the due clock, the other only says how often.
             '<button class="fl-btn" onclick="flMarkServiced(' + r.user_id + ',' +
             (svc && svc.current_meter ? svc.current_meter : 0) + ')">🛢️ Record service</button>' +
+            // ⚠ The STORED override, not the derived interval — see the note in
+            //   shape(). Pre-filling the due job's schedule here would let a manager
+            //   "confirm" a value he never set.
             '<button class="fl-btn" onclick="flSetBikeInterval(' + r.user_id + ',' +
-            (svc && svc.interval_km ? svc.interval_km : 0) + ')">⚙️ This bike\'s schedule</button>' +
+            (svc && svc.interval_override ? svc.interval_override : 0) + ')">⚙️ This bike\'s schedule</button>' +
             '<button class="fl-btn" onclick="flSetDefaultInterval()">🏢 Company default (' + flNum(flDefaultInterval) + ' km)</button>' +
             '</div>' +
             // The rider's own maintenance request is the normal input — it carries
@@ -1510,32 +1566,124 @@ function flReject(id, level) {
  * bike's due date at once, so it says so before saving.
  */
 function flSetDefaultInterval() {
-    const v = window.prompt(
-        'Service every how many km, company-wide?\n\n' +
-        'This applies to every bike that has no schedule of its own.\n' +
-        'Bikes with their own interval are unaffected.',
-        flDefaultInterval || '');
-    if (v === null) return;
-    const km = parseInt(String(v).replace(/[^0-9]/g, ''), 10);
-    if (!km || km < 100 || km > 100000) { alert('Give a value between 100 and 100,000 km.'); return; }
+    document.getElementById('flDefKm').value = flDefaultInterval || '';
+    flDefError('');
+    const box = document.getElementById('flDefOverrides');
+    box.innerHTML = '<div style="font-size:12px;color:#9ca3af;">Checking which bikes have their own schedule…</div>';
+    document.getElementById('flDefModal').style.display = 'flex';
+
+    // Ask BEFORE showing the choice — a manager cannot decide about bikes he has
+    // not been shown.
+    fetch(FL_BASE + '/interval-overrides', { headers: { 'Accept': 'application/json' } })
+        .then(r => r.json())
+        .then(res => {
+            if (!res.success) { box.innerHTML = ''; return; }
+            flRenderDefaultOverrides(res);
+        })
+        .catch(() => { box.innerHTML = ''; });   // silence = "nothing special to warn about"
+}
+
+/**
+ * ⭐ NAME THE EXCEPTIONS, THEN ASK (owner ask, Aug-16).
+ *
+ * The old prompt asserted "bikes with their own interval are unaffected" and stopped
+ * there, so the manager never learned WHICH bikes would ignore his change. Here they
+ * are listed with their own numbers, and the decision is an explicit, defaulted-safe
+ * choice rather than a hidden behaviour.
+ *
+ * ⚠ Bikes whose override already equals the company value are shown greyed and are
+ *   NOT counted as exceptions — "overriding" them changes nothing, and listing them
+ *   as casualties would make the warning cry wolf.
+ */
+function flRenderDefaultOverrides(res) {
+    const box = document.getElementById('flDefOverrides');
+    const vs = (res.vehicles || []);
+    const rs = (res.riders || []);
+    if (!vs.length && !rs.length) {
+        box.innerHTML = '<div style="font-size:12px;color:#15803d;background:#f0fdf4;border:1px solid #bbf7d0;'
+            + 'border-radius:8px;padding:9px 11px;">✓ No bike has a schedule of its own — this applies to the whole fleet.</div>';
+        return;
+    }
+
+    const row = (name, km, sub, same) =>
+        '<div style="display:flex;gap:8px;align-items:baseline;padding:3px 0;'
+        + (same ? 'opacity:.5;' : '') + '">'
+        + '<span style="font-weight:600;color:#111827;">' + flEsc(name) + '</span>'
+        + (sub ? '<span style="color:#9ca3af;font-size:11px;">' + flEsc(sub) + '</span>' : '')
+        + '<span style="margin-left:auto;white-space:nowrap;color:#b45309;font-weight:700;">'
+        + 'every ' + flNum(km) + ' km' + (same ? ' (same)' : '') + '</span></div>';
+
+    let html = '<div style="border:1px solid #fde68a;background:#fffbeb;border-radius:8px;padding:10px 12px;">'
+        + '<div style="font-size:12px;font-weight:800;color:#92400e;margin-bottom:6px;">'
+        + '⚠ These hold a schedule of their own</div>'
+        + '<div style="font-size:12px;">';
+    vs.forEach(v => html += row(v.name, v.interval_km, v.keeper_name || '', v.same_as_default));
+    // ⚠ Rider-level schedules are LEGACY and only take effect for someone with no
+    //   registered machine — calling them "will ignore the company schedule" named
+    //   casualties that mostly aren't. They are still listed (and still cleared by
+    //   "put every bike on it"), but labelled for what they are.
+    rs.forEach(r => html += row(r.name, r.interval_km, 'older rider schedule', r.same_as_default));
+    html += '<div style="font-size:10.5px;color:#92400e;margin-top:6px;line-height:1.4;">'
+        + 'Bikes keep their own number instead of the company one. '
+        + '<i>Older rider schedules</i> only apply to someone with no registered bike.</div>';
+    html += '</div></div>';
+
+    // The choice. Default is LEAVE ALONE — the safe reading, and what this button
+    // has always silently done.
+    html += '<div style="margin-top:10px;font-size:12.5px;">'
+        + '<label style="display:flex;gap:8px;align-items:flex-start;padding:7px 0;cursor:pointer;">'
+        + '<input type="radio" name="flDefApply" value="keep" checked style="margin-top:3px;">'
+        + '<span><b>Leave them on their own schedule</b>'
+        + '<div style="color:#6b7280;font-size:11.5px;">They keep their own numbers. Only the other bikes change.</div>'
+        + '</span></label>'
+        + '<label style="display:flex;gap:8px;align-items:flex-start;padding:7px 0;cursor:pointer;">'
+        + '<input type="radio" name="flDefApply" value="clear" style="margin-top:3px;">'
+        + '<span><b>Put every bike on this schedule</b>'
+        + '<div style="color:#6b7280;font-size:11.5px;">Clears their own schedules, so they follow the company one '
+        + 'from now on — including the next time you change it.</div>'
+        + '</span></label></div>';
+
+    box.innerHTML = html;
+}
+
+function flCloseDefault() { document.getElementById('flDefModal').style.display = 'none'; }
+function flDefError(msg) {
+    const el = document.getElementById('flDefError');
+    el.textContent = msg || '';
+    el.style.display = msg ? 'block' : 'none';
+}
+
+function flSaveDefault() {
+    const km = parseInt(String(document.getElementById('flDefKm').value).replace(/[^0-9]/g, ''), 10);
+    if (!km || km < 100 || km > 100000) { flDefError('Give a value between 100 and 100,000 km.'); return; }
+    const sel = document.querySelector('input[name="flDefApply"]:checked');
+    const clear = !!(sel && sel.value === 'clear');
+
+    const btn = document.getElementById('flDefSave');
+    btn.disabled = true; btn.textContent = 'Saving…';
+    flDefError('');
 
     fetch(FL_BASE + '/default-interval', {
         method: 'POST',
         headers: {
             'Content-Type': 'application/json',
+            'Accept': 'application/json',
             'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || ''
         },
-        body: JSON.stringify({ interval_km: km })
+        body: JSON.stringify({ interval_km: km, clear_overrides: clear })
     })
     .then(r => r.json())
     .then(res => {
         if (!res.success) throw new Error(res.message || 'Failed');
         flDefaultInterval = res.interval_km;
+        flCloseDefault();
         alert(res.message);
         flLoad(flMonth);
         if (flSelected) flSelectRider(flSelected);
+        if (typeof flvLoad === 'function' && document.getElementById('flvWrap')) flvLoad();
     })
-    .catch(err => alert(err.message || 'Could not save the default.'));
+    .catch(err => flDefError(err.message || 'Could not save the default.'))
+    .finally(() => { btn.disabled = false; btn.textContent = 'Save schedule'; });
 }
 
 /** A service HAPPENED — resets the due clock. Never touches the schedule. */
@@ -1728,7 +1876,12 @@ function flNewPickBank(id) {
     flNewPayChanged();
 }
 
-function flCloseNew() { document.getElementById('flNewModal').style.display = 'none'; }
+function flCloseNew() {
+    document.getElementById('flNewModal').style.display = 'none';
+    // Drop the bike's record with the modal — reopening for a DIFFERENT rider must
+    // never flash the previous machine's history while the new answer is in flight.
+    flRenderLastMaint(null);
+}
 
 /** May this user manage types / correct a filed claim? Same server-side gate. */
 function flCanManageTypes() { return !!(flData && flData.can_manage_types); }
@@ -1756,8 +1909,13 @@ function flOpenEdit(claimId) {
 
     // The rider cannot be changed here — moving a claim between riders would move
     // it between two different bikes and odometer histories. Re-file instead.
+    // ⚠ The option MUST carry the user id as its value: flNewWhichBike() reads
+    //   `.value` to name the machine and fetch its record. A value-less option made
+    //   `.value` the rider's NAME, the server cast it to user 0, and the edit modal
+    //   silently lost both the which-bike line and the last-maintenance panel.
     const rsel = document.getElementById('flNewRider');
-    rsel.innerHTML = '<option>' + flEsc((flRider && flRider.name) || 'this rider') + '</option>';
+    rsel.innerHTML = '<option value="' + ((flRider && flRider.user_id) || '') + '">'
+        + flEsc((flRider && flRider.name) || 'this rider') + '</option>';
     rsel.disabled = true;
     document.getElementById('flNewBikeHint').textContent = 'Filed for this rider — to move it to someone else, reject it and file again.';
 
@@ -1863,7 +2021,7 @@ function flNewWhichBike() {
     if (!el) return;
     const uid  = document.getElementById('flNewRider').value;
     const date = document.getElementById('flNewDate').value;
-    if (!uid) { el.style.display = 'none'; el.textContent = ''; return; }
+    if (!uid) { el.style.display = 'none'; el.textContent = ''; flRenderLastMaint(null); return; }
 
     const seq = ++flNewBikeSeq;        // last answer wins, never a stale one
     fetch(FLV_BASE + '/for-user?user_id=' + encodeURIComponent(uid)
@@ -1873,13 +2031,88 @@ function flNewWhichBike() {
         .then(res => {
             if (seq !== flNewBikeSeq) return;
             const v = res && res.vehicle;
-            if (!v) { el.style.display = 'none'; el.textContent = ''; return; }
+            if (!v) { el.style.display = 'none'; el.textContent = ''; flRenderLastMaint(null); return; }
             el.style.display = '';
             el.innerHTML = (v.vtype === 'van' ? '🚚' : '🏍️')
                 + ' This will be recorded against <b>' + flEsc(v.name) + '</b>'
                 + (v.is_company ? '' : ' <span style="color:#9ca3af;">(his own bike)</span>');
+            // ⭐ …and what that machine already has on record.
+            flRenderLastMaint(res.last_maintenance || null);
         })
-        .catch(() => { if (seq === flNewBikeSeq) el.style.display = 'none'; });
+        .catch(() => { if (seq === flNewBikeSeq) { el.style.display = 'none'; flRenderLastMaint(null); } });
+}
+
+/**
+ * ⭐ "WHAT IS ALREADY THERE" — the machine's maintenance record, shown while the
+ *    claim is still being typed (owner ask, Aug-16).
+ *
+ * Three things, in the order a person actually asks them:
+ *   1. what is due next, and how soon — so a service is not filed twice, and a due
+ *      one is not missed while the form is open;
+ *   2. each scheduled job's last record — WHEN, at what odometer and BY WHOM;
+ *   3. the last few entries as filed, pending ones included — because "somebody
+ *      already put this in yesterday" is the duplicate this panel exists to stop.
+ *
+ * Maintenance only. On a petrol claim it would be noise beside the since-last-fill
+ * line, so it stays hidden.
+ */
+function flRenderLastMaint(lm) {
+    const box = document.getElementById('flNewLastMaint');
+    if (!box) return;
+    if (!lm || flNewCat !== 'Maintenance') { box.style.display = 'none'; box.innerHTML = ''; return; }
+
+    const tone = s => s === 'overdue' ? '#b91c1c' : (s === 'due_soon' ? '#b45309' : '#15803d');
+    const dueText = t => t.due_in_km === null || t.due_in_km === undefined
+        ? 'never recorded'
+        : (t.due_in_km < 0 ? flNum(-t.due_in_km) + ' km overdue' : 'due in ' + flNum(t.due_in_km) + ' km');
+
+    let html = '';
+
+    const o = lm.overall;
+    if (o && o.due_in_km !== null && o.due_in_km !== undefined) {
+        html += '<div style="font-weight:700;color:' + tone(o.state) + ';margin-bottom:5px;">'
+            + '🛢 ' + (o.due_type_name ? flEsc(o.due_type_name) : 'Service') + ' — '
+            + (o.due_in_km < 0 ? flNum(-o.due_in_km) + ' km overdue' : 'due in ' + flNum(o.due_in_km) + ' km')
+            + '</div>';
+    }
+
+    const rows = (lm.per_type || []).filter(t => t.last_meter !== null && t.last_meter !== undefined);
+    if (rows.length) {
+        html += '<div style="color:#6b7280;font-weight:700;font-size:10.5px;letter-spacing:.03em;'
+            + 'text-transform:uppercase;margin-bottom:3px;">Last done on this bike</div>';
+        rows.forEach(t => {
+            html += '<div style="display:flex;gap:6px;align-items:baseline;">'
+                + '<span style="color:#111827;font-weight:600;">' + flEsc(t.name) + '</span>'
+                + '<span style="color:#6b7280;">' + flNum(t.last_meter) + ' km'
+                + (t.last_at ? ' · ' + flDate(t.last_at) : '')
+                + (t.last_by ? ' · ' + flEsc(t.last_by) : '')
+                + (t.covered_by ? ' · <i>via ' + flEsc(t.covered_by) + '</i>' : '')
+                + '</span>'
+                + '<span style="margin-left:auto;white-space:nowrap;color:' + tone(t.state) + ';font-weight:600;">'
+                + dueText(t) + '</span></div>';
+        });
+    }
+
+    const recent = (lm.recent || []).slice(0, 3);
+    if (recent.length) {
+        html += '<div style="color:#6b7280;font-weight:700;font-size:10.5px;letter-spacing:.03em;'
+            + 'text-transform:uppercase;margin:7px 0 3px;">Recent entries</div>';
+        recent.forEach(r => {
+            html += '<div style="color:#6b7280;">'
+                + flDate(r.date) + ' · ' + flEsc(r.kind)
+                + ' · Rs ' + flNum(r.amount)
+                + (r.meter ? ' · ' + flNum(r.meter) + ' km' : '')
+                + ' · ' + flEsc(r.by_name || '')
+                + (r.is_pending ? ' <b style="color:#b45309;">(pending)</b>' : '')
+                + '</div>';
+        });
+    }
+
+    if (!html) {
+        html = '<span style="color:#9ca3af;">No maintenance recorded on this bike yet.</span>';
+    }
+    box.innerHTML = html;
+    box.style.display = '';
 }
 
 /**
@@ -2428,8 +2661,15 @@ function flvFreeRiderCard(r) {
             ? '<div class="fl-vfoot">'
               + '<button type="button" class="fl-vbtn primary" onclick="flvAssignToRider(' + r.user_id + ')">'
               +   '➕ Give him a bike</button>'
-              + '<button type="button" class="fl-vbtn" onclick="flvNewOwnBike(' + r.user_id + ','
-              +   JSON.stringify(r.name) + ')" title="Register a bike he owns himself and assign it to him">'
+              // ⚠⚠ ID ONLY — never a name in an inline onclick. JSON.stringify puts
+              //   DOUBLE QUOTES inside the double-quoted attribute, which truncates
+              //   it ("flvNewOwnBike(95," + junk attributes) and makes the click a
+              //   silent SyntaxError. That is why "New own bike" did nothing for
+              //   Rajab on prod AND dev (14 Aug) — broken for every rider since the
+              //   button shipped, invisible in every log because no request ever
+              //   fired. The name is looked up from flvData inside the function.
+              + '<button type="button" class="fl-vbtn" onclick="flvNewOwnBike(' + r.user_id + ')"'
+              +   ' title="Register a bike he owns himself and assign it to him">'
               +   '🏍️ New own bike</button>'
               + '</div>'
             : '')
@@ -2466,7 +2706,11 @@ function flvAssignToRider(userId) {
  * path for a new rider who arrives with his own machine (owner asked, Aug-6).
  * Without this, "where do I enter him?" is a two-screen answer nobody remembers.
  */
-function flvNewOwnBike(userId, name) {
+function flvNewOwnBike(userId) {
+    // The name comes from the SAME payload that rendered the card — passing it
+    // through an HTML attribute is what broke this button (see the call site).
+    const rider = ((flvData && flvData.riders) || []).find(r => r.user_id === userId);
+    const name = (rider && rider.name) || 'Rider';
     flvOpenEdit(null);
     document.getElementById('flvEditNick').value = name + ' - own bike';
     document.getElementById('flvEditCompany').checked = false;   // his bike, his fuel
@@ -2997,7 +3241,11 @@ function flvRenderDetail(v, canManage, res) {
       +   '<div class="fl-vsec">'
       +     '<h4>Service</h4>'
       +     '<div style="font-size:12.5px;color:#374151;line-height:1.7;">'
-      +       'Due every <b>' + flNum(s.interval_km) + ' km</b>'
+      /* ⚠ One job's story, named — the most urgent scheduled job's own last-done and
+         interval, not necessarily the bike's most recent visit. The full per-type
+         truth sits right below in flvScheduleHtml. */
+      +       (s.due_type_name ? '<b>' + flEsc(s.due_type_name) + '</b> — due' : 'Due')
+      +       ' every <b>' + flNum(s.interval_km) + ' km</b>'
       +       (s.last_service_meter !== null && s.last_service_meter !== undefined
               ? ' · last done at <b>' + flNum(s.last_service_meter) + ' km</b>'
                 + (s.last_service_at ? ' on ' + flvDate(s.last_service_at) : '')
@@ -3084,6 +3332,12 @@ function flvScheduleHtml(res) {
                     ? '<div style="font-size:11px;color:#6b7280;">last at ' + flNum(t.last_meter) + ' km'
                       + (t.last_at ? ' · ' + flvDate(t.last_at) : '')
                       + (t.last_by ? ' · by ' + flEsc(t.last_by) : '')
+                      /* ⭐ Say WHY a job nobody filed reads as freshly done — a bigger
+                         service contained it (the covers rule). Without this line an
+                         Oil Change with no record of its own looks like a bug. */
+                      + (t.covered_by ? ' · <i title="A larger scheduled service '
+                          + 'includes this job, so it reset this countdown too">done with '
+                          + flEsc(t.covered_by) + '</i>' : '')
                       + (t.assumed ? ' <span class="fl-vchip unk" title="Recorded before the registry '
                           + 'knew who had this machine — credited to its first known keeper">assumed</span>' : '')
                       + '</div>'
@@ -3453,8 +3707,13 @@ function flvOpenEdit(id) {
     document.getElementById('flvEditReg').value       = v ? (v.reg_no || '') : '';
     document.getElementById('flvEditNick').value      = v ? (v.nickname || '') : '';
     document.getElementById('flvEditModelName').value = v ? (v.make_model || '') : '';
+    // ⚠ The STORED override, never the derived interval. `service.interval_km` is the
+    //   due job's own schedule (1,200 from Oil Change even when this bike has no
+    //   override at all) — pre-filling from it would turn "follow the company
+    //   default" into a hard-coded 1,200 the moment anyone opened and saved this form.
+    //   Blank here means blank in the database, which is what "default" is.
     document.getElementById('flvEditInterval').value  =
-        v && v.service && v.service.interval_km ? v.service.interval_km : '';
+        v && v.service_interval_override ? v.service_interval_override : '';
     document.getElementById('flvEditCompany').checked = v ? !!v.is_company : true;
     document.getElementById('flvEditActive').checked  = v ? !!v.is_active : true;
     document.getElementById('flvEditLat').value    = v && v.base && v.base.latitude  !== null ? v.base.latitude  : '';
@@ -3504,25 +3763,41 @@ function flvSaveVehicle() {
         // ⭐ "New own bike for [rider]" — hand it over the moment it exists, so the
         //   onboarding path is genuinely ONE step. Chained, not fired alongside:
         //   the vehicle must exist before it can be assigned.
+        // ⚠ AWAITED and CHECKED (14 Aug): this used to be fire-and-forget with an
+        //   empty catch, so a failed assign showed pure success and the reload
+        //   raced it — the manager saw "no bike" and had no idea why. A failure
+        //   now says the bike EXISTS and where to finish the job.
         const pending = flvPendingAssignUser;
         flvPendingAssignUser = null;
+        let assignP = Promise.resolve();
         if (pending && vid) {
             const afd = new FormData();
             afd.append('user_id', pending);
-            fetch(FLV_BASE + '/' + vid + '/assign', {
+            assignP = fetch(FLV_BASE + '/' + vid + '/assign', {
                 method: 'POST', headers: { 'Accept': 'application/json', 'X-CSRF-TOKEN': csrf }, body: afd
-            }).catch(() => { /* the bike is created; assign it from the card */ });
+            })
+            .then(r => r.json())
+            .then(a => {
+                if (!a.success) {
+                    throw new Error('The bike was created, but could not be handed over: '
+                        + (a.message || 'assignment failed') + ' Assign it from its card.');
+                }
+            })
+            .catch(e => {
+                throw (e instanceof Error ? e : new Error(
+                    'The bike was created, but the handover did not go through. Assign it from its card.'));
+            });
         }
 
-        if (!vid || (!lat && !lng && !hadBase)) return null;
-        return fetch(FLV_BASE + '/' + vid + '/base', {
+        if (!vid || (!lat && !lng && !hadBase)) return assignP;
+        return assignP.then(() => fetch(FLV_BASE + '/' + vid + '/base', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', 'Accept': 'application/json', 'X-CSRF-TOKEN': csrf },
             body: JSON.stringify(
                 (!lat || !lng)
                     ? { clear: true }
                     : { latitude: lat, longitude: lng, radius_m: parseInt(rad, 10) || null })
-        }).then(r => r.json()).then(b => { if (!b.success) throw new Error(b.message || 'Base not saved'); });
+        }).then(r => r.json()).then(b => { if (!b.success) throw new Error(b.message || 'Base not saved'); }));
     })
     .then(() => { flvCloseEdit(); flvLoad(); if (flvOpenId) flvOpen(flvOpenId); })
     .catch(e => { err.textContent = e.message || 'Could not save.'; err.style.display = ''; })

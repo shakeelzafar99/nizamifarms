@@ -38,6 +38,44 @@ class BikeServiceClock
             if ($req->status !== RequestModel::STATUS_APPROVED) return;
             if ($req->expense_category !== 'Maintenance') return;
 
+            // ⚠⚠ THE MEMO MUST BE DROPPED ON EVERY EXIT FROM HERE, not just the one
+            //   that moves the clock. An approved claim is new EVIDENCE even when it
+            //   does not move the overall clock — an old back-dated one still starts
+            //   its own type's countdown, and a non-clock-resetting job (brake shoe)
+            //   returns early above having changed that type's schedule entirely. A
+            //   flush on the happy path only would leave an approval endpoint
+            //   re-rendering the state from before its own write.
+            //   `finally` is the only placement that survives all seven returns.
+            try {
+                self::applyApproval($req);
+            } finally {
+                // Bump the machine's evidence version too, so cross-request caches
+                // die with the memos. Resolving the machine is best-effort — a null
+                // simply falls back to memo-flush + the cache TTL.
+                $vid = null;
+                try {
+                    $vid = $req->vehicle_id
+                        ?: (new \App\Services\Riders\VehicleResolver())->vehicleForDay(
+                            (int) $req->requester_user_id,
+                            $req->expense_date
+                                ? \Carbon\Carbon::parse($req->expense_date)->format('Y-m-d')
+                                : now()->format('Y-m-d')
+                        );
+                } catch (\Throwable $e) {
+                    $vid = null;
+                }
+                \App\Services\Riders\VehicleService::bumpServiceEvidence($vid ? (int) $vid : null);
+            }
+        } catch (\Throwable $e) {
+            Log::warning('Service clock reset skipped: ' . $e->getMessage(), ['request_id' => $req->id ?? null]);
+        }
+    }
+
+    /** The body of onRequestApproved — see the memo note in its caller. */
+    private static function applyApproval(RequestModel $req): void
+    {
+        try {
+
             // ⭐ Aug-2026: which REGULAR services actually reset the clock is now a
             // property of the chosen type, not of the bucket. The manager's list has
             // several regular types on different schedules (oil 1,200 km, brake shoe
@@ -56,6 +94,10 @@ class BikeServiceClock
             $profile = DB::table('t_ops_rider_profile')
                 ->where('user_id', $req->requester_user_id)->first();
             if (!$profile) return;
+
+            // ⚠ Drop the memo BEFORE reading too: anything earlier in this request
+            //   may have cached this machine's evidence from before the approval.
+            \App\Services\Riders\VehicleService::flushServiceMemo();
 
             // Freeze how far off schedule the bike was, BEFORE the clock moves.
             // Negative = overdue by that many km. Once the update below lands,
@@ -98,7 +140,58 @@ class BikeServiceClock
     {
         try {
             if ($req->service_due_km !== null) return;          // already frozen
-            $last = $profile->last_service_meter !== null ? (int) $profile->last_service_meter : null;
+
+            // ⭐⭐ MEASURED AGAINST THE MACHINE, NOT THE MAN (Aug-16). The reference
+            //    point used to be the rider's profile stamp, which drifts the moment a
+            //    bike changes hands — hand a bike over and the next service on it was
+            //    judged against whatever the NEW rider's own last bike had done.
+            //    `lastServicePointBefore` asks the machine's own history, and asks it
+            //    strictly below this claim's odometer, so a late-filed old claim is
+            //    judged against the bike as it stood at ITS meter rather than against
+            //    work done since. Falls back to the profile when the registry cannot
+            //    place the claim (a rider with no registered machine).
+            $last = null;
+            $machineAnswered = false;
+            try {
+                $veh = new \App\Services\Riders\VehicleService();
+                if ($veh->available()) {
+                    $date = $req->expense_date
+                        ? \Carbon\Carbon::parse($req->expense_date)->format('Y-m-d')
+                        : now()->format('Y-m-d');
+                    $vid = $req->vehicle_id
+                        ?: (new \App\Services\Riders\VehicleResolver())
+                            ->vehicleForDay($req->requester_user_id, $date);
+                    if ($vid) {
+                        // ⚠ The claim's OWN type interval rides along so the reference
+                        //   point is something that could have included this job — an
+                        //   Oil + Tuning is measured from the last tuning-or-bigger,
+                        //   never from a mere oil change (the covers rule, both ways).
+                        $claimType = app(\App\Services\Riders\MaintenanceTypeService::class)
+                            ->find($req->maintenance_type_id ?? null);
+                        $point = $veh->lastServicePointBefore(
+                            (int) $vid,
+                            $meter,
+                            $claimType && (int) $claimType->interval_km > 0
+                                ? (int) $claimType->interval_km : null
+                        );
+                        // ⚠ "No valid reference" IS an answer. When the machine's
+                        //   history holds nothing that could have included this job,
+                        //   the stamp must be SKIPPED (the docblock's no-made-up-
+                        //   numbers rule) — falling back to the rider-profile stamp
+                        //   here would count exactly the smaller-job records the
+                        //   filter above just rejected, through the back door.
+                        $machineAnswered = true;
+                        if ($point) $last = (int) $point['meter'];
+                    }
+                }
+            } catch (\Throwable $e) {
+                $last = null;
+            }
+            // The profile is only consulted when the registry could not PLACE the
+            // claim at all (no machine, tables missing) — the pre-registry behaviour.
+            if ($last === null && !$machineAnswered) {
+                $last = $profile->last_service_meter !== null ? (int) $profile->last_service_meter : null;
+            }
             if ($last === null || $meter <= $last) return;
 
             // Interval priority: the TYPE's own schedule (Oil Change = 1,200 km)

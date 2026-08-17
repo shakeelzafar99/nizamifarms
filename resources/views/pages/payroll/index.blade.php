@@ -163,6 +163,80 @@
   .pr-cust-adv .give:hover { text-decoration: underline; }
   .pr-cust-adv .view { font-weight: 700; cursor: pointer; text-decoration: underline dotted; }
 
+  /* "waiting for you" banner (advance requests still undecided) */
+  .pr-banner { display: flex; align-items: center; gap: 13px; flex-wrap: wrap; border: 1px solid #fcd34d; background: #fffbeb; border-radius: 11px; padding: 12px 15px; margin-bottom: 14px; }
+  .pr-banner .ic { font-size: 19px; line-height: 1; }
+  .pr-banner .tx { font-size: 13.5px; font-weight: 700; color: #92400e; }
+  .pr-banner .sub { font-size: 11.5px; color: #b45309; font-weight: 400; margin-top: 3px; line-height: 1.5; }
+  .pr-banner .act { margin-left: auto; height: 34px; padding: 0 16px; border: none; border-radius: 9px; background: #f59e0b; color: #fff; font-weight: 700; font-size: 12.5px; cursor: pointer; white-space: nowrap; }
+  .pr-banner .act:hover { background: #d97706; }
+
+  /* ── custom running balance ("khata"): headline, calendar, payments ────────
+     Wording over signs everywhere: managers read "To pay" / "Paid ahead", and
+     colour carries the same meaning (red = we owe, green = paid ahead). */
+  .pr-bal-hero { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; border: 1px solid; border-radius: 11px; padding: 12px 14px; margin-top: 12px; }
+  .pr-bal-hero.to_pay { background: #fff7f7; border-color: #fecaca; }
+  .pr-bal-hero.paid_ahead { background: #f0fdf4; border-color: #bbf7d0; }
+  .pr-bal-hero.settled { background: #f8fafc; border-color: #e5e7eb; }
+  .pr-bal-lbl { font-size: 10.5px; font-weight: 800; letter-spacing: .07em; text-transform: uppercase; }
+  .pr-bal-hero.to_pay .pr-bal-lbl { color: #b91c1c; }
+  .pr-bal-hero.paid_ahead .pr-bal-lbl { color: #047857; }
+  .pr-bal-hero.settled .pr-bal-lbl { color: #6b7280; }
+  .pr-bal-amt { font-size: 25px; font-weight: 800; letter-spacing: -.02em; color: #111827; line-height: 1.15; }
+  .pr-bal-note { font-size: 11.5px; color: #6b7280; margin-top: 2px; }
+  .pr-bal-acts { margin-left: auto; display: flex; gap: 8px; flex-wrap: wrap; }
+  .pr-bal-btn { height: 34px; padding: 0 14px; border: 1px solid #d1d5db; background: #fff; color: #374151; border-radius: 9px; font-size: 12.5px; font-weight: 700; cursor: pointer; }
+  .pr-bal-btn:hover { background: #f9fafb; }
+  .pr-bal-btn.primary { background: #16a34a; border-color: #16a34a; color: #fff; }
+  .pr-bal-btn.primary:hover { background: #15803d; }
+  .pr-bal-stats { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 10px; }
+  .pr-bal-stat { background: #f9fafb; border: 1px solid #eef0f2; border-radius: 9px; padding: 6px 11px; font-size: 11.5px; color: #6b7280; }
+  .pr-bal-stat b { color: #111827; font-size: 12.5px; font-weight: 700; }
+  .pr-bal-start { display: inline-flex; align-items: center; gap: 6px; margin-top: 10px; font-size: 12px; color: #4f46e5; cursor: pointer; font-weight: 700; }
+  .pr-bal-start:hover { text-decoration: underline; }
+  .pr-bal-warn { margin-top: 9px; font-size: 11.5px; color: #b45309; background: #fffbeb; border: 1px solid #fde68a; border-radius: 8px; padding: 7px 10px; line-height: 1.5; }
+  .pr-bal-legacy { margin-top: 11px; padding-top: 10px; border-top: 1px dashed #e5e7eb; }
+  .pr-bal-legacy .lbl { font-size: 11px; color: #9ca3af; line-height: 1.5; }
+  .pr-bal-mini { border: 1px solid #eef0f2; background: #f9fafb; border-radius: 9px; padding: 9px 12px; margin-bottom: 12px; font-size: 12.5px; color: #374151; }
+  .pr-bal-mini b { color: #111827; }
+
+  /* interactive month calendar */
+  .pr-modal.wide { max-width: 640px; }
+  .pr-cal-nav { display: flex; align-items: center; justify-content: center; gap: 12px; margin: 14px 0 10px; }
+  .pr-cal-month { font-size: 14px; font-weight: 700; min-width: 148px; text-align: center; color: #111827; }
+  .pr-cal-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 5px; }
+  .pr-cal-dow { text-align: center; font-size: 10px; font-weight: 800; color: #9ca3af; letter-spacing: .05em; }
+  .pr-cal-day { position: relative; min-height: 56px; border: 1px solid #e5e7eb; border-radius: 9px; background: #fff; padding: 4px 3px 3px; display: flex; flex-direction: column; align-items: center; gap: 2px; cursor: pointer; transition: background .12s, border-color .12s, transform .07s; }
+  .pr-cal-day:active { transform: scale(.95); }
+  .pr-cal-day .n { font-size: 12.5px; font-weight: 700; color: #374151; line-height: 1.2; }
+  .pr-cal-day.counted:hover { border-color: #16a34a; background: #f0fdf4; }
+  .pr-cal-day.crossed { background: #fef2f2; border-color: #fecaca; }
+  .pr-cal-day.crossed .n { color: #b91c1c; text-decoration: line-through; }
+  .pr-cal-day.future { border-style: dashed; background: #fcfcfd; }
+  .pr-cal-day.future .n { color: #9ca3af; }
+  .pr-cal-day.crossed.future { background: #fef2f2; }
+  .pr-cal-day.pre { background: #fafafa; border-style: dashed; cursor: default; }
+  .pr-cal-day.pre .n { color: #d1d5db; }
+  .pr-cal-day.today { box-shadow: 0 0 0 2px #16a34a; }
+  .pr-cal-day.empty { border: none; background: none; cursor: default; }
+  .pr-cal-x { position: absolute; top: 2px; right: 5px; font-size: 10px; font-weight: 900; color: #dc2626; }
+  .pr-cal-pay { font-size: 9.5px; font-weight: 800; color: #065f46; background: #d1fae5; border: 1px solid #a7f3d0; border-radius: 5px; padding: 0 4px; line-height: 1.5; cursor: pointer; }
+  .pr-cal-pay:hover { background: #a7f3d0; }
+  .pr-cal-run { font-size: 9px; font-weight: 700; font-variant-numeric: tabular-nums; margin-top: auto; }
+  .pr-cal-run.to_pay { color: #dc2626; }
+  .pr-cal-run.paid_ahead { color: #059669; }
+  .pr-cal-run.settled { color: #cbd5e1; }
+  .pr-cal-foot { margin-top: 12px; display: flex; flex-wrap: wrap; gap: 7px; }
+  .pr-cal-hint { font-size: 11.5px; color: #6b7280; text-align: center; margin-top: 9px; }
+  .pr-cal-legend { margin-top: 9px; font-size: 10.5px; color: #9ca3af; display: flex; flex-wrap: wrap; gap: 11px; justify-content: center; }
+  .pr-cal-key { display: inline-flex; align-items: center; gap: 4px; }
+  .pr-cal-sw { width: 11px; height: 11px; border-radius: 4px; border: 1px solid #e5e7eb; display: inline-block; }
+  @media (max-width: 520px) {
+    .pr-cal-grid { gap: 3px; }
+    .pr-cal-day { min-height: 48px; }
+    .pr-cal-run { display: none; }
+  }
+
   /* custom pay modal computed line */
   .pr-calc { background: #f9fafb; border: 1px solid #eef0f2; border-radius: 10px; padding: 12px 14px; margin: 4px 0 12px; }
   .pr-calc .row { display: flex; justify-content: space-between; font-size: 12.5px; padding: 3px 0; color: #374151; }
@@ -190,6 +264,11 @@
       <button class="pr-btn-primary" id="prGen">Generate</button>
     </div>
   </div>
+
+  {{-- "something is waiting for you" banner. Above the tabs on purpose: a pending request
+       must not hide behind a tab choice, and it counts EVERY pending request, including
+       staff who never appear on the monthly grid. --}}
+  <div id="prAlertBanner"></div>
 
   <div class="pr-tabs">
     <button class="pr-tab active" id="prTabMonthly" data-tab="monthly">Monthly</button>
@@ -312,6 +391,7 @@
   <div class="pr-modal">
     <div class="pr-modal-h" id="prSetTitle">Pay settings</div>
     <div class="pr-modal-b">
+      <div id="prSetLockNote" style="display:none;"></div>
       <div class="pr-field">
         <label>Pay schedule</label>
         <div class="pr-radio-row" id="prSetSched">
@@ -384,6 +464,142 @@
   </div>
 </div>
 
+{{-- ── custom running balance ("khata") ─────────────────────────────────────
+     Calendar: one month at a time, every day clickable. Crossing a day means it
+     earns nothing; payments show on the day the money was handed over; the small
+     number under each day is the balance AFTER that day. --}}
+<div class="pr-modal-back" id="prBalCal">
+  <div class="pr-modal wide">
+    <div class="pr-modal-h" style="display:flex;align-items:center;justify-content:space-between;gap:10px;">
+      <span id="prBalCalTitle">Calendar</span>
+      <span class="pr-sheet-x" id="prBalCalX">×</span>
+    </div>
+    <div class="pr-modal-b">
+      <div id="prBalCalHero"></div>
+      <div class="pr-cal-nav">
+        <button class="pr-navbtn" id="prBalCalPrev" title="Previous month">‹</button>
+        <div class="pr-cal-month" id="prBalCalMonth">—</div>
+        <button class="pr-navbtn" id="prBalCalNext" title="Next month">›</button>
+      </div>
+      <div class="pr-cal-grid" id="prBalCalDows"></div>
+      <div class="pr-cal-grid" id="prBalCalGrid" style="margin-top:5px;"></div>
+      <div class="pr-cal-hint" id="prBalCalHint">Tap a day to mark it as not counted. Tap again to undo.</div>
+      <div class="pr-cal-foot" id="prBalCalFoot"></div>
+      <div class="pr-cal-legend">
+        <span class="pr-cal-key"><span class="pr-cal-sw" style="background:#fff;"></span> counted</span>
+        <span class="pr-cal-key"><span class="pr-cal-sw" style="background:#fef2f2;border-color:#fecaca;"></span> not counted</span>
+        <span class="pr-cal-key"><span class="pr-cal-sw" style="background:#d1fae5;border-color:#a7f3d0;"></span> payment</span>
+        <span class="pr-cal-key"><span class="pr-cal-sw" style="background:#fcfcfd;border-style:dashed;"></span> still to come</span>
+      </div>
+    </div>
+    <div class="pr-modal-f">
+      <button class="pr-btn-ghost" id="prBalCalClose">Done</button>
+      <button class="pr-btn-primary" id="prBalCalPay">＋ Record payment</button>
+    </div>
+  </div>
+</div>
+
+{{-- record a payment against the balance --}}
+<div class="pr-modal-back" id="prBalPayModal">
+  <div class="pr-modal">
+    <div class="pr-modal-h" id="prBalPayTitle">Record payment</div>
+    <div class="pr-modal-b">
+      <div class="pr-bal-mini" id="prBalPayNow"></div>
+      <div style="display:flex;gap:10px;">
+        <div class="pr-field" style="flex:1;">
+          <label>Amount paid</label>
+          <input type="number" class="pr-input" id="prBalPayAmt" min="1" placeholder="0">
+        </div>
+        <div class="pr-field" style="flex:1;">
+          <label>Date paid</label>
+          <input type="date" class="pr-input" id="prBalPayDate">
+        </div>
+      </div>
+      <div class="pr-calc"><div class="pr-calc-inner" id="prBalPayAfter"><div class="row"><span>Enter the amount to see the new balance</span><span></span></div></div></div>
+      <div style="font-size:12px;color:#6b7280;margin-bottom:6px;">Paid from</div>
+      <label class="pr-fund active" data-balfund="cash">
+        <input type="radio" name="prBalFund" value="cash" checked style="margin-right:8px;">
+        <span class="lbl" id="prBalCashLabel">NF Cash</span>
+      </label>
+      <label class="pr-fund" data-balfund="online">
+        <input type="radio" name="prBalFund" value="online" style="margin-right:8px;">
+        <span class="lbl">Online / bank transfer</span>
+        <select class="pr-bank-sel" id="prBalBankSel" disabled></select>
+      </label>
+      <input type="text" id="prBalPayNote" class="pr-input" style="margin-top:10px;" placeholder="Note (optional)">
+    </div>
+    <div class="pr-modal-f">
+      <button class="pr-btn-ghost" id="prBalPayCancel">Cancel</button>
+      <button class="pr-btn-primary" id="prBalPayConfirm">Record payment</button>
+    </div>
+  </div>
+</div>
+
+{{-- start a running balance (the anchor + what is owed on day one) --}}
+<div class="pr-modal-back" id="prBalEnableModal">
+  <div class="pr-modal">
+    <div class="pr-modal-h" id="prBalEnTitle">Start a running balance</div>
+    <div class="pr-modal-b">
+      <div style="font-size:12.5px;color:#4b5563;line-height:1.6;margin-bottom:14px;">
+        From the start date, every day earns the daily rate unless you cross it out on the calendar.
+        Payments you record are subtracted, and the difference carries forward month after month.
+        <b>Nothing before the start date is ever counted</b>, so the past stays closed.
+      </div>
+      <div class="pr-field">
+        <label>Start counting from</label>
+        <input type="date" class="pr-input" id="prBalEnStart">
+        <div style="font-size:11px;color:#9ca3af;margin-top:4px;" id="prBalEnStartHint"></div>
+      </div>
+      <div class="pr-field">
+        <label>On that date, the account stands at</label>
+        <div class="pr-radio-row" id="prBalEnDir" style="flex-wrap:wrap;">
+          <div class="pr-radio active" data-baldir="zero">Nothing owed<br><span style="font-weight:400;font-size:11px;">start clean</span></div>
+          <div class="pr-radio" data-baldir="ahead">Paid ahead<br><span style="font-weight:400;font-size:11px;">he holds our money</span></div>
+          <div class="pr-radio" data-baldir="owe">We owe him<br><span style="font-weight:400;font-size:11px;">unpaid from before</span></div>
+        </div>
+      </div>
+      <div class="pr-field" id="prBalEnAmtWrap" style="display:none;">
+        <label id="prBalEnAmtLbl">Amount</label>
+        <input type="number" class="pr-input" id="prBalEnAmt" min="0" placeholder="0">
+      </div>
+      <div id="prBalEnAdvNote"></div>
+    </div>
+    <div class="pr-modal-f">
+      <button class="pr-btn-ghost" id="prBalEnCancel">Cancel</button>
+      <button class="pr-btn-primary" id="prBalEnSave">Start balance</button>
+    </div>
+  </div>
+</div>
+
+{{-- change the rate from a chosen date --}}
+<div class="pr-modal-back" id="prBalRateModal">
+  <div class="pr-modal">
+    <div class="pr-modal-h" id="prBalRateTitle">Change rate</div>
+    <div class="pr-modal-b">
+      <div class="pr-bal-mini" id="prBalRateNow"></div>
+      <div style="display:flex;gap:10px;">
+        <div class="pr-field" style="flex:1;">
+          <label id="prBalRateLbl">New rate per day</label>
+          <input type="number" class="pr-input" id="prBalRateAmt" min="1" placeholder="0">
+        </div>
+        <div class="pr-field" style="flex:1;">
+          <label>Applies from</label>
+          <input type="date" class="pr-input" id="prBalRateDate">
+        </div>
+      </div>
+      <div style="font-size:11.5px;color:#6b7280;line-height:1.6;">
+        Days before that date keep the rate they were worked at — the balance already earned
+        is not re-priced. Pick the date the new rate actually started, even if that was
+        a few days ago.
+      </div>
+    </div>
+    <div class="pr-modal-f">
+      <button class="pr-btn-ghost" id="prBalRateCancel">Cancel</button>
+      <button class="pr-btn-primary" id="prBalRateSave">Save rate</button>
+    </div>
+  </div>
+</div>
+
 {{-- date-list side sheet --}}
 <div class="pr-sheet-back" id="prSheet">
   <div class="pr-sheet">
@@ -410,6 +626,10 @@
   let TAB = 'monthly';
   let CUST_ROWS = [];             // custom-schedule rows
   let CUST_LOADED_MONTH = '';     // month the custom list was last loaded for
+  let ADV_SUMMARY = null;         // page-wide pending-advance totals (banner + strip card)
+  let BAL_AVAILABLE = false;      // khata schema applied → running balances usable
+  let CAN_VOID_PAY = false;       // Taimur / Shabib: may void a custom-salary payment
+  let TODAY = '';                 // the server's today (never trust the browser clock for money)
 
   // ---- month init ----
   const now = new Date();
@@ -442,7 +662,9 @@
       KHAAS_BU_ID = j.khaas_bu_id || null;
       CAN_VOID = !!j.can_void_advance;
       LEAVE_ACT = j.leave_actions || null;
+      ADV_SUMMARY = j.advance_summary || null;
       ROWS = (j.rows || []).map(r => ({ ...r, _selected: false, _lateOverride: null, _netOverride: null, _skipOvertime: false, _skipLateLeave: false }));
+      renderBanner();
       renderStrip();
       renderRows();
       buildFundModal();
@@ -466,14 +688,47 @@
   function hasNetOverride(r) { return r._netOverride !== null && r._netOverride !== undefined && r._netOverride !== ''; }
   function effNet(r) { return hasNetOverride(r) ? Math.max(0, Number(r._netOverride)) : Math.max(0, net(r)); }
 
+  // The one thing on this page that says "you have something to do". Shown on both tabs,
+  // and it counts every pending request — including the ones from people who never appear
+  // on a payroll grid, which are exactly the ones that get forgotten.
+  function renderBanner() {
+    const s = ADV_SUMMARY || {};
+    const n = Number(s.count || 0);
+    const b = el('prAlertBanner');
+    if (!b) return;
+    if (!n) { b.innerHTML = ''; return; }
+
+    const bits = [];
+    if (s.oldest_days > 0) {
+      bits.push('oldest is ' + s.oldest_days + ' day' + (s.oldest_days === 1 ? '' : 's') +
+                ' old' + (s.oldest_name ? ' (' + esc(s.oldest_name) + ')' : ''));
+    }
+    bits.push('no money has been paid out yet');
+    if (s.blocked > 0) {
+      bits.push('<b>' + s.blocked + '</b> can only be rejected — they have left or are on a running balance');
+    }
+
+    b.innerHTML = '<div class="pr-banner">' +
+      '<span class="ic">⏳</span>' +
+      '<div><div class="tx">' + n + ' advance request' + (n === 1 ? '' : 's') +
+        ' waiting for you · ' + fmt(s.total) + '</div>' +
+        '<div class="sub">' + bits.join(' · ') + '</div></div>' +
+      '<button type="button" class="act" id="prBannerBtn">Review ' + (n === 1 ? 'it' : 'them') + '</button>' +
+    '</div>';
+    el('prBannerBtn').onclick = () => openRequestSheet();
+  }
+
   function renderStrip() {
     const configured = ROWS.filter(r => r.configured);
     const totalNet = ROWS.reduce((s, r) => s + effNet(r), 0);
     const missing = ROWS.filter(r => !r.configured).length;
-    // Requests waiting on a decision. Derived from the rows themselves so the card and the
-    // per-row chips can never disagree; the sheet re-fetches the live list when opened.
-    const reqCount = ROWS.reduce((s, r) => s + ((r.pending_requests || []).length), 0);
-    const reqTotal = ROWS.reduce((s, r) => s + Number(r.pending_request_total || 0), 0);
+    // Requests waiting on a decision — the PAGE total from the server, which is what the
+    // review sheet lists. Deriving it from ROWS (as this once did) counted only employees
+    // on this grid, so it read "2" while the sheet showed 6: custom-schedule staff, people
+    // who have left, and anyone hidden from Payroll raise requests too. The per-row chips
+    // still show that row's own requests.
+    const reqCount = Number((ADV_SUMMARY || {}).count || 0);
+    const reqTotal = Number((ADV_SUMMARY || {}).total || 0);
     el('prStrip').innerHTML =
       card('Employees', ROWS.length) +
       card('With salary set', configured.length) +
@@ -1208,17 +1463,30 @@
       const age = q.age_days > 60
         ? '<span style="color:#b91c1c;font-weight:700;"> · ' + q.age_days + ' days old</span>'
         : (q.age_days > 0 ? '<span style="color:#9ca3af;"> · ' + q.age_days + 'd ago</span>' : '');
+      // Some requests can no longer be paid: the employee has left, or they are now on a
+      // running balance (where money is recorded as a payment, not an advance). The server
+      // refuses both, so offer Reject alone and say why rather than showing a button that fails.
+      const blockedWhy = (q.employee_active === false)
+        ? 'This employee is no longer active — it can only be rejected.'
+        : (q.balance_tracked
+            ? 'On a running balance — record a payment on their card instead, then reject this.'
+            : null);
+      const actions = blockedWhy
+        ? '<div style="display:flex;gap:6px;flex-shrink:0;">' +
+            '<button type="button" data-reqno="' + q.request_id + '" style="font-size:11px;font-weight:700;color:#b91c1c;background:#fee2e2;border:1px solid #fecaca;border-radius:6px;padding:5px 10px;cursor:pointer;white-space:nowrap;">✕ Reject</button>' +
+          '</div>'
+        : '<div style="display:flex;gap:6px;flex-shrink:0;">' +
+            '<button type="button" data-reqok="' + q.request_id + '" style="font-size:11px;font-weight:700;color:#166534;background:#dcfce7;border:1px solid #bbf7d0;border-radius:6px;padding:5px 10px;cursor:pointer;white-space:nowrap;">✓ Approve &amp; pay</button>' +
+            '<button type="button" data-reqno="' + q.request_id + '" style="font-size:11px;font-weight:700;color:#b91c1c;background:#fee2e2;border:1px solid #fecaca;border-radius:6px;padding:5px 10px;cursor:pointer;white-space:nowrap;">✕ Reject</button>' +
+          '</div>';
       return '<div class="pr-daterow" style="align-items:flex-start;">' +
         '<div style="min-width:0;">' +
           '<div class="dt">' + fmt(q.amount) + ' <span style="font-weight:600;color:#374151;font-size:12px;">· ' + esc(q.fullname) + '</span></div>' +
           '<div class="lb">' + (q.date || '') + ' · ' + esc(q.request_number) + age + '</div>' +
           '<div class="lb" style="color:#9ca3af;">' + who + '</div>' +
           (q.note ? '<div class="lb" style="color:#9ca3af;font-style:italic;">“' + esc(q.note) + '”</div>' : '') +
-        '</div>' +
-        '<div style="display:flex;gap:6px;flex-shrink:0;">' +
-          '<button type="button" data-reqok="' + q.request_id + '" style="font-size:11px;font-weight:700;color:#166534;background:#dcfce7;border:1px solid #bbf7d0;border-radius:6px;padding:5px 10px;cursor:pointer;white-space:nowrap;">✓ Approve &amp; pay</button>' +
-          '<button type="button" data-reqno="' + q.request_id + '" style="font-size:11px;font-weight:700;color:#b91c1c;background:#fee2e2;border:1px solid #fecaca;border-radius:6px;padding:5px 10px;cursor:pointer;white-space:nowrap;">✕ Reject</button>' +
-        '</div></div>';
+          (blockedWhy ? '<div class="lb" style="color:#b45309;">⚠ ' + blockedWhy + '</div>' : '') +
+        '</div>' + actions + '</div>';
     }).join('');
     html += '<div class="pr-daterow" style="font-weight:700;border-top:2px solid #eef0f2;"><span class="dt">Total requested</span><span class="dt">' + fmt(total) + '</span></div>';
     el('prSheetBody').innerHTML = html;
@@ -1388,6 +1656,8 @@
     el('prAdvBankSel').innerHTML = bankOpts;
     if (el('prCustCashLabel')) el('prCustCashLabel').textContent = cashLbl;
     if (el('prCustBankSel')) el('prCustBankSel').innerHTML = bankOpts;
+    if (el('prBalCashLabel')) el('prBalCashLabel').textContent = cashLbl;
+    if (el('prBalBankSel')) el('prBalBankSel').innerHTML = bankOpts;
   }
 
   // ---- give advance ----
@@ -1577,9 +1847,14 @@
       KHAAS_AVAILABLE = !!j.khaas_available;
       KHAAS_BU_ID = j.khaas_bu_id || null;
       CAN_VOID = !!j.can_void_advance;
+      BAL_AVAILABLE = !!j.balance_available;
+      CAN_VOID_PAY = !!j.can_void_payment;
+      TODAY = j.today || TODAY;
+      ADV_SUMMARY = j.advance_summary || null;
       CUST_ROWS = j.rows || [];
       CUST_LOADED_MONTH = month;
       buildFundModal();
+      renderBanner();
       renderCustom();
     } catch (e) {
       el('prCustList').innerHTML = '<div class="pr-empty">Could not load: ' + (e.message || e) + '</div>';
@@ -1608,6 +1883,36 @@
       ? '<span class="pr-bu bu-' + (r.bu_code === 'KHAAS' ? 'KHAAS">Khaas' : 'NF">NF') + '</span>'
       : '';
 
+    // A running-balance employee is a different KIND of card: one balance and a
+    // calendar, no periods and no advances. Everyone else keeps the period card
+    // exactly as it was.
+    //
+    // "Paid in <month>" must count BOTH channels for a tracked employee: the khata
+    // payments AND any date-range periods filed under that month from before the
+    // balance started. They are different entry kinds, so they can never overlap —
+    // and counting only the khata read "Paid in Aug: Rs 0" for men who really had
+    // been paid tens of thousands by period earlier that same month.
+    const paidThisMonth = r.balance_tracked
+      ? (((r.month_summary || {}).paid || 0) + (r.paid_total || 0))
+      : (r.paid_total || 0);
+    const body = r.balance_tracked ? balBody(r, i) : periodBody(r, i);
+
+    return '<div class="pr-cust-card">' +
+      '<div class="pr-cust-top">' +
+        '<div><div class="pr-cust-name">' + esc(r.fullname) +
+          (r.designation ? ' <span style="font-weight:400;color:#9ca3af;font-size:12px;">· ' + esc(r.designation) + '</span>' : '') + '</div>' +
+          '<div class="pr-cust-meta">' + rate + buChip +
+            (r.balance_tracked ? '<span class="pr-ratepill" title="Paid against a running balance">📒 running balance</span>' : '') +
+            '<span class="pr-gear" data-csettings="' + i + '" title="Pay schedule & business unit">⚙ settings</span></div></div>' +
+        '<div style="text-align:right;"><div style="font-size:11px;color:#9ca3af;">Paid in ' + esc(monthLabel()) + '</div>' +
+          '<div style="font-weight:700;">' + fmt(paidThisMonth) + '</div></div>' +
+      '</div>' +
+      body +
+    '</div>';
+  }
+
+  // ---- period card (unchanged behaviour) ----
+  function periodBody(r, i) {
     let cover = (r.paid_periods || []).map((p, pi) =>
       '<span class="pr-cover-chip paid" data-period="' + i + '_' + pi + '" title="Paid ' + esc(String(p.paid_at).slice(0, 10)) +
         (paidFromLabel(p) ? ' from ' + paidFromLabel(p) : '') + '">✓ ' + esc(p.label) + ' · ' + fmt(p.net) + '</span>'
@@ -1625,18 +1930,83 @@
       ? '<div class="pr-cust-adv">Open advances: <span class="view" data-cadv="' + i + '">' + fmt(r.advance_total) + '</span> (deducted next pay) <span class="give" data-cgive="' + i + '">＋ advance</span></div>'
       : '<div class="pr-cust-adv" style="color:#9ca3af;">No open advances <span class="give" data-cgive="' + i + '">＋ advance</span></div>';
 
-    return '<div class="pr-cust-card">' +
-      '<div class="pr-cust-top">' +
-        '<div><div class="pr-cust-name">' + esc(r.fullname) +
-          (r.designation ? ' <span style="font-weight:400;color:#9ca3af;font-size:12px;">· ' + esc(r.designation) + '</span>' : '') + '</div>' +
-          '<div class="pr-cust-meta">' + rate + buChip +
-            '<span class="pr-gear" data-csettings="' + i + '" title="Pay schedule & business unit">⚙ settings</span></div></div>' +
-        '<div style="text-align:right;"><div style="font-size:11px;color:#9ca3af;">Paid in ' + esc(monthLabel()) + '</div>' +
-          '<div style="font-weight:700;">' + fmt(r.paid_total || 0) + '</div></div>' +
-      '</div>' +
-      '<div class="pr-cover">' + cover + '</div>' +
-      adv +
-    '</div>';
+    // Offered only once a rate exists — the khata prices days off it from day one.
+    const start = (BAL_AVAILABLE && r.configured)
+      ? '<div class="pr-bal-start" data-balstart="' + i + '">📒 Start a running balance — record payments &amp; mark absent days instead</div>'
+      : '';
+
+    return '<div class="pr-cover">' + cover + '</div>' + adv + start;
+  }
+
+  // ---- running-balance card ----
+  function balBody(r, i) {
+    const b = r.balance || {};
+    const s = r.month_summary || {};
+    const dir = b.direction || 'settled';
+    const asOf = (s.is_current === false) ? ('to ' + esc(niceDate(s.closing_date))) : 'as of today';
+
+    const hero =
+      '<div class="pr-bal-hero ' + dir + '">' +
+        '<div>' +
+          '<div class="pr-bal-lbl">' + esc(b.label || 'All settled') + '</div>' +
+          '<div class="pr-bal-amt">' + fmt(b.amount || 0) + '</div>' +
+          '<div class="pr-bal-note">as of today · balance running since ' + esc(b.start_label || '') + '</div>' +
+        '</div>' +
+        '<div class="pr-bal-acts">' +
+          '<button class="pr-bal-btn primary" data-balpay="' + i + '">＋ Payment</button>' +
+          '<button class="pr-bal-btn" data-balcal="' + i + '">📅 Calendar</button>' +
+        '</div>' +
+      '</div>';
+
+    const stat = (label, value, extra) =>
+      '<span class="pr-bal-stat">' + label + ' <b>' + value + '</b>' + (extra ? ' · ' + extra : '') + '</span>';
+
+    // A month entirely BEFORE the anchor has no days in this account at all. Saying
+    // "earned 0 · Balance All settled 0" there reads as though the month was worked and
+    // squared up — it wasn't, the khata did not exist yet. Same wording as the calendar.
+    let stats = s.before_start
+      ? '<div class="pr-bal-stats"><span class="pr-bal-stat">' + esc(monthLabel()) +
+        ' is before this balance started on <b>' + esc(b.start_label || '') + '</b></span></div>'
+      : '<div class="pr-bal-stats">' +
+        stat(esc(monthLabel()) + ' earned', fmt(s.earned || 0), (s.counted || 0) + ' day' + ((s.counted === 1) ? '' : 's') + ' counted') +
+        stat(esc(monthLabel()) + ' paid', fmt(s.paid || 0), (r.month_payments || []).length + ' payment' + (((r.month_payments || []).length === 1) ? '' : 's')) +
+        ((s.crossed || 0) > 0 ? stat('Not counted', s.crossed + ' day' + (s.crossed === 1 ? '' : 's'), '') : '') +
+        ((s.is_current === false) ? stat('Balance ' + asOf, esc(s.label || '') + ' ' + fmt(s.amount || 0), '') : '') +
+        '</div>';
+
+    // Date-range payments filed under the month being viewed, from BEFORE the balance
+    // started. That money really was paid and the records are intact, so the card shows
+    // them rather than pretending the month was empty. Read-only — periods are blocked
+    // for a tracked employee, so there is no "＋ Add period" here. The chips reuse the
+    // same data-period hooks, so clicking one opens the same frozen receipt as always.
+    const legacy = (r.paid_periods || []).length
+      ? '<div class="pr-bal-legacy">' +
+          '<div class="lbl">Also paid in ' + esc(monthLabel()) + ' by date range, before the running balance started ' +
+          '— already settled, and not part of the balance above</div>' +
+          '<div class="pr-cover" style="margin-top:7px;">' +
+            (r.paid_periods || []).map((p, pi) =>
+              '<span class="pr-cover-chip paid" data-period="' + i + '_' + pi + '" title="Paid ' + esc(String(p.paid_at).slice(0, 10)) +
+                (paidFromLabel(p) ? ' from ' + paidFromLabel(p) : '') + '">✓ ' + esc(p.label) + ' · ' + fmt(p.net) + '</span>'
+            ).join('') +
+          '</div>' +
+        '</div>'
+      : '';
+
+    // A leftover advance from before the khata (shouldn't happen — enabling converts
+    // them — but if one is created another way it must not sit there invisibly).
+    const warn = (r.advance_total > 0)
+      ? '<div class="pr-bal-warn">⚠ This employee still has ' + fmt(r.advance_total) +
+        ' in open advances from before the running balance. They are <b>not</b> part of this balance — ' +
+        '<span class="view" style="text-decoration:underline;cursor:pointer;" data-cadv="' + i + '">see them</span>.</div>'
+      : '';
+
+    return hero + stats + legacy + warn;
+  }
+
+  function niceDate(d) {
+    if (!d) return '';
+    const t = new Date(d + 'T00:00:00');
+    return t.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
   }
   function monthLabel() {
     const [y, m] = (CURMONTH || el('prMonth').value).split('-').map(Number);
@@ -1658,10 +2028,20 @@
       const chip = document.querySelector('[data-period="' + i + '_' + pi + '"]');
       if (chip) chip.onclick = () => showCustomPeriod(r, p);
     });
+    // running-balance controls
+    const bpay = document.querySelector('[data-balpay="' + i + '"]');
+    if (bpay) bpay.onclick = () => openBalPay(r);
+    const bcal = document.querySelector('[data-balcal="' + i + '"]');
+    if (bcal) bcal.onclick = () => openBalCal(r);
+    const bstart = document.querySelector('[data-balstart="' + i + '"]');
+    if (bstart) bstart.onclick = () => openBalEnable(r);
   }
 
   // Rate edit reuses the base-salary endpoint (base_salary IS the rate for custom).
+  // A tracked employee goes to the dated rate change instead: their past days must
+  // keep the price they were worked at.
   function editRate(r) {
+    if (r.balance_tracked) { openBalRate(r); return; }
     const cur = r.configured ? Math.round(r.base_rate) : '';
     const val = prompt('Rate for ' + r.fullname + ' (' + (r.rate_type === 'daily' ? 'per DAY' : 'per MONTH') + '):', cur);
     if (val === null) return;
@@ -1729,6 +2109,19 @@
     setRadioGroup('prSetBu', 'bu', SET_BU);
     el('prSetRateWrap').style.display = SET_SCHED === 'custom' ? 'block' : 'none';
     el('prSetBuWrap').style.display = KHAAS_AVAILABLE ? 'block' : 'none';
+    // While a running balance is on, the schedule and rate unit are frozen (the server
+    // refuses them too): switching would strand the balance or reprice the whole account.
+    // The business unit stays editable, so the save skips the schedule call instead of
+    // failing the whole modal.
+    const locked = !!r.balance_tracked;
+    el('prSetLockNote').style.display = locked ? 'block' : 'none';
+    el('prSetLockNote').innerHTML = locked
+      ? '<div class="pr-bal-warn" style="margin-top:0;margin-bottom:12px;">📒 This employee is on a <b>running balance</b>, so the pay schedule and rate unit stay fixed. The rate itself is changed from their card, with the date it applies from.</div>'
+      : '';
+    ['prSetSched', 'prSetRate'].forEach(id => {
+      el(id).style.opacity = locked ? '.45' : '';
+      el(id).style.pointerEvents = locked ? 'none' : '';
+    });
     el('prSetModal').classList.add('show');
   }
   document.querySelectorAll('#prSetSched [data-sched]').forEach(x => x.onclick = () => {
@@ -1747,11 +2140,15 @@
     if (!SET_ROW) return;
     el('prSetSave').disabled = true; el('prSetSave').textContent = 'Saving…';
     try {
-      const r1 = await fetch('/hr/payroll/set-schedule', {
-        method: 'POST', headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': csrf },
-        body: JSON.stringify({ user_id: SET_ROW.user_id, pay_schedule: SET_SCHED, rate_type: SET_RATE })
-      }).then(x => x.json());
-      if (!r1.success) throw new Error(r1.message || 'Failed');
+      // A balance-tracked employee's schedule is frozen — skip that call rather than
+      // let its (correct) refusal block a business-unit change.
+      if (!SET_ROW.balance_tracked) {
+        const r1 = await fetch('/hr/payroll/set-schedule', {
+          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': csrf },
+          body: JSON.stringify({ user_id: SET_ROW.user_id, pay_schedule: SET_SCHED, rate_type: SET_RATE })
+        }).then(x => x.json());
+        if (!r1.success) throw new Error(r1.message || 'Failed');
+      }
       if (KHAAS_AVAILABLE) {
         const r2 = await fetch('/hr/payroll/set-business-unit', {
           method: 'POST', headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': csrf },
@@ -1853,6 +2250,455 @@
       alert('Could not pay: ' + (e.message || e));
     } finally {
       el('prCustConfirm').disabled = false; el('prCustConfirm').textContent = 'Pay period';
+    }
+  };
+
+  // ============================================================
+  //  CUSTOM RUNNING BALANCE ("khata")
+  // ============================================================
+  // One employee's account: days earn, payments subtract, the difference carries
+  // forward. Everything here is scoped to the Custom tab — the monthly grid never
+  // reaches any of it. Element ids are all prefixed prBal… because both views are
+  // in the DOM at once and a shared id would wire the wrong element.
+
+  let BAL_ROW = null;        // employee whose calendar is open
+  let BAL_CAL = null;        // the loaded month payload
+  let BAL_CAL_MONTH = '';
+  let BAL_DIRTY = false;     // something changed → refresh the list when the calendar closes
+
+  // Compact money for a calendar cell: 10,000 → "10k", 4,500 → "4.5k".
+  function balShort(n) {
+    n = Math.round(Number(n) || 0);
+    if (n === 0) return '0';
+    if (n < 1000) return String(n);
+    const k = n / 1000;
+    return (k >= 100 ? Math.round(k) : Math.round(k * 10) / 10) + 'k';
+  }
+
+  // The balance in words + colour, never a bare minus sign.
+  function balWords(signed) {
+    const v = Number(signed) || 0;
+    if (Math.abs(v) < 0.005) return { dir: 'settled', label: 'All settled', amount: 0 };
+    return v > 0
+      ? { dir: 'paid_ahead', label: 'Paid ahead', amount: v }
+      : { dir: 'to_pay', label: 'To pay', amount: -v };
+  }
+
+  // ---- calendar ----
+  async function openBalCal(r) {
+    BAL_ROW = r;
+    BAL_DIRTY = false;
+    const startMonth = (r.balance && r.balance.track_start) ? r.balance.track_start.slice(0, 7) : '';
+    let month = CURMONTH || el('prMonth').value;
+    if (startMonth && month < startMonth) { month = startMonth; }
+    el('prBalCalTitle').textContent = 'Calendar — ' + r.fullname;
+    el('prBalCalHero').innerHTML = '';
+    el('prBalCalFoot').innerHTML = '';
+    el('prBalCalGrid').innerHTML = '<div class="pr-empty" style="grid-column:1/-1;">Loading…</div>';
+    el('prBalCal').classList.add('show');
+    await balCalLoad(month);
+  }
+
+  async function balCalLoad(month, quiet) {
+    if (!BAL_ROW) return;
+    if (!quiet) el('prBalCalGrid').innerHTML = '<div class="pr-empty" style="grid-column:1/-1;">Loading…</div>';
+    try {
+      const res = await fetch('/hr/payroll/balance-calendar?user_id=' + BAL_ROW.user_id +
+        '&month=' + encodeURIComponent(month), { headers: { 'Accept': 'application/json' } });
+      const j = await res.json();
+      if (!j.success) throw new Error(j.message || 'Failed');
+      BAL_CAL = j;
+      BAL_CAL_MONTH = j.month;
+      if (j.can_void_payment !== undefined) CAN_VOID_PAY = !!j.can_void_payment;
+      if (j.today) TODAY = j.today;
+      balCalRender();
+    } catch (e) {
+      el('prBalCalGrid').innerHTML = '<div class="pr-empty" style="grid-column:1/-1;">Could not load: ' + esc(e.message || e) + '</div>';
+    }
+  }
+
+  function balCalRender() {
+    const j = BAL_CAL;
+    if (!j) return;
+    const b = j.balance || {}, s = j.summary || {};
+
+    el('prBalCalMonth').textContent = j.month_label;
+    el('prBalCalPrev').style.opacity = j.has_prev ? '1' : '.35';
+    el('prBalCalPrev').style.pointerEvents = j.has_prev ? '' : 'none';
+
+    el('prBalCalHero').innerHTML =
+      '<div class="pr-bal-hero ' + (b.direction || 'settled') + '" style="margin-top:0;">' +
+        '<div>' +
+          '<div class="pr-bal-lbl">' + esc(b.label || 'All settled') + ' — today</div>' +
+          '<div class="pr-bal-amt">' + fmt(b.amount || 0) + '</div>' +
+          '<div class="pr-bal-note">' + fmt(b.day_rate) + ' per day · running since ' + esc(b.start_label || '') + '</div>' +
+        '</div>' +
+      '</div>';
+
+    el('prBalCalDows').innerHTML = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
+      .map(d => '<div class="pr-cal-dow">' + d + '</div>').join('');
+
+    const days = j.days || [];
+    let cells = '';
+    if (days.length) {
+      const lead = (days[0].dow || 1) - 1;   // dow: 1 = Monday
+      for (let k = 0; k < lead; k++) cells += '<div class="pr-cal-day empty"></div>';
+    }
+    cells += days.map((d, di) => balDayCell(d, di)).join('');
+    el('prBalCalGrid').innerHTML = cells;
+
+    const chip = (label, value, extra) =>
+      '<span class="pr-bal-stat">' + label + ' <b>' + value + '</b>' + (extra ? ' · ' + extra : '') + '</span>';
+    // A month before the account existed says so, rather than dating today's balance to it.
+    el('prBalCalFoot').innerHTML = s.before_start
+      ? '<span class="pr-bal-stat">This month is before the balance started on <b>' + esc(b.start_label || '') + '</b></span>'
+      : (chip('Earned', fmt(s.earned || 0), (s.counted || 0) + ' day' + ((s.counted === 1) ? '' : 's')) +
+         chip('Paid', fmt(s.paid || 0)) +
+         ((s.crossed || 0) > 0 ? chip('Not counted', s.crossed + ' day' + (s.crossed === 1 ? '' : 's')) : '') +
+         chip('Balance ' + (s.is_current ? 'today' : 'at ' + esc(niceDate(s.closing_date))),
+              esc(s.label || '') + ' ' + fmt(s.amount || 0)));
+    el('prBalCalHint').style.display = s.before_start ? 'none' : '';
+
+    // wire the cells
+    days.forEach((d, di) => {
+      const cell = document.querySelector('[data-balday="' + di + '"]');
+      if (cell && d.in_account) cell.onclick = () => balToggleDay(di);
+      const pay = document.querySelector('[data-balpayday="' + di + '"]');
+      if (pay) pay.onclick = (ev) => { ev.stopPropagation(); showBalPayments(d); };
+    });
+  }
+
+  function balDayCell(d, di) {
+    let cls = 'pr-cal-day';
+    if (!d.in_account) { cls += ' pre'; }
+    else {
+      if (d.crossed) cls += ' crossed';
+      if (d.future) cls += ' future';
+      if (!d.crossed && !d.future) cls += ' counted';
+    }
+    if (d.is_today) cls += ' today';
+
+    const x = d.crossed ? '<span class="pr-cal-x">✕</span>' : '';
+    const pay = (d.paid_total > 0)
+      ? '<span class="pr-cal-pay" data-balpayday="' + di + '">' + balShort(d.paid_total) + '</span>'
+      : '';
+    let run = '';
+    if (d.in_account && d.running !== null && d.running !== undefined && !d.future) {
+      const w = balWords(d.running);
+      run = '<span class="pr-cal-run ' + w.dir + '">' + balShort(w.amount) + '</span>';
+    }
+    return '<div class="' + cls + '" data-balday="' + di + '" title="' + esc(balDayTitle(d)) + '">' +
+      x + '<span class="n">' + d.day + '</span>' + pay + run + '</div>';
+  }
+
+  // The whole story of one day, for the hover tooltip: what it earned, what was
+  // paid on it, and the balance after it — the running account, day by day.
+  function balDayTitle(d) {
+    const dt = niceDate(d.date);
+    if (!d.in_account) return dt + ' — before this balance started';
+    const bits = [dt];
+    if (d.crossed) bits.push(d.future ? 'marked not counted (still to come)' : 'not counted — earns nothing');
+    else if (d.future) bits.push('still to come');
+    else bits.push('counted · earns ' + fmt(d.rate));
+    if (d.paid_total > 0) bits.push('paid ' + fmt(d.paid_total));
+    if (!d.future && d.running !== null && d.running !== undefined) {
+      const w = balWords(d.running);
+      bits.push('balance after: ' + (w.dir === 'settled' ? 'all settled' : w.label.toLowerCase() + ' ' + fmt(w.amount)));
+    }
+    return bits.join(' · ');
+  }
+
+  // Optimistic flip for instant feedback, then a silent reload so the running
+  // balances and totals are the server's answer, never the browser's guess.
+  async function balToggleDay(di) {
+    const d = ((BAL_CAL || {}).days || [])[di];
+    if (!d || !d.in_account || !BAL_ROW) return;
+    const cell = document.querySelector('[data-balday="' + di + '"]');
+    if (cell) { cell.classList.toggle('crossed'); cell.classList.toggle('counted'); }
+    try {
+      const res = await fetch('/hr/payroll/balance-absence', {
+        method: 'POST', headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': csrf },
+        body: JSON.stringify({ user_id: BAL_ROW.user_id, date: d.date })
+      });
+      const j = await res.json();
+      if (!j.success) throw new Error(j.message || 'Failed');
+      BAL_DIRTY = true;
+      await balCalLoad(BAL_CAL_MONTH, true);
+    } catch (e) {
+      alert('Could not update that day: ' + (e.message || e));
+      balCalLoad(BAL_CAL_MONTH, true);
+    }
+  }
+
+  el('prBalCalPrev').onclick = () => { if (BAL_CAL) balCalLoad(BAL_CAL.prev_month); };
+  el('prBalCalNext').onclick = () => { if (BAL_CAL) balCalLoad(BAL_CAL.next_month); };
+  function closeBalCal() {
+    el('prBalCal').classList.remove('show');
+    if (BAL_DIRTY) { BAL_DIRTY = false; customLoad(); }
+  }
+  el('prBalCalX').onclick = closeBalCal;
+  el('prBalCalClose').onclick = closeBalCal;
+  el('prBalCal').onclick = (ev) => { if (ev.target === el('prBalCal')) closeBalCal(); };
+  el('prBalCalPay').onclick = () => {
+    if (BAL_ROW) openBalPay(BAL_ROW, (BAL_CAL || {}).balance);
+  };
+
+  // ---- payment receipts for one day ----
+  function showBalPayments(d) {
+    const list = d.payments || [];
+    if (!list.length) return;
+    const line = (label, value, muted) =>
+      '<div class="pr-daterow"><span class="dt" style="font-weight:400;color:#6b7280;">' + label + '</span>' +
+      '<span class="dt"' + (muted ? ' style="color:#cbd5e1;"' : '') + '>' + value + '</span></div>';
+
+    let html = '';
+    list.forEach((p, pi) => {
+      if (pi > 0) html += '<div style="height:10px;background:#f9fafb;border-top:1px solid #eef0f2;border-bottom:1px solid #eef0f2;"></div>';
+      html += line('Amount', '<b>' + fmt(p.amount) + '</b>');
+      html += line('Paid on', esc(niceDate(p.date)));
+      html += line('Paid from', paidFromLabel(p) || '—');
+      if (p.paid_by_name) html += line('Recorded by', esc(p.paid_by_name));
+      if (p.notes) html += line('Note', esc(p.notes));
+      if (p.ledger_id) html += line('Ledger entry', '#' + p.ledger_id, true);
+      if (CAN_VOID_PAY) {
+        html += '<div style="padding:10px 14px;">' +
+          '<button type="button" class="pr-la-btn pr-la-cut" data-balvoid="' + pi + '">🗑 Void this payment</button>' +
+          '<div style="font-size:11px;color:#9ca3af;margin-top:5px;line-height:1.5;">Returns the money to where it came from and removes it from the balance.</div>' +
+          '</div>';
+      }
+    });
+
+    sheetWide(false);
+    el('prSheetTitle').textContent = 'Payment — ' + niceDate(d.date);
+    el('prSheetBody').innerHTML = html;
+    el('prSheet').classList.add('show');
+    list.forEach((p, pi) => {
+      const btn = document.querySelector('[data-balvoid="' + pi + '"]');
+      if (btn) btn.onclick = () => voidBalPayment(p);
+    });
+  }
+
+  async function voidBalPayment(p) {
+    const reason = prompt('Why is this ' + fmt(p.amount) + ' payment being voided?\n\nThe money goes back to where it came from and the balance is recalculated.');
+    if (reason === null) return;
+    if (String(reason).trim().length < 3) { alert('Please type a short reason.'); return; }
+    try {
+      const res = await fetch('/hr/payroll/balance-void-payment', {
+        method: 'POST', headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': csrf },
+        body: JSON.stringify({ payment_id: p.id, reason: reason })
+      });
+      const j = await res.json();
+      if (!j.success) throw new Error(j.message || 'Failed');
+      el('prSheet').classList.remove('show');
+      alert(j.message || 'Payment voided.');
+      BAL_DIRTY = true;
+      if (el('prBalCal').classList.contains('show')) { balCalLoad(BAL_CAL_MONTH, true); }
+      else { customLoad(); BAL_DIRTY = false; }
+    } catch (e) {
+      alert('Could not void: ' + (e.message || e));
+    }
+  }
+
+  // ---- record a payment ----
+  let BAL_PAY_ROW = null, BAL_PAY_BAL = null;
+  function openBalPay(r, balOverride) {
+    BAL_PAY_ROW = r;
+    BAL_PAY_BAL = balOverride || r.balance || null;
+    const b = BAL_PAY_BAL || {};
+    el('prBalPayTitle').textContent = 'Record payment — ' + r.fullname;
+    el('prBalPayNow').innerHTML = 'Balance now: <b>' + esc(b.label || '—') + ' ' + fmt(b.amount || 0) + '</b>' +
+      (b.day_rate ? ' · ' + fmt(b.day_rate) + ' per day' : '');
+    el('prBalPayAmt').value = '';
+    el('prBalPayDate').value = TODAY;
+    el('prBalPayDate').max = TODAY;
+    if (b.track_start) el('prBalPayDate').min = b.track_start;
+    el('prBalPayNote').value = '';
+    el('prBalPayAfter').innerHTML = '<div class="row"><span>Enter the amount to see the new balance</span><span></span></div>';
+    document.querySelectorAll('[data-balfund]').forEach(x => x.classList.remove('active'));
+    document.querySelector('[data-balfund="cash"]').classList.add('active');
+    document.querySelector('input[name=prBalFund][value=cash]').checked = true;
+    el('prBalBankSel').disabled = true;
+    el('prBalPayModal').classList.add('show');
+    setTimeout(() => el('prBalPayAmt').focus(), 50);
+  }
+
+  function balPayPreview() {
+    const amt = Number(el('prBalPayAmt').value) || 0;
+    if (!amt || !BAL_PAY_BAL) {
+      el('prBalPayAfter').innerHTML = '<div class="row"><span>Enter the amount to see the new balance</span><span></span></div>';
+      return;
+    }
+    const now = balWords(Number(BAL_PAY_BAL.balance) || 0);
+    const after = balWords((Number(BAL_PAY_BAL.balance) || 0) + amt);
+    el('prBalPayAfter').innerHTML =
+      '<div class="row"><span>Balance now</span><span>' + esc(now.label) + ' ' + fmt(now.amount) + '</span></div>' +
+      '<div class="row"><span>This payment</span><span>+ ' + fmt(amt) + '</span></div>' +
+      '<div class="row tot"><span>Balance after</span><span style="color:' +
+        (after.dir === 'to_pay' ? '#b91c1c' : (after.dir === 'paid_ahead' ? '#047857' : '#6b7280')) + ';">' +
+        esc(after.label) + ' ' + fmt(after.amount) + '</span></div>' +
+      '<div class="ref">Days keep earning after this, so the balance moves again tomorrow.</div>';
+  }
+  el('prBalPayAmt').oninput = balPayPreview;
+
+  document.querySelectorAll('[data-balfund]').forEach(f => {
+    f.onclick = (ev) => {
+      if (ev.target.closest('select')) return;
+      document.querySelectorAll('[data-balfund]').forEach(x => x.classList.remove('active'));
+      f.classList.add('active');
+      f.querySelector('input[type=radio]').checked = true;
+      const dis = (f.getAttribute('data-balfund') !== 'online');
+      if (el('prBalBankSel').disabled !== dis) el('prBalBankSel').disabled = dis;
+    };
+  });
+  el('prBalPayCancel').onclick = () => el('prBalPayModal').classList.remove('show');
+  el('prBalPayModal').onclick = (ev) => { if (ev.target === el('prBalPayModal')) el('prBalPayModal').classList.remove('show'); };
+  el('prBalPayConfirm').onclick = async () => {
+    if (!BAL_PAY_ROW) return;
+    const amount = Number(el('prBalPayAmt').value);
+    if (!amount || amount < 1) { alert('Enter the amount paid.'); return; }
+    const date = el('prBalPayDate').value;
+    if (!date) { alert('Pick the date the money was paid.'); return; }
+    const fundType = document.querySelector('input[name=prBalFund]:checked').value;
+    const bankId = el('prBalBankSel').value;
+    if (fundType === 'online' && !bankId) { alert('Choose the bank.'); return; }
+    el('prBalPayConfirm').disabled = true; el('prBalPayConfirm').textContent = 'Recording…';
+    try {
+      const res = await fetch('/hr/payroll/balance-payment', {
+        method: 'POST', headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': csrf },
+        body: JSON.stringify({
+          user_id: BAL_PAY_ROW.user_id, amount: amount, date: date,
+          funding: fundType, bank_id: fundType === 'online' ? Number(bankId) : null,
+          note: el('prBalPayNote').value || null
+        })
+      });
+      const j = await res.json();
+      if (!j.success) throw new Error(j.message || 'Failed');
+      el('prBalPayModal').classList.remove('show');
+      if (el('prBalCal').classList.contains('show')) {
+        BAL_DIRTY = true;
+        balCalLoad(BAL_CAL_MONTH, true);
+      } else {
+        customLoad();
+      }
+    } catch (e) {
+      alert('Could not record the payment: ' + (e.message || e));
+    } finally {
+      el('prBalPayConfirm').disabled = false; el('prBalPayConfirm').textContent = 'Record payment';
+    }
+  };
+
+  // ---- start a running balance ----
+  let BAL_EN_ROW = null, BAL_EN_DIR = 'zero';
+  function openBalEnable(r) {
+    if (!r.configured) { alert('Set this employee\'s rate first (click the rate).'); return; }
+    BAL_EN_ROW = r;
+    el('prBalEnTitle').textContent = 'Start a running balance — ' + r.fullname;
+    // Default to the first day that isn't already paid as a period.
+    el('prBalEnStart').value = r.suggested_start || TODAY;
+    el('prBalEnStart').max = TODAY;
+    // The first free day, not the last paid one — otherwise the picker offers a date
+    // the server must reject (a day can't be both period-paid and balance-accrued).
+    if (r.last_period_end && r.suggested_start) el('prBalEnStart').min = r.suggested_start;
+    el('prBalEnStartHint').textContent = r.last_period_end
+      ? ('Everything up to ' + niceDate(r.last_period_end) + ' is already paid as periods, so the balance must start after that.')
+      : 'Days before this date are never counted.';
+
+    BAL_EN_DIR = r.advance_total > 0 ? 'ahead' : 'zero';
+    setRadioGroup('prBalEnDir', 'baldir', BAL_EN_DIR);
+    el('prBalEnAmt').value = r.advance_total > 0 ? Math.round(r.advance_total) : '';
+    balEnDirUI();
+    el('prBalEnAdvNote').innerHTML = r.advance_total > 0
+      ? '<div class="pr-bal-warn">He is holding <b>' + fmt(r.advance_total) + '</b> in open advances. ' +
+        'Starting the balance closes those advances off. Keep <b>Paid ahead</b> with that amount if the money should count ' +
+        'against his coming days — or choose <b>Nothing owed</b> to write it off and start clean.</div>'
+      : '';
+    el('prBalEnableModal').classList.add('show');
+  }
+  function balEnDirUI() {
+    const show = BAL_EN_DIR !== 'zero';
+    el('prBalEnAmtWrap').style.display = show ? 'block' : 'none';
+    el('prBalEnAmtLbl').textContent = BAL_EN_DIR === 'ahead'
+      ? 'How much is he holding?' : 'How much do we still owe him?';
+  }
+  document.querySelectorAll('#prBalEnDir [data-baldir]').forEach(x => x.onclick = () => {
+    BAL_EN_DIR = x.getAttribute('data-baldir');
+    setRadioGroup('prBalEnDir', 'baldir', BAL_EN_DIR);
+    balEnDirUI();
+  });
+  el('prBalEnCancel').onclick = () => el('prBalEnableModal').classList.remove('show');
+  el('prBalEnableModal').onclick = (ev) => { if (ev.target === el('prBalEnableModal')) el('prBalEnableModal').classList.remove('show'); };
+  el('prBalEnSave').onclick = async () => {
+    if (!BAL_EN_ROW) return;
+    const start = el('prBalEnStart').value;
+    if (!start) { alert('Pick the date to start from.'); return; }
+    let opening = 0;
+    if (BAL_EN_DIR !== 'zero') {
+      const amt = Number(el('prBalEnAmt').value);
+      if (!amt || amt <= 0) { alert('Enter the amount, or choose "Nothing owed".'); return; }
+      opening = BAL_EN_DIR === 'ahead' ? amt : -amt;
+    }
+    el('prBalEnSave').disabled = true; el('prBalEnSave').textContent = 'Starting…';
+    try {
+      const res = await fetch('/hr/payroll/balance-enable', {
+        method: 'POST', headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': csrf },
+        body: JSON.stringify({ user_id: BAL_EN_ROW.user_id, start_date: start, opening: opening })
+      });
+      const j = await res.json();
+      if (!j.success) throw new Error(j.message || 'Failed');
+      el('prBalEnableModal').classList.remove('show');
+      alert(j.message + (j.advances_converted ? ('\n' + j.advances_converted + ' open advance(s) closed off.') : ''));
+      customLoad();
+    } catch (e) {
+      alert('Could not start: ' + (e.message || e));
+    } finally {
+      el('prBalEnSave').disabled = false; el('prBalEnSave').textContent = 'Start balance';
+    }
+  };
+
+  // ---- change the rate from a date ----
+  let BAL_RATE_ROW = null;
+  function openBalRate(r) {
+    BAL_RATE_ROW = r;
+    const b = r.balance || {};
+    const per = r.rate_type === 'daily' ? 'day' : 'month';
+    el('prBalRateTitle').textContent = 'Change rate — ' + r.fullname;
+    el('prBalRateLbl').textContent = 'New rate per ' + per;
+    el('prBalRateNow').innerHTML = 'Now <b>' + fmt(r.base_rate) + '</b> per ' + per +
+      (b.start_label ? ' · balance running since ' + esc(b.start_label) : '');
+    el('prBalRateAmt').value = '';
+    el('prBalRateDate').value = TODAY;
+    el('prBalRateDate').max = TODAY;
+    if (b.track_start) el('prBalRateDate').min = b.track_start;
+    el('prBalRateModal').classList.add('show');
+    setTimeout(() => el('prBalRateAmt').focus(), 50);
+  }
+  el('prBalRateCancel').onclick = () => el('prBalRateModal').classList.remove('show');
+  el('prBalRateModal').onclick = (ev) => { if (ev.target === el('prBalRateModal')) el('prBalRateModal').classList.remove('show'); };
+  el('prBalRateSave').onclick = async () => {
+    if (!BAL_RATE_ROW) return;
+    const rate = Number(el('prBalRateAmt').value);
+    if (!rate || rate <= 0) { alert('Enter the new rate.'); return; }
+    const date = el('prBalRateDate').value;
+    if (!date) { alert('Pick the date the new rate starts.'); return; }
+    el('prBalRateSave').disabled = true; el('prBalRateSave').textContent = 'Saving…';
+    try {
+      const res = await fetch('/hr/payroll/balance-rate', {
+        method: 'POST', headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': csrf },
+        body: JSON.stringify({ user_id: BAL_RATE_ROW.user_id, rate: rate, effective_date: date })
+      });
+      const j = await res.json();
+      if (!j.success) throw new Error(j.message || 'Failed');
+      el('prBalRateModal').classList.remove('show');
+      if (el('prBalCal').classList.contains('show')) {
+        BAL_DIRTY = true;
+        balCalLoad(BAL_CAL_MONTH, true);
+      } else {
+        customLoad();
+      }
+    } catch (e) {
+      alert('Could not change the rate: ' + (e.message || e));
+    } finally {
+      el('prBalRateSave').disabled = false; el('prBalRateSave').textContent = 'Save rate';
     }
   };
 

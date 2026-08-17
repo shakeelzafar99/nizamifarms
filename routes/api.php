@@ -396,6 +396,8 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('/service-alerts/dismiss', [\App\Http\Controllers\CRM\VehicleController::class, 'dismissServiceAlert']);
     Route::post('/store/fleet/mark-serviced', [\App\Http\Controllers\CRM\FleetFuelController::class, 'apiMarkServiced']);
     Route::post('/store/fleet/default-interval', [\App\Http\Controllers\CRM\FleetFuelController::class, 'apiSetDefaultInterval']);
+    // Which bikes hold their own schedule — shown before a company-wide change.
+    Route::get('/store/fleet/interval-overrides', [\App\Http\Controllers\CRM\FleetFuelController::class, 'apiIntervalOverrides']);
     Route::get('/store/cancelled-orders', [\App\Http\Controllers\API\RiderController::class, 'getStoreCancelledOrders']); // ⭐ Cancelled orders grouped by date
     Route::get('/store/delivered-quantities-tree', [\App\Http\Controllers\API\RiderController::class, 'getDeliveredQuantitiesTree']); // ⭐ Delivered quantities with drill-down (lazy)
     Route::get('/store/delivered-quantities-full-tree', [\App\Http\Controllers\API\RiderController::class, 'getDeliveredQuantitiesFullTree']); // ⭐ Full tree for instant access (last 10 days)

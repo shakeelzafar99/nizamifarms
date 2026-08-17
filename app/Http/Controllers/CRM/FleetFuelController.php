@@ -214,7 +214,20 @@ class FleetFuelController extends Controller
             if (!$model) {
                 return $this->maintenanceTypes($request);
             }
+            // ⚠ BOTH tables. A type recorded only through "Record service" on the
+            //   Bikes screen has no claim, but it does have `t_fleet_service_log` rows
+            //   — and those are evidence the derived schedule reads. Hard-deleting it
+            //   left orphan rows whose service silently vanished from every countdown.
             $inUse = \DB::table('t_req_master')->where('maintenance_type_id', $model->id)->exists();
+            if (!$inUse) {
+                try {
+                    $inUse = \Illuminate\Support\Facades\Schema::hasTable('t_fleet_service_log')
+                        && \DB::table('t_fleet_service_log')
+                            ->where('maintenance_type_id', $model->id)->exists();
+                } catch (\Throwable $e) {
+                    $inUse = true;   // cannot prove it is unused ⇒ retire, never delete
+                }
+            }
             if ($inUse) {
                 $model->is_active  = false;
                 $model->updated_by = auth()->id();
@@ -377,6 +390,13 @@ class FleetFuelController extends Controller
     /** Drop the month/rider caches the Bikes screens read. */
     private function forgetFleetCaches(): void
     {
+        // ⚠⚠ A maintenance TYPE's interval (or its active flag) changes the countdown
+        //   for every machine that has ever had that job — machines this write never
+        //   names. Without the config bump a manager edited "Oil Change: every 1,200"
+        //   to 1,500, saw the type list update, and the bikes kept counting down on
+        //   1,200 until the cache expired. Verified before the fix.
+        \App\Services\Riders\VehicleService::bumpServiceConfig();
+
         try {
             foreach ([Carbon::today()->format('Y-m'), Carbon::today()->subMonthNoOverflow()->format('Y-m')] as $m) {
                 Cache::forget("fleet_fuel_month_{$m}");
@@ -469,13 +489,40 @@ class FleetFuelController extends Controller
                 // the Bikes drawer resets. Deliberately NOT a zero-amount expense
                 // request: a service record is not a money movement, and faking one
                 // would put Rs 0 rows into the expense reports and the ledger.
-                if ($recordType && \Illuminate\Support\Facades\Schema::hasTable('t_fleet_service_log')) {
+                //
+                // ⚠⚠ AN UNTYPED RECORDING MUST STILL LAND SOMEWHERE. Every APK in the
+                //    field posts `{rider_id, meter}` with NO type (FleetScreen's
+                //    "Record a service"), and the derived engine reads the rider's
+                //    profile stamp only in its LEGACY FALLBACK — which is unreachable
+                //    the moment a bike has any typed history. So without this the
+                //    manager tapped Record service, was told "Service recorded at
+                //    36,500 km", and every surface carried on reading the old date.
+                //    Verified before the fix: 0 log rows, headline unmoved.
+                //
+                //    Untyped has always meant the ROUTINE service (that is all it could
+                //    mean before types existed), so it is recorded against the shortest
+                //    clock-resetting type — the same job the per-bike override targets.
+                //    Old APKs therefore start working again on the web upload alone.
+                $logType = $recordType;
+                if (!$logType) {
+                    try {
+                        $logType = \DB::table('t_fleet_maintenance_types')
+                            ->where('is_active', 1)->where('resets_service_clock', 1)
+                            ->where('interval_km', '>', 0)
+                            ->orderBy('interval_km')->first(['id', 'type_name', 'interval_km']);
+                    } catch (\Throwable $e) {
+                        $logType = null;
+                    }
+                }
+                if ($logType && \Illuminate\Support\Facades\Schema::hasTable('t_fleet_service_log')) {
                     \DB::table('t_fleet_service_log')->insert([
                         'user_id'             => (int) $data['rider_id'],
-                        'maintenance_type_id' => (int) $recordType->id,
+                        'maintenance_type_id' => (int) $logType->id,
                         'meter'               => (int) $data['meter'],
                         'service_date'        => $serviceDate,
-                        'note'                => 'Recorded on the Bikes screen (no bill filed)',
+                        'note'                => $recordType
+                            ? 'Recorded on the Bikes screen (no bill filed)'
+                            : 'Recorded on the Bikes screen — no service type given, treated as the routine service',
                         'created_by'          => auth()->id(),
                         'created_at'          => now(),
                     ]);
@@ -489,14 +536,26 @@ class FleetFuelController extends Controller
                     $update['last_service_meter'] = (int) $data['meter'];
                     $update['last_service_at']    = $serviceDate;
 
-                    // And the schedule follows the work done: an Oil + Tuning means
-                    // due again in 2,500 km, not whatever the bike's old override
-                    // said. (A claim approved the normal way derives this from its
-                    // own request row; a hand-recorded service has none, so the
-                    // per-bike override is where it lands.)
-                    if ($recordType && (int) $recordType->interval_km > 0) {
-                        $update['service_interval_km'] = (int) $recordType->interval_km;
-                    }
+                    // ⚠⚠ THE OLD "schedule follows the work done" WRITE IS GONE, and
+                    //    removing it is a FIX, not a regression.
+                    //
+                    //    It stamped the recorded type's interval as the bike's own
+                    //    override — a sensible workaround when there was ONE clock and
+                    //    "due again in 2,500" had nowhere else to live. Each type now
+                    //    carries its own interval, so the countdown already follows the
+                    //    work done without any override at all.
+                    //
+                    //    Left in, it actively broke things: the per-bike override now
+                    //    replaces the interval of the SHORTEST clock-resetting type, so
+                    //    recording one Oil + Tuning silently rewrote that bike's Oil
+                    //    Change from every 1,200 km to every 2,500 — on the banner, the
+                    //    rider's phone and the alert, with nothing on screen saying why.
+                    //    (Verified: 1200 → 2500 from a single click.) It also opted the
+                    //    bike out of the company default forever, since any non-NULL
+                    //    override counts as "has its own schedule".
+                    //
+                    //    An override is now written ONLY when a manager explicitly asks
+                    //    for one — the `interval_km` branch below.
                 }
             }
             // The schedule changed → how often it falls due. Never touches when
@@ -509,6 +568,65 @@ class FleetFuelController extends Controller
             \DB::table('t_ops_rider_profile')
                 ->where('user_id', $data['rider_id'])
                 ->update($update);
+
+            // ⭐⭐ THE SCHEDULE BELONGS TO THE MACHINE (owner ruling, Aug-16).
+            //
+            //    "How often is this bike due?" is a fact about the bike, not about
+            //    whoever happens to be riding it — so when the registry can name the
+            //    machine, the override is written THERE as well. Hand the bike over
+            //    and its schedule goes with it, instead of staying behind on the old
+            //    rider's profile while the new rider's own (unrelated) override
+            //    silently takes over the bike he has just been given.
+            //
+            // ⚠ WHERE THE OVERRIDE ACTUALLY BITES (be honest about this): under the
+            //   Aug-3 rule "the schedule follows the work last done", a bike with any
+            //   TYPED clock-resetting record takes each countdown's interval from the
+            //   TYPE — overrides (machine, then rider, then company default) govern
+            //   only bikes whose history has no typed service yet. That is the same
+            //   precedence the owner approved for the Bikes chip; writing the machine
+            //   copy here keeps the fallback correct across a handover, it does not
+            //   outrank the type's own schedule.
+            //
+            // ⚠ The profile write above is deliberately KEPT: riders with no
+            //   registered machine still resolve through it. Two copies of a SETTING
+            //   is safe in a way that two copies of a derived FACT was not — a
+            //   setting has one writer (this endpoint) and a defined read order.
+            // ⚠ `last_service_meter` is deliberately NOT mirrored onto the vehicle
+            //   row. That column is the seed that silently froze and started this
+            //   whole bug; it stays demoted to one piece of evidence among many, so a
+            //   second source of truth can never grow back.
+            if (array_key_exists('service_interval_km', $update)) {
+                try {
+                    $veh = new \App\Services\Riders\VehicleService();
+                    if ($veh->available()) {
+                        $vid = (new \App\Services\Riders\VehicleResolver())
+                            ->currentVehicleFor((int) $data['rider_id']);
+                        if ($vid) {
+                            \DB::table(\App\Services\Riders\VehicleService::T_VEHICLE)
+                                ->where('id', $vid)
+                                ->update([
+                                    'service_interval_km' => $update['service_interval_km'],
+                                    'updated_at'          => now(),
+                                ]);
+                        }
+                    }
+                } catch (\Throwable $e) {
+                    \Log::warning('Machine-level service interval not written', ['error' => $e->getMessage()]);
+                }
+            }
+
+            // ⚠ The derived service state is memoised per process AND cached across
+            //   requests — bump the machine's evidence version so both die, or this
+            //   same request (or the next render) could answer from evidence gathered
+            //   before the write and tell the manager the service he just recorded
+            //   has not happened.
+            try {
+                $bumpVid = (new \App\Services\Riders\VehicleResolver())
+                    ->currentVehicleFor((int) $data['rider_id']);
+            } catch (\Throwable $e) {
+                $bumpVid = null;
+            }
+            \App\Services\Riders\VehicleService::bumpServiceEvidence($bumpVid ? (int) $bumpVid : null);
 
             // Targeted invalidation only — a global Cache::flush() here would also
             // wipe unrelated caches (rider_reports_live, tz offset, ...). Month
@@ -599,6 +717,79 @@ class FleetFuelController extends Controller
      * a fleet-level setting, not a per-bike one, and one careless edit moves
      * every bike's due date at once.
      */
+    /**
+     * ⭐ WHO WOULD BE LEFT BEHIND BY A COMPANY-WIDE CHANGE (owner ask, Aug-16).
+     *
+     * "If someone changes the overall service limit he should know which bikes have
+     * their own limit set, and decide whether to override them or leave them alone."
+     *
+     * The old prompt said "bikes with their own interval are unaffected" without ever
+     * naming one — so a manager raising the company schedule had no way to know three
+     * machines would quietly ignore him. This lists them BEFORE he commits.
+     *
+     * Read-only. Two populations, because there are two places an override can live:
+     *   • MACHINES (`t_ops_vehicle.service_interval_km`) — where a schedule belongs;
+     *   • RIDERS (`t_ops_rider_profile.service_interval_km`) — the legacy fallback,
+     *     which still governs anyone with no registered machine. Hiding those would
+     *     make this list a half-truth.
+     */
+    public function intervalOverrides(Request $request)
+    {
+        if (!$this->canManageService()) {
+            return response()->json(['success' => false, 'message' => 'Not authorised'], 403);
+        }
+        try {
+            $default = (int) (\DB::table('t_fin_config')
+                ->where('config_key', 'BIKE_SERVICE_INTERVAL_KM')->value('config_value') ?: 0);
+
+            $vehicles = [];
+            $veh = new \App\Services\Riders\VehicleService();
+            if ($veh->available()) {
+                $vehicles = \DB::table(\App\Services\Riders\VehicleService::T_VEHICLE . ' as v')
+                    ->leftJoin(\App\Services\Riders\VehicleService::T_ASSIGN . ' as a', function ($j) {
+                        $j->on('a.vehicle_id', '=', 'v.id')->whereNull('a.released_on');
+                    })
+                    ->leftJoin('t_sys_user as u', 'u.id', '=', 'a.user_id')
+                    ->where('v.is_active', 1)
+                    ->whereNotNull('v.service_interval_km')
+                    ->orderByRaw('COALESCE(v.reg_no, v.nickname)')
+                    ->get(['v.id', 'v.reg_no', 'v.nickname', 'v.service_interval_km', 'u.fullname'])
+                    ->map(fn ($v) => [
+                        'id'          => (int) $v->id,
+                        'name'        => $v->reg_no ?: ($v->nickname ?: ('Vehicle #' . $v->id)),
+                        'interval_km' => (int) $v->service_interval_km,
+                        'keeper_name' => $v->fullname,
+                        // Flagged so the UI can grey out the ones that already agree —
+                        // "overriding" a bike whose override equals the new value is
+                        // a no-op, and showing it as a casualty would be misleading.
+                        'same_as_default' => (int) $v->service_interval_km === $default,
+                    ])->values()->all();
+            }
+
+            $riders = \DB::table('t_ops_rider_profile as p')
+                ->join('t_sys_user as u', 'u.id', '=', 'p.user_id')
+                ->whereNotNull('p.service_interval_km')
+                ->orderBy('u.fullname')
+                ->get(['p.user_id', 'u.fullname', 'p.service_interval_km'])
+                ->map(fn ($p) => [
+                    'user_id'     => (int) $p->user_id,
+                    'name'        => $p->fullname,
+                    'interval_km' => (int) $p->service_interval_km,
+                    'same_as_default' => (int) $p->service_interval_km === $default,
+                ])->values()->all();
+
+            return response()->json([
+                'success'     => true,
+                'default_km'  => $default,
+                'vehicles'    => $vehicles,
+                'riders'      => $riders,
+            ]);
+        } catch (\Throwable $e) {
+            \Log::error('FleetFuel intervalOverrides failed', ['error' => $e->getMessage()]);
+            return response()->json(['success' => false, 'message' => 'Could not read the overrides'], 500);
+        }
+    }
+
     public function setDefaultInterval(Request $request)
     {
         if (!$this->canManageService()) {
@@ -607,6 +798,11 @@ class FleetFuelController extends Controller
 
         $data = $request->validate([
             'interval_km' => 'required|integer|min:100|max:100000',
+            // ⭐ The manager's explicit decision about the bikes that have their own
+            //    schedule. Absent = LEAVE THEM ALONE, which is the safe reading and
+            //    exactly what this endpoint has always done — an old page that has
+            //    not been reloaded cannot accidentally wipe a per-bike setting.
+            'clear_overrides' => 'nullable|boolean',
         ]);
 
         try {
@@ -636,11 +832,62 @@ class FleetFuelController extends Controller
                 }
             }
 
+            // ⭐ "Put everyone on this schedule": CLEAR the per-bike overrides rather
+            //    than stamping the new number onto each. Clearing means "follow the
+            //    company default", so the next change reaches them too; stamping
+            //    would silently re-create the same divergence one change later.
+            $cleared = ['vehicles' => 0, 'riders' => 0];
+            if ($request->boolean('clear_overrides')) {
+                try {
+                    $veh = new \App\Services\Riders\VehicleService();
+                    if ($veh->available()) {
+                        // ⚠⚠ `is_active` — CLEAR EXACTLY WHAT WAS SHOWN. The preview
+                        //    lists active machines only, so an unfiltered clear would
+                        //    wipe overrides on retired bikes the manager was never
+                        //    shown and could not have approved, and report a count
+                        //    that did not match his own list. This write is
+                        //    irreversible and unaudited; it must not exceed consent.
+                        $ids = \DB::table(\App\Services\Riders\VehicleService::T_VEHICLE)
+                            ->where('is_active', 1)
+                            ->whereNotNull('service_interval_km')->pluck('id');
+                        $cleared['vehicles'] = \DB::table(\App\Services\Riders\VehicleService::T_VEHICLE)
+                            ->where('is_active', 1)
+                            ->whereNotNull('service_interval_km')
+                            ->update(['service_interval_km' => null, 'updated_at' => now()]);
+                        foreach ($ids as $vid) {
+                            \App\Services\Riders\VehicleService::bumpServiceEvidence((int) $vid);
+                        }
+                    }
+                } catch (\Throwable $e) {
+                    \Log::warning('Clearing vehicle intervals failed', ['error' => $e->getMessage()]);
+                }
+                try {
+                    $cleared['riders'] = \DB::table('t_ops_rider_profile')
+                        ->whereNotNull('service_interval_km')
+                        ->update(['service_interval_km' => null, 'updated_at' => now()]);
+                } catch (\Throwable $e) {
+                    \Log::warning('Clearing rider intervals failed', ['error' => $e->getMessage()]);
+                }
+            }
+            // ⚠ The COMPANY default feeds every bike that has no schedule of its own,
+            //   so this is a fleet-wide settings change — the per-vehicle counters
+            //   cannot express it.
+            \App\Services\Riders\VehicleService::bumpServiceConfig();
+
+            $msg = 'Every bike without its own schedule is now serviced every '
+                 . number_format($data['interval_km']) . ' km';
+            if ($cleared['vehicles'] || $cleared['riders']) {
+                $bits = [];
+                if ($cleared['vehicles']) $bits[] = $cleared['vehicles'] . ' bike' . ($cleared['vehicles'] === 1 ? '' : 's');
+                if ($cleared['riders'])   $bits[] = $cleared['riders'] . ' rider schedule' . ($cleared['riders'] === 1 ? '' : 's');
+                $msg .= '. ' . implode(' and ', $bits) . ' had their own schedule — now cleared, so they follow this too';
+            }
+
             return response()->json([
                 'success' => true,
-                'message' => 'Every bike without its own schedule is now serviced every '
-                             . number_format($data['interval_km']) . ' km',
+                'message' => $msg,
                 'interval_km' => (int) $data['interval_km'],
+                'cleared' => $cleared,
             ]);
         } catch (\Throwable $e) {
             \Log::error('FleetFuel setDefaultInterval failed', ['error' => $e->getMessage()]);
@@ -656,6 +903,20 @@ class FleetFuelController extends Controller
         }
         $this->mobileContext = true;
         return $this->setDefaultInterval($request);
+    }
+
+    /**
+     * Mobile entry for "which bikes hold their own schedule".
+     * ⚠ Same method as the web, so the two surfaces can never disagree about who the
+     *   exceptions are — a manager must see the same list on his phone and his desk.
+     */
+    public function apiIntervalOverrides(Request $request)
+    {
+        if (!$this->mobileAllowed($request)) {
+            return response()->json(['success' => false, 'message' => 'Not authorised'], 403);
+        }
+        $this->mobileContext = true;
+        return $this->intervalOverrides($request);
     }
 
     /** Mobile entry for recording a service / setting a bike's own interval. */

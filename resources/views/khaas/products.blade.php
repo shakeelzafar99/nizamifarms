@@ -455,7 +455,7 @@
                 </button>
             </div>
         </div>
-        <form method="POST" action="{{ route('khaas.warehouse.stock') }}">
+        <form method="POST" action="{{ route('khaas.warehouse.stock') }}" style="display:flex; flex-direction:column; flex:1 1 auto; min-height:0;">
             @csrf
             <input type="hidden" name="product_id" id="stock_product_id">
             <input type="hidden" name="product_variant_id" id="stock_variant_id">
@@ -566,7 +566,7 @@
                 </button>
             </div>
         </div>
-        <form method="POST" action="{{ route('khaas.store.stock') }}">
+        <form method="POST" action="{{ route('khaas.store.stock') }}" style="display:flex; flex-direction:column; flex:1 1 auto; min-height:0;">
             @csrf
             <input type="hidden" name="product_id" id="store_stock_product_id">
             <input type="hidden" name="product_variant_id" id="store_stock_variant_id">
@@ -672,7 +672,7 @@
                 </div>
             </div>
         </div>
-        <form id="productApproveForm" method="POST">
+        <form id="productApproveForm" method="POST" style="display:flex; flex-direction:column; flex:1 1 auto; min-height:0;">
             @csrf
             <div class="px-6 py-5" style="flex:1 1 auto; min-height:0; overflow-y:auto;">
                 <label class="block text-sm font-semibold text-gray-700 mb-2">Counted by</label>
@@ -706,7 +706,7 @@
                 </div>
             </div>
         </div>
-        <form id="productRejectForm" method="POST">
+        <form id="productRejectForm" method="POST" style="display:flex; flex-direction:column; flex:1 1 auto; min-height:0;">
             @csrf
             <div class="px-6 py-5" style="flex:1 1 auto; min-height:0; overflow-y:auto;">
                 <label class="block text-sm font-semibold text-gray-700 mb-2">Reason for Rejection</label>
@@ -740,7 +740,7 @@
                 </button>
             </div>
         </div>
-        <form method="POST" action="{{ route('khaas.warehouse.transfer') }}">
+        <form method="POST" action="{{ route('khaas.warehouse.transfer') }}" style="display:flex; flex-direction:column; flex:1 1 auto; min-height:0;">
             @csrf
             <input type="hidden" name="product_id" id="transfer_product_id">
             <input type="hidden" name="product_variant_id" id="transfer_variant_id">
@@ -821,7 +821,18 @@
                 </button>
             </div>
         </div>
-        <form method="POST" action="{{ route('khaas.transfer-requests.create') }}">
+        {{-- ⚠⚠ THE FORM MUST BE THE FLEX COLUMN, NOT A PLAIN BLOCK.
+             The shell above is `display:flex; flex-direction:column; max-height:90vh;
+             overflow:hidden`, and its only sizeable child is this form. Without
+             these four declarations the form stays `display:block` and sizes to its
+             CONTENT, so the scroll body's `flex:1 1 auto; overflow-y:auto` had nothing
+             to size against: the body never scrolled, the form overflowed the shell,
+             and `overflow:hidden` clipped the footer — putting "Send request" below
+             the fold on any short window. Measured on a 620px-tall viewport: form
+             bottom 640 vs viewport 620, button bottom 627, body scrollable = false.
+             Users worked around it by zooming out; the modal looked "stuck". --}}
+        <form method="POST" action="{{ route('khaas.transfer-requests.create') }}"
+              style="display:flex; flex-direction:column; flex:1 1 auto; min-height:0;">
             @csrf
             <input type="hidden" name="product_id" id="request_product_id">
             <input type="hidden" name="product_variant_id" id="request_variant_id">
@@ -899,7 +910,7 @@
                 </div>
             </div>
         </div>
-        <form id="acceptRequestForm" method="POST">
+        <form id="acceptRequestForm" method="POST" style="display:flex; flex-direction:column; flex:1 1 auto; min-height:0;">
             @csrf
             <div class="px-6 py-5 space-y-4" style="flex:1 1 auto; min-height:0; overflow-y:auto;">
                 <div>
@@ -936,7 +947,7 @@
                 </div>
             </div>
         </div>
-        <form id="declineRequestForm" method="POST">
+        <form id="declineRequestForm" method="POST" style="display:flex; flex-direction:column; flex:1 1 auto; min-height:0;">
             @csrf
             <div class="px-6 py-5" style="flex:1 1 auto; min-height:0; overflow-y:auto;">
                 <label class="block text-sm font-semibold text-gray-700 mb-2">Reason</label>

@@ -261,6 +261,9 @@ Route::middleware(['auth'])->group(function () {
     Route::get('/orders/riders-map/fleet/rider', [\App\Http\Controllers\CRM\FleetFuelController::class, 'rider'])->name('orders.riders-map.fleet.rider');
     Route::post('/orders/riders-map/fleet/mark-serviced', [\App\Http\Controllers\CRM\FleetFuelController::class, 'markServiced'])->name('orders.riders-map.fleet.mark-serviced');
     Route::post('/orders/riders-map/fleet/default-interval', [\App\Http\Controllers\CRM\FleetFuelController::class, 'setDefaultInterval'])->name('orders.riders-map.fleet.default-interval');
+    // Which bikes hold their own schedule — shown before a company-wide change so the
+    // manager decides whether to override them or leave them alone.
+    Route::get('/orders/riders-map/fleet/interval-overrides', [\App\Http\Controllers\CRM\FleetFuelController::class, 'intervalOverrides'])->name('orders.riders-map.fleet.interval-overrides');
     // 🔧 Manager-editable maintenance types (Aug-2026). Reading is open to anyone
     // who can open Bikes (the pickers need it); writes are gated on
     // `manage_bike_service` inside the controller so they return JSON the modals
@@ -1426,6 +1429,15 @@ Route::middleware(['auth'])->group(function () {
             Route::post('/custom-pay', [\App\Http\Controllers\HR\PayrollController::class, 'payCustom'])->name('custom-pay');
             Route::post('/set-schedule', [\App\Http\Controllers\HR\PayrollController::class, 'setSchedule'])->name('set-schedule');
             Route::post('/set-business-unit', [\App\Http\Controllers\HR\PayrollController::class, 'setBusinessUnit'])->name('set-business-unit');
+            // Custom running balance ("khata"): payments + absence calendar for employees
+            // who have no attendance in the system. `manage_payroll` gates all of these;
+            // void-payment additionally needs `void_salary_payment`.
+            Route::get('/balance-calendar', [\App\Http\Controllers\HR\PayrollController::class, 'balanceCalendar'])->name('balance-calendar');
+            Route::post('/balance-enable', [\App\Http\Controllers\HR\PayrollController::class, 'balanceEnable'])->name('balance-enable');
+            Route::post('/balance-absence', [\App\Http\Controllers\HR\PayrollController::class, 'balanceAbsence'])->name('balance-absence');
+            Route::post('/balance-payment', [\App\Http\Controllers\HR\PayrollController::class, 'balancePayment'])->name('balance-payment');
+            Route::post('/balance-rate', [\App\Http\Controllers\HR\PayrollController::class, 'balanceRate'])->name('balance-rate');
+            Route::post('/balance-void-payment', [\App\Http\Controllers\HR\PayrollController::class, 'balanceVoidPayment'])->name('balance-void-payment');
             Route::get('/staff-expense-detail', [\App\Http\Controllers\HR\PayrollController::class, 'staffExpenseDetail'])->name('staff-expense-detail');
         });
 

@@ -706,6 +706,11 @@ class PayrollService
     /** Set / insert an employee's base salary (audited). Throws on failure. */
     public function setBaseSalary(int $userId, float $newBase, int $actorId): void
     {
+        // A running-balance employee's rate carries an effective DATE (past days keep the
+        // price they were worked at), so it can never be changed by this flat setter.
+        if ($this->isBalanceTracked($userId)) {
+            throw new \RuntimeException('This employee is on a running balance — change the rate from their card so you can set the date it applies from.');
+        }
         $newBase = round($newBase, 2);
         $existing = DB::table('t_hr_employee_profile')->where('user_id', $userId)->first();
         if ($existing) {
@@ -736,6 +741,11 @@ class PayrollService
         }
         if ($funding === 'online' && !$bankId) {
             return ['success' => false, 'message' => 'Choose the bank you are paying from.'];
+        }
+        // Advances don't exist for a running-balance employee: money handed over is a
+        // payment against the balance, which is the same cash with an honest name.
+        if ($this->isBalanceTracked($userId)) {
+            return ['success' => false, 'message' => 'This employee is on a running balance — record a payment instead of an advance.'];
         }
         try {
             $category = \App\Models\Request\RequestCategoryModel::where('category_code', 'salary_advance')->firstOrFail();
@@ -1318,9 +1328,13 @@ class PayrollService
             $ids = $rows->pluck('requester_user_id')->merge($rows->pluck('created_by'))
                 ->filter()->unique()->all();
             $names = $ids ? DB::table('t_sys_user')->whereIn('id', $ids)->pluck('fullname', 'id')->toArray() : [];
+            $active = $ids ? DB::table('t_sys_user')->whereIn('id', $ids)->pluck('is_active', 'id')->toArray() : [];
+            // An employee on a running balance takes payments, not advances — approving one
+            // is refused server-side, so the sheet must offer Reject only and say why.
+            $tracked = $this->balanceTrackedUserIds();
             $today = time();
 
-            return $rows->map(function ($r) use ($names, $today) {
+            return $rows->map(function ($r) use ($names, $today, $tracked, $active) {
                 $date = $r->created_at ? substr((string) $r->created_at, 0, 10) : null;
                 $age = $date ? (int) floor(($today - strtotime($date)) / 86400) : 0;
                 return [
@@ -1335,11 +1349,46 @@ class PayrollService
                     // Who typed it: the employee themselves (mobile self-request) or a manager.
                     'self_requested' => (int) $r->created_by === (int) $r->requester_user_id,
                     'raised_by'      => $names[$r->created_by] ?? null,
+                    // Why this one may not be payable: they're on a running balance, or they
+                    // have left the company. Both are Reject-only.
+                    'balance_tracked' => isset($tracked[(int) $r->requester_user_id]),
+                    'employee_active' => ((int) ($active[$r->requester_user_id] ?? 1)) === 1,
                 ];
             })->toArray();
         } catch (\Throwable $e) {
             return [];
         }
+    }
+
+    /**
+     * Page-level summary of everything still awaiting a decision — the banner and the
+     * strip card both read THIS, so neither can disagree with the review sheet.
+     *
+     * ⚠ It deliberately counts EVERY pending request, not just the ones belonging to
+     * employees on the monthly grid. Custom-schedule staff, people who have left, and
+     * anyone hidden from Payroll all raise requests too, and those are exactly the ones
+     * that sit forgotten — the card used to count only grid rows and so read "2" while
+     * the sheet listed 6.
+     */
+    public function pendingAdvanceSummary(): array
+    {
+        $rows = $this->pendingAdvanceRequests();
+        if (empty($rows)) {
+            return ['count' => 0, 'total' => 0.0, 'oldest_days' => 0, 'oldest_name' => null, 'blocked' => 0];
+        }
+        $oldest = $rows[0];
+        $blocked = 0;
+        foreach ($rows as $r) {
+            if ($r['age_days'] > $oldest['age_days']) { $oldest = $r; }
+            if (!empty($r['balance_tracked']) || empty($r['employee_active'])) { $blocked++; }
+        }
+        return [
+            'count'       => count($rows),
+            'total'       => round(array_sum(array_column($rows, 'amount')), 2),
+            'oldest_days' => (int) $oldest['age_days'],
+            'oldest_name' => $oldest['fullname'],
+            'blocked'     => $blocked,   // can only be rejected (left, or on a running balance)
+        ];
     }
 
     /**
@@ -1374,6 +1423,11 @@ class PayrollService
                 }
                 if ((float) $req->amount <= 0) {
                     return ['success' => false, 'message' => 'This request has no amount — reject it instead.'];
+                }
+                // Same rule as "+ advance": a running-balance employee takes payments, not
+                // advances, so approving one here would create a debt the khata can't see.
+                if ($this->isBalanceTracked((int) $req->requester_user_id)) {
+                    return ['success' => false, 'message' => 'This employee is on a running balance — record a payment on their card instead, then reject this request.'];
                 }
 
                 $fundingAcct = $funding === 'online'
@@ -1849,13 +1903,19 @@ class PayrollService
             if ($hasPeriods) {
                 $cols = array_merge($cols, ['period_start', 'period_end', 'period_key']);
             }
+            // entry_kind separates a khata payment (a single day the money moved) from a
+            // salary/period row (a stretch of days that is now COVERED). Only the latter
+            // may block a new range — see customPeriodConflict.
+            $hasKind = $this->payrollHasEntryKind();
+            if ($hasKind) { $cols[] = 'entry_kind'; }
             $q = DB::table('t_hr_payroll_payment')->where('user_id', $userId)->where('status', 'paid');
             if ($forUpdate) { $q->lockForUpdate(); }
             $rows = $q->get($cols);
-            return $rows->map(function ($r) use ($hasPeriods) {
+            return $rows->map(function ($r) use ($hasPeriods, $hasKind) {
                 $r->period_key   = $hasPeriods ? ($r->period_key ?? '') : '';
                 $r->period_start = $hasPeriods && $r->period_start ? substr((string) $r->period_start, 0, 10) : null;
                 $r->period_end   = $hasPeriods && $r->period_end ? substr((string) $r->period_end, 0, 10) : null;
+                $r->entry_kind   = $hasKind ? ($r->entry_kind ?? '') : '';
                 return $r;
             })->all();
         } catch (\Throwable $e) {
@@ -1872,6 +1932,10 @@ class PayrollService
     private function customPeriodConflict(string $start, string $end, array $paidRows): ?string
     {
         foreach ($paidRows as $r) {
+            // A khata payment is money moving on ONE day, not days being covered — it can
+            // never block a period. (Tracked employees can't be paid by period at all, so
+            // this only matters for a range paid before a khata was opened.)
+            if (($r->entry_kind ?? '') === 'balance_payment') { continue; }
             $pk = $r->period_key ?? '';
             if ($pk !== '' && $r->period_start && $r->period_end) {
                 if ($this->rangesOverlap($start, $end, $r->period_start, $r->period_end)) {
@@ -1898,7 +1962,12 @@ class PayrollService
         foreach ($this->userPaidRows($userId) as $r) {
             if (($r->period_key ?? '') !== '' && $r->period_start && $r->period_end
                 && $this->rangesOverlap($ms, $me, $r->period_start, $r->period_end)) {
-                return 'Custom periods already exist in ' . date('F Y', strtotime($month . '-01'))
+                // A khata payment blocks the month too: paying the whole month as a salary
+                // on top of money already handed over on the running balance would pay twice.
+                $what = (($r->entry_kind ?? '') === 'balance_payment')
+                    ? 'Custom-salary payments already exist in '
+                    : 'Custom periods already exist in ';
+                return $what . date('F Y', strtotime($month . '-01'))
                     . '. Finish this month on the Custom tab, or switch this employee to Monthly from next month.';
             }
         }
@@ -1946,6 +2015,11 @@ class PayrollService
         }
         if ((float) ($profile?->base_salary ?? 0) <= 0) {
             return ['success' => false, 'message' => "Set this employee's rate first."];
+        }
+        // A running-balance employee is paid by recording payments against the balance —
+        // periods would double-count the same days.
+        if ($this->isBalanceTracked($userId)) {
+            return ['success' => false, 'message' => 'This employee is on a running balance — record a payment instead of a period.'];
         }
 
         try {
@@ -2114,9 +2188,27 @@ class PayrollService
                 $advances = $this->openAdvances((int) $uid);
                 $advTotal = round(array_sum(array_column($advances, 'amount')), 2);
 
+                // Running balance (khata) employees: the card shows a balance, not periods.
+                // The figures come from balanceCalendar so the card and the calendar are ONE
+                // computation read at two depths and cannot drift apart.
+                $balance = null; $monthSummary = null; $monthPayments = [];
+                if ($this->isBalanceTracked((int) $uid)) {
+                    $cal = $this->balanceCalendar((int) $uid, $month);
+                    if (!empty($cal['success'])) {
+                        $balance = $cal['balance'];
+                        $monthSummary = $cal['summary'];
+                        foreach ($cal['days'] as $day) {
+                            foreach ($day['payments'] as $p) { $monthPayments[] = $p; }
+                        }
+                    }
+                }
+
                 // Paid custom periods filed under this month (pay_month = end month) + last end overall.
                 $paid = []; $lastEnd = null;
                 foreach ($this->userPaidRows((int) $uid) as $r) {
+                    // Khata payments are shown as payments, never as covered periods — and a
+                    // payment must not push `suggested_start` either.
+                    if (($r->entry_kind ?? '') === 'balance_payment') { continue; }
                     if (($r->period_key ?? '') === '' || !$r->period_start || !$r->period_end) { continue; }
                     if ($lastEnd === null || $r->period_end > $lastEnd) { $lastEnd = $r->period_end; }
                     if ($r->pay_month === $month) {
@@ -2152,12 +2244,22 @@ class PayrollService
                     'employee_code'    => $profile?->employee_code,
                     'designation'      => $profile?->designation,
                     'configured'       => $base > 0,
+                    // Every row on this tab IS custom — without this the settings modal
+                    // opened from a custom card pre-selected "Monthly" (the key was simply
+                    // absent), so saving it silently moved the employee off the tab.
+                    'pay_schedule'     => 'custom',
                     'rate_type'        => $rateType,
                     'base_rate'        => round($base, 2),
                     'business_unit_id' => $this->stampBuId($profileBu),
                     'bu_code'          => $this->buCodeFor($profileBu),
                     'advances'         => $advances,
                     'advance_total'    => $advTotal,
+                    // Khata fields — null for a period-paid custom employee, so the card
+                    // renderer picks its mode off `balance_tracked` alone.
+                    'balance_tracked'  => $balance !== null,
+                    'balance'          => $balance,
+                    'month_summary'    => $monthSummary,
+                    'month_payments'   => $monthPayments,
                     'paid_periods'     => $paid,
                     'paid_total'       => round(array_sum(array_column($paid, 'net')), 2),
                     'last_period_end'  => $lastEnd,
@@ -2202,6 +2304,889 @@ class PayrollService
         return $rows;
     }
 
+    // =========================================================================
+    //  CUSTOM RUNNING BALANCE ("khata")
+    // =========================================================================
+    //
+    // For custom employees who don't use the app (the butchers): no attendance, no
+    // periods, no advances. The manager records PAYMENTS and crosses out days the man
+    // didn't come, and the account runs continuously:
+    //
+    //     balance = opening + payments(since anchor) − Σ day-rate over counted days
+    //     + = paid ahead        − = still to pay
+    //
+    // ⭐ The balance is DERIVED on every read, never stored. Crossing a day, un-crossing
+    // it, voiding a payment or correcting a rate simply changes the answer next time it
+    // is asked — there is no snapshot that can drift out of agreement with the facts.
+    //
+    // ⭐ `balance_track_start` is the anchor AND the on-switch. Nothing before it is ever
+    // counted — no day, no payment — which is exactly what makes "treat the past as
+    // cleared and start fresh from the 1st" safe: old periods and advances are invisible
+    // to this math, not merely netted to zero.
+    //
+    // ⚠ Monthly payroll never reaches any of this: every entry point below returns early
+    // unless the employee is custom-tagged AND has an anchor date.
+
+    private static ?bool $balanceColsMemo = null;
+    private function profileHasBalanceCols(): bool
+    {
+        if (self::$balanceColsMemo === null) {
+            try {
+                self::$balanceColsMemo = Schema::hasColumn('t_hr_employee_profile', 'balance_track_start')
+                    && Schema::hasColumn('t_hr_employee_profile', 'balance_opening');
+            } catch (\Throwable $e) {
+                self::$balanceColsMemo = false;
+            }
+        }
+        return self::$balanceColsMemo;
+    }
+
+    private static ?bool $entryKindMemo = null;
+    private function payrollHasEntryKind(): bool
+    {
+        if (self::$entryKindMemo === null) {
+            try {
+                self::$entryKindMemo = Schema::hasColumn('t_hr_payroll_payment', 'entry_kind');
+            } catch (\Throwable $e) {
+                self::$entryKindMemo = false;
+            }
+        }
+        return self::$entryKindMemo;
+    }
+
+    private static ?bool $balanceTablesMemo = null;
+    private function balanceTablesExist(): bool
+    {
+        if (self::$balanceTablesMemo === null) {
+            try {
+                self::$balanceTablesMemo = Schema::hasTable('t_hr_custom_absence')
+                    && Schema::hasTable('t_hr_custom_rate');
+            } catch (\Throwable $e) {
+                self::$balanceTablesMemo = false;
+            }
+        }
+        return self::$balanceTablesMemo;
+    }
+
+    /** Every piece of schema the khata needs. False → the feature is invisible and inert. */
+    public function balanceTrackingAvailable(): bool
+    {
+        return $this->profileHasScheduleCols()
+            && $this->payrollHasPeriodCols()
+            && $this->profileHasBalanceCols()
+            && $this->payrollHasEntryKind()
+            && $this->balanceTablesExist();
+    }
+
+    /** user_id => true for every employee on a running balance. Empty pre-SQL. */
+    private function balanceTrackedUserIds(): array
+    {
+        if (!$this->balanceTrackingAvailable()) { return []; }
+        try {
+            return DB::table('t_hr_employee_profile')->whereNotNull('balance_track_start')
+                ->pluck('user_id')->flip()->toArray();
+        } catch (\Throwable $e) {
+            return [];
+        }
+    }
+
+    /** Is this employee on a running balance? (custom + an anchor date). */
+    public function isBalanceTracked(int $userId): bool
+    {
+        if (!$this->balanceTrackingAvailable()) { return false; }
+        try {
+            return DB::table('t_hr_employee_profile')
+                ->where('user_id', $userId)
+                ->whereNotNull('balance_track_start')
+                ->exists();
+        } catch (\Throwable $e) {
+            return false;
+        }
+    }
+
+    /** A monthly rate is a day rate under the same flat ÷30 convention the periods use. */
+    private function dayRateFrom(float $amount, string $rateType): float
+    {
+        return round($rateType === 'daily' ? $amount : ($amount / 30), 4);
+    }
+
+    /**
+     * Dated day-rate history, ascending — the reason a rate change can carry the date the
+     * manager chooses: days keep the price that was in force ON that day, so nothing is
+     * ever silently repriced. Always non-empty (opening a khata writes the first row; a
+     * profile-derived fallback covers a history that somehow went missing).
+     */
+    private function rateTimeline(int $userId, string $trackStart, ?object $profile = null): array
+    {
+        $rows = [];
+        try {
+            $rows = DB::table('t_hr_custom_rate')->where('user_id', $userId)
+                ->orderBy('effective_date')->get(['effective_date', 'day_rate'])
+                ->map(fn ($r) => [
+                    'from' => substr((string) $r->effective_date, 0, 10),
+                    'rate' => (float) $r->day_rate,
+                ])->all();
+        } catch (\Throwable $e) {
+            $rows = [];
+        }
+
+        if (empty($rows)) {
+            $profile = $profile ?: DB::table('t_hr_employee_profile')->where('user_id', $userId)->first();
+            $rateType = (($profile->rate_type ?? 'monthly') === 'daily') ? 'daily' : 'monthly';
+            $rows = [[
+                'from' => $trackStart,
+                'rate' => $this->dayRateFrom((float) ($profile->base_salary ?? 0), $rateType),
+            ]];
+        }
+        // A segment effective before the anchor simply applies from the anchor.
+        if ($rows[0]['from'] > $trackStart) {
+            array_unshift($rows, ['from' => $trackStart, 'rate' => $rows[0]['rate']]);
+        }
+        return $rows;
+    }
+
+    /** The day rate in force on a date (last segment starting on or before it). */
+    private function rateOnDate(array $timeline, string $date): float
+    {
+        $rate = 0.0;
+        foreach ($timeline as $seg) {
+            if ($seg['from'] <= $date) { $rate = $seg['rate']; } else { break; }
+        }
+        return $rate;
+    }
+
+    /** Crossed-out dates for an employee as a lookup set ['Y-m-d' => true]. */
+    private function absenceSet(int $userId): array
+    {
+        if (!$this->balanceTablesExist()) { return []; }
+        try {
+            $out = [];
+            foreach (DB::table('t_hr_custom_absence')->where('user_id', $userId)->pluck('absent_date') as $d) {
+                $out[substr((string) $d, 0, 10)] = true;
+            }
+            return $out;
+        } catch (\Throwable $e) {
+            return [];
+        }
+    }
+
+    /**
+     * Walk an inclusive day range: what it earned, how many days counted, how many were
+     * crossed. The ONE place a day is priced — every figure on the card, the calendar and
+     * the month summary comes through here, so they cannot disagree.
+     */
+    private function walkDays(array $timeline, array $absent, string $from, string $to): array
+    {
+        $earned = 0.0; $counted = 0; $crossed = 0;
+        if ($to >= $from) {
+            $d = $from;
+            $guard = 0;
+            while ($d <= $to && $guard++ < 4000) {
+                if (isset($absent[$d])) {
+                    $crossed++;
+                } else {
+                    $counted++;
+                    $earned += $this->rateOnDate($timeline, $d);
+                }
+                $d = date('Y-m-d', strtotime($d . ' +1 day'));
+            }
+        }
+        return ['earned' => round($earned, 2), 'counted' => $counted, 'crossed' => $crossed];
+    }
+
+    /**
+     * Khata payments (money actually handed over), ascending by the date it was given.
+     * A voided payment is status='voided' and drops out here exactly as it drops out of
+     * the Expenses page, HQ and Reports — one filter, one truth.
+     */
+    private function balancePaymentRows(int $userId): array
+    {
+        if (!$this->balanceTrackingAvailable()) { return []; }
+        try {
+            return DB::table('t_hr_payroll_payment')
+                ->where('user_id', $userId)
+                ->where('status', 'paid')
+                ->where('entry_kind', 'balance_payment')
+                ->orderBy('period_start')->orderBy('id')
+                ->get(['id', 'period_start', 'net_salary', 'funding', 'bank_id',
+                       'ledger_id', 'notes', 'paid_by', 'paid_at'])
+                ->map(fn ($r) => [
+                    'id'        => (int) $r->id,
+                    'date'      => substr((string) $r->period_start, 0, 10),
+                    'amount'    => (float) $r->net_salary,
+                    'funding'   => $r->funding,
+                    'bank_id'   => $r->bank_id ? (int) $r->bank_id : null,
+                    'ledger_id' => $r->ledger_id ? (int) $r->ledger_id : null,
+                    'notes'     => $r->notes,
+                    'paid_by'   => $r->paid_by ? (int) $r->paid_by : null,
+                    'paid_at'   => (string) $r->paid_at,
+                ])->all();
+        } catch (\Throwable $e) {
+            return [];
+        }
+    }
+
+    /** Human labels for payment receipts (bank + who paid), one query each. Cosmetic. */
+    private function decoratePayments(array $payments): array
+    {
+        try {
+            $bankIds = array_filter(array_column($payments, 'bank_id'));
+            $payerIds = array_filter(array_column($payments, 'paid_by'));
+            $bankLabels = $bankIds
+                ? DB::table('t_fin_online_receiving_accounts')->whereIn('id', $bankIds)
+                    ->get(['id', 'name', 'bank_name', 'account_last4'])
+                    ->mapWithKeys(fn ($b) => [$b->id => trim(($b->name ?: $b->bank_name) . ($b->account_last4 ? ' ••' . $b->account_last4 : ''))])
+                    ->toArray()
+                : [];
+            $payerNames = $payerIds
+                ? DB::table('t_sys_user')->whereIn('id', $payerIds)->pluck('fullname', 'id')->toArray()
+                : [];
+            foreach ($payments as $i => $p) {
+                $payments[$i]['bank_label'] = $p['bank_id'] ? ($bankLabels[$p['bank_id']] ?? ('Bank #' . $p['bank_id'])) : null;
+                $payments[$i]['paid_by_name'] = $p['paid_by'] ? ($payerNames[$p['paid_by']] ?? null) : null;
+            }
+        } catch (\Throwable $e) { /* labels are cosmetic */ }
+        return $payments;
+    }
+
+    /** Wording, never a bare sign: managers read "To pay" / "Paid ahead", not "−8000". */
+    private function balanceShape(float $balance): array
+    {
+        if (abs($balance) < 0.005) {
+            return ['direction' => 'settled', 'label' => 'All settled', 'amount' => 0.0];
+        }
+        return $balance > 0
+            ? ['direction' => 'paid_ahead', 'label' => 'Paid ahead', 'amount' => round($balance, 2)]
+            : ['direction' => 'to_pay',     'label' => 'To pay',     'amount' => round(-$balance, 2)];
+    }
+
+    /**
+     * The running balance for a tracked employee, as of a date (default today).
+     * PURE COMPUTATION — returns null when the employee isn't on a khata.
+     *
+     * Future days never accrue: the accrual always stops at today, so a date in the
+     * future answers "what it is now", and a crossed future day is simply recorded
+     * until its day comes.
+     */
+    public function balanceState(int $userId, ?string $asOf = null): ?array
+    {
+        if (!$this->balanceTrackingAvailable()) { return null; }
+
+        try {
+            $profile = DB::table('t_hr_employee_profile')->where('user_id', $userId)->first();
+        } catch (\Throwable $e) {
+            return null;
+        }
+        if (!$profile || empty($profile->balance_track_start)) { return null; }
+
+        $start = substr((string) $profile->balance_track_start, 0, 10);
+        $today = date('Y-m-d');
+        $asOf  = $asOf ? substr($asOf, 0, 10) : $today;
+        $accrualEnd = ($asOf > $today) ? $today : $asOf;
+
+        $rateType = (($profile->rate_type ?? 'monthly') === 'daily') ? 'daily' : 'monthly';
+        $timeline = $this->rateTimeline($userId, $start, $profile);
+        $absent   = $this->absenceSet($userId);
+
+        $walk = $this->walkDays($timeline, $absent, $start, $accrualEnd);
+
+        $paid = 0.0; $payCount = 0;
+        foreach ($this->balancePaymentRows($userId) as $p) {
+            if ($p['date'] >= $start && $p['date'] <= $asOf) {
+                $paid += $p['amount'];
+                $payCount++;
+            }
+        }
+        $paid = round($paid, 2);
+
+        $opening = round((float) ($profile->balance_opening ?? 0), 2);
+        $balance = round($opening + $paid - $walk['earned'], 2);
+
+        return array_merge($this->balanceShape($balance), [
+            'tracked'      => true,
+            'track_start'  => $start,
+            'start_label'  => date('j M Y', strtotime($start)),
+            'opening'      => $opening,
+            'as_of'        => $asOf,
+            'earned'       => $walk['earned'],
+            'paid'         => $paid,
+            'payment_count' => $payCount,
+            'counted_days' => $walk['counted'],
+            'crossed_days' => $walk['crossed'],
+            'balance'      => $balance,          // signed; the UI uses direction + amount
+            'day_rate'     => round($this->rateOnDate($timeline, $today), 2),
+            'base_rate'    => round((float) ($profile->base_salary ?? 0), 2),
+            'rate_type'    => $rateType,
+        ]);
+    }
+
+    /**
+     * One month of the khata: a day-by-day calendar plus that month's totals.
+     * Every day carries the balance AFTER it, so the running account the manager
+     * described is visible per day, not just as a headline.
+     */
+    public function balanceCalendar(int $userId, string $month): array
+    {
+        $state = $this->balanceState($userId);
+        if (!$state) {
+            return ['success' => false, 'message' => 'This employee is not on a running balance.'];
+        }
+        if (!preg_match('/^\d{4}-\d{2}$/', $month)) {
+            $month = date('Y-m');
+        }
+
+        $profile = DB::table('t_hr_employee_profile')->where('user_id', $userId)->first();
+        $start   = $state['track_start'];
+        $today   = date('Y-m-d');
+        [$mStart, $mEnd] = $this->monthBounds($month);
+
+        $timeline = $this->rateTimeline($userId, $start, $profile);
+        $absent   = $this->absenceSet($userId);
+
+        $payments = $this->decoratePayments($this->balancePaymentRows($userId));
+        $payByDate = [];
+        foreach ($payments as $p) {
+            if ($p['date'] >= $start) { $payByDate[$p['date']][] = $p; }
+        }
+
+        // Walk from the anchor so each day of the shown month knows the balance after it.
+        $run = $state['opening'];
+        $runningByDate = [];
+        $d = $start; $guard = 0;
+        while ($d <= $mEnd && $guard++ < 4000) {
+            foreach ($payByDate[$d] ?? [] as $p) { $run += $p['amount']; }
+            if ($d <= $today && !isset($absent[$d])) { $run -= $this->rateOnDate($timeline, $d); }
+            if ($d >= $mStart) { $runningByDate[$d] = round($run, 2); }
+            $d = date('Y-m-d', strtotime($d . ' +1 day'));
+        }
+
+        $days = [];
+        $d = $mStart;
+        while ($d <= $mEnd) {
+            $inAccount = ($d >= $start);
+            $days[] = [
+                'date'       => $d,
+                'day'        => (int) date('j', strtotime($d)),
+                'dow'        => (int) date('N', strtotime($d)),   // 1 = Mon
+                'in_account' => $inAccount,
+                'crossed'    => $inAccount && isset($absent[$d]),
+                'future'     => $d > $today,
+                'is_today'   => $d === $today,
+                'rate'       => $inAccount ? round($this->rateOnDate($timeline, $d), 2) : 0,
+                'payments'   => $payByDate[$d] ?? [],
+                'paid_total' => round(array_sum(array_column($payByDate[$d] ?? [], 'amount')), 2),
+                'running'    => $inAccount ? ($runningByDate[$d] ?? null) : null,
+            ];
+            $d = date('Y-m-d', strtotime($d . ' +1 day'));
+        }
+
+        // Month totals: accrual clamped to today, so the current month reads "so far".
+        $from = ($start > $mStart) ? $start : $mStart;
+        $to   = ($mEnd > $today) ? $today : $mEnd;
+        $walk = $this->walkDays($timeline, $absent, $from, $to);
+        $paidThisMonth = 0.0;
+        foreach ($payments as $p) {
+            if ($p['date'] >= $mStart && $p['date'] <= $mEnd && $p['date'] >= $start) {
+                $paidThisMonth += $p['amount'];
+            }
+        }
+        // Closing = the balance at the last day this month can speak for (its own end, or
+        // today for a month still running). A month entirely BEFORE the anchor has no days
+        // in the account at all, so it closes at the opening balance — never today's figure,
+        // which would date a live number to a month the account did not yet exist in.
+        $closingDate  = ($mEnd > $today) ? $today : $mEnd;
+        $beforeStart  = ($mEnd < $start);
+        $closing = $beforeStart ? $state['opening'] : ($runningByDate[$closingDate] ?? $state['balance']);
+
+        return [
+            'success'     => true,
+            'month'       => $month,
+            'month_label' => date('F Y', strtotime($mStart)),
+            'prev_month'  => date('Y-m', strtotime($mStart . ' -1 month')),
+            'next_month'  => date('Y-m', strtotime($mStart . ' +1 month')),
+            'has_prev'    => $mStart > $start,
+            'days'        => $days,
+            'balance'     => $state,
+            'summary'     => array_merge($this->balanceShape((float) $closing), [
+                'counted'      => $walk['counted'],
+                'crossed'      => $walk['crossed'],
+                'earned'       => $walk['earned'],
+                'paid'         => round($paidThisMonth, 2),
+                'closing_date' => $closingDate,
+                'is_current'   => ($mStart <= $today && $mEnd >= $today),
+                'before_start' => $beforeStart,
+            ]),
+        ];
+    }
+
+    /**
+     * Open a khata: pick the anchor + the opening balance. Everything before the anchor
+     * stops existing for this employee's pay — which is how "the previous month is
+     * cleared, start from the 1st" is achieved without deleting a single record.
+     *
+     * The anchor may not fall on a day already paid (period or monthly month), or the
+     * same day would be paid twice — once as a period, once as accrued days.
+     */
+    public function enableBalanceTracking(int $userId, string $startDate, float $opening, int $actorId): array
+    {
+        if (!$this->balanceTrackingAvailable()) {
+            return ['success' => false, 'message' => 'Running balances need the schema update to be applied first.'];
+        }
+        $startDate = substr($startDate, 0, 10);
+        if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $startDate) || strtotime($startDate) === false) {
+            return ['success' => false, 'message' => 'Pick a valid start date.'];
+        }
+        if ($startDate > date('Y-m-d')) {
+            return ['success' => false, 'message' => "The start date can't be in the future."];
+        }
+
+        $profile = DB::table('t_hr_employee_profile')->where('user_id', $userId)->first();
+        if (!$profile) {
+            return ['success' => false, 'message' => 'This employee has no payroll profile yet.'];
+        }
+        if (($profile->pay_schedule ?? 'monthly') !== 'custom') {
+            return ['success' => false, 'message' => 'Only custom-schedule employees can be put on a running balance.'];
+        }
+        if ((float) ($profile->base_salary ?? 0) <= 0) {
+            return ['success' => false, 'message' => "Set this employee's rate first."];
+        }
+        if (!empty($profile->balance_track_start)) {
+            return ['success' => false, 'message' => 'This employee is already on a running balance.'];
+        }
+
+        // The anchor must sit after everything already paid the old way.
+        $lastCovered = null;
+        foreach ($this->userPaidRows($userId) as $r) {
+            if (($r->entry_kind ?? '') === 'balance_payment') { continue; }
+            $end = (($r->period_key ?? '') !== '' && $r->period_end)
+                ? $r->period_end
+                : $this->monthBounds($r->pay_month)[1];
+            if ($lastCovered === null || $end > $lastCovered) { $lastCovered = $end; }
+        }
+        if ($lastCovered !== null && $startDate <= $lastCovered) {
+            $free = date('Y-m-d', strtotime($lastCovered . ' +1 day'));
+            return ['success' => false, 'message' => 'Days up to ' . date('j M Y', strtotime($lastCovered))
+                . ' are already paid. Start the balance on ' . date('j M Y', strtotime($free)) . ' or later.'];
+        }
+
+        $rateType = (($profile->rate_type ?? 'monthly') === 'daily') ? 'daily' : 'monthly';
+        $base     = (float) $profile->base_salary;
+        $opening  = round($opening, 2);
+
+        try {
+            return DB::transaction(function () use ($userId, $startDate, $opening, $actorId, $base, $rateType) {
+                DB::table('t_hr_employee_profile')->where('user_id', $userId)->lockForUpdate()->first();
+
+                DB::table('t_hr_employee_profile')->where('user_id', $userId)->update([
+                    'balance_track_start' => $startDate,
+                    'balance_opening'     => $opening,
+                    'updated_at'          => now(),
+                ]);
+
+                // First rate segment, so every counted day has a price from day one.
+                DB::table('t_hr_custom_rate')->updateOrInsert(
+                    ['user_id' => $userId, 'effective_date' => $startDate],
+                    [
+                        'day_rate'    => $this->dayRateFrom($base, $rateType),
+                        'base_amount' => round($base, 2),
+                        'rate_type'   => $rateType,
+                        'created_by'  => $actorId,
+                        'created_at'  => now(),
+                        'updated_at'  => now(),
+                    ]
+                );
+
+                // Advances stop existing as a concept for this employee: whatever the manager
+                // put in the opening balance IS the settlement. The ledger rows are untouched —
+                // the cash-out history stays exactly where it is.
+                $advances = $this->openAdvances($userId);
+                $settled = 0;
+                foreach ($advances as $a) {
+                    if (empty($a['request_id'])) { continue; }
+                    $settled += DB::table('t_req_master')
+                        ->where('id', $a['request_id'])
+                        ->where('status', 'approved')
+                        ->where(function ($q) {
+                            $q->whereNull('settlement_status')->orWhere('settlement_status', '!=', 'settled');
+                        })
+                        ->update([
+                            'settlement_status' => 'settled',
+                            'settled_at'        => now(),
+                            'settled_by'        => $actorId,
+                            'settlement_notes'  => 'Converted to running balance on ' . date('j M Y', strtotime($startDate)),
+                            'updated_at'        => now(),
+                        ]);
+                }
+
+                \Log::info('Payroll balance tracking enabled', [
+                    'user_id' => $userId, 'start' => $startDate, 'opening' => $opening,
+                    'advances_converted' => $settled, 'by' => $actorId,
+                ]);
+
+                return [
+                    'success' => true,
+                    'message' => 'Running balance started from ' . date('j M Y', strtotime($startDate)) . '.',
+                    'advances_converted' => $settled,
+                ];
+            });
+        } catch (\Throwable $e) {
+            \Log::error('enableBalanceTracking failed', ['user_id' => $userId, 'error' => $e->getMessage()]);
+            return ['success' => false, 'message' => 'Could not start the running balance: ' . $e->getMessage()];
+        }
+    }
+
+    /**
+     * Cross a day out (it earns nothing) or restore it. Future days are allowed — the
+     * manager often knows in advance — and simply wait for their date to matter.
+     */
+    public function toggleAbsence(int $userId, string $date, int $actorId): array
+    {
+        $state = $this->balanceState($userId);
+        if (!$state) {
+            return ['success' => false, 'message' => 'This employee is not on a running balance.'];
+        }
+        $date = substr($date, 0, 10);
+        if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $date) || strtotime($date) === false) {
+            return ['success' => false, 'message' => 'Pick a valid date.'];
+        }
+        if ($date < $state['track_start']) {
+            return ['success' => false, 'message' => 'That day is before this balance started ('
+                . $state['start_label'] . ') — it is not part of the account.'];
+        }
+        if ($date > date('Y-m-d', strtotime('+1 year'))) {
+            return ['success' => false, 'message' => "That's too far ahead to mark."];
+        }
+
+        try {
+            $existing = DB::table('t_hr_custom_absence')
+                ->where('user_id', $userId)->where('absent_date', $date)->first();
+            if ($existing) {
+                DB::table('t_hr_custom_absence')->where('id', $existing->id)->delete();
+                $crossed = false;
+            } else {
+                DB::table('t_hr_custom_absence')->insert([
+                    'user_id'     => $userId,
+                    'absent_date' => $date,
+                    'marked_by'   => $actorId,
+                    'created_at'  => now(),
+                    'updated_at'  => now(),
+                ]);
+                $crossed = true;
+            }
+            \Log::info('Payroll khata day toggled', [
+                'user_id' => $userId, 'date' => $date, 'crossed' => $crossed, 'by' => $actorId,
+            ]);
+            return [
+                'success' => true,
+                'crossed' => $crossed,
+                'balance' => $this->balanceState($userId),
+            ];
+        } catch (\Throwable $e) {
+            \Log::error('toggleAbsence failed', ['user_id' => $userId, 'date' => $date, 'error' => $e->getMessage()]);
+            return ['success' => false, 'message' => 'Could not update that day.'];
+        }
+    }
+
+    /**
+     * Change a tracked employee's rate FROM A DATE THE MANAGER PICKS (owner ruling).
+     * Days before it keep the old price; days from it — including days already crossed —
+     * price at the new one. Nothing is repriced silently, and a wrong entry is fixed by
+     * saving again on the same effective date.
+     */
+    public function changeTrackedRate(int $userId, float $newBase, string $effectiveDate, int $actorId): array
+    {
+        $state = $this->balanceState($userId);
+        if (!$state) {
+            return ['success' => false, 'message' => 'This employee is not on a running balance.'];
+        }
+        if ($newBase <= 0) {
+            return ['success' => false, 'message' => 'Enter the new rate.'];
+        }
+        $effectiveDate = substr($effectiveDate, 0, 10);
+        if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $effectiveDate) || strtotime($effectiveDate) === false) {
+            return ['success' => false, 'message' => 'Pick a valid date for the new rate.'];
+        }
+        if ($effectiveDate < $state['track_start']) {
+            return ['success' => false, 'message' => 'The new rate cannot start before the balance itself ('
+                . $state['start_label'] . ').'];
+        }
+        if ($effectiveDate > date('Y-m-d')) {
+            return ['success' => false, 'message' => "A rate can't start in the future — set it on the day it applies."];
+        }
+
+        $rateType = $state['rate_type'];
+        try {
+            DB::transaction(function () use ($userId, $newBase, $effectiveDate, $actorId, $rateType) {
+                $existing = DB::table('t_hr_employee_profile')->where('user_id', $userId)->lockForUpdate()->first();
+
+                DB::table('t_hr_custom_rate')->updateOrInsert(
+                    ['user_id' => $userId, 'effective_date' => $effectiveDate],
+                    [
+                        'day_rate'    => $this->dayRateFrom($newBase, $rateType),
+                        'base_amount' => round($newBase, 2),
+                        'rate_type'   => $rateType,
+                        'created_by'  => $actorId,
+                        'created_at'  => now(),
+                        'updated_at'  => now(),
+                    ]
+                );
+
+                // Keep the profile's headline rate in step (it is what the card shows and
+                // what a future khata/period would start from).
+                DB::table('t_hr_employee_profile')->where('user_id', $userId)->update([
+                    'previous_salary'         => $existing->base_salary ?? null,
+                    'base_salary'             => round($newBase, 2),
+                    'last_salary_change_date' => $effectiveDate,
+                    'updated_at'              => now(),
+                ]);
+            });
+            \Log::info('Payroll khata rate changed', [
+                'user_id' => $userId, 'rate' => $newBase, 'effective' => $effectiveDate, 'by' => $actorId,
+            ]);
+            return [
+                'success' => true,
+                'message' => 'Rate updated from ' . date('j M Y', strtotime($effectiveDate)) . '.',
+                'balance' => $this->balanceState($userId),
+            ];
+        } catch (\Throwable $e) {
+            \Log::error('changeTrackedRate failed', ['user_id' => $userId, 'error' => $e->getMessage()]);
+            return ['success' => false, 'message' => 'Could not change the rate.'];
+        }
+    }
+
+    /**
+     * Record money handed to a tracked employee. This is a NORMAL payroll payment row
+     * (entry_kind='balance_payment') plus the same `salary_payment` ledger entry the
+     * monthly and period paths post — which is why the Expenses page, Ledger Hub, HQ and
+     * Reports pick it up with no changes on their side.
+     *
+     * @param array $opts ['funding','bank_id','note','actor_id']
+     */
+    public function recordBalancePayment(int $userId, float $amount, string $date, array $opts): array
+    {
+        $state = $this->balanceState($userId);
+        if (!$state) {
+            return ['success' => false, 'message' => 'This employee is not on a running balance.'];
+        }
+        $amount = round($amount, 2);
+        if ($amount < 1) {
+            return ['success' => false, 'message' => 'Enter the amount paid.'];
+        }
+        $date = substr($date, 0, 10);
+        if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $date) || strtotime($date) === false) {
+            return ['success' => false, 'message' => 'Pick a valid payment date.'];
+        }
+        if ($date > date('Y-m-d')) {
+            return ['success' => false, 'message' => "You can't record a payment for a future date."];
+        }
+        if ($date < $state['track_start']) {
+            return ['success' => false, 'message' => 'That date is before this balance started ('
+                . $state['start_label'] . '). Money paid earlier belongs in the opening balance.'];
+        }
+
+        $funding = ($opts['funding'] ?? 'cash') === 'online' ? 'online' : 'cash';
+        $bankId  = $funding === 'online' ? ($opts['bank_id'] ?? null) : null;
+        if ($funding === 'online' && !$bankId) {
+            return ['success' => false, 'message' => 'Choose the bank you are paying from.'];
+        }
+        $actorId = (int) ($opts['actor_id'] ?? auth()->id() ?? 1);
+        $note    = $opts['note'] ?? null;
+
+        // Backdating stamps BOTH the ledger date and paid_at, so Ledger Hub, the Expenses
+        // page and this screen all tell the same story about when the money moved.
+        $stampAt = ($date === date('Y-m-d')) ? now() : \Carbon\Carbon::parse($date . ' 12:00:00');
+
+        try {
+            return DB::transaction(function () use ($userId, $amount, $date, $funding, $bankId, $actorId, $note, $stampAt) {
+                DB::table('t_hr_employee_profile')->where('user_id', $userId)->lockForUpdate()->first();
+
+                // Double-submit guard: the same amount, same day, seconds ago is a stutter,
+                // not a second payment. A genuine repeat is fine a couple of minutes later.
+                $dupe = DB::table('t_hr_payroll_payment')
+                    ->where('user_id', $userId)
+                    ->where('entry_kind', 'balance_payment')
+                    ->where('status', 'paid')
+                    ->where('period_start', $date)
+                    ->where('net_salary', $amount)
+                    ->where('created_at', '>=', now()->subMinutes(2))
+                    ->exists();
+                if ($dupe) {
+                    return ['success' => false, 'message' => 'That exact payment was just recorded — refresh to see it.'];
+                }
+
+                $profile = DB::table('t_hr_employee_profile')->where('user_id', $userId)->first();
+                $buId = $this->stampBuId($profile && $profile->business_unit_id ? (int) $profile->business_unit_id : null);
+                $fullname = DB::table('t_sys_user')->where('id', $userId)->value('fullname') ?: ('User ' . $userId);
+
+                $source = $funding === 'online'
+                    ? \App\Models\FIN\ConfigModel::getOnlineBankAccount()
+                    : \App\Models\FIN\ConfigModel::getNFCashAccount();
+                if (!$source) {
+                    throw new \RuntimeException('Funding account not found.');
+                }
+
+                $empCash = \App\Models\FIN\AccountModel::where('user_id', $userId)
+                    ->where('account_category', 'employee_cash')->first();
+                if (!$empCash) {
+                    $empCash = \App\Models\FIN\AccountModel::createEmployeeCashAccount($userId, $fullname);
+                }
+
+                $ledger = \App\Models\FIN\LedgerModel::create([
+                    'transaction_date'     => $stampAt,
+                    'transaction_type'     => 'salary_payment',
+                    'description'          => 'Salary payment ' . date('j M Y', strtotime($date)) . ' — ' . $fullname,
+                    'from_account_id'      => $source->id,
+                    'to_account_id'        => $empCash->id,
+                    'amount'               => $amount,
+                    'mode'                 => $funding === 'online' ? 'online' : 'cash',
+                    'receiving_account_id' => $bankId,
+                    'business_unit_id'     => $buId,
+                    'approval_status'      => 'approved',
+                    'approval_date'        => $stampAt,
+                    'approved_by'          => $actorId,
+                    'external_source'      => 'payroll',
+                    'external_ref_id'      => 'khata/' . $userId . '/' . $date,
+                    'comments'             => 'Paid from: ' . $source->account_name . ($funding === 'online' ? (' (bank #' . $bankId . ')') : ''),
+                    'created_by'           => $actorId,
+                ]);
+                (new \App\Services\FIN\BalancePostingService())->apply($ledger);
+
+                // period_start = period_end = the day the money was handed over. The unique
+                // key is (user, pay_month, period_key), so the random suffix lets the same
+                // employee be paid more than once on one day.
+                $periodKey = 'PAY_' . $date . '_' . substr(md5(uniqid('', true)), 0, 8);
+
+                DB::table('t_hr_payroll_payment')->insert([
+                    'user_id'           => $userId,
+                    'pay_month'         => date('Y-m', strtotime($date)),
+                    'base_salary'       => round((float) ($profile->base_salary ?? 0), 2),
+                    'working_days'      => 0,
+                    'present_days'      => 0,
+                    'absent_days'       => 0,
+                    'leave_days'        => 0,
+                    'absent_deduction'  => 0,
+                    'late_minutes'      => 0,
+                    'late_deduction'    => 0,
+                    'late_leave_deduct' => 0,
+                    'bonus_leaves'      => 0,
+                    'advance_total'     => 0,
+                    'net_salary'        => $amount,
+                    'funding'           => $funding,
+                    'bank_id'           => $bankId,
+                    'ledger_id'         => $ledger->id,
+                    'status'            => 'paid',
+                    'notes'             => $note,
+                    'paid_at'           => $stampAt,
+                    'paid_by'           => $actorId,
+                    'period_start'      => $date,
+                    'period_end'        => $date,
+                    'period_key'        => $periodKey,
+                    'entry_kind'        => 'balance_payment',
+                    'business_unit_id'  => $buId,
+                    'created_at'        => now(),
+                    'updated_at'        => now(),
+                ]);
+
+                \Log::info('Payroll khata payment recorded', [
+                    'user_id' => $userId, 'amount' => $amount, 'date' => $date,
+                    'ledger_id' => $ledger->id, 'by' => $actorId,
+                ]);
+
+                return [
+                    'success'   => true,
+                    'message'   => 'Recorded Rs ' . number_format($amount) . '.',
+                    'ledger_id' => $ledger->id,
+                    'balance'   => $this->balanceState($userId),
+                ];
+            });
+        } catch (\Throwable $e) {
+            \Log::error('recordBalancePayment failed', ['user_id' => $userId, 'error' => $e->getMessage()]);
+            return ['success' => false, 'message' => 'Could not record the payment: ' . $e->getMessage()];
+        }
+    }
+
+    /**
+     * Undo a khata payment entered by mistake. Same shape as voiding an advance: the money
+     * goes back through the balance engine, the ledger row is kept and marked reversed, and
+     * the payment row flips to status='voided' — which removes it from the balance AND from
+     * every money surface at once, since they all filter status='paid'.
+     */
+    public function voidBalancePayment(int $paymentId, string $reason, int $actorId): array
+    {
+        if (!$this->balanceTrackingAvailable()) {
+            return ['success' => false, 'message' => 'Running balances need the schema update to be applied first.'];
+        }
+        $reason = trim($reason);
+        if ($reason === '') {
+            return ['success' => false, 'message' => 'Please type why this payment is being voided.'];
+        }
+
+        try {
+            return DB::transaction(function () use ($paymentId, $reason, $actorId) {
+                $pay = DB::table('t_hr_payroll_payment')->where('id', $paymentId)->lockForUpdate()->first();
+                if (!$pay) {
+                    return ['success' => false, 'message' => 'Payment not found.'];
+                }
+                if (($pay->entry_kind ?? '') !== 'balance_payment') {
+                    return ['success' => false, 'message' => 'Only a custom-salary payment can be voided here.'];
+                }
+                if ($pay->status !== 'paid') {
+                    return ['success' => false, 'message' => 'This payment is already ' . $pay->status . '.'];
+                }
+
+                $actorName = DB::table('t_sys_user')->where('id', $actorId)->value('fullname') ?: ('User ' . $actorId);
+                $stamp = 'VOIDED by ' . $actorName . ' on ' . now()->format('Y-m-d H:i:s') . ' — Reason: ' . $reason;
+                $restoredTo = null;
+
+                if ($pay->ledger_id) {
+                    $ledger = \App\Models\FIN\LedgerModel::lockForUpdate()->find($pay->ledger_id);
+                    if (!$ledger) {
+                        return ['success' => false, 'message' => 'The ledger entry for this payment is missing — please check it before changing anything.'];
+                    }
+                    if ($ledger->approval_status !== \App\Models\FIN\LedgerModel::STATUS_APPROVED) {
+                        return ['success' => false, 'message' => 'The ledger entry for this payment is already '
+                            . $ledger->approval_status . ' — nothing to restore.'];
+                    }
+                    $restoredTo = \App\Models\FIN\AccountModel::find($ledger->from_account_id)?->account_name;
+                    if ($ledger->receiving_account_id) {
+                        $bank = DB::table('t_fin_online_receiving_accounts')
+                            ->where('id', $ledger->receiving_account_id)
+                            ->first(['name', 'bank_name', 'account_last4']);
+                        if ($bank) {
+                            $restoredTo = trim(($bank->name ?: $bank->bank_name)
+                                . ($bank->account_last4 ? ' ••' . $bank->account_last4 : ''));
+                        }
+                    }
+                    (new \App\Services\FIN\BalancePostingService())->reverse($ledger);
+                    $ledger->approval_status = \App\Models\FIN\LedgerModel::STATUS_REVERSED;
+                    $ledger->comments = ($ledger->comments ? $ledger->comments . "\n" : '') . $stamp;
+                    $ledger->save();
+                }
+
+                DB::table('t_hr_payroll_payment')->where('id', $paymentId)->update([
+                    'status'     => 'voided',
+                    'notes'      => trim((string) ($pay->notes ? $pay->notes . ' | ' : '') . $stamp),
+                    'updated_at' => now(),
+                ]);
+
+                \Log::info('Payroll khata payment voided', [
+                    'payment_id' => $paymentId, 'user_id' => $pay->user_id,
+                    'amount' => $pay->net_salary, 'by' => $actorId, 'reason' => $reason,
+                ]);
+
+                return [
+                    'success' => true,
+                    'message' => 'Payment of Rs ' . number_format((float) $pay->net_salary) . ' voided'
+                        . ($restoredTo ? ' — returned to ' . $restoredTo : '') . '.',
+                    'balance' => $this->balanceState((int) $pay->user_id),
+                ];
+            });
+        } catch (\Throwable $e) {
+            \Log::error('voidBalancePayment failed', ['payment_id' => $paymentId, 'error' => $e->getMessage()]);
+            return ['success' => false, 'message' => 'Could not void this payment: ' . $e->getMessage()];
+        }
+    }
+
     /** Ensure an employee profile row exists (so tag updates have a row to write). */
     private function ensureProfile(int $userId): void
     {
@@ -2225,6 +3210,11 @@ class PayrollService
         }
         $paySchedule = $paySchedule === 'custom' ? 'custom' : 'monthly';
         $rateType = in_array($rateType, ['daily', 'monthly'], true) ? $rateType : 'monthly';
+        // While a running balance is on, the schedule is frozen: switching to Monthly would
+        // strand the balance (and the rate unit change would reprice the whole account).
+        if ($this->isBalanceTracked($userId)) {
+            return ['success' => false, 'message' => 'This employee is on a running balance — the pay schedule and rate unit stay fixed while it is on.'];
+        }
         try {
             $this->ensureProfile($userId);
             DB::table('t_hr_employee_profile')->where('user_id', $userId)->update([

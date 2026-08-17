@@ -217,7 +217,28 @@ class VehicleController extends Controller
                     'is_company'  => $v['is_company'],
                     'keeper_name' => $v['keeper_name'] ?? null,
                     'since'       => $v['keeper_since'] ?? null,
+                    // The machine's live service state, so a form can show what it is
+                    // about to be measured against.
+                    'service'     => $v['service'] ?? null,
                 ],
+                /**
+                 * ⭐ WHAT IS ALREADY ON RECORD (owner ask, Aug-16): "show them the last
+                 *    maintenance entry so they know what they are entering, what is
+                 *    already there, when, and by whom."
+                 *
+                 * ⭐ SERVED FROM THE ENDPOINT ALL FOUR FILING SURFACES ALREADY CALL —
+                 *    the web modal, the manager's mobile form, the rider's own form and
+                 *    the store form each fetch this to name the bike. Attaching the
+                 *    context here means one implementation, one set of figures, and no
+                 *    screen inventing a lookup that could disagree with the panel it
+                 *    sits next to. It also means every one of them gains the feature at
+                 *    once, with no new permission and no new route.
+                 *
+                 * Keyed to the MACHINE the claim will land on, not to the person filing
+                 * it, so a manager filing for someone else sees that bike's history and
+                 * a rider newly given a machine sees what his predecessor had done.
+                 */
+                'last_maintenance' => $svc->lastMaintenanceFor((int) $vid),
             ]);
         } catch (\Throwable $e) {
             Log::warning('VehicleController forUser failed', ['user' => $uid, 'error' => $e->getMessage()]);
@@ -512,6 +533,14 @@ class VehicleController extends Controller
         if (!$res['ok']) {
             return response()->json(['success' => false, 'message' => $res['message']], 422);
         }
+        // ⚠ This form can change `service_interval_km`, which the derived schedule
+        //   reads — and the derivation is cached across requests. Without this bump a
+        //   manager saved a new per-bike schedule here and the card kept showing the
+        //   old countdown until the cache expired (verified: 2,500 → 600 invisible).
+        //   Bump BEFORE the find() below, so the payload we hand back is already the
+        //   new answer rather than the one we just invalidated.
+        \App\Services\Riders\VehicleService::bumpServiceEvidence((int) $res['id']);
+
         return response()->json([
             'success' => true,
             'message' => $id ? 'Vehicle updated.' : 'Vehicle added.',
@@ -825,6 +854,11 @@ class VehicleController extends Controller
                 'vehicle_source' => $vid ? 'manager' : null,
             ]);
             \App\Services\Riders\VehicleResolver::flush();
+            // ⚠ A day override moves that day's claims (and its readings) between
+            //   machines, so BOTH the machine gaining the day and the one losing it
+            //   have a different derivation now. The config counter is the honest
+            //   blunt instrument here — we do not know which machine lost the day.
+            \App\Services\Riders\VehicleService::bumpServiceConfig();
 
             $label = $vid ? $res->labelFor($vid) : null;
             Log::info('Vehicle day override set', [
