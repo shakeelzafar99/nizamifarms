@@ -83,8 +83,18 @@
         <div class="fld"><label>Description (optional)</label><textarea name="description" rows="2"></textarea></div>
         <div class="fld"><label>Receipt images (optional — pick several)</label><input type="file" name="receipt_images[]" accept="image/*" multiple></div>
       </form>
+
+      {{-- Shown AFTER the payment is recorded, when a bank debit matching it is
+           still waiting in the assistant's money box. Answering files the SMS
+           against this entry; skipping leaves it exactly where it was. --}}
+      <div id="hubPaySms" style="display:none">
+        <div class="smsq-head">✅ Payment recorded. Is this its bank SMS?</div>
+        <div class="smsq-sub">Filing it clears the message from your money box, and records which entry it belongs to.</div>
+        <div id="hubPaySmsList"></div>
+      </div>
     </div>
-    <div class="hubmodal-foot"><button class="btn" type="button" onclick="hubClose('hubPay')">Cancel</button><button class="btn primary" type="button" onclick="hubSubmitPayment()">Record payment</button></div>
+    <div class="hubmodal-foot" id="hubPayFoot"><button class="btn" type="button" onclick="hubClose('hubPay')">Cancel</button><button class="btn primary" type="button" onclick="hubSubmitPayment()">Record payment</button></div>
+    <div class="hubmodal-foot" id="hubPaySmsFoot" style="display:none"><button class="btn" type="button" onclick="hubPaySmsDone()">Not this one — leave it</button></div>
   </div>
 </div>
 
@@ -152,6 +162,12 @@
     var csrf = (document.querySelector('meta[name="csrf-token"]')||{}).content || '';
     var products = null;
     var fmt2 = function(n){ return Number(n).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2}); };
+    // ⚠ Deliberately NOT named fmt0/esc: every hub partial on this page shares
+    // ONE script scope, and sibling partials already define a `fmt0` with a
+    // different contract (theirs prefixes "Rs. "). Distinct names cannot be
+    // shadowed by include order.
+    var smsFmt0 = function(n){ return Number(n).toLocaleString(undefined,{maximumFractionDigits:0}); };
+    var smsEsc  = function(s){ var d=document.createElement('div'); d.textContent=(s==null?'':String(s)); return d.innerHTML; };
 
     window.hubClose = function(id){ document.getElementById(id).classList.remove('on'); };
     function open(id){ document.getElementById(id).classList.add('on'); }
@@ -506,10 +522,65 @@
             var r=await post('/finance/vendors/'+VID+'/payment', new FormData(f), true);
             if(r.status===422){ var j=await r.json(); return errShow('hubPayErr', (j.message||Object.values(j.errors||{}).flat()[0])||'Check the form.'); }
             var j2=await r.json().catch(function(){return{success:r.ok};});
-            if(j2.success) return done('Payment recorded');
+            if(j2.success){
+                // The payment IS recorded at this point. Everything below only
+                // decides what we say next, so any failure here still ends in
+                // the same reload — it can never lose the payment.
+                var p=j2.bank_sms_prompt;
+                if(p && p.action==='tagged') return done(p.message||'Payment recorded');
+                if(p && p.action==='ask' && (p.candidates||[]).length) return hubPaySmsAsk(j2.transaction_id, p.candidates);
+                return done('Payment recorded');
+            }
             errShow('hubPayErr', j2.message||'Could not record the payment.');
         }catch(e){ errShow('hubPayErr','Network error.'); }
     };
+
+    // ---------- "is this its bank SMS?" ----------
+    // Swap the modal from a form into a question. The payment is already saved,
+    // so every exit from here — answer, skip, or close — simply reloads.
+    function hubPaySmsAsk(ledgerId, cands){
+        var box=document.getElementById('hubPaySmsList');
+        box.innerHTML=cands.map(function(c){
+            var meta=[c.counterparty, (c.date||'')+(c.time?' '+c.time:''), c.bank, c.reference?('TID '+c.reference):'']
+                     .filter(Boolean).map(smsEsc).join(' · ');
+            return '<div class="smsq-row"><div class="sq-main">'+
+                   '<div class="sq-amt">Rs. '+smsFmt0(c.amount)+'</div>'+
+                   '<div class="sq-meta">'+meta+'</div></div>'+
+                   '<button class="btn primary sq-ok" type="button" data-sms="'+c.id+'" data-led="'+ledgerId+'">Yes, that\'s it</button></div>';
+        }).join('');
+        box.querySelectorAll('button[data-sms]').forEach(function(b){
+            b.addEventListener('click', function(){ hubPaySmsTag(b.dataset.sms, b.dataset.led, b); });
+        });
+        document.getElementById('hubPayForm').style.display='none';
+        document.getElementById('hubPaySms').style.display='block';
+        document.getElementById('hubPayFoot').style.display='none';
+        document.getElementById('hubPaySmsFoot').style.display='flex';
+    }
+
+    async function hubPaySmsTag(smsId, ledgerId, btn){
+        btn.disabled=true; btn.textContent='Filing…';
+        try{
+            // ⚠ post() sends no CSRF header — the other calls here carry it in
+            // the form body via @csrf. This FormData is built by hand, so the
+            // token has to be added explicitly or the request 419s.
+            var fd=new FormData(); fd.append('_token',csrf);
+            fd.append('sms_id',smsId); fd.append('ledger_id',ledgerId);
+            var r=await post('{{ url('assistant-view/money-out/tag') }}', fd, true);
+            var j=await r.json().catch(function(){return{success:false};});
+            if(j.success){
+                document.getElementById('hubPaySmsList').innerHTML=
+                    '<div class="smsq-done">'+smsEsc(j.message||'Filed against this entry.')+'</div>';
+                return setTimeout(function(){ location.reload(); }, 900);
+            }
+            btn.disabled=false; btn.textContent="Yes, that's it";
+            errShow('hubPayErr', j.message||'Could not file that bank SMS.');
+        }catch(e){
+            btn.disabled=false; btn.textContent="Yes, that's it";
+            errShow('hubPayErr','Network error — the payment is recorded; the SMS is still in your money box.');
+        }
+    }
+
+    window.hubPaySmsDone = function(){ done('Payment recorded'); };
 
     // ---------- Report ----------
     var reportData = null;

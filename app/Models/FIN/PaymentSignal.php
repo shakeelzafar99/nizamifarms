@@ -96,6 +96,57 @@ class PaymentSignal extends Model
         return in_array((string) $this->match_reason, self::GUESS_REASONS, true);
     }
 
+    /**
+     * ⭐ THE MOVEMENT LOG (owner ask, Aug-2026): "so I know what payments
+     * changed hands." Self-healing is only trustworthy when it is visible —
+     * every attach, re-point and release of a signal's order/customer is
+     * recorded in t_fin_payment_signal_moves, with the reason before and after.
+     *
+     * A model hook rather than edits at every call site ON PURPOSE: the moves
+     * happen in a dozen places (pairing retract, displacement, resweep, G1
+     * re-validation, manual re-points, ignore, unmark…) and every future one is
+     * covered automatically, so the log can never silently fall out of date.
+     *
+     * ⚠⚠ MUST NO-OP UNTIL THE TABLE EXISTS. Code reaches prod before the owner
+     * runs the SQL (deploys are manual), and a throwing hook here would take
+     * down EVERY signal save — matching, approvals, the assistant. Existence is
+     * checked once per request and any failure is swallowed: the log is a
+     * nicety, the save is money.
+     */
+    protected static function booted(): void
+    {
+        static::updated(function (PaymentSignal $s) {
+            try {
+                if (!$s->wasChanged('matched_order_id') && !$s->wasChanged('matched_customer_id')) {
+                    return;
+                }
+                static $tableOk = null;
+                if ($tableOk === null) {
+                    $tableOk = \Illuminate\Support\Facades\Schema::hasTable('t_fin_payment_signal_moves');
+                }
+                if (!$tableOk) {
+                    return;
+                }
+                \Illuminate\Support\Facades\DB::table('t_fin_payment_signal_moves')->insert([
+                    'signal_id'        => $s->id,
+                    'source'           => $s->source,
+                    'amount'           => $s->extracted_amount,
+                    'payer_name'       => $s->extracted_sender_name,
+                    'from_customer_id' => $s->getOriginal('matched_customer_id'),
+                    'from_order_id'    => $s->getOriginal('matched_order_id'),
+                    'to_customer_id'   => $s->matched_customer_id,
+                    'to_order_id'      => $s->matched_order_id,
+                    'from_reason'      => $s->getOriginal('match_reason'),
+                    'to_reason'        => $s->match_reason,
+                    'moved_by'         => auth()->id(),
+                    'created_at'       => now(),
+                ]);
+            } catch (\Throwable $e) {
+                // Never let bookkeeping break a money-path save.
+            }
+        });
+    }
+
     protected $fillable = [
         'source',
         'wa_message_id',

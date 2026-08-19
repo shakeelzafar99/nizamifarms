@@ -99,6 +99,58 @@ class PaymentSignalMatcher
                 $partner = $signal;
             }
 
+            // ⚠⚠ A GUESSED identity is re-validated, never re-trusted (Aug-2026).
+            // resolveCustomerId trusts a pre-set matched_customer_id on bank-side
+            // signals — right when the auto-action service set it from a mapped
+            // account (a human teaching), WRONG when it was inferred from the
+            // payer's name: re-matching then stays imprisoned inside the guessed
+            // customer's orders forever, and a later exact-balance coincidence
+            // there would even re-attach it as a clean NON-guess match — a guess
+            // laundered into certainty. The Rs 2,250 "MUHAMMAD ASLAM KHAN" credit
+            // could never leave Adnan Khan this way, however much the name rules
+            // improved underneath it.
+            //
+            // So: re-run the CURRENT name rules. Same customer → proceed, still
+            // stamped a guess. Different customer or nobody → the old identity
+            // goes; a re-resolution carries the guess reason forward, and no
+            // resolution leaves the credit honestly unidentified (held — the
+            // money-in box and the human path take it from there).
+            $guessReason = null;
+            if ($primary->isGuess()
+                && in_array($primary->source, PaymentSignal::BANK_SIDE_SOURCES, true)) {
+                $guessReason = (string) $primary->match_reason;
+                $identityBefore = (int) $primary->matched_customer_id;
+
+                if ($primary->matched_customer_id && $primary->extracted_sender_name) {
+                    $resolved = app(PayerNameResolver::class)->resolve(
+                        $primary->extracted_sender_name,
+                        (float) $primary->extracted_amount,
+                        $primary->extracted_txn_datetime
+                    );
+                    if ((int) ($resolved['customer_id'] ?? 0) !== $identityBefore) {
+                        $primary->matched_customer_id = $resolved['customer_id'] ?? null;
+                        $guessReason = PaymentSignal::REASON_NAME_AMOUNT;
+                    }
+                } elseif ($primary->matched_customer_id && !$primary->extracted_sender_name) {
+                    // An amount-only guess has no name to re-validate with — the
+                    // identity was never more than "who owed this figure", so it
+                    // does not survive a re-match on its own authority.
+                    $primary->matched_customer_id = null;
+                }
+
+                // Identity dropped or replaced → every trace of the old verdict
+                // goes with it. The corroboration hold path below doMatch never
+                // touches these fields (a fresh unidentified credit never had
+                // them), so a released guess would otherwise keep pointing at
+                // the wrong customer's ORDER while claiming to be unmatched —
+                // exactly the half-cleaned state found in verification.
+                if ((int) $primary->matched_customer_id !== $identityBefore) {
+                    $primary->matched_order_id  = null;
+                    $primary->match_reason      = null;
+                    $primary->match_confidence  = null;
+                }
+            }
+
             // Detach the pair so the matcher re-pairs + re-propagates cleanly. We
             // clear only the match RESULT (the extracted facts stay), and never
             // reset status to 'new' — that would make the Gemini worker re-extract.
@@ -115,7 +167,13 @@ class PaymentSignalMatcher
                 $partner->save();
             }
 
-            return $this->doMatch($primary->fresh());
+            // Persist any identity change BEFORE the fresh() below discards it.
+            $primary->save();
+
+            // Through match(), not doMatch(): a guess must re-enter as a guess
+            // (uncertainty stamp, no-stacking guard, capped confidence — and it
+            // can never displace someone else's evidence).
+            return $this->match($primary->fresh(), null, $guessReason);
         } catch (\Throwable $e) {
             Log::error('PaymentSignalMatcher rematch failed', [
                 'signal_id' => $signal->id,
@@ -173,8 +231,11 @@ class PaymentSignalMatcher
             return ['status' => 'ambiguous', 'orders' => $balanceMatches->map($one)->all(), 'reason' => 'multiple_candidates', 'open_orders' => $openOrders];
         }
 
-        // Step 5: combined / bulk.
-        $combined = $this->findCombinedSet($candidates, $amount, $tolerance);
+        // Step 5: combined / bulk — over still-open invoices only, exactly as
+        // doMatch does. This preview is used to explain the matcher to a human,
+        // so any divergence here would be a lie about what will happen.
+        $openInvoices = $this->unsettledOnly($candidates);
+        $combined = $this->findCombinedSet($openInvoices, $amount, $tolerance);
         if (is_array($combined) && !empty($combined['orders'])) {
             return ['status' => 'combined', 'orders' => array_map($one, $combined['orders']), 'reason' => $combined['reason'] ?? 'bulk_combined', 'open_orders' => $openOrders];
         }
@@ -182,8 +243,10 @@ class PaymentSignalMatcher
             return ['status' => 'ambiguous', 'orders' => $openOrders, 'reason' => 'bulk_ambiguous', 'open_orders' => $openOrders];
         }
 
-        // Step 6: amount fits nothing — would attach to the newest as a mismatch.
-        return ['status' => 'amount_mismatch', 'orders' => [$one($latest)], 'reason' => 'amount_differs', 'open_orders' => $openOrders];
+        // Step 6: amount fits nothing — would attach to the newest OPEN invoice
+        // as a mismatch (the newest overall only if none is open).
+        $fallback = $openInvoices->first() ?: $latest;
+        return ['status' => 'amount_mismatch', 'orders' => [$one($fallback)], 'reason' => 'amount_differs', 'open_orders' => $openOrders];
     }
 
     private function doMatch(PaymentSignal $signal, ?array $onlyOrderIds = null): PaymentSignal
@@ -242,12 +305,33 @@ class PaymentSignalMatcher
             return $this->link($signal, $balanceMatches->first(), 0.45, 'multiple_candidates');
         }
 
+        // ── Everything below is SPECULATIVE ──────────────────────────────────
+        // Steps 2-4 above are self-proving: the amount EQUALS an invoice's
+        // balance. From here we start proposing answers the figure alone does
+        // not establish, so the pool narrows to invoices that are still open.
+        //
+        // ⭐⭐ WHY (owner ruling Aug-2026, and the data agrees emphatically):
+        // approving an invoice does NOT flip the order's payment_status or
+        // total_paid — measured, 1,303 of 1,303 approved invoices still read
+        // 'unpaid' with total_paid 0.00. So an APPROVED invoice stays a
+        // candidate forever, and 97% of the "open" pool (5,879 → 175 rows) is
+        // in fact already settled. A speculative rule rummaging through that is
+        // how a payment gets welded onto an invoice Taimur approved weeks ago,
+        // and it is what let a combined search consider nine of Naveed
+        // Solaija's invoices when only three were genuinely owed.
+        //
+        // Exact matches keep the FULL pool on purpose: a proof landing on a
+        // settled invoice by exact balance is late record-keeping, harmless and
+        // right (5 such matches in history). Only guesswork is restricted.
+        $openInvoices = $this->unsettledOnly($candidates);
+
         // Step 5: combined / bulk payment — ONE transfer that settles SEVERAL
         // open invoices. Anchored on the NEWEST invoice (the customer pays the
-        // latest, then tops up older ones), preferring a contiguous run. When a
-        // set is found we mark the signal MATCHED and link it to every covered
-        // invoice (see findCombinedSet) so all of them show the proof.
-        $combined = $this->findCombinedSet($candidates, $amount, $tolerance);
+        // latest, then tops up older ones), preferring a contiguous run, and
+        // falling back to an unanchored search when that assumption fails.
+        // When a set is found we mark the signal MATCHED and link it to every
+        // covered invoice (see findCombinedSet) so all of them show the proof.
+        $combined = $this->findCombinedSet($openInvoices, $amount, $tolerance);
         if (is_array($combined) && !empty($combined['orders'])) {
             return $this->linkCombined($signal, $combined['orders'], $combined['confidence'], $combined['reason']);
         }
@@ -258,6 +342,14 @@ class PaymentSignalMatcher
         // same amount — we don't auto-pick one; the proof panel shows the open
         // invoices so the manager can decide.)
         $ambiguousBulk = is_array($combined) && !empty($combined['ambiguous']);
+
+        // The fallback lands on the newest invoice that is still OPEN — an
+        // approved one has no approver left to inform, so flagging "amount
+        // differs" on it is noise on settled business. If every invoice is
+        // settled we keep today's behaviour (newest overall) rather than
+        // hiding the proof entirely: a customer's screenshot must stay visible
+        // somewhere, and holding it would be a step backwards.
+        $fallback = $openInvoices->first() ?: $latest;
 
         // ⭐ PLAUSIBILITY BOUND (bank-side only). A bank credit that dwarfs the
         // order it would land on is not that order's payment — it is capital,
@@ -271,10 +363,25 @@ class PaymentSignalMatcher
         // image about their own account, so the approver should see it in
         // context even when the figure is odd. The dumping-ground risk there
         // was the zero-balance order, already fixed in candidateOrders().
-        if ($latest && in_array($signal->source, PaymentSignal::BANK_SIDE_SOURCES, true)) {
+        // ⭐ …and the bound is TWO-SIDED. The ceiling alone was blind to the
+        // opposite error: Aug-2026, a Rs 2,250 credit from "MUHAMMAD ASLAM
+        // KHAN" was read as Adnan Khan's and painted onto his Rs 19,921
+        // invoice — 0.11x, a ninth of the bill, and nothing about it says
+        // "this is that payment". A part-payment is real, but a figure this
+        // far below the balance is a different transaction.
+        //
+        // Calibrated, not guessed: 95.2% of all real matches sit at 0.8-1.25x,
+        // and across the whole history a 0.5 floor refuses exactly ONE
+        // bank-side speculative attach — that Aslam→Adnan one. Nouman's
+        // 7,600-on-7,400 (1.03x), the case this feature exists for, is
+        // untouched, as is every 0.5-0.8x part-payment.
+        if ($fallback && in_array($signal->source, PaymentSignal::BANK_SIDE_SOURCES, true)) {
             $maxRatio = (float) config('payment_signals.mismatch_attach_max_ratio', 3.0);
-            $latestBal = $this->balance($latest);
-            if ($maxRatio > 0 && $latestBal > 0.01 && $amount > $maxRatio * $latestBal) {
+            $minRatio = (float) config('payment_signals.mismatch_attach_min_ratio', 0.5);
+            $bal = $this->balance($fallback);
+            $tooLarge = $maxRatio > 0 && $bal > 0.01 && $amount > $maxRatio * $bal;
+            $tooSmall = $minRatio > 0 && $bal > 0.01 && $amount < $minRatio * $bal;
+            if ($tooLarge || $tooSmall) {
                 $signal->status = PaymentSignal::STATUS_UNMATCHED;
                 $signal->match_reason = 'amount_far_from_balance';
                 $signal->match_confidence = null;
@@ -294,7 +401,7 @@ class PaymentSignalMatcher
         $signal->match_reason = $this->guessReason
             ?: ($ambiguousBulk ? 'bulk_ambiguous' : 'amount_differs');
         $signal->match_confidence = $ambiguousBulk ? 0.30 : 0.20;
-        $signal->matched_order_id = $latest?->id;
+        $signal->matched_order_id = $fallback?->id;
         $signal->save();
         // No combined set survived — make sure no stale links remain on re-match.
         $this->clearLinks($signal->id);
@@ -509,6 +616,34 @@ class PaymentSignalMatcher
             return null;
         }
 
+        // Preferred reading: the newest invoice is part of the payment.
+        $anchored = $this->anchoredCombinedSet($orders, $amount, $tol);
+        if ($anchored !== null) {
+            return $anchored; // includes the deliberate "ambiguous" verdict
+        }
+
+        // ⚠⚠ …but the anchor is an ASSUMPTION, not a fact, and it fails on the
+        // most ordinary event there is: the customer places a NEW order before
+        // paying the delivered ones. Aug-14, Naveed Solaija ordered SH-21996
+        // (Rs 11,900) at 12:17 and sent Rs 35,444 at 14:30 for two DELIVERED
+        // invoices — NF-19152 (16,916.80) + SH-21869 (18,527.20), exact to the
+        // rupee. Both were in the candidate set. But the anchor forced the
+        // 11,900 into every combination, so the search hunted for 23,544,
+        // found nothing, and dumped the proof on the brand-new order as
+        // "amount differs". A two-hour-old order silently poisoned it.
+        //
+        // So when the anchored reading yields nothing, look for the set
+        // WITHOUT insisting on the newest. Only reachable over still-open
+        // invoices (see doMatch), which is what keeps this safe: that pool is
+        // small — 8 customers company-wide have 3+ open invoices, against 679
+        // before the settled ones are excluded — so a coincidental subset is
+        // close to impossible, and the exactly-one rule still guards it.
+        return $this->unanchoredCombinedSet($orders, $amount, $tol);
+    }
+
+    /** The newest invoice must be part of the set (the original reading). */
+    private function anchoredCombinedSet($orders, float $amount, float $tol): ?array
+    {
         $newest    = $orders->first();
         $newestBal = $this->balance($newest);
 
@@ -555,6 +690,71 @@ class PaymentSignalMatcher
         }
 
         return null;
+    }
+
+    /**
+     * Any set of two or more open invoices summing to the payment — the newest
+     * is not privileged. Lower confidence than the anchored reading because it
+     * rests on arithmetic alone, and still refuses on ambiguity: if two
+     * different sets of invoices sum to the same figure, nobody can say which
+     * the customer meant, so it stays a question for a human.
+     *
+     * ⚠ Two or more by definition. A one-invoice "set" is a plain balance
+     * match, already settled by steps 2-4 — allowing it here would sneak past
+     * their exactly-one-candidate rule.
+     */
+    private function unanchoredCombinedSet($orders, float $amount, float $tol): ?array
+    {
+        $arr = $orders->all();
+        if (count($arr) < 2 || count($arr) > 14) {
+            return null; // same enumeration bound as the anchored search
+        }
+
+        $subsets = array_values(array_filter(
+            $this->subsetsSummingTo($arr, $amount, $tol),
+            fn ($s) => count($s) >= 2
+        ));
+
+        if (count($subsets) === 1) {
+            // $orders is newest-first and subsetsSummingTo preserves that
+            // order, so linkCombined receives the list it documents.
+            return ['orders' => $subsets[0], 'confidence' => 0.50, 'reason' => 'bulk_combined'];
+        }
+        if (count($subsets) > 1) {
+            return ['orders' => [], 'ambiguous' => true];
+        }
+        return null;
+    }
+
+    /**
+     * Drop invoices that are already SETTLED — their invoice entry has reached
+     * `approved` or `pending_l2`, so the money is accounted for and a new
+     * payment cannot be for them.
+     *
+     * ⚠ An order can carry SEVERAL invoice ledger rows (reversed, then raised
+     * again — Naveed's NF-18863 and NF-19036 both do), so this asks whether a
+     * LIVE approved row exists; it must never join on "the" invoice row.
+     */
+    private function unsettledOnly($candidates)
+    {
+        if ($candidates->isEmpty()) {
+            return $candidates;
+        }
+
+        $settled = DB::table('t_fin_ledger')
+            ->whereIn('order_id', $candidates->pluck('id')->all())
+            ->where('transaction_type', 'invoice')
+            ->whereIn('approval_status', ['approved', 'pending_l2'])
+            ->distinct()
+            ->pluck('order_id')
+            ->all();
+
+        if (empty($settled)) {
+            return $candidates;
+        }
+        $settled = array_flip($settled);
+
+        return $candidates->reject(fn ($o) => isset($settled[$o->id]))->values();
     }
 
     /**
@@ -773,6 +973,25 @@ class PaymentSignalMatcher
         $guess = $a->isGuess() ? $a : ($b->isGuess() ? $b : null);
         if (!$guess) {
             return;
+        }
+
+        // One-strike unlearn, pair edition (Aug-2026). This was the ONE
+        // guess-correction path that kept the alias: manual re-points, ignore,
+        // unmark and displacement all unlearn, so a wrong guess that got
+        // APPROVED (teaching "SENDER -> wrong customer") and was later exposed
+        // by the payer's own screenshot kept its poisoned lesson and would
+        // misroute that payer's next credit too.
+        //
+        // Only when the evidence names a DIFFERENT customer. A guess that
+        // picked the right PERSON but the wrong ORDER proves nothing against
+        // the alias - deleting it there would strip a legitimate, often
+        // approver-confirmed lesson every time a customer's payment lands one
+        // scope away from where the ladder first put it.
+        $evidence = $guess === $a ? $b : $a;
+        if ($guess->matched_customer_id
+            && $evidence->matched_customer_id
+            && (int) $guess->matched_customer_id !== (int) $evidence->matched_customer_id) {
+            app(CustomerBankAliasService::class)->unlearnFromSignal($guess);
         }
 
         $this->releaseGuess($guess, 'amount_guess_retracted');

@@ -742,7 +742,16 @@ class RequestController extends Controller
                 'message' => $message,
                 'request_id' => $requestModel->id,
                 'request_number' => $requestModel->request_number,
-                'auto_approved' => $overallStatus === RequestModel::STATUS_APPROVED
+                'auto_approved' => $overallStatus === RequestModel::STATUS_APPROVED,
+                // ⭐ "Is this expense's bank SMS still in the money box?"
+                // Only answerable once a LEDGER row exists, which for an
+                // expense happens on posting — immediate when the requester
+                // holds the approval levels (measured: about half of them),
+                // hours later otherwise. When it isn't there yet this is null
+                // and the money-inbox sweep remains the safety net, exactly as
+                // before. Additive and best-effort: it cannot affect the
+                // request that was just created.
+                'bank_sms_prompt' => $this->bankSmsPromptForRequest($requestModel->id),
             ]);
 
         } catch (\Exception $e) {
@@ -1052,6 +1061,39 @@ class RequestController extends Controller
                 'success' => false,
                 'message' => 'Error finding request'
             ], 500);
+        }
+    }
+
+    /**
+     * "You just recorded this expense — is this the bank SMS for it?"
+     *
+     * An expense reaches the ledger only when it POSTS, so this asks the ledger
+     * (via request_id) rather than assuming a row exists. No row yet — the
+     * common case when approval is still pending — means no question, and the
+     * money-inbox sweep stays the safety net exactly as before.
+     *
+     * Never throws: the request is already created and must not be endangered
+     * by a question about it.
+     */
+    private function bankSmsPromptForRequest(int $requestId): ?array
+    {
+        try {
+            if (!auth()->check() || !auth()->user()->hasMobilePermission('use_ai_assistant')) {
+                return null;
+            }
+            $ledgerId = DB::table('t_fin_ledger')
+                ->where('request_id', $requestId)
+                ->where('transaction_type', 'expense')
+                ->orderByDesc('id')
+                ->value('id');
+            if (!$ledgerId) {
+                return null;
+            }
+            return app(\App\Services\Assistant\MoneyOutTagService::class)
+                ->afterEntry((int) $ledgerId, (int) auth()->id());
+        } catch (\Throwable $e) {
+            Log::warning('[bankSmsPromptForRequest] ' . $e->getMessage(), ['request' => $requestId]);
+            return null;
         }
     }
 }

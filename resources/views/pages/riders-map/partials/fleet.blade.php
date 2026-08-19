@@ -386,6 +386,38 @@
      who is measured for its meter, whether the company buys the fuel, and whether the
      overnight checks can run at all — so the server is asked what WILL happen and the
      answer is shown in words before Save is ever pressed. --}}
+{{-- ⭐ The machine's meter editor (owner ask, Aug-14). Opened from a vehicle card or
+     its profile. It EDITS the date rather than blindly inserting: whatever is already
+     recorded is preloaded and each field is routed back to its own source on save. --}}
+<div id="flvMeterModal" onclick="if(event.target===this)flvCloseMeter()"
+     style="display:none;position:fixed;inset:0;background:rgba(17,24,39,.45);z-index:1200;
+            align-items:flex-start;justify-content:center;padding:40px 14px;overflow:auto;">
+  <div style="background:#fff;border-radius:12px;max-width:470px;width:100%;padding:18px;
+              box-shadow:0 10px 30px rgba(20,20,40,.18);">
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;">
+      <b id="flvMeterTitle" style="font-size:15px;color:#111827;">🧾 Meter reading</b>
+      <button type="button" onclick="flvCloseMeter()"
+              style="margin-left:auto;border:0;background:none;font-size:22px;color:#9ca3af;cursor:pointer;">&times;</button>
+    </div>
+
+    <div>
+      <label class="fl-dc-k">date</label>
+      <input type="date" id="flvMeterDate" onchange="flvLoadMeterDay()"
+             style="width:100%;border:1px solid #d1d5db;border-radius:8px;padding:7px 9px;font-size:13px;">
+    </div>
+
+    <div id="flvMeterBody" style="margin-top:11px;"></div>
+
+    <div id="flvMeterError" style="display:none;font-size:12px;color:#b91c1c;background:#fef2f2;
+                                   border-radius:7px;padding:8px 10px;margin-top:9px;"></div>
+
+    <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px;">
+      <button type="button" class="fl-vbtn" onclick="flvCloseMeter()">Cancel</button>
+      <button type="button" class="fl-vbtn primary" id="flvMeterSave" onclick="flvSaveMeter()">Save</button>
+    </div>
+  </div>
+</div>
+
 <div id="flvAssignModal" onclick="if(event.target===this)flvCloseAssign()"
      style="display:none;position:fixed;inset:0;z-index:4200;background:rgba(0,0,0,.5);
             align-items:center;justify-content:center;padding:16px;">
@@ -1791,9 +1823,20 @@ function flOpenNew(cat) {
     // Riders come from the month payload already loaded for this screen.
     const sel = document.getElementById('flNewRider');
     const riders = (flData && flData.riders) ? flData.riders : [];
-    sel.innerHTML = '<option value="">— choose a rider —</option>' + riders.map(r =>
-        '<option value="' + r.user_id + '" data-company="' + (r.bike === 'company' ? '1' : '0') + '">' +
-        flEsc(r.name) + (r.bike === 'company' ? ' — company bike' : ' — own bike') + '</option>').join('');
+    // ⭐ NAME THE MACHINE, NOT ITS KIND (owner, Aug-17). `r.bike` is only
+    //   company|own — it answers "who pays for the fuel", never "which vehicle" —
+    //   so a VAN keeper read "Taimur — company bike", which is simply wrong.
+    //   `vehicle_label` is the plate/name and `holds_now` says he still has it, both
+    //   already on the row; fall back to the old wording for riders the registry has
+    //   never tracked, whose label stays exactly as before.
+    sel.innerHTML = '<option value="">— choose a rider —</option>' + riders.map(r => {
+        const known = r.vehicle_label && r.holds_now !== false;
+        const suffix = known
+            ? ' — ' + flEsc(r.vehicle_label)
+            : (r.bike === 'company' ? ' — company vehicle' : ' — own vehicle');
+        return '<option value="' + r.user_id + '" data-company="' + (r.bike === 'company' ? '1' : '0') + '">'
+            + flEsc(r.name) + suffix + '</option>';
+    }).join('');
 
     document.getElementById('flNewAmount').value = '';
     document.getElementById('flNewMeter').value = '';
@@ -1995,10 +2038,11 @@ function flNewRiderChanged() {
     const sel = document.getElementById('flNewRider');
     const opt = sel.options[sel.selectedIndex];
     const isCompany = opt && opt.dataset && opt.dataset.company === '1';
+    // "vehicle", not "bike" — the van goes through this same form.
     document.getElementById('flNewBikeHint').textContent = !opt || !sel.value
         ? '' : (isCompany
-            ? 'Company bike — the firm buys the fuel, so the meter is required.'
-            : 'Own bike — paid per shift kilometre. The meter is optional here.');
+            ? 'Company vehicle — the firm buys the fuel, so the meter is required.'
+            : 'Own vehicle — paid per shift kilometre. The meter is optional here.');
     flNewSvcChanged();
     flNewMeterTyped();          // the since-last-fill line is per rider
     flNewWhichBike();           // ⭐ and WHICH machine this will land on
@@ -2790,6 +2834,11 @@ function flvCard(v, keeperOf) {
           + (v.keeper_user_id ? '<button type="button" class="fl-vbtn" onclick="flvRelease(' + v.id + ')">Take back</button>' : '')
           + '<button type="button" class="fl-vbtn" onclick="flvOpenEdit(' + v.id + ')">✏️ Edit</button>'
         : '')
+      // ⭐ Gated on can_log_meters (manage_bike_service): recording what a machine
+      //   did belongs to the service-recording family of right, not the assignment one.
+      +     (flvData && flvData.can_log_meters
+              ? '<button type="button" class="fl-vbtn" onclick="flvOpenMeter(' + v.id + ')" title="Record or correct this machine&#39;s meter for a day">🧾 Meter</button>'
+              : '')
       +     '<button type="button" class="fl-vbtn" style="margin-left:auto;" onclick="flvOpen(' + v.id + ')">Profile ▸</button>'
       +   '</div>'
       + '</div>';
@@ -2973,6 +3022,9 @@ function flvCardLine(l, s) {
         return '<div class="fl-dc-l">' + K(isStart ? 'meter start' : 'meter end')
             + '<b>' + flNum(l.value) + '</b>'
             + '<span class="fl-muted">· ' + flEsc(l.who || '—') + (l.at ? ' · ' + l.at : '') + '</span>'
+            + (l.source === 'log'
+                ? ' <span class="fl-vchip unk" title="Recorded from the Vehicles page — the machine own record, not the rider day">🧾 manager entry</span>'
+                : '')
             + (isStart && l.source === 'manager'
                 ? ' <span class="fl-vchip unk" title="Entered by a manager, not by the rider">✎ manager ne likha</span>'
                 : '')
@@ -3349,6 +3401,289 @@ function flvScheduleHtml(res) {
 }
 
 // ── assign ────────────────────────────────────────────────────────────────
+/**
+ * ⭐⭐ THE MACHINE'S METER EDITOR (owner ask, Aug-14).
+ *
+ * A rider-day carries ONE set of meters and the engine maps it to ONE machine, so a
+ * mid-day second machine — the van handed over at noon while the driver already
+ * opened his day on his own bike — had nowhere to record its kilometres.
+ *
+ * ⭐ THIS IS AN EDITOR, NOT AN INSERT FORM. It PRELOADS whatever the date already
+ *   has and routes each field back to ITS OWN home on save: a reading the rider
+ *   entered updates his attendance row (through the same writer the Attendance page
+ *   uses), a manager's entry updates the machine's log, and only an empty slot
+ *   creates a new one. That is what makes "one reading, one home" enforceable — two
+ *   competing records for one reading would put a contradiction into the chain.
+ */
+let flvMeterVehicle = null;
+let flvMeterState = null;
+
+function flvOpenMeter(vehicleId, date) {
+    flvMeterVehicle = vehicleId;
+    const v = ((flvData && flvData.vehicles) || []).find(x => x.id === vehicleId);
+    document.getElementById('flvMeterTitle').textContent =
+        '🧾 Meter reading — ' + (v ? v.name : 'vehicle');
+    document.getElementById('flvMeterDate').value = date || flvTodayYmd();
+    document.getElementById('flvMeterError').style.display = 'none';
+    document.getElementById('flvMeterModal').style.display = 'flex';
+    flvLoadMeterDay();
+}
+
+function flvCloseMeter() {
+    document.getElementById('flvMeterModal').style.display = 'none';
+    flvMeterVehicle = null;
+    flvMeterState = null;
+}
+
+/** Preload the date: what is already recorded, and where each reading came from. */
+function flvLoadMeterDay() {
+    const date = document.getElementById('flvMeterDate').value;
+    const body = document.getElementById('flvMeterBody');
+    if (!flvMeterVehicle || !date) return;
+    body.innerHTML = '<div class="fl-muted" style="font-size:12.5px;">Loading…</div>';
+
+    fetch(FLV_BASE + '/' + flvMeterVehicle + '/meter-day?date=' + encodeURIComponent(date),
+          {headers: {'Accept': 'application/json'}})
+        .then(r => r.json())
+        .then(res => {
+            if (!res.success) throw new Error(res.message || 'Could not load that day');
+            flvMeterState = res;
+            body.innerHTML = flvMeterForm(res);
+        })
+        .catch(e => { body.innerHTML = '<div style="color:#b91c1c;font-size:12.5px;">'
+            + flEsc(e.message || 'Could not load that day') + '</div>'; });
+}
+
+function flvMeterForm(res) {
+    const a = res.attendance;
+    const l = res.log;
+
+    // ── Section 1: the RIDER's own reading (attendance) ──────────────────────
+    // Shown as his, editable only by someone the Attendance page would already
+    // let correct it — the same act must not have two different locks depending
+    // on which screen you are standing on.
+    let attBlock = '';
+    if (a) {
+        const locked = !res.can_edit_attendance;
+        attBlock =
+          '<div class="fl-mrow" style="background:#f8f9fb;">'
+        +   '<span class="fl-dc-k">rider reading</span>'
+        +   '<b>' + flEsc(a.name || 'rider') + '</b>'
+        +   '<span class="fl-muted">his own day on this machine</span>'
+        +   (locked
+              ? '<span class="fl-vchip unk" title="Correct it on the Attendance page">read-only here</span>'
+              : '<span class="fl-vchip ok">you can correct it</span>')
+        + '</div>'
+        + '<div style="display:flex;gap:9px;margin-top:6px;">'
+        +   '<div style="flex:1;"><label class="fl-dc-k">meter start</label>'
+        +     '<input type="number" id="flvMeterAStart" value="' + (a.meter_start ?? '') + '"' + (locked ? ' disabled' : '')
+        +     ' oninput="flvMeterHintCheck()" style="width:100%;border:1px solid #d1d5db;border-radius:8px;padding:7px 9px;font-size:13px;"></div>'
+        +   '<div style="flex:1;"><label class="fl-dc-k">meter end</label>'
+        +     '<input type="number" id="flvMeterAEnd" value="' + (a.meter_end ?? '') + '"' + (locked ? ' disabled' : '')
+        +     ' oninput="flvMeterHintCheck()" style="width:100%;border:1px solid #d1d5db;border-radius:8px;padding:7px 9px;font-size:13px;"></div>'
+        + '</div>';
+    }
+
+    // ── Section 2: the MACHINE's own log (manager entry) ─────────────────────
+    // ⭐ ALWAYS rendered — before Aug-18 this block was hidden whenever an
+    //   attendance row existed, which made a SECOND stint on the same date
+    //   (holder rode, then a manager stint) impossible to record, and left an
+    //   already-existing log row invisible ("shadowed"). Both records now show,
+    //   each routed to its own home on Save.
+    const drivers = (res.drivers || []).map(d =>
+        '<option value="' + d.user_id + '"'
+        + ((l && l.driver_user_id === d.user_id) ? ' selected' : '')
+        + '>' + flEsc(d.name) + '</option>').join('');
+
+    const logHead = a
+        ? (l ? 'entry on the same date' : 'add a second stint')
+        : (l ? 'manager entry' : 'nothing recorded yet');
+
+    const logBlock =
+      '<div class="fl-mrow" style="background:#f8f9fb;margin-top:' + (a ? '12px' : '0') + ';">'
+    +   '<span class="fl-dc-k">machine log</span><b>🧾 ' + logHead + '</b>'
+    +   (l ? '<button type="button" class="fl-vbtn" style="margin-left:auto;" onclick="flvMeterClearLog()"'
+           + ' title="Empty both readings removes this entry on Save">clear</button>' : '')
+    + '</div>'
+    + '<div style="display:flex;gap:9px;margin-top:6px;">'
+    +   '<div style="flex:1;"><label class="fl-dc-k">meter start</label>'
+    +     '<input type="number" id="flvMeterStart" value="' + (l ? (l.meter_start ?? '') : '') + '"'
+    +     ' oninput="flvMeterHintCheck()" style="width:100%;border:1px solid #d1d5db;border-radius:8px;padding:7px 9px;font-size:13px;"></div>'
+    +   '<div style="flex:1;"><label class="fl-dc-k">meter end</label>'
+    +     '<input type="number" id="flvMeterEnd" value="' + (l ? (l.meter_end ?? '') : '') + '"'
+    +     ' oninput="flvMeterHintCheck()" style="width:100%;border:1px solid #d1d5db;border-radius:8px;padding:7px 9px;font-size:13px;"></div>'
+    + '</div>'
+    // The driver only exists on a manager entry: a rider's own row already knows
+    // whose day it was, and re-asking would invite a contradiction.
+    + '<div style="margin-top:9px;"><label class="fl-dc-k">driver</label>'
+    + '<select id="flvMeterDriver" style="width:100%;border:1px solid #d1d5db;border-radius:8px;padding:7px 9px;font-size:13px;">'
+    +   '<option value="">— no driver (machine only) —</option>' + drivers
+    + '</select>'
+    + '<div class="fl-muted" style="font-size:11.5px;margin-top:3px;">'
+    + 'The named driver gets these kilometres in his own month too. '
+    + '⚠ This does NOT hand him the machine — no handover, no meter demands change.</div></div>'
+    + '<div style="margin-top:9px;"><label class="fl-dc-k">note</label>'
+    + '<input type="text" id="flvMeterNote" maxlength="255" value="' + flEsc((l && l.note) || '') + '"'
+    + ' placeholder="e.g. lunchtime delivery run" style="width:100%;border:1px solid #d1d5db;border-radius:8px;padding:7px 9px;font-size:13px;"></div>';
+
+    return attBlock + logBlock
+      + '<div id="flvMeterHint" class="fl-muted" style="font-size:11.5px;margin-top:7px;"></div>';
+}
+
+function flvMeterClearLog() {
+    const sEl = document.getElementById('flvMeterStart');
+    const eEl = document.getElementById('flvMeterEnd');
+    if (sEl) sEl.value = '';
+    if (eEl) eEl.value = '';
+    flvMeterHintCheck();
+}
+
+/**
+ * ⚠ ADVICE, NEVER A BLOCK — the same rule as the handover odometer. A reading that
+ *   looks wrong is still recorded; refusing it would leave the machine's history
+ *   less complete than the manager's memory, which helps nobody.
+ */
+function flvMeterHintCheck() {
+    const hint = document.getElementById('flvMeterHint');
+    let sEl = document.getElementById('flvMeterStart');
+    let eEl = document.getElementById('flvMeterEnd');
+    if (!hint) return;
+    // When the log inputs are empty but a rider block is present, advise on that
+    // block instead — the manager is likely correcting the rider's reading.
+    if (sEl && eEl && sEl.value === '' && eEl.value === '') {
+        const aS = document.getElementById('flvMeterAStart');
+        const aE = document.getElementById('flvMeterAEnd');
+        if (aS && aE && (aS.value !== '' || aE.value !== '')) { sEl = aS; eEl = aE; }
+    }
+    if (!sEl || !eEl) return;
+    const s = parseInt(sEl.value, 10), e = parseInt(eEl.value, 10);
+    const w = (flvMeterState && flvMeterState.window) || {};
+
+    if (!isNaN(s) && !isNaN(e) && e < s) {
+        hint.style.color = '#b45309';
+        hint.innerHTML = '⚠ The end reading is below the start. It will still be saved — check for a typo.';
+        return;
+    }
+    if (!isNaN(s) && !isNaN(e)) {
+        hint.style.color = '#15803d';
+        hint.innerHTML = '✓ ' + flNum(e - s) + ' km on this machine for that day.';
+        return;
+    }
+    if (w.floor && !isNaN(s) && s < w.floor) {
+        hint.style.color = '#b45309';
+        hint.innerHTML = '⚠ Below this machine\'s last known reading (' + flNum(w.floor) + ' km). Saved anyway.';
+        return;
+    }
+    hint.style.color = '#6b7280';
+    hint.innerHTML = 'Either reading may stand alone — add the close later on the same date.';
+}
+
+function flvSaveMeter() {
+    const btn = document.getElementById('flvMeterSave');
+    const err = document.getElementById('flvMeterError');
+    const res = flvMeterState;
+    if (!res) return;
+
+    const date = document.getElementById('flvMeterDate').value;
+    const csrf = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || '';
+    const val = id => { const el = document.getElementById(id); return el ? el.value : ''; };
+
+    // ⭐ ROUTE EACH READING TO ITS OWN HOME — the whole point. The rider block
+    //   goes back to his attendance row (via the shared corrector), the machine
+    //   block to the log. Both can be saved in one go now that both are visible.
+    const jobs = [];
+
+    if (res.attendance && res.can_edit_attendance) {
+        const aS = val('flvMeterAStart'), aE = val('flvMeterAEnd');
+        const had = v => (v === null || v === undefined) ? '' : String(v);
+        const fd = new FormData();
+        fd.append('date', date);
+        fd.append('target', 'attendance');
+        fd.append('attendance_id', res.attendance.attendance_id);
+        // Only fields actually CHANGED are sent — an untouched (or emptied)
+        // field stays untouched. Clearing a rider's reading is an Attendance-page
+        // act, not something this editor should do by accident.
+        if (aS !== '' && aS !== had(res.attendance.meter_start)) fd.append('meter_start', parseInt(aS, 10));
+        if (aE !== '' && aE !== had(res.attendance.meter_end))   fd.append('meter_end', parseInt(aE, 10));
+        if (fd.has('meter_start') || fd.has('meter_end')) jobs.push(fd);
+    }
+
+    const lS = val('flvMeterStart'), lE = val('flvMeterEnd');
+    const lD = val('flvMeterDriver'), lN = val('flvMeterNote').trim();
+    const hasLogValue = lS !== '' || lE !== '';
+
+    // A driver or note with no reading would be silently dropped server-side
+    // (empty readings mean "remove the row") — say so instead of losing it.
+    if (!hasLogValue && (lD || lN) && !res.log) {
+        err.textContent = 'A driver or note needs at least one meter reading to attach to.';
+        err.style.display = '';
+        return;
+    }
+
+    if (hasLogValue || res.log) {
+        // Empty readings on an EXISTING row = deliberate removal (server deletes).
+        const fd = new FormData();
+        fd.append('date', date);
+        fd.append('target', 'log');
+        if (lS !== '') fd.append('meter_start', parseInt(lS, 10));
+        if (lE !== '') fd.append('meter_end', parseInt(lE, 10));
+        if (lD) fd.append('driver_user_id', lD);
+        if (lN) fd.append('note', lN);
+        jobs.push(fd);
+    }
+
+    if (!jobs.length) {
+        err.textContent = 'Nothing changed.';
+        err.style.display = '';
+        return;
+    }
+
+    err.style.display = 'none';
+    btn.disabled = true; btn.textContent = 'Saving…';
+
+    // Sequential on purpose — both writers flush the same derived-month cache.
+    jobs.reduce((chain, fd) => chain.then(() =>
+        fetch(FLV_BASE + '/' + flvMeterVehicle + '/meter-save', {
+            method: 'POST',
+            headers: {'Accept': 'application/json', 'X-CSRF-TOKEN': csrf},
+            body: fd
+        })
+        .then(r => r.json())
+        .then(j => { if (!j.success) throw new Error(j.message || 'Could not save'); })
+    ), Promise.resolve())
+    .then(() => {
+        flvCloseMeter();
+        // ⭐ TRUE refresh (owner, Aug-18): every figure this save can move is
+        //   redrawn, and every cache that could serve the OLD numbers is dropped.
+        //   1. the client-side day-list cache — it is keyed per vehicle+month and
+        //      would happily keep showing yesterday's rows after a save;
+        //   2. the vehicles grid;  3. the RIDERS table (the named driver's month
+        //   changed too);  4. the open profile, PRESERVING the tab the manager was
+        //   on — flvOpen() resets to 'money', which would hide the very day list
+        //   he was looking at.
+        // ⚠ flvDaysCache is a const — clear it IN PLACE, reassignment throws.
+        Object.keys(flvDaysCache).forEach(k => delete flvDaysCache[k]);
+        const wasMode = flvDetailMode;
+        flvLoad();
+        if (typeof flLoad === 'function') flLoad();
+        if (flvOpenId) {
+            const vid = flvOpenId;
+            flvOpen(vid);
+            if (wasMode === 'days') {
+                // flvOpen fetches the profile async; switch back once it lands.
+                let tries = 0;
+                (function back() {
+                    if (flvLastRes && flvLastRes.vehicle && flvLastRes.vehicle.id === vid) {
+                        flvSetDetailMode('days');
+                    } else if (tries++ < 40) { setTimeout(back, 100); }
+                })();
+            }
+        }
+    })
+    .catch(e => { err.textContent = e.message || 'Could not save.'; err.style.display = ''; })
+    .finally(() => { btn.disabled = false; btn.textContent = 'Save'; });
+}
+
 function flvOpenAssign(vehicleId, preselectUserId) {
     const v = (flvData.vehicles || []).find(x => x.id === vehicleId);
     if (!v) return;

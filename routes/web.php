@@ -122,6 +122,14 @@ Route::middleware(['auth'])->group(function () {
         Route::post('/sms/{id}/teach-sender', [\App\Http\Controllers\API\AssistantSmsController::class, 'teachSender'])->name('sms.teach');
         Route::post('/sms/{id}/draft', [\App\Http\Controllers\API\AssistantSmsController::class, 'draft'])->name('sms.draft');
         Route::post('/sms/{id}/save-map', [\App\Http\Controllers\API\AssistantSmsController::class, 'saveMap'])->name('sms.save-map');
+
+        // Tag-on-entry: "you just recorded a payment — is this its bank SMS?"
+        Route::get('/money-out/candidates', [\App\Http\Controllers\API\AssistantSmsController::class, 'tagCandidates'])->name('money-out.candidates');
+        Route::post('/money-out/tag', [\App\Http\Controllers\API\AssistantSmsController::class, 'tagToEntry'])->name('money-out.tag');
+        Route::get('/money-out/for-entry', [\App\Http\Controllers\API\AssistantSmsController::class, 'smsForEntry'])->name('money-out.for-entry');
+
+        // Movement log — what payments changed hands (self-heal visibility).
+        Route::get('/money-moves', [\App\Http\Controllers\API\AssistantWorkspaceController::class, 'moneyMoves'])->name('money-moves');
     });
 
     // Dashboard main routes
@@ -296,6 +304,16 @@ Route::middleware(['auth'])->group(function () {
     Route::get('/orders/riders-map/fleet/vehicles', [\App\Http\Controllers\CRM\VehicleController::class, 'index'])->name('orders.riders-map.fleet.vehicles');
     // "He was on a different bike that day" — the only writer of attendance.vehicle_id.
     // Declared BEFORE '/vehicles/{id}' so 'day-override' is not read as a vehicle id.
+    // ⭐ Aug-2026 — METER READINGS FROM THE VEHICLES PAGE. A rider-day carries ONE
+    //   set of meters and the engine maps it to ONE machine, so a mid-day second
+    //   machine (the van handed over at noon) was unrecordable. These read/write the
+    //   MACHINE side. Gate = `manage_bike_service` (owner ruling: Shabib + admins +
+    //   Qasim). Correcting a RIDER's own attendance reading additionally mirrors the
+    //   Attendance page's own `block.rider` lock — inside the controller AND here —
+    //   so the same act can never have two different locks.
+    // ⚠ MUST stay above the '/vehicles/{id}' catch-all or {id} swallows the word.
+    Route::get('/orders/riders-map/fleet/vehicles/{id}/meter-day', [\App\Http\Controllers\CRM\VehicleController::class, 'meterDay'])->name('orders.riders-map.fleet.vehicles.meter-day');
+    Route::post('/orders/riders-map/fleet/vehicles/{id}/meter-save', [\App\Http\Controllers\CRM\VehicleController::class, 'meterSave'])->middleware('block.rider')->name('orders.riders-map.fleet.vehicles.meter-save');
     Route::post('/orders/riders-map/fleet/vehicles/day-override', [\App\Http\Controllers\CRM\VehicleController::class, 'dayOverride'])->name('orders.riders-map.fleet.vehicles.day-override');
     Route::get('/orders/riders-map/fleet/vehicles/rider-days', [\App\Http\Controllers\CRM\VehicleController::class, 'riderDays'])->name('orders.riders-map.fleet.vehicles.rider-days');
     // Which machine a claim would land on. ⚠ ABOVE '/vehicles/{id}' — otherwise
@@ -330,8 +348,22 @@ Route::middleware(['auth'])->group(function () {
     Route::post('/orders/open-quantities/settings', [OrderController::class, 'saveOpenQuantitiesSettings'])->name('orders.open-quantities.settings.save');
     // Phase 3 delivery package-scan toggles (operations area on the orders page). Static paths,
     // defined BEFORE /orders/{id} so they are not captured as an {id}.
+    // ⚠ Aug-2026: renamed off the /settings-shaped path for the SAME reason as the receipt routes
+    // below — StackProtect was challenging /orders/delivery-scan/settings on prod, so this modal
+    // could silently fail to load its state or save it. `/orders/delivery-scan-flags` was
+    // curl-verified against prod before the rename. It is a SINGLE-segment /orders/... path, so it
+    // must stay above /orders/{id} or the catch-all swallows it (it demonstrably does).
+    Route::get('/orders/delivery-scan-flags', [OrderController::class, 'getDeliveryScanSettings'])->name('orders.delivery-scan.flags.get');
+    Route::post('/orders/delivery-scan-flags', [OrderController::class, 'saveDeliveryScanSettings'])->name('orders.delivery-scan.flags.save');
+    // Deprecated aliases (old challenged path). Kept one release so a partial upload cannot strand
+    // the modal; delete once both the route file and the blade have shipped together.
     Route::get('/orders/delivery-scan/settings', [OrderController::class, 'getDeliveryScanSettings'])->name('orders.delivery-scan.settings.get');
     Route::post('/orders/delivery-scan/settings', [OrderController::class, 'saveDeliveryScanSettings'])->name('orders.delivery-scan.settings.save');
+    // Scan help (Aug-2026): riders asking a manager to approve a short delivery. Two-segment paths,
+    // and the words "settings"/"config" are avoided deliberately — both were curl-verified as
+    // reaching Laravel on prod (its own 404) before any code existed.
+    Route::get('/orders/scan-help/pending', [OrderController::class, 'scanHelpPending'])->name('orders.scan-help.pending');
+    Route::post('/orders/scan-help/decide', [OrderController::class, 'scanHelpDecide'])->name('orders.scan-help.decide');
     // Receipt printout field config (operations "More" menu). Static paths before /orders/{id}.
     // ⚠ The path deliberately avoids the words "config"/"settings": the host's StackProtect bot
     // filter challenges /settings-shaped URLs BEFORE they reach Laravel (verified Aug-2026 — see
@@ -472,6 +504,8 @@ Route::middleware(['auth'])->group(function () {
         Route::post('/auto-assign-riders', [\App\Http\Controllers\CRM\DeliveryRegionController::class, 'autoAssignRiders'])->name('regions.auto-assign-riders');
         Route::post('/save-polygon', [\App\Http\Controllers\CRM\DeliveryRegionController::class, 'saveRegionPolygon'])->name('regions.save-polygon');
         Route::post('/remove-polygon', [\App\Http\Controllers\CRM\DeliveryRegionController::class, 'removeRegionPolygon'])->name('regions.remove-polygon');
+        Route::get('/suggestions', [\App\Http\Controllers\CRM\DeliveryRegionController::class, 'getRegionSuggestions'])->name('regions.suggestions');
+        Route::post('/suggestions/apply', [\App\Http\Controllers\CRM\DeliveryRegionController::class, 'applyRegionSuggestions'])->name('regions.suggestions.apply');
     });
 
     // Open Orders → "Get Customer Locations" (bulk WhatsApp location request).

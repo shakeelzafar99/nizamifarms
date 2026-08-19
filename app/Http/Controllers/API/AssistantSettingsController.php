@@ -56,8 +56,38 @@ class AssistantSettingsController extends Controller
 
         // Resolve each saved default id to a name from the matching option list,
         // so the UI shows "Expense Fund", not "5".
+        // ⚠ ENUM preferences are not ids and must be settled first. Falling
+        // through to the id path below would run (int) 'prompt' = 0 — a value
+        // the UI then shows as an unset row opening an empty picker. They carry
+        // their own option list so the same picker component still drives them.
+        $enums = config('assistant.pref_enums', []);
+        $enumLabels = [
+            'tag_prompt_mode' => [
+                'prompt' => 'Ask me',
+                'auto'   => 'File it for me',
+                'off'    => 'Never ask',
+            ],
+        ];
+        $prefsRaw = $this->prefs((int) $user->id);
+
         $defaults = [];
         foreach (config('assistant.pref_keys', []) as $key) {
+            if (isset($enums[$key])) {
+                $listName = 'enum_' . $key;
+                $options[$listName] = array_map(
+                    fn ($v) => ['id' => $v, 'name' => $enumLabels[$key][$v] ?? $v],
+                    $enums[$key]
+                );
+                $cur = (string) ($prefsRaw[$key] ?? $enums[$key][0]); // first = the default
+                $defaults[$key] = [
+                    'id'          => null,
+                    'value'       => $cur,
+                    'name'        => $enumLabels[$key][$cur] ?? $cur,
+                    'options_key' => $listName,
+                ];
+                continue;
+            }
+
             $id = $savedIds[$key] ?? null;
             $listName = self::PREF_SOURCE[$key] ?? null;
             $name = null;

@@ -209,6 +209,12 @@ class MachineAttribution
 
         $handovers = $this->handoverMeters($from, $to);
 
+        // ⭐⭐ Aug-2026 — THE THIRD EVIDENCE SOURCE: readings entered from the
+        //   Vehicles page for a machine nobody's attendance row covers (the
+        //   mid-day van stint). Vehicle-keyed by construction, so R-A never applies
+        //   to them; the named driver gets the kilometres on BOTH lenses.
+        $logs = $this->meterLogs($from, $to);
+
         foreach ($vehicles as $v) {
             $vid = (int) $v->id;
             $out['vehicles'][$vid] = $this->walk(
@@ -218,7 +224,8 @@ class MachineAttribution
                 $rowsByVehicle[$vid] ?? [],
                 $vs,
                 $month, $from, $to,
-                $handovers[$vid] ?? []
+                $handovers[$vid] ?? [],
+                $logs[$vid] ?? []
             );
         }
 
@@ -236,7 +243,7 @@ class MachineAttribution
      */
     private function walk(int $vehicleId, string $label, bool $isCompany, array $rows,
                           VehicleService $vs, string $month, string $from, string $to,
-                          array $handoverByDate): array
+                          array $handoverByDate, array $logByDate = []): array
     {
         $totals = ['on_duty' => 0, 'off_duty' => 0, 'shared' => 0,
                    'transfer' => 0, 'unaccounted' => 0, 'total' => 0,
@@ -269,6 +276,12 @@ class MachineAttribution
         foreach ($claims as $c) {
             $byDate[$c['date']]['claims'][] = $c;
         }
+        // ⚠ A manager's reading may be the ONLY evidence a date has — the van on a
+        //   day nobody's attendance row covers. Seed those dates too, or the walk
+        //   never visits them and the reading is silently ignored.
+        foreach (array_keys($logByDate) as $ld) {
+            if (!isset($byDate[$ld])) $byDate[$ld] = [];
+        }
         if (!$byDate) {
             $out['days'] = [];
             return $out;
@@ -284,6 +297,11 @@ class MachineAttribution
         $dirty = false;
         $days  = [];
         $legs  = [];
+        // ⭐ The first reading this month ACTUALLY produced, whatever its source.
+        //   A claim-only or manager-logged day carries its reading in the POINT, not
+        //   in the row's meter columns, so a machine measured purely from fills had
+        //   no opening anchor and could never reconcile.
+        $firstSeen = null;
 
         foreach ($byDate as $d => $bundle) {
             $dayRows   = $bundle['rows']   ?? [];
@@ -330,13 +348,23 @@ class MachineAttribution
 
             // A claim on a day with no attendance row still proves the machine was
             // read that day — the only reading such a day leaves behind.
+            // ⭐⭐ ONE POINT PER CLAIM, not one per day (fixed Aug-14). Collapsing the
+            //   day to min→max threw away the distance BETWEEN two fills: the van has
+            //   two claims on 17 Aug (73,342 and 73,410) and those 68 km sat inside
+            //   the month's span while appearing in no leg, so the machine could not
+            //   reconcile. Emitting each meter as its own point lets the ordinary gap
+            //   machinery measure and OWN the stretch, filer by filer.
             if (!$points && $dayClaims) {
-                $meters = array_values(array_filter(array_map(
-                    fn ($c) => $this->reading($c['meter'] ?? null), $dayClaims)));
-                if ($meters) {
-                    $uid = $dayClaims[0]['by_user_id'] ?? null;
+                $withMeter = [];
+                foreach ($dayClaims as $c) {
+                    $m = $this->reading($c['meter'] ?? null);
+                    if ($m !== null) $withMeter[] = ['m' => $m, 'c' => $c];
+                }
+                if ($withMeter) {
+                    usort($withMeter, fn ($a, $b) => $a['m'] <=> $b['m']);
                     $dayOut[] = [
-                        'date' => $d, 'user_id' => $uid, 'keeper' => $dayClaims[0]['by_name'] ?? null,
+                        'date' => $d, 'user_id' => $withMeter[0]['c']['by_user_id'] ?? null,
+                        'keeper' => $withMeter[0]['c']['by_name'] ?? null,
                         'meter_start' => null, 'meter_end' => null, 'meter_home' => null,
                         'start_source' => null, 'work_km' => null, 'home_km' => null,
                         'status' => 'claim_only', 'partial' => false, 'handover_day' => $isBoundary,
@@ -344,12 +372,69 @@ class MachineAttribution
                         'gap_from_user' => null, 'gap_to_user' => null, 'gap_user_id' => null,
                         'claims' => [],
                     ];
-                    $points[] = ['v' => min($meters), 'user_id' => $uid,
-                                 'keeper' => $dayClaims[0]['by_name'] ?? null, 'kind' => 'claim',
-                                 'work' => null, 'closes' => max($meters), 'home' => null,
-                                 'idx' => count($dayOut) - 1];
+                    $idx = count($dayOut) - 1;
+                    foreach ($withMeter as $w) {
+                        $points[] = ['v' => $w['m'], 'user_id' => $w['c']['by_user_id'] ?? null,
+                                     'keeper' => $w['c']['by_name'] ?? null, 'kind' => 'claim',
+                                     'work' => null, 'closes' => $w['m'], 'home' => null,
+                                     'idx' => $idx];
+                    }
                 }
             }
+
+            // ⭐⭐ THE MANAGER'S OWN READING for this machine on this date (Aug-2026).
+            //   The mid-day van stint: the driver already opened his day on another
+            //   machine, so his ONE set of attendance meters is spent and the van's
+            //   kilometres have nowhere else to live. Added as ordinary chain points,
+            //   so every downstream rule (sanity, legs, the invariant, reconciles)
+            //   treats them exactly like any other reading.
+            // ⚠ NO handover is implied: the machine's holder does not change, nobody's
+            //   meter demand moves. Only the named DRIVER gets the kilometres.
+            $logRow = $logByDate[$d] ?? null;
+            // ⚠ DUPLICATE GUARD: if a manager typed the SAME readings the rider also
+            //   recorded (log entered in the morning, the holder checks in on the
+            //   machine later), ingesting both would double-count the day and the
+            //   card would carry two identical lines. An exact duplicate is dropped;
+            //   a DIFFERENT log stint on the same day (holder morning + borrower
+            //   afternoon) is genuine and stays — the chain orders it by odometer.
+            if ($logRow) {
+                foreach ($dayRows as $dr) {
+                    if ($dr['meter_start'] === $logRow['meter_start']
+                        && $dr['meter_end'] === $logRow['meter_end']) {
+                        $logRow = null;
+                        break;
+                    }
+                }
+            }
+            if ($logRow && ($logRow['meter_start'] !== null || $logRow['meter_end'] !== null)) {
+                $ls = $logRow['meter_start'];
+                $le = $logRow['meter_end'];
+                $lWork = ($ls !== null && $le !== null && $le >= $ls
+                          && ($le - $ls) <= self::MAX_DAY_KM) ? $le - $ls : null;
+
+                $dayOut[] = [
+                    'date' => $d, 'user_id' => $logRow['driver_id'], 'keeper' => $logRow['driver'],
+                    'meter_start' => $ls, 'meter_end' => $le, 'meter_home' => null,
+                    'start_source' => 'log', 'start_at' => null, 'end_at' => null,
+                    'work_km' => $lWork, 'home_km' => null,
+                    'status' => $lWork !== null ? 'ok' : 'half',
+                    'partial' => $lWork === null,
+                    'handover_day' => $isBoundary,
+                    'from_log' => true,
+                    'log_id' => $logRow['id'],
+                    'log_note' => $logRow['note'],
+                    'log_by' => $logRow['by_name'],
+                    'gap_km' => null, 'gap_kind' => null, 'gap_since' => null,
+                    'gap_from_user' => null, 'gap_to_user' => null, 'gap_user_id' => null,
+                    'claims' => [],
+                ];
+                $opensAt = $ls ?? $le;
+                $points[] = ['v' => $opensAt, 'user_id' => $logRow['driver_id'],
+                             'keeper' => $logRow['driver'], 'kind' => 'log',
+                             'work' => $lWork, 'closes' => $le ?? $ls, 'home' => null,
+                             'idx' => count($dayOut) - 1];
+            }
+
 
             // Attach the day's claims to the first row of that rider, else the first row.
             foreach ($dayClaims as $c) {
@@ -378,6 +463,7 @@ class MachineAttribution
             usort($points, fn ($a, $b) => $a['v'] <=> $b['v']);
 
             foreach ($points as $pt) {
+                if ($firstSeen === null) $firstSeen = $pt['v'];
                 // ---- the stretch BEFORE this point -------------------------
                 if ($prev !== null) {
                     $gap = $pt['v'] - $prev;
@@ -456,7 +542,7 @@ class MachineAttribution
         $out['legs']   = $legs;
         $out['days']   = $days;
         $out['totals'] = $totals;
-        $out['opens_at'] = $win['floor'] ?? ($days ? $this->firstReading($days) : null);
+        $out['opens_at'] = $win['floor'] ?? ($this->firstReading($days) ?? $firstSeen);
         $out['closes_at'] = $prev;
         $out['span'] = ($out['opens_at'] !== null && $prev !== null && $prev >= $out['opens_at'])
             ? $prev - $out['opens_at'] : null;
@@ -578,7 +664,10 @@ class MachineAttribution
                 if ($endVal === null && $r['meter_home'] !== null) $endVal = $r['meter_home'];
                 if ($endVal !== null) {
                     $close = ['value' => $endVal, 'who' => $r['keeper'],
-                              'user_id' => $r['user_id'], 'at' => $r['end_at'] ?? null];
+                              'user_id' => $r['user_id'], 'at' => $r['end_at'] ?? null,
+                              // provenance travels with the CLOSE too, so a manager-
+                              // logged evening reading is marked as one on the card.
+                              'source' => $r['start_source'] ?? null];
                 }
             }
 
@@ -665,10 +754,29 @@ class MachineAttribution
         }
 
         if ($open && $close) {
-            $shared = $open['user_id'] !== null && $close['user_id'] !== null
-                   && $open['user_id'] !== $close['user_id'];
-            return ['km' => $km, 'kind' => $shared ? 'shared' : 'on_duty',
-                    'riders' => $shared ? [$open['who'], $close['who']] : [$close['who']]];
+            $differs = $open['user_id'] !== null && $close['user_id'] !== null
+                    && $open['user_id'] !== $close['user_id'];
+
+            // ⚠ 'shared' is a CLAIM — that a stretch of road belongs to nobody in
+            //   particular. Only say it when the engine actually produced a shared
+            //   leg for this date. Two names can also bracket a day whose every
+            //   stretch IS attributed (the holder's own pair plus a manager log
+            //   stint with a named driver): that day is measured, not shared, and
+            //   labelling it shared would un-credit kilometres the log just
+            //   credited. Present those as parts, like a handover-metered day.
+            if ($differs && !array_filter($legs, fn ($l) => $l['kind'] === 'shared')) {
+                $parts = array_values(array_filter($legs,
+                    fn ($l) => $l['kind'] === 'on_duty' && $l['user_id'] !== null));
+                if ($parts) {
+                    return ['km' => $km, 'kind' => 'split', 'riders' => array_values(array_unique(
+                        array_filter(array_map(fn ($l) => $this->nameFor($l['user_id'], $rows, []), $parts)))),
+                        'parts' => array_map(fn ($l) => ['km' => $l['km'],
+                            'who' => $this->nameFor($l['user_id'], $rows, [])], $parts)];
+                }
+            }
+
+            return ['km' => $km, 'kind' => $differs ? 'shared' : 'on_duty',
+                    'riders' => $differs ? [$open['who'], $close['who']] : [$close['who']]];
         }
 
         // No pair to measure. Say which of the honest reasons it is.
@@ -1044,6 +1152,57 @@ class MachineAttribution
         }
         return $out;
     }
+
+/**
+     * ⭐ READINGS ENTERED FROM THE VEHICLES PAGE, as [vehicle_id][date] => row.
+     *
+     * The machine's own supplementary odometer record: the mid-day van stint, a
+     * reading nobody's attendance row could carry, a correction on a machine with no
+     * keeper. Vehicle-keyed by construction, so R-A (one machine per rider-day) has
+     * no question to answer about them.
+     *
+     * Absent table (SQL not yet run) = no rows = the engine behaves exactly as it did
+     * before this feature existed.
+     */
+    private function meterLogs(string $from, string $to): array
+    {
+        $out = [];
+        try {
+            if (!\Illuminate\Support\Facades\Schema::hasTable('t_ops_vehicle_meter_log')) {
+                return [];
+            }
+            $rows = DB::table('t_ops_vehicle_meter_log as l')
+                ->leftJoin('t_sys_user as u', 'u.id', '=', 'l.driver_user_id')
+                ->whereBetween('l.log_date', [$from, $to])
+                ->get(['l.id', 'l.vehicle_id', 'l.log_date', 'l.meter_start', 'l.meter_end',
+                       'l.driver_user_id', 'l.note', 'l.entered_by', 'u.fullname as driver_name']);
+
+            $byIds = [];
+            foreach ($rows as $r) {
+                if ($r->entered_by) $byIds[(int) $r->entered_by] = true;
+            }
+            $byNames = $byIds
+                ? DB::table('t_sys_user')->whereIn('id', array_keys($byIds))->pluck('fullname', 'id')->toArray()
+                : [];
+
+            foreach ($rows as $r) {
+                $out[(int) $r->vehicle_id][substr((string) $r->log_date, 0, 10)] = [
+                    'id'          => (int) $r->id,
+                    'meter_start' => $this->reading($r->meter_start),
+                    'meter_end'   => $this->reading($r->meter_end),
+                    'driver_id'   => $r->driver_user_id !== null ? (int) $r->driver_user_id : null,
+                    'driver'      => $r->driver_name,
+                    'note'        => $r->note,
+                    'by_name'     => $r->entered_by ? ($byNames[(int) $r->entered_by] ?? null) : null,
+                ];
+            }
+        } catch (\Throwable $e) {
+            Log::warning('meterLogs failed', ['error' => $e->getMessage()]);
+            return [];
+        }
+        return $out;
+    }
+
 
     private function firstReading(array $days): ?int
     {

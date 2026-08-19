@@ -1163,8 +1163,17 @@ class ApprovalController extends Controller
         foreach ($approvedLedger as $ledger) {
             $items[] = $this->formatOnlineLedgerItem($ledger, null, 'approved');
         }
-        
-        return $this->attachProofStatus($items);
+
+        // ⭐ THE APPROVED TAB IS A RECORD, NOT A PROMPT (owner ask, Aug-2026).
+        // `forOrders()` suppresses the badge on settled orders by default — the
+        // right call on the pending tabs, where a badge means "look at this".
+        // But it also meant an APPROVED invoice showed nothing at all, so
+        // "what proof was this approved on?" could not be answered from the one
+        // screen where the question is actually asked. Measured before the fix:
+        // real approved orders carrying a verified WhatsApp + bank-SMS pair
+        // reported status 'none' / "No proof yet". Same badge, same click-through
+        // to the existing proof panel — the record simply stops hiding itself.
+        return $this->attachProofStatus($items, suppressSettled: false);
     }
 
     /**
@@ -1285,7 +1294,12 @@ class ApprovalController extends Controller
      * badges) to each online-approval row in bulk (no N+1). No-op when the
      * feature switch is off.
      */
-    private function attachProofStatus(array $items): array
+    /**
+     * @param bool $suppressSettled  TRUE (default) on the pending tabs: a badge
+     *   there is a prompt to ACT, and an already-settled order has nothing to
+     *   act on. FALSE on the approved tab, which is a RECORD — see below.
+     */
+    private function attachProofStatus(array $items, bool $suppressSettled = true): array
     {
         if (empty($items) || !config('payment_signals.enabled')) {
             return $items;
@@ -1300,7 +1314,7 @@ class ApprovalController extends Controller
         }
 
         $map = app(\App\Services\Payments\Signals\PaymentProofStatusService::class)
-            ->forOrders($orderIds);
+            ->forOrders($orderIds, suppressSettled: $suppressSettled);
 
         foreach ($items as &$item) {
             $oid = $item['order_id'] ?? null;

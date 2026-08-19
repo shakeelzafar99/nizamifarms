@@ -787,6 +787,178 @@ class DeliveryRegionController extends Controller
     }
 
     /**
+     * Batch-mate suggestions: for customers no coordinate can place, propose a
+     * region from the orders theirs went out WITH.
+     *
+     * Scoped to recent, non-Qurbani orders — Qurbani ran on a different delivery
+     * model, so its co-delivery pattern says nothing about normal routing.
+     */
+    public function getRegionSuggestions(Request $request)
+    {
+        $months = min(max((int) $request->input('months', 6), 1), 24);
+        $from   = now()->subMonths($months)->startOfDay();
+
+        $candidates = DB::table('t_crm_prod_order as o')
+            ->join('t_crm_prod_customer as c', 'c.id', '=', 'o.customer_id')
+            ->whereNull('c.delivery_region_id')
+            ->whereNotIn('o.order_status', ['cancelled', 'refunded'])
+            ->where('o.order_date', '>=', $from)
+            ->whereNull('o.qurbani_day')
+            ->whereNull('o.qurbani_slot')
+            ->whereNull('o.qurbani_region')
+            ->whereNull('o.qurbani_delivery_type')
+            ->whereNotExists(function ($sub) {
+                $sub->select(DB::raw(1))
+                    ->from('t_crm_prod_order_line_item as li_q')
+                    ->join('t_crm_prod_product as p_q', 'p_q.id', '=', 'li_q.product_id')
+                    ->whereColumn('li_q.order_id', 'o.id')
+                    ->whereRaw("LOWER(COALESCE(p_q.attribute_1, '')) = 'qurbani'");
+            })
+            ->groupBy('c.id', 'c.first_name', 'c.last_name', 'c.phone_original', 'c.address1', 'c.city')
+            ->select([
+                'c.id',
+                'c.first_name',
+                'c.last_name',
+                'c.phone_original',
+                'c.address1',
+                'c.city',
+                DB::raw('COUNT(*) as order_count'),
+                DB::raw('MAX(o.order_date) as last_order_date'),
+            ])
+            ->get();
+
+        $suggestions = \App\Services\RegionSuggestionService::suggestForCustomers(
+            $candidates->pluck('id')->all()
+        );
+
+        $rows = [];
+        foreach ($candidates as $c) {
+            $s = $suggestions[(int) $c->id] ?? null;
+            $rows[] = [
+                'customer_id'      => (int) $c->id,
+                'name'             => trim(($c->first_name ?? '') . ' ' . ($c->last_name ?? '')) ?: '(no name)',
+                'phone'            => $c->phone_original,
+                'address'          => trim((string) ($c->address1 ?? '')),
+                'city'             => $c->city,
+                'order_count'      => (int) $c->order_count,
+                'last_order_date'  => $c->last_order_date,
+                'suggested'        => $s['suggested'] ?? null,
+                'confidence'       => $s['confidence'] ?? 0,
+                'confidence_label' => $s['confidence_label'] ?? 'none',
+                'total_votes'      => $s['total_votes'] ?? 0,
+                'total_trips'      => $s['total_trips'] ?? 0,
+                'breakdown'        => $s['breakdown'] ?? [],
+            ];
+        }
+
+        // Strongest evidence first; customers with nothing to go on sink to the bottom.
+        usort($rows, function ($a, $b) {
+            return [$b['confidence'], $b['total_votes']] <=> [$a['confidence'], $a['total_votes']];
+        });
+
+        // 'unanimous' and 'unanimous_thin' are counted separately on purpose:
+        // measured against customers whose true region is known, unanimous on 3+
+        // co-deliveries is 96.7% right, but unanimous on a single co-delivery is
+        // only 79%. Merging them into one number would make the one-click
+        // "select safe" batch look safer than it is.
+        $summary = [
+            'candidates'     => count($rows),
+            'unanimous'      => count(array_filter($rows, fn ($r) => $r['confidence_label'] === 'unanimous')),
+            'unanimous_thin' => count(array_filter($rows, fn ($r) => $r['confidence_label'] === 'unanimous_thin')),
+            'strong'         => count(array_filter($rows, fn ($r) => $r['confidence_label'] === 'strong')),
+            'moderate'       => count(array_filter($rows, fn ($r) => $r['confidence_label'] === 'moderate')),
+            'conflicted'     => count(array_filter($rows, fn ($r) => $r['confidence_label'] === 'conflicted')),
+            'no_evidence'    => count(array_filter($rows, fn ($r) => $r['total_votes'] === 0)),
+            'months'         => $months,
+        ];
+
+        return response()->json(['success' => true, 'summary' => $summary, 'suggestions' => $rows]);
+    }
+
+    /**
+     * Apply confirmed batch-mate suggestions.
+     *
+     * Only the customer ids the UI explicitly sends are written — there is no
+     * "apply everything the server thinks" path, on purpose. Each write is
+     * re-verified against a freshly computed suggestion so a stale page cannot
+     * commit a region the evidence no longer supports.
+     *
+     * Stored as source 'batch_mate', which is sticky against a bulk re-detect
+     * (a human confirmed it) but still yields to a later verified pin.
+     * Deliberately does NOT call learnFromManualAssignment(): auto-minting
+     * address keywords from these would spread a guess into the keyword matcher.
+     */
+    public function applyRegionSuggestions(Request $request)
+    {
+        $validated = $request->validate([
+            'customer_ids'   => 'required|array|min:1',
+            'customer_ids.*' => 'integer',
+        ]);
+
+        $ids = array_values(array_unique(array_map('intval', $validated['customer_ids'])));
+        $suggestions = \App\Services\RegionSuggestionService::suggestForCustomers($ids);
+
+        $applied = 0;
+        $skipped = [];
+
+        foreach ($ids as $customerId) {
+            $s = $suggestions[$customerId] ?? null;
+
+            if (!$s || empty($s['suggested'])) {
+                $skipped[] = ['customer_id' => $customerId, 'reason' => 'no confident suggestion'];
+                continue;
+            }
+
+            $customer = DB::table('t_crm_prod_customer')
+                ->where('id', $customerId)
+                ->first(['id', 'delivery_region_id', 'delivery_region_source']);
+
+            if (!$customer) {
+                $skipped[] = ['customer_id' => $customerId, 'reason' => 'customer not found'];
+                continue;
+            }
+
+            // Someone (or a pin) placed them since the page was loaded — leave it.
+            if ($customer->delivery_region_id) {
+                $skipped[] = ['customer_id' => $customerId, 'reason' => 'already has a region'];
+                continue;
+            }
+
+            DB::table('t_crm_prod_customer')
+                ->where('id', $customerId)
+                ->update([
+                    'delivery_region_id'     => $s['suggested']['region_id'],
+                    'delivery_region_source' => 'batch_mate',
+                    'updated_at'             => now(),
+                ]);
+
+            \Log::info('Region set from batch-mate suggestion', [
+                'customer_id' => $customerId,
+                'region_id'   => $s['suggested']['region_id'],
+                'region'      => $s['suggested']['region_name'],
+                'confidence'  => $s['confidence'],
+                'votes'       => $s['total_votes'],
+                'breakdown'   => array_map(
+                    fn ($b) => $b['region_code'] . '=' . $b['votes'],
+                    $s['breakdown']
+                ),
+                'applied_by'  => auth()->id(),
+            ]);
+
+            $applied++;
+        }
+
+        return response()->json([
+            'success' => true,
+            'applied' => $applied,
+            'skipped' => count($skipped),
+            'skipped_detail' => $skipped,
+            'message' => $applied . ' customer' . ($applied === 1 ? '' : 's') . ' mapped'
+                . (count($skipped) ? ', ' . count($skipped) . ' skipped' : ''),
+        ]);
+    }
+
+    /**
      * Re-detect regions for ALL customers (force update).
      * reset_manual=true will also overwrite manually set regions.
      */
@@ -805,7 +977,7 @@ class DeliveryRegionController extends Controller
             if (!$resetManual) {
                 $query->where(function ($q) {
                     $q->whereNull('c.delivery_region_source')
-                      ->orWhere('c.delivery_region_source', '!=', 'manual');
+                      ->orWhereNotIn('c.delivery_region_source', RegionDetectionService::STICKY_SOURCES);
                 });
             }
 
@@ -838,7 +1010,7 @@ class DeliveryRegionController extends Controller
             if (!$resetManual) {
                 $query->where(function ($q) {
                     $q->whereNull('delivery_region_source')
-                      ->orWhere('delivery_region_source', '!=', 'manual');
+                      ->orWhereNotIn('delivery_region_source', RegionDetectionService::STICKY_SOURCES);
                 });
             }
 
@@ -861,12 +1033,12 @@ class DeliveryRegionController extends Controller
 
             $skippedManual = $resetManual ? 0 : DB::table('t_crm_prod_customer')
                 ->where('is_active', 1)
-                ->where('delivery_region_source', 'manual')
+                ->whereIn('delivery_region_source', RegionDetectionService::STICKY_SOURCES)
                 ->count();
 
             $msg = "Re-detected " . count($customers) . " customers: {$updated} matched, {$cleared} cleared";
             if ($skippedManual > 0) {
-                $msg .= " ({$skippedManual} manual assignments preserved)";
+                $msg .= " ({$skippedManual} human-set assignments preserved)";
             }
 
             return response()->json([

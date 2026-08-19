@@ -31,6 +31,7 @@ class AssistantWorkspaceController extends Controller
             return response()->json(['success' => false, 'message' => 'No permission'], 403);
         }
 
+        $this->reclassifyUnknownDirections((int) $user->id);
         $this->revertOrphanedSms((int) $user->id);
         $this->closeCorroboratedSms((int) $user->id);
         $this->reconcileRecordedDebits((int) $user->id);
@@ -86,6 +87,7 @@ class AssistantWorkspaceController extends Controller
             return response()->json(['success' => false, 'message' => 'No permission'], 403);
         }
 
+        $this->reclassifyUnknownDirections((int) $user->id);
         $this->revertOrphanedSms((int) $user->id);
         $this->closeCorroboratedSms((int) $user->id);
         $this->reconcileRecordedDebits((int) $user->id);
@@ -237,6 +239,106 @@ class AssistantWorkspaceController extends Controller
                 'id' => $c->id,
                 'name' => trim(($c->first_name ?? '') . ' ' . ($c->last_name ?? '')),
                 'open_orders' => $this->approvalsQueueCount((int) $c->id),
+            ])->all(),
+        ]);
+    }
+
+    /**
+     * GET /assistant/money-moves — the movement log: every payment signal that
+     * changed hands (attached, re-pointed, released), newest first. This is the
+     * owner's window into self-healing: a system allowed to correct itself must
+     * show its corrections. Read-only.
+     */
+    public function moneyMoves(Request $request)
+    {
+        $user = Auth::user();
+        if (!$this->allowed($user)) {
+            return response()->json(['success' => false, 'message' => 'No permission'], 403);
+        }
+        if (!\Illuminate\Support\Facades\Schema::hasTable('t_fin_payment_signal_moves')) {
+            return response()->json(['success' => true, 'moves' => [],
+                'note' => 'Movement log not installed yet (run the signal-moves SQL).']);
+        }
+
+        $days = max(1, min(90, (int) $request->input('days', 14)));
+        $raw = DB::table('t_fin_payment_signal_moves')
+            ->where('created_at', '>=', now()->subDays($days))
+            ->orderBy('id')
+            ->limit(2000)
+            ->get();
+
+        // ⭐ COLLAPSE TO NET MOVEMENT. A single heal is written as its honest
+        // steps (released from B → placed on A), and a legitimate re-match of a
+        // settled pair (the balance-discount flow re-runs MATCHED signals)
+        // writes a detach + reattach that nets to NOTHING. The raw table keeps
+        // every step as the forensic truth; this view answers the owner's
+        // actual question — "what changed hands" — so steps within one burst
+        // (same signal, ≤2 min apart) merge, and bursts that end exactly where
+        // they began are dropped. Without this, routine re-matching would read
+        // as payments constantly changing hands when nothing moved at all.
+        $chains = [];
+        foreach ($raw->groupBy('signal_id') as $signalId => $rows) {
+            $chain = [];
+            foreach ($rows as $r) {
+                if ($chain && strtotime($r->created_at) - strtotime(end($chain)->created_at) > 120) {
+                    $chains[] = $chain;
+                    $chain = [];
+                }
+                $chain[] = $r;
+            }
+            if ($chain) {
+                $chains[] = $chain;
+            }
+        }
+
+        $net = [];
+        foreach ($chains as $chain) {
+            $first = $chain[0];
+            $last  = end($chain);
+            if ((int) $first->from_order_id === (int) $last->to_order_id
+                && (int) $first->from_customer_id === (int) $last->to_customer_id) {
+                continue; // round trip — nothing actually moved
+            }
+            $by = collect($chain)->pluck('moved_by')->filter()->first();
+            $net[] = (object) [
+                'id' => $last->id, 'signal_id' => $first->signal_id,
+                'source' => $first->source, 'amount' => $first->amount,
+                'payer_name' => $first->payer_name,
+                'from_customer_id' => $first->from_customer_id, 'from_order_id' => $first->from_order_id,
+                'to_customer_id' => $last->to_customer_id, 'to_order_id' => $last->to_order_id,
+                'from_reason' => $first->from_reason, 'to_reason' => $last->to_reason,
+                'moved_by' => $by, 'created_at' => $last->created_at,
+            ];
+        }
+        $net = collect($net)->sortByDesc('id')->take(100)->values();
+
+        // Resolve names in bulk for what survived the collapse.
+        $custIds  = $net->flatMap(fn($m) => [$m->from_customer_id, $m->to_customer_id])->filter()->unique();
+        $orderIds = $net->flatMap(fn($m) => [$m->from_order_id, $m->to_order_id])->filter()->unique();
+        $custs  = DB::table('t_crm_prod_customer')->whereIn('id', $custIds)
+            ->get(['id', 'first_name', 'last_name'])
+            ->keyBy('id')->map(fn($c) => trim($c->first_name . ' ' . ($c->last_name ?? '')));
+        $orders = DB::table('t_crm_prod_order')->whereIn('id', $orderIds)
+            ->pluck('order_number', 'id');
+        $users  = DB::table('t_sys_user')->whereIn('id', $net->pluck('moved_by')->filter()->unique())
+            ->pluck('fullname', 'id');
+
+        return response()->json([
+            'success' => true,
+            'moves' => $net->map(fn($m) => [
+                'id'          => (int) $m->id,
+                'signal_id'   => (int) $m->signal_id,
+                'source'      => $m->source,
+                'amount'      => $m->amount !== null ? round((float) $m->amount, 0) : null,
+                'payer'       => $m->payer_name,
+                // From → to, in words a human can act on. Null side = held.
+                'from'        => $orders[$m->from_order_id] ?? ($custs[$m->from_customer_id] ?? null),
+                'to'          => $orders[$m->to_order_id] ?? ($custs[$m->to_customer_id] ?? null),
+                'from_reason' => $m->from_reason,
+                'to_reason'   => $m->to_reason,
+                // A named human = a manual re-point; 'system' = a self-heal.
+                'by'          => $users[$m->moved_by] ?? 'system',
+                'at'          => (string) $m->created_at,
             ])->all(),
         ]);
     }
@@ -706,7 +808,10 @@ class AssistantWorkspaceController extends Controller
     private function autoHandledToday(int $userId, string $direction): array
     {
         $reasons = $direction === 'out'
-            ? ['already_recorded', 'already_in_ledger']
+            // 'entry_tagged' = a human answered "yes, that's it" when they
+            // recorded the payment by hand. It belongs here beside the swept
+            // closes: same outcome, stronger evidence, same Restore.
+            ? ['already_recorded', 'already_in_ledger', 'entry_tagged']
             : ['order_approved', 'approved_in_queue', 'already_verified', 'proof_pair', 'mapped_customer'];
 
         $rows = DB::table('t_ai_bank_sms as s')
@@ -717,7 +822,8 @@ class AssistantWorkspaceController extends Controller
             ->orderByDesc('s.sms_at')
             ->limit(40)
             ->get(['s.id', 's.amount', 's.counterparty', 's.sms_at', 's.auto_reason',
-                   's.counterparty_account', 'l.transaction_type', 'l.description']);
+                   's.counterparty_account', 'l.transaction_type', 'l.description',
+                   'l.id as ledger_id', 'l.amount as ledger_amount', 'l.transaction_date']);
 
         $map = app(\App\Services\Assistant\SmsCounterpartyMap::class);
 
@@ -739,6 +845,17 @@ class AssistantWorkspaceController extends Controller
                 'reason'       => $s->auto_reason,
                 'note'         => $this->reasonNote($s->auto_reason, $s->description),
                 'teach'        => $teach,
+                // ⭐ WHAT it was filed against — the owner's "so later I know
+                // what was tagged to what". A reason alone ("Already recorded")
+                // still leaves you asking "recorded as what?"; this answers it
+                // on the row, with the id so a client can link straight to it.
+                'tagged_to'    => $s->ledger_id ? [
+                    'ledger_id' => (int) $s->ledger_id,
+                    'label'     => trim(\Illuminate\Support\Str::limit(trim((string) $s->description), 48)
+                                   ?: ucfirst(str_replace('_', ' ', (string) $s->transaction_type))),
+                    'amount'    => round((float) $s->ledger_amount, 0),
+                    'date'      => $s->transaction_date ? substr((string) $s->transaction_date, 0, 10) : null,
+                ] : null,
             ];
         })->all();
     }
@@ -751,6 +868,7 @@ class AssistantWorkspaceController extends Controller
                                     ? ' — ' . \Illuminate\Support\Str::limit(trim($ledgerDescription), 60)
                                     : ' in the ledger'),
             'already_in_ledger' => 'Already recorded in the ledger',
+            'entry_tagged'      => 'You confirmed this when you recorded the payment',
             'order_approved'    => 'The matching order was approved',
             'approved_in_queue' => 'Approved in Online Approvals',
             'already_verified'  => 'Already verified by the bank email',
@@ -1108,10 +1226,30 @@ class AssistantWorkspaceController extends Controller
      *     row carries receiving_account_id — verified 17/17 on both types),
      *   • amount within Rs 1 and date within 1 day,
      *   • rejected / reversed entries don't count as recorded,
-     *   • EXACTLY ONE unclaimed candidate, else nothing happens,
+     *   • WHO WAS PAID must match whenever we can know it (see below),
+     *   • EXACTLY ONE unclaimed candidate when identity is unknown,
      *   • the claimed ledger row is REMEMBERED (linked_ledger_id) so it can never
      *     also close a second look-alike SMS,
      *   • the closed row stays visible under "Handled today" with Restore.
+     *
+     * ⚠⚠ IDENTITY (Aug-2026 fix). Bank + amount + date alone is NOT an identity:
+     * it closed a T.ALI debit against a payment to a DIFFERENT vendor (Aug-10 —
+     * four Rs 150,000 RAAST transfers to Jilani in two minutes, one recorded;
+     * the sweep matched the second SMS to Imran Qureshi's own Rs 150,000 of the
+     * next day). Two lies for the price of one: Jilani's khata stayed short while
+     * the row claiming to be recorded went quiet, and Imran's genuine SMS was
+     * left with its only candidate stolen. So when the SMS's counterparty account
+     * is MAPPED (a deliberate human teaching), the ledger row must have paid THAT
+     * counterparty — `to_account_id` = the vendor's account (or our own account
+     * for a transfer). Measured on the whole history: 1 cross-vendor close, this
+     * one; every other close is unaffected.
+     *
+     * ⭐ And once identity is certain, MULTIPLE candidates stop being ambiguous:
+     * same vendor, same bank, same amount, same day, all equally valid — so N
+     * SMS claim the N oldest unclaimed rows and any extra SMS stay open. That is
+     * what a split transfer needs (RAAST caps force one payment into several),
+     * and today's exactly-one rule strands every one of them. Identity UNKNOWN
+     * keeps the old exactly-one rule — ambiguity there is still a real risk.
      */
     private function reconcileRecordedDebits(int $userId): void
     {
@@ -1147,24 +1285,58 @@ class AssistantWorkspaceController extends Controller
         }
         $claimed = array_unique(array_merge($claimed, $ledgerIds));
 
+        // Which ledger destination each taught account key owns, and the reverse
+        // (destination → the keys that claim it). Built once for the whole sweep.
+        $spokenFor = $this->mappedLedgerDestinations();
+
         foreach ($open as $sms) {
             $day = substr((string) $sms->sms_at, 0, 10);
 
-            $hits = DB::table('t_fin_ledger')
+            $base = DB::table('t_fin_ledger')
                 ->where('mode', 'online')
                 ->whereIn('transaction_type', ['vendor_payment', 'expense', 'transfer'])
                 ->whereNotIn('approval_status', ['rejected', 'reversed'])
                 ->where('receiving_account_id', $sms->receiving_account_id)
                 ->whereRaw('ABS(amount - ?) <= 1', [$sms->amount])
                 ->whereRaw('ABS(DATEDIFF(transaction_date, ?)) <= 1', [$day])
-                ->when($claimed, fn($q) => $q->whereNotIn('id', $claimed))
-                ->limit(2)
-                ->get(['id', 'transaction_type']);
+                ->when($claimed, fn($q) => $q->whereNotIn('id', $claimed));
 
-            if ($hits->count() !== 1) {
-                continue; // zero = genuinely unrecorded; several = ambiguous
+            $target = $this->debitLedgerTarget($sms);
+
+            if ($target !== null) {
+                // Identity established — only this counterparty's rows qualify,
+                // and any of them will do (see the split-transfer note above).
+                $hit = (clone $base)->where('to_account_id', $target)
+                    ->orderBy('transaction_date')->orderBy('id')
+                    ->first(['id']);
+                if (!$hit) {
+                    continue;
+                }
+            } else {
+                // Identity unknown. Old rule — exactly one candidate — PLUS a
+                // veto: a row paying a counterparty whose account we know, and
+                // which is not this SMS's account, cannot be this SMS. (An SMS
+                // carrying no account key at all — e.g. every Alfalah debit —
+                // can prove nothing, so it matches exactly as before.)
+                $key = (string) ($sms->counterparty_account ?? '');
+                if ($key !== '' && $spokenFor) {
+                    $foreign = [];
+                    foreach ($spokenFor as $accountId => $keys) {
+                        if (!in_array($key, $keys, true)) {
+                            $foreign[] = $accountId;
+                        }
+                    }
+                    if ($foreign) {
+                        $base->whereNotIn('to_account_id', $foreign);
+                    }
+                }
+
+                $hits = $base->limit(2)->get(['id']);
+                if ($hits->count() !== 1) {
+                    continue; // zero = genuinely unrecorded; several = ambiguous
+                }
+                $hit = $hits->first();
             }
-            $hit = $hits->first();
 
             DB::table('t_ai_bank_sms')->where('id', $sms->id)->update([
                 'status'           => 'recorded',
@@ -1174,6 +1346,164 @@ class AssistantWorkspaceController extends Controller
             ]);
             $claimed[] = $hit->id; // never let the same entry close another SMS
         }
+    }
+
+    /**
+     * Re-read the still-unsorted SMS whose direction the parser could not call
+     * at the time, and let a SMARTER parser have another go.
+     *
+     * WHY THIS EXISTS: parsing happens once, at ingest, so a parser improvement
+     * only ever helps future messages — the rows already sitting in the inbox
+     * keep the old verdict forever. Alfalah's incoming-payment wording
+     * ("received from X in your A/C … via Fund Transfer") was read as 'unknown'
+     * for weeks, and an unknown is drawn in the MONEY OUT box with a minus
+     * sign: four real customer payments were on the wrong side of the screen,
+     * looking like unrecorded expenses, invisible to every credit rule we have.
+     *
+     * A sweep rather than a one-off script, for the same reason every other
+     * reconciliation here is one: prod runs no scheduler, and a page load is
+     * the only reliable clock. It is idempotent (a row that gets a verdict is
+     * no longer 'unknown'; one that doesn't costs a regex) and it is cheap —
+     * unsorted unknowns are a handful of rows.
+     *
+     * SAFETY:
+     *   • ONLY rows still awaiting a human ('new'). A recorded/matched/ignored
+     *     row may already have had decisions built on its direction; those are
+     *     never rewritten.
+     *   • The parser must be CONFIDENT — a still-'unknown' verdict changes
+     *     nothing.
+     *   • Names and account keys are only ever FILLED IN, never overwritten:
+     *     an account key is what counterparty rules are keyed on, and a human
+     *     may already have taught this one.
+     *   • A row that becomes a CREDIT is then run through the ordinary no-tap
+     *     pipeline, exactly as if it had just arrived — so it can pair with a
+     *     screenshot, or find its payer by name, without anyone re-sending it.
+     */
+    private function reclassifyUnknownDirections(int $userId): void
+    {
+        try {
+            // Bounded so the FIRST run after a parser improvement can never turn
+            // a page load into a batch job: unsorted unknowns are naturally few
+            // (they are the inbox), but a backlog is exactly when this fires.
+            // Anything left over is picked up by the next load — self-healing.
+            $rows = DB::table('t_ai_bank_sms')
+                ->where('user_id', $userId)
+                ->where('status', 'new')
+                ->where('direction', 'unknown')
+                ->orderByDesc('sms_at')
+                ->limit(25)
+                ->get(['id', 'raw_body', 'counterparty', 'counterparty_account']);
+
+            if ($rows->isEmpty()) {
+                return;
+            }
+            $parser = app(\App\Services\Assistant\BankSmsParser::class);
+
+            foreach ($rows as $row) {
+                $parsed = $parser->parse((string) $row->raw_body);
+                if (($parsed['direction'] ?? 'unknown') === 'unknown') {
+                    continue; // still not certain — leave it for the human
+                }
+
+                $update = ['direction' => $parsed['direction'], 'updated_at' => now()];
+                if (empty($row->counterparty) && !empty($parsed['counterparty'])) {
+                    $update['counterparty'] = $parsed['counterparty'];
+                }
+                if (empty($row->counterparty_account) && !empty($parsed['counterparty_account'])) {
+                    $update['counterparty_account'] = $parsed['counterparty_account'];
+                }
+                DB::table('t_ai_bank_sms')->where('id', $row->id)->update($update);
+
+                // Either way it just gained a real direction — run it through
+                // the ordinary no-tap pipeline as if it had just arrived: a
+                // credit can pair or find its payer, a debit can auto-ignore or
+                // raise its card. (Unlike restore(), no human said "no" here —
+                // the row was simply unreadable until the parser got smarter.)
+                app(\App\Services\Assistant\BankSmsAutoActionService::class)
+                    ->handle(DB::table('t_ai_bank_sms')->where('id', $row->id)->first());
+            }
+        } catch (\Throwable $e) {
+            // Never break the inbox over a re-read: the rows stay exactly as
+            // they are and the human path is untouched.
+            \Log::warning('[reclassifyUnknownDirections] ' . $e->getMessage(), ['user' => $userId]);
+        }
+    }
+
+    /**
+     * The ledger `to_account_id` a debit SMS must have paid, or null when we
+     * cannot know. Only an ACCOUNT-KEY rule counts: a key is a deliberate human
+     * teaching, while a name is a guess that collides (T.ALI / T. ALI / TAHIR
+     * ALI), and this drives an automatic close that HIDES a row.
+     *
+     *   vendor rule  → that vendor's ledger account (t_fin_vendors.account_id).
+     *   account rule → one of our own accounts, the destination of a transfer.
+     *   expense / customer / ignore → null: an expense category is not a ledger
+     *   destination (expenses post to whichever account the category resolves
+     *   to), so those keep the conservative exactly-one rule.
+     */
+    private function debitLedgerTarget(object $sms): ?int
+    {
+        if (empty($sms->counterparty_account)) {
+            return null;
+        }
+        $rule = app(\App\Services\Assistant\SmsCounterpartyMap::class)
+            ->byAccount($sms->counterparty_account);
+        if (!$rule || empty($rule->entity_id)) {
+            return null;
+        }
+        if ($rule->entity_type === 'vendor') {
+            $accountId = DB::table('t_fin_vendors')->where('id', $rule->entity_id)->value('account_id');
+            return $accountId ? (int) $accountId : null;
+        }
+        if ($rule->entity_type === 'account') {
+            return (int) $rule->entity_id;
+        }
+        return null;
+    }
+
+    /**
+     * [ledger to_account_id => [account keys taught for it]] for every active
+     * vendor/account rule. Used as the identity veto for unmapped SMS: a
+     * destination somebody else's key owns is not a candidate for this one.
+     */
+    private function mappedLedgerDestinations(): array
+    {
+        $out = [];
+        try {
+            $rows = DB::table('t_ai_counterparty_map')
+                ->where('is_active', 1)
+                ->whereNotNull('account_key')
+                ->whereIn('entity_type', ['vendor', 'account'])
+                ->whereNotNull('entity_id')
+                // ⚠ WAGROUP:* rules are vendor-typed but they map a WhatsApp
+                // GROUP, not a bank account — they say nothing about which
+                // account keys this vendor's debits carry. Counting them here
+                // would mark the vendor's ledger account "owned" the moment his
+                // first purchase log is confirmed, and the exactly-one sweep
+                // would then refuse to close that vendor's rows forever.
+                // (WAPROD:* product aliases are already outside this whereIn.)
+                ->where('account_key', 'not like', 'WAGROUP:%')
+                ->get(['account_key', 'entity_type', 'entity_id']);
+
+            $vendorAccounts = DB::table('t_fin_vendors')->whereNotNull('account_id')
+                ->pluck('account_id', 'id');
+
+            foreach ($rows as $r) {
+                $accountId = $r->entity_type === 'vendor'
+                    ? ($vendorAccounts[$r->entity_id] ?? null)
+                    : (int) $r->entity_id;
+                if (!$accountId) {
+                    continue;
+                }
+                $out[(int) $accountId][] = (string) $r->account_key;
+            }
+        } catch (\Throwable $e) {
+            // A veto we cannot build must not block the sweep — fall back to the
+            // pre-existing behaviour rather than closing nothing at all.
+            \Log::warning('[reconcileRecordedDebits] veto build failed: ' . $e->getMessage());
+            return [];
+        }
+        return $out;
     }
 
     /**

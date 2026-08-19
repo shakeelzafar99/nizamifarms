@@ -674,6 +674,14 @@ class CustomerController extends Controller
                 . "AND l.transaction_type = '{$ledgerInvoice}' "
                 . "AND l.approval_status IN ({$settledStatuses})) as invoice_settled";
 
+            // Actual delivery date. Production orders have no delivery_date COLUMN —
+            // it comes from the most recent 'delivered' status-history row, exactly
+            // as OrderModel::getDeliveryDateAttribute() derives it. A correlated
+            // subquery (not a join) keeps this one row per order and hits
+            // idx_status_code_order (status_code, order_id, changed_at).
+            $deliveredAtExpr = "(SELECT MAX(h.changed_at) FROM t_crm_order_status_history h "
+                . "WHERE h.order_id = o.id AND h.status_code = 'delivered') as delivered_at_raw";
+
             // 1. Get production orders (non-Shopify) with line item count
             $prodOrders = DB::table('t_crm_prod_order as o')
                 ->leftJoin(DB::raw('(SELECT order_id, COUNT(*) as line_items_count FROM t_crm_prod_order_line_item GROUP BY order_id) as li'), 'o.id', '=', 'li.order_id')
@@ -688,6 +696,7 @@ class CustomerController extends Controller
                     // Payment tracking (for the "invoices + payment status" view).
                     'o.payment_status', 'o.total_paid',
                     DB::raw($invoiceSettledExpr),
+                    DB::raw($deliveredAtExpr),
                     DB::raw('COALESCE(li.line_items_count, 0) as line_items_count'),
                     DB::raw("'production' as source_type")
                 )
@@ -706,6 +715,8 @@ class CustomerController extends Controller
                         // NULLs so the mapped shape matches the production rows.
                         DB::raw('NULL as payment_status'), DB::raw('NULL as total_paid'),
                         DB::raw('NULL as invoice_settled'),
+                        // Legacy orders DO carry a real delivered_at column.
+                        'o.delivered_at as delivered_at_raw',
                         DB::raw('COALESCE(li.line_items_count, 0) as line_items_count'),
                         DB::raw("'history' as source_type")
                     )
@@ -808,10 +819,27 @@ class CustomerController extends Controller
                         $pendingAmount = $isProduction ? ($pendingAmountByOrder[$order->id] ?? null) : null;
                     }
 
+                    // ---- Delivery date -------------------------------------
+                    // Mirrors OrderModel::getDeliveryDateAttribute() so the web
+                    // statement and the mobile app can never disagree: only
+                    // delivered/completed orders have one, it's the real
+                    // 'delivered' timestamp when we have it, and it falls back to
+                    // the order date when we don't. Emitted as 'Y-m-d' (never a
+                    // Carbon date cast) to avoid the UTC off-by-one on display.
+                    // NOTE: all 'completed' orders currently hit the fallback —
+                    // they have no 'delivered' status-history row.
+                    $deliveryDate = null;
+                    if (in_array($order->order_status ?? '', ['delivered', 'completed'], true)) {
+                        $deliveryDate = !empty($order->delivered_at_raw)
+                            ? date('Y-m-d', strtotime($order->delivered_at_raw))
+                            : ($order->order_date ? date('Y-m-d', strtotime($order->order_date)) : null);
+                    }
+
                     return [
                         'id' => $order->id,
                         'order_number' => $order->order_number,
                         'order_date' => $order->order_date,
+                        'delivery_date' => $deliveryDate,
                         'order_status' => $order->order_status,
                         'total_price' => $order->total_price,
                         'payment_status' => $paymentStatus,
@@ -1866,6 +1894,9 @@ class CustomerController extends Controller
                         : 'Verified pin set on the web app',
                 }
             );
+
+            // Pin changed → re-derive the region from it (see refreshAfterPinSave).
+            \App\Services\RegionDetectionService::refreshAfterPinSave($customer->id);
 
             $approximate   = $coordsSource === 'geocoded';
             $coordsMissing = $coordsSource === 'none';

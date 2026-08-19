@@ -1411,7 +1411,7 @@ window.viewCustomerOrders = function(customerId, customerName) {
                                     <th style="padding: 12px; text-align: left; font-size: 12px; font-weight: 600; color: #374151; text-transform: uppercase;">Order #</th>
                                     <th style="padding: 12px; text-align: left; font-size: 12px; font-weight: 600; color: #374151; text-transform: uppercase;">Date</th>
                                     <th style="padding: 12px; text-align: left; font-size: 12px; font-weight: 600; color: #374151; text-transform: uppercase;">Status</th>
-                                    <th style="padding: 12px; text-align: left; font-size: 12px; font-weight: 600; color: #374151; text-transform: uppercase;">Items</th>
+                                    <th style="padding: 12px; text-align: left; font-size: 12px; font-weight: 600; color: #374151; text-transform: uppercase;">Products</th>
                                     <th style="padding: 12px; text-align: right; font-size: 12px; font-weight: 600; color: #374151; text-transform: uppercase;">Total</th>
                                     ${isShop ? `
                                     <th style="padding: 12px; text-align: center; font-size: 12px; font-weight: 600; color: #374151; text-transform: uppercase;">Payment</th>
@@ -1496,7 +1496,7 @@ window.viewCustomerOrders = function(customerId, customerName) {
                                     ${order.order_status ? order.order_status.charAt(0).toUpperCase() + order.order_status.slice(1) : 'N/A'}
                                 </span>
                             </td>
-                            <td style="padding: 12px; color: #6b7280;">${order.line_items_count || 0} items</td>
+                            <td style="padding: 12px; color: #6b7280;">${custInvProductLabel(order.line_items_count)}</td>
                             <td style="padding: 12px; text-align: right; font-weight: 600; color: #1f2937;">PKR ${Math.round(order.total_price || 0).toLocaleString()}</td>
                             ${extraCells}
                             <td style="padding: 12px; text-align: center;">
@@ -1591,8 +1591,9 @@ function buildCustomerInvoiceRow(order, isShop) {
         <tr style="border-bottom:1px solid #f3f4f6;">
             <td style="padding:12px;font-weight:600;color:#1f2937;">#${order.order_number || order.id}${isHistoryOrder ? ' <span style="margin-left:4px;padding:2px 6px;background:#f3e8ff;color:#9333ea;font-size:10px;border-radius:4px;">Legacy</span>' : ''}</td>
             <td style="padding:12px;color:#6b7280;">${window.formatDateLocal(order.order_date)}</td>
+            <td style="padding:12px;color:${order.delivery_date ? '#6b7280' : '#d1d5db'};">${order.delivery_date ? window.formatDateLocal(order.delivery_date) : '—'}</td>
             <td style="padding:12px;"><span style="display:inline-flex;align-items:center;padding:4px 8px;border-radius:12px;font-size:12px;font-weight:500;background-color:${statusColor}20;color:${statusColor};">${order.order_status ? order.order_status.charAt(0).toUpperCase() + order.order_status.slice(1) : 'N/A'}</span></td>
-            <td style="padding:12px;color:#6b7280;">${order.line_items_count || 0} items</td>
+            <td style="padding:12px;color:#6b7280;">${custInvProductLabel(order.line_items_count)}</td>
             <td style="padding:12px;text-align:right;font-weight:600;color:#1f2937;">PKR ${Math.round(order.total_price || 0).toLocaleString()}</td>
             ${extraCells}
             <td style="padding:12px;text-align:center;">${actionButtons}</td>
@@ -1602,6 +1603,13 @@ function buildCustomerInvoiceRow(order, isShop) {
 // ---- Date-range + status filtering over the loaded invoice list ----------
 // The whole order set is fetched once; every filter below re-renders from
 // window.__custInv without hitting the server again.
+
+// Line-item count as the owner reads it: "1 product" / "2 products". The column
+// used to read "Items" (and "1 items"); it counts line items on the order.
+function custInvProductLabel(n) {
+    const c = Number(n) || 0;
+    return c + (c === 1 ? ' product' : ' products');
+}
 
 // 'YYYY-MM-DD' key for an order_date. These come from a raw query (no date
 // cast), so the leading 10 chars are already the local calendar day — parsing
@@ -1633,13 +1641,79 @@ function custInvRangeLabel() {
     return 'Up to ' + custInvPretty(st.to);
 }
 
-// Date filter only (drives the tiles + the chip counts).
+// ---- Order-status (delivered / cancelled / ...) filter ---------------------
+// Deliberately a SEPARATE axis from the payment/approval chips: an order can be
+// cancelled and unpaid at the same time, so the two must be able to combine.
+// Selector values: 'all' | 'not_cancelled' | 'only:<status>'.
+
+function custInvOrderStatusMatch(o) {
+    const st = window.__custInv;
+    const sel = (st && st.orderStatus) || 'all';
+    if (sel === 'all') return true;
+    const s = String(o.order_status || '').toLowerCase();
+    if (sel === 'not_cancelled') return s !== 'cancelled';
+    if (sel.indexOf('only:') === 0) return s === sel.slice(5);
+    return true;
+}
+
+function custInvNiceStatus(s) {
+    return s ? (s.charAt(0).toUpperCase() + s.slice(1).replace(/_/g, ' ')) : 'No status';
+}
+
+// Human label for the active order-status filter — screen, print and CSV.
+function custInvOrderStatusLabel() {
+    const st = window.__custInv;
+    const sel = (st && st.orderStatus) || 'all';
+    if (sel === 'all') return 'All order statuses';
+    if (sel === 'not_cancelled') return 'Excluding cancelled';
+    if (sel.indexOf('only:') === 0) return custInvNiceStatus(sel.slice(5)) + ' only';
+    return 'All order statuses';
+}
+
+window.applyCustInvOrderStatus = function() {
+    const st = window.__custInv;
+    if (!st) return;
+    const el = document.getElementById('custInvOrderStatus');
+    st.orderStatus = (el && el.value) || 'all';
+    renderCustomerInvoices();
+};
+
+// ---- Which date the Period filter measures --------------------------------
+// 'order' is the historical behaviour and stays the default. On 'delivery' an
+// order with no delivery date (cancelled / not yet delivered) cannot be placed
+// in a range, so it drops out once a range is set — that is intended, and the
+// print sheet states the basis so a statement is never ambiguous.
+
+function custInvBasisField() {
+    const st = window.__custInv;
+    return (st && st.dateBasis === 'delivery') ? 'delivery_date' : 'order_date';
+}
+
+function custInvBasisLabel() {
+    const st = window.__custInv;
+    return (st && st.dateBasis === 'delivery') ? 'Delivery date' : 'Order date';
+}
+
+window.setCustInvDateBasis = function(basis) {
+    const st = window.__custInv;
+    if (!st) return;
+    st.dateBasis = (basis === 'delivery') ? 'delivery' : 'order';
+    renderCustomerInvoices();
+};
+
+// Date + order-status filter (drives the tiles + the chip counts). The payment /
+// approval chip is applied on top of this by custInvVisible().
 function custInvRanged() {
     const st = window.__custInv;
     if (!st) return [];
-    if (!st.from && !st.to) return st.orders;
+    const hasDates = !!(st.from || st.to);
+    const hasStatus = (st.orderStatus || 'all') !== 'all';
+    if (!hasDates && !hasStatus) return st.orders;
+    const field = custInvBasisField();
     return st.orders.filter(o => {
-        const k = custInvDateKey(o.order_date);
+        if (!custInvOrderStatusMatch(o)) return false;
+        if (!hasDates) return true;
+        const k = custInvDateKey(o[field]);
         if (!k) return false;
         if (st.from && k < st.from) return false;
         if (st.to && k > st.to) return false;
@@ -1769,16 +1843,24 @@ function renderCustomerInvoices() {
     let chipsHtml = chip('all', 'All', ranged.length, st.status === 'all');
     chipDefs.forEach(([k, l]) => { const c = countFor(k); if (c > 0) chipsHtml += chip(k, l, c, st.status === k); });
 
+    // ---- Period basis segmented toggle. Re-rendered every pass so the active
+    // half can never disagree with st.dateBasis. ----
+    const basisBtn = (key, label, on, round) => `<button type="button" onclick="setCustInvDateBasis('${key}')" style="padding:4px 9px;font-size:11.5px;font-weight:700;cursor:pointer;border:1px solid ${on ? '#4f46e5' : '#d1d5db'};background:${on ? '#4f46e5' : '#fff'};color:${on ? '#fff' : '#6b7280'};border-radius:${round};margin-left:${round.startsWith('0') ? '-1px' : '0'};" title="Measure the period against the ${label.toLowerCase()}">${label}</button>`;
+    const basisEl = document.getElementById('custInvBasis');
+    if (basisEl) basisEl.innerHTML =
+        basisBtn('order', 'Order date', st.dateBasis !== 'delivery', '999px 0 0 999px')
+      + basisBtn('delivery', 'Delivery date', st.dateBasis === 'delivery', '0 999px 999px 0');
+
     const tilesEl = document.getElementById('custInvTiles');
     const chipsEl = document.getElementById('custInvChips');
     const body = document.getElementById('custInvBody');
     if (tilesEl) tilesEl.innerHTML = tilesHtml;
     if (chipsEl) chipsEl.innerHTML = chipsHtml;
     if (body) {
-        const cols = isShop ? 8 : 7;
+        const cols = isShop ? 9 : 8;   // +1 for the delivery-date column
         body.innerHTML = visible.length
             ? visible.map(o => buildCustomerInvoiceRow(o, isShop)).join('')
-            : `<tr><td colspan="${cols}" style="padding:20px;text-align:center;color:#9ca3af;">No invoices in this ${hasRange ? 'date range' : 'filter'}.</td></tr>`;
+            : `<tr><td colspan="${cols}" style="padding:20px;text-align:center;color:#9ca3af;">No invoices match the current ${hasRange ? 'period / filters' : 'filters'}.</td></tr>`;
     }
     const cnt = document.getElementById('custInvShowing');
     if (cnt) cnt.textContent = visible.length === st.orders.length
@@ -1797,17 +1879,45 @@ function buildCustomerOrdersSection(data, customer) {
     }
 
     // State for the filters / print / CSV. Rendered by renderCustomerInvoices().
+    // orderStatus defaults to 'all' so the panel behaves exactly as before until
+    // the owner picks something.
     window.__custInv = {
         orders, isShop,
         summary: data.summary || {},
         customer: customer || null,
-        status: 'all', from: '', to: ''
+        status: 'all', orderStatus: 'all', dateBasis: 'order', from: '', to: ''
     };
+
+    // Order-status options are derived from the rows actually present, so a new
+    // status in the DB shows up here without a code change. Known operational
+    // statuses are listed in workflow order; anything unexpected trails behind.
+    const statusesPresent = [];
+    orders.forEach(o => {
+        const k = String(o.order_status || '').toLowerCase();
+        if (statusesPresent.indexOf(k) === -1) statusesPresent.push(k);
+    });
+    const statusOrder = ['new', 'pending', 'delivered', 'completed', 'cancelled', ''];
+    statusesPresent.sort((a, b) => {
+        const ia = statusOrder.indexOf(a), ib = statusOrder.indexOf(b);
+        return (ia === -1 ? 98 : ia) - (ib === -1 ? 98 : ib);
+    });
+    const statusOptsHtml = ['<option value="all">All statuses</option>']
+        .concat(statusesPresent.indexOf('cancelled') !== -1
+            ? ['<option value="not_cancelled">All except cancelled</option>'] : [])
+        .concat(statusesPresent.map(s => `<option value="only:${custInvEsc(s)}">${custInvEsc(custInvNiceStatus(s))} only</option>`))
+        .join('');
+    // A single-status customer has nothing to choose — don't add dead furniture.
+    const statusControl = statusesPresent.length > 1
+        ? `<span style="color:#d1d5db;">|</span>
+           <span style="font-size:12px;font-weight:700;color:#6b7280;text-transform:uppercase;letter-spacing:.04em;">Status</span>
+           <select id="custInvOrderStatus" onchange="applyCustInvOrderStatus()" style="padding:4px 8px;border:1px solid #d1d5db;border-radius:6px;font-size:12.5px;background:#fff;color:#374151;font-weight:600;cursor:pointer;" title="Filter the list, the print sheet and the CSV by order status">${statusOptsHtml}</select>`
+        : '';
 
     const preset = (key, label) => `<button type="button" onclick="setCustInvPreset('${key}')" style="padding:4px 10px;background:#fff;color:#4b5563;border:1px solid #d1d5db;border-radius:999px;font-size:12px;font-weight:600;cursor:pointer;">${label}</button>`;
     const toolbar = `
         <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:12px;padding:10px 12px;background:#f8fafc;border:1px solid #e5e7eb;border-radius:10px;">
             <span style="font-size:12px;font-weight:700;color:#6b7280;text-transform:uppercase;letter-spacing:.04em;">📅 Period</span>
+            <span id="custInvBasis" style="display:inline-flex;gap:0;"></span>
             <input type="date" id="custInvFrom" onchange="applyCustInvDates()" style="padding:4px 8px;border:1px solid #d1d5db;border-radius:6px;font-size:12.5px;">
             <span style="color:#9ca3af;">→</span>
             <input type="date" id="custInvTo" onchange="applyCustInvDates()" style="padding:4px 8px;border:1px solid #d1d5db;border-radius:6px;font-size:12.5px;">
@@ -1816,6 +1926,7 @@ function buildCustomerOrdersSection(data, customer) {
             ${preset('last_3m', 'Last 3 months')}
             ${preset('this_year', 'This year')}
             ${preset('all', 'All time')}
+            ${statusControl}
             <div style="flex:1;min-width:8px;"></div>
             <span id="custInvShowing" style="font-size:12px;color:#6b7280;"></span>
             <button type="button" onclick="printCustomerStatement()" style="padding:5px 12px;background:#4f46e5;color:#fff;border:none;border-radius:8px;font-size:12.5px;font-weight:600;cursor:pointer;" title="Print / save as PDF what is shown below">🖨️ Print</button>
@@ -1824,9 +1935,10 @@ function buildCustomerOrdersSection(data, customer) {
 
     const header = `<tr style="background-color:#f9fafb;border-bottom:1px solid #e5e7eb;">
             <th style="padding:12px;text-align:left;font-size:12px;font-weight:600;color:#374151;text-transform:uppercase;">Order #</th>
-            <th style="padding:12px;text-align:left;font-size:12px;font-weight:600;color:#374151;text-transform:uppercase;">Date</th>
+            <th style="padding:12px;text-align:left;font-size:12px;font-weight:600;color:#374151;text-transform:uppercase;">Order date</th>
+            <th style="padding:12px;text-align:left;font-size:12px;font-weight:600;color:#374151;text-transform:uppercase;">Delivery date</th>
             <th style="padding:12px;text-align:left;font-size:12px;font-weight:600;color:#374151;text-transform:uppercase;">Status</th>
-            <th style="padding:12px;text-align:left;font-size:12px;font-weight:600;color:#374151;text-transform:uppercase;">Items</th>
+            <th style="padding:12px;text-align:left;font-size:12px;font-weight:600;color:#374151;text-transform:uppercase;">Products</th>
             <th style="padding:12px;text-align:right;font-size:12px;font-weight:600;color:#374151;text-transform:uppercase;">Total</th>
             ${isShop ? `<th style="padding:12px;text-align:center;font-size:12px;font-weight:600;color:#374151;text-transform:uppercase;">Payment</th><th style="padding:12px;text-align:right;font-size:12px;font-weight:600;color:#374151;text-transform:uppercase;">Balance</th>` : `<th style="padding:12px;text-align:center;font-size:12px;font-weight:600;color:#374151;text-transform:uppercase;">Approval</th>`}
             <th style="padding:12px;text-align:center;font-size:12px;font-weight:600;color:#374151;text-transform:uppercase;">Actions</th>
@@ -1886,14 +1998,17 @@ window.printCustomerStatement = function() {
         ? box('Invoices', String(t.count)) + box('Total value', money(t.value)) + box('Paid', money(t.paid)) + box('Outstanding', money(t.outstanding), t.outstanding > 0.01)
         : box('Invoices', String(t.count)) + box('Total value', money(t.value)) + box('Pending approval (L1)', money(t.pending), t.pending > 0.01);
 
-    const head = ['Order #', 'Date', 'Status', 'Items', 'Total']
+    // NOTE: 'Total' is now index 5 (the delivery-date column shifted it), and the
+    // money columns from there on are right-aligned.
+    const head = ['Order #', 'Order date', 'Delivery date', 'Status', 'Products', 'Total']
         .concat(isShop ? ['Payment', 'Paid', 'Balance'] : ['Approval'])
-        .map((h, i) => `<th class="${i >= 4 ? 'r' : ''}">${e(h)}</th>`).join('');
+        .map((h, i) => `<th class="${i >= 5 ? 'r' : ''}">${e(h)}</th>`).join('');
 
     const bodyRows = rows.map(o => {
         const cells = [
             `<td>#${e(o.order_number || o.id)}${o.source_type === 'history' ? ' <span class="muted">(legacy)</span>' : ''}</td>`,
             `<td>${e(window.formatDateLocal(o.order_date))}</td>`,
+            `<td${o.delivery_date ? '' : ' class="muted"'}>${o.delivery_date ? e(window.formatDateLocal(o.delivery_date)) : '—'}</td>`,
             `<td>${e(o.order_status ? o.order_status.charAt(0).toUpperCase() + o.order_status.slice(1) : '—')}</td>`,
             `<td>${e(o.line_items_count || 0)}</td>`,
             `<td class="r">${e(money(Number(o.total_price) || 0))}</td>`
@@ -1958,15 +2073,19 @@ window.printCustomerStatement = function() {
   <div class="period">
     <div class="lbl">Period</div>
     <div class="v">${e(custInvRangeLabel())}</div>
+    <div class="lbl" style="margin-top:8px;">Period measured on</div>
+    <div class="v">${e(custInvBasisLabel())}</div>
     <div class="lbl" style="margin-top:8px;">Filter</div>
     <div class="v">${e(custInvStatusLabel())}</div>
+    <div class="lbl" style="margin-top:8px;">Order status</div>
+    <div class="v">${e(custInvOrderStatusLabel())}</div>
   </div>
 </div>
 <div class="boxes">${boxes}</div>
 <table>
   <thead><tr>${head}</tr></thead>
   <tbody>${bodyRows}</tbody>
-  <tfoot><tr><td colspan="4">TOTAL — ${e(t.count)} invoice${t.count === 1 ? '' : 's'}</td>${totalCells}</tr></tfoot>
+  <tfoot><tr><td colspan="5">TOTAL — ${e(t.count)} invoice${t.count === 1 ? '' : 's'}</td>${totalCells}</tr></tfoot>
 </table>
 <div class="foot">Generated ${e(new Date().toLocaleString())}${isShop ? ' · Outstanding = delivered online invoices not yet settled.' : ' · Pending approval = invoices awaiting L1 approval.'} Figures cover the invoices listed above.</div>
 <script>window.onload = function() { setTimeout(function() { window.focus(); window.print(); }, 350); };<\/script>
@@ -1993,14 +2112,16 @@ window.exportCustomerStatementCsv = function() {
 
     const out = [];
     out.push(line([isShop ? 'Shop statement' : 'Customer statement', custInvCustomerName()]));
-    out.push(line(['Period', custInvRangeLabel(), 'Filter', custInvStatusLabel()]));
+    out.push(line(['Period', custInvRangeLabel(), 'Measured on', custInvBasisLabel(),
+                   'Filter', custInvStatusLabel(), 'Order status', custInvOrderStatusLabel()]));
     out.push('');
-    out.push(line(['Order #', 'Date', 'Status', 'Items', 'Total']
+    out.push(line(['Order #', 'Order date', 'Delivery date', 'Status', 'Products', 'Total']
         .concat(isShop ? ['Payment', 'Paid', 'Balance'] : ['Approval', 'Pending amount'])));
     rows.forEach(o => {
         const base = [
             '#' + (o.order_number || o.id) + (o.source_type === 'history' ? ' (legacy)' : ''),
             custInvDateKey(o.order_date),
+            custInvDateKey(o.delivery_date),
             o.order_status || '',
             o.line_items_count || 0,
             Math.round(Number(o.total_price) || 0)
@@ -2024,11 +2145,16 @@ window.exportCustomerStatementCsv = function() {
 
     const slug = custInvCustomerName().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'customer';
     const span = (st.from || st.to) ? ((st.from || 'start') + '_to_' + (st.to || 'today')) : 'all-time';
+    // Status token in the filename so a filtered export can't silently overwrite
+    // an unfiltered one in the Downloads folder.
+    const stTag = ((st.orderStatus && st.orderStatus !== 'all')
+        ? '-' + st.orderStatus.replace('only:', '').replace(/[^a-z0-9]+/gi, '-') : '')
+        + (st.dateBasis === 'delivery' ? '-by-delivery' : '');
     // BOM so Excel opens the UTF-8 correctly.
     const blob = new Blob(["﻿" + out.join('\r\n')], { type: 'text/csv;charset=utf-8;' });
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
-    a.download = `statement-${slug}-${span}.csv`;
+    a.download = `statement-${slug}-${span}${stTag}.csv`;
     document.body.appendChild(a);
     a.click();
     setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 0);

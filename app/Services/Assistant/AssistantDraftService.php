@@ -122,6 +122,8 @@ class AssistantDraftService
             'business_unit_id' => $businessUnitId,
             'expense_date' => $date,
             '_pending_choice' => $choice,
+            // Provenance, and what earns this card the long TTL in store().
+            '_from_sms' => !empty($args['_from_sms']) ?: null,
         ], fn($v) => $v !== null);
 
         $display = array_values(array_filter([
@@ -389,6 +391,8 @@ class AssistantDraftService
             'transaction_date' => $date,
             'description' => $desc,
             '_pending_choice' => $choice,
+            // Provenance, and what earns this card the long TTL in store().
+            '_from_sms' => !empty($args['_from_sms']) ?: null,
         ], fn($v) => $v !== null);
 
         $display = array_values(array_filter([
@@ -422,7 +426,22 @@ class AssistantDraftService
             return ['error' => 'That vendor id does not exist. Use find_vendor first — never guess an id.'];
         }
 
-        $amount = (float) ($args['amount'] ?? 0);
+        // ⭐ CLUBBED CARD. Several transfers to ONE vendor become ONE card whose
+        // amount IS their sum — deliberately routed through this same method
+        // rather than a parallel builder, so every guard below (vendor exists,
+        // balance cap, source account, bank picker, duplicate notice) applies to
+        // a batch exactly as it does to a single payment. A second
+        // implementation would be a second place for those rules to drift.
+        //
+        // ⚠ The draft TYPE stays 'vendor_payment'. The shipped APK switches on
+        // it in three places — including `isOut`, which decides money-out from
+        // money-in — so a NEW type would render a clubbed vendor payment as
+        // money IN until the next build. The batch travels as payload metadata.
+        $transfers = $this->cleanTransfers($args['_transfers'] ?? null);
+
+        $amount = $transfers
+            ? round(array_sum(array_column($transfers, 'amount')), 2)
+            : (float) ($args['amount'] ?? 0);
         if ($amount <= 0) {
             return ['error' => 'I need an amount greater than zero.'];
         }
@@ -430,7 +449,21 @@ class AssistantDraftService
         // The server caps a payment at the outstanding balance. Surfacing it
         // here turns a post-confirm rejection into a useful sentence.
         $balance = round((float) ($vendor->current_balance ?? 0), 2);
-        if ($amount > $balance) {
+
+        // ⭐⭐ A CLUB THAT OVERSHOOTS IS A QUESTION, NOT A DEAD END (owner, Aug-17).
+        // When several transfers total more than we owe, there are exactly two
+        // real explanations and Taimur is the only one who can tell them apart:
+        // some of these were ALREADY recorded by hand (the SMS just stayed in the
+        // box), or a purchase genuinely hasn't been entered yet. So the card is
+        // still built — with a chip per transfer so he can drop the ones already
+        // on the books and record the rest. Refusing outright would hide the
+        // whole night behind an error message and tell him nothing about which
+        // transfer is the problem.
+        //
+        // A SINGLE payment over the balance keeps the old refusal: there is
+        // nothing to choose between, so the honest answer is still "no".
+        $overBalance = $amount > $balance;
+        if ($overBalance && !$transfers) {
             return ['error' => 'That is more than we owe ' . $vendor->vendor_name
                 . ' (outstanding Rs ' . number_format($balance, 0) . '). The server will reject it. Confirm the amount with the user.'];
         }
@@ -460,6 +493,28 @@ class AssistantDraftService
             return ['error' => 'No banks are configured, so I cannot pay this from a bank account. Suggest a cash source instead.'];
         }
 
+        // The drop-a-transfer picker (see the over-balance note above). It uses
+        // the SAME `_pending_choice` slot as the bank picker, which is what makes
+        // it render as chips on the SHIPPED app with no build: the client just
+        // draws `options[].name` and posts the id back. It also inherits that
+        // slot's safety property — Confirm stays disabled until it is answered,
+        // so an over-balance club can never be confirmed straight into a
+        // rejection. ⚠ The bank question wins when both apply: without a bank
+        // there is nothing to record at all, and only one choice can be live.
+        if ($overBalance && $transfers && !$choice) {
+            $choice = [
+                'field'   => '_drop_transfer',
+                'label'   => 'Rs ' . number_format($amount, 0) . ' is more than we owe (Rs '
+                           . number_format($balance, 0) . '). Drop any already recorded:',
+                'options' => array_map(fn($t) => [
+                    'id'   => (int) $t['sms_id'],
+                    'name' => 'Drop Rs ' . number_format($t['amount'], 0)
+                            . (!empty($t['time']) ? ' · ' . $t['time'] : '')
+                            . (!empty($t['reference']) ? ' · ' . $t['reference'] : ''),
+                ], $transfers),
+            ];
+        }
+
         $date = $this->cleanDate($args['transaction_date'] ?? null) ?: now()->toDateString();
 
         $payload = array_filter([
@@ -470,25 +525,169 @@ class AssistantDraftService
             'transaction_date' => $date,
             'description' => trim((string) ($args['description'] ?? '')) ?: null,
             '_pending_choice' => $choice,
+            '_transfers' => $transfers,
+            // Provenance, and what earns this card the long TTL in store() —
+            // also how pendingVendorCard() tells an SMS-raised card (clubbable)
+            // from one Taimur typed in chat (never rewritten underneath him).
+            '_from_sms' => !empty($args['_from_sms']) ?: null,
         ], fn($v) => $v !== null);
 
-        $display = array_values(array_filter([
-            ['label' => 'Vendor', 'value' => $vendor->vendor_name],
-            ['label' => 'Amount', 'value' => 'Rs ' . number_format($amount, 0)],
-            ['label' => 'Paid from', 'value' => $source->account_name],
-            $receivingId ? ['label' => 'Bank', 'value' => $this->bankName($receivingId)] : null,
-            $needsBankChoice ? ['label' => 'Bank', 'value' => 'Choose below'] : null,
-            ['label' => 'Date', 'value' => $date],
-            ['label' => 'Outstanding after', 'value' => 'Rs ' . number_format($balance - $amount, 0)],
-        ]));
+        // A look-alike payment already on the books is worth a sentence, never a
+        // refusal: splitting one payment into several same-amount transfers is
+        // routine here (RAAST caps), so the honest answer is "check this", not
+        // "no". Shown as a card row, which every client already renders.
+        // ⭐ A CLUBBED card is the split, all of it, on one card — so the
+        // look-alikes it contains are the point, not a warning. Only its own
+        // total is worth checking against what is already on the books.
+        $dupNotice = $transfers
+            ? null
+            : $this->duplicatePaymentNotice($vendorId, $vendor->vendor_name, $amount, $date,
+                $user, $this->replacesId($args));
+
+        // One row per transfer, so a clubbed card reads like the bank's own
+        // night — each time and TID visible, nothing merged away.
+        $transferRows = [];
+        foreach (($transfers ?? []) as $i => $t) {
+            $transferRows[] = [
+                'label' => 'Transfer ' . ($i + 1),
+                'value' => implode(' · ', array_filter([
+                    'Rs ' . number_format($t['amount'], 0),
+                    $t['time'] ?? null,
+                    !empty($t['reference']) ? 'TID ' . $t['reference'] : null,
+                ])),
+            ];
+        }
+
+        $display = array_values(array_filter(array_merge(
+            [['label' => 'Vendor', 'value' => $vendor->vendor_name]],
+            $transferRows,
+            [
+                ['label' => $transfers ? 'Total (' . count($transfers) . ' transfers)' : 'Amount',
+                 'value' => 'Rs ' . number_format($amount, 0)],
+                ['label' => 'Paid from', 'value' => $source->account_name],
+                $receivingId ? ['label' => 'Bank', 'value' => $this->bankName($receivingId)] : null,
+                $needsBankChoice ? ['label' => 'Bank', 'value' => 'Choose below'] : null,
+                ['label' => 'Date', 'value' => $date],
+                // ⚠ Never a bare minus (the standing rule from the payroll
+                // khata): "Rs -270,380 outstanding" reads like a number nobody
+                // can act on. Say what it actually means instead.
+                $overBalance
+                    ? ['label' => 'Over what we owe',
+                       'value' => 'Rs ' . number_format($amount - $balance, 0) . ' more than the Rs '
+                                . number_format($balance, 0) . ' outstanding']
+                    : ['label' => 'Outstanding after', 'value' => 'Rs ' . number_format($balance - $amount, 0)],
+                $dupNotice ? ['label' => '⚠ Check', 'value' => $dupNotice] : null,
+            ]
+        )));
 
         if (empty($args['_from_sms'])) {
             [$payload, $display] = $this->attachChatImage($payload, $display, $user);
         }
 
-        return $this->store($user, 'vendor_payment',
-            'Pay ' . $vendor->vendor_name . ': Rs ' . number_format($amount, 0),
+        $summary = $transfers
+            ? 'Pay ' . $vendor->vendor_name . ': ' . count($transfers) . ' transfers, Rs ' . number_format($amount, 0)
+            : 'Pay ' . $vendor->vendor_name . ': Rs ' . number_format($amount, 0);
+
+        return $this->store($user, 'vendor_payment', $summary,
             $payload, $display, $this->replacesId($args));
+    }
+
+    /**
+     * Normalise a clubbed-card transfer list, or null when there isn't one.
+     *
+     * Every entry must carry a positive amount and the id of the bank SMS it
+     * came from — the SMS id is what lets the confirm stamp each ledger row back
+     * onto the message that proves it. A list of ONE is not a batch: it is an
+     * ordinary payment, and saying so here keeps the single-payment path
+     * completely untouched by this feature.
+     *
+     * @return array<int, array{sms_id:int, amount:float, reference:?string, time:?string, date:?string}>|null
+     */
+    private function cleanTransfers($raw): ?array
+    {
+        if (!is_array($raw)) {
+            return null;
+        }
+        $out = [];
+        $seen = [];
+        foreach ($raw as $t) {
+            $smsId  = (int) ($t['sms_id'] ?? 0);
+            $amount = round((float) ($t['amount'] ?? 0), 2);
+            // The same SMS twice would double-record real money.
+            if ($smsId <= 0 || $amount <= 0 || isset($seen[$smsId])) {
+                continue;
+            }
+            $seen[$smsId] = true;
+            $out[] = [
+                'sms_id'    => $smsId,
+                'amount'    => $amount,
+                'reference' => $t['reference'] ?? null,
+                'time'      => $t['time'] ?? null,
+                'date'      => $t['date'] ?? null,
+            ];
+        }
+        return count($out) > 1 ? $out : null;
+    }
+
+    /**
+     * "Is this the same payment again?" — a sentence for the card when a
+     * near-identical vendor payment is already recorded (or already sitting on
+     * another card), or null.
+     *
+     * ⚠ WARNING, NEVER A BLOCK. Same vendor, same amount, same day is exactly
+     * what a legitimate split transfer looks like (Aug-10: four Rs 150,000
+     * transfers to one vendor inside two minutes). Refusing would break the
+     * real case to prevent a rarer one; a line on the card lets the human — who
+     * knows what he sent — decide in a second.
+     *
+     * @param int|null $excludeDraftId  The card this one corrects ("make it
+     *   4,000"): still pending at this moment, and warning about it would be
+     *   telling the user their own correction is a duplicate.
+     */
+    private function duplicatePaymentNotice(int $vendorId, string $vendorName, float $amount,
+        string $date, $user, ?int $excludeDraftId = null): ?string
+    {
+        try {
+            $accountId = DB::table('t_fin_vendors')->where('id', $vendorId)->value('account_id');
+            if ($accountId) {
+                $prior = DB::table('t_fin_ledger')
+                    ->where('transaction_type', 'vendor_payment')
+                    ->where('to_account_id', $accountId)
+                    ->whereNotIn('approval_status', ['rejected', 'reversed'])
+                    ->whereRaw('ABS(amount - ?) <= 1', [$amount])
+                    ->whereRaw('ABS(DATEDIFF(transaction_date, ?)) <= 1', [$date])
+                    ->orderByDesc('transaction_date')
+                    ->first(['transaction_date']);
+
+                if ($prior) {
+                    $when = \Illuminate\Support\Carbon::parse($prior->transaction_date);
+                    return 'Rs ' . number_format($amount, 0) . ' to ' . $vendorName
+                        . ' is already recorded for ' . $when->format('j M')
+                        . ' — confirm this is a separate transfer.';
+                }
+            }
+
+            // A second card for the same payment is the other way to pay twice.
+            $pending = DB::table('t_ai_drafts')
+                ->where('user_id', $user->id)
+                ->where('type', 'vendor_payment')
+                ->where('status', 'pending')
+                ->when($excludeDraftId, fn($q) => $q->where('id', '<>', $excludeDraftId))
+                ->get(['payload_json']);
+
+            foreach ($pending as $p) {
+                $payload = json_decode($p->payload_json, true) ?: [];
+                if ((int) ($payload['vendor_id'] ?? 0) === $vendorId
+                    && abs((float) ($payload['amount'] ?? 0) - $amount) <= 1) {
+                    return 'Another card for Rs ' . number_format($amount, 0) . ' to ' . $vendorName
+                        . ' is already waiting to be confirmed — don\'t confirm both unless these are two transfers.';
+                }
+            }
+        } catch (\Throwable $e) {
+            // A missing warning must never cost the user their card.
+            Log::warning('[duplicatePaymentNotice] ' . $e->getMessage(), ['vendor' => $vendorId]);
+        }
+        return null;
     }
 
     /**
@@ -510,7 +709,16 @@ class AssistantDraftService
             return ['error' => 'That vendor id does not exist. Use find_vendor first — never guess an id.'];
         }
 
-        $amount = (float) ($args['amount'] ?? 0);
+        // ⭐ A WEIGHED day from a WhatsApp purchase log: many weighings, one
+        // day, one entry. Same method as the plain by-total purchase so every
+        // guard here applies to both, and the draft TYPE stays
+        // `vendor_purchase` — the shipped APK switches on it (same reasoning as
+        // the clubbed payment card).
+        $lines = $this->cleanPurchaseLines($args['_lines'] ?? null);
+
+        $amount = $lines
+            ? round(array_sum(array_map(fn($l) => $l['quantity'] * $l['rate'], $lines)), 2)
+            : (float) ($args['amount'] ?? 0);
         if ($amount <= 0) {
             return ['error' => 'I need an amount greater than zero.'];
         }
@@ -522,25 +730,155 @@ class AssistantDraftService
 
         $balance = round((float) ($vendor->current_balance ?? 0), 2);
 
+        // Weighings whose product we could not name ("Chakki . 650"). They are
+        // asked about one at a time with chips — the SAME `_pending_choice`
+        // slot the bank picker and the drop-chips use, so it renders on the
+        // shipped app with no build, and Confirm stays blocked until answered.
+        // ⚠⚠ Blocking is the point: an unplaced weighing is meat that was
+        // bought, so confirming without it would under-record the day AND
+        // (because dedup compares the shape of a day) make the same screenshot
+        // look new next time.
+        $unplaced = $this->cleanUnplaced($args['_unplaced'] ?? null);
+
         $payload = array_filter([
             'vendor_id' => $vendorId,
             'amount' => round($amount, 2),
             'transaction_date' => $date,
             'description' => trim((string) ($args['description'] ?? '')) ?: null,
+            '_lines' => $lines,
+            '_unplaced' => $unplaced,
+            '_group_title' => trim((string) ($args['group_title'] ?? '')) ?: null,
         ], fn($v) => $v !== null);
 
-        $display = [
-            ['label' => 'Vendor', 'value' => $vendor->vendor_name],
-            ['label' => 'Purchase amount', 'value' => 'Rs ' . number_format($amount, 0)],
-            ['label' => 'Date', 'value' => $date],
-            ['label' => 'We will owe them', 'value' => 'Rs ' . number_format($balance + $amount, 0)],
-        ];
+        if ($unplaced) {
+            $first = $unplaced[0];
+            $products = app(PurchaseLogService::class)->vendorProducts($vendorId);
+            $payload['_pending_choice'] = [
+                'field'   => '_place_line',
+                'label'   => 'What was "' . $first['text'] . '"? (' . $first['quantity'] . ')',
+                'options' => array_merge(
+                    array_map(fn($p) => ['id' => (int) $p->id, 'name' => $p->product_name], $products),
+                    [['id' => 0, 'name' => '✕ Not a purchase — skip this line']]
+                ),
+            ];
+        }
 
+        // One row per weighing, each showing its own rate and where the rate
+        // came from — a catalog figure must never look like a settled fact on
+        // a product whose price actually moves (Cow Brain: 300/350/800/1000).
+        // Taimur corrects one by replying ("cow brain 350"), which re-drafts
+        // through replaces_draft_id.
+        $lineRows = [];
+        foreach (($lines ?? []) as $i => $l) {
+            $note = !empty($l['rate_varies']) ? ' ⚠ rate varies' : '';
+            $lineRows[] = [
+                'label' => 'Line ' . ($i + 1) . ' · ' . $l['product_name'],
+                'value' => rtrim(rtrim(number_format($l['quantity'], 3, '.', ''), '0'), '.')
+                         . ' ' . $l['unit'] . ' × Rs ' . number_format($l['rate'], 0)
+                         . ' = Rs ' . number_format($l['quantity'] * $l['rate'], 0) . $note,
+            ];
+        }
+
+        // Unplaced weighings are SHOWN, not hidden — the total is knowingly
+        // short until they are placed, and saying so is what stops a
+        // half-recorded day being confirmed by reflex.
+        foreach ($unplaced ?? [] as $u) {
+            $lineRows[] = ['label' => '❓ ' . $u['text'],
+                           'value' => $u['quantity'] . ' — tell me what this is (below)'];
+        }
+
+        $display = array_values(array_filter(array_merge(
+            [['label' => 'Vendor', 'value' => $vendor->vendor_name]],
+            $lineRows,
+            [
+                ['label' => $lines ? 'Total (' . count($lines) . ' weighings)' : 'Purchase amount',
+                 'value' => 'Rs ' . number_format($amount, 0)
+                          . ($unplaced ? ' so far' : '')],
+                ['label' => 'Date', 'value' => $date],
+                ['label' => 'We will owe them', 'value' => 'Rs ' . number_format($balance + $amount, 0)],
+                $lines ? ['label' => 'To change a rate',
+                          'value' => 'reply e.g. "cow brain 350" and I will redo this card'] : null,
+            ]
+        )));
+
+        // The screenshot IS the receipt for a weighed day — attaching it is the
+        // whole point, and attachChatImage already does exactly that.
         [$payload, $display] = $this->attachChatImage($payload, $display, $user);
 
-        return $this->store($user, 'vendor_purchase',
-            'Purchase from ' . $vendor->vendor_name . ': Rs ' . number_format($amount, 0),
+        $summary = $lines
+            ? 'Purchase from ' . $vendor->vendor_name . ': ' . count($lines)
+              . ' weighings, Rs ' . number_format($amount, 0) . ' (' . $date . ')'
+            : 'Purchase from ' . $vendor->vendor_name . ': Rs ' . number_format($amount, 0);
+
+        return $this->store($user, 'vendor_purchase', $summary,
             $payload, $display, $this->replacesId($args));
+    }
+
+    /**
+     * Normalise weighed purchase lines, or null when this is a plain by-total
+     * purchase. Every line needs a real vendor PRODUCT id, a positive quantity
+     * and a positive rate — a line missing any of those would post a nonsense
+     * item, so it is dropped rather than guessed at.
+     *
+     * ⚠⚠ `product_id` is a `t_fin_vendor_products` id — the vendor's own
+     * purchase catalogue. It is NOT a sales-catalogue (`t_pdm_*`) product, and
+     * the two must never be mixed: they are different price lists for
+     * different sides of the business.
+     *
+     * @return array<int, array{product_id:int, product_name:string, unit:string,
+     *         quantity:float, rate:float, rate_varies:bool}>|null
+     */
+    private function cleanPurchaseLines($raw): ?array
+    {
+        if (!is_array($raw) || empty($raw)) {
+            return null;
+        }
+        $out = [];
+        foreach ($raw as $l) {
+            $pid  = (int) ($l['product_id'] ?? 0);
+            $qty  = round((float) ($l['quantity'] ?? 0), 3);
+            $rate = round((float) ($l['rate'] ?? 0), 2);
+            if ($pid <= 0 || $qty <= 0 || $rate <= 0) {
+                continue;
+            }
+            $out[] = [
+                'product_id'   => $pid,
+                'product_name' => (string) ($l['product_name'] ?? ''),
+                'unit'         => (string) ($l['unit'] ?? 'kg'),
+                'quantity'     => $qty,
+                'rate'         => $rate,
+                'rate_varies'  => (bool) ($l['rate_varies'] ?? false),
+                // The chat message this line came from. Kept so a CONFIRM can
+                // teach "what the butcher's word means" (incl. corrections) —
+                // replayWeightedPurchase whitelists its item fields, so this
+                // never reaches the endpoint.
+                'text'         => mb_substr(trim((string) ($l['text'] ?? '')), 0, 80),
+            ];
+        }
+        return $out ?: null;
+    }
+
+    /**
+     * Weighings read off the chat whose product we could not name. Each keeps
+     * its own text and quantity so the chip question can quote the message
+     * exactly as the butcher wrote it.
+     *
+     * @return array<int, array{text:string, quantity:float}>|null
+     */
+    private function cleanUnplaced($raw): ?array
+    {
+        if (!is_array($raw) || empty($raw)) {
+            return null;
+        }
+        $out = [];
+        foreach ($raw as $u) {
+            $qty = round((float) ($u['quantity'] ?? 0), 3);
+            $txt = trim((string) ($u['text'] ?? ''));
+            if ($qty > 0 && $txt !== '') {
+                $out[] = ['text' => mb_substr($txt, 0, 80), 'quantity' => $qty];
+            }
+        }
+        return $out ?: null;
     }
 
     /**
@@ -729,7 +1067,14 @@ class AssistantDraftService
         // re-locks and re-validates LIVE balances at confirm: a stale card can
         // reject, but it can never double-pay or mis-post.
         // Other money-moving cards keep the short TTL — their numbers ARE the draft.
-        $ttl = in_array($type, ['payment_proof', 'shop_payment'], true)
+        // ⭐ A card RAISED FROM A BANK SMS gets the same long TTL, for the same
+        // reason: nobody typed it, so nobody is standing there to confirm it.
+        // An auto-raised card on a 15-minute clock would expire before Taimur
+        // next looked at his phone, bounce its SMS back to the money box, and
+        // raise itself again — a loop that looks like the feature not working.
+        // Equally safe: an SMS card's numbers come from the bank and cannot go
+        // stale, and recordPayment re-checks the live balance at confirm.
+        $ttl = in_array($type, ['payment_proof', 'shop_payment'], true) || !empty($payload['_from_sms'])
             ? (int) config('assistant.proof_draft_ttl_minutes', 1440)
             : (int) config('assistant.draft_ttl_minutes', 15);
 
@@ -769,7 +1114,11 @@ class AssistantDraftService
 
         $note = 'NOTHING has been recorded yet. The user now sees a confirmation card and must tap Confirm. Tell them what you have prepared and that it is waiting for their confirmation — do NOT say it is saved, paid or recorded.';
         if (!empty($payload['_pending_choice'])) {
-            $note = 'NOTHING has been recorded yet. The card is on screen with BANK BUTTONS — the user must first tap which bank it went from, then tap Confirm. Tell them to pick the bank on the card. Do NOT list the banks in text and do NOT say it is saved.';
+            // Two different questions can occupy this slot now, so tell the
+            // model which one it is rather than always saying "bank".
+            $note = ($payload['_pending_choice']['field'] ?? null) === '_drop_transfer'
+                ? 'NOTHING has been recorded yet. These transfers total MORE than we owe this vendor, so the card is on screen with a chip per transfer — the user must first drop any that are already recorded, then tap Confirm. Tell them that in one sentence. Do NOT list the transfers in text and do NOT say it is saved.'
+                : 'NOTHING has been recorded yet. The card is on screen with BANK BUTTONS — the user must first tap which bank it went from, then tap Confirm. Tell them to pick the bank on the card. Do NOT list the banks in text and do NOT say it is saved.';
         }
 
         return [
@@ -812,10 +1161,86 @@ class AssistantDraftService
 
         $payload = json_decode($draft->payload_json, true) ?: [];
 
-        // A card still waiting on its bank buttons is not confirmable — the
-        // whole point of the picker is that the money can't move without a bank.
+        // A card still waiting on a choice is not confirmable — the whole point
+        // of a picker is that the money can't move until it is answered. The
+        // message comes from the card's OWN question: it is not always the bank
+        // one any more (a clubbed card can be asking which transfers to drop),
+        // and telling someone to "pick a bank" that isn't on screen is worse
+        // than saying nothing.
         if (!empty($payload['_pending_choice'])) {
-            return ['ok' => false, 'message' => 'Pick which bank it went from first — the options are on the card.'];
+            $label = trim((string) ($payload['_pending_choice']['label'] ?? ''));
+            return ['ok' => false, 'message' => $label !== ''
+                ? $label . ' — the options are on the card.'
+                : 'Answer the question on the card first.'];
+        }
+
+        // Read the batch BEFORE the underscore strip below eats it — it is card
+        // metadata (never a form field), but the commit genuinely needs it.
+        $transfers = $this->cleanTransfers($payload['_transfers'] ?? null);
+        $rawPayload = $payload;   // weighed purchase lines are read from here too
+
+        // ⚠⚠ LAST LOOK BEFORE MONEY MOVES: was one of these transfers recorded
+        // BY HAND while the card sat waiting? SMS-raised cards live for a day,
+        // and Taimur sometimes enters a payment on the web in between. Only
+        // rows created AFTER this card was raised are considered — anything
+        // older was already handled at ingest (no card is raised for a debit
+        // that is already on the books), so the two guards split time cleanly
+        // and an old same-amount row can never falsely trip this one.
+        if ($draft->type === 'vendor_payment' && !empty($payload['_from_sms'])) {
+            $already = $this->transferRecordedSinceDraft($draft, $payload, $transfers);
+            if ($already !== null) {
+                if ($transfers) {
+                    // Take that transfer off the card; the card rebuilds around
+                    // the rest.
+                    $dropped = $this->dropTransfer($draft, $payload, (int) $already['sms_id'], $user);
+                    // File the SMS against the row that already records it, HERE
+                    // and not "when the sweep next runs" — the rebuilt card may
+                    // be confirmed seconds later, and an unclaimed row lying
+                    // around would trip this same guard again on a transfer that
+                    // is genuinely fine. (Same close the sweep would write, with
+                    // the same Restore path if it is ever wrong.)
+                    if (($dropped['ok'] ?? false) && !empty($already['ledger_id'])) {
+                        DB::table('t_ai_bank_sms')->where('id', (int) $already['sms_id'])
+                            ->where('status', 'new')
+                            ->update([
+                                'status'           => 'recorded',
+                                'auto_reason'      => 'already_recorded',
+                                'linked_ledger_id' => (int) $already['ledger_id'],
+                                'updated_at'       => now(),
+                            ]);
+                    }
+                    return [
+                        'ok' => false,
+                        'message' => 'Rs ' . number_format($already['amount'], 0)
+                            . ($already['reference'] ? ' (TID ' . $already['reference'] . ')' : '')
+                            . ' was already recorded — I took it off the card and filed it. '
+                            . ($dropped['ok'] ? 'Confirm the new card below for the rest.' : $dropped['message']),
+                        'draft_id' => $dropped['draft_id'] ?? null,
+                    ];
+                }
+
+                // A single-payment card whose one transfer is already recorded
+                // has nothing left to do: retire the card and file the SMS in
+                // one move, instead of telling the user to go do both by hand.
+                DB::table('t_ai_drafts')->where('id', $draftId)->update([
+                    'status' => 'cancelled', 'cancelled_at' => now(),
+                    'error' => 'Already recorded by hand after the card was raised.',
+                    'updated_at' => now(),
+                ]);
+                DB::table('t_ai_bank_sms')->where('linked_draft_id', $draftId)
+                    ->where('status', 'recorded')
+                    ->update([
+                        'auto_reason'      => 'already_recorded',
+                        'linked_draft_id'  => null,
+                        'linked_ledger_id' => (int) ($already['ledger_id'] ?? 0) ?: null,
+                        'updated_at'       => now(),
+                    ]);
+                return [
+                    'ok' => false,
+                    'message' => 'This payment was already recorded after the card was raised — '
+                        . 'I removed the card and filed the bank SMS against that entry. Nothing to confirm.',
+                ];
+            }
         }
 
         // Underscore-prefixed keys are card metadata, never form fields.
@@ -824,8 +1249,12 @@ class AssistantDraftService
         try {
             $result = match ($draft->type) {
                 'expense'         => $this->replayExpense($payload, $user),
-                'vendor_payment'  => $this->replayVendorPayment($payload, $user),
-                'vendor_purchase' => $this->replayVendorPurchase($payload, $user),
+                'vendor_payment'  => $transfers
+                    ? $this->replayVendorPaymentBatch($payload, $transfers, $user)
+                    : $this->replayVendorPayment($payload, $user),
+                'vendor_purchase' => ($purchaseLines = $this->cleanPurchaseLines($rawPayload['_lines'] ?? null))
+                    ? $this->replayWeightedPurchase($payload, $purchaseLines, $user)
+                    : $this->replayVendorPurchase($payload, $user),
                 'payment_proof'   => $this->replayPaymentProof($payload, $user),
                 'shop_payment'    => $this->replayShopPayment($payload, $user),
                 'account_transfer' => $this->replayAccountTransfer($payload, $user),
@@ -872,6 +1301,49 @@ class AssistantDraftService
                     'linked_signal_id' => $result['result_id'],
                     'updated_at'       => now(),
                 ]);
+        }
+
+        // ⭐ A CONFIRMED purchase is the assistant's lesson — twice over. Only on
+        // confirm: a card he cancels is not an endorsement.
+        //   • The GROUP belongs to that vendor (teachVendor upserts on the key,
+        //     so confirming a re-asked group also RE-teaches a wrong one), and
+        //   • every line's chat word means the product he confirmed it as —
+        //     chip placements ("Chakki" → a product) and corrections (he moved
+        //     an auto-placed line to another product) both land as per-vendor
+        //     WAPROD aliases, so next time the word places itself.
+        if ($draft->type === 'vendor_purchase') {
+            try {
+                $svc = app(PurchaseLogService::class);
+                if (!empty($rawPayload['_group_title'])) {
+                    $svc->teachVendor(
+                        (string) $rawPayload['_group_title'],
+                        (int) ($rawPayload['vendor_id'] ?? 0),
+                        $user ? (int) $user->id : null
+                    );
+                }
+                if (!empty($rawPayload['_lines']) && is_array($rawPayload['_lines'])) {
+                    $svc->teachProductAliases(
+                        (int) ($rawPayload['vendor_id'] ?? 0),
+                        $rawPayload['_lines'],
+                        $user ? (int) $user->id : null
+                    );
+                }
+            } catch (\Throwable $e) {
+                Log::warning('[purchaseLogTeach] ' . $e->getMessage(), ['draft' => $draftId]);
+            }
+        }
+
+        // ⭐ Stamp the ledger row onto the bank SMS that proves it, so "what was
+        // tagged to what" stays answerable — and so the money-inbox sweep counts
+        // that row as CLAIMED and can never hand it to a look-alike debit.
+        // Only fills a BLANK: a clubbed confirm has already given each SMS its
+        // own row, and overwriting those with the batch's first id would flatten
+        // exactly the detail this exists to keep.
+        if (($result['result_type'] ?? null) === 'ledger' && !empty($result['result_id'])) {
+            DB::table('t_ai_bank_sms')
+                ->where('linked_draft_id', $draftId)
+                ->whereNull('linked_ledger_id')
+                ->update(['linked_ledger_id' => $result['result_id'], 'updated_at' => now()]);
         }
 
         // A payment recorded from CHAT usually has a bank SMS for the very same
@@ -921,6 +1393,10 @@ class AssistantDraftService
      *     so ambiguity does nothing and the rows stay in the inbox for the
      *     human. Widening the window therefore fails safe: more ambiguity means
      *     more no-ops, never more wrong guesses.
+     *   • ⚠ and (Aug-2026) an SMS whose account is TAUGHT to a different vendor
+     *     is not a candidate at all, however well the numbers line up — the same
+     *     identity rule the money-inbox sweep now applies. Paying Jilani must
+     *     never adopt the SMS for a transfer to Imran Qureshi.
      */
     private function adoptMatchingSms(int $draftId, string $draftType, array $payload, $user): void
     {
@@ -955,8 +1431,15 @@ class AssistantDraftService
                 ->whereRaw('ABS(COALESCE(amount,0) - ?) <= 1', [$amount])
                 ->where('sms_at', '>=', $anchor->copy()->subDay()->startOfDay())
                 ->where('sms_at', '<=', $anchor->copy()->addDay()->endOfDay())
-                ->limit(2)
-                ->get(['id']);
+                ->limit(5)
+                ->get(['id', 'counterparty_account']);
+
+            // Drop any SMS that a taught account key assigns to somebody else.
+            // (Filtered here rather than in SQL so the exactly-one test below is
+            // made on what actually qualifies — the limit is raised to match.)
+            $candidates = $candidates->reject(
+                fn($c) => $this->smsBelongsElsewhere($c->counterparty_account ?? null, $draftType, $payload)
+            )->values();
 
             if ($candidates->count() !== 1) {
                 return;
@@ -970,6 +1453,34 @@ class AssistantDraftService
         } catch (\Throwable $e) {
             // Housekeeping only — a failure here must never affect the confirm.
             Log::warning('[adoptMatchingSms] ' . $e->getMessage(), ['draft' => $draftId]);
+        }
+    }
+
+    /**
+     * Is this SMS's counterparty account taught to someone OTHER than the party
+     * this draft pays? True only when both sides are known and they disagree —
+     * an untaught account, or a draft with no counterparty identity (an
+     * expense), can never be proven wrong and so is never rejected here.
+     */
+    private function smsBelongsElsewhere(?string $accountKey, string $draftType, array $payload): bool
+    {
+        if (!$accountKey) {
+            return false;
+        }
+        try {
+            $rule = app(SmsCounterpartyMap::class)->byAccount($accountKey);
+            if (!$rule || empty($rule->entity_id)) {
+                return false;
+            }
+            if ($draftType === 'vendor_payment' && $rule->entity_type === 'vendor') {
+                return (int) $rule->entity_id !== (int) ($payload['vendor_id'] ?? 0);
+            }
+            if ($draftType === 'account_transfer' && $rule->entity_type === 'account') {
+                return (int) $rule->entity_id !== (int) ($payload['to_account_id'] ?? 0);
+            }
+            return false;
+        } catch (\Throwable $e) {
+            return false; // a check that cannot run must not block an adoption
         }
     }
 
@@ -1056,6 +1567,16 @@ class AssistantDraftService
             return ['ok' => false, 'message' => 'That is not one of the options on this card.'];
         }
 
+        // Dropping a transfer off a clubbed card is not "filling in a field" —
+        // it rebuilds the card around a smaller set. Handled apart from the
+        // bank picker below, which answers a question once and is done.
+        if (($choice['field'] ?? null) === '_drop_transfer') {
+            return $this->dropTransfer($draft, $payload, (int) $optionId, $user);
+        }
+        if (($choice['field'] ?? null) === '_place_line') {
+            return $this->placeLine($draft, $payload, (int) $optionId, $user);
+        }
+
         $payload[$choice['field']] = (int) $picked['id'];
         unset($payload['_pending_choice']);
 
@@ -1080,6 +1601,202 @@ class AssistantDraftService
         ]);
 
         return ['ok' => true, 'message' => $picked['name'] . ' selected — tap Confirm to record it.'];
+    }
+
+    /**
+     * Take one transfer off a clubbed card and rebuild it around the rest.
+     *
+     * The dropped transfer is not discarded — its bank SMS goes back to the
+     * money box as unsorted, because "not on this card" is not the same as
+     * "handled". If it was already recorded by hand, the inbox sweep closes it
+     * there on its own; if it wasn't, it keeps asking.
+     *
+     * ⭐ Rebuilt by calling draftVendorPayment() again rather than by editing
+     * this card in place: the total, the per-transfer rows, the outstanding
+     * line and the question of whether a picker is still needed all follow from
+     * the same code that built it the first time. Patching the JSON by hand
+     * would be a second, quietly diverging version of every one of those rules.
+     */
+    private function dropTransfer(object $draft, array $payload, int $smsId, $user): array
+    {
+        $transfers = $payload['_transfers'] ?? [];
+        $keep = array_values(array_filter($transfers, fn($t) => (int) ($t['sms_id'] ?? 0) !== $smsId));
+
+        if (count($keep) === count($transfers)) {
+            return ['ok' => false, 'message' => 'That transfer is not on this card.'];
+        }
+        if (empty($keep)) {
+            return ['ok' => false, 'message' => 'That would leave nothing to record — cancel the card instead.'];
+        }
+
+        // Release it BEFORE rebuilding: store() re-points the surviving SMS rows
+        // onto the new card, and this one must not be among them.
+        DB::table('t_ai_bank_sms')->where('id', $smsId)->where('linked_draft_id', $draft->id)
+            ->update(['status' => 'new', 'linked_draft_id' => null, 'auto_reason' => null, 'updated_at' => now()]);
+
+        $rebuilt = $this->draftVendorPayment([
+            'vendor_id'                 => (int) ($payload['vendor_id'] ?? 0),
+            'payment_source_account_id' => $payload['payment_source_account_id'] ?? null,
+            'receiving_account_id'      => $payload['receiving_account_id'] ?? null,
+            'transaction_date'          => $payload['transaction_date'] ?? null,
+            'description'               => $payload['description'] ?? null,
+            '_from_sms'                 => true,
+            // One survivor is an ordinary single payment, and cleanTransfers()
+            // collapses it to exactly that.
+            '_transfers'                => $keep,
+            'amount'                    => count($keep) === 1 ? (float) $keep[0]['amount'] : null,
+            'replaces_draft_id'         => (int) $draft->id,
+        ], $user);
+
+        if (!empty($rebuilt['error'])) {
+            // Put the transfer back so the card is never left short of a
+            // transfer that is also no longer in the money box.
+            DB::table('t_ai_bank_sms')->where('id', $smsId)
+                ->update(['status' => 'recorded', 'linked_draft_id' => $draft->id, 'updated_at' => now()]);
+            return ['ok' => false, 'message' => $rebuilt['error']];
+        }
+
+        $left = count($keep);
+        return [
+            'ok' => true,
+            'message' => 'Dropped — it is back in your money box. '
+                . ($left === 1 ? 'One transfer' : $left . ' transfers')
+                . ' left on the card.',
+            'draft_id' => $rebuilt['draft_id'] ?? null,
+        ];
+    }
+
+    /**
+     * The first transfer on this card that a ledger row created AFTER the card
+     * already records — or null. Vendor-scoped, sweep bounds (bank + amount ±1 +
+     * date ±1), unclaimed rows only. For a single-payment card the payload
+     * itself is treated as the one transfer.
+     *
+     * @return array{sms_id:int, amount:float, reference:?string}|null
+     */
+    private function transferRecordedSinceDraft(object $draft, array $payload, ?array $transfers): ?array
+    {
+        try {
+            $vendorAccount = DB::table('t_fin_vendors')
+                ->where('id', (int) ($payload['vendor_id'] ?? 0))->value('account_id');
+            $bankId = (int) ($payload['receiving_account_id'] ?? 0);
+            if (!$vendorAccount || !$bankId) {
+                return null; // cannot scope — never block a confirm on a guess
+            }
+
+            $probe = $transfers ?: [[
+                'sms_id'    => 0,
+                'amount'    => (float) ($payload['amount'] ?? 0),
+                'reference' => null,
+                'date'      => $payload['transaction_date'] ?? null,
+            ]];
+
+            $matched = []; // ledger ids already used by an earlier transfer in this loop
+            foreach ($probe as $t) {
+                $day = $t['date'] ?? ($payload['transaction_date'] ?? now()->toDateString());
+                $row = DB::table('t_fin_ledger as l')
+                    ->where('l.transaction_type', 'vendor_payment')
+                    ->where('l.to_account_id', $vendorAccount)
+                    ->where('l.mode', 'online')
+                    ->whereNotIn('l.approval_status', ['rejected', 'reversed'])
+                    ->where('l.receiving_account_id', $bankId)
+                    ->whereRaw('ABS(l.amount - ?) <= 1', [(float) $t['amount']])
+                    ->whereRaw('ABS(DATEDIFF(l.transaction_date, ?)) <= 1', [$day])
+                    ->where('l.created_at', '>=', $draft->created_at)
+                    ->whereNotExists(function ($s) {
+                        $s->select(DB::raw(1))->from('t_ai_bank_sms as b')
+                          ->whereColumn('b.linked_ledger_id', 'l.id');
+                    })
+                    ->when($matched, fn($q) => $q->whereNotIn('l.id', $matched))
+                    ->value('l.id');
+
+                if ($row) {
+                    // N identical transfers vs M new rows: each row excuses ONE
+                    // transfer, exactly like the sweep's count-pairing.
+                    $matched[] = $row;
+                    return [
+                        'sms_id'    => (int) ($t['sms_id'] ?? 0),
+                        'amount'    => (float) $t['amount'],
+                        'reference' => $t['reference'] ?? null,
+                        'ledger_id' => (int) $row,
+                    ];
+                }
+            }
+        } catch (\Throwable $e) {
+            Log::warning('[transferRecordedSinceDraft] ' . $e->getMessage(), ['draft' => $draft->id]);
+        }
+        return null;
+    }
+
+    /**
+     * Answer "what was this weighing?" — put the unplaced line onto a product
+     * (or drop it) and rebuild the card around the result.
+     *
+     * Rebuilt by calling draftVendorPurchase() again rather than patching the
+     * JSON: the total, the line rows, the rate flags and whether another
+     * question is still owed all follow from the one place that computes them.
+     * If more unplaced weighings remain, the new card simply asks the next.
+     */
+    private function placeLine(object $draft, array $payload, int $productId, $user): array
+    {
+        $unplaced = $payload['_unplaced'] ?? [];
+        if (empty($unplaced)) {
+            return ['ok' => false, 'message' => 'Nothing on this card is waiting to be identified.'];
+        }
+        $target = array_shift($unplaced);   // always the one the chips asked about
+        $lines  = $payload['_lines'] ?? [];
+
+        if ($productId > 0) {
+            $product = DB::table('t_fin_vendor_products')
+                ->where('id', $productId)
+                ->where('vendor_id', (int) ($payload['vendor_id'] ?? 0))
+                ->first(['id', 'product_name', 'unit', 'rate_per_unit']);
+            // ⚠ The product must belong to THIS vendor — vendor catalogues are
+            // per-vendor, and a chip id from a stale card must never price a
+            // line off another vendor's list.
+            if (!$product) {
+                return ['ok' => false, 'message' => 'That product is not on this vendor\'s list.'];
+            }
+            $svc  = app(PurchaseLogService::class);
+            $rate = $svc->rateFor($product);
+            if ($rate <= 0) {
+                return ['ok' => false, 'message' => 'That product has no rate yet — set one on the vendor screen first.'];
+            }
+            $lines[] = [
+                'product_id'   => (int) $product->id,
+                'product_name' => $product->product_name,
+                'unit'         => $product->unit,
+                'quantity'     => (float) $target['quantity'],
+                'rate'         => $rate,
+                'rate_varies'  => $svc->rateSourceFor($product)['varies'] ?? false,
+                // What the butcher wrote — a chip tap here IS a placement the
+                // confirm will learn from (WAPROD alias), so next time the same
+                // word places itself.
+                'text'         => (string) ($target['text'] ?? ''),
+            ];
+        }
+
+        $rebuilt = $this->draftVendorPurchase([
+            'vendor_id'         => (int) ($payload['vendor_id'] ?? 0),
+            'transaction_date'  => $payload['transaction_date'] ?? null,
+            'description'       => $payload['description'] ?? null,
+            'group_title'       => $payload['_group_title'] ?? null,
+            '_lines'            => $lines,
+            '_unplaced'         => $unplaced,
+            'replaces_draft_id' => (int) $draft->id,
+        ], $user);
+
+        if (!empty($rebuilt['error'])) {
+            return ['ok' => false, 'message' => $rebuilt['error']];
+        }
+
+        $left = count($unplaced);
+        return [
+            'ok' => true,
+            'message' => ($productId > 0 ? 'Added to the card.' : 'Skipped that line.')
+                . ($left ? ' ' . $left . ' more to identify.' : ' Nothing left to identify — tap Confirm.'),
+            'draft_id' => $rebuilt['draft_id'] ?? null,
+        ];
     }
 
     public function cancel(int $draftId, $user): array
@@ -1206,6 +1923,163 @@ class AssistantDraftService
         return [
             'ok' => true,
             'message' => $data['message'] ?? 'Payment recorded.',
+            'result_type' => 'ledger',
+            'result_id' => $data['transaction_id'] ?? $data['ledger_id'] ?? null,
+            'result_json' => $data,
+        ];
+    }
+
+    /**
+     * Commit a CLUBBED vendor card: one ledger row per real bank transfer.
+     *
+     * ⭐⭐ ONE ROW PER TRANSFER, not one merged row (owner ruling). Four RAAST
+     * transfers of Rs 150,000 are four movements the bank can show you; the
+     * khata reading as a single Rs 600,000 line would be a story we invented.
+     * Each row is also stamped back onto the SMS that proves it, which is what
+     * makes "what was tagged to what" answerable later — and what stops the
+     * money-inbox sweep from re-claiming those rows for some other look-alike.
+     *
+     * ⚠⚠ ALL OR NOTHING. Posted inside one transaction: a batch that fails on
+     * the third transfer must not leave two recorded and a card that still says
+     * three. The vendor balance is also checked against the TOTAL before any
+     * row is written, because the endpoint caps each payment individually — pay
+     * 150k against a 179k balance and the second call would fail on its own.
+     * Failing early with a clear sentence beats failing halfway.
+     */
+    private function replayVendorPaymentBatch(array $payload, array $transfers, $user): array
+    {
+        $vendorId = (int) ($payload['vendor_id'] ?? 0);
+        $total    = round(array_sum(array_column($transfers, 'amount')), 2);
+
+        $vendor = DB::table('t_fin_vendors as v')
+            ->leftJoin('t_fin_accounts as a', 'a.id', '=', 'v.account_id')
+            ->where('v.id', $vendorId)
+            ->first(['v.vendor_name', 'a.current_balance']);
+        if (!$vendor) {
+            return ['ok' => false, 'message' => 'That vendor no longer exists.'];
+        }
+
+        $balance = round((float) ($vendor->current_balance ?? 0), 2);
+        if ($total > $balance) {
+            return ['ok' => false, 'message' => 'These ' . count($transfers) . ' transfers total Rs '
+                . number_format($total, 0) . ', but we only owe ' . $vendor->vendor_name
+                . ' Rs ' . number_format($balance, 0)
+                . '. Record the purchases first, then confirm this card again.'];
+        }
+
+        try {
+            $posted = DB::transaction(function () use ($payload, $transfers, $user) {
+                $rows = [];
+                foreach ($transfers as $i => $t) {
+                    $one = $payload;
+                    $one['amount'] = $t['amount'];
+                    if (!empty($t['date'])) {
+                        $one['transaction_date'] = $t['date'];
+                    }
+                    // Keep each row individually identifiable in the khata.
+                    if (!empty($t['reference'])) {
+                        $one['description'] = trim(($payload['description'] ?? '') . ' · ref ' . $t['reference']);
+                    }
+
+                    $r = $this->replayVendorPayment($one, $user);
+                    if (!($r['ok'] ?? false)) {
+                        // Abort the whole night — see the all-or-nothing note.
+                        throw new \RuntimeException(
+                            'Transfer ' . ($i + 1) . ' of ' . count($transfers) . ' was refused: '
+                            . ($r['message'] ?? 'rejected') . ' — nothing was recorded.'
+                        );
+                    }
+                    $rows[] = ['sms_id' => $t['sms_id'], 'ledger_id' => $r['result_id'] ?? null];
+                }
+
+                // Stamp each ledger row onto its own SMS: the audit trail, and
+                // the claim that stops reconcileRecordedDebits handing that row
+                // to a different look-alike debit later.
+                foreach ($rows as $row) {
+                    if ($row['ledger_id']) {
+                        DB::table('t_ai_bank_sms')->where('id', $row['sms_id'])
+                            ->update(['linked_ledger_id' => $row['ledger_id'], 'updated_at' => now()]);
+                    }
+                }
+                return $rows;
+            });
+        } catch (\RuntimeException $e) {
+            return ['ok' => false, 'message' => $e->getMessage()];
+        }
+
+        $ids = array_values(array_filter(array_column($posted, 'ledger_id')));
+
+        return [
+            'ok' => true,
+            'message' => count($posted) . ' payments to ' . $vendor->vendor_name
+                . ' recorded (Rs ' . number_format($total, 0) . ').',
+            'result_type' => 'ledger',
+            // The first row keeps the existing single-id contract; the full set
+            // lives alongside it for anything that needs the whole batch.
+            'result_id'   => $ids[0] ?? null,
+            'result_json' => ['ledger_ids' => $ids, 'transfers' => count($posted), 'total' => $total],
+        ];
+    }
+
+    /**
+     * Commit a WEIGHED day — the WhatsApp purchase log.
+     *
+     * Goes through `VendorController::recordWeightedPurchase`, the same
+     * endpoint the Ledger Hub's weighted modal posts to, so the ledger row,
+     * the line items, the balance posting and the bill image are all produced
+     * by the existing money code rather than a second copy of it.
+     *
+     * ⚠ `items[].product_id` is a `t_fin_vendor_products` id (the vendor's own
+     * purchase catalogue). The customer-facing catalogue is a different table
+     * entirely and is not involved in a purchase.
+     */
+    private function replayWeightedPurchase(array $payload, array $lines, $user): array
+    {
+        $payload = $this->stampAssistant($payload);
+        $vendorId = (int) $payload['vendor_id'];
+
+        $items = array_map(fn($l) => [
+            'product_id'   => $l['product_id'],
+            'product_name' => $l['product_name'],
+            'quantity'     => $l['quantity'],
+            'unit'         => $l['unit'],
+            'rate'         => $l['rate'],
+        ], $lines);
+
+        $body = array_filter([
+            'items'             => $items,
+            'adjustment_amount' => 0,
+            'transaction_date'  => $payload['transaction_date'] ?? now()->toDateString(),
+            'description'       => $payload['description'] ?? null,
+        ], fn($v) => $v !== null);
+
+        // The screenshot travels as the bill image, exactly like a photographed
+        // bill on the vendor screen.
+        $files = $this->attachmentFiles($payload, 'bill_image');
+
+        $request = Request::create(
+            "/api/vendors/{$vendorId}/weighted-purchase",
+            'POST',
+            $body,
+            [], $files, ['HTTP_ACCEPT' => 'application/json']
+        );
+        $request->setUserResolver(fn() => $user);
+        $this->actAs($user);
+
+        $response = app(\App\Http\Controllers\FIN\VendorController::class)
+            ->recordWeightedPurchase($request, $vendorId);
+
+        $data = method_exists($response, 'getContent')
+            ? (json_decode($response->getContent(), true) ?: [])
+            : [];
+
+        if (($data['success'] ?? false) !== true) {
+            return ['ok' => false, 'message' => $data['message'] ?? 'The purchase was rejected.'];
+        }
+
+        return [
+            'ok' => true,
+            'message' => $data['message'] ?? (count($items) . ' weighings recorded.'),
             'result_type' => 'ledger',
             'result_id' => $data['transaction_id'] ?? $data['ledger_id'] ?? null,
             'result_json' => $data,

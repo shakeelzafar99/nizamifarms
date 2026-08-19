@@ -59,6 +59,55 @@ class AssistantToolRegistry
                 ],
             ],
             [
+                'name' => 'read_transfer_screenshot',
+                'description' => 'Identify a bank TRANSFER screenshot: which way the money went, and who the other side is. Call this whenever the user sends a transfer/receipt image, BEFORE deciding what to record — pass exactly what you can read off it. Returns direction (out = we paid someone, in = a customer paid us, unknown = you must ask) and, when the account is one we have been taught, the vendor/account it belongs to.',
+                'parameters' => [
+                    'type' => 'OBJECT',
+                    'properties' => [
+                        'receiver_account' => ['type' => 'STRING', 'description' => 'Beneficiary account exactly as shown, e.g. "**** ...4237" or "PK16FAYSxx564"'],
+                        'receiver_name'    => ['type' => 'STRING', 'description' => 'Beneficiary / "Transferred to" name'],
+                        'receiver_bank'    => ['type' => 'STRING', 'description' => 'Beneficiary bank if shown, e.g. "Meezan" or "myABL"'],
+                        'sender_account'   => ['type' => 'STRING', 'description' => 'From-account as shown, e.g. "**** ...4403"'],
+                        'sender_name'      => ['type' => 'STRING', 'description' => 'From-account holder name'],
+                    ],
+                    'required' => [],
+                ],
+            ],
+            [
+                'name' => 'read_purchase_log',
+                'description' => 'Read a WhatsApp PURCHASE LOG screenshot (a vendor group where the butcher posts each weighing, e.g. "Mutton 12.5", "Chakki . 650"). Call this when the image is a chat full of product+weight lines — NOT a bank transfer receipt. Pass the group title, participant names, and the lines grouped by the chat\'s own date separators. Returns, per day: the vendor, the priced lines ready to draft, whether that day is already recorded, and anything it could not place.',
+                'parameters' => [
+                    'type' => 'OBJECT',
+                    'properties' => [
+                        'group_title'  => ['type' => 'STRING', 'description' => 'Chat/group name at the top, e.g. "Taimoor Ali (Jilani Meat)"'],
+                        'participants' => ['type' => 'STRING', 'description' => 'Participant names under the title, comma separated'],
+                        'vendor_id'    => ['type' => 'INTEGER', 'description' => 'ONLY when the tool said it could not tell whose group this is and the user has ANSWERED: the vendor id from find_vendor. Never pass a guess — the user\'s answer is remembered for this group.'],
+                        'days' => [
+                            'type' => 'ARRAY',
+                            'description' => 'One entry per date separator in the screenshot, in order',
+                            'items' => [
+                                'type' => 'OBJECT',
+                                'properties' => [
+                                    'label' => ['type' => 'STRING', 'description' => 'The separator exactly as shown: "Saturday", "Yesterday", "Today", or a date'],
+                                    'lines' => [
+                                        'type' => 'ARRAY',
+                                        'description' => 'Every message under that separator, in order',
+                                        'items' => [
+                                            'type' => 'OBJECT',
+                                            'properties' => [
+                                                'text' => ['type' => 'STRING', 'description' => 'Message text, e.g. "Mutton 5.750" (a photo caption counts)'],
+                                                'time' => ['type' => 'STRING', 'description' => 'Time shown on the message, e.g. "9:15 am"'],
+                                            ],
+                                        ],
+                                    ],
+                                ],
+                            ],
+                        ],
+                    ],
+                    'required' => ['days'],
+                ],
+            ],
+            [
                 'name' => 'get_pending_draft',
                 'description' => 'Check whether the user already has a confirmation card waiting. Call this when the user says yes/ok/confirm/theek hai, or asks to CHANGE something on a card — the result gives you the exact details to re-draft from.',
                 'parameters' => ['type' => 'OBJECT', 'properties' => (object) []],
@@ -212,9 +261,37 @@ class AssistantToolRegistry
                     'type' => 'OBJECT',
                     'properties' => [
                         'vendor_id' => ['type' => 'INTEGER', 'description' => 'From find_vendor'],
-                        'amount' => ['type' => 'NUMBER', 'description' => 'Purchase amount in PKR'],
+                        'amount' => ['type' => 'NUMBER', 'description' => 'Purchase amount in PKR. For a weighed day pass the day\'s total from read_purchase_log — it is recomputed from _lines anyway.'],
                         'transaction_date' => ['type' => 'STRING', 'description' => 'YYYY-MM-DD. Omit for today.'],
                         'description' => ['type' => 'STRING', 'description' => 'Optional note, e.g. what was bought'],
+                        'group_title' => ['type' => 'STRING', 'description' => 'When drafting from a WhatsApp purchase log: the group title exactly as passed to read_purchase_log. On confirm the group is remembered as this vendor\'s.'],
+                        '_lines' => [
+                            'type' => 'ARRAY',
+                            'description' => 'Weighed lines from read_purchase_log, passed through EXACTLY as returned — one per weighing, never summed, each keeping its text.',
+                            'items' => [
+                                'type' => 'OBJECT',
+                                'properties' => [
+                                    'product_id'   => ['type' => 'INTEGER', 'description' => 'Vendor product id, exactly as read_purchase_log returned it'],
+                                    'product_name' => ['type' => 'STRING'],
+                                    'unit'         => ['type' => 'STRING'],
+                                    'quantity'     => ['type' => 'NUMBER'],
+                                    'rate'         => ['type' => 'NUMBER'],
+                                    'rate_varies'  => ['type' => 'BOOLEAN'],
+                                    'text'         => ['type' => 'STRING', 'description' => 'The chat message this line came from'],
+                                ],
+                            ],
+                        ],
+                        '_unplaced' => [
+                            'type' => 'ARRAY',
+                            'description' => 'Weighings read_purchase_log could not place, passed through as returned — the card asks about them with chips and cannot be confirmed until answered.',
+                            'items' => [
+                                'type' => 'OBJECT',
+                                'properties' => [
+                                    'text'     => ['type' => 'STRING'],
+                                    'quantity' => ['type' => 'NUMBER'],
+                                ],
+                            ],
+                        ],
                         'replaces_draft_id' => ['type' => 'INTEGER', 'description' => 'When CORRECTING a card the user already has, pass that draft_id from get_pending_draft — the old card is cancelled so it cannot be confirmed by mistake.'],
                     ],
                     'required' => ['vendor_id', 'amount'],
@@ -235,6 +312,8 @@ class AssistantToolRegistry
                 'get_context'          => $this->getContext($user),
                 'get_pending_draft'    => $this->getPendingDraft($user),
                 'find_vendor'          => $this->findVendor($args, $user),
+                'read_transfer_screenshot' => $this->readTransferScreenshot($args, $user),
+                'read_purchase_log'    => $this->readPurchaseLog($args, $user),
                 'find_customer'        => $this->findCustomer($args, $user),
                 'list_expenses'        => $this->listExpenses($args, $user),
                 'find_order'           => $this->findOrder($args, $user),
@@ -749,19 +828,284 @@ class AssistantToolRegistry
             ];
         }
 
+        // THREE different questions can live in the choice slot now — telling
+        // the model "bank buttons" while the card is asking which TRANSFERS to
+        // drop, or WHICH PRODUCT a weighing was, would have it instruct the
+        // user to tap a bank that isn't on screen.
+        $payload = json_decode($d->payload_json, true) ?: [];
+        $choice  = $payload['_pending_choice'] ?? null;
+        $choiceField = is_array($choice) ? ($choice['field'] ?? null) : null;
+
         return [
             'pending_draft' => [
                 'draft_id' => $d->id,
                 'type' => $d->type,
                 'summary' => $d->summary,
-                'details' => json_decode($d->payload_json, true),
-                'awaiting_bank_choice' => str_contains((string) $d->payload_json, '_pending_choice'),
+                'details' => $payload,
+                'awaiting_bank_choice' => $choice !== null && !in_array($choiceField, ['_drop_transfer', '_place_line'], true),
+                'awaiting_transfer_drop' => $choiceField === '_drop_transfer',
+                'awaiting_line_place' => $choiceField === '_place_line',
+                'pending_question' => is_array($choice) ? ($choice['label'] ?? null) : null,
             ],
-            'note' => 'A card IS waiting on screen. Confirmation happens by TAPPING the Confirm button on it — a chat "yes" does nothing. Tell the user to tap Confirm on the card (or pick the bank on it first if awaiting_bank_choice). To CHANGE something, call the draft tool again with the corrected details.',
+            'note' => 'A card IS waiting on screen. Confirmation happens by TAPPING the Confirm button on it — a chat "yes" does nothing. Tell the user to tap Confirm on the card; if awaiting_bank_choice, to pick the bank on it first; if awaiting_transfer_drop, that these transfers total more than we owe and they should first tap-drop any already recorded; if awaiting_line_place, the card is asking WHICH PRODUCT one weighing was — tell him to tap it on the card (pending_question is the exact ask), or if he ANSWERS in chat, re-draft via replaces_draft_id with that line moved from _unplaced into _lines keeping its text. To CHANGE something, call the draft tool again with the corrected details.',
         ];
     }
 
     // ── PREFERENCES (owner ruling: Taimur sets his own defaults) ─────────────
+
+    /**
+     * Read a transfer screenshot: which way, and who is the other side.
+     *
+     * The answer is deliberately shaped as an INSTRUCTION rather than raw data.
+     * The model's job here is to route — vendor payment, customer proof, or a
+     * question — and the one mistake that actually costs money is treating a
+     * customer's proof as a payment we made. So the direction is decided from
+     * our own bank registry, not from the model's reading, and 'unknown' says
+     * plainly that it must ask.
+     */
+    private function readTransferScreenshot(array $args, $user): array
+    {
+        $resolver = app(\App\Services\Assistant\ScreenshotPayeeResolver::class);
+
+        $recvAcct = trim((string) ($args['receiver_account'] ?? '')) ?: null;
+        $recvName = trim((string) ($args['receiver_name'] ?? '')) ?: null;
+        $recvBank = trim((string) ($args['receiver_bank'] ?? '')) ?: null;
+        $sendAcct = trim((string) ($args['sender_account'] ?? '')) ?: null;
+
+        $direction = $resolver->direction($recvAcct, $sendAcct, $recvName);
+
+        if ($direction === $resolver::DIR_IN) {
+            return [
+                'direction' => 'in',
+                'note' => 'Money came INTO our account — this is a CUSTOMER paying us, not a payment we made. '
+                        . 'Use find_customer then draft_payment_proof (or draft_shop_payment for a shop). '
+                        . 'NEVER draft a vendor payment from this.',
+            ];
+        }
+
+        if ($direction === $resolver::DIR_UNKNOWN) {
+            return [
+                'direction' => 'unknown',
+                'note' => 'I cannot tell from this whether the money went out or came in — neither side is an '
+                        . 'account of ours that I recognise. ASK the user in one short question whether they '
+                        . 'PAID someone or RECEIVED this, and do not draft anything until they answer.',
+            ];
+        }
+
+        // Money OUT — try to name the beneficiary.
+        $payee = $resolver->resolvePayee($recvAcct, $recvBank, $recvName);
+        if (!$payee) {
+            return [
+                'direction' => 'out',
+                'payee' => null,
+                'note' => 'Money went OUT of our account, but this beneficiary account is not one I have been '
+                        . 'taught. ASK who was paid. Once they tell you, draft it as usual — and afterwards the '
+                        . 'user can save the account against that vendor so it is recognised next time.',
+            ];
+        }
+
+        $out = [
+            'direction'   => 'out',
+            'payee'       => $payee,
+            'matched_by'  => $payee['how'],
+        ];
+
+        if ($payee['entity_type'] === 'vendor') {
+            $v = DB::table('t_fin_vendors as v')
+                ->leftJoin('t_fin_accounts as a', 'a.id', '=', 'v.account_id')
+                ->where('v.id', $payee['entity_id'])
+                ->first(['v.id', 'v.vendor_name', 'a.current_balance']);
+            $out['vendor_id'] = $v->id ?? null;
+            $out['vendor_name'] = $v->vendor_name ?? $payee['label'];
+            $out['outstanding'] = $v ? round((float) ($v->current_balance ?? 0), 0) : null;
+            $out['note'] = 'Money went OUT to ' . ($v->vendor_name ?? $payee['label'])
+                . ' — a vendor we know by this account. Draft the vendor payment with the amount and date you '
+                . 'read off the image, and SAY who you matched it to so the user can correct you. '
+                . 'Nothing is recorded until they tap Confirm.';
+        } elseif ($payee['entity_type'] === 'account') {
+            $out['to_account_id'] = $payee['entity_id'];
+            $out['note'] = 'Money went OUT to ' . $payee['label'] . ' — one of OUR OWN accounts, so this is a '
+                . 'transfer, not a payment. Use draft_account_transfer.';
+        } else { // expense category
+            $out['expense_category'] = $payee['label'];
+            $out['note'] = 'Money went OUT and this account is remembered as the expense category "'
+                . $payee['label'] . '". Draft the expense with that category and the amount/date from the image.';
+        }
+
+        return $out;
+    }
+
+    /**
+     * Read a WhatsApp purchase-log screenshot into ready-to-draft days.
+     *
+     * Returns instructions rather than raw data, because the mistakes that cost
+     * money here are all decisions: recording a day that is already on the
+     * books, or putting a day's meat on the wrong vendor's khata. So the tool
+     * resolves what it can prove and says plainly where it needs an answer.
+     */
+    private function readPurchaseLog(array $args, $user): array
+    {
+        $svc = app(\App\Services\Assistant\PurchaseLogService::class);
+
+        $title = trim((string) ($args['group_title'] ?? ''));
+        $participants = array_filter(array_map('trim',
+            explode(',', (string) ($args['participants'] ?? ''))));
+
+        // ⭐ HIS ANSWER BEATS EVERY GUESS — and every old lesson. When the group
+        // could not be recognised, the model asks and calls again with the
+        // vendor he named; when a group was mis-taught, this same path is how
+        // it gets corrected (confirm re-teaches the key to the new vendor).
+        $vendor = null;
+        $toldId = (int) ($args['vendor_id'] ?? 0);
+        if ($toldId > 0) {
+            $name = DB::table('t_fin_vendors')->where('id', $toldId)
+                ->where('is_active', 1)->value('vendor_name');
+            if (!$name) {
+                return ['error' => 'Vendor id ' . $toldId . ' does not exist — use find_vendor, never guess.'];
+            }
+            $vendor = ['vendor_id' => $toldId, 'vendor_name' => $name, 'how' => 'told'];
+        }
+
+        $vendor = $vendor ?: $svc->resolveVendor($title, $participants);
+        if (!$vendor) {
+            return [
+                'vendor' => null,
+                'note' => 'I cannot tell which vendor this group belongs to' . ($title !== '' ? ' ("' . $title . '")' : '')
+                    . '. ASK which vendor it is (find_vendor to get the id), then call this tool AGAIN with the '
+                    . 'same days PLUS vendor_id — after he confirms, the group is remembered for next time.',
+            ];
+        }
+
+        $out = [
+            'vendor' => ['id' => $vendor['vendor_id'], 'name' => $vendor['vendor_name'], 'matched_by' => $vendor['how']],
+            'days'   => [],
+        ];
+
+        foreach (($args['days'] ?? []) as $day) {
+            $label = (string) ($day['label'] ?? '');
+            $date  = $this->resolveLogDate($label);
+            if (!$date) {
+                $out['days'][] = ['label' => $label, 'date' => null, 'action' => 'ask_date',
+                    'note' => 'I could not work out the real date for "' . $label . '" — ask him which date it is.'];
+                continue;
+            }
+
+            $parsed = $svc->parseLines($vendor['vendor_id'], $day['lines'] ?? []);
+            if (empty($parsed['lines']) && empty($parsed['unknown'])) {
+                continue; // a separator with only chatter under it
+            }
+
+            $verdict = $svc->dedupeVerdict($vendor['vendor_id'], $date, $parsed['lines'], $parsed["unknown"]);
+            $total = round(array_sum(array_map(fn($l) => $l['quantity'] * $l['rate'], $parsed['lines'])), 2);
+
+            $entry = [
+                'label'    => $label,
+                'date'     => $date,
+                'lines'    => array_map(fn($l) => [
+                    'product_id'   => $l['product_id'],
+                    'product_name' => $l['product_name'],
+                    'unit'         => $l['unit'],
+                    'quantity'     => $l['quantity'],
+                    'rate'         => $l['rate'],
+                    'rate_varies'  => $l['rate_source']['varies'] ?? false,
+                    // The chat message itself — MUST travel into _lines so a
+                    // confirm can learn placements and corrections (WAPROD).
+                    'text'         => $l['text'] ?? '',
+                ], $parsed['lines']),
+                'total'    => $total,
+                'existing' => $verdict['existing'],
+            ];
+
+            // Anything whose product we could not place — chips, never a guess.
+            if (!empty($parsed['unknown'])) {
+                $entry['unplaced'] = $parsed['unknown'];
+                $entry['products'] = array_map(fn($p) => ['id' => (int) $p->id, 'name' => $p->product_name],
+                    $svc->vendorProducts($vendor['vendor_id']));
+            }
+
+            $entry['action'] = match ($verdict['verdict']) {
+                'skip'     => 'skip',
+                'ask_same' => 'ask',
+                'ask_near' => 'ask',
+                default    => 'draft',
+            };
+            $entry['note'] = match ($verdict['verdict']) {
+                'skip' => $date . ' is ALREADY recorded (Rs ' . number_format($verdict['existing']['amount'], 0)
+                        . ' · ' . $verdict['existing']['lines'] . ' lines). Do NOT draft it — say so in one short line. '
+                        . 'Only draft it if he explicitly says to add it anyway.',
+                'ask_same' => 'There is already a purchase for ' . $date . ' (Rs '
+                        . number_format($verdict['existing']['amount'], 0) . ' · ' . $verdict['existing']['summary']
+                        . ') but it looks DIFFERENT from this. ASK whether this is a second purchase that day or a correction — do not draft until he answers.',
+                'ask_near' => 'Nothing is recorded for ' . $date . ', but ' . $verdict['existing']['date']
+                        . ' has a similar purchase (Rs ' . number_format($verdict['existing']['amount'], 0)
+                        . ' · ' . $verdict['existing']['summary'] . '). ASK: same purchase, or a new day? Do not draft until he answers.',
+                default => 'Nothing like this is recorded. Draft it with draft_vendor_purchase, passing vendor_id, '
+                        . 'transaction_date = ' . $date . ', and _lines exactly as given here.',
+            };
+
+            $out['days'][] = $entry;
+        }
+
+        if (empty($out['days'])) {
+            $out['note'] = 'I could not find any weighings in that screenshot — ask him what it is.';
+            return $out;
+        }
+
+        $out['how_to_record'] = 'ONE card per day, oldest first. Each card is draft_vendor_purchase with _lines '
+            . 'passed through EXACTLY as given (never one summed amount — and keep each line\'s text), plus _unplaced '
+            . 'and group_title when present. Rates come from the vendor catalogue; a line marked rate_varies has been '
+            . 'bought at different prices before, so read it out and let him correct it — a reply like "cow brain 350" '
+            . 'means re-draft that card with the corrected rate via replaces_draft_id. If he says a LINE is the wrong '
+            . 'product ("chakki was mutton whole"), re-draft with that line\'s product corrected, keeping its text — '
+            . 'on confirm I learn what his word means for this vendor. The screenshot attaches itself.';
+        if ($vendor['how'] === 'name_match') {
+            $out['remember_group'] = 'This group was matched by NAME, not remembered. After he confirms the vendor is right, '
+                . 'you may tell him it will be recognised automatically next time.';
+        }
+        if ($vendor['how'] === 'told') {
+            $out['remember_group'] = 'Using the vendor HE named. Pass group_title on each draft — when he confirms, '
+                . 'this group is remembered as ' . $vendor['vendor_name'] . ' and will not be asked again.';
+        }
+
+        return $out;
+    }
+
+    /**
+     * A WhatsApp separator → a real date. The separators are RELATIVE to when
+     * the screenshot was taken, so "Yesterday" is only yesterday if he forwards
+     * it the same day — he is typically 1–3 days behind. Weekday names resolve
+     * to the most recent past occurrence; anything unrecognised returns null so
+     * the caller asks rather than invents a date for a stock entry.
+     */
+    private function resolveLogDate(string $label): ?string
+    {
+        $l = mb_strtolower(trim($label));
+        if ($l === '') {
+            return null;
+        }
+        if ($l === 'today')     return now()->toDateString();
+        if ($l === 'yesterday') return now()->subDay()->toDateString();
+
+        $days = ['sunday' => 0, 'monday' => 1, 'tuesday' => 2, 'wednesday' => 3,
+                 'thursday' => 4, 'friday' => 5, 'saturday' => 6];
+        foreach ($days as $name => $dow) {
+            if (str_contains($l, $name)) {
+                $d = now()->startOfDay();
+                for ($i = 1; $i <= 7; $i++) {          // most recent PAST occurrence
+                    $d = $d->copy()->subDay();
+                    if ((int) $d->dayOfWeek === $dow) {
+                        return $d->toDateString();
+                    }
+                }
+            }
+        }
+        try {
+            $parsed = \Illuminate\Support\Carbon::parse($label);
+            return $parsed->isFuture() ? null : $parsed->toDateString();
+        } catch (\Throwable $e) {
+            return null;
+        }
+    }
 
     private function setDefault(array $args, $user): array
     {
@@ -779,6 +1123,26 @@ class AssistantToolRegistry
         $value = trim((string) ($args['value'] ?? ''));
         if ($value === '') {
             return ['error' => 'No value given.'];
+        }
+
+        // ENUM preferences are settled first: they are not ids and would
+        // otherwise fall through to the account/business-unit resolvers below
+        // and be rejected as "no such account".
+        $enums = config('assistant.pref_enums', []);
+        if (isset($enums[$key])) {
+            $picked = strtolower(trim($value));
+            if (!in_array($picked, $enums[$key], true)) {
+                return ['error' => 'For ' . $key . ' use one of: ' . implode(', ', $enums[$key]) . '.'];
+            }
+            $prefs = $this->prefs($user->id);
+            $prefs[$key] = $picked;
+            DB::table('t_ai_user_prefs')->updateOrInsert(
+                ['user_id' => $user->id],
+                ['prefs_json' => json_encode($prefs), 'updated_at' => now()]
+            );
+            // `resolved_to` is what the settings endpoint echoes back as
+            // "Saved: …", so an enum must supply it like every other pref.
+            return ['saved' => true, 'key' => $key, 'value' => $picked, 'resolved_to' => $picked];
         }
 
         // Order matters: receiving keys also end in _account_id.

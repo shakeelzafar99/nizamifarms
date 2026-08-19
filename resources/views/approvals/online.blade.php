@@ -2069,6 +2069,26 @@ function buildProofPanelHtml(data) {
     </div>`;
     html += `<div style="display:inline-block; padding:3px 10px; border-radius:10px; font-size:12px; font-weight:600; background:${proof.color}1A; color:${proof.color}; border:1px solid ${proof.color}55; margin-bottom:14px;">${escapeHtml(proof.label || '')}</div>`;
 
+    // 🔀 Did this proof change hands? Shown only when it did — the ordinary
+    // case has no history and says nothing. On an approved invoice this is
+    // part of the record: "this credit was first read as someone else's, then
+    // the payer's own screenshot moved it here".
+    if (Array.isArray(data.moves) && data.moves.length) {
+        const rows = data.moves.map(m => {
+            const from = m.from ? escapeHtml(m.from) : 'held';
+            const to   = m.to   ? escapeHtml(m.to)   : 'held';
+            const why  = m.why ? ` <span style="color:#92400E;">· ${escapeHtml(String(m.why).replace(/_/g, ' '))}</span>` : '';
+            return `<div style="padding:3px 0; font-size:12.5px; color:#78350F;">
+                ${from} → <b>${to}</b>${why}
+                <span style="color:#A16207;"> · ${escapeHtml(m.by || 'system')} · ${escapeHtml(String(m.at).slice(0, 16))}</span>
+            </div>`;
+        }).join('');
+        html += `<div style="border:1px solid #FDE68A; background:#FFFBEB; border-radius:10px; padding:12px; margin-bottom:14px;">
+            <div style="font-weight:700; color:#92400E; margin-bottom:4px;">🔀 This payment moved ${data.moves.length === 1 ? 'once' : data.moves.length + ' times'}</div>
+            ${rows}
+        </div>`;
+    }
+
     // 🧩 Combined payment — one transfer covering several invoices. Show what it
     // covers and offer a one-click dismissal if the auto-match got it wrong.
     if (data.combined && data.combined.invoices && data.combined.invoices.length >= 2) {

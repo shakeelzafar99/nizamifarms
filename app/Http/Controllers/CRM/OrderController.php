@@ -437,7 +437,16 @@ class OrderController extends Controller
             $order->delivery_scanned_by_name = $order->delivery_scanned_by
                 ? (\DB::table('t_sys_user')->where('id', $order->delivery_scanned_by)->value('fullname') ?: null)
                 : null;
-            
+            // Aug-2026: the rider's scan now records WHICH packet indices he scanned (it used to keep
+            // only the time), and a short delivery names the manager who approved it. Both are null /
+            // 0 on staging orders and before the migration runs — the modal just omits those lines.
+            $order->delivery_scanned_count = $order->delivery_scanned_packets
+                ? count((array) json_decode($order->delivery_scanned_packets, true))
+                : 0;
+            $order->scan_bypass_decided_by_name = $order->scan_bypass_decided_by
+                ? (\DB::table('t_sys_user')->where('id', $order->scan_bypass_decided_by)->value('fullname') ?: null)
+                : null;
+
             // Get delivery location if order is delivered
             $deliveryLocation = null;
             if (in_array($order->order_status, ['delivered', 'completed'])) {
@@ -5849,6 +5858,54 @@ class OrderController extends Controller
     }
 
     /**
+     * Scan help (Aug-2026) — riders waiting for a manager to approve a short delivery, for the
+     * orders-page banner. Shares ScanHelpService with store mode so the two surfaces cannot drift.
+     *
+     * ⚠ The route for this is deliberately NOT /settings- or /config-shaped: the host's StackProtect
+     *   bot filter challenges those URLs before they reach Laravel, which is exactly why the
+     *   delivery-scan settings modal has been silently failing on prod. Both candidate paths were
+     *   curl-verified against prod (Laravel's own 404 = passes) before this code was written.
+     */
+    public function scanHelpPending()
+    {
+        try {
+            $svc = new \App\Services\Riders\ScanHelpService();
+            $canApprove = $svc->canApprove(auth()->user());
+            return response()->json([
+                'success'     => true,
+                'can_approve' => $canApprove,
+                'requests'    => $canApprove ? $svc->pending() : [],
+            ]);
+        } catch (\Exception $e) {
+            // A banner must never be able to break the page that polls it.
+            return response()->json(['success' => true, 'can_approve' => false, 'requests' => []]);
+        }
+    }
+
+    /**
+     * Scan help — approve or deny from the orders page. Authority is ScanHelpService::canApprove.
+     */
+    public function scanHelpDecide(Request $request)
+    {
+        try {
+            $res = (new \App\Services\Riders\ScanHelpService())->decide(
+                (int) $request->input('order_id'),
+                (string) $request->input('decision', ''),
+                auth()->user()
+            );
+            return response()->json([
+                'success' => $res['ok'],
+                'status'  => $res['status'] ?? null,
+                'code'    => $res['code'] ?? null,
+                'message' => $res['message'] ?? null,
+            ], $res['ok'] ? 200 : (($res['code'] ?? '') === 'forbidden' ? 403 : 422));
+        } catch (\Exception $e) {
+            \Log::error('scanHelpDecide (web) failed', ['error' => $e->getMessage()]);
+            return response()->json(['success' => false, 'message' => 'Could not save the decision'], 500);
+        }
+    }
+
+    /**
      * Phase 3 delivery-scan settings (orders-page operations toggle) — read the two flags.
      */
     public function getDeliveryScanSettings()
@@ -5871,11 +5928,14 @@ class OrderController extends Controller
     {
         try {
             // Manager-only: this switch gates riders' ability to mark orders delivered,
-            // so ordinary staff must not be able to flip it. Mirrors the role check used
-            // by saveOpenQuantitiesSettings.
+            // so ordinary staff must not be able to flip it.
+            // ⚠ Aug-2026: 'management' added — there is NO role literally named 'admin' in
+            //   t_sys_role (the admin roles are 'Management' and 'Taimur'), so the original
+            //   ['admin','taimur'] check silently matched ONLY Taimur and locked Shabib out of
+            //   his own settings modal. 'admin' kept in case such a role is ever created.
             $user = auth()->user();
             $isManager = $user && $user->roles()
-                ->whereRaw('LOWER(urole_name) IN (?, ?)', ['admin', 'taimur'])
+                ->whereRaw('LOWER(urole_name) IN (?, ?, ?)', ['admin', 'management', 'taimur'])
                 ->exists();
             if (!$isManager) {
                 return response()->json([

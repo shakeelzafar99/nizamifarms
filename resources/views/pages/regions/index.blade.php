@@ -65,6 +65,7 @@
     <button onclick="switchTab('regions')" id="tabRegions" style="padding:8px 16px;font-size:13px;font-weight:600;border:none;border-bottom:2px solid #2563eb;color:#2563eb;background:transparent;cursor:pointer;">Regions & Map</button>
     <button onclick="switchTab('areas')" id="tabAreas" style="padding:8px 16px;font-size:13px;font-weight:600;border:none;border-bottom:2px solid transparent;color:#6b7280;background:transparent;cursor:pointer;">Area Mapping</button>
     <button onclick="switchTab('riders')" id="tabRiders" style="padding:8px 16px;font-size:13px;font-weight:600;border:none;border-bottom:2px solid transparent;color:#6b7280;background:transparent;cursor:pointer;">Rider Assignments</button>
+    <button onclick="switchTab('suggestions')" id="tabSuggestions" style="padding:8px 16px;font-size:13px;font-weight:600;border:none;border-bottom:2px solid transparent;color:#6b7280;background:transparent;cursor:pointer;">Suggestions <span id="tabSuggestionsBadge" style="display:none;background:#4f46e5;color:#fff;border-radius:9999px;padding:1px 7px;font-size:11px;margin-left:4px;"></span></button>
   </div>
 
   <!-- === TAB: Regions & Map === -->
@@ -184,6 +185,64 @@
           <div class="p-4 text-center text-gray-400 text-sm">Loading...</div>
         </div>
       </div>
+    </div>
+  </div>
+
+  <!-- === TAB: Suggestions (batch-mate inference) === -->
+  <div id="panelSuggestions" class="hidden">
+    <div class="bg-indigo-50 border border-indigo-200 rounded-lg p-4 mb-4">
+      <p class="text-sm font-semibold text-indigo-900">Suggested regions from delivery batches</p>
+      <p class="text-xs text-indigo-700 mt-1 leading-relaxed">
+        For customers no GPS pin or geocode can place. Each suggestion counts the orders theirs went out with —
+        dispatched in the same batch (within {{ \App\Services\RegionSuggestionService::BATCH_GAP_MINUTES }} min)
+        or delivered on the same leg (within {{ \App\Services\RegionSuggestionService::DELIVERY_GAP_MINUTES }} min).
+        Only companions whose own region came from a verified pin or a person get a vote.
+        Qurbani orders are excluded.
+      </p>
+      <p class="text-xs text-indigo-700 mt-2">
+        Accuracy measured on customers whose true region is already known from their own verified pin:
+        <strong>unanimous with 3+ co-deliveries ≈ 97%</strong> ·
+        unanimous with only 1–2 ≈ 84% · strong ≈ 94% · moderate ≈ 88% ·
+        conflicted ≈ 47% (shown for context, never recommended).
+        “Select safe” picks only the first tier.
+      </p>
+    </div>
+
+    <div class="bg-white rounded-lg shadow-sm border">
+      <div class="p-3 border-b bg-gray-50 flex flex-wrap items-center justify-between gap-2">
+        <div class="flex items-center gap-2 flex-wrap">
+          <span class="text-sm font-medium text-gray-700">Unmapped customers</span>
+          <select id="sugMonths" onchange="loadSuggestions()" class="text-sm border-gray-300 rounded-md px-2 py-1">
+            <option value="3">Last 3 months</option>
+            <option value="6" selected>Last 6 months</option>
+            <option value="12">Last 12 months</option>
+          </select>
+          <span id="sugSummary" class="text-xs text-gray-500"></span>
+        </div>
+        <div class="flex gap-2">
+          <button onclick="selectSuggestions('unanimous')" title="Selects only unanimous suggestions backed by 3+ co-deliveries (~97% accurate). Thinner ones are left for you to review." style="background:#e5e7eb;color:#374151;padding:6px 12px;border-radius:6px;font-size:12px;font-weight:600;border:none;cursor:pointer;">Select safe (unanimous, 3+)</button>
+          <button onclick="selectSuggestions('none')" style="background:#e5e7eb;color:#374151;padding:6px 12px;border-radius:6px;font-size:12px;font-weight:600;border:none;cursor:pointer;">Clear</button>
+          <button onclick="applySuggestions()" id="btnApplySug" style="background:#4f46e5;color:#fff;padding:6px 16px;border-radius:6px;font-size:12px;font-weight:700;border:none;cursor:pointer;">Apply selected</button>
+        </div>
+      </div>
+      <div class="overflow-x-auto">
+        <table class="min-w-full divide-y divide-gray-200">
+          <thead class="bg-gray-50">
+            <tr>
+              <th class="px-3 py-2 w-8"><input type="checkbox" id="sugCheckAll" onchange="toggleAllSuggestions(this.checked)"></th>
+              <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Customer</th>
+              <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Orders</th>
+              <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Suggested</th>
+              <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Evidence (co-deliveries by region)</th>
+              <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Override</th>
+            </tr>
+          </thead>
+          <tbody id="sugTableBody" class="bg-white divide-y divide-gray-200 text-sm">
+            <tr><td colspan="6" class="p-6 text-center text-gray-400 text-sm">Loading...</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div id="sugEmpty" class="hidden text-center py-8 text-gray-400 text-sm">No unmapped customers with orders in this window.</div>
     </div>
   </div>
 </div>
@@ -995,13 +1054,165 @@ async function saveRegionFromModal() {
 
 // ===== TABS =====
 function switchTab(tab) {
-  ['regions','areas','riders'].forEach(t => {
+  ['regions','areas','riders','suggestions'].forEach(t => {
     document.getElementById('panel'+t.charAt(0).toUpperCase()+t.slice(1)).classList.toggle('hidden', t !== tab);
     const btn = document.getElementById('tab'+t.charAt(0).toUpperCase()+t.slice(1));
     btn.style.borderBottomColor = t === tab ? '#2563eb' : 'transparent';
     btn.style.color = t === tab ? '#2563eb' : '#6b7280';
   });
   if (tab === 'regions') setTimeout(() => map.invalidateSize(), 100);
+  if (tab === 'suggestions' && !suggestionsLoaded) loadSuggestions();
+}
+
+// ===== BATCH-MATE SUGGESTIONS =====
+let suggestionsLoaded = false;
+let suggestionRows = [];
+
+// Labels carry the measured accuracy so nobody has to guess how much to trust a row.
+const SUG_BADGE = {
+  unanimous:      {label: 'unanimous · ~97% right',        bg: '#dcfce7', fg: '#166534'},
+  unanimous_thin: {label: 'unanimous but thin · ~84%',     bg: '#fef3c7', fg: '#92400e'},
+  strong:         {label: 'strong · ~94%',                 bg: '#dbeafe', fg: '#1e40af'},
+  moderate:       {label: 'moderate · ~88%',               bg: '#fef3c7', fg: '#92400e'},
+  conflicted:     {label: 'conflicted · ~47%, check it',   bg: '#fee2e2', fg: '#991b1b'},
+  none:           {label: 'no evidence',                   bg: '#f3f4f6', fg: '#6b7280'},
+};
+
+async function loadSuggestions() {
+  const months = document.getElementById('sugMonths').value;
+  const body = document.getElementById('sugTableBody');
+  body.innerHTML = '<tr><td colspan="6" class="p-6 text-center text-gray-400 text-sm">Loading suggestions...</td></tr>';
+  document.getElementById('sugEmpty').classList.add('hidden');
+
+  try {
+    const d = await (await fetch(`/regions/suggestions?months=${months}`)).json();
+    if (!d.success) throw new Error(d.message || 'Failed to load');
+
+    suggestionsLoaded = true;
+    suggestionRows = d.suggestions || [];
+    renderSuggestions(d.summary);
+  } catch (e) {
+    body.innerHTML = `<tr><td colspan="6" class="p-6 text-center text-red-500 text-sm">Error: ${esc(e.message)}</td></tr>`;
+  }
+}
+
+function renderSuggestions(summary) {
+  const body = document.getElementById('sugTableBody');
+  const empty = document.getElementById('sugEmpty');
+
+  const s = summary || {};
+  document.getElementById('sugSummary').textContent =
+    `${s.candidates || 0} unmapped · ${s.unanimous || 0} unanimous · ${s.unanimous_thin || 0} thin · ${s.strong || 0} strong · ${s.moderate || 0} moderate · ${s.conflicted || 0} conflicted · ${s.no_evidence || 0} no evidence`;
+
+  // The badge counts only what is safe to apply in one click, so it never
+  // overstates how much work is genuinely ready to go.
+  const badge = document.getElementById('tabSuggestionsBadge');
+  const actionable = (s.unanimous || 0) + (s.strong || 0);
+  badge.style.display = actionable > 0 ? 'inline-block' : 'none';
+  badge.textContent = actionable;
+
+  if (!suggestionRows.length) {
+    body.innerHTML = '';
+    empty.classList.remove('hidden');
+    return;
+  }
+  empty.classList.add('hidden');
+
+  const regionOptions = regionsData
+    .filter(r => Number(r.is_active) === 1)
+    .map(r => `<option value="${r.id}">${esc(r.name)}</option>`).join('');
+
+  body.innerHTML = suggestionRows.map(r => {
+    const b = SUG_BADGE[r.confidence_label] || SUG_BADGE.none;
+    const pct = Math.round((r.confidence || 0) * 100);
+
+    const suggested = r.suggested
+      ? `<div style="font-weight:600;color:#111827;">${esc(r.suggested.region_name)}</div>
+         <div style="display:inline-block;margin-top:3px;background:${b.bg};color:${b.fg};border-radius:9999px;padding:1px 8px;font-size:11px;font-weight:600;">${b.label} · ${pct}%</div>`
+      : `<span style="color:#9ca3af;font-size:12px;">${b.label}</span>`;
+
+    // The vote split the owner asked to see: "10 with DHA 2, 2 with Islamabad".
+    const evidence = (r.breakdown || []).length
+      ? (r.breakdown || []).map((x, i) => `
+          <span title="${x.votes} co-delivered order(s) across ${x.trips} trip(s), ${x.customers} customer(s)"
+                style="display:inline-block;margin:1px 4px 1px 0;padding:2px 8px;border-radius:9999px;font-size:11px;font-weight:${i===0?'700':'500'};
+                       background:${i===0?'#eef2ff':'#f9fafb'};color:#374151;border:1px solid ${i===0?'#c7d2fe':'#e5e7eb'};">
+            <span style="display:inline-block;width:7px;height:7px;border-radius:50%;background:${x.color};margin-right:5px;"></span>
+            ${esc(x.region_name)} &times;${x.votes}
+            <span style="color:#9ca3af;">(${x.trips} trip${x.trips===1?'':'s'})</span>
+          </span>`).join('')
+      : '<span style="color:#9ca3af;font-size:12px;">never delivered alongside a confirmed customer</span>';
+
+    return `<tr data-cid="${r.customer_id}">
+      <td class="px-3 py-2 align-top"><input type="checkbox" class="sugCheck" value="${r.customer_id}" ${r.suggested ? '' : 'disabled'}></td>
+      <td class="px-3 py-2 align-top">
+        <div style="font-weight:600;color:#111827;">${esc(r.name)}</div>
+        <div style="font-size:11px;color:#6b7280;">${esc(r.address || '')}${r.city ? ' · ' + esc(r.city) : ''}</div>
+      </td>
+      <td class="px-3 py-2 align-top" style="font-size:12px;color:#4b5563;">${r.order_count}</td>
+      <td class="px-3 py-2 align-top">${suggested}</td>
+      <td class="px-3 py-2 align-top">${evidence}</td>
+      <td class="px-3 py-2 align-top">
+        <select onchange="overrideSuggestion(${r.customer_id}, this.value)" class="text-xs border-gray-300 rounded px-1 py-1">
+          <option value="">Set manually…</option>
+          ${regionOptions}
+        </select>
+      </td>
+    </tr>`;
+  }).join('');
+}
+
+function toggleAllSuggestions(checked) {
+  document.querySelectorAll('.sugCheck:not(:disabled)').forEach(c => c.checked = checked);
+}
+
+// Deliberately excludes 'unanimous_thin' (1-2 agreeing co-deliveries, ~84%).
+// Only the 3+-vote unanimous tier (~97%) is safe to wave through in bulk; the
+// thin ones stay for a human to look at one by one.
+function selectSuggestions(kind) {
+  document.getElementById('sugCheckAll').checked = false;
+  document.querySelectorAll('.sugCheck').forEach(c => {
+    if (kind === 'none') { c.checked = false; return; }
+    const row = suggestionRows.find(r => String(r.customer_id) === c.value);
+    c.checked = !c.disabled && !!row && row.confidence_label === 'unanimous';
+  });
+}
+
+async function applySuggestions() {
+  const ids = Array.from(document.querySelectorAll('.sugCheck:checked')).map(c => Number(c.value));
+  if (!ids.length) { alert('Select at least one suggestion to apply.'); return; }
+  if (!confirm(`Apply the suggested region to ${ids.length} customer(s)?\n\nThese stay put on a re-detect, but a later verified GPS pin will still correct them.`)) return;
+
+  const btn = document.getElementById('btnApplySug');
+  btn.disabled = true; btn.style.opacity = '0.6'; btn.textContent = 'Applying...';
+
+  try {
+    const d = await (await fetch('/regions/suggestions/apply', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json', 'X-CSRF-TOKEN': CSRF},
+      body: JSON.stringify({customer_ids: ids}),
+    })).json();
+
+    alert(d.message || (d.success ? 'Done' : 'Failed'));
+    if (d.success) { suggestionsLoaded = false; await loadSuggestions(); loadStats(); loadRegions(); }
+  } catch (e) {
+    alert('Error: ' + e.message);
+  } finally {
+    btn.disabled = false; btn.style.opacity = '1'; btn.textContent = 'Apply selected';
+  }
+}
+
+async function overrideSuggestion(customerId, regionId) {
+  if (!regionId) return;
+  try {
+    const d = await (await fetch('/regions/set-customer-region', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json', 'X-CSRF-TOKEN': CSRF},
+      body: JSON.stringify({customer_id: customerId, delivery_region_id: Number(regionId)}),
+    })).json();
+    if (d.success) { suggestionsLoaded = false; await loadSuggestions(); loadStats(); loadRegions(); }
+    else alert(d.message || 'Failed to set region');
+  } catch (e) { alert('Error: ' + e.message); }
 }
 
 function esc(s) { if(s==null)return''; const d=document.createElement('div'); d.textContent=s; return d.innerHTML; }

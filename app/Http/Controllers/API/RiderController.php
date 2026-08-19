@@ -842,6 +842,12 @@ class RiderController extends Controller
                 }
             );
 
+            // The pin moved, so the delivery region must follow it. Without this
+            // the region stays whatever it was first guessed at (often a Google
+            // city-centre geocode) for the life of the customer, and region-based
+            // rider auto-assign keeps routing the order to the wrong rider.
+            \App\Services\RegionDetectionService::refreshAfterPinSave($customer->id);
+
             // Warn when the pin's coordinates are approximate (geocoded from the
             // address) or missing (link had none and geocode failed) — so staff
             // know to drop an exact pin instead of trusting a coord-less save.
@@ -2900,6 +2906,9 @@ class RiderController extends Controller
                     . ($precision ? ' (' . $precision . ' match)' : '')
             );
 
+            // Pin changed → re-derive the region from it (see refreshAfterPinSave).
+            \App\Services\RegionDetectionService::refreshAfterPinSave($customer->id);
+
             \Log::info('Quick verified location from address', [
                 'order_id' => $orderId,
                 'customer_id' => $validated['customer_id'],
@@ -3104,7 +3113,7 @@ class RiderController extends Controller
         try {
             $order = \DB::table('t_crm_prod_order')
                 ->where('id', $orderId)
-                ->select('id', 'customer_id')
+                ->select('id', 'customer_id', 'expected_packets')
                 ->first();
             if (!$order) {
                 return response()->json(['success' => false, 'message' => 'Order not found'], 404);
@@ -3152,6 +3161,11 @@ class RiderController extends Controller
                     'verified_pin_unlock_requested' => $unlockRequested,
                     'require_delivery_scan'      => $cfg ? (int) ($cfg->require_delivery_scan ?? 0) : 0,
                     'allow_delivery_scan_bypass' => $cfg ? (int) ($cfg->allow_delivery_scan_bypass ?? 0) : 0,
+                    // ⭐ The packet target rides along too (Aug-2026). The scan modal used to take it
+                    //    from whatever the order payload held when the screen loaded, so a count the
+                    //    store corrected AFTER that never reached the rider — half of how NF-19218
+                    //    was delivered 1-of-2. This poll is the fresh source of truth.
+                    'expected_packets'           => (int) ($order->expected_packets ?: 0),
                     'payment_proof'              => $paymentProof,
                 ],
             ]);
@@ -3248,6 +3262,94 @@ class RiderController extends Controller
                 }
             }
 
+            // ── Aug-2026 packet-count enforcement (order NF-19218). The gate above only proves the
+            //    rider scanned A label belonging to THIS order — it never counted them, so an order
+            //    the store packed as 2 could be closed with a single scan, and was. When the store
+            //    has set a count and scanning is required, that count is the target and the SERVER
+            //    is the judge: the phone's own idea of the target was exactly what went wrong (a
+            //    stale "1/1" label talked the scanner down from 2 to 1).
+            //
+            //    Authority order: the distinct packet indices the phone actually scanned
+            //    (scanned_indices — new in the Aug-2026 build) beat the free-typed actual_packets,
+            //    which is all an older build sends. Older builds are still enforced, just on the
+            //    weaker number — which is why this check lives here and not only in the app.
+            $scanHelp = new \App\Services\Riders\ScanHelpService();
+            $expectedPackets = (int) ($order->expected_packets ?: 0);
+            $rawIndices = $request->input('scanned_indices');
+            $scannedIndices = is_array($rawIndices)
+                ? array_values(array_unique(array_filter(
+                    array_map('intval', array_filter($rawIndices, 'is_numeric')),
+                    fn ($i) => $i > 0
+                )))
+                : null;
+            $countedPackets = $scannedIndices !== null
+                ? count($scannedIndices)
+                : (is_numeric($actualPackets) ? (int) $actualPackets : null);
+            $shortDeliveryApproved = false;
+
+            // No count at all while one is expected. Every shipped client sends one in this
+            // situation, so this is unreachable in practice — but it is the shape a tampered or
+            // very old client would take, and it would slip past the check below, so make it
+            // visible instead of silent. Not blocked: a client that can omit the field can equally
+            // send the expected number, so a block buys nothing and could strand a real rider.
+            if ($requireScan && $expectedPackets > 0 && $countedPackets === null) {
+                \Log::warning('Delivery had no packet count to check', [
+                    'order_id'         => $order->id,
+                    'order_number'     => $order->order_number,
+                    'rider_id'         => $user->id,
+                    'expected_packets' => $expectedPackets,
+                ]);
+            }
+
+            if ($requireScan && $expectedPackets > 0 && $countedPackets !== null && $countedPackets < $expectedPackets) {
+                $approval = $scanHelp->approvalFor($order, (int) $user->id);
+
+                if ($approval === null) {
+                    $requestPending = (string) ($order->scan_bypass_status ?? '') === \App\Services\Riders\ScanHelpService::STATUS_PENDING
+                        && (int) ($order->scan_bypass_requested_by ?: 0) === (int) $user->id;
+                    \Log::warning('Delivery blocked — packet shortfall', [
+                        'order_id'         => $order->id,
+                        'order_number'     => $order->order_number,
+                        'rider_id'         => $user->id,
+                        'expected_packets' => $expectedPackets,
+                        'counted_packets'  => $countedPackets,
+                        'from_indices'     => $scannedIndices !== null,
+                        'request_pending'  => $requestPending,
+                    ]);
+                    return response()->json([
+                        'success'          => false,
+                        'code'             => 'packet_shortfall',
+                        'expected_packets' => $expectedPackets,
+                        'counted_packets'  => $countedPackets,
+                        'request_pending'  => $requestPending,
+                        'message'          => 'The store packed ' . $expectedPackets . ' packets for this order but only '
+                            . $countedPackets . ' ' . ($countedPackets === 1 ? 'was' : 'were')
+                            . ' scanned. Scan the rest, or ask a manager to approve a short delivery.',
+                    ], 422);
+                }
+
+                // Approved short delivery. The approval is burned only AFTER the status change
+                // actually succeeds (further down) — burning it here would leave the rider needing a
+                // brand-new approval if the delivery itself then failed. Single-use either way.
+                // The note is the durable record: it outlives the request row, which a later packet
+                // change or a fresh request will clear.
+                $shortDeliveryApproved = true;
+                $notes .= ' (short delivery approved: ' . $countedPackets . ' of ' . $expectedPackets
+                    . ($approval['reason'] !== '' ? ' — ' . mb_substr($approval['reason'], 0, 80) : '') . ')';
+                \Log::info('Short delivery allowed by approved scan-help', [
+                    'order_id'         => $order->id,
+                    'order_number'     => $order->order_number,
+                    'rider_id'         => $user->id,
+                    'expected_packets' => $expectedPackets,
+                    'counted_packets'  => $countedPackets,
+                    'approved_by'      => $approval['decided_by'],
+                ]);
+            } elseif ($countedPackets !== null && $expectedPackets > 0 && $countedPackets >= $expectedPackets) {
+                // He found the missing box and scanned everything after all — retire the request so
+                // the managers' banner stops asking them to decide something that no longer matters.
+                $scanHelp->clear($order, 'rider scanned every packet in the end');
+            }
+
             // Log received GPS data for debugging
             \Log::info('Received GPS data from mobile app', [
                 'order_id' => $order->id,
@@ -3265,21 +3367,47 @@ class RiderController extends Controller
                 $notes .= " (GPS: {$latitude}, {$longitude})";
             }
 
-            // Update actual_packets if provided by rider
-            if ($actualPackets !== null && is_numeric($actualPackets)) {
-                $order->actual_packets = (int)$actualPackets;
+            // Record the packet count. `$countedPackets` is the number the enforcement above
+            // actually judged (the distinct scan indices when the phone sent them, else the typed
+            // field), so record THAT — an audit trail that disagrees with the rule which let the
+            // delivery through is worse than none.
+            if ($countedPackets !== null) {
+                $order->actual_packets = $countedPackets;
                 $order->save();
-                
+
+                // Persist WHICH packets were scanned. Before this only the scan TIME survived
+                // (delivery_scanned_at), so a short rider scan left nothing to reconstruct while the
+                // store side kept dispatch_scanned_packets. Written in its OWN statement: if the
+                // column has not been migrated yet this fails alone and the delivery recorded above
+                // is untouched (same pattern as dispatch_scan_banner_enabled).
+                if ($scannedIndices !== null) {
+                    try {
+                        sort($scannedIndices);
+                        \DB::table('t_crm_prod_order')->where('id', $order->id)
+                            ->update(['delivery_scanned_packets' => json_encode($scannedIndices)]);
+                    } catch (\Throwable $e) {
+                        // column absent — the count above is still on record
+                    }
+                }
+
                 \Log::info('Rider entered packet count', [
                     'order_id' => $order->id,
                     'expected_packets' => $order->expected_packets,
-                    'actual_packets' => $actualPackets,
-                    'match' => $order->expected_packets == $actualPackets
+                    'actual_packets' => $countedPackets,
+                    'scanned_indices' => $scannedIndices,
+                    'typed_packets' => is_numeric($actualPackets) ? (int) $actualPackets : null,
+                    'match' => (int) ($order->expected_packets ?: 0) === (int) $countedPackets
                 ]);
             }
 
             // Use the existing changeStatus method
             $result = $order->changeStatus('delivered', $notes, $user->id);
+
+            // The delivery is on record — now burn the one-time short-delivery approval so it can
+            // never serve a second attempt. Deliberately after the status change, not before.
+            if ($result && $shortDeliveryApproved) {
+                $scanHelp->consume($order);
+            }
 
             // Update the status history record with GPS coordinates if provided
             if ($result && $latitude && $longitude) {
@@ -3495,6 +3623,122 @@ class RiderController extends Controller
         } catch (\Exception $e) {
             // Best-effort only — never surface an error into the delivery flow.
             return response()->json(['success' => false], 200);
+        }
+    }
+
+    /**
+     * ── Scan help (Aug-2026). A rider who cannot scan every packet asks a manager instead of
+     *    self-serving a bypass. Four endpoints: he requests, he polls, managers list, managers
+     *    decide. All authority lives in ScanHelpService so store mode and the web banner cannot
+     *    drift apart. See add_scan_help_bypass_aug17_2026.sql.
+     *
+     * POST /api/rider/orders/{id}/scan-help   { reason, packets_in_hand }
+     */
+    public function scanHelpRequest(Request $request, $id)
+    {
+        try {
+            $user = Auth::user();
+            $order = \App\Models\CRM\OrderModel::find($id);
+            if (!$order) {
+                return response()->json(['success' => false, 'message' => 'Order not found'], 404);
+            }
+            // Only the assigned rider may ask — the approval is later bound to this same id.
+            if ((int) $order->assigned_rider_user_id !== (int) $user->id) {
+                return response()->json(['success' => false, 'message' => 'Not authorized for this order'], 403);
+            }
+            if (in_array($order->order_status, ['delivered', 'completed', 'cancelled', 'refunded'])) {
+                return response()->json(['success' => false, 'message' => 'This order is already closed.'], 422);
+            }
+
+            $inHand = $request->input('packets_in_hand');
+            $res = (new \App\Services\Riders\ScanHelpService())->request(
+                $order,
+                (int) $user->id,
+                (string) $request->input('reason', ''),
+                is_numeric($inHand) ? (int) $inHand : null
+            );
+
+            return response()->json([
+                'success' => $res['ok'],
+                'status'  => $res['status'] ?? null,
+                'message' => $res['message'] ?? null,
+            ], $res['ok'] ? 200 : 422);
+        } catch (\Exception $e) {
+            \Log::error('scanHelpRequest failed', ['order_id' => $id, 'error' => $e->getMessage()]);
+            return response()->json(['success' => false, 'message' => 'Could not send the request'], 500);
+        }
+    }
+
+    /**
+     * What the rider's phone polls while it waits for a decision.
+     * GET /api/rider/orders/{id}/scan-help
+     */
+    public function scanHelpStatus(Request $request, $id)
+    {
+        try {
+            $user = Auth::user();
+            $order = \App\Models\CRM\OrderModel::find($id);
+            if (!$order) {
+                return response()->json(['success' => false, 'message' => 'Order not found'], 404);
+            }
+            if ((int) $order->assigned_rider_user_id !== (int) $user->id) {
+                return response()->json(['success' => false, 'message' => 'Not authorized for this order'], 403);
+            }
+            $state = (new \App\Services\Riders\ScanHelpService())->statusFor($order, (int) $user->id);
+            return response()->json(array_merge(['success' => true], $state));
+        } catch (\Exception $e) {
+            // Polling must never surface an error — the rider keeps waiting and can retry.
+            return response()->json(['success' => true, 'status' => 'none']);
+        }
+    }
+
+    /**
+     * Pending requests for the store-mode banner.
+     * GET /api/rider/scan-help/pending
+     *
+     * `can_approve` is returned LIVE rather than relying on the app's permission snapshot, which is
+     * only refreshed at app start / login — a freshly granted approve_scan_bypass would otherwise
+     * stay invisible until every manager re-logged in.
+     */
+    public function scanHelpPending(Request $request)
+    {
+        try {
+            $svc = new \App\Services\Riders\ScanHelpService();
+            $user = Auth::user();
+            $canApprove = $svc->canApprove($user);
+            return response()->json([
+                'success'     => true,
+                'can_approve' => $canApprove,
+                // Nothing to show someone who cannot act on it.
+                'requests'    => $canApprove ? $svc->pending() : [],
+            ]);
+        } catch (\Exception $e) {
+            return response()->json(['success' => true, 'can_approve' => false, 'requests' => []]);
+        }
+    }
+
+    /**
+     * Manager approves or denies from store mode.
+     * POST /api/rider/scan-help/decide  { order_id, decision: approved|denied }
+     */
+    public function scanHelpDecide(Request $request)
+    {
+        try {
+            $orderId = (int) $request->input('order_id');
+            $res = (new \App\Services\Riders\ScanHelpService())->decide(
+                $orderId,
+                (string) $request->input('decision', ''),
+                Auth::user()
+            );
+            return response()->json([
+                'success' => $res['ok'],
+                'status'  => $res['status'] ?? null,
+                'code'    => $res['code'] ?? null,
+                'message' => $res['message'] ?? null,
+            ], $res['ok'] ? 200 : (($res['code'] ?? '') === 'forbidden' ? 403 : 422));
+        } catch (\Exception $e) {
+            \Log::error('scanHelpDecide failed', ['error' => $e->getMessage()]);
+            return response()->json(['success' => false, 'message' => 'Could not save the decision'], 500);
         }
     }
 
@@ -13365,6 +13609,13 @@ class RiderController extends Controller
                     'order_date' => $order->order_date,
                     'order_status' => $order->order_status,
                     'total_price' => $order->total_price,
+                    // ⭐ Aug-2026 — shipping/delivery fee for the store board's order
+                    //    card. Same `shipping_total` column the invoice's SHIPPING
+                    //    line prints, so the card and the invoice can never disagree;
+                    //    edit the fee and the next poll shows the new number.
+                    //    Cast to float so 0 arrives as 0, not the string "0.00"
+                    //    (the card has to tell "free delivery" from "no data").
+                    'shipping_total' => (float) ($order->shipping_total ?? 0),
                     'delivery_priority' => $order->delivery_priority, // ⭐ Delivery sequence priority
                     // ⭐ Estimated delivery time (from "Get Times" / Dispatch)
                     'estimated_delivery_at' => $order->estimated_delivery_at,
@@ -14905,9 +15156,18 @@ class RiderController extends Controller
                 ], 422);
             }
             
+            $previousExpected = (int) ($order->expected_packets ?: 0);
             $order->expected_packets = $validated['expected_packets'];
             $order->save();
-            
+
+            // ⭐ A scan-help approval means "this rider, this order, THIS many packets". The count
+            //    just moved, so anything riding on the old number is void — otherwise a 1-of-2
+            //    approval would still be sitting there after the store corrected the order to 3.
+            //    (ScanHelpService::approvalFor re-checks this too; belt and braces on purpose.)
+            if ($previousExpected !== (int) $validated['expected_packets']) {
+                (new \App\Services\Riders\ScanHelpService())->clear($order, 'store changed expected_packets');
+            }
+
             \Log::info('Packet info updated (Store Mode)', [
                 'order_id' => $order->id,
                 'expected_packets' => $validated['expected_packets'],

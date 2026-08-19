@@ -51,6 +51,34 @@ class BankSmsParser
         'transferred from', 'transfer from', 'inflow', ' cr ',
     ];
 
+    // STRONG forms — the SMS states which side of OUR account the money landed
+    // on, so the direction is a fact rather than a word count. These are settled
+    // BEFORE the word lists.
+    //
+    // ⚠ WHY THIS EXISTS (Aug-2026): Alfalah writes an incoming payment as
+    // "PKR 3,840.00 received from RAHILA AKRAM MMBL in your BAF A/C **4343 …
+    // via Fund Transfer". "received" is a credit word and "fund transfer" is a
+    // debit word, so the both-words rule called it 'unknown' — and an unknown
+    // is rendered in the MONEY OUT box with a minus sign. Four real customer
+    // payments were sitting there as if they were expenses, never reaching the
+    // payer-name matching that would have identified them.
+    //
+    // The pairs are deliberately about OUR account ("in your" / "from your"),
+    // which is the one thing no bank leaves ambiguous. If both fire (an
+    // internal move that debits one of our accounts and credits another), the
+    // word-count rule below still gets the final say and yields 'unknown' —
+    // the Meezan lesson survives intact.
+    private const STRONG_CREDIT_PATTERNS = [
+        '/\breceived\s+from\b.{0,140}?\bin\s+your\b/s',
+        '/\breceived\s+in\s+your\b/',
+        '/\bcredited\s+(?:to|in)\s+your\b/',
+    ];
+    private const STRONG_DEBIT_PATTERNS = [
+        '/\b(?:sent|paid|transferred)\s+to\b.{0,140}?\bfrom\s+your\b/s',
+        '/\bdebited\s+from\s+your\b/',
+        '/\bwithdrawn\s+from\s+your\b/',
+    ];
+
     // Bank / wallet short codes seen in Pakistani alert SMS. Used to (a) strip
     // a trailing bank token off a person's name ("NADEEM ROSHAN ALI SIYAL BAF")
     // and (b) reject a "name" that is only a bank ("received from BAFL" — HBL
@@ -83,6 +111,14 @@ class BankSmsParser
     /** Conservative debit/credit detection — 'unknown' whenever it's not clear. */
     private function direction(string $lowerPadded): string
     {
+        // Where the money landed relative to OUR account outranks word-counting:
+        // "received from <payer> in your A/C" is a credit no matter how many
+        // debit-ish words the bank's boilerplate also contains.
+        $strongCredit = $this->matchesAny($lowerPadded, self::STRONG_CREDIT_PATTERNS);
+        $strongDebit  = $this->matchesAny($lowerPadded, self::STRONG_DEBIT_PATTERNS);
+        if ($strongCredit && !$strongDebit) return 'credit';
+        if ($strongDebit && !$strongCredit) return 'debit';
+
         $hasDebit  = $this->containsAny($lowerPadded, self::DEBIT_WORDS);
         $hasCredit = $this->containsAny($lowerPadded, self::CREDIT_WORDS);
 
@@ -329,6 +365,14 @@ class BankSmsParser
     {
         foreach ($needles as $n) {
             if (str_contains($haystack, $n)) return true;
+        }
+        return false;
+    }
+
+    private function matchesAny(string $haystack, array $patterns): bool
+    {
+        foreach ($patterns as $p) {
+            if (preg_match($p, $haystack)) return true;
         }
         return false;
     }

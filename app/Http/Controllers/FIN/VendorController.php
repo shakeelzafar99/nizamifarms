@@ -858,12 +858,37 @@ class VendorController extends Controller
             if ($request->expectsJson() || $request->is('api/*')) {
                 return response()->json([
                     'success' => true,
-                    'message' => $message
+                    'message' => $message,
+                    // ⭐ Which ledger row this became. Purely ADDITIVE (Aug-2026)
+                    // — no existing caller reads it, the web branch below is
+                    // untouched. Two things need it: the assistant stamps it
+                    // onto the bank SMS that proves the payment ("what was
+                    // tagged to what"), and the money-inbox sweep counts a row
+                    // it can name as CLAIMED, so the same entry can never also
+                    // close a look-alike debit. Vendor payments returned no id
+                    // at all before this, which is why they were invisible to
+                    // that claimed-set.
+                    'transaction_id' => $ledger->id,
+                    // ⭐ "Is this payment's bank SMS still sitting in the money
+                    // box?" Read-only and best-effort — it only ever ADDS a
+                    // question to the response, and a failure here cannot
+                    // affect the payment that was just recorded. null = say
+                    // nothing (the normal case).
+                    'bank_sms_prompt' => $this->bankSmsPrompt($ledger->id),
                 ]);
             }
 
-            return redirect()->route('fin.vendors.show', $vendor->id)
+            // The classic vendor page posts a normal form and lands back here,
+            // so its version of "is this the bank SMS?" travels in the session
+            // rather than a JSON key. Same service, same answer — only the
+            // delivery differs. Flashed only when there is something to ask.
+            $redirect = redirect()->route('fin.vendors.show', $vendor->id)
                            ->with('success', $message);
+            $prompt = $this->bankSmsPrompt($ledger->id);
+            if ($prompt) {
+                $redirect->with('bank_sms_prompt', $prompt);
+            }
+            return $redirect;
 
         } catch (\Exception $e) {
             DB::rollBack();
@@ -976,6 +1001,11 @@ class VendorController extends Controller
             if ($request->expectsJson() || $request->is('api/*')) {
                 return response()->json([
                     'success' => true,
+                    // Which ledger row this became — additive (Aug-2026), same
+                    // as recordPayment. The assistant needs it to record what a
+                    // confirmed card produced; no existing caller reads it and
+                    // the web redirect branch below is untouched.
+                    'transaction_id' => $ledger->id,
                     'message' => 'Weighted purchase recorded successfully! Total: Rs. ' . number_format($grandTotal, 2)
                 ]);
             }
@@ -1609,6 +1639,30 @@ class VendorController extends Controller
      * then the legacy single fields via handleImageUpload() — so the current APK
      * and any old form keep working unchanged. Returns an array of stored paths.
      */
+    /**
+     * "You just recorded this payment — is this the bank SMS for it?"
+     *
+     * The money box holds bank debits waiting to be sorted; the person who just
+     * typed this entry is the one who knows whether one of them is this very
+     * transfer. Returns null unless there is something worth asking, and never
+     * throws: the payment is already recorded and must not be endangered by a
+     * question about it. Honours the user's own prompt/auto/off setting inside
+     * MoneyOutTagService.
+     */
+    private function bankSmsPrompt(int $ledgerId): ?array
+    {
+        try {
+            if (!auth()->check() || !auth()->user()->hasMobilePermission('use_ai_assistant')) {
+                return null;
+            }
+            return app(\App\Services\Assistant\MoneyOutTagService::class)
+                ->afterEntry($ledgerId, (int) auth()->id());
+        } catch (\Throwable $e) {
+            Log::warning('[bankSmsPrompt] ' . $e->getMessage(), ['ledger' => $ledgerId]);
+            return null;
+        }
+    }
+
     private function collectImageUploads(Request $request, string $fieldName, $vendor): array
     {
         $paths = [];

@@ -108,5 +108,15 @@ return [
         // "pay lacarne 5000" needs zero follow-up questions.
         'expense_receiving_account_id',
         'vendor_payment_receiving_account_id',
+        // ⭐ Not an account — an ENUM: prompt | auto | off. Governs whether
+        // recording a payment by hand asks "is this bank SMS the one?"
+        // (MoneyOutTagService). Settable by voice too ("stop asking me about
+        // bank SMS"), which is why it lives in the same allowlist.
+        'tag_prompt_mode',
+    ],
+
+    /** Allowed values for the enum preferences above. */
+    'pref_enums' => [
+        'tag_prompt_mode' => ['prompt', 'auto', 'off'],
     ],
 ];

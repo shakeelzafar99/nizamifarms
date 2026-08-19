@@ -184,6 +184,7 @@
   const U = {
     summary: '{{ route('assistant-view.summary') }}',
     inbox:   '{{ route('assistant-view.inbox') }}',
+    moves:   '{{ route('assistant-view.money-moves') }}',
     history: '{{ route('assistant-view.history') }}',
     message: '{{ route('assistant-view.message') }}',
     newTopic:'{{ route('assistant-view.new-topic') }}',
@@ -310,6 +311,19 @@
       } else {
         if(outRows){ parts.push(sub('💸 Money out')); parts.push(outRows); }
         if(inRows){ parts.push(sub('💰 Money in')); parts.push(inRows); }
+      }
+      // 🔀 What changed hands (net, last 14 days) — the self-heal audit trail.
+      // A person's name = a manual re-point; "system" = the proof did it.
+      if(recentMoves.length){
+        parts.push(sub('🔀 Payments that changed hands'));
+        recentMoves.slice(0, 12).forEach(m => {
+          parts.push('<div class="row"><div class="body">'
+            + '<div class="t" style="font-weight:600">'+esc(m.payer||m.source||'Payment')
+            + ' <span class="s">'+esc(m.from||'held')+' → <b>'+esc(m.to||'held')+'</b></span></div>'
+            + '<div class="s">'+esc(String(m.to_reason||'').replace(/_/g,' '))
+            + ' · '+esc(m.by||'system')+' · '+esc(String(m.at).slice(0,16))+'</div>'
+            + '</div><div class="amt">'+money(m.amount)+'</div></div>');
+        });
       }
       parts.push('</div>');
       box.innerHTML = parts.join('');
@@ -529,9 +543,17 @@
     if(s.teach && s.teach.account){
       btns += '<button class="b tag" data-act="pick-tag" data-id="'+s.id+'" title="'+esc(s.teach.account)+'">🏷 Remember this account…</button>';
     }
+    // ⭐ WHAT it was filed against (owner: "so later I know what was tagged to
+    // what"). The reason alone still left "recorded as what?" unanswered.
+    const tagged = s.tagged_to
+      ? '<div class="s" style="color:#059669">→ '+esc(s.tagged_to.label||'entry')
+        +(s.tagged_to.amount!=null?' · '+money(s.tagged_to.amount):'')
+        +(s.tagged_to.date?' · '+esc(s.tagged_to.date):'')+'</div>'
+      : '';
     return '<div class="row"><div class="body">'
       + '<div class="t" style="font-weight:600">'+esc(s.counterparty||'Bank SMS')+' <span class="auto">⚡</span></div>'
       + '<div class="s">'+esc(s.note||'Handled automatically')+(s.time?' · '+esc(s.time):'')+'</div>'
+      + tagged
       + '<div class="btns">'+btns+'</div></div>'
       + '<div class="amt out">'+money(s.amount)+'</div>'+pickerPanel(s.id)+'</div>';
   }
@@ -606,8 +628,14 @@
     return r;
   }
 
+  // Net movement log ("what payments changed hands"). Fetched with the box and
+  // rendered inside the Handled view; [] until the moves SQL is run — the strip
+  // simply doesn't appear then, so this is safe to ship ahead of the table.
+  let recentMoves = [];
+
   async function loadBox(){
-    const [sm, ib] = await Promise.all([api(U.summary), api(U.inbox)]);
+    const [sm, ib, mv] = await Promise.all([api(U.summary), api(U.inbox), api(U.moves)]);
+    recentMoves = (mv.ok && mv.data.success) ? (mv.data.moves||[]) : [];
     if(sm.ok && sm.data.success){
       $('#stOut').textContent = sm.data.money_out?.count ?? 0;
       $('#stIn').textContent = sm.data.money_in?.count ?? 0;

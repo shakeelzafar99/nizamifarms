@@ -324,19 +324,30 @@ class ApprovalsAPIController extends Controller
             if (config('payment_signals.enabled')) {
                 $proofOrderIds = [];
                 foreach ($items as $it) { if (!empty($it['order_id'])) { $proofOrderIds[] = $it['order_id']; } }
-                foreach ($approvedItems as $it) { if (!empty($it['order_id'])) { $proofOrderIds[] = $it['order_id']; } }
+                $approvedOrderIds = [];
+                foreach ($approvedItems as $it) { if (!empty($it['order_id'])) { $approvedOrderIds[] = $it['order_id']; } }
                 $proofOrderIds = array_values(array_unique($proofOrderIds));
-                if (!empty($proofOrderIds)) {
-                    $proofMap = app(\App\Services\Payments\Signals\PaymentProofStatusService::class)
-                        ->forOrders($proofOrderIds);
+                $approvedOrderIds = array_values(array_unique($approvedOrderIds));
+                if (!empty($proofOrderIds) || !empty($approvedOrderIds)) {
+                    // ⚠ TWO lookups on purpose (Aug-2026, same rule as the web).
+                    // Pending rows keep the default — a badge there is a prompt
+                    // to ACT, and settled orders have nothing to act on. The
+                    // APPROVED list is a RECORD: with the shared default it
+                    // said "No proof yet" on invoices approved against a
+                    // verified screenshot+SMS pair, and the phone disagreed
+                    // with the web's approved tab about the same order.
+                    $proofSvc = app(\App\Services\Payments\Signals\PaymentProofStatusService::class);
+                    $proofMap = !empty($proofOrderIds) ? $proofSvc->forOrders($proofOrderIds) : [];
+                    $approvedProofMap = !empty($approvedOrderIds)
+                        ? $proofSvc->forOrders($approvedOrderIds, suppressSettled: false) : [];
                     foreach ($items as &$it) {
                         $it['payment_proof'] = (!empty($it['order_id']) && isset($proofMap[$it['order_id']]))
                             ? $proofMap[$it['order_id']] : null;
                     }
                     unset($it);
                     foreach ($approvedItems as &$it) {
-                        $it['payment_proof'] = (!empty($it['order_id']) && isset($proofMap[$it['order_id']]))
-                            ? $proofMap[$it['order_id']] : null;
+                        $it['payment_proof'] = (!empty($it['order_id']) && isset($approvedProofMap[$it['order_id']]))
+                            ? $approvedProofMap[$it['order_id']] : null;
                     }
                     unset($it);
                 }

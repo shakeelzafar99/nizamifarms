@@ -2314,7 +2314,7 @@ document.addEventListener('DOMContentLoaded', function(){
 .nfad-card.nfad-gone{opacity:0;transform:translateX(30px)}
 .nfad-top{display:flex;align-items:flex-start;justify-content:space-between;gap:10px}
 .nfad-cust{font-weight:680;color:#0f172a}
-.nfad-no{font-size:11.5px;color:#94a3b8;font-variant-numeric:tabular-nums}
+.nfad-onum{font-size:11.5px;color:#94a3b8;font-variant-numeric:tabular-nums}
 .nfad-total{font-weight:700;font-variant-numeric:tabular-nums;text-align:right;color:#0f172a}
 .nfad-meta{display:flex;gap:6px;flex-wrap:wrap;margin:9px 0 10px}
 .nfad-mini{font-size:11px;font-weight:600;padding:2px 8px;border-radius:999px;background:#f1f5f9;color:#475569;border:1px solid #e2e8f0}
@@ -2327,6 +2327,26 @@ document.addEventListener('DOMContentLoaded', function(){
 .nfad-yes{background:#15803d;border-color:#15803d;color:#fff}
 .nfad-no{background:#fff;border-color:#e2e8f0;color:#475569}
 .nfad-open{flex:0 0 auto;background:#fff;border-color:#e2e8f0;color:#2563eb;padding:8px 12px}
+/* Region chip. Green = region came from a verified pin or a manual set;
+   amber = it came from a Google geocode, which is city-centroid junk a large
+   part of the time, so it is marked with ~ rather than presented as fact. */
+.nfad-mini.region{background:#ecfdf5;color:#047857;border-color:#a7f3d0}
+.nfad-mini.region-weak{background:#fffbeb;color:#b45309;border-color:#fde68a}
+/* Expandable detail: items + address, built from data the list call ALREADY
+   returns (line_items / address_* / delivery_region_name) — no extra request. */
+.nfad-top{cursor:pointer}
+.nfad-chev{flex:0 0 auto;color:#94a3b8;font-size:10px;transition:transform .18s;user-select:none}
+.nfad-card.nfad-x-open .nfad-chev{transform:rotate(180deg)}
+.nfad-det{border-top:1px dashed #e2e8f0;margin:0 0 11px;padding-top:9px}
+.nfad-det-h{font-size:10.5px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:#94a3b8;margin:0 0 5px}
+.nfad-li{display:flex;gap:8px;font-size:12px;color:#334155;padding:3px 0;border-bottom:1px solid #f1f5f9}
+.nfad-li:last-child{border-bottom:0}
+.nfad-li-q{flex:0 0 auto;font-weight:700;color:#0f172a;font-variant-numeric:tabular-nums;min-width:24px}
+.nfad-li-n{flex:1;min-width:0}
+.nfad-li-a{flex:0 0 auto;font-variant-numeric:tabular-nums;color:#475569}
+.nfad-sum{display:flex;justify-content:space-between;font-size:12px;font-weight:700;color:#0f172a;border-top:1px solid #e2e8f0;margin-top:7px;padding-top:6px}
+.nfad-addr{font-size:12px;color:#334155;line-height:1.55}
+.nfad-dim{color:#94a3b8}
 .nfad-empty{padding:30px 14px;text-align:center;color:#94a3b8;font-size:13px}
 .nfad-foot{font-size:11.5px;color:#94a3b8;text-align:center;padding:10px;border-top:1px solid #eef2f7}
 @media (prefers-reduced-motion:reduce){#nfadDrawer,#nfadScrim,#nfadFab button{transition:none!important;animation:none!important}}
@@ -2349,8 +2369,15 @@ document.addEventListener('DOMContentLoaded', function(){
 <script>
 (function(){
   var loaded = false, lastCount = null;
+  // byId feeds the lazy detail render; expandedId survives a poll-driven
+  // re-render so a card the user is reading doesn't slam shut under them.
+  var byId = {}, expandedId = null;
   function money(v){ var n = parseFloat(v)||0; return 'Rs ' + (Number.isInteger(n) ? n.toLocaleString('en-US') : n.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})); }
   function esc(s){ var d=document.createElement('div'); d.textContent = (s==null?'':String(s)); return d.innerHTML; }
+  // esc() escapes & < > but NOT quotes — anything going into an attribute needs this.
+  function escAttr(s){ return esc(s).replace(/"/g, '&quot;'); }
+  // Shopify sends quantities as '4.000'; show '4' (and still '1.5' when it matters).
+  function qty(v){ var n = parseFloat(v); if(!isFinite(n)) return String(v==null?'':v); return String(Math.round(n*1000)/1000); }
   function csrf(){ var m=document.querySelector('meta[name="csrf-token"]'); return m?m.getAttribute('content'):''; }
 
   window.nfApprovalsOpen = function(){
@@ -2375,7 +2402,14 @@ document.addEventListener('DOMContentLoaded', function(){
         var orders = (d && d.orders) ? d.orders : [];
         setCount(orders.length);
         if(!orders.length){ body.innerHTML = '<div class="nfad-empty">No pending approvals right now 🎉</div>'; return; }
+        byId = {};
+        orders.forEach(function(o){ byId[o.id] = o; });
         body.innerHTML = orders.map(renderCard).join('');
+        // poll() re-renders the whole list when new orders land — re-open
+        // whatever was open so the user doesn't lose their place mid-read.
+        var reopen = (expandedId !== null && byId[expandedId]) ? expandedId : null;
+        expandedId = null;
+        if(reopen !== null) nfApprovalsToggle(reopen);
       })
       .catch(function(e){ body.innerHTML = '<div class="nfad-empty">Could not load approvals. <a href="/orders?source=shopify&tab=approvals" style="color:#2563eb">Open full view</a></div>'; });
   };
@@ -2386,14 +2420,30 @@ document.addEventListener('DOMContentLoaded', function(){
     var metas = '';
     if(badge) metas += '<span class="nfad-mini badge">'+esc(badge)+'</span>';
     if(reply) metas += '<span class="nfad-mini reply">💬 '+esc(reply)+'</span>';
-    if(o.items_count) metas += '<span class="nfad-mini">'+esc(o.items_count)+' items</span>';
+    var icount = parseInt(o.items_count, 10);
+    if(o.items_count) metas += '<span class="nfad-mini">'+esc(o.items_count)+' item'+(icount === 1 ? '' : 's')+'</span>';
+    // Delivery region — already on the payload (filter() resolves it from the
+    // customer, ~91% coverage). The SOURCE decides the treatment: a
+    // polygon_geocoded region is unreliable, so it is toned down and marked ~.
+    if(o.delivery_region_name){
+      var rsrc = (o.customer && o.customer.delivery_region_source) || '';
+      var weak = (rsrc === 'polygon_geocoded');
+      metas += '<span class="nfad-mini region'+(weak ? ' region-weak' : '')+'" title="'
+        + (weak ? 'Region came from a Google geocode — often wrong, confirm before relying on it'
+                : 'Delivery region' + (rsrc ? ' (' + escAttr(rsrc) + ')' : ''))
+        + '">\uD83D\uDCCD '+(weak ? '~' : '')+escAttr(o.delivery_region_name)+'</span>';
+    }
     var summary = o.items_summary || (o.raw_products_text ? o.raw_products_text.slice(0,120) : '');
     return '<div class="nfad-card" id="nfad-card-'+o.id+'">'
-      + '<div class="nfad-top"><div><div class="nfad-cust">'+esc(o.name || o.customer_name || 'Customer')+'</div>'
-      + '<div class="nfad-no">#'+esc(o.order_number)+'</div></div>'
-      + '<div class="nfad-total">'+money(o.total_price)+'</div></div>'
+      + '<div class="nfad-top" onclick="nfApprovalsToggle('+o.id+')" title="Show items and delivery address">'
+      + '<div><div class="nfad-cust">'+esc(o.name || o.customer_name || 'Customer')+'</div>'
+      + '<div class="nfad-onum">#'+esc(o.order_number)+'</div></div>'
+      + '<div style="display:flex;align-items:center;gap:7px">'
+      + '<div class="nfad-total">'+money(o.total_price)+'</div>'
+      + '<span class="nfad-chev">\u25BC</span></div></div>'
       + (metas ? '<div class="nfad-meta">'+metas+'</div>' : '')
       + (summary ? '<div class="nfad-items">'+esc(summary)+'</div>' : '')
+      + '<div class="nfad-det" id="nfad-det-'+o.id+'" style="display:none"></div>'
       + '<div class="nfad-btns">'
       + '<button class="nfad-b nfad-yes" onclick="nfApprovalsApprove('+o.id+')">Approve</button>'
       + '<button class="nfad-b nfad-no" onclick="nfApprovalsIgnore('+o.id+')">Ignore</button>'
@@ -2401,9 +2451,66 @@ document.addEventListener('DOMContentLoaded', function(){
       + '</div></div>';
   }
 
+  // Built from the SAME objects the list call returned — nothing is refetched.
+  function renderDetails(o){
+    var html = '', items = (o && o.line_items) ? o.line_items : [];
+    if(items.length){
+      html += '<div class="nfad-det-h">Items ('+items.length+')</div>';
+      html += items.map(function(li){
+        var nm  = li.name || li.product_name || li.title || 'Item';
+        var amt = (li.line_total != null) ? money(li.line_total) : '';
+        return '<div class="nfad-li"><span class="nfad-li-q">'+esc(qty(li.quantity))+'\u00D7</span>'
+             + '<span class="nfad-li-n">'+esc(nm)
+             + (li.sku ? ' <span class="nfad-dim">'+esc(li.sku)+'</span>' : '')+'</span>'
+             + '<span class="nfad-li-a">'+esc(amt)+'</span></div>';
+      }).join('');
+    } else {
+      html += '<div class="nfad-det-h">Items</div>'
+            + '<div class="nfad-addr nfad-dim">No line items on this order.</div>';
+    }
+    html += '<div class="nfad-sum"><span>Order total</span><span>'+money(o.total_price)+'</span></div>';
+
+    var parts = [];
+    var who = [o.address_first_name, o.address_last_name].filter(Boolean).join(' ');
+    if(who) parts.push('<strong>'+esc(who)+'</strong>');
+    if(o.address_phone) parts.push(esc(o.address_phone));
+    var street = [o.address_line1, o.address_line2].filter(Boolean).join(', ');
+    if(street) parts.push(esc(street));
+    var city = [o.address_city, o.address_province, o.address_postal_code].filter(Boolean).join(', ');
+    if(city) parts.push(esc(city));
+    if(o.delivery_region_name) parts.push('<span class="nfad-dim">Region: </span>'+esc(o.delivery_region_name));
+    html += '<div class="nfad-det-h" style="margin-top:10px">Delivery address</div>'
+          + '<div class="nfad-addr">'
+          + (parts.length ? parts.join('<br>') : '<span class="nfad-dim">No address on this order.</span>')
+          + '</div>';
+    return html;
+  }
+
+  function nfadCollapse(id){
+    var d = document.getElementById('nfad-det-'+id), c = document.getElementById('nfad-card-'+id);
+    if(d) d.style.display = 'none';
+    if(c) c.classList.remove('nfad-x-open');
+  }
+
+  // Accordion — one card open at a time keeps the queue scannable. The detail
+  // DOM is built on FIRST open only (dataset.built), so a long pending list
+  // never pays for panels nobody opened.
+  window.nfApprovalsToggle = function(id){
+    var det = document.getElementById('nfad-det-'+id), card = document.getElementById('nfad-card-'+id);
+    if(!det || !card) return;
+    var isOpen = det.style.display !== 'none';
+    if(expandedId !== null && expandedId !== id) nfadCollapse(expandedId);
+    if(isOpen){ nfadCollapse(id); expandedId = null; return; }
+    if(!det.dataset.built){ det.innerHTML = renderDetails(byId[id] || {}); det.dataset.built = '1'; }
+    det.style.display = '';
+    card.classList.add('nfad-x-open');
+    expandedId = id;
+  };
+
   function removeCard(id){
     var el = document.getElementById('nfad-card-'+id);
     if(!el) return;
+    if(expandedId === id) expandedId = null;
     el.classList.add('nfad-gone');
     setTimeout(function(){
       el.remove();
@@ -2433,7 +2540,12 @@ document.addEventListener('DOMContentLoaded', function(){
   window.nfApprovalsIgnore = function(id){
     if(!confirm('Ignore this Shopify order? It will be marked ignored and no invoice is created.')) return;
     var card = document.getElementById('nfad-card-'+id);
-    var btn = card ? card.querySelector('.nfad-no') : null;
+    // MUST be button.nfad-no. The order-number div used to share this class, so
+    // querySelector('.nfad-no') matched IT first: clicking Ignore overwrote the
+    // order number with "..." and never disabled the real button, so a
+    // double-click fired two ignore POSTs. The div is now .nfad-onum; the tag
+    // qualifier keeps this correct even if a class is reused again later.
+    var btn = card ? card.querySelector('button.nfad-no') : null;
     if(btn){ btn.disabled = true; btn.textContent = '…'; }
     fetch('/orders/'+id+'/ignore', { method:'POST', headers:{ 'Content-Type':'application/json', 'X-CSRF-TOKEN': csrf() }, credentials:'same-origin' })
       .then(function(r){ return r.json(); })
@@ -3541,6 +3653,24 @@ function viewOrderDetails(orderId) {
                     html += '<div style="margin-top: 8px; padding: 10px 12px; background-color: white; border-radius: 6px; font-size: 13px; color: #374151;">';
                     html += '<span style="color: #6b7280;">Delivery scan (rider):</span> <strong>' + (order.delivery_scanned_by_name ? escapeHtml(order.delivery_scanned_by_name) : 'Done') + '</strong>';
                     html += ' · ' + formatDate(order.delivery_scanned_at);
+                    // Aug-2026: how many packets that scan actually covered. Older deliveries kept
+                    // only the timestamp, so this stays hidden for them rather than showing "0 of N".
+                    if (Number(order.delivery_scanned_count) > 0) {
+                        html += ' · <span style="color:#6b7280;">' + Number(order.delivery_scanned_count) + ' of ' + (order.expected_packets || '?') + ' scanned</span>';
+                    }
+                    html += '</div>';
+                }
+                // A short delivery that a manager signed off on. Shown as its own amber line: the
+                // red "Mismatch Detected" chip above says WHAT happened, this says it was allowed
+                // and by whom — the two must never be confused when reviewing an order.
+                if (order.scan_bypass_used_at && order.scan_bypass_status === 'approved') {
+                    html += '<div style="margin-top: 8px; padding: 10px 12px; background-color: #fffbeb; border: 1px solid #fbbf24; border-radius: 6px; font-size: 13px; color: #92400e;">';
+                    html += '<strong>Short delivery approved</strong>';
+                    if (order.scan_bypass_decided_by_name) html += ' by ' + escapeHtml(order.scan_bypass_decided_by_name);
+                    if (order.scan_bypass_packets != null && order.expected_packets) {
+                        html += ' · ' + Number(order.scan_bypass_packets) + ' of ' + Number(order.expected_packets) + ' packets';
+                    }
+                    if (order.scan_bypass_reason) html += '<br><span style="color:#b45309;">Reason: ' + escapeHtml(order.scan_bypass_reason) + '</span>';
                     html += '</div>';
                 }
                 html += '</div>';
@@ -19332,14 +19462,18 @@ document.addEventListener('DOMContentLoaded', function() {
 <script>
 /* Phase 3 — Delivery package-scan settings modal (opened from the operations "More" menu).
    Self-contained: builds its own modal in JS so it cannot disturb this large blade's HTML
-   structure. Reads/writes the two flags via /orders/delivery-scan/settings. */
+   structure. Reads/writes the flags via /orders/delivery-scan-flags.
+   ⚠ Aug-2026: renamed from /orders/delivery-scan/settings — the host's StackProtect bot filter
+   challenges /settings-shaped URLs before they reach Laravel, so this modal could silently show
+   the wrong state (it defaults every box to unchecked, then fills from a silently-caught fetch)
+   and its Save could fail. The old path stays routed one release for a partial-upload window. */
 (function(){
   function csrf(){ var m=document.querySelector('meta[name="csrf-token"]'); return m?m.getAttribute('content'):''; }
   var overlay=null;
   function hide(){ if(overlay) overlay.style.display='none'; }
   function save(){
     var req=overlay.querySelector('#dss-require').checked, byp=overlay.querySelector('#dss-bypass').checked, ban=overlay.querySelector('#dss-banner').checked;
-    fetch('/orders/delivery-scan/settings',{method:'POST',headers:{'Content-Type':'application/json','X-Requested-With':'XMLHttpRequest','X-CSRF-TOKEN':csrf()},body:JSON.stringify({require_delivery_scan:req?1:0,allow_delivery_scan_bypass:byp?1:0,dispatch_scan_banner_enabled:ban?1:0})})
+    fetch('/orders/delivery-scan-flags',{method:'POST',headers:{'Content-Type':'application/json','X-Requested-With':'XMLHttpRequest','X-CSRF-TOKEN':csrf()},body:JSON.stringify({require_delivery_scan:req?1:0,allow_delivery_scan_bypass:byp?1:0,dispatch_scan_banner_enabled:ban?1:0})})
       .then(function(r){return r.json();}).then(function(d){ hide(); alert(d&&d.success?'Delivery scan settings saved.':'Could not save settings.'); })
       .catch(function(){ alert('Could not save settings.'); });
   }
@@ -19366,10 +19500,127 @@ document.addEventListener('DOMContentLoaded', function() {
     overlay.querySelector('#dss-require').checked=false;
     overlay.querySelector('#dss-bypass').checked=false;
     overlay.querySelector('#dss-banner').checked=false;
-    fetch('/orders/delivery-scan/settings',{headers:{'X-Requested-With':'XMLHttpRequest'}})
+    fetch('/orders/delivery-scan-flags',{headers:{'X-Requested-With':'XMLHttpRequest'}})
       .then(function(r){return r.json();}).then(function(d){ if(d){ overlay.querySelector('#dss-require').checked=!!Number(d.require_delivery_scan); overlay.querySelector('#dss-bypass').checked=!!Number(d.allow_delivery_scan_bypass); overlay.querySelector('#dss-banner').checked=!!Number(d.dispatch_scan_banner_enabled); } })
       .catch(function(){});
   };
+})();
+</script>
+
+<script>
+/* Scan help (Aug-2026) — riders waiting on a manager to approve a SHORT delivery (fewer packets
+   than the store set). A rider is standing at a customer's door while this sits unanswered, so the
+   banner is deliberately not dismissable: it clears when the request is decided, nothing else.
+
+   Same shape as the "N new orders" pill above: one small probe every 30s, ONLY while the tab is
+   visible, inserted before .orders-table-container, and fail-open — a banner must never be able to
+   break the page that hosts it. Rows on this page freeze at load (they are a server-rendered
+   snapshot), which is exactly why this needs its own poll rather than riding the table refresh.
+
+   The endpoint returns an empty list to anyone who cannot approve, so there is no permission logic
+   here — and `can_approve` is computed live server-side, not from a cached snapshot. */
+(function(){
+  var POLL_MS = 30000;
+  var timer = null;
+  var busy = false;      // a decision is in flight — don't let a poll redraw underneath it
+  var lastKey = '';      // avoid rebuilding identical DOM every 30s (kills mid-click focus loss)
+
+  function csrf(){ var m=document.querySelector('meta[name="csrf-token"]'); return m?m.getAttribute('content'):''; }
+  function esc(s){ var d=document.createElement('div'); d.textContent=(s==null?'':String(s)); return d.innerHTML; }
+
+  function ensureBox(){
+    var box = document.getElementById('nfScanHelpBanner');
+    if(box) return box;
+    box = document.createElement('div');
+    box.id = 'nfScanHelpBanner';
+    box.style.cssText = 'display:none;margin:6px 0 10px;padding:12px 14px;background:#fffbeb;border:1px solid #f59e0b;border-left:4px solid #f59e0b;border-radius:8px;';
+    var container = document.querySelector('.orders-table-container');
+    if(container && container.parentNode){ container.parentNode.insertBefore(box, container); }
+    else { return null; }   // no anchor on this view — stay silent rather than float somewhere odd
+    return box;
+  }
+
+  function decide(orderId, decision, btn){
+    if(busy) return;
+    busy = true;
+    if(btn){ btn.disabled = true; btn.style.opacity = '0.6'; }
+    fetch('/orders/scan-help/decide',{
+      method:'POST',
+      headers:{'Content-Type':'application/json','X-Requested-With':'XMLHttpRequest','X-CSRF-TOKEN':csrf()},
+      body:JSON.stringify({order_id:orderId, decision:decision})
+    })
+      .then(function(r){ return r.json().catch(function(){ return {success:false}; }); })
+      .then(function(d){
+        busy = false;
+        // A stale banner (already decided, or the store changed the packet count) answers with a
+        // reason — show it, because silently doing nothing looks like a broken button.
+        if(!d || !d.success){ alert((d && d.message) ? d.message : 'Could not save the decision.'); }
+        lastKey = '';
+        poll();
+      })
+      .catch(function(){
+        busy = false;
+        if(btn){ btn.disabled = false; btn.style.opacity = '1'; }
+        alert('Could not save the decision — please try again.');
+      });
+  }
+
+  function render(list){
+    var box = ensureBox();
+    if(!box) return;
+    if(!list || !list.length){ box.style.display='none'; box.innerHTML=''; lastKey=''; return; }
+
+    var key = list.map(function(r){ return r.order_id + ':' + r.in_hand + '/' + r.expected; }).join('|');
+    if(key === lastKey && box.style.display !== 'none') return;  // nothing changed — leave the DOM alone
+    lastKey = key;
+
+    var html = '<div style="font-weight:700;color:#92400e;font-size:13px;margin-bottom:8px;">'
+             + '📦 ' + list.length + ' rider' + (list.length===1?'':'s') + ' waiting to deliver short of the packet count</div>';
+    list.forEach(function(r){
+      html += '<div data-sh-row="' + r.order_id + '" style="display:flex;flex-wrap:wrap;align-items:center;gap:10px;padding:8px 0;border-top:1px solid #fde68a;">'
+           +  '<div style="flex:1;min-width:240px;font-size:13px;color:#78350f;">'
+           +    '<strong>' + esc(r.rider_name) + '</strong> — ' + esc(r.order_number)
+           +    (r.customer_name ? ' · ' + esc(r.customer_name) : '')
+           +    '<br><span style="color:#b45309;">has ' + (r.in_hand==null?'?':Number(r.in_hand)) + ' of ' + Number(r.expected) + ' packets'
+           +    (r.reason ? ' · "' + esc(r.reason) + '"' : '') + '</span>'
+           +  '</div>'
+           +  '<button type="button" data-sh-approve="' + r.order_id + '" style="padding:7px 14px;border:none;background:#0f766e;color:#fff;border-radius:6px;font-weight:700;font-size:13px;cursor:pointer;">Approve</button>'
+           +  '<button type="button" data-sh-deny="' + r.order_id + '" style="padding:7px 14px;border:1px solid #cbd5e1;background:#fff;color:#334155;border-radius:6px;font-weight:600;font-size:13px;cursor:pointer;">Deny</button>'
+           +  '</div>';
+    });
+    box.innerHTML = html;
+    box.style.display = 'block';
+
+    box.querySelectorAll('[data-sh-approve]').forEach(function(b){
+      b.onclick = function(){ decide(Number(b.getAttribute('data-sh-approve')), 'approved', b); };
+    });
+    box.querySelectorAll('[data-sh-deny]').forEach(function(b){
+      b.onclick = function(){ decide(Number(b.getAttribute('data-sh-deny')), 'denied', b); };
+    });
+  }
+
+  function poll(){
+    if(busy) return;
+    if(document.hidden) return;
+    fetch('/orders/scan-help/pending',{headers:{'X-Requested-With':'XMLHttpRequest'}})
+      .then(function(r){ return r.json(); })
+      .then(function(d){ if(d && d.success){ render(d.can_approve ? (d.requests||[]) : []); } })
+      .catch(function(){ /* offline / challenged / not deployed yet — stay quiet */ });
+  }
+
+  function start(){
+    if(timer) return;
+    poll();
+    timer = setInterval(poll, POLL_MS);
+  }
+
+  document.addEventListener('visibilitychange', function(){
+    // Coming back to the tab: answer immediately rather than waiting out the interval.
+    if(!document.hidden) poll();
+  });
+
+  if(document.readyState === 'loading'){ document.addEventListener('DOMContentLoaded', start); }
+  else { start(); }
 })();
 </script>
 

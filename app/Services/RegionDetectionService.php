@@ -9,6 +9,58 @@ use Illuminate\Support\Facades\Cache;
 class RegionDetectionService
 {
     /**
+     * Sources a bulk re-detect must NOT overwrite, because a human decided them:
+     * 'manual' (someone picked the region outright) and 'batch_mate' (someone
+     * confirmed a co-delivery suggestion). Detection would otherwise wipe both
+     * on the next "Re-detect All", since neither can be re-derived from
+     * coordinates — that is the whole reason they exist.
+     */
+    public const STICKY_SOURCES = ['manual', 'batch_mate'];
+
+    /**
+     * Re-run detection because a customer's verified pin just changed.
+     *
+     * The normal path is set-once: detectAndSaveForCustomer() returns early when
+     * a region is already stored, so a customer whose region was guessed from a
+     * Google geocode kept that guess forever, even after a real pin arrived.
+     * Pin-save endpoints call this instead, which forces a re-detect so the
+     * verified pin — priority 1 in detectRegion() — decides.
+     *
+     * 'manual' is preserved: a person chose that deliberately. 'batch_mate' is
+     * NOT preserved here — a real pin is stronger evidence than a co-delivery
+     * guess, so the pin is allowed to correct it.
+     *
+     * Never throws. A detection failure must not fail the pin save it followed.
+     */
+    public static function refreshAfterPinSave(?int $customerId): ?int
+    {
+        if (!$customerId) {
+            return null;
+        }
+
+        try {
+            $customer = DB::table('t_crm_prod_customer')
+                ->where('id', $customerId)
+                ->first(['id', 'delivery_region_id', 'delivery_region_source']);
+
+            if (!$customer) {
+                return null;
+            }
+
+            if (($customer->delivery_region_source ?? null) === 'manual') {
+                return $customer->delivery_region_id ? (int) $customer->delivery_region_id : null;
+            }
+
+            return self::detectAndSaveForCustomer($customerId, true);
+        } catch (\Throwable $e) {
+            Log::warning('refreshAfterPinSave failed: ' . $e->getMessage(), [
+                'customer_id' => $customerId,
+            ]);
+            return null;
+        }
+    }
+
+    /**
      * Detect delivery region for a customer and persist it.
      * Safe to call multiple times — skips if already set unless $force = true.
      */
@@ -44,7 +96,11 @@ class RegionDetectionService
             return $result['region_id'];
         }
 
-        if ($force && $customer->delivery_region_source !== 'manual') {
+        // Detection found nothing. Overwriting a real value with null is only
+        // acceptable for machine-derived sources — a human-decided region
+        // (manual / confirmed batch_mate) is still the best information we have
+        // and must survive a re-detect that simply had nothing to say.
+        if ($force && !in_array($customer->delivery_region_source, self::STICKY_SOURCES, true)) {
             DB::table('t_crm_prod_customer')
                 ->where('id', $customerId)
                 ->update([

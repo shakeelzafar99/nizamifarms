@@ -614,6 +614,9 @@ class CustomerAppController extends Controller
                 'Verified pin (customer app)'
             );
 
+            // Pin changed → re-derive the region from it (see refreshAfterPinSave).
+            \App\Services\RegionDetectionService::refreshAfterPinSave($customerId);
+
             $c = DB::table('t_crm_prod_customer')
                 ->where('id', $customerId)
                 ->select([

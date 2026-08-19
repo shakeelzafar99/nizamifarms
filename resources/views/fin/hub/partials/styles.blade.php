@@ -312,6 +312,17 @@
   .hubmodal .bankchip.on{border-color:var(--accent);background:var(--accent-soft);color:var(--accent)}
   .hubmodal .m-err{background:var(--out-soft);color:var(--out);border-radius:8px;padding:8px 12px;font-size:12.5px;font-weight:600;margin-bottom:12px;display:none}
   .hubmodal .m-err.on{display:block}
+  /* "is this its bank SMS?" — asked after a payment is recorded */
+  .smsq-head{font-size:14px;font-weight:700;color:var(--ink);margin-bottom:2px}
+  .smsq-sub{font-size:12px;color:var(--ink3);margin-bottom:12px}
+  .smsq-row{display:flex;align-items:center;gap:10px;padding:10px;border:1px solid var(--line);
+    border-radius:10px;margin-bottom:8px;background:var(--surface)}
+  .smsq-row .sq-main{flex:1;min-width:0}
+  .smsq-row .sq-amt{font-weight:700;color:var(--ink);font-size:13.5px}
+  .smsq-row .sq-meta{font-size:11.5px;color:var(--ink3);margin-top:1px}
+  .smsq-row .sq-ok{white-space:nowrap}
+  .smsq-done{background:var(--in-soft);color:var(--in);border-radius:8px;padding:10px 12px;
+    font-size:12.5px;font-weight:600}
   /* invoice list (breakdown + settle) */
   .inv-list{display:flex;flex-direction:column;gap:0}
   .inv-row{display:flex;align-items:center;gap:10px;padding:10px 2px;border-bottom:1px solid var(--line2);font-size:13px}

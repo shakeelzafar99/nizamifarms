@@ -159,10 +159,20 @@ class PaymentSignalsController extends Controller
             'success'      => true,
             'order_id'     => $orderId,
             'order_number' => $order->order_number ?? null,
-            'proof'        => app(PaymentProofStatusService::class)->forOrder($orderId),
+            // ⚠ suppressSettled: false — this panel only opens because someone
+            // asked to SEE the proof, so it is a record surface by definition.
+            // With the default it headed an approved order's own screenshot and
+            // bank SMS with "No proof yet", which is simply false.
+            'proof'        => app(PaymentProofStatusService::class)->forOrder($orderId, suppressSettled: false),
             'signals'      => $payload,
             'combined'     => $this->combinedPaymentHint($signals),
             'balance_adjustment' => $this->balanceAdjustmentInfo($signals, $orderId),
+            // ⭐ Did this proof ever change hands? On a settled order the panel
+            // is the record of WHY it was approved, and "this credit was first
+            // read as someone else's, then the payer's own screenshot moved it
+            // here" is part of that record. Read-only; empty for the ordinary
+            // case where nothing ever moved.
+            'moves'        => $this->signalMoveHistory($signals),
         ]);
     }
 
@@ -172,6 +182,54 @@ class PaymentSignalsController extends Controller
      * invoices so the manager can see what it likely covers and split manually.
      * Additive/read-only; null when not a bulk case.
      */
+    /**
+     * Where these signals have been. Only moves that actually landed on or left
+     * an ORDER are shown — the intermediate "held" step of a single heal is
+     * plumbing, not history. Silent (empty) until the movement-log SQL is run.
+     *
+     * @return array<int, array{at:string, from:?string, to:?string, why:?string, by:string}>
+     */
+    private function signalMoveHistory($signals): array
+    {
+        try {
+            if (!\Illuminate\Support\Facades\Schema::hasTable('t_fin_payment_signal_moves')) {
+                return [];
+            }
+            $ids = collect($signals)->pluck('id')->filter()->all();
+            if (empty($ids)) {
+                return [];
+            }
+
+            $rows = \DB::table('t_fin_payment_signal_moves')
+                ->whereIn('signal_id', $ids)
+                ->orderBy('id')
+                ->limit(50)
+                ->get();
+            if ($rows->isEmpty()) {
+                return [];
+            }
+
+            $orderIds = $rows->flatMap(fn ($r) => [$r->from_order_id, $r->to_order_id])->filter()->unique();
+            $orders = \DB::table('t_crm_prod_order')->whereIn('id', $orderIds)->pluck('order_number', 'id');
+            $users = \DB::table('t_sys_user')->whereIn('id', $rows->pluck('moved_by')->filter()->unique())
+                ->pluck('fullname', 'id');
+
+            return $rows
+                // A move between two orders, or off/onto one — not a pure
+                // held→held bookkeeping step.
+                ->filter(fn ($r) => $r->from_order_id || $r->to_order_id)
+                ->map(fn ($r) => [
+                    'at'   => (string) $r->created_at,
+                    'from' => $r->from_order_id ? ($orders[$r->from_order_id] ?? ('#' . $r->from_order_id)) : null,
+                    'to'   => $r->to_order_id ? ($orders[$r->to_order_id] ?? ('#' . $r->to_order_id)) : null,
+                    'why'  => $r->to_reason ?: $r->from_reason,
+                    'by'   => $users[$r->moved_by] ?? 'system',
+                ])->values()->all();
+        } catch (\Throwable $e) {
+            return []; // history is a nicety; never break the proof panel
+        }
+    }
+
     private function combinedPaymentHint($signals): ?array
     {
         // Prefer the authoritative combined links if any of these signals carry

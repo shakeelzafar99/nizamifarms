@@ -223,6 +223,14 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('/verify-delivery-scan', [\App\Http\Controllers\API\RiderController::class, 'verifyDeliveryScan']);
         // Best-effort audit stamp: rider completed the delivery package scan (proof + time).
         Route::post('/orders/{id}/delivery-scan-mark', [\App\Http\Controllers\API\RiderController::class, 'deliveryScanMark']);
+        // Scan help (Aug-2026): a rider who cannot scan every packet asks a manager to approve a
+        // short delivery, instead of the packet count being silently ignored. The two /scan-help
+        // collection routes are declared BEFORE the {id} forms purely for readability — the
+        // prefixes differ, so there is no capture risk either way.
+        Route::get('/scan-help/pending', [\App\Http\Controllers\API\RiderController::class, 'scanHelpPending']);
+        Route::post('/scan-help/decide', [\App\Http\Controllers\API\RiderController::class, 'scanHelpDecide']);
+        Route::post('/orders/{id}/scan-help', [\App\Http\Controllers\API\RiderController::class, 'scanHelpRequest']);
+        Route::get('/orders/{id}/scan-help', [\App\Http\Controllers\API\RiderController::class, 'scanHelpStatus']);
         // Receipt printout field config for the app (which fields/text to print).
         Route::get('/receipt-config', [\App\Http\Controllers\API\RiderController::class, 'getReceiptConfig']);
         // Dispatch package-scan (store hand-over): scan each packet, persistent "ready" tick.
@@ -1039,6 +1047,15 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::post('/sms/{id}/ignore', [\App\Http\Controllers\API\AssistantSmsController::class, 'ignore']);
         Route::post('/sms/{id}/teach-sender', [\App\Http\Controllers\API\AssistantSmsController::class, 'teachSender']);
         Route::post('/sms/{id}/save-map', [\App\Http\Controllers\API\AssistantSmsController::class, 'saveMap']);
+
+        // Tag-on-entry: "you just recorded a payment — is this its bank SMS?"
+        // Same endpoints the web uses, so phone and web behave identically.
+        Route::get('/money-out/candidates', [\App\Http\Controllers\API\AssistantSmsController::class, 'tagCandidates']);
+        Route::post('/money-out/tag', [\App\Http\Controllers\API\AssistantSmsController::class, 'tagToEntry']);
+        Route::get('/money-out/for-entry', [\App\Http\Controllers\API\AssistantSmsController::class, 'smsForEntry']);
+
+        // Movement log — what payments changed hands (self-heal visibility).
+        Route::get('/money-moves', [\App\Http\Controllers\API\AssistantWorkspaceController::class, 'moneyMoves']);
         Route::post('/sms/{id}/restore', [\App\Http\Controllers\API\AssistantSmsController::class, 'restore']);
     });
 

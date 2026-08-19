@@ -563,7 +563,11 @@ class AssistantSmsController extends Controller
         // automation you cannot reverse is automation you cannot trust. A row
         // closed by a real confirmed DRAFT is excluded: that one represents
         // money actually recorded, so it is not the sweep's to undo.
-        $undoable = ['already_recorded', 'already_in_ledger', 'order_approved', 'approved_in_queue'];
+        // 'entry_tagged' is here for the same reason as the rest: an answer
+        // given in one tap while recording a payment must be takeable back in
+        // one tap. Restore also frees the ledger row (linked_ledger_id → null)
+        // so the right SMS can still be filed against it afterwards.
+        $undoable = ['already_recorded', 'already_in_ledger', 'order_approved', 'approved_in_queue', 'entry_tagged'];
         $isAutoClosed = $sms
             && in_array($sms->status, ['recorded', 'matched'], true)
             && in_array((string) $sms->auto_reason, $undoable, true)
@@ -725,6 +729,100 @@ class AssistantSmsController extends Controller
         }
 
         return response()->json(['success' => true, 'sms' => $this->row($id)]);
+    }
+
+    // ── TAG-ON-ENTRY (a payment recorded by hand ⇄ its bank SMS) ─────────────
+
+    /**
+     * GET /assistant/money-out/candidates?ledger_id=N — the open bank debits
+     * that could be the entry just recorded. Read-only; safe to call after any
+     * save. An empty list is the normal answer and means "say nothing".
+     */
+    public function tagCandidates(Request $request)
+    {
+        $user = Auth::user();
+        if (!$this->allowed($user)) {
+            return response()->json(['success' => false, 'message' => 'No permission'], 403);
+        }
+        $request->validate(['ledger_id' => 'required|integer']);
+
+        $svc = app(\App\Services\Assistant\MoneyOutTagService::class);
+        $result = $svc->afterEntry((int) $request->input('ledger_id'), (int) $user->id);
+
+        return response()->json([
+            'success'    => true,
+            'mode'       => $svc->mode((int) $user->id),
+            // null → nothing to say. Otherwise action = ask | tagged.
+            'action'     => $result['action'] ?? null,
+            'candidates' => $result['candidates'] ?? [],
+            'message'    => $result['message'] ?? null,
+        ]);
+    }
+
+    /**
+     * POST /assistant/money-out/tag — {sms_id, ledger_id}. "Yes, that's it."
+     * The human answer that turns an inference into a recorded fact.
+     */
+    public function tagToEntry(Request $request)
+    {
+        $user = Auth::user();
+        if (!$this->allowed($user)) {
+            return response()->json(['success' => false, 'message' => 'No permission'], 403);
+        }
+        $request->validate([
+            'sms_id'    => 'required|integer',
+            'ledger_id' => 'required|integer',
+        ]);
+
+        $result = app(\App\Services\Assistant\MoneyOutTagService::class)
+            ->tag((int) $request->input('sms_id'), (int) $request->input('ledger_id'), (int) $user->id);
+
+        return response()->json([
+            'success' => $result['ok'],
+            'message' => $result['message'],
+        ], $result['ok'] ? 200 : 422);
+    }
+
+    /**
+     * GET /assistant/money-out/for-entry?ledger_id=N — the bank SMS already
+     * filed against this entry, or null. This is the OTHER half of "what was
+     * tagged to what": the money box names the entry, and a payment screen can
+     * now name its bank message. Read-only.
+     */
+    public function smsForEntry(Request $request)
+    {
+        $user = Auth::user();
+        if (!$this->allowed($user)) {
+            return response()->json(['success' => false, 'message' => 'No permission'], 403);
+        }
+        $request->validate(['ledger_id' => 'required|integer']);
+
+        $s = DB::table('t_ai_bank_sms as s')
+            ->leftJoin('t_fin_online_receiving_accounts as b', 'b.id', '=', 's.receiving_account_id')
+            ->where('s.linked_ledger_id', (int) $request->input('ledger_id'))
+            ->first(['s.id', 's.amount', 's.counterparty', 's.reference', 's.sms_at',
+                     's.auto_reason', 'b.name as bank']);
+
+        return response()->json([
+            'success' => true,
+            'sms'     => $s ? [
+                'id'           => (int) $s->id,
+                'amount'       => round((float) $s->amount, 0),
+                'counterparty' => $s->counterparty,
+                'reference'    => $s->reference,
+                'bank'         => $s->bank,
+                'at'           => $s->sms_at,
+                // How it came to be filed here — an explicit human answer reads
+                // differently from a sweep's inference, and the difference is
+                // worth showing.
+                'how'          => match ((string) $s->auto_reason) {
+                    'entry_tagged'     => 'You confirmed this bank SMS for this entry',
+                    'already_recorded' => 'Matched automatically to this entry',
+                    'auto_card'        => 'Recorded from this bank SMS',
+                    default            => 'Linked to this entry',
+                },
+            ] : null,
+        ]);
     }
 
     // ── helpers ──────────────────────────────────────────────────────────────

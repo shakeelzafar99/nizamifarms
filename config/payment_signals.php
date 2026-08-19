@@ -100,6 +100,25 @@ return [
     // WhatsApp screenshots are exempt — the customer sent that image on purpose.
     'mismatch_attach_max_ratio' => env('PAYMENT_SIGNALS_MISMATCH_MAX_RATIO', 3.0),
 
+    // …and the FLOOR for the same fallback. A credit far below the invoice it
+    // would land on is not a part-payment, it is a different transaction:
+    // Aug-2026, Rs 2,250 read as Adnan Khan's and attached to his Rs 19,921
+    // invoice (0.11x) because the payer name "MUHAMMAD ASLAM KHAN" shared two
+    // common tokens with his alias. Measured on the full history: 95.2% of real
+    // matches sit at 0.8-1.25x, and a 0.5 floor refuses exactly ONE bank-side
+    // speculative attach — that one. Genuine part-payments (0.5-0.8x) survive,
+    // as does the Nouman case (7,600 on a 7,400 balance = 1.03x). Set 0 to
+    // disable. WhatsApp screenshots are exempt, same as the ceiling.
+    'mismatch_attach_min_ratio' => env('PAYMENT_SIGNALS_MISMATCH_MIN_RATIO', 0.5),
+
+    // A name token appearing in at least this SHARE of our customer/alias
+    // corpus carries no identity, so two names agreeing only on such tokens is
+    // not an identification (KHAN 6.65%, MUHAMMAD 5.61%, ALI 4.55% — against
+    // ASLAM 0.61%, ADNAN 0.60%, NOUMAN 0.08%). Measured live, never hard-coded,
+    // and it does NOT stop common surnames counting — it only stops them
+    // counting ALONE. Set 0 to disable the check.
+    'name_generic_token_share' => env('PAYMENT_SIGNALS_GENERIC_TOKEN_SHARE', 0.02),
+
     // Held bank credits are re-evaluated (the "resweep") because the invoice
     // they belong to is usually created AT DELIVERY — minutes to hours AFTER
     // the customer paid — so the first attempt at ingest often had nothing to

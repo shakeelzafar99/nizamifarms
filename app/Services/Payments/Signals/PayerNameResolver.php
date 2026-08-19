@@ -153,9 +153,14 @@ class PayerNameResolver
         foreach ([['alias_tokens', $this->aliasIndex()], ['name_tokens', $this->customerIndex()]] as [$tier, $index]) {
             $matches = [];
             foreach ($index as $entry) {
-                if (count(array_intersect($entry['folded'], $folded)) >= $minTokens) {
-                    $matches[$entry['customer_id']] = true;
+                $shared = array_intersect($entry['folded'], $folded);
+                if (count($shared) < $minTokens) {
+                    continue;
                 }
+                if (!$this->sharedTokensIdentify($shared, $entry['folded'], $folded)) {
+                    continue;
+                }
+                $matches[$entry['customer_id']] = true;
             }
             $ids = array_keys($matches);
             if (count($ids) === 1) {
@@ -172,6 +177,89 @@ class PayerNameResolver
         }
 
         return null;
+    }
+
+    /**
+     * Do the tokens these two names agree on actually NAME anybody?
+     *
+     * ⚠⚠ THE FAILURE THIS EXISTS FOR (Aug-2026). A Rs 2,250 credit from
+     * "MUHAMMAD ASLAM KHAN" was resolved to **Adnan Khan**, whose confirmed
+     * alias is "MUHAMMAD ADNAN KHAN". Two tokens agreed — MUHAMMAD and KHAN —
+     * which cleared the >= 2 bar. But in this customer book KHAN appears in
+     * 6.65% of names and MUHAMMAD in 5.61%; together they are barely more
+     * identifying than "Mr". The one token that carried the identity, ASLAM
+     * (0.61%) vs ADNAN (0.60%), is exactly the one that DISAGREED.
+     *
+     * So: at least one token they share must be distinctive. Frequency is
+     * measured from the live corpus rather than hard-coded, because a name list
+     * is a moving target and a stale constant would quietly rot.
+     *
+     * ⚠ This does NOT strip common surnames from matching — Malik, Khan, Syed
+     * and Chaudhry are real name parts here and removing them would manufacture
+     * collisions (a lesson already paid for). They still count; they just
+     * cannot be the ONLY thing two names have in common.
+     */
+    private function sharedTokensIdentify(array $shared, array $candidate, array $payer): bool
+    {
+        $generic = $this->genericTokens();
+        if (empty($generic)) {
+            return true; // corpus too small to judge — behave as before
+        }
+
+        // Identical names agree on everything, so genericness is moot: "ALI
+        // AHMED" matching "ALI AHMED" is a real match even though both tokens
+        // are common. Only PARTIAL overlaps have to earn it.
+        $a = array_values($candidate); sort($a);
+        $b = array_values($payer);     sort($b);
+        if ($a === $b) {
+            return true;
+        }
+
+        foreach ($shared as $token) {
+            if (!isset($generic[$token])) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Tokens common enough in our own customer/alias corpus that agreeing on
+     * them proves nothing, as a [folded token => true] set. Computed from the
+     * indexes already loaded for matching, so it costs no extra query.
+     */
+    private ?array $genericTokensCache = null;
+
+    private function genericTokens(): array
+    {
+        if ($this->genericTokensCache !== null) {
+            return $this->genericTokensCache;
+        }
+
+        $share = (float) config('payment_signals.name_generic_token_share', 0.02);
+        $entries = array_merge($this->customerIndex(), $this->aliasIndex());
+        $total = count($entries);
+
+        // A thin corpus cannot support a frequency argument — every token would
+        // look common. Judge nothing rather than judge wrongly.
+        if ($share <= 0 || $total < 500) {
+            return $this->genericTokensCache = [];
+        }
+
+        $freq = [];
+        foreach ($entries as $entry) {
+            foreach (array_unique($entry['folded']) as $t) {
+                $freq[$t] = ($freq[$t] ?? 0) + 1;
+            }
+        }
+
+        $generic = [];
+        foreach ($freq as $token => $count) {
+            if ($count / $total >= $share) {
+                $generic[$token] = true;
+            }
+        }
+        return $this->genericTokensCache = $generic;
     }
 
     /**

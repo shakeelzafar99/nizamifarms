@@ -153,6 +153,73 @@
         </div>
     @endif
 
+    {{-- "Is this the bank SMS for the payment you just recorded?" — flashed by
+         VendorController@recordPayment when a matching debit is still waiting in
+         the assistant's money box. Answering files it against this entry; doing
+         nothing leaves it exactly where it was. --}}
+    @if(session('bank_sms_prompt') && (session('bank_sms_prompt')['action'] ?? null) === 'ask')
+        @php $nfSmsPrompt = session('bank_sms_prompt'); @endphp
+        <div class="mb-4 p-4 bg-blue-50 border border-blue-200 rounded-md" id="nfSmsPrompt">
+            <p class="text-sm font-semibold text-blue-900 mb-1">Is this the bank SMS for that payment?</p>
+            <p class="text-xs text-blue-700 mb-3">Filing it clears the message from your money box and records which entry it belongs to.</p>
+            <div id="nfSmsPromptMsg" class="text-sm text-blue-900 mb-2" style="display:none"></div>
+            <div id="nfSmsPromptRows">
+                @foreach($nfSmsPrompt['candidates'] as $cand)
+                    <div class="flex items-center gap-3 bg-white border border-blue-200 rounded-md p-3 mb-2">
+                        <div class="flex-1 min-w-0">
+                            <div class="text-sm font-semibold text-gray-900">Rs. {{ number_format($cand['amount'], 0) }}</div>
+                            <div class="text-xs text-gray-500">
+                                {{ collect([$cand['counterparty'], trim(($cand['date'] ?? '') . ' ' . ($cand['time'] ?? '')), $cand['bank'], $cand['reference'] ? 'TID ' . $cand['reference'] : null])->filter()->implode(' · ') }}
+                            </div>
+                        </div>
+                        <button type="button"
+                                class="px-3 py-1.5 text-sm font-medium text-white bg-blue-600 rounded-md hover:bg-blue-700 whitespace-nowrap nf-sms-yes"
+                                data-sms="{{ $cand['id'] }}" data-ledger="{{ $nfSmsPrompt['ledger_id'] }}">Yes, that's it</button>
+                    </div>
+                @endforeach
+            </div>
+            <button type="button" class="text-xs text-blue-700 underline"
+                    onclick="document.getElementById('nfSmsPrompt').remove()">Not this one — leave it</button>
+        </div>
+        {{-- ⚠ Inline, NOT @push('scripts'): this layout stacks 'demo1_js' and
+             'modals' — there is no 'scripts' stack, so a push would compile
+             fine and silently never render. This page's own scripts are inline
+             inside @section('content') too, so this matches it. --}}
+        <script>
+        // Standalone on purpose: this page's other scripts are unrelated, and a
+        // banner that fails must never take the vendor page down with it.
+        (function () {
+            var box = document.getElementById('nfSmsPrompt');
+            if (!box) return;
+            var token = (document.querySelector('meta[name="csrf-token"]') || {}).content || '';
+            box.querySelectorAll('.nf-sms-yes').forEach(function (btn) {
+                btn.addEventListener('click', function () {
+                    btn.disabled = true; btn.textContent = 'Filing…';
+                    var fd = new FormData();
+                    fd.append('_token', token);
+                    fd.append('sms_id', btn.dataset.sms);
+                    fd.append('ledger_id', btn.dataset.ledger);
+                    fetch('{{ url('assistant-view/money-out/tag') }}', {
+                        method: 'POST', body: fd,
+                        headers: {'X-Requested-With': 'XMLHttpRequest', 'Accept': 'application/json'}
+                    }).then(function (r) { return r.json(); }).then(function (j) {
+                        var msg = document.getElementById('nfSmsPromptMsg');
+                        msg.textContent = j.message || (j.success ? 'Filed.' : 'Could not file that bank SMS.');
+                        msg.style.display = 'block';
+                        if (j.success) { document.getElementById('nfSmsPromptRows').remove(); }
+                        else { btn.disabled = false; btn.textContent = "Yes, that's it"; }
+                    }).catch(function () {
+                        btn.disabled = false; btn.textContent = "Yes, that's it";
+                        var msg = document.getElementById('nfSmsPromptMsg');
+                        msg.textContent = 'Network error — the payment is recorded; the SMS is still in your money box.';
+                        msg.style.display = 'block';
+                    });
+                });
+            });
+        })();
+        </script>
+    @endif
+
     <!-- Date Range Filter -->
     <div class="bg-gradient-to-r from-blue-50 to-blue-100 rounded-lg p-3 mb-4 border border-blue-300 shadow-sm">
         <form method="GET" action="{{ route('fin.vendors.show', $vendor->id) }}" class="flex flex-wrap items-end gap-3">

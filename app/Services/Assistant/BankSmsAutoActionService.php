@@ -480,15 +480,299 @@ class BankSmsAutoActionService
             $this->map->bump((int) $rule->id);
             return ['action' => 'auto_ignored', 'label' => $this->map->entityName($rule)];
         }
-        // Vendor / expense / account rules only pre-fill the card — never
-        // auto-post. But RECOGNISING the SMS still counts: bump here (once per
-        // ingested SMS) so the review panel's "recognised N×, last seen" is
-        // truthful. Before this, only ignore/customer rules ever bumped and a
-        // heavily-used vendor rule read "not seen yet" forever.
+        // Vendor / expense / account rules never auto-POST. But RECOGNISING the
+        // SMS counts: bump here (once per ingested SMS) so the review panel's
+        // "recognised N×, last seen" is truthful. Before this, only
+        // ignore/customer rules ever bumped and a heavily-used vendor rule read
+        // "not seen yet" forever.
         if ($rule && in_array($rule->entity_type, ['vendor', 'expense', 'account'], true)) {
             $this->map->bump((int) $rule->id);
+            return $this->raiseDebitCard($sms, $rule);
         }
         return null;
+    }
+
+    /**
+     * A debit from a TAUGHT account raises its confirmation card immediately.
+     *
+     * ⭐ WHY: the money-safety rule is unchanged — nothing here posts anything,
+     * and Taimur's Confirm is still the only thing that moves money. What
+     * changes is that the card is already waiting for him instead of needing a
+     * tap in the money box to create it. Recognised rows were sitting for days
+     * because "one tap" was really two taps on two screens. `raiseShopCard()`
+     * has done exactly this for mapped SHOP credits since Jul-2026; this is the
+     * same move for the money-out side.
+     *
+     * Failure is always silent and safe: no card simply means the SMS stays in
+     * the money box with its existing buttons, i.e. today's behaviour.
+     */
+    private function raiseDebitCard(object $sms, object $rule): ?array
+    {
+        try {
+            // Same preconditions the manual inbox path checks before drafting.
+            if (!$sms->receiving_account_id || !($sms->amount > 0)) {
+                return null;
+            }
+
+            // ⚠⚠ ALREADY ON THE BOOKS → NO CARD. Taimur records first and the
+            // SMS arrives later — measured on prod data: one T.ALI alert landed
+            // 42 HOURS after its payment was entered, and the NF Messages
+            // deep-scan posts old SMS in BATCHES, so several already-recorded
+            // transfers can arrive together. Raising cards for those (which
+            // would CLUB, and a clubbed card carries no duplicate warning) is a
+            // straight road to recording a night twice. If an unclaimed ledger
+            // row already matches this debit, the answer is the money-inbox
+            // sweep — it closes the SMS as "already recorded" on the next box
+            // load, with Restore if it is ever wrong. Skipping here costs
+            // nothing: the SMS stays in the box exactly as today.
+            if ($this->coveredByExistingLedger($sms, $rule)) {
+                return null;
+            }
+            $user = \App\Models\User::find($sms->user_id);
+            if (!$user) {
+                return null;
+            }
+            $online = \App\Models\FIN\AccountModel::getByCode('ONLINE');
+            if (!$online) {
+                return null;
+            }
+
+            $drafts = app(AssistantDraftService::class);
+            $label  = $this->map->entityName($rule);
+            $common = [
+                'amount'                    => (float) $sms->amount,
+                'payment_source_account_id' => $online->id,
+                'receiving_account_id'      => (int) $sms->receiving_account_id,
+                // Never let the card adopt whatever image is latest in chat, and
+                // (since Aug-2026) mark it as SMS-raised so it gets the long TTL.
+                '_from_sms'                 => true,
+            ];
+
+            $result = match ($rule->entity_type) {
+                'vendor'  => $this->raiseVendorCard($sms, $rule, $common, $user, $drafts),
+                'expense' => $drafts->draftExpense($common + [
+                    'expense_category' => $label,
+                    'title'            => $label,
+                    'description'      => $this->smsNote($sms),
+                ], $user),
+                'account' => $drafts->draftAccountTransfer([
+                    'from_account_id'      => $online->id,
+                    'to_account_id'        => (int) $rule->entity_id,
+                    'amount'               => (float) $sms->amount,
+                    'receiving_account_id' => (int) $sms->receiving_account_id,
+                    'mode'                 => 'online',
+                    'description'          => $this->smsNote($sms),
+                    '_from_sms'            => true,
+                ], $user),
+                default   => null,
+            };
+
+            if (!$result || !empty($result['error']) || empty($result['draft_id'])) {
+                return null; // stays in the money box — the human path is intact
+            }
+
+            $draftId = (int) $result['draft_id'];
+
+            // Claim THIS sms for the card. A clubbed card also inherits the
+            // previous card's SMS rows — store() re-points them when it
+            // supersedes the old draft, so they are already correct here.
+            DB::table('t_ai_bank_sms')->where('id', $sms->id)->update([
+                'status'          => 'recorded',
+                'linked_draft_id' => $draftId,
+                'auto_reason'     => 'auto_card',
+                'updated_at'      => now(),
+            ]);
+
+            $drafts->postCardToChat($user, $draftId,
+                (string) ($result['summary'] ?? 'Ready to record'),
+                '📩 From your bank SMS —');
+
+            return ['action' => 'auto_card', 'type' => $rule->entity_type, 'label' => $label];
+        } catch (\Throwable $e) {
+            Log::warning('[raiseDebitCard] ' . $e->getMessage(), ['sms_id' => $sms->id ?? null]);
+            return null;
+        }
+    }
+
+    /**
+     * The vendor card — CLUBBED when this vendor already has an unconfirmed one.
+     *
+     * A vendor paid twice in one evening should be ONE decision, not two cards
+     * racing each other: RAAST caps routinely split a single payment into
+     * several transfers (Aug-10: four Rs 150,000 sends to one vendor inside two
+     * minutes). The new card supersedes the old via `replaces_draft_id`, and
+     * `store()` re-points the old card's SMS rows onto it, so every transfer in
+     * the club stays linked to the one card that will record them all.
+     *
+     * ⚠ If clubbing is refused — most often because the TOTAL now exceeds what
+     * we owe the vendor — we do NOT fall back to raising a second single card.
+     * Two live cards for one vendor is how the same night gets recorded twice.
+     * The existing card stands and the new SMS waits in the money box.
+     */
+    private function raiseVendorCard(object $sms, object $rule, array $common, $user, AssistantDraftService $drafts): ?array
+    {
+        $vendorId = (int) $rule->entity_id;
+        $pending  = $this->pendingVendorCard($user->id, $vendorId);
+
+        $mine = [
+            'sms_id'    => (int) $sms->id,
+            'amount'    => (float) $sms->amount,
+            'reference' => $sms->reference,
+            'time'      => $sms->sms_at ? substr((string) $sms->sms_at, 11, 5) : null,
+            'date'      => $sms->sms_at ? substr((string) $sms->sms_at, 0, 10) : null,
+        ];
+
+        if (!$pending) {
+            return $drafts->draftVendorPayment($common + [
+                'vendor_id'        => $vendorId,
+                'description'      => $this->smsNote($sms),
+                'transaction_date' => $mine['date'],
+                '_transfers'       => [$mine], // a single entry is not a batch
+            ], $user);
+        }
+
+        $payload  = json_decode($pending->payload_json, true) ?: [];
+
+        // ⚠⚠ NEVER CLUB ACROSS BANKS. A card carries ONE receiving bank and the
+        // batch commit stamps every ledger row with it — so folding a transfer
+        // from a DIFFERENT bank into the club would book that row under the
+        // wrong bank and quietly skew both banks' balances. And this is not a
+        // corner case: vendors were paid through two banks on the same day nine
+        // times since June (Meezan for one transfer, Alfalah for the next).
+        // The other-bank SMS simply waits in the money box — recording it there
+        // by hand is exactly right, because it IS a separate movement of a
+        // different bank's money. (No second auto-card either: two live cards
+        // for one vendor is how a night gets recorded twice.)
+        if ((int) ($payload['receiving_account_id'] ?? 0) !== (int) $sms->receiving_account_id) {
+            return null;
+        }
+        $existing = $payload['_transfers'] ?? null;
+
+        // An older single-payment card carries no transfer list — rebuild its
+        // one entry from the SMS that produced it, so it joins the club rather
+        // than being silently dropped from the total.
+        if (!is_array($existing) || !$existing) {
+            $existing = [];
+            foreach (DB::table('t_ai_bank_sms')->where('linked_draft_id', $pending->id)->get() as $prior) {
+                $existing[] = [
+                    'sms_id'    => (int) $prior->id,
+                    'amount'    => (float) $prior->amount,
+                    'reference' => $prior->reference,
+                    'time'      => $prior->sms_at ? substr((string) $prior->sms_at, 11, 5) : null,
+                    'date'      => $prior->sms_at ? substr((string) $prior->sms_at, 0, 10) : null,
+                ];
+            }
+            if (!$existing) {
+                return null; // can't reconstruct it — leave both alone
+            }
+        }
+
+        return $drafts->draftVendorPayment($common + [
+            'vendor_id'          => $vendorId,
+            'description'        => $this->smsNote($sms),
+            'transaction_date'   => $existing[0]['date'] ?? $mine['date'],
+            '_transfers'         => array_merge($existing, [$mine]),
+            'replaces_draft_id'  => (int) $pending->id,
+        ], $user);
+    }
+
+    /**
+     * Do the ledger rows already on the books COVER this debit?
+     *
+     * ⭐⭐ COUNT-AWARE, exactly like the sweep's pairing — because split
+     * transfers make same-signature debits routine (four Rs 150,000 to one
+     * vendor in one night). Two hand-recorded rows must excuse exactly TWO of
+     * those transfers, not all four: R matching unclaimed ledger rows against S
+     * matching unresolved SMS — covered only while R >= S. Arriving one at a
+     * time, that plays out naturally: with 2 rows on the books, arrivals 1 and
+     * 2 are covered (skip — the sweep files them as already recorded), arrivals
+     * 3 and 4 exceed the rows and get their card.
+     *
+     * Bounds mirror the sweep (bank + amount ±1 + date ±1, live rows only),
+     * scoped by what the rule KNOWS: vendor rules to that vendor's account,
+     * account rules to that destination, expense rules to expense rows.
+     * "Unclaimed" = no SMS owns the row — one claimed by a different message
+     * is a different transfer and must not excuse this one.
+     */
+    private function coveredByExistingLedger(object $sms, object $rule): bool
+    {
+        $day = substr((string) $sms->sms_at, 0, 10);
+
+        $rows = DB::table('t_fin_ledger as l')
+            ->where('l.mode', 'online')
+            ->whereNotIn('l.approval_status', ['rejected', 'reversed'])
+            ->where('l.receiving_account_id', $sms->receiving_account_id)
+            ->whereRaw('ABS(l.amount - ?) <= 1', [$sms->amount])
+            ->whereRaw('ABS(DATEDIFF(l.transaction_date, ?)) <= 1', [$day])
+            ->whereNotExists(function ($s) {
+                $s->select(DB::raw(1))->from('t_ai_bank_sms as b')
+                  ->whereColumn('b.linked_ledger_id', 'l.id');
+            });
+
+        if ($rule->entity_type === 'vendor') {
+            $accountId = DB::table('t_fin_vendors')->where('id', $rule->entity_id)->value('account_id');
+            if (!$accountId) {
+                return false; // cannot scope — never suppress on a guess
+            }
+            $rows->where('l.transaction_type', 'vendor_payment')->where('l.to_account_id', $accountId);
+        } elseif ($rule->entity_type === 'account') {
+            $rows->where('l.transaction_type', 'transfer')->where('l.to_account_id', (int) $rule->entity_id);
+        } else { // expense
+            $rows->where('l.transaction_type', 'expense');
+        }
+
+        $r = $rows->count();
+        if ($r === 0) {
+            return false;
+        }
+
+        // Unresolved same-signature SMS, THIS one included (it is 'new' during
+        // ingest). Keyed on the counterparty account when the SMS carries one —
+        // the same identity the rule fired on — else bank+amount+day alone.
+        $s = DB::table('t_ai_bank_sms')
+            ->where('user_id', $sms->user_id)
+            ->where('status', 'new')
+            ->whereIn('direction', ['debit', 'unknown'])
+            ->where('receiving_account_id', $sms->receiving_account_id)
+            ->whereRaw('ABS(COALESCE(amount,0) - ?) <= 1', [$sms->amount])
+            ->whereRaw('ABS(DATEDIFF(DATE(sms_at), ?)) <= 1', [$day])
+            ->when(!empty($sms->counterparty_account),
+                fn($q) => $q->where('counterparty_account', $sms->counterparty_account))
+            ->count();
+
+        return $r >= max(1, $s);
+    }
+
+    /** This user's live, unconfirmed vendor card for that vendor, or null. */
+    private function pendingVendorCard(int $userId, int $vendorId): ?object
+    {
+        $rows = DB::table('t_ai_drafts')
+            ->where('user_id', $userId)
+            ->where('type', 'vendor_payment')
+            ->where('status', 'pending')
+            ->where(fn($q) => $q->whereNull('expires_at')->orWhere('expires_at', '>', now()))
+            ->orderByDesc('id')
+            ->get(['id', 'payload_json']);
+
+        foreach ($rows as $row) {
+            $payload = json_decode($row->payload_json, true) ?: [];
+            // Only ever club cards that came from bank SMS: a payment Taimur
+            // typed in chat is his own deliberate entry and must not be
+            // rewritten underneath him by an arriving message.
+            if ((int) ($payload['vendor_id'] ?? 0) === $vendorId && !empty($payload['_from_sms'])) {
+                return $row;
+            }
+        }
+        return null;
+    }
+
+    /** The same one-line provenance note the manual inbox path writes. */
+    private function smsNote(object $sms): string
+    {
+        $bits = ['From bank SMS'];
+        if ($sms->counterparty) $bits[] = $sms->counterparty;
+        if ($sms->reference)    $bits[] = 'ref ' . $sms->reference;
+        return mb_substr(implode(' · ', $bits), 0, 490);
     }
 
     /** A bank-side signal describing this SMS (the bank's own word). */

@@ -7,6 +7,7 @@ use App\Services\Riders\VehicleService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Facades\Storage;
 
 /**
@@ -66,6 +67,8 @@ class VehicleController extends Controller
                 'can_manage' => $this->canManage(),
                 // Photos are a separate, wider right — see canAddPhotos().
                 'can_add_photos' => $this->canAddPhotos(),
+                // ⭐ Recording a machine's meter is its own right (manage_bike_service).
+                'can_log_meters' => $this->canLogMeters(),
                 'transfer_grace_km' => $svc->transferGraceKm(),
                 'rules_enabled'     => $svc->rulesEnabled(),
             ]);
@@ -1045,6 +1048,26 @@ class VehicleController extends Controller
     }
 
     /**
+     * Every active user, for the meter-log DRIVER picker only. The assign modal
+     * keeps the rider roster() — an ASSIGNMENT makes someone a machine-holder with
+     * meter demands, so it stays rider-shaped; a log entry merely NAMES who drove
+     * a stint, and the owner ruled that can be anyone on the team.
+     */
+    private function allActiveUsers(): array
+    {
+        try {
+            return DB::table('t_sys_user')
+                ->where('is_active', '1')   // ⚠ this table uses 1/0, not Y/N
+                ->orderBy('fullname')
+                ->get(['id', 'fullname'])
+                ->map(fn ($u) => ['user_id' => (int) $u->id, 'name' => $u->fullname])
+                ->values()->all();
+        } catch (\Throwable $e) {
+            return $this->roster();   // worst case: the old, narrower list
+        }
+    }
+
+    /**
      * The rider list the assign modal picks from — the Bikes roster (the "Delivery
      * Rider" tick on the People list), never the company-wide user list, whose
      * names render cut off and whose entries are mostly not riders at all.
@@ -1113,6 +1136,210 @@ class VehicleController extends Controller
      * May this user change the fleet? `assign_vehicles` and nothing else.
      * View-only accounts are refused regardless of the grant (ReadOnlyGuard).
      */
+    /**
+     * ⭐ MAY THIS USER RECORD A MACHINE'S METER? (owner ruling Aug-14: Shabib +
+     *   admin users + Qasim — which is exactly the `manage_bike_service` holder set,
+     *   so NO new permission key is needed.)
+     *
+     * ⚠ Deliberately NOT `assign_vehicles`: recording what a machine did belongs to
+     *   the same family as recording its service, not to handing it to someone.
+     *   Read-only accounts are refused here as everywhere.
+     */
+    private function canLogMeters(): bool
+    {
+        $u = auth()->user();
+        if (!$u) return false;
+        if (method_exists($u, 'isReadOnly') && $u->isReadOnly()) return false;
+        return (bool) $u->hasPermission('manage_bike_service');
+    }
+
+    /**
+     * ⚠⚠ THE SAME ACTION MUST HAVE THE SAME LOCK. Correcting a rider's attendance
+     *   reading is already reachable from the Attendance page, whose only server gate
+     *   is `block.rider` (pure-rider accounts refused). Mirroring exactly that here
+     *   means this second door changes NOBODY's access: it does not widen it, and it
+     *   does not create the inconsistency of one screen refusing what another allows.
+     */
+    private function canCorrectAttendance(): bool
+    {
+        $u = auth()->user();
+        if (!$u) return false;
+        if (method_exists($u, 'isReadOnly') && $u->isReadOnly()) return false;
+
+        $roleTypes = DB::table('t_sys_user_role as ur')
+            ->join('t_sys_role as r', 'r.id', '=', 'ur.role_id')
+            ->where('ur.user_id', $u->id)->pluck('r.type')->all();
+        $hasRider = in_array('rider', $roleTypes, true);
+        $hasStaff = count(array_filter($roleTypes, fn ($t) => $t !== 'rider')) > 0;
+        return !($hasRider && !$hasStaff);
+    }
+
+    /**
+     * What the meter editor shows for one machine on one date: whatever is ALREADY
+     * recorded, and where each reading came from.
+     *
+     * ⭐⭐ THIS IS WHAT MAKES "ONE READING, ONE HOME" ENFORCEABLE. The editor preloads
+     *   from here, so a manager can never add a log reading that competes with a
+     *   rider's attendance reading for the same slot — he edits the existing one
+     *   instead. Two competing points for one reading would put a contradiction into
+     *   the machine's chain, which is the class of bug the engine exists to prevent.
+     */
+    public function meterDay(Request $request, VehicleService $svc, $id)
+    {
+        if (!$this->canLogMeters()) {
+            return response()->json(['success' => false, 'message' => 'Not authorised to record meters'], 403);
+        }
+        $data = $request->validate(['date' => 'required|date']);
+        $date = \Carbon\Carbon::parse($data['date'])->format('Y-m-d');
+
+        try {
+            $res = new \App\Services\Riders\VehicleResolver();
+
+            // 1. an ATTENDANCE row whose day the resolver maps to THIS machine
+            $attendance = null;
+            foreach (DB::table('t_ops_attendance as a')
+                        ->leftJoin('t_sys_user as u', 'u.id', '=', 'a.user_id')
+                        ->where('a.attendance_date', $date)
+                        ->whereNotNull('a.login_time')
+                        ->get(['a.id', 'a.user_id', 'a.meter_start', 'a.meter_end',
+                               'a.meter_start_source', 'u.fullname']) as $a) {
+                if ($res->vehicleForDay((int) $a->user_id, $date) !== (int) $id) continue;
+                $attendance = [
+                    'attendance_id' => (int) $a->id,
+                    'user_id'       => (int) $a->user_id,
+                    'name'          => $a->fullname,
+                    'meter_start'   => $a->meter_start !== null ? (int) $a->meter_start : null,
+                    'meter_end'     => $a->meter_end !== null ? (int) $a->meter_end : null,
+                    'start_source'  => $a->meter_start_source,
+                ];
+                break;
+            }
+
+            // 2. a LOG row for this machine+date
+            $log = null;
+            if (Schema::hasTable('t_ops_vehicle_meter_log')) {
+                $l = DB::table('t_ops_vehicle_meter_log')
+                    ->where('vehicle_id', (int) $id)->where('log_date', $date)->first();
+                if ($l) {
+                    $log = [
+                        'id'             => (int) $l->id,
+                        'meter_start'    => $l->meter_start !== null ? (int) $l->meter_start : null,
+                        'meter_end'      => $l->meter_end !== null ? (int) $l->meter_end : null,
+                        'driver_user_id' => $l->driver_user_id !== null ? (int) $l->driver_user_id : null,
+                        'note'           => $l->note,
+                    ];
+                }
+            }
+
+            return response()->json([
+                'success'    => true,
+                'date'       => $date,
+                'attendance' => $attendance,
+                'log'        => $log,
+                'can_edit_attendance' => $this->canCorrectAttendance(),
+                // ⭐ Ruling 4 (Aug-18): the DRIVER can be ANY active user — Taimur took
+                //   the van himself on 17 Aug and he is no rider. The roster() list is
+                //   the Delivery-Rider cohort and would hide exactly those people.
+                'drivers'    => $this->allActiveUsers(),
+                'window'     => $svc->meterWindowFor((int) $id, $date),
+            ]);
+        } catch (\Throwable $e) {
+            Log::error('meterDay failed', ['vehicle' => $id, 'error' => $e->getMessage()]);
+            return response()->json(['success' => false, 'message' => 'Could not load that day'], 500);
+        }
+    }
+
+    /**
+     * Save the machine's readings for one date. Each field is routed back to ITS OWN
+     * home: a reading that came from a rider's attendance row updates that row (via
+     * the shared MeterCorrectionService, so the Attendance page and this page cannot
+     * drift); anything else lives in the machine's own log.
+     */
+    public function meterSave(Request $request, VehicleService $svc, $id)
+    {
+        if (!$this->canLogMeters()) {
+            return response()->json(['success' => false, 'message' => 'Not authorised to record meters'], 403);
+        }
+        $data = $request->validate([
+            // ⚠ meters are recorded, never forecast — a future date would plant a
+            //   phantom point in the machine's chain that no reading can ever match.
+            'date'           => 'required|date|before_or_equal:today',
+            'target'         => 'required|in:attendance,log',
+            'attendance_id'  => 'nullable|integer',
+            'meter_start'    => 'nullable|integer|min:0',
+            'meter_end'      => 'nullable|integer|min:0',
+            'driver_user_id' => 'nullable|integer|exists:t_sys_user,id',
+            'note'           => 'nullable|string|max:255',
+        ]);
+        $date = \Carbon\Carbon::parse($data['date'])->format('Y-m-d');
+
+        try {
+            if ($data['target'] === 'attendance') {
+                if (!$this->canCorrectAttendance()) {
+                    return response()->json(['success' => false,
+                        'message' => 'You cannot change a rider own reading here. Correct it on the Attendance page.'], 403);
+                }
+                if (empty($data['attendance_id'])) {
+                    return response()->json(['success' => false, 'message' => 'Which day are we correcting?'], 422);
+                }
+                $r = app(\App\Services\Riders\MeterCorrectionService::class)->correct(
+                    (int) $data['attendance_id'],
+                    $request->has('meter_start'), $data['meter_start'] ?? null,
+                    $request->has('meter_end'),   $data['meter_end'] ?? null,
+                    (int) auth()->id()
+                );
+                if (!$r['ok']) {
+                    return response()->json(['success' => false, 'message' => $r['message']], 422);
+                }
+            } else {
+                if (!Schema::hasTable('t_ops_vehicle_meter_log')) {
+                    return response()->json(['success' => false,
+                        'message' => 'Meter logging is not set up on this server yet (SQL pending).'], 422);
+                }
+                $start = $request->has('meter_start') ? $data['meter_start'] : null;
+                $end   = $request->has('meter_end')   ? $data['meter_end']   : null;
+
+                // Nothing to keep → remove the row rather than leave an empty shell.
+                if ($start === null && $end === null) {
+                    DB::table('t_ops_vehicle_meter_log')
+                        ->where('vehicle_id', (int) $id)->where('log_date', $date)->delete();
+                } else {
+                    $row = [
+                        'vehicle_id'     => (int) $id,
+                        'log_date'       => $date,
+                        'meter_start'    => $start,
+                        'meter_end'      => $end,
+                        'driver_user_id' => $data['driver_user_id'] ?? null,
+                        'note'           => $data['note'] ?? null,
+                        'entered_by'     => (int) auth()->id(),
+                        'updated_at'     => now(),
+                    ];
+                    $existing = DB::table('t_ops_vehicle_meter_log')
+                        ->where('vehicle_id', (int) $id)->where('log_date', $date)->first();
+                    if ($existing) {
+                        DB::table('t_ops_vehicle_meter_log')->where('id', $existing->id)->update($row);
+                    } else {
+                        $row['created_at'] = now();
+                        DB::table('t_ops_vehicle_meter_log')->insert($row);
+                    }
+                }
+                Log::info('Vehicle meter log saved', [
+                    'vehicle_id' => (int) $id, 'date' => $date,
+                    'driver' => $data['driver_user_id'] ?? null, 'by' => auth()->id(),
+                ]);
+            }
+
+            // The month's figures are derived — drop the cache so the page redraws truth.
+            (new \App\Services\Riders\MachineAttribution())->flush(substr($date, 0, 7));
+            \App\Services\Riders\VehicleResolver::flush();
+
+            return response()->json(['success' => true, 'message' => 'Meter saved.']);
+        } catch (\Throwable $e) {
+            Log::error('meterSave failed', ['vehicle' => $id, 'error' => $e->getMessage()]);
+            return response()->json(['success' => false, 'message' => 'Could not save the meter'], 500);
+        }
+    }
+
     private function canManage(): bool
     {
         $u = auth()->user();

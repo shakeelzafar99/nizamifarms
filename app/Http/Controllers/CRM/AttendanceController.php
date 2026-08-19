@@ -1414,59 +1414,29 @@ class AttendanceController extends Controller
                 'meter_end' => 'nullable|integer|min:0',
             ]);
 
-            $att = DB::table('t_ops_attendance')->where('id', $validated['attendance_id'])->first();
-            if (!$att) {
-                return response()->json(['success' => false, 'message' => 'Attendance record not found.'], 404);
+            // ⭐ Aug-2026: the rule moved to MeterCorrectionService so the Vehicles page
+            //   can offer the same correction without a second implementation. The
+            //   "only write what was sent" / U5 provenance / U4 home-journey subtleties
+            //   all live there now — behaviour on this screen is unchanged.
+            $res = app(\App\Services\Riders\MeterCorrectionService::class)->correct(
+                (int) $validated['attendance_id'],
+                $request->has('meter_start'), $validated['meter_start'] ?? null,
+                $request->has('meter_end'),   $validated['meter_end'] ?? null,
+                auth()->id()
+            );
+
+            if (!$res['ok']) {
+                return response()->json(
+                    ['success' => false, 'message' => $res['message']],
+                    $res['message'] === 'Attendance record not found.' ? 404 : 422
+                );
             }
-
-            // Only write the fields that were actually sent (so a blank field doesn't wipe a value).
-            $update = ['updated_by' => auth()->id(), 'updated_at' => now()];
-            if ($request->has('meter_start')) { $update['meter_start'] = $validated['meter_start']; }
-            if ($request->has('meter_end'))   { $update['meter_end']   = $validated['meter_end']; }
-
-            // ⭐ U5 — audit where the START reading came from: a manager filling a MISSING /
-            // office-typed start stamps source='manager' (+moment). A correction of a genuine
-            // home recording keeps its 'home' stamp — the manager only fixed digits.
-            if ($request->has('meter_start') && $validated['meter_start'] !== null
-                && \Illuminate\Support\Facades\Schema::hasColumn('t_ops_attendance', 'meter_start_source')
-                && (string) ($att->meter_start_source ?? '') !== 'home') {
-                $update['meter_start_source'] = 'manager';
-                $update['meter_start_recorded_at'] = now();
-            }
-
-            // ⭐ U4: for a company-bike rider on the going-home flow, meter_home IS the day-closing
-            // reading (a mirror of meter_end). Keep them in sync so a manager correcting meter_end
-            // never leaves the home journey stuck "locked" with a stale/empty meter_home. Only
-            // touches bike-journey rows (home_expected_by set); non-bike rows are unaffected.
-            if ($request->has('meter_end') && $validated['meter_end'] !== null
-                && !empty($att->home_expected_by)
-                && \Illuminate\Support\Facades\Schema::hasColumn('t_ops_attendance', 'meter_home')) {
-                $update['meter_home'] = $validated['meter_end'];
-                if (empty($att->meter_home)) {
-                    // Journey was still open → close it now (honest arrival = the correction moment).
-                    if (empty($att->home_arrived_at)) {
-                        $update['home_arrived_at'] = now();
-                        $update['home_arrival_source'] = 'manager';
-                    }
-                    if (\Illuminate\Support\Facades\Schema::hasColumn('t_ops_attendance', 'home_meter_recorded_at')) {
-                        $update['home_meter_recorded_at'] = now();
-                    }
-                }
-            }
-
-            DB::table('t_ops_attendance')->where('id', $att->id)->update($update);
-
-            \Log::info('Meter values corrected via web attendance', [
-                'attendance_id' => $att->id, 'user_id' => $att->user_id, 'by' => auth()->id(),
-                'meter_start' => $update['meter_start'] ?? $att->meter_start,
-                'meter_end' => $update['meter_end'] ?? $att->meter_end,
-            ]);
 
             return response()->json([
                 'success' => true,
-                'message' => 'Meter updated.',
-                'meter_start' => $update['meter_start'] ?? $att->meter_start,
-                'meter_end' => $update['meter_end'] ?? $att->meter_end,
+                'message' => $res['message'],
+                'meter_start' => $res['meter_start'],
+                'meter_end' => $res['meter_end'],
             ]);
         } catch (\Illuminate\Validation\ValidationException $ve) {
             return response()->json(['success' => false, 'message' => $ve->validator->errors()->first()], 422);
