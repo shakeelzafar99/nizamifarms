@@ -4,6 +4,7 @@ namespace App\Services\Riders;
 
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Schema;
 use Carbon\Carbon;
 
 /**
@@ -39,8 +40,23 @@ class FleetFuelService
     /** Two flat claims closer together than this with the same amount = double-tap. */
     const DOUBLETAP_SECS = 600;
 
+    /**
+     * A gap between two consecutive fills beyond this is a typo or a swapped bike,
+     * never a real tank. Named because BOTH chains below (machine-keyed and the
+     * rider-keyed fallback) have to call the same number plausible — two literals
+     * would eventually drift and the same claim would read "142 km" on one path
+     * and "doesn't add up" on the other.
+     */
+    const MAX_FILL_GAP_KM = 2000;
+
     const CAT_FUEL = 'Petrol';
     const CAT_MAINT = 'Maintenance';
+
+    /** One machine's fill list is walked once per request, not once per claim. */
+    private array $machineFillMemo = [];
+
+    /** Same, for the new-claim form's "since his last fill" hint. */
+    private array $lastFillMemo = [];
 
     // =================================================================
     // MONTH SUMMARY
@@ -236,7 +252,12 @@ class FleetFuelService
                 // The last odometer we have from a FILL, so the new-claim form can
                 // say "that's N km since his last fill" while the manager types —
                 // the same figure the approver later sees on the claim itself.
-                'last_fill_meter' => $this->lastFillMeter($uid),
+                // ⭐ THE BIKE HE HOLDS NOW, not the man: the claim being typed is for
+                //   that machine, so the tank it follows is that machine's. `_by` is
+                //   set when the previous tank was somebody else's, so the hint can
+                //   say so instead of calling it "his".
+                'last_fill_meter' => $this->lastFillMeter($uid)['meter'],
+                'last_fill_by'    => $this->lastFillMeter($uid)['by'],
                 'incl_ride_home_days' => $m['incl_ride_home_days'] ?? 0,
                 'fuel_rs'       => $c['fuel_rs'],
                 'fuel_pending_rs' => $c['fuel_pending_rs'],
@@ -1295,8 +1316,17 @@ class FleetFuelService
                     'meter_distance' => $r->meter_distance !== null ? (float) $r->meter_distance : null,
                     'petrol_rate'    => $r->petrol_rate !== null ? (float) $r->petrol_rate : null,
                     'meter_at_fill'  => $r->meter_at_fill !== null ? (int) $r->meter_at_fill : null,
-                    'km_since_fill'  => ($sinceById[$r->id] ?? null) > 0 ? $sinceById[$r->id] : null,
-                    'km_since_fill_odd' => ($sinceById[$r->id] ?? null) === -1,
+                    'km_since_fill'  => ($sinceById[$r->id]['km'] ?? null) > 0
+                        ? $sinceById[$r->id]['km'] : null,
+                    'km_since_fill_odd' => ($sinceById[$r->id]['km'] ?? null) === -1,
+                    // ⭐ WHOSE tank this is measured from, when it was not his own.
+                    //   "962 km since last fill" on a bike somebody else filled last
+                    //   night is the exact confusion this chip caused; naming the
+                    //   previous filler is what makes the number readable. Extra keys
+                    //   only — an older APK simply ignores them and shows the number.
+                    'km_since_fill_by'   => $sinceById[$r->id]['by'] ?? null,
+                    'km_since_fill_on'   => $sinceById[$r->id]['on'] ?? null,
+                    'km_since_fill_from' => $sinceById[$r->id]['from_meter'] ?? null,
                     'litres'         => $r->litres !== null ? (float) $r->litres : null,
                     'service_type'   => $r->service_type,
                     // The manager's own label for this job ("Brake Shoe"), falling back
@@ -1547,11 +1577,32 @@ class FleetFuelService
     }
 
     /**
-     * claim_id => km since the previous fuel fill (or -1 when the two readings
-     * don't add up). Fills are chained in filing order; the seed is the last
-     * fill with a meter reading BEFORE the month, so month boundaries don't
-     * blank the first delta. Fills without a reading break the chain honestly —
-     * the next delta would span an unknown distance, so it is not invented.
+     * claim_id => how far the BIKE ran on the tank before this one.
+     *
+     * ⭐⭐ MACHINE-KEYED (Aug-2026). A tank belongs to the machine, not to the man,
+     *    so the anchor is the previous fill on THAT BIKE — whoever filed it. The old
+     *    chain asked only "when did this rider last fill?", which is the same question
+     *    on a bike nobody else touches and the wrong one the moment a bike changes
+     *    hands. Danish's 20-Aug fill on DCR-799 (26,441) was measured against his own
+     *    last fill eleven days earlier (25,479) and reported **962 km** for a tank that
+     *    covered **143** — Waseem had filled the same bike at 26,298 the night before.
+     *    It failed in both directions: the first fill after a handover had no anchor at
+     *    all and printed nothing (Danish 8 Aug, Farooq 17 Aug, Rajab's van pair).
+     *
+     * ⭐ The house rule, same as `serviceState` and `FuelClaimRules::odometerWindow`:
+     *    the machine answers where the registry can place the claim, and anything it
+     *    cannot place keeps the rider-keyed answer it has always had. A rider the
+     *    registry has never tracked cannot notice that this code exists.
+     *
+     * ⚠ A fill with NO reading still breaks the chain, now for the whole machine: an
+     *   unmeasured tank means the next delta would span an unknown distance, and that
+     *   is just as true when the unmeasured fill was someone else's. (Per-km metered
+     *   claims carry no reading either, but they only ever attach to OWN bikes — a
+     *   company machine never sees one — so they cannot break a company chain.)
+     *
+     * @return array<int, array{km:int,by:?string,on:?string,from_meter:?int}>
+     *         `km` is -1 where the two readings don't add up; `by` is set only when
+     *         the previous tank was somebody ELSE's.
      */
     private function kmSinceLastFill(int $userId, $claimRows, string $monthStart): array
     {
@@ -1561,6 +1612,123 @@ class FleetFuelService
             ->values();
         if ($fills->isEmpty()) return [];
 
+        // ⚠ The rider walk runs over the WHOLE list rather than over the leftovers,
+        //   so an untracked rider's chain is byte-identical to the one he has always
+        //   had. Placed rows are then OVERWRITTEN by the machine's answer — never
+        //   removed from the walk, whose anchors depend on seeing every fill.
+        $out = $this->riderFillChain($userId, $fills, $monthStart);
+
+        foreach ($this->machineFillChain($userId, $fills) as $id => $m) {
+            $out[$id] = $m;
+        }
+        return $out;
+    }
+
+    /**
+     * ⭐⭐ THE MACHINE'S OWN FILL CHAIN, cut down to one rider's claims.
+     *
+     * Returns an entry for EVERY one of his metered fills the registry can place on
+     * a machine — including an explicit `km => null` when the machine declines to
+     * measure (nothing honest on the near side: the bike's first-ever reading, or a
+     * break behind someone's unmeasured tank). That silence is an ANSWER and must
+     * override the rider-keyed number, which would otherwise bridge across another
+     * man's unknown tank — or another bike entirely. Only fills the registry cannot
+     * PLACE are absent, and absence is the signal to keep the rider-keyed answer.
+     *
+     * ⚠ WHICH CLAIMS BELONG TO A MACHINE IS ASKED ONCE, of
+     *   `VehicleService::claimHistoryFor` — the same reconstruction the Vehicles tab
+     *   spends money against (stamped rows, assignment windows, manager day-overrides,
+     *   the pre-registry backfill). Re-deriving it here would let the fuel chip and the
+     *   bike's own cost history disagree about which bike burned a tank.
+     */
+    private function machineFillChain(int $userId, $fills): array
+    {
+        $out = [];
+        try {
+            // ⭐ THE SAME ROLLBACK LEVER as the rest of the machine work: one config
+            //   row (`MACHINE_ATTRIBUTION = 'N'`) puts every chip back on the rider
+            //   chain with no upload and no code change, and it is how the regression
+            //   suite proves the before/after.
+            if (strtoupper((string) $this->cfg('MACHINE_ATTRIBUTION', 'Y')) !== 'Y') return [];
+
+            $veh = new VehicleService();
+            if (!$veh->available()) return [];
+            $resolver = new VehicleResolver();
+
+            // 1. which machine each of HIS fills belongs to. The STAMP wins — it is the
+            //    fact frozen at filing (VehicleResolver::stampClaim), and a reassignment
+            //    months later must not silently re-point old money. The day lookup only
+            //    covers rows filed before the stamp existed.
+            $stamped = $this->stampedVehicles($fills->pluck('id')->all());
+            $vidByClaim = [];
+            foreach ($fills as $f) {
+                $vid = $stamped[(int) $f->id] ?? null;
+                if (!$vid) $vid = $resolver->vehicleForDay($userId, $f->d);
+                if ($vid) $vidByClaim[(int) $f->id] = (int) $vid;
+            }
+            if (!$vidByClaim) return [];
+
+            // 2. walk each of those machines end to end — every rider's fills, in
+            //    filing order. The walk covers the machine's whole history, so a month
+            //    boundary and a handover are the same non-event to it.
+            foreach (array_unique(array_values($vidByClaim)) as $vid) {
+                $mine = array_flip(array_keys($vidByClaim, $vid, true));
+                $prev = null; $prevBy = null; $prevById = null; $prevOn = null;
+
+                foreach ($this->machineFills($veh, (int) $vid) as $c) {
+                    if ($c['meter'] === null) {          // unmeasured tank — see the docblock
+                        $prev = null; $prevBy = null; $prevById = null; $prevOn = null;
+                        continue;
+                    }
+                    $cur  = (int) $c['meter'];
+                    $his  = isset($mine[$c['id']]);
+
+                    if ($prev === null) {
+                        // ⭐ Nothing honest on the near side (first reading, or the fill
+                        //   behind an unmeasured tank). For HIS claims this is an
+                        //   explicit answer — see the docblock — never a fall-through.
+                        if ($his) $out[$c['id']] = ['km' => null, 'by' => null, 'on' => null, 'from_meter' => null];
+                        $prev = $cur; $prevBy = $c['by_name'];
+                        $prevById = $c['by_user_id']; $prevOn = $c['date'];
+                        continue;
+                    }
+
+                    $delta = $cur - $prev;
+                    if ($delta >= 1 && $delta <= self::MAX_FILL_GAP_KM) {
+                        if ($his) {
+                            $out[$c['id']] = [
+                                'km' => $delta,
+                                // Named only when the previous tank was SOMEONE ELSE's —
+                                // on his own run of fills there is nothing to explain,
+                                // and "since Danish's fill" on Danish's row reads as a bug.
+                                'by' => ($prevById !== null && $prevById !== $userId) ? $prevBy : null,
+                                'on' => $prevOn,
+                                'from_meter' => $prev,
+                            ];
+                        }
+                        $prev = $cur; $prevBy = $c['by_name'];
+                        $prevById = $c['by_user_id']; $prevOn = $c['date'];
+                    } else {
+                        if ($his) $out[$c['id']] = ['km' => -1, 'by' => null, 'on' => null, 'from_meter' => null];
+                        // Anchor stays at the last SANE reading, so one bad entry poisons
+                        // its own row only — exactly as the rider chain has always done.
+                    }
+                }
+            }
+        } catch (\Throwable $e) {
+            // The machine is an improvement, never a dependency. Whatever was already
+            // resolved stands; everything else keeps the rider-keyed answer.
+            Log::warning('machineFillChain unavailable', ['user' => $userId, 'error' => $e->getMessage()]);
+        }
+        return $out;
+    }
+
+    /**
+     * The rider-keyed chain this screen has always used, unchanged in substance.
+     * Still the answer for anyone the registry cannot place on a machine.
+     */
+    private function riderFillChain(int $userId, $fills, string $monthStart): array
+    {
         $prev = DB::table('t_req_master')
             ->where('requester_user_id', $userId)
             ->where('expense_category', self::CAT_FUEL)
@@ -1586,17 +1754,61 @@ class FleetFuelService
                 continue;
             }
             $delta = $cur - $prev;
-            if ($delta >= 1 && $delta <= 2000) {
-                $out[$f->id] = $delta;
+            if ($delta >= 1 && $delta <= self::MAX_FILL_GAP_KM) {
+                $out[(int) $f->id] = ['km' => $delta, 'by' => null, 'on' => null, 'from_meter' => $prev];
                 $prev = $cur;
             } else {
                 // Implausible reading (typo / swapped bike). Flag it, but keep the
                 // anchor at the last SANE reading — otherwise one bad entry would
                 // poison every delta after it instead of just its own.
-                $out[$f->id] = -1;
+                $out[(int) $f->id] = ['km' => -1, 'by' => null, 'on' => null, 'from_meter' => null];
             }
         }
         return $out;
+    }
+
+    /**
+     * One machine's fuel claims, oldest first, memoised per request.
+     *
+     * Ordered by DATE then ID — the same order the Vehicles tab lists them in, so
+     * "the previous fill" means the same physical row on both screens. (Two fills on
+     * one day are ordered by id, which is filing order.)
+     */
+    private function machineFills(VehicleService $veh, int $vehicleId): array
+    {
+        if (array_key_exists($vehicleId, $this->machineFillMemo)) return $this->machineFillMemo[$vehicleId];
+
+        $fuel = array_values(array_filter(
+            $veh->claimHistoryFor($vehicleId),
+            fn ($c) => ($c['category'] ?? null) === self::CAT_FUEL
+        ));
+        usort($fuel, fn ($a, $b) => [$a['date'], $a['id']] <=> [$b['date'], $b['id']]);
+
+        return $this->machineFillMemo[$vehicleId] = $fuel;
+    }
+
+    /**
+     * The machine each claim was STAMPED with at filing, for ids we already hold.
+     *
+     * ⚠ Guarded on the column: the web files can be uploaded to a server where batch
+     *   13 has not been run, and that must degrade to the day lookup rather than 500
+     *   the whole drill-down.
+     *
+     * @return array<int, int>
+     */
+    private function stampedVehicles(array $ids): array
+    {
+        $ids = array_values(array_filter(array_map('intval', $ids)));
+        if (!$ids) return [];
+        try {
+            if (!Schema::hasColumn('t_req_master', 'vehicle_id')) return [];
+            return DB::table('t_req_master')->whereIn('id', $ids)
+                ->whereNotNull('vehicle_id')
+                ->pluck('vehicle_id', 'id')
+                ->map(fn ($v) => (int) $v)->all();
+        } catch (\Throwable $e) {
+            return [];
+        }
     }
 
     /**
@@ -1626,12 +1838,39 @@ class FleetFuelService
      *
      * Needs the odometer at the service (`meter_at_fill`), so it stays null for
      * everything filed before that field existed rather than being guessed.
+     *
+     * ⭐⭐ THREE THINGS CHANGED IN AUG-2026, all so this can never again contradict
+     *    the frozen `service_due_km` printed on the SAME ROW. The live screen showed
+     *    Waseem's 16-Aug oil change as "⏱ serviced 297 km early" AND "🔴 done 43 km
+     *    overdue" at once; on Kanan's 17-Aug row the two were 1,351 km apart.
+     *
+     *    1. WHICH ROWS COUNT is the TYPE's call, not `service_type`'s. That column
+     *       says only "regular", so Chain Set and Brake Shoe — both flagged
+     *       `resets_service_clock = 0` — were being chained as if they were services.
+     *       Waseem's anchor was a Chain Set at 25,007 when the real oil anchor was
+     *       24,667. Same predicate the approval hook uses: `resetsClock()`.
+     *    2. THE ANCHOR IS THE MACHINE'S, not the man's — `lastServicePointBefore`,
+     *       the identical call that produced the frozen figure, including its
+     *       "covers" rule (a tuning is never measured from a mere oil change).
+     *    3. THE INTERVAL IS THE JOB'S OWN. Measuring a 10,000 km brake-shoe job
+     *       against the 1,200 km oil schedule reported it "151 km overdue", which is
+     *       noise dressed as a finding.
+     *
+     * ⭐ Where the row already carries `service_due_km`, that number IS the answer —
+     *    it was frozen at approval against evidence that no longer exists, so
+     *    recomputing it could only ever disagree with it. Note that early/late then
+     *    come out EXACTLY equal to the frozen figure whatever interval is in force,
+     *    since both sides divide out. Only the "▲ N km since last service" line
+     *    depends on the interval, which is why the precedence below has to mirror
+     *    `BikeServiceClock::stampServiceDueKm` — change one, change both.
      */
     private function kmSinceLastService(int $userId, $claimRows, ?bool $isCompany): array
     {
+        $types = app(\App\Services\Riders\MaintenanceTypeService::class);
+
         $regular = collect($claimRows)
             ->filter(fn ($r) => $r->expense_category === self::CAT_MAINT
-                && in_array($r->service_type, ['oil_change', 'general'], true)
+                && $types->resetsClock($r->maintenance_type_id ?? null, $r->service_type)
                 && $r->meter_at_fill !== null
                 && in_array($r->status, ['approved', 'pending'], true))
             ->sortBy(fn ($r) => $r->d . '|' . $r->created_at)
@@ -1640,8 +1879,33 @@ class FleetFuelService
 
         $profiles = $this->profiles();
         $p = $profiles[$userId] ?? null;
-        $interval = (int) (($p->service_interval_km ?? 0) ?: $this->cfg('BIKE_SERVICE_INTERVAL_KM', 3000));
-        if ($interval <= 0) return [];
+        // ⚠ 1200, matching serviceState() and VehicleService. This was 3000 — the
+        //   same two-literals-for-one-rule trap already fixed in serviceState, left
+        //   behind here. The config row exists on prod, so today this changes nothing.
+        $default = (int) $this->cfg('BIKE_SERVICE_INTERVAL_KM', 1200);
+
+        // The schedule this particular job is judged against: its own type first,
+        // then the rider's override, then the company default — the precedence
+        // `stampServiceDueKm` used when it froze `service_due_km`.
+        $intervalFor = function ($r) use ($types, $p, $default): int {
+            $t = $types->find($r->maintenance_type_id ?? null);
+            if ($t && (int) $t->interval_km > 0) return (int) $t->interval_km;
+            $ovr = (int) ($p->service_interval_km ?? 0);
+            if ($ovr > 0) return $ovr;
+            return $default;
+        };
+
+        // ⭐ The machine, where the registry can place the claim. Gated on the same
+        //   rollback lever as every other machine read on this screen.
+        $veh       = new VehicleService();
+        $machineOn = strtoupper((string) $this->cfg('MACHINE_ATTRIBUTION', 'Y')) === 'Y';
+        try {
+            $machineOn = $machineOn && $veh->available();
+        } catch (\Throwable $e) {
+            $machineOn = false;
+        }
+        $resolver = new VehicleResolver();
+        $stamped  = $machineOn ? $this->stampedVehicles($regular->pluck('id')->all()) : [];
 
         // Seed from the most recent regular service BEFORE this month, so the
         // first one in the month is still measured. APPROVED ONLY — the anchor
@@ -1651,6 +1915,9 @@ class FleetFuelService
         // must not shift how the next real claim reads: a mistyped pending meter
         // used to poison the following claim's early/late, and a claim that was
         // later REJECTED had already served as an anchor.
+        //
+        // ⚠ This is now the FALLBACK anchor only — used for riders the registry
+        //   cannot place, whose chip must stay exactly as it has always been.
         $prev = DB::table('t_req_master')
             ->where('requester_user_id', $userId)
             ->where('expense_category', self::CAT_MAINT)
@@ -1666,8 +1933,47 @@ class FleetFuelService
         foreach ($regular as $r) {
             $cur = (int) $r->meter_at_fill;
             $isApproved = $r->status === 'approved';
-            if ($prev !== null) {
+            $interval   = $intervalFor($r);
+            $since      = null;
+            $answered   = false;
+
+            // 1. Frozen at approval — the record of what was actually true then.
+            if ($r->service_due_km !== null && $interval > 0) {
+                $since    = $interval - (int) $r->service_due_km;
+                $answered = true;
+            }
+
+            // 2. Otherwise ask the machine. A pending service has no frozen figure
+            //    by definition, and this is precisely the number the approver wants
+            //    next to the Approve button.
+            if (!$answered && $machineOn) {
+                try {
+                    $vid = $stamped[(int) $r->id] ?? $resolver->vehicleForDay($userId, $r->d);
+                    if ($vid) {
+                        $t = $types->find($r->maintenance_type_id ?? null);
+                        $point = $veh->lastServicePointBefore((int) $vid, $cur,
+                            $t && (int) $t->interval_km > 0 ? (int) $t->interval_km : null);
+                        // ⚠ "Nothing on record that could have included this job" IS an
+                        //   answer, and it is `null` — falling through to the rider
+                        //   anchor here would count exactly the smaller jobs the covers
+                        //   rule just rejected, through the back door. Same reasoning as
+                        //   BikeServiceClock::stampServiceDueKm.
+                        $answered = true;
+                        $since    = $point ? $cur - (int) $point['meter'] : null;
+                    }
+                } catch (\Throwable $e) {
+                    $answered = false;          // machine unavailable → rider chain
+                }
+            }
+
+            // 3. The rider-keyed walk, unchanged, for anyone the registry cannot place.
+            if (!$answered && $prev !== null) {
                 $since = $cur - $prev;
+            }
+
+            // A schedule of zero cannot judge anything early or late — it would make
+            // every service look overdue by its own distance. Say nothing instead.
+            if ($since !== null && $interval > 0) {
                 // Implausible gap = a typo or a swapped bike; don't call it early.
                 if ($since >= 1 && $since <= 50000) {
                     $out[$r->id] = [
@@ -1838,14 +2144,63 @@ class FleetFuelService
      * the attendance meter pictures, which is why those always worked on mobile.
      */
     /**
-     * The most recent odometer this rider recorded ON A FUEL FILL, whatever month
-     * it was in. Used only to show a live "N km since his last fill" while a claim
-     * is being typed — the stored figure on the claim still comes from
-     * kmSinceLastFill(), which chains fills properly and refuses to guess across a
-     * fill that carried no reading.
+     * The odometer the NEXT fill will be measured from, for the live "that's N km
+     * since his last fill" hint while a claim is being typed.
+     *
+     * ⭐ THE MACHINE HE HOLDS NOW, whoever filled it last — the claim being typed is
+     *    for that bike, so the tank it follows is that bike's. Keyed to the man, the
+     *    hint told a manager filing Danish's 20-Aug claim that the previous reading
+     *    was 25,479 (Danish's own, eleven days and one handover ago) when DCR-799 had
+     *    been filled at 26,298 the night before — the same error the chip on the
+     *    saved claim made, one step earlier.
+     *
+     * ⚠ NO ABSOLUTE FLOOR on the machine branch, deliberately. A reading under
+     *   1,000 km is a dropped digit on a 47,000 km bike and the plain truth on
+     *   EDN-198, which has never read above 800; the floor is why that bike's hint
+     *   never appeared at all. Readings on the machine's own list are already
+     *   bounded by its own series — `FuelClaimRules::checkOdometer` refuses anything
+     *   outside the machine's window before it can be saved.
+     *
+     * The stored figure on a saved claim still comes from kmSinceLastFill(), which
+     * chains fills properly and refuses to guess across a fill that carried no
+     * reading. This is only the hint.
+     *
+     * @return array{meter:?int,by:?string}  `by` names the previous filler only when
+     *         it was somebody other than this rider.
      */
-    private function lastFillMeter(int $userId): ?int
+    private function lastFillMeter(int $userId): array
     {
+        if (array_key_exists($userId, $this->lastFillMemo)) return $this->lastFillMemo[$userId];
+        $out = ['meter' => null, 'by' => null];
+
+        try {
+            if (strtoupper((string) $this->cfg('MACHINE_ATTRIBUTION', 'Y')) === 'Y') {
+                $veh = new VehicleService();
+                $vid = $veh->available()
+                    ? (new VehicleResolver())->currentVehicleFor($userId)
+                    : null;
+                if ($vid) {
+                    // machineFills() is oldest-first, so the machine's latest fill
+                    // with a reading is the last one carrying a meter.
+                    foreach (array_reverse($this->machineFills($veh, (int) $vid)) as $c) {
+                        if ($c['meter'] === null) continue;
+                        $out = [
+                            'meter' => (int) $c['meter'],
+                            'by' => (($c['by_user_id'] ?? null) !== null && (int) $c['by_user_id'] !== $userId)
+                                ? $c['by_name'] : null,
+                        ];
+                        return $this->lastFillMemo[$userId] = $out;
+                    }
+                    // He holds a machine that has never been filled with a reading —
+                    // that IS the answer. Falling through to his own history would
+                    // offer a different bike's odometer as this bike's last fill.
+                    return $this->lastFillMemo[$userId] = $out;
+                }
+            }
+        } catch (\Throwable $e) {
+            // fall through to the rider-keyed figure — a hint must never break the page
+        }
+
         try {
             $v = DB::table('t_req_master')
                 ->where('requester_user_id', $userId)
@@ -1855,10 +2210,11 @@ class FleetFuelService
                 ->whereNotIn('status', ['cancelled', 'rejected'])
                 ->orderByRaw('COALESCE(expense_date, DATE(created_at)) DESC, id DESC')
                 ->value('meter_at_fill');
-            return $v !== null ? (int) $v : null;
+            $out['meter'] = $v !== null ? (int) $v : null;
         } catch (\Throwable $e) {
-            return null;
+            $out['meter'] = null;
         }
+        return $this->lastFillMemo[$userId] = $out;
     }
 
     private function attachmentUrl($attachments): ?string

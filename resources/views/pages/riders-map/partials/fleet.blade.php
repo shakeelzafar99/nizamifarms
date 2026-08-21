@@ -1407,9 +1407,18 @@ function flClaimRow(c) {
         mid += ' <span class="fl-muted">cash claim</span>';
     }
     if (c.meter_at_fill) mid += ' <span class="fl-muted">· meter ' + flNum(c.meter_at_fill) + '</span>';
-    // The approver's number: how far the bike went on the PREVIOUS tank.
+    // The approver's number: how far the BIKE went on the PREVIOUS tank — whoever
+    // filled it. On a handover the previous tank is usually the other man's, and an
+    // unattributed number reads as "since HIS last fill", which is what made a
+    // 143 km tank look like 962. So the chip names him when it was not the filer.
     if (c.km_since_fill) {
-        mid += ' <span class="fl-pill fl-company" title="Kilometres since the previous fuel fill">▲ ' + flNum(c.km_since_fill) + ' km since last fill</span>';
+        let sinceTip = 'Kilometres since this bike\'s previous fuel fill';
+        if (c.km_since_fill_from) sinceTip += ', at meter ' + flNum(c.km_since_fill_from);
+        if (c.km_since_fill_by)   sinceTip += ' — filled by ' + c.km_since_fill_by;
+        if (c.km_since_fill_on)   sinceTip += ' on ' + flDate(c.km_since_fill_on);
+        mid += ' <span class="fl-pill fl-company" title="' + flEsc(sinceTip) + '">▲ ' + flNum(c.km_since_fill) + ' km since last fill'
+             + (c.km_since_fill_by ? ' <span style="opacity:.75;">· ' + flEsc(c.km_since_fill_by) + '</span>' : '')
+             + '</span>';
     } else if (c.km_since_fill_odd) {
         mid += ' <span class="fl-pill fl-warn" title="This meter reading and the previous fill\'s reading don\'t add up — typo or a different bike">⚠ meter vs last fill doesn\'t add up</span>';
     }
@@ -1422,10 +1431,18 @@ function flClaimRow(c) {
     if (c.flag) mid += ' <span class="fl-pill fl-warn" title="' + (flagText[c.flag] || '') + '">⚠ ' + (flagText[c.flag] || c.flag) + '</span>';
     // Serviced before the schedule was up — money spent sooner than needed, or a
     // bike with a problem. Either way the approver should see it.
-    if (c.service_early_by) {
+    //
+    // ⚠ SILENT ONCE THE ROW CARRIES A FROZEN FIGURE. `service_due_km_at_approval`
+    //   below says the same thing in past tense ("done 43 km overdue") and is the
+    //   permanent record; printing both is the same number twice. They can no longer
+    //   DISAGREE — since Aug-2026 the server derives early/late from that very figure
+    //   — but before it did, and this row read "serviced 297 km early" beside
+    //   "done 43 km overdue". Belt and braces: only one of them ever speaks.
+    const svcFrozen = c.service_due_km_at_approval !== null && c.service_due_km_at_approval !== undefined;
+    if (c.service_early_by && !svcFrozen) {
         mid += ' <span class="fl-pill fl-warn" title="' + flNum(c.km_since_service) + ' km since the last service; schedule is ' +
                flNum(c.service_interval) + ' km">⏱ serviced ' + flNum(c.service_early_by) + ' km early</span>';
-    } else if (c.service_late_by) {
+    } else if (c.service_late_by && !svcFrozen) {
         mid += ' <span class="fl-pill fl-warn" title="' + flNum(c.km_since_service) + ' km since the last service; schedule is ' +
                flNum(c.service_interval) + ' km">⏱ serviced ' + flNum(c.service_late_by) + ' km overdue</span>';
     } else if (c.km_since_service) {
@@ -2172,16 +2189,21 @@ function flNewMeterTyped() {
     const now = parseInt(document.getElementById('flNewMeter').value, 10);
 
     if (flNewCat !== 'Petrol' || !prev || !now || isNaN(now)) { el.style.display = 'none'; return; }
+    // ⭐ The reading belongs to the BIKE he holds, so when the previous tank was
+    //   somebody else's the hint says whose. "his last fill" on a bike that changed
+    //   hands last night is the error this whole change exists to remove.
+    // (written with textContent below, so no escaping — and none must be added)
+    const who = r && r.last_fill_by ? (r.last_fill_by + '’s') : 'his';
     const gap = now - prev;
     if (gap <= 0) {
         el.style.color = '#b45309';
-        el.textContent = '⚠ That is not above his last fill reading (' + flNum(prev) + ' km).';
+        el.textContent = '⚠ That is not above ' + who + ' last fill reading (' + flNum(prev) + ' km).';
     } else if (gap > 2000) {
         el.style.color = '#b45309';
-        el.textContent = '⚠ ' + flNum(gap) + ' km since his last fill (' + flNum(prev) + ') — check the reading.';
+        el.textContent = '⚠ ' + flNum(gap) + ' km since ' + who + ' last fill (' + flNum(prev) + ') — check the reading.';
     } else {
         el.style.color = '#3730a3';
-        el.textContent = '▲ ' + flNum(gap) + ' km since his last fill (' + flNum(prev) + ' km).';
+        el.textContent = '▲ ' + flNum(gap) + ' km since ' + who + ' last fill (' + flNum(prev) + ' km).';
     }
     el.style.display = 'block';
 }

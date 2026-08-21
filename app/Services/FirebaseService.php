@@ -391,6 +391,27 @@ class FirebaseService
     }
 
     /**
+     * ⚠️ A van driver drove away from a meet-up with somebody's boxes still
+     * aboard (Aug-2026). Pressing "Done" is an ABANDON — the normal end of a
+     * meet-up is the last rider scanning his last box, which closes it by
+     * itself — so the store is told the moment it happens, the same way a meter
+     * or verified-pin bypass is reported, rather than discovering it tomorrow
+     * when the boxes show as never handed over.
+     *
+     * Same 'receive_dispatch_alerts' audience as the other van/dispatch alerts.
+     */
+    public function notifyVanStopForceClosed(int $driverId, string $driverName, string $awaitingSummary): void
+    {
+        $this->sendToPermissionGroup('receive_dispatch_alerts', [
+            'title' => '⚠️ Van meet-up closed early',
+            'body'  => "{$driverName} closed the meet-up while {$awaitingSummary} still had orders on the van.",
+        ], [
+            'type'        => 'van_stop_forced',
+            'van_user_id' => (string) $driverId,
+        ], 'dispatch_alerts', $driverId); // never push it back to the driver himself
+    }
+
+    /**
      * Generic: send notifications to all users with a given permission
      */
     protected function sendToPermissionGroup(string $permissionCode, array $notification, array $data, string $channelId = 'whatsapp_messages', ?int $excludeUserId = null): void

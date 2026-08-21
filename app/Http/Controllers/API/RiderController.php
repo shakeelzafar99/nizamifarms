@@ -2341,10 +2341,19 @@ class RiderController extends Controller
             $riderLocation    = $origin['location'];
             $usedShopLocation = $origin['used_store'];
 
+            // 🚚 ON-VAN ORDERS ARE ROUTE-PLANNABLE TOO (Aug-2026). The whole point
+            //    of sequencing while the boxes ride the van is that
+            //    `delivery_priority` SURVIVES the handover — the rider collects a
+            //    route that is already planned and only has to press Dispatch.
+            //    The save half of that (updateDeliveryPriorities) has accepted
+            //    `on_van` since Aug-4; this SUGGESTION half still refused, so
+            //    "Auto Route" answered "no orders" about a list the store was
+            //    looking at. Everything downstream is status-agnostic, and the
+            //    apply step goes through the same whitelist.
             $orders = \DB::table('t_crm_prod_order as o')
                 ->leftJoin('t_crm_prod_customer as c', 'c.id', '=', 'o.customer_id')
                 ->where('o.assigned_rider_user_id', $riderId)
-                ->where('o.order_status', 'out_for_delivery')
+                ->whereIn('o.order_status', ['out_for_delivery', 'on_van'])
                 ->select([
                     'o.id', 'o.order_number', 'o.delivery_priority',
                     'c.latitude', 'c.longitude', 'c.geocoded_latitude', 'c.geocoded_longitude',
@@ -2356,7 +2365,7 @@ class RiderController extends Controller
                 ->get();
 
             if ($orders->isEmpty()) {
-                return response()->json(['success' => false, 'message' => 'No out_for_delivery orders found'], 400);
+                return response()->json(['success' => false, 'message' => 'No orders out for delivery or on the van found'], 400);
             }
 
             $waypoints = [['lat' => (float)$riderLocation->latitude, 'lng' => (float)$riderLocation->longitude]];
@@ -14457,7 +14466,16 @@ class RiderController extends Controller
      *
      * @return array{minutes:int,arrival_at:string,arrival_display:string,distance_meters:int,distance_display:string,source:string}|null
      */
-    private function getReturnToOfficeInfo(int $riderId, ?float $officeLat = null, ?float $officeLng = null, int $radiusMeters = 300, bool $useGoogleEta = true): ?array
+    /**
+     * ⭐ PUBLIC so the VAN BOARD can ask the same question (Aug-2026) — it is the
+     *    one place that already knows a van driver is NOT "returning" while he is
+     *    heading to a rendezvous or still carrying somebody's boxes. The van panel
+     *    reuses it rather than computing a second, van-blind arrival time.
+     *
+     * ⚠ POLLING CALLERS MUST PASS `$useGoogleEta = false` — see the cache note
+     *   below. The van board polls every 30s exactly like the live rider board.
+     */
+    public function getReturnToOfficeInfo(int $riderId, ?float $officeLat = null, ?float $officeLng = null, int $radiusMeters = 300, bool $useGoogleEta = true): ?array
     {
         if ($officeLat === null || $officeLng === null) {
             $office = $this->getPrimaryOfficeCoords();
@@ -15032,13 +15050,49 @@ class RiderController extends Controller
                 'assigned_by_name' => $user->fullname
             ]);
             
+            // 🚚 STRANDED-ON-THE-VAN HINT (Aug-2026, from prod).
+            //
+            //    Reassigning an order that is still ON the van is fine and needs
+            //    no help — the manifest regroups it and the new rider's meet-card
+            //    picks it up within a poll (proven on 21 Aug).
+            //
+            //    The gap is the order the DRIVER already dispatched as his own
+            //    before the manager handed it to somebody else. It is out for
+            //    delivery, still stamped with the van, and never collected — so
+            //    the new rider gets no card and no scan, and the board keeps
+            //    counting it as aboard. The store fixed this by hand that night
+            //    (put it back to On Van, which is exactly right); this just says
+            //    so instead of leaving them to work it out.
+            $vanHint = null;
+            try {
+                $order->refresh();
+                $vs = new \App\Services\Riders\VanService();
+                if ($vs->available()
+                    && $order->order_status !== \App\Services\Riders\VanService::STATUS_ON_VAN
+                    && !empty($order->van_loaded_at) && !empty($order->van_user_id)
+                    && empty($order->handover_at)
+                    && (int) $order->van_user_id !== (int) $rider->id
+                    && $order->van_loaded_at >= now()->subHours(\App\Services\Riders\VanService::STALE_TAG_HOURS)) {
+                    $vanHint = [
+                        'order_id' => (int) $order->id,
+                        'message'  => 'Ye order abhi van par hai aur kisi ne collect nahi kiya. '
+                                    . 'Isay wapas "On Van" karein taake ' . $rider->fullname
+                                    . ' van se scan kar ke le sake.',
+                        'suggest_status' => \App\Services\Riders\VanService::STATUS_ON_VAN,
+                    ];
+                }
+            } catch (\Throwable $e) {
+                // A hint must never cost a successful assignment.
+            }
+
             return response()->json([
                 'success' => true,
                 'message' => 'Rider assigned successfully',
                 'assigned_rider' => [
                     'id' => $rider->id,
                     'name' => $rider->fullname
-                ]
+                ],
+                'van_hint' => $vanHint,
             ]);
             
         } catch (\Exception $e) {

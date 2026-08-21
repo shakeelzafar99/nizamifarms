@@ -89,7 +89,7 @@ class BikeServiceClock
             }
 
             $meter = (int) ($req->meter_at_fill ?? 0);
-            if ($meter <= 1000) return;      // missing or a dropped-digit typo
+            if ($meter <= 0) return;         // missing
 
             $profile = DB::table('t_ops_rider_profile')
                 ->where('user_id', $req->requester_user_id)->first();
@@ -98,6 +98,16 @@ class BikeServiceClock
             // ⚠ Drop the memo BEFORE reading too: anything earlier in this request
             //   may have cached this machine's evidence from before the approval.
             \App\Services\Riders\VehicleService::flushServiceMemo();
+
+            // ⚠⚠ THE DROPPED-DIGIT GUARD, ASKED OF THE MACHINE (Aug-2026). This used
+            //   to be a bare `<= 1000 return`, which is right for a 47,000 km bike and
+            //   silently fatal for a new one: Farooq's approved oil change on EDN-198
+            //   at 659 km reset nothing and stamped nothing, so that bike still has no
+            //   service clock. `plausibleServiceMeter` is now THE one rule — shared
+            //   with the per-type evidence and `lastServicePointBefore`, so all three
+            //   accept or refuse a reading together. It returns exactly the old answer
+            //   for any machine whose own odometer has passed 1,000 km.
+            if (!self::meterIsPlausible($req, $meter)) return;
 
             // Freeze how far off schedule the bike was, BEFORE the clock moves.
             // Negative = overdue by that many km. Once the update below lands,
@@ -124,6 +134,39 @@ class BikeServiceClock
             ]);
         } catch (\Throwable $e) {
             Log::warning('Service clock reset skipped: ' . $e->getMessage(), ['request_id' => $req->id ?? null]);
+        }
+    }
+
+    /**
+     * Is this odometer reading usable as a service record?
+     *
+     * Delegates to `VehicleService::plausibleServiceMeter`, which is machine-relative:
+     * anything over 1,000 km passes as it always has, and a three-figure reading
+     * passes only on a machine whose own history is genuinely down there.
+     *
+     * ⚠ Falls back to the OLD absolute rule if the registry cannot answer, so a
+     *   missing table or an unresolvable machine can never make this hook laxer than
+     *   it was before — only ever exactly as strict.
+     */
+    private static function meterIsPlausible(RequestModel $req, int $meter): bool
+    {
+        try {
+            $veh = new \App\Services\Riders\VehicleService();
+            if (!$veh->available()) return $meter > \App\Services\Riders\VehicleService::MIN_METER;
+
+            $date = $req->expense_date
+                ? \Carbon\Carbon::parse($req->expense_date)->format('Y-m-d')
+                : now()->format('Y-m-d');
+            $vid = $req->vehicle_id
+                ?: (new \App\Services\Riders\VehicleResolver())
+                    ->vehicleForDay((int) $req->requester_user_id, $date);
+
+            // The claim's own date anchors the verdict — a low reading is judged
+            // against what the machine had read BY that day, so approving an old
+            // claim late cannot change what the answer would have been.
+            return $veh->plausibleServiceMeter($meter, $vid ? (int) $vid : null, $date);
+        } catch (\Throwable $e) {
+            return $meter > \App\Services\Riders\VehicleService::MIN_METER;
         }
     }
 

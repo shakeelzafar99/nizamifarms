@@ -42,6 +42,21 @@ class VanService
     public const LEG_TO_STOP    = 'to_stop';
     public const LEG_DONE       = 'done';
 
+    /**
+     * ⭐ HOW OLD A TAG MAY BE BEFORE IT IS CALLED STALE (Aug-2026).
+     *
+     * Same 20h window every other live van pointer already uses. A tag set the
+     * evening before a morning run is normal; one still sitting a day later is
+     * an order nobody loaded and nobody cleared.
+     *
+     * ⚠⚠ THIS FLAGS, IT NEVER HIDES. A stale tag stays in `to_load` on purpose:
+     *    hiding it would be the one genuinely dangerous outcome here — an order
+     *    silently dropped off the loading list is an order that gets left behind
+     *    with nobody told. The only thing staleness suppresses is the store's
+     *    van TAB auto-pinning itself open forever (see VanController::drivers).
+     */
+    public const STALE_TAG_HOURS = 20;
+
     // =================================================================
     // AVAILABILITY
     // =================================================================
@@ -660,14 +675,22 @@ class VanService
                     'o.id', 'o.order_number', 'o.order_status', 'o.assigned_rider_user_id',
                     'o.delivery_priority', 'o.expected_packets', 'o.handover_at',
                     'o.eta_calculated_at', 'o.address_line1', 'o.address_city',
-                    'o.van_loaded_packets',
+                    'o.van_loaded_packets', 'o.van_loaded_at',
                     'u.fullname as rider_name',
                     DB::raw('CONCAT(COALESCE(c.first_name,""), " ", COALESCE(c.last_name,"")) as customer_name'),
                 ]);
 
             $mine = [];
             $byRider = [];
+            // The first box aboard = when loading actually began. The trip row's
+            // own created_at is not it: `ensureTrip` can be minted by setting a
+            // meet-up point before anything is scanned.
+            $firstLoadedAt = null;
             foreach ($rows as $r) {
+                if ($r->van_loaded_at !== null
+                    && ($firstLoadedAt === null || (string) $r->van_loaded_at < $firstLoadedAt)) {
+                    $firstLoadedAt = (string) $r->van_loaded_at;
+                }
                 $item = [
                     'id'            => (int) $r->id,
                     'order_number'  => $r->order_number,
@@ -682,6 +705,14 @@ class VanService
                     'area'          => $r->address_city ?: null,
                     'handed_over'   => $r->handover_at !== null,
                     'dispatched'    => $r->eta_calculated_at !== null,
+                    // ⭐ THE TIMES, NOT JUST THE FLAGS (Aug-2026). The boards could
+                    //    say a box was collected but never WHEN, so nobody could
+                    //    tell a handover running to plan from one an hour late.
+                    //    Every figure here was already recorded by the scans — this
+                    //    only stops throwing it away on the way to the screen.
+                    'loaded_at'     => $r->van_loaded_at,
+                    'handover_at'   => $r->handover_at,
+                    'dispatched_at' => $r->eta_calculated_at,
                 ];
 
                 if ((int) $r->assigned_rider_user_id === $vanUserId) {
@@ -693,11 +724,26 @@ class VanService
                             'user_id' => $rid,
                             'name'    => $r->rider_name ?: ('Rider #' . $rid),
                             'orders'  => [], 'packets' => 0, 'handed' => 0,
+                            // When this rider's collection STARTED and FINISHED —
+                            // the two points the trip timeline plots for him.
+                            'first_handover_at' => null,
+                            'last_handover_at'  => null,
                         ];
                     }
                     $byRider[$rid]['orders'][] = $item;
                     $byRider[$rid]['packets']  += $item['packets'];
-                    if ($item['handed_over']) $byRider[$rid]['handed']++;
+                    if ($item['handed_over']) {
+                        $byRider[$rid]['handed']++;
+                        $h = (string) $item['handover_at'];
+                        if ($byRider[$rid]['first_handover_at'] === null
+                            || $h < $byRider[$rid]['first_handover_at']) {
+                            $byRider[$rid]['first_handover_at'] = $h;
+                        }
+                        if ($byRider[$rid]['last_handover_at'] === null
+                            || $h > $byRider[$rid]['last_handover_at']) {
+                            $byRider[$rid]['last_handover_at'] = $h;
+                        }
+                    }
                 }
             }
 
@@ -707,9 +753,21 @@ class VanService
             //    scanned — any rider's orders, because the van carries for
             //    everyone. (`van_user_id IS NULL` keeps a box already scanned
             //    onto another van off this list.)
+            // ⭐ WHEN WAS IT TAGGED? The order row itself cannot say — `updated_at`
+            //    moves for any edit — but the status history holds the exact
+            //    moment: its CURRENT row is the `on_van` one for a tagged order.
+            //    LEFT JOIN so a missing history row (very old data) simply reads
+            //    "unknown age" and is never mistaken for stale.
+            $staleBefore = now()->subHours(self::STALE_TAG_HOURS);
+
             $toLoad = DB::table('t_crm_prod_order as o')
                 ->leftJoin('t_crm_prod_customer as c', 'c.id', '=', 'o.customer_id')
                 ->leftJoin('t_sys_user as u', 'u.id', '=', 'o.assigned_rider_user_id')
+                ->leftJoin('t_crm_order_status_history as h', function ($j) {
+                    $j->on('h.order_id', '=', 'o.id')
+                      ->where('h.is_current', '=', 1)
+                      ->where('h.status_code', '=', self::STATUS_ON_VAN);
+                })
                 ->where('o.order_status', self::STATUS_ON_VAN)
                 ->whereNull('o.van_loaded_at')
                 ->whereNull('o.van_user_id')
@@ -717,7 +775,7 @@ class VanService
                 ->get([
                     'o.id', 'o.order_number', 'o.assigned_rider_user_id',
                     'o.expected_packets', 'o.van_loaded_packets', 'o.address_city',
-                    'u.fullname as rider_name',
+                    'u.fullname as rider_name', 'h.changed_at as tagged_at',
                     DB::raw('CONCAT(COALESCE(c.first_name,""), " ", COALESCE(c.last_name,"")) as customer_name'),
                 ])
                 ->map(fn ($r) => [
@@ -732,7 +790,20 @@ class VanService
                     'van_loaded_count' => $r->van_loaded_packets
                         ? count((array) json_decode($r->van_loaded_packets, true)) : 0,
                     'van_loaded_at'    => null,
-                ])->values()->all();
+                    'tagged_at'        => $r->tagged_at,
+                    // Flagged, never hidden — see STALE_TAG_HOURS.
+                    'is_stale'         => $r->tagged_at !== null
+                        && (string) $r->tagged_at < $staleBefore->format('Y-m-d H:i:s'),
+                ])
+                // ⚠ SAFETY NET, NOT A FIX FOR A KNOWN BUG. `changeStatus` clears
+                //   `is_current` before inserting the new row, so exactly one
+                //   history row should ever match the join — verified true for
+                //   all 16,003 orders on the replica. But this list drives a
+                //   COUNT the driver is warned with and the store acts on, and a
+                //   duplicated row would silently inflate it. One cheap dedupe
+                //   beats trusting an invariant maintained somewhere else.
+                ->unique('id')
+                ->values()->all();
 
             foreach ($byRider as &$g) {
                 $g['total']    = count($g['orders']);
@@ -753,6 +824,8 @@ class VanService
                     'carried_handed'   => array_sum(array_map(fn ($g) => $g['handed'], $byRider)),
                     'riders_waiting'   => count(array_filter($byRider, fn ($g) => !$g['complete'])),
                     'to_load'          => count($toLoad),
+                    'to_load_stale'    => count(array_filter($toLoad, fn ($o) => $o['is_stale'])),
+                    'first_loaded_at'  => $firstLoadedAt,
                 ],
             ];
         } catch (\Throwable $e) {
@@ -819,6 +892,58 @@ class VanService
         } catch (\Throwable $e) {
             return false;
         }
+    }
+
+    /**
+     * ⭐ WHO is still owed boxes, WITH NAMES AND COUNTS (Aug-2026).
+     *
+     * `ridersAwaiting()` answers "who" as bare ids — enough to push to, useless
+     * for a sentence. Closing a meet-up is now an exceptional act that has to
+     * NAME the person being stranded ("Kanan ka saman abhi van mein hai"), and
+     * the manager banner has to say the same thing, so both read this.
+     *
+     * @return array<int, array{user_id:int,name:string,orders:int}>
+     */
+    public function ridersAwaitingDetail(int $vanUserId): array
+    {
+        if (!$this->available()) return [];
+        try {
+            return DB::table('t_crm_prod_order as o')
+                ->leftJoin('t_sys_user as u', 'u.id', '=', 'o.assigned_rider_user_id')
+                ->where('o.van_user_id', $vanUserId)
+                ->where('o.order_status', self::STATUS_ON_VAN)
+                ->whereColumn('o.assigned_rider_user_id', '!=', 'o.van_user_id')
+                ->whereNotNull('o.assigned_rider_user_id')
+                // Same freshness bound every live van pointer carries: a box
+                // stranded for days must not keep naming a rider forever.
+                ->whereNotNull('o.van_loaded_at')
+                ->where('o.van_loaded_at', '>=', now()->subHours(self::STALE_TAG_HOURS))
+                ->groupBy('o.assigned_rider_user_id', 'u.fullname')
+                ->select([
+                    'o.assigned_rider_user_id as user_id',
+                    'u.fullname as name',
+                    DB::raw('COUNT(*) as orders'),
+                ])
+                ->get()
+                ->map(fn ($r) => [
+                    'user_id' => (int) $r->user_id,
+                    'name'    => $r->name ?: ('Rider #' . (int) $r->user_id),
+                    'orders'  => (int) $r->orders,
+                ])->values()->all();
+        } catch (\Throwable $e) {
+            Log::warning('VanService::ridersAwaitingDetail failed', ['driver' => $vanUserId, 'error' => $e->getMessage()]);
+            return [];
+        }
+    }
+
+    /** "Kanan (3 boxes)" / "Kanan aur Waseem" — one short phrase for a prompt. */
+    public static function describeAwaiting(array $detail): string
+    {
+        $bits = array_map(
+            fn ($r) => $r['name'] . ' (' . $r['orders'] . ')',
+            $detail
+        );
+        return implode(' · ', $bits);
     }
 
     /** Riders who still have cargo on this van — the push audience, derived. */
@@ -1037,8 +1162,57 @@ class VanService
     public static function manualChangeBlock($order, string $targetStatus): ?string
     {
         try {
-            if (($order->order_status ?? null) !== self::STATUS_ON_VAN) return null;
+            // Putting something ON the van is always allowed — it is also the
+            // REPAIR for a box that left the van without being collected.
             if ($targetStatus === self::STATUS_ON_VAN) return null;
+
+            $current    = (string) ($order->order_status ?? '');
+            $loaded     = !empty($order->van_loaded_at) && !empty($order->van_user_id);
+            $handedOver = !empty($order->handover_at);
+
+            // ⭐⭐ THE DRIVER'S OWN STOPS ARE NEVER "HANDED OVER" — he cannot
+            //    collect from himself, so `handover_at` stays NULL on them for
+            //    life and his load scan IS their custody proof. Without this
+            //    exclusion the guard below would refuse to let him deliver his
+            //    own boxes, which is most of what the van actually does.
+            $isDriversOwn = $loaded
+                && (int) ($order->assigned_rider_user_id ?? 0) === (int) $order->van_user_id;
+
+            if ($current !== self::STATUS_ON_VAN) {
+                // ⚠⚠ THE TWO-HOP BYPASS (found in prod, 21 Aug). The rules below
+                //   only ever looked at the CURRENT status, so `on_van → on_hold`
+                //   (allowed on purpose — plans change) followed by
+                //   `on_hold → out_for_delivery` walked straight past them: by
+                //   the second hop the order was no longer on_van, so nothing
+                //   looked. It happened eight seconds apart and put two boxes on
+                //   the road with no collection scan and the board still reading
+                //   "handed over 0 of 2".
+                //
+                //   So custody is keyed on the VAN POINTERS, not the status: an
+                //   order still stamped with a van, never handed over, may not be
+                //   sent out for delivery by hand whatever status it sits in.
+                //
+                // ⭐ Deliberately ONLY `out_for_delivery`. Blocking `delivered`
+                //   too would strand a rider who is already holding the box —
+                //   the damage is done by then and refusing helps nobody.
+                if ($targetStatus === self::STATUS_OFD
+                    && $loaded && !$handedOver && !$isDriversOwn
+                    && $order->van_loaded_at >= now()->subHours(self::STALE_TAG_HOURS)) {
+
+                    $rider = null;
+                    try {
+                        $rider = DB::table('t_sys_user')
+                            ->where('id', $order->assigned_rider_user_id)->value('fullname');
+                    } catch (\Throwable $e) {
+                        // a name is a nicety, never a dependency
+                    }
+                    return 'This order is still recorded as loaded on the van and was never '
+                         . 'collected. Put it back to "On Van" so ' . ($rider ?: 'the assigned rider')
+                         . ' can scan it at the meet-up, or set it to Processing to take it off '
+                         . 'the van first.';
+                }
+                return null;
+            }
 
             // ⭐⭐ THE STATUS IS THE PLAN, THE SCAN IS THE PROOF (owner ruling
             //    Aug-4, reversing a same-day entry block). Staff set "On Van" by
@@ -1050,8 +1224,13 @@ class VanService
             //    So the custody rules below apply only once the order is
             //    actually LOADED. A tagged-but-unloaded order is just a plan,
             //    and plans may be changed freely.
-            $loaded = !empty($order->van_loaded_at) || !empty($order->van_user_id);
-            if (!$loaded) return null;
+            //
+            // ⚠ Deliberately OR, not the AND used by the pointer check above:
+            //   here we are asking "has ANY custody stamp landed on this box",
+            //   and a half-stamped row must be treated as aboard. Named apart
+            //   from `$loaded` so the two rules can never be confused.
+            $hasAnyVanStamp = !empty($order->van_loaded_at) || !empty($order->van_user_id);
+            if (!$hasAnyVanStamp) return null;
 
             if (in_array($targetStatus, ['cancelled', 'refunded', 'on_hold', 'on-hold'], true)) {
                 return null;
@@ -1069,11 +1248,29 @@ class VanService
                 return null;
             }
 
+            // ⭐ CUSTODY IS ALREADY PROVEN — let it through. A collected box (or
+            //   one a manager recorded a no-scan handover for) has nothing left
+            //   to guard: `handover_at` IS the proof this rule exists to demand.
+            //   Without this the guard kept refusing after the very scan it had
+            //   been asking for, and the only way out was another van door.
+            if ($handedOver) return null;
+
             $rider = null;
             try {
                 $rider = DB::table('t_sys_user')->where('id', $order->assigned_rider_user_id)->value('fullname');
             } catch (\Throwable $e) {
                 // name is a nicety, never a dependency
+            }
+
+            // ⭐ THE DRIVER'S OWN STOPS NEED DIFFERENT WORDS. He cannot hand a box
+            //   over to himself, so telling him to "collect it with the handover
+            //   scan" describes an action that does not exist. His sanctioned
+            //   door is the wave picker in his own van panel, which times the
+            //   stops properly instead of dropping them out with no ETA.
+            if ($isDriversOwn) {
+                return 'This is the van driver\'s own stop. He sends it out himself from the '
+                     . 'van panel — "Where to next?" → "My deliveries" — so it gets a delivery '
+                     . 'time. Changing it by hand here would put it on the road with no ETA.';
             }
 
             return 'This order is on the van. '
@@ -1166,8 +1363,13 @@ class VanService
 
     private function emptyTotals(): array
     {
+        // ⚠ KEEP IN SHAPE WITH manifest()'s totals. Every surface reads these
+        //   keys straight off the payload; a key that exists on one path and not
+        //   the other is a client-side undefined on exactly the failure path
+        //   where the UI most needs to stay calm.
         return ['mine_total' => 0, 'mine_on_van' => 0, 'mine_dispatched' => 0,
-                'carried_total' => 0, 'carried_handed' => 0, 'riders_waiting' => 0, 'to_load' => 0];
+                'carried_total' => 0, 'carried_handed' => 0, 'riders_waiting' => 0, 'to_load' => 0,
+                'to_load_stale' => 0, 'first_loaded_at' => null];
     }
 
     private function fail(string $message): array

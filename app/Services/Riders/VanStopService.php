@@ -71,6 +71,27 @@ class VanStopService
     }
 
     /**
+     * Is this preset currently active? Returns null when the row does not exist
+     * (or the feature is not installed) so a caller can tell "no answer" from
+     * "retired".
+     *
+     * ⭐ Exists so a non-staff editor (the van driver) can be held to the row's
+     *    EXISTING active state instead of savePreset's create-time default of 1 —
+     *    otherwise his rename would silently resurrect a retired stop.
+     */
+    public function presetActiveState(int $id): ?bool
+    {
+        if (!$this->available()) return null;
+        try {
+            $v = DB::table(self::T_LOC)->where('id', $id)
+                ->where('is_handover_point', 1)->value('is_active');
+            return $v === null ? null : ((int) $v === 1);
+        } catch (\Throwable $e) {
+            return null;
+        }
+    }
+
+    /**
      * Create or rename a preset stop. The pin is OPTIONAL — a stop can be a name
      * the team already uses before anyone has recorded where it is.
      */
@@ -292,6 +313,22 @@ class VanStopService
                 if ($impliesDeparture || !empty($trip->departed_at)) {
                     $update['current_leg'] = VanService::LEG_TO_STOP;
                     $update['departed_at'] = $trip->departed_at ?: now();
+
+                    // ⚠⚠ CLAIM THE DEPARTURE LATCH WHEN WE STAMP A FRESH ONE.
+                    //   Proven on prod (trip 5, 20 Aug): `departed_at` set,
+                    //   `departure_notified_at` NULL for the whole trip. When the
+                    //   DRIVER's first act is picking the meet-up point, departure
+                    //   is stamped here — but only `startLeg` ever claimed the
+                    //   latch, and it decides "first leg" from `departed_at`,
+                    //   which by then is set. So the latch stayed NULL for life
+                    //   and every later leg change also skipped the ping.
+                    //
+                    //   Claiming it here is honest: the caller announces this stop
+                    //   to exactly the same riders in the same request, and that
+                    //   message says more than "the van has left" does.
+                    if (empty($trip->departed_at) && empty($trip->departure_notified_at)) {
+                        $update['departure_notified_at'] = now();
+                    }
                 }
                 DB::table(VanService::T_TRIP)->where('id', $trip->id)->update($update);
             }
@@ -328,18 +365,67 @@ class VanStopService
     }
 
     /** Done here — closes the stop (the trip continues). */
-    public function completeStop(int $driverId): array
+    /**
+     * Close the current meet-up.
+     *
+     * ⚠⚠ CLOSING WHILE SOMEBODY STILL HAS CARGO IS AN EXCEPTIONAL ACT (prod,
+     *    21 Aug). "I'm here" and "Done" occupy the SAME slot in the driver's
+     *    panel — the moment the reach registers, the button changes under his
+     *    thumb — and this call used to be silent. A driver double-tapped it
+     *    three seconds after arriving, the meet-up closed with three of Kanan's
+     *    boxes aboard, and Kanan's app fell back to "the van will send the
+     *    meeting point shortly" for the rest of the run.
+     *
+     *    So a bare close now REFUSES while riders are still owed boxes and says
+     *    who. Only a deliberate `$force` goes through, and that is recorded on
+     *    the row (`status = 'forced'` + a note naming who was left) so the store
+     *    can be told — the same treatment a meter or pin bypass gets.
+     *
+     * @param bool $force  caller has confirmed, or is a path that must always close
+     */
+    public function completeStop(int $driverId, bool $force = false, ?int $actorId = null): array
     {
         if (!$this->available()) return $this->fail('Van stops are not set up yet (SQL batch 14).');
         try {
             $stop = $this->currentStop($driverId);
             if (!$stop) return ['ok' => true, 'message' => 'No open stop.'];
 
-            DB::table(VanService::T_HANDOVER)->where('id', $stop->id)->update([
-                'status' => 'done', 'completed_at' => now(), 'updated_at' => now(),
-            ]);
-            return ['ok' => true, 'message' => 'Stop closed.'];
+            $awaiting = (new VanService())->ridersAwaitingDetail($driverId);
+            if (!$force && !empty($awaiting)) {
+                return [
+                    'ok'            => false,
+                    'needs_confirm' => true,
+                    'awaiting'      => $awaiting,
+                    'message'       => VanService::describeAwaiting($awaiting)
+                                     . ' — still has orders on the van.',
+                ];
+            }
+
+            $forced = $force && !empty($awaiting);
+            $row = [
+                // ⭐ 'forced' fits the varchar(12) column — no schema change. Any
+                //    reader that only knows 'done' still sees a closed stop,
+                //    because every one of them tests `completed_at`, not status.
+                'status'       => $forced ? 'forced' : 'done',
+                'completed_at' => now(),
+                'updated_at'   => now(),
+            ];
+            if ($forced) {
+                $row['note'] = mb_substr('Closed with cargo still aboard: '
+                    . VanService::describeAwaiting($awaiting), 0, 250);
+            }
+            DB::table(VanService::T_HANDOVER)->where('id', $stop->id)->update($row);
+
+            if ($forced) {
+                Log::warning('Van meet-up FORCE-closed with cargo aboard', [
+                    'driver' => $driverId, 'stop' => $stop->id,
+                    'by' => $actorId, 'awaiting' => $awaiting,
+                ]);
+            }
+            return ['ok' => true, 'forced' => $forced, 'awaiting' => $awaiting,
+                    'message' => $forced ? 'Meet-up closed — the store has been told.' : 'Stop closed.'];
         } catch (\Throwable $e) {
+            Log::error('VanStopService::completeStop failed', ['driver' => $driverId, 'error' => $e->getMessage()]);
             return $this->fail('Could not close that stop.');
         }
     }
@@ -362,12 +448,23 @@ class VanStopService
     {
         try {
             if ($leg === VanService::LEG_DONE) {
-                $this->completeStop($driverId);
+                // Finishing the trip has its OWN confirmation (startLeg refuses a
+                // bare "done" while anything is aboard), so by the time we get
+                // here the decision is already made — force, or the stop would
+                // outlive the trip that owns it.
+                $this->completeStop($driverId, true);
                 return;
             }
             if ($leg === VanService::LEG_DELIVERIES) {
+                // ⚠⚠ NOT while riders are still owed boxes. This door closed a
+                //   reached stop on the way to a deliveries wave regardless of
+                //   who was still coming — the same stranding the "Done" button
+                //   caused, just a different button. Driving off to deliver a few
+                //   of his own stops is normal and must not end the rendezvous;
+                //   `completeStopIfHandoverDone` closes it by itself the moment
+                //   the last box is collected.
                 $cur = $this->currentStop($driverId);
-                if ($cur && $cur->reached_at) $this->completeStop($driverId);
+                if ($cur && $cur->reached_at) $this->completeStop($driverId, false);
             }
         } catch (\Throwable $e) {
             // Closing a stop must never block a leg change.
@@ -428,6 +525,30 @@ class VanStopService
                     'set_at'     => $s->set_at,
                     'reached_at' => $s->reached_at,
                     'completed_at' => $s->completed_at,
+                ])->all();
+        } catch (\Throwable $e) {
+            return [];
+        }
+    }
+
+    /**
+     * ⚠️ Meet-ups on this trip that were closed while cargo was still aboard.
+     * Drives the manager banner on the web van card and the store Van tab.
+     */
+    public function forcedCloses(?int $tripId): array
+    {
+        if (!$this->available() || !$tripId) return [];
+        try {
+            return DB::table(VanService::T_HANDOVER)
+                ->where('trip_id', $tripId)
+                ->where('status', 'forced')
+                ->orderBy('id')
+                ->get(['id', 'label', 'completed_at', 'note'])
+                ->map(fn ($s) => [
+                    'id'           => (int) $s->id,
+                    'label'        => $s->label ?: 'Meet-up point',
+                    'completed_at' => $s->completed_at,
+                    'note'         => $s->note,
                 ])->all();
         } catch (\Throwable $e) {
             return [];

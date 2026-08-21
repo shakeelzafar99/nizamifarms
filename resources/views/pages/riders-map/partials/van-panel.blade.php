@@ -129,6 +129,43 @@
          cursor:pointer;color:#374151;}
 .vp-sbtn:hover{background:#f3f4f6;}
 .vp-sbtn.danger{color:#b91c1c;border-color:#fecaca;}
+
+/* ---------- the day's spine, and the order lists (Aug-2026) ---------- */
+/* Every timestamp below was already recorded by the scans; this only stops the
+   web throwing it away. Wraps rather than scrolls — it is read, not scrubbed. */
+.vp-line{display:flex;flex-wrap:wrap;align-items:center;gap:5px;margin-top:10px;padding-top:9px;
+         border-top:1px solid #ccfbf1;font-size:11.5px;color:#4b5563;}
+.vp-ev{background:#fff;border:1px solid #e5e7eb;border-radius:20px;padding:2px 9px;white-space:nowrap;}
+.vp-ev b{color:#111827;font-variant-numeric:tabular-nums;font-weight:700;}
+.vp-ev.now{background:#fffbeb;border-color:#fcd34d;color:#92400e;}
+.vp-ev.done{background:#f0fdf4;border-color:#bbf7d0;color:#166534;}
+.vp-arrow{color:#cbd5e1;}
+
+.vp-groups{margin-top:11px;}
+.vp-grp{border:1px solid #e5e7eb;border-radius:9px;background:#fff;margin-bottom:6px;overflow:hidden;}
+.vp-ghead{display:flex;align-items:center;gap:8px;padding:7px 10px;cursor:pointer;font-size:12.5px;
+          font-weight:700;color:#111827;user-select:none;}
+.vp-ghead:hover{background:#f9fafb;}
+/* `flex:1` on the count is what right-aligns everything after it, so the row
+   lays out correctly whether or not the optional ETA/stale slot is present. */
+.vp-gcount{font-weight:600;color:#6b7280;font-size:11.5px;flex:1;}
+.vp-geta{font-weight:700;color:#0f766e;font-size:11.5px;white-space:nowrap;}
+.vp-geta.approx{color:#b45309;font-weight:600;}
+.vp-gchev{color:#9ca3af;font-size:11px;}
+.vp-glist{border-top:1px solid #f1f5f9;}
+.vp-orow{display:flex;align-items:center;gap:9px;padding:5px 10px;font-size:12px;
+         border-bottom:1px solid #f8fafc;}
+.vp-orow:last-child{border-bottom:none;}
+.vp-ono{font-weight:700;color:#111827;min-width:78px;}
+.vp-ocust{color:#6b7280;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.vp-ostate{font-size:10.5px;font-weight:700;padding:1px 8px;border-radius:20px;white-space:nowrap;}
+.vp-ostate.wait{background:#fef3c7;color:#92400e;}
+.vp-ostate.ok{background:#dcfce7;color:#166534;}
+.vp-ostate.stale{background:#fee2e2;color:#991b1b;}
+.vp-otime{color:#9ca3af;font-size:11px;font-variant-numeric:tabular-nums;white-space:nowrap;}
+/* Abandoned meet-up — same visual weight as a meter / verified-pin bypass. */
+.vp-bypass{background:#fef2f2;border:1px solid #fecaca;border-radius:9px;padding:8px 11px;
+           margin-top:10px;font-size:12px;font-weight:700;color:#991b1b;line-height:1.45;}
 </style>
 
 <script>
@@ -136,6 +173,20 @@
 let vpData = null;
 let vpTimer = null;
 let vpCanManage = false;
+
+/* ⚠⚠ COLLAPSE STATE LIVES OUT HERE, NOT IN THE MARKUP. The card is rebuilt from
+   scratch by innerHTML every 30s poll, so anything held in the DOM (a <details>
+   `open`, a CSS class) is wiped four times a minute — a manager reading a rider's
+   order list would have it snap shut under him. Keyed by van + group so two vans
+   never share a toggle. Absent key = use the caller's default. */
+let vpGrpState = {};
+function vpGrpIsOpen(key, dflt) {
+    return Object.prototype.hasOwnProperty.call(vpGrpState, key) ? vpGrpState[key] : dflt;
+}
+function vpToggleGrp(key, dflt) {
+    vpGrpState[key] = !vpGrpIsOpen(key, dflt);
+    vpRender();   // repaint from cached data — a toggle must never wait on a fetch
+}
 
 const VP_URL   = '/orders/van/panel';
 const VP_STOPS = '/orders/van/stops';
@@ -163,9 +214,17 @@ function vpLoad() {
             }
             vpData = res;
             el.style.display = '';
-            el.innerHTML = (res.vans || []).map(vpCard).join('');
+            vpRender();
         })
         .catch(() => { /* the panel is a companion view — never break the board */ });
+}
+
+/* Paint from whatever we last received. Separate from vpLoad so a collapse
+   toggle repaints instantly instead of waiting out the poll. */
+function vpRender() {
+    const el = document.getElementById('vanPanel');
+    if (!el || !vpData) return;
+    el.innerHTML = (vpData.vans || []).map(vpCard).join('');
 }
 
 function vpCard(v) {
@@ -186,13 +245,21 @@ function vpCard(v) {
         stats += vpStat('Waiting', stop.waiting_minutes + ' min');
     }
     if (v.trip && v.trip.departed_at) {
-        stats += vpStat('Left', vpTime(v.trip.departed_at));
+        stats += vpStat('Left', vpWhen(v.trip.departed_at));
+    }
+    // ⭐ "WHEN IS HE BACK?" — the server only sends this once he is genuinely on
+    //    his way in (not while heading to a rendezvous, not while still carrying
+    //    somebody's boxes), so if it is here it can be shown without hedging.
+    if (v.return_eta) {
+        stats += vpStat('Back at', vpEsc(v.return_eta.arrival_display || (v.return_eta.minutes + ' min'))
+            + (v.return_eta.source === 'approx' ? ' <span style="color:#b45309;">(est)</span>' : ''));
     }
     const onBoard = (t.mine_on_van || 0) + (t.carried_total || 0) - (t.carried_handed || 0);
     stats += vpStat('On board', onBoard);
     // ⭐ Tagged "On Van" (the staff's plan) but not scanned aboard yet.
     if (t.to_load) {
-        stats += vpStat('To scan aboard', '<span style="color:#b45309;">' + t.to_load + '</span>');
+        stats += vpStat('To scan aboard', '<span style="color:#b45309;">' + t.to_load + '</span>'
+            + (t.to_load_stale ? ' <span style="color:#b91c1c;font-size:11px;">' + t.to_load_stale + ' stale</span>' : ''));
     }
     if (t.carried_total) {
         stats += vpStat('Handed over', (t.carried_handed || 0) + ' of ' + t.carried_total);
@@ -230,6 +297,15 @@ function vpCard(v) {
           + (stop.is_adhoc ? ' <span class="vp-pill adhoc">one-off spot</span>' : '')
         : '';
 
+    /* ⚠️ ABANDONED MEET-UP — the driver drove off while somebody still had boxes
+       aboard. Surfaced like a meter / verified-pin bypass so the store learns of
+       it from the board it is already watching, not from tomorrow's report. */
+    const forced = (v.forced_closes || []).map(fc =>
+        '<div class="vp-bypass">⚠️ Meet-up “' + vpEsc(fc.label) + '” closed at '
+        + vpWhen(fc.completed_at) + ' with cargo still on the van'
+        + (fc.note ? ' — ' + vpEsc(String(fc.note).replace(/^Closed with cargo still aboard: /, '')) : '')
+        + '</div>').join('');
+
     return '<div class="vp-card">'
          +   '<div class="vp-head">'
          +     '<div style="min-width:0;">'
@@ -239,11 +315,170 @@ function vpCard(v) {
          +     '<button type="button" class="vp-gear" onclick="vpOpenStops()">⚙ Meet-up points</button>'
          +   '</div>'
          +   '<div class="vp-strip">' + stats + '</div>'
+         +   forced
+         +   vpTimeline(v)
          +   (nothingYet
                ? '<div class="vp-riders"><div class="vp-empty">Nothing loaded yet — '
                  + 'the store scans each package onto the van, or the driver does it himself.</div></div>'
                : '')
          +   riders
+         +   vpGroups(v)
+         + '</div>';
+}
+
+/* ═══ THE DAY'S SPINE (Aug-2026) ══════════════════════════════════════════
+   loaded → left → each stop → each rider's collection. Managers could see THAT
+   a handover had happened but never WHEN, so a meet-up running to plan and one
+   an hour behind looked identical on this board until Day Review the next day.
+
+   Every timestamp is already recorded by the scans and the stop presses — this
+   only renders them. Built as a sorted event list rather than fixed slots so an
+   out-of-order day (a rider collecting before the driver presses "I'm here")
+   still reads truthfully instead of pretending a sequence that did not happen. */
+function vpTs(s) {
+    if (!s) return null;
+    const d = new Date(String(s).replace(' ', 'T'));
+    return isNaN(d) ? null : d.getTime();
+}
+
+function vpTimeline(v) {
+    const t = v.totals || {};
+    const ev = [];
+    const push = (at, html, cls) => {
+        const ms = vpTs(at);
+        if (ms !== null) ev.push({ms: ms, html: html, cls: cls || ''});
+    };
+
+    push(t.first_loaded_at, 'loaded <b>' + vpWhen(t.first_loaded_at) + '</b>');
+    if (v.trip && v.trip.departed_at) {
+        push(v.trip.departed_at, 'left <b>' + vpWhen(v.trip.departed_at) + '</b>');
+    }
+
+    (v.trip_stops || []).forEach(s => {
+        const label = vpEsc(s.label);
+        if (s.reached_at) {
+            push(s.reached_at, '🅿️ ' + label + ' <b>' + vpWhen(s.reached_at) + '</b>');
+        } else if (s.set_at) {
+            // Named but not reached — the only forward-looking chip on the line.
+            push(s.set_at, '➡️ ' + label + ' <b>' + vpWhen(s.set_at) + '</b>', 'now');
+        }
+        if (s.completed_at) {
+            push(s.completed_at, '✓ ' + label + ' done <b>' + vpWhen(s.completed_at) + '</b>', 'done');
+        }
+    });
+
+    (v.carrying || []).forEach(g => {
+        const name = vpEsc(g.name);
+        if (g.complete && g.last_handover_at) {
+            push(g.last_handover_at, '✓ ' + name + ' <b>' + vpWhen(g.last_handover_at) + '</b>', 'done');
+        } else if (g.first_handover_at) {
+            // Started collecting but not finished — say so rather than call it done.
+            push(g.first_handover_at, '⏳ ' + name + ' ' + (g.handed || 0) + '/' + (g.total || 0)
+                 + ' <b>' + vpWhen(g.first_handover_at) + '</b>', 'now');
+        }
+    });
+
+    if (!ev.length) return '';
+    ev.sort((a, b) => a.ms - b.ms);
+    return '<div class="vp-line">'
+         + ev.map(e => '<span class="vp-ev ' + e.cls + '">' + e.html + '</span>')
+             .join('<span class="vp-arrow">›</span>')
+         + '</div>';
+}
+
+/* ═══ THE ORDER LISTS (Aug-2026) ══════════════════════════════════════════
+   The web card showed only COUNTS while the mobile store board had listed every
+   order number since Aug-4 — same endpoint, half the answer. "On board: 6" does
+   not tell a manager WHICH six, which is the question actually being asked when
+   somebody rings about an order.
+
+   ⭐ OPEN BY DEFAULT WHILE THERE IS SOMETHING LIVE IN THEM, collapsed once the
+   work is done. Defaulting everything closed reintroduced the original problem
+   in a new costume — the manager still had to hunt for the order numbers, one
+   click per group. A rider who has collected everything folds away; one still
+   owed boxes stays open. Whatever he clicks wins and survives the poll. */
+function vpGroups(v) {
+    const vid = v.driver_user_id;
+    let out = '';
+
+    const toLoad = v.to_load || [];
+    if (toLoad.length) {
+        const stale = toLoad.filter(o => o.is_stale).length;
+        out += vpGrp(vid, 'toload', '📦 To scan aboard', toLoad.length,
+            stale ? '<span class="vp-ostate stale">' + stale + ' stale</span>' : '',
+            true,
+            toLoad.map(o => vpORow(
+                o.order_number,
+                o.rider_name ? 'for ' + o.rider_name : (o.customer_name || ''),
+                o.van_loaded_count > 0
+                    ? (o.van_loaded_count + '/' + o.expected_packets + ' scanned')
+                    : 'to scan',
+                o.is_stale ? 'stale' : 'wait',
+                // A stale row says HOW old it is — that is the whole actionable
+                // bit, so it must carry the DATE, not a clock time (see vpWhen).
+                o.is_stale ? ('tagged ' + vpWhen(o.tagged_at)) : ''
+            )).join(''));
+    }
+
+    const mine = v.mine || [];
+    if (mine.length) {
+        // ⭐ ALWAYS OPEN. His own stops are the one group nobody else on this page
+        //    is tracking, and on a day when the van carries nothing for anybody
+        //    else they are the entire content of the card. Folding them once he
+        //    dispatches would blank the board at exactly the moment the owner
+        //    asked to keep watching ("after he presses dispatch the van should
+        //    still show what's happening, since it's being driven"). The list
+        //    shrinks by itself as stops are delivered — a delivered order leaves
+        //    the manifest — so it can never grow into clutter.
+        out += vpGrp(vid, 'mine', '🏠 ' + vpEsc(v.driver_name || 'Driver') + "'s own", mine.length,
+            '', true,
+            mine.map(o => vpORow(
+                o.order_number, o.customer || '',
+                o.status === 'on_van' ? 'on the van' : (o.dispatched ? 'delivering' : 'out for delivery'),
+                o.status === 'on_van' ? 'wait' : 'ok',
+                o.dispatched_at ? vpWhen(o.dispatched_at) : ''
+            )).join(''));
+    }
+
+    (v.carrying || []).forEach(g => {
+        const inb = (v.inbound || []).find(r => Number(r.user_id) === Number(g.user_id));
+        const eta = (!g.complete && inb && inb.eta)
+            ? '<span class="vp-geta' + (inb.eta.source === 'approx' ? ' approx' : '') + '">'
+              + vpEta(inb.eta) + '</span>'
+            : '';
+        out += vpGrp(vid, 'r' + g.user_id, (g.complete ? '✅ ' : '⏳ ') + vpEsc(g.name),
+            (g.handed || 0) + '/' + (g.total || 0), eta, !g.complete,
+            (g.orders || []).map(o => vpORow(
+                o.order_number, o.customer || '',
+                o.handed_over ? 'collected' : (o.dispatched ? 'delivering' : 'on the van'),
+                o.handed_over ? 'ok' : 'wait',
+                o.handover_at ? vpWhen(o.handover_at) : ''
+            )).join(''));
+    });
+
+    return out ? '<div class="vp-groups">' + out + '</div>' : '';
+}
+
+function vpGrp(vid, key, title, count, right, dflt, rows) {
+    const k = vid + ':' + key;
+    const open = vpGrpIsOpen(k, dflt);
+    return '<div class="vp-grp">'
+         +   '<div class="vp-ghead" onclick="vpToggleGrp(' + vpJs(k) + ',' + (dflt ? 'true' : 'false') + ')">'
+         +     '<span>' + title + '</span>'
+         +     '<span class="vp-gcount">' + count + '</span>'
+         +     (right || '')
+         +     '<span class="vp-gchev">' + (open ? '▾' : '▸') + '</span>'
+         +   '</div>'
+         +   (open ? '<div class="vp-glist">' + rows + '</div>' : '')
+         + '</div>';
+}
+
+function vpORow(no, cust, state, tone, time) {
+    return '<div class="vp-orow">'
+         +   '<span class="vp-ono">' + vpEsc(no) + '</span>'
+         +   '<span class="vp-ocust">' + vpEsc(cust) + '</span>'
+         +   (time ? '<span class="vp-otime">' + vpEsc(time) + '</span>' : '')
+         +   '<span class="vp-ostate ' + tone + '">' + vpEsc(state) + '</span>'
          + '</div>';
 }
 
@@ -545,10 +780,46 @@ function vpPromote(handoverId, suggested) {
 }
 
 /* ── helpers ─────────────────────────────────────────────────────────── */
+/* ⭐ HOUSE TIME FORMAT — "3:42 PM" (owner, Aug-2026: AM/PM, not 24-hour).
+   Identical to Day Review's `drHm` on this same page and to the mobile app's
+   `hm`, so the live van card and the trip's own history read the same way. Day
+   Review was ALREADY am/pm; this panel was the odd one out.
+
+   ⚠ Parsed by SLICING THE STRING, not through `new Date()`. The API sends
+   local-time strings with no zone ("2026-08-20 15:42:00"); slicing cannot be
+   shifted by an engine's timezone handling, and it also accepts a bare "15:42".
+   (`vpTs` below still builds a Date — but only to SORT, never to display.) */
 function vpTime(ts) {
     if (!ts) return '';
-    const d = new Date(String(ts).replace(' ', 'T'));
-    return isNaN(d) ? '' : d.toLocaleTimeString('en-GB', {hour: '2-digit', minute: '2-digit'});
+    const s = String(ts);
+    const t = s.length > 11 ? s.substring(11, 16) : s.substring(0, 5);
+    const parts = t.split(':').map(Number);
+    const h = parts[0], m = parts[1];
+    if (isNaN(h) || isNaN(m)) return '';
+    const ap = h >= 12 ? 'PM' : 'AM';
+    const hh = h % 12 === 0 ? 12 : h % 12;
+    return hh + ':' + String(m).padStart(2, '0') + ' ' + ap;
+}
+/* ⚠ A BARE CLOCK TIME LIES ABOUT AN OLD TIMESTAMP. A tag set two days ago
+   rendered as "tagged 14:00", which reads as 14:00 TODAY — the precise opposite
+   of the point, since the whole reason the row is flagged is that it is old.
+   Same-day keeps the clock (that is the useful precision); anything older says
+   the date instead. */
+function vpWhen(ts) {
+    if (!ts) return '';
+    const t = vpTime(ts);
+    if (!t) return '';
+    const day = String(ts).substring(0, 10);
+    const n = new Date();
+    const today = n.getFullYear() + '-' + String(n.getMonth() + 1).padStart(2, '0')
+                + '-' + String(n.getDate()).padStart(2, '0');
+    if (day === today || day.length !== 10) return t;
+    // Keeps the clock time alongside the date, exactly like the mobile app's
+    // `when()` ("18 Aug, 2:00 PM") — the date says it is old, the time still
+    // says when, and dropping one of the two helps nobody.
+    const d = new Date(day + 'T00:00:00');
+    if (isNaN(d)) return t;
+    return d.toLocaleDateString('en-GB', {day: 'numeric', month: 'short'}) + ', ' + t;
 }
 function vpEsc(s) {
     return String(s === null || s === undefined ? '' : s)

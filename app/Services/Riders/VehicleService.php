@@ -36,9 +36,19 @@ class VehicleService
     public const T_VEHICLE = 't_ops_vehicle';
     public const T_ASSIGN  = 't_ops_vehicle_assignment';
     public const T_PHOTO   = 't_ops_vehicle_photo';
+    public const T_METER_LOG = 't_ops_vehicle_meter_log';
 
     /** Readings below this are dropped-digit typos — the bikes here are 5-figure. */
     public const MIN_METER = 1000;
+
+    /**
+     * How far a sub-floor reading may sit below what the machine had already read
+     * for it to still be the same odometer rather than a dropped digit. Matches
+     * MachineAttribution::MAX_GAP_KM — a real 3-figure reading on a genuinely new
+     * bike is within a tank-span of its chain; a dropped digit on a 5-figure bike
+     * is tens of thousands below it.
+     */
+    private const LOW_ERA_GAP_KM = 2000;
 
     /** Per-process memos for the service derivation — see serviceEvidenceByType. */
     private static array $evidenceMemo = [];
@@ -47,6 +57,10 @@ class VehicleService
     private static array $meterMemo = [];
     private static array $elsewhereMemo = [];
     private static array $dayMapMemo = [];
+    /** [vehicleId => bool] — is a three-figure reading the truth for this machine? */
+    private static array $lowMileageMemo = [];
+    /** [vehicleId => [['m'=>int,'d'=>?string],…]] raw, floor-free readings + dates. */
+    private static array $rawReadingsMemo = [];
     private static $typesMemo = null;
 
     /**
@@ -603,7 +617,9 @@ class VehicleService
                 if (($c['category'] ?? '') !== 'Maintenance') continue;
                 if (($c['status'] ?? '') !== 'approved')      continue;
                 if (empty($c['maintenance_type_id']) || $c['meter'] === null) continue;
-                if (!self::plausibleServiceMeter((int) $c['meter'])) continue;
+                // ⚠ The reading's OWN date rides along — its verdict must never
+                //   change as the bike ages (see plausibleServiceMeter).
+                if (!$this->plausibleServiceMeter((int) $c['meter'], $vehicleId, $c['date'])) continue;
                 $tid = (int) $c['maintenance_type_id'];
                 if (self::beatsEvidence((int) $c['meter'], $c['date'], $last[$tid] ?? null)) {
                     $last[$tid] = ['m' => (int) $c['meter'], 'd' => $c['date'],
@@ -619,8 +635,8 @@ class VehicleService
                             ->whereNotNull('l.meter')
                             ->get(['l.user_id', 'l.maintenance_type_id', 'l.meter',
                                    'l.service_date', 'u.fullname']) as $row) {
-                    if (!self::plausibleServiceMeter((int) $row->meter)) continue;
                     $d = substr((string) $row->service_date, 0, 10);
+                    if (!$this->plausibleServiceMeter((int) $row->meter, $vehicleId, $d)) continue;
                     if ($resolver->vehicleForDay((int) $row->user_id, $d) !== $vehicleId) continue;
                     $tid = (int) $row->maintenance_type_id;
                     if (self::beatsEvidence((int) $row->meter, $d, $last[$tid] ?? null)) {
@@ -669,10 +685,128 @@ class VehicleService
      *   consumers of this rule already guarded it; the per-type gatherer did not,
      *   which quietly widened the blast radius of an old typo. Same MIN_METER the
      *   odometer window and the approval hook use.
+     *
+     * ⭐⭐ …BUT PLAUSIBILITY IS RELATIVE TO THE MACHINE'S OWN CHAIN, ANCHORED IN TIME
+     *    (Aug-2026, MachineAttribution's rule R-B, applied here at last). The bare
+     *    floor is right for a 47,000 km bike and catastrophic for a NEW one: EDN-198
+     *    has never read above 800, so its approved Rs 1,000 oil change at 659 km was
+     *    thrown away by every consumer of this rule — the bike had no service clock,
+     *    and the claim's `service_due_km` was never stamped.
+     *
+     * ⚠⚠ WHY THE DATE, NOT A PER-MACHINE FLAG (review, same day). A dropped digit
+     *    means the machine had ALREADY read far above the number when it was written
+     *    down — that is a fact about a moment, not about the machine. The first cut
+     *    of this fix classified whole machines by their MAXIMUM reading, which put a
+     *    cliff at the floor: the week EDN-198's odometer passed 1,000 km, its flag
+     *    would flip and the 659 km service — a historical fact — would have been
+     *    thrown away all over again, days before its oil change came due. Anchored to
+     *    the reading's own date, the verdict on a record can never change afterwards:
+     *    the 659 stays valid when the bike reads 15,000, and a three-figure typo
+     *    typed on that same bike NEXT year is still refused, because by then the
+     *    machine HAD read far above it.
+     *
+     *    A reading over the floor passes outright, as it always has — the relaxation
+     *    only ever examines the sub-floor case, so every 5-figure reading on the
+     *    fleet answers bit-for-bit as before. A machine with no raw readings at all
+     *    keeps the strict rule: "unknown" must never buy laxity.
+     *
+     * @param string|null $onDate the reading's own date. Null = judge against the
+     *        machine's whole history — the conservative answer, right for callers
+     *        with no date, wrong for historical rows (their verdict would drift as
+     *        the bike ages), so evidence gatherers must pass the date.
      */
-    private static function plausibleServiceMeter(?int $meter): bool
+    public function plausibleServiceMeter(?int $meter, ?int $vehicleId = null, ?string $onDate = null): bool
     {
-        return $meter !== null && $meter > self::MIN_METER;
+        if ($meter === null || $meter <= 0) return false;
+        if ($meter > self::MIN_METER) return true;
+        if ($vehicleId === null) return false;
+
+        $all = $this->rawMachineReadings($vehicleId);
+        if (!$all) return false;                    // nothing known → the strict rule
+
+        $d = $onDate ? substr($onDate, 0, 10) : null;
+
+        // Undated evidence (the registry seed) counts as "always known" — it can only
+        // make the check STRICTER, never looser.
+        $prior = [];
+        foreach ($all as $r) {
+            if ($d === null || $r['d'] === null || $r['d'] <= $d) $prior[] = $r['m'];
+        }
+        if ($prior) {
+            // The machine had read `max($prior)` by then. A reading a whole tank-span
+            // below that is a dropped digit; anything the chain can reach is real.
+            return max($prior) - $meter <= self::LOW_ERA_GAP_KM;
+        }
+
+        // Nothing on record on or before that date: accept only what plugs onto the
+        // FRONT of the chain (a back-dated first reading), never a free-floating one.
+        return min(array_column($all, 'm')) - $meter <= self::LOW_ERA_GAP_KM;
+    }
+
+    /**
+     * ⭐ Is this machine still genuinely below the dropped-digit floor?
+     *
+     * ⚠ ONE consumer: computeCurrentMeter's query floor, where the max-based answer
+     *   is self-correcting — the moment the machine's readings pass the floor, the
+     *   floored MAX query finds those same readings, so no cliff exists THERE.
+     *   Evidence rules must use `plausibleServiceMeter` with the reading's date
+     *   instead; a max-based flag would re-lose old low records as the bike ages.
+     */
+    public function isLowMileageMachine(int $vehicleId): bool
+    {
+        if (array_key_exists($vehicleId, self::$lowMileageMemo)) return self::$lowMileageMemo[$vehicleId];
+
+        // No reading at all is "unknown", not "low" — an own bike whose rider files
+        // per-km claims has no odometer here and must not be reclassified.
+        $all = $this->rawMachineReadings($vehicleId);
+        $answer = $all && max(array_column($all, 'm')) <= self::MIN_METER;
+        return self::$lowMileageMemo[$vehicleId] = $answer;
+    }
+
+    /**
+     * Every raw odometer reading the machine has ever produced, with its date —
+     * deliberately UNFILTERED by any floor (filtering the evidence by the rule it
+     * feeds would be circular). Sources: stamped claims, the manual meter log, and
+     * the registry seed. Attendance rows are left out on purpose: they are
+     * rider-keyed, and the two rules built on this list only need the machine-keyed
+     * spine to say "had this machine read far above X by date D".
+     */
+    private function rawMachineReadings(int $vehicleId): array
+    {
+        if (array_key_exists($vehicleId, self::$rawReadingsMemo)) return self::$rawReadingsMemo[$vehicleId];
+
+        $out = [];
+        try {
+            if (Schema::hasColumn('t_req_master', 'vehicle_id')) {
+                foreach (DB::table('t_req_master')
+                            ->where('vehicle_id', $vehicleId)
+                            ->whereNotNull('meter_at_fill')
+                            ->where('meter_at_fill', '>', 0)
+                            ->whereNotIn('status', ['cancelled', 'rejected'])
+                            ->selectRaw('meter_at_fill AS m, COALESCE(expense_date, DATE(created_at)) AS d')
+                            ->get() as $r) {
+                    $out[] = ['m' => (int) $r->m, 'd' => $r->d ? substr((string) $r->d, 0, 10) : null];
+                }
+            }
+            if (Schema::hasTable(self::T_METER_LOG)) {
+                foreach (DB::table(self::T_METER_LOG)->where('vehicle_id', $vehicleId)
+                            ->get(['meter_start', 'meter_end', 'log_date']) as $r) {
+                    $d = $r->log_date ? substr((string) $r->log_date, 0, 10) : null;
+                    foreach ([$r->meter_start, $r->meter_end] as $m) {
+                        if ($m !== null && (int) $m > 0) $out[] = ['m' => (int) $m, 'd' => $d];
+                    }
+                }
+            }
+            $v = DB::table(self::T_VEHICLE)->where('id', $vehicleId)
+                ->first(['last_service_meter', 'last_service_at']);
+            if ($v && $v->last_service_meter !== null && (int) $v->last_service_meter > 0) {
+                $out[] = ['m' => (int) $v->last_service_meter,
+                          'd' => $v->last_service_at ? substr((string) $v->last_service_at, 0, 10) : null];
+            }
+        } catch (\Throwable $e) {
+            // Partial evidence is still evidence; empty keeps the strict rule.
+        }
+        return self::$rawReadingsMemo[$vehicleId] = $out;
     }
 
     private static function beatsEvidence(int $meter, ?string $date, ?array $incumbent): bool
@@ -694,10 +828,26 @@ class VehicleService
             = $this->claimsForVehicle($vehicleId, self::PRE_REGISTRY_FROM, date('Y-m-d'));
     }
 
+    /**
+     * ⭐ ONE MACHINE'S WHOLE CLAIM HISTORY, for consumers outside this class.
+     *
+     * Deliberately the SAME memoised list the per-type evidence and
+     * `lastServicePointBefore` read. `FleetFuelService` chains a bike's fuel fills
+     * from it (Aug-2026); giving it its own reconstruction would let the fuel chip
+     * and this bike's cost history disagree about which machine burned a tank, which
+     * is the whole class of bug the attribution work exists to end.
+     */
+    public function claimHistoryFor(int $vehicleId): array
+    {
+        return $this->allClaimsFor($vehicleId);
+    }
+
     /** Drop the service memos — tests, queue workers, anything long-lived. */
     public static function flushServiceMemo(): void
     {
         self::$evidenceMemo = [];
+        self::$lowMileageMemo = [];
+        self::$rawReadingsMemo = [];
         self::$fullClaimsMemo = [];
         self::$scheduleMemo = [];
         self::$meterMemo = [];
@@ -1142,8 +1292,11 @@ class VehicleService
                 || $claimTypeInterval <= (int) $this->cfg('BIKE_SERVICE_INTERVAL_KM', 1200);
 
             $best = null;
-            $consider = function (int $m, ?string $d, ?int $interval) use ($meter, &$best) {
-                if ($m <= self::MIN_METER || $m >= $meter) return;
+            // ⚠ Same machine-relative, DATE-ANCHORED floor as the per-type evidence —
+            //   a new bike's three-figure service is a real reference point, and it
+            //   must STAY one however far the bike later runs.
+            $consider = function (int $m, ?string $d, ?int $interval) use ($meter, $vehicleId, &$best) {
+                if (!$this->plausibleServiceMeter($m, $vehicleId, $d) || $m >= $meter) return;
                 if ($best !== null && ($m < $best['meter']
                     || ($m === $best['meter'] && (string) $d <= (string) $best['date']))) return;
                 $best = ['meter' => $m, 'date' => $d, 'interval' => $interval];
@@ -1902,6 +2055,12 @@ class VehicleService
     private function computeCurrentMeter(int $vehicleId): ?int
     {
         try {
+            // ⚠ The dropped-digit floor, machine-relative (Aug-2026). Without this a
+            //   bike that has genuinely never passed 1,000 km reports NO odometer at
+            //   all, so every countdown built on it reads "unknown" — EDN-198 had an
+            //   approved oil change and still showed no schedule. `false` for every
+            //   5-figure machine, i.e. this changes nothing anywhere else.
+            $floor = $this->isLowMileageMachine($vehicleId) ? 0 : self::MIN_METER;
             // 1. The machine's own rows (Phase B onwards).
             $byVehicle = (int) DB::table('t_ops_attendance')
                 ->where('vehicle_id', $vehicleId)
@@ -1940,7 +2099,7 @@ class VehicleService
                 $fill = (int) DB::table('t_req_master')
                     ->where('requester_user_id', $w['user_id'])
                     ->whereNotNull('meter_at_fill')
-                    ->where('meter_at_fill', '>', self::MIN_METER)
+                    ->where('meter_at_fill', '>', $floor)
                     ->whereNotIn('status', ['cancelled', 'rejected'])
                     ->whereRaw('COALESCE(expense_date, DATE(created_at)) >= ?', [$w['from']])
                     ->when($w['to'], fn ($q) => $q->whereRaw('COALESCE(expense_date, DATE(created_at)) <= ?', [$w['to']]))
@@ -1952,7 +2111,7 @@ class VehicleService
                 $best = max($best, $att, $fill);
             }
 
-            return $best > self::MIN_METER ? $best : null;
+            return $best > $floor ? $best : null;
         } catch (\Throwable $e) {
             return null;
         }

@@ -436,24 +436,90 @@ class VanController extends Controller
     }
 
     /** Done here. */
-    public function completeStop(Request $request, \App\Services\Riders\VanStopService $stops)
+    /**
+     * "Done" — end the meet-up.
+     *
+     * ⭐ The happy path never needs this: `completeStopIfHandoverDone` closes the
+     *    stop by itself when the last rider scans his last box. Pressing Done is
+     *    therefore an ABANDON — "nobody is coming, I am leaving with their boxes"
+     *    — and is treated as one: refused unless confirmed, then recorded and
+     *    reported to the store.
+     */
+    public function completeStop(Request $request, \App\Services\Riders\VanStopService $stops, VanService $van)
     {
         $user = Auth::user();
         if (!$user) return response()->json(['success' => false, 'message' => 'Not authorised'], 401);
-        $res = $stops->completeStop((int) $user->id);
-        return response()->json(['success' => $res['ok'], 'message' => $res['message']], $res['ok'] ? 200 : 422);
+
+        $uid = (int) $user->id;
+        $res = $stops->completeStop($uid, $request->boolean('force'), $uid);
+
+        // A refusal here is not an error — it is the guard asking. The app turns
+        // `needs_confirm` + `awaiting` into the Roman-Urdu warning that names who
+        // is being left behind.
+        if (!($res['ok'] ?? false)) {
+            return response()->json([
+                'success'       => false,
+                'needs_confirm' => (bool) ($res['needs_confirm'] ?? false),
+                'awaiting'      => $res['awaiting'] ?? [],
+                'message'       => $res['message'],
+            ], 422);
+        }
+
+        // ⭐ Forcing it tells the STORE, not just the log — same discipline as a
+        //    meter or verified-pin bypass. Best-effort: a push failure must never
+        //    fail the close, the banner on the boards carries it anyway.
+        if (!empty($res['forced'])) {
+            $this->announceForcedClose($uid, $res['awaiting'] ?? []);
+        }
+
+        return response()->json([
+            'success' => true,
+            'forced'  => (bool) ($res['forced'] ?? false),
+            'message' => $res['message'],
+            'stop'    => $stops->currentStopPayload($uid),
+        ]);
+    }
+
+    /**
+     * Tell the store a driver drove off with somebody's boxes still aboard.
+     * Push to whoever gets dispatch alerts; the boards show it regardless.
+     */
+    private function announceForcedClose(int $driverId, array $awaiting): void
+    {
+        try {
+            if (empty($awaiting)) return;
+            $driver = DB::table('t_sys_user')->where('id', $driverId)->value('fullname') ?: 'The van';
+            app(\App\Services\FirebaseService::class)->notifyVanStopForceClosed(
+                $driverId, $driver, VanService::describeAwaiting($awaiting)
+            );
+        } catch (\Throwable $e) {
+            Log::warning('Forced-close announcement failed', ['driver' => $driverId, 'error' => $e->getMessage()]);
+        }
     }
 
     /** Create / rename / re-pin a preset stop (managers). */
     public function saveStop(Request $request, \App\Services\Riders\VanStopService $stops, VanService $van, $id = null)
     {
         $user = Auth::user();
-        // ⭐ CREATE is open to the VAN DRIVER too (owner ruling Aug-4): he is the
-        //    one standing at the spots, so he may name new ones from his phone.
-        //    EDIT (an $id) / retire / promote stay with staff — renaming or
-        //    killing a point everyone relies on is a management act.
+        // ⭐ CREATE is open to the VAN DRIVER (owner ruling Aug-4): he is the one
+        //    standing at the spots, so he may name new ones from his phone.
+        //
+        // ⭐ AND SO IS EDIT (owner ruling Aug-2026: "the van driver should be able
+        //    to edit the meet-up point"). He is the person who discovers that the
+        //    pin is on the wrong side of the road or that a name is confusing, so
+        //    making him ask the office to fix it was friction for no safety gain.
+        //
+        // ⚠⚠ RETIRE IS STILL STAFF-ONLY, AND THAT IS NOT JUST THE DELETE ROUTE.
+        //    `savePreset` writes `is_active` from the payload, so an edit carrying
+        //    `is_active:false` IS a retire through the side door — and an edit
+        //    carrying nothing at all defaults it back to 1, which would let a
+        //    driver resurrect a point staff had deliberately retired. The field is
+        //    therefore STRIPPED for a driver, leaving the row's own state
+        //    untouched either way. Renaming a stop is reversible; removing one
+        //    everybody's card points at is not.
         $isDriver = $user && $van->isVanDriver((int) $user->id);
-        if (!$this->canManageStops($user) && !($isDriver && $id === null)) {
+        $isStaff  = $this->canManageStops($user);
+        if (!$isStaff && !$isDriver) {
             return response()->json(['success' => false, 'message' => 'You cannot manage meet-up stops.'], 403);
         }
         $data = $request->validate([
@@ -463,6 +529,15 @@ class VanController extends Controller
             'radius_m'  => 'nullable|integer|min:50|max:5000',
             'is_active' => 'nullable|boolean',
         ]);
+        if (!$isStaff) {
+            unset($data['is_active']);
+            // Editing an existing row keeps whatever active state it already has,
+            // rather than savePreset's create-time default of 1.
+            if ($id) {
+                $cur = $stops->presetActiveState((int) $id);
+                if ($cur !== null) $data['is_active'] = $cur;
+            }
+        }
 
         $res = $stops->savePreset($data, $id ? (int) $id : null, (int) $user->id);
         return response()->json(['success' => $res['ok'], 'message' => $res['message'] ?? null,
@@ -602,14 +677,25 @@ class VanController extends Controller
             $youBit = $yourEta ? ' · you ~' . $yourEta['arrival_display'] : '';
 
             // One honest sentence for each real situation.
+            //
+            // ⭐⭐ COLLECTING NEVER DEPENDS ON A MEET-UP POINT (owner ruling
+            //    Aug-2026, after prod). The scanner used to be offered only in
+            //    the two states that HAVE a stop — so when a driver closed his
+            //    meet-up early, every rider who had not collected yet dropped to
+            //    "he will send the meeting point shortly" and lost the scanner
+            //    entirely, standing next to the van. The server side never
+            //    needed a stop: `handoverScan` only checks the box is aboard and
+            //    the scanner is its rider. So the button follows THE CARGO, and
+            //    the stop is now only about where and when.
             if (!$departed) {
                 $state = 'loading';
                 $head  = 'Your orders are on the van';
-                $sub   = 'It has not left the store yet.';
+                $sub   = 'Van abhi store par hai. Agar aap wahin hain to abhi collect kar sakte hain.';
             } elseif (!$stop) {
                 $state = 'awaiting_location';
                 $head  = '🚚 The van has left';
-                $sub   = ($driverName ?: 'The driver') . ' will send the meeting point shortly.';
+                $sub   = ($driverName ?: 'The driver') . ' abhi meeting point bhejega. '
+                       . 'Jab van mile, Collect daba kar scan kar lein.';
             } elseif (!empty($stop['reached_at'])) {
                 $state = 'waiting';
                 $head  = '🚚 The van is waiting for you';
@@ -628,6 +714,11 @@ class VanController extends Controller
             return response()->json([
                 'success'      => true,
                 'has_cargo'    => true,
+                // ⭐ THE SERVER DECIDES WHETHER HE MAY COLLECT, not the app's
+                //    reading of `state`. Anything aboard = the scanner is open.
+                //    A flag rather than a rule the client re-derives, so this can
+                //    never drift back out of step with the scan endpoint.
+                'can_collect'  => true,
                 'state'        => $state,
                 'headline'     => $head,
                 'sub'          => $sub,
@@ -710,11 +801,28 @@ class VanController extends Controller
         //    (owner, Aug-6: "the van is always showing"). The tab should follow
         //    the WORK: something tagged for the van, something aboard, or a trip
         //    already running. Tagging the first order brings it back.
+        //    ⚠⚠ AND THE TAG CHECK IS TIME-BOUNDED (Aug-2026). Every other live van
+        //    pointer already carries a bound; this one did not, so a single order
+        //    tagged On Van and never loaded — the exact leftover the load list is
+        //    designed to surface — held the tab open for days on end and made the
+        //    "it comes back when van work starts" promise meaningless, because it
+        //    had never gone away. An order whose history row is missing counts as
+        //    work: unknown age must never read as stale.
         $hasWork = false;
         if ($van->available()) {
             try {
-                $hasWork = DB::table('t_crm_prod_order')
-                        ->where('order_status', VanService::STATUS_ON_VAN)
+                $freshTag = now()->subHours(VanService::STALE_TAG_HOURS);
+                $hasWork = DB::table('t_crm_prod_order as o')
+                        ->leftJoin('t_crm_order_status_history as h', function ($j) {
+                            $j->on('h.order_id', '=', 'o.id')
+                              ->where('h.is_current', '=', 1)
+                              ->where('h.status_code', '=', VanService::STATUS_ON_VAN);
+                        })
+                        ->where('o.order_status', VanService::STATUS_ON_VAN)
+                        ->where(function ($q) use ($freshTag) {
+                            $q->whereNull('h.changed_at')
+                              ->orWhere('h.changed_at', '>=', $freshTag);
+                        })
                         ->exists()
                     || DB::table('t_crm_prod_order')
                         ->whereNotNull('van_loaded_at')
@@ -774,6 +882,7 @@ class VanController extends Controller
                 ->map(fn ($v) => (int) $v)->filter()->unique()->values();
 
             $warm = [];
+            $warmReturn = [];
             $vans = [];
             foreach ($driverIds as $did) {
                 // ⭐ Self-heal a finished (or pointless) meet-up before rendering:
@@ -844,11 +953,33 @@ class VanController extends Controller
                     ];
                 }
 
+                // ⭐ "WHEN IS THE VAN BACK?" (owner ask, Aug-2026). Deliberately the
+                //    SAME `getReturnToOfficeInfo` the live rider board uses, not a
+                //    second arrival calculation: that method already knows a van
+                //    driver heading to a rendezvous — or still carrying somebody's
+                //    boxes — is NOT returning, and answers null for him. A private
+                //    copy here would have to relearn all of that and would drift.
+                //
+                // ⚠ `useGoogleEta: false` — this panel POLLS. A cold Google call on
+                //   the hot path is the exact failure the live board was fixed for.
+                //   Warm cache if the board already filled it, else the same ~22 km/h
+                //   approximation shown everywhere else, warmed out of band below.
+                $returnEta = null;
+                try {
+                    $returnEta = app(RiderController::class)
+                        ->getReturnToOfficeInfo($did, null, null, 300, false);
+                } catch (\Throwable $e) {
+                    // Never let the return estimate cost the board its render.
+                }
+                if ($returnEta !== null) $warmReturn[] = $did;
+
                 $vans[] = [
                     'driver_user_id' => $did,
                     'driver_name'    => $name,
                     'mode'           => $mode,
                     'headline'       => $this->panelHeadline($mode, $name, $stop, $m),
+                    // Present only while he is genuinely on his way back.
+                    'return_eta'     => $returnEta,
                     'trip'           => $trip ? [
                         'id' => (int) $trip->id,
                         'departed_at' => $trip->departed_at,
@@ -870,11 +1001,38 @@ class VanController extends Controller
                     'to_load'        => $m['to_load'] ?? [],
                     'totals'         => $m['totals'],
                     'trip_stops'     => $stops->tripStops($trip->id ?? null),
+                    // ⚠️ Meet-ups this driver ABANDONED with cargo still aboard.
+                    //    Reported like a meter / verified-pin bypass: the store
+                    //    finds out while it is happening, from the boards it is
+                    //    already watching, not in tomorrow's report.
+                    'forced_closes'  => $stops->forcedCloses($trip->id ?? null),
                 ];
             }
 
             // Warm the cold ETAs AFTER the response — never on the poll's path.
             if (!empty($warm)) $this->warmEtas($warm);
+
+            // ⭐ Same treatment for the return ETA, so the van board is not
+            //    dependent on somebody having the live rider board open to get a
+            //    real Google figure. Shares `return_office_eta:<id>` with the live
+            //    board — one cache, one answer, never two different arrival times.
+            if (!empty($warmReturn)) {
+                try {
+                    $ids = array_values(array_unique($warmReturn));
+                    app()->terminating(function () use ($ids) {
+                        foreach ($ids as $rid) {
+                            try {
+                                app(RiderController::class)
+                                    ->getReturnToOfficeInfo($rid, null, null, 300, true);
+                            } catch (\Throwable $e) {
+                                // Non-fatal — the board keeps its approximation.
+                            }
+                        }
+                    });
+                } catch (\Throwable $e) {
+                    // No terminating() here (console/queue) — skip silently.
+                }
+            }
 
             return response()->json(['success' => true, 'available' => true, 'vans' => $vans]);
         } catch (\Throwable $e) {
