@@ -268,15 +268,25 @@ class FuelClaimRules
         } catch (\Throwable $e) { /* fall back to the rider-keyed window */ }
 
         try {
-            $sane = 'meter_start > ' . self::MIN_PLAUSIBLE_METER . '
-                     AND (meter_end IS NULL OR (meter_end >= meter_start AND meter_end - meter_start <= 500))
-                     AND (meter_home IS NULL OR (meter_home >= meter_start AND meter_home - meter_start <= 700))';
+            // ⭐⭐ ONE READING RULE, ONE DEFINITION (Aug-22 2026). This block used to carry a
+            //    VERBATIM COPY of VehicleService's old predicate — including its defect, that
+            //    `meter_start` gatekeeps `meter_end`/`meter_home`, so a handover evening was
+            //    thrown away whole. Left as a copy, a rider the registry CAN answer for would be
+            //    judged by one rule and a rider it CANNOT by another, and only one of them would
+            //    ever get fixed. Both now call the same three helpers.
+            //
+            // ⚠ MIN_PLAUSIBLE_METER has not been lost: it lives inside `readingLowExprSql()`,
+            //   applied to the CANDIDATE rather than the row — see that method for why the
+            //   distinction matters on the ceil side.
+            $sane     = \App\Services\Riders\VehicleService::readingRowFilterSql();
+            $highExpr = \App\Services\Riders\VehicleService::readingHighExprSql();
+            $lowExpr  = \App\Services\Riders\VehicleService::readingLowExprSql();
 
             $attBefore = DB::table('t_ops_attendance')
                 ->where('user_id', $userId)
                 ->where('attendance_date', '<', $date)
                 ->whereRaw($sane)
-                ->selectRaw('MAX(GREATEST(COALESCE(meter_end,0), COALESCE(meter_home,0), COALESCE(meter_start,0))) AS m')
+                ->selectRaw('MAX(' . $highExpr . ') AS m')
                 ->value('m');
 
             $fillBefore = DB::table('t_req_master')
@@ -295,7 +305,7 @@ class FuelClaimRules
                 ->where('user_id', $userId)
                 ->where('attendance_date', '>', $date)
                 ->whereRaw($sane)
-                ->selectRaw('MIN(COALESCE(NULLIF(meter_start,0), NULLIF(meter_end,0), NULLIF(meter_home,0))) AS m')
+                ->selectRaw('MIN(' . $lowExpr . ') AS m')
                 ->value('m');
 
             $fillAfter = DB::table('t_req_master')

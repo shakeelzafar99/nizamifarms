@@ -52,8 +52,26 @@ class MeterCorrectionService
      * @param  int|null  $actorId   who is making the correction
      * @return array{ok:bool, message:string, meter_start?:int|null, meter_end?:int|null}
      */
+    /**
+     * ⭐⭐ STEP C — WHY THIS WRITER DOES **NOT** STAMP `currentVehicleFor` (Aug-22 2026).
+     *
+     * Every other meter writer freezes the machine at the moment of the reading, because the
+     * rider is holding it. A manager correction is the opposite situation: he is fixing a reading
+     * from LAST TUESDAY, from a desk, and "what is that rider holding right now" is not merely
+     * unhelpful — it is actively wrong, and would have stamped Rajab's own-bike morning reading
+     * as the Van, freezing the exact mistake step C exists to prevent.
+     *
+     * So the rule here is: KEEP whatever stamp the row already carries, and otherwise leave it
+     * NULL. NULL means "derive it", which is precisely the honest answer for a reading nobody
+     * recorded a machine for. `$vehicleId` is the escape hatch for a future correction UI that
+     * asks the manager outright — the one control they did not have during the Van incident.
+     *
+     * @param  int|null $vehicleId  explicit machine for these readings (a manager saying so),
+     *                              or null to leave the existing stamp untouched.
+     */
     public function correct(int $attendanceId, bool $hasStart, ?int $start,
-                            bool $hasEnd, ?int $end, ?int $actorId = null): array
+                            bool $hasEnd, ?int $end, ?int $actorId = null,
+                            ?int $vehicleId = null): array
     {
         $att = DB::table('t_ops_attendance')->where('id', $attendanceId)->first();
         if (!$att) {
@@ -88,6 +106,19 @@ class MeterCorrectionService
                 }
                 if (Schema::hasColumn('t_ops_attendance', 'home_meter_recorded_at')) {
                     $update['home_meter_recorded_at'] = now();
+                }
+            }
+        }
+
+        // ⭐ STEP C — only when the manager explicitly named a machine (see the docblock).
+        //   Applied to the readings actually being written, and to meter_home alongside
+        //   meter_end because (3) above mirrors one into the other.
+        if ($vehicleId !== null && Schema::hasColumn('t_ops_attendance', 'meter_start_vehicle_id')) {
+            if ($hasStart && $start !== null) $update['meter_start_vehicle_id'] = $vehicleId;
+            if ($hasEnd && $end !== null) {
+                $update['meter_end_vehicle_id'] = $vehicleId;
+                if (array_key_exists('meter_home', $update)) {
+                    $update['meter_home_vehicle_id'] = $vehicleId;
                 }
             }
         }

@@ -6814,6 +6814,10 @@ class RiderController extends Controller
                     }
 
                     $updateData['meter_start'] = (int) $meterReading;
+                    // ⭐ STEP C — freeze WHICH MACHINE this reading is of, now, while we still
+                    //   know. See meterStampFields(): a no-op until the SQL has run.
+                    $updateData = array_merge($updateData, $this->meterStampFields(
+                        $user->id, ['meter_start'], ['meter_start' => (int) $meterReading]));
                     // ⭐ U5 — SOURCE FOLLOWS LOCATION, not which button: GPS at the home pin =
                     // real HOME start; anywhere else (or GPS off) = 'checkin' + nudge + flagged.
                     // The ride-in TIMER is ALWAYS armed for a bike rider's first reading (owner
@@ -6899,6 +6903,10 @@ class RiderController extends Controller
                 // ⭐ Save OCR-extracted meter reading to meter_end column
                 if ($meterReading !== null && $meterReading !== '') {
                     $updateData['meter_end'] = (int) $meterReading;
+                    // ⭐ STEP C — the closing reading is of whatever he holds NOW, which on a
+                    //   handover day is not what he opened the day on.
+                    $updateData = array_merge($updateData, $this->meterStampFields(
+                        $user->id, ['meter_end'], ['meter_end' => (int) $meterReading]));
                 }
             }
 
@@ -7068,17 +7076,8 @@ class RiderController extends Controller
             //    FAIL-OPEN on errors — never strand a rider at the office over a DB hiccup.
             try {
                 $mrColumn = \Illuminate\Support\Facades\Schema::hasColumn('t_ops_rider_profile', 'meter_required');
-                // ⭐ PHASE D — a day OPENED on a meter must be CLOSED on one, even if the
-                //   machine changed hands at lunchtime. Without this a mid-day handover
-                //   leaves a half-read day (a start with no end) and those kilometres
-                //   drop out of the bike's chain as "unaccounted" for good. He read it
-                //   this morning; he can read it at the point he handed it over.
-                //   ⚠ Only in the Phase-D world (the resolver has an opinion) — on a
-                //     server with the switch off this clause must not exist at all.
                 $registrySpeaks = (new \App\Services\Riders\VehicleResolver())
                     ->meterRequiredNow($user->id, $today) !== null;
-                $openedOnAMeter = $registrySpeaks
-                    && $existing->meter_start !== null && $existing->meter_start !== '';
 
                 if (!$checkoutBypass
                     && ($mrColumn || $registrySpeaks)
@@ -7086,8 +7085,53 @@ class RiderController extends Controller
                     // Asked through the SAME helper the app's flag came from, so the gate
                     // can never demand a reading the app didn't offer to take.
                     $mrFlagOut = $this->meterRequiredForUser($user->id, $today);
-                    if (((int) $mrFlagOut === 1 || $openedOnAMeter)
-                        && (new \App\Services\Riders\HomeJourneyService())->riderHomePin($user->id) === null) {
+
+                    // ⭐⭐ THE OWNER'S THREE METER RULES, IN ONE PLACE (owner ruling, Aug-22 2026):
+                    //   1. holds a COMPANY machine right now → the CLOSING reading is taken at
+                    //      HOME by the going-home flow, so this gate must stay out of the way.
+                    //   2. holds his OWN bike                → he closes it at CHECKOUT, wherever
+                    //      that is (customer or office), so demand it here.
+                    //   3. holds NOTHING                     → nothing is asked of him at all.
+                    //
+                    // ⚠⚠ R8 — this used to key on `riderHomePin() === null`, which is a question
+                    //    about ATTENDANCE geofencing, not about machines. A home pin exempted a
+                    //    rider from this gate on the assumption the home flow would collect his
+                    //    close — but `armHomeJourney` only arms for COMPANY machines, so an
+                    //    own-bike rider with a pin was asked by nobody and his day closed unread.
+                    //
+                    // ⚠⚠ R5 — `$openedOnAMeter` (a day opened on a meter must be closed on one)
+                    //    is GONE for rule 3. It forced a rider who handed his machine back at
+                    //    lunch to close a meter he no longer had in front of him. Its stated
+                    //    justification — that the kilometres would otherwise fall out of the
+                    //    machine's chain — no longer holds: MachineAttribution's `shared` leg
+                    //    already carries a handover day whose two ends belong to different
+                    //    riders, and the incoming rider's close continues the chain.
+                    $holdsCompany = $this->holdsCompanyMachineNow($user->id);
+
+                    if ($holdsCompany === true) {
+                        // Rule 1 — but ONLY when the home flow can actually take the handoff.
+                        // ⚠⚠ "Company machine → close at home" presumes a HOME PIN: armHomeJourney
+                        //    returns null without one, so for a pinless holder (the VAN driver who
+                        //    checks out still holding it) skipping here would mean NOBODY collects
+                        //    the close — the home flow can't, and we just excused the only other
+                        //    door. The pre-Aug-22 gate blocked exactly this case, and that part of
+                        //    it was right. Pin → the home flow owns the close; no pin → it is
+                        //    owed here, at checkout, like an own bike.
+                        $hasHomePin = (new \App\Services\Riders\HomeJourneyService())
+                            ->riderHomePin($user->id) !== null;
+                        $needsMeterNow = !$hasHomePin && (int) $mrFlagOut === 1;
+                    } elseif ($holdsCompany === false) {
+                        $needsMeterNow = ((int) $mrFlagOut === 1);    // rule 2 / rule 3
+                    } else {
+                        // Registry silent (rules off, tables missing, not a rider): behave
+                        // EXACTLY as before this change — including the old home-pin exemption.
+                        $openedOnAMeter = $registrySpeaks
+                            && $existing->meter_start !== null && $existing->meter_start !== '';
+                        $needsMeterNow = ((int) $mrFlagOut === 1 || $openedOnAMeter)
+                            && (new \App\Services\Riders\HomeJourneyService())->riderHomePin($user->id) === null;
+                    }
+
+                    if ($needsMeterNow) {
                         return response()->json([
                             'success' => false,
                             'meter_required' => true,
@@ -7284,6 +7328,89 @@ class RiderController extends Controller
      *   false → holds nothing, or his own machine — no overnight flow
      *   null  → registry silent (rules off / not a rider) → old behaviour, unchanged
      */
+    /**
+     * ⭐⭐ STEP C — STAMP THE MACHINE ONTO THE READING, AT THE MOMENT IT IS TAKEN.
+     *
+     * WHY THIS EXISTS (the Van, 20–21 Aug 2026). "Which machine was this reading of?" used to be
+     * INFERRED afterwards, from the day's assignment. A rider-day holds ONE meter pair and the
+     * registry ONE open assignment, so a day on which a man used two machines could not be
+     * expressed at all: Rajab's own bike read 6,434 at 11:58, the Van reached him at 12:09, and
+     * the inference filed 6,434 against a van whose odometer is ~73,800.
+     *
+     * ⭐ The codebase already solved this shape for MONEY. `VehicleResolver::stampClaim()`:
+     *   "a permanent financial record… must be frozen at filing time. A reassignment months
+     *   later must not silently re-attribute old money." A meter reading is the same kind of
+     *   fact — one machine, one instant — so it gets the same treatment.
+     *
+     * ⭐⭐ This is why time-aware assignment history is NOT needed. `currentVehicleFor()` already
+     *    means "what is he holding RIGHT NOW", so recording its answer at the moment of the
+     *    reading captures the time implicitly — without touching `vehicleForDay`'s contract,
+     *    which eight surfaces depend on.
+     *
+     * ⚠ Returns [] when the columns are not migrated yet, so the code is safe to upload before
+     *   the SQL: nothing is stamped, every reader falls back to the old derivation.
+     * ⚠ Returns [] rather than a NULL stamp when the registry cannot answer. NULL means
+     *   "derive it" and that is the correct, unchanged behaviour — writing a guessed stamp would
+     *   freeze a guess into a column that exists to hold a recorded fact.
+     *
+     * @param  string[] $which  any of 'meter_start', 'meter_end', 'meter_home'
+     */
+    private function meterStampFields(int $userId, array $which, array $values = []): array
+    {
+        static $hasCols = null;
+        try {
+            if ($hasCols === null) {
+                $hasCols = \Illuminate\Support\Facades\Schema::hasColumn(
+                    't_ops_attendance', 'meter_start_vehicle_id'
+                );
+            }
+            if (!$hasCols) return [];
+
+            $vid = (new \App\Services\Riders\VehicleResolver())->currentVehicleFor($userId);
+            if (!$vid) return [];
+
+            // ⭐⭐ DON'T STAMP A READING ONTO A MACHINE IT CANNOT BE OF (Aug-22 2026).
+            //
+            // ⚠⚠ THE OPERATIONAL HOLE THIS CLOSES. The flow assumes the van is released BEFORE the
+            //    rider records his closing meter. If a manager forgets, he types his OWN bike's
+            //    6,606 while the registry still says he holds the van — and we would freeze that
+            //    number onto a machine whose odometer reads ~73,800, turning a recoverable
+            //    mistake into a recorded "fact" that Rule P can no longer overrule.
+            //
+            // ⭐ So the value is checked against the machine's own spine (the same evidence Rule P
+            //   uses) before it is stamped. Implausible → leave it UNSTAMPED, which means "derive
+            //   it", which is exactly the honest answer and keeps every existing protection.
+            //   Logged, because a manager forgot a step and somebody should be able to see that.
+            try {
+                $val = null;
+                foreach (['meter_start', 'meter_end', 'meter_home'] as $c) {
+                    if (isset($values[$c]) && (int) $values[$c] > 0) { $val = (int) $values[$c]; break; }
+                }
+                if ($val !== null
+                    && !(new \App\Services\Riders\VehicleService())->readingPlausibleFor((int) $vid, $val)) {
+                    \Log::warning('Meter stamp skipped — reading implausible for the held machine', [
+                        'user_id' => $userId, 'vehicle_id' => (int) $vid, 'reading' => $val,
+                    ]);
+                    return [];
+                }
+            } catch (\Throwable $e) { /* plausibility is a safety net, never a gate */ }
+
+            $out = [];
+            foreach ($which as $col) {
+                if (in_array($col, ['meter_start', 'meter_end', 'meter_home'], true)) {
+                    $out[$col . '_vehicle_id'] = (int) $vid;
+                }
+            }
+            return $out;
+        } catch (\Throwable $e) {
+            // A stamp is an improvement, never a precondition — a reading must still save.
+            \Log::warning('meterStampFields failed (non-fatal)', [
+                'user_id' => $userId, 'error' => $e->getMessage(),
+            ]);
+            return [];
+        }
+    }
+
     private function holdsCompanyMachineNow(int $userId): ?bool
     {
         try {
@@ -7479,6 +7606,10 @@ class RiderController extends Controller
                 'meter_end'   => $meterHome, // day-closing reading for bike riders
                 'updated_at'  => now(),
             ];
+            // ⭐ STEP C — both, because meter_end here is a MIRROR of meter_home: same reading,
+            //   same machine, so they must never be able to carry different stamps.
+            $upd = array_merge($upd, $this->meterStampFields(
+                $user->id, ['meter_home', 'meter_end'], ['meter_home' => (int) $meterHome]));
             // Keep the EARLIEST arrival stamp (heartbeat's true arrival time beats typing time).
             if (!$arrivalStamped) {
                 $upd['home_arrived_at'] = now();
@@ -7593,6 +7724,9 @@ class RiderController extends Controller
                 'meter_start_recorded_at' => now(),
                 'updated_at' => now(),
             ];
+            // ⭐ STEP C — the morning reading is of the machine that slept at his house.
+            $fields = array_merge($fields, $this->meterStampFields(
+                $user->id, ['meter_start'], ['meter_start' => (int) $meterStart]));
             if ($picPath) { $fields['picture_start'] = $picPath; }
             if ($existing) {
                 \DB::table('t_ops_attendance')->where('id', $existing->id)->update($fields);
@@ -7718,6 +7852,23 @@ class RiderController extends Controller
     {
         try {
             if (!\Illuminate\Support\Facades\Schema::hasColumn('t_ops_attendance', 'work_expected_by')) {
+                return null;
+            }
+            // ⭐⭐ R6 (owner ruling, Aug-22 2026) — HOLDS-NOW GUARD, the one the morning never
+            //    learned. `armHomeJourney` and `buildHomeJourneyPayload` have both had it since
+            //    Phase D — "a rider who gave his machine up at lunch must not be armed for its
+            //    meter at 9 pm" — but this card gated only on home pin + leave + working day. So
+            //    a rider holding NOTHING (or riding his OWN bike, whose rule is close-at-checkout,
+            //    not start-at-home) was still invited to record a company-bike start meter.
+            //
+            //    That invitation is how a reading for the wrong machine gets created in the first
+            //    place, which is the Van incident in miniature.
+            //
+            // ⚠⚠ `=== false` ONLY. `holdsCompanyMachineNow()` returns NULL when the registry has
+            //    no opinion (rules off, tables absent, not a rider) and null MUST fall through to
+            //    the old behaviour — guarding on falsy would blank this card for every rider the
+            //    moment the registry went quiet.
+            if ($this->holdsCompanyMachineNow($userId) === false) {
                 return null;
             }
             $wj = new \App\Services\Riders\WorkJourneyService();
@@ -11463,7 +11614,28 @@ class RiderController extends Controller
                         $meterEnd = $record->meter_end ? (float)$record->meter_end : null;
                         $meterDistance = null;
                         $meterWarning = null;
-                        if ($meterStart !== null && $meterEnd !== null) {
+                        // ⭐⭐ A SPLIT DAY HAS NO SINGLE DISTANCE (Aug-22 2026) — and this is the
+                        //    per-km rate's input, i.e. real money.
+                        //
+                        // ⚠⚠ `meter_end - meter_start` silently assumes both readings are of the
+                        //    SAME machine. On a day the rider opened on his own bike (6,434) and
+                        //    closed on the van (73,959) it computes 67,525 km, and at Rs 9.5/km the
+                        //    app would offer a Rs 641,487 fuel claim. The existing >1,000 km check
+                        //    is only a WARNING — the app renders the claim button on
+                        //    `meter_distance > 0` and never blocks on the warning.
+                        //
+                        // ⭐ Step C's stamps make this detectable for the first time: when the two
+                        //   ends name different machines there is no honest distance, so the
+                        //   distance stays NULL — which is exactly what makes the app hide the
+                        //   claim button — and the rider is told why in words he can act on.
+                        $startVid = $record->meter_start_vehicle_id ?? null;
+                        $endVid   = $record->meter_end_vehicle_id ?? null;
+                        if ($meterStart !== null && $meterEnd !== null
+                            && $startVid && $endVid && (int) $startVid !== (int) $endVid) {
+                            $meterWarning = 'Your start and end readings are from two different '
+                                . 'vehicles, so the distance cannot be worked out. Ask your manager '
+                                . 'to correct the readings.';
+                        } elseif ($meterStart !== null && $meterEnd !== null) {
                             if ($meterEnd < $meterStart) {
                                 $meterWarning = 'End reading (' . number_format($meterEnd) . ') is less than start (' . number_format($meterStart) . '). Please check your readings.';
                             } else {
@@ -11989,6 +12161,31 @@ class RiderController extends Controller
                         'message' => 'A petrol request has already been submitted for this day.'
                     ], 422);
                 }
+
+                // ⭐⭐ SPLIT DAY = NO CLAIMABLE DISTANCE. The screen already hides the button when
+                //    the server sends `meter_distance = null`, but a phone holding a stale screen
+                //    can still post the old number — and this one is money: opening on the own
+                //    bike (6,434) and closing on the van (73,959) is 67,525 "km". The server, not
+                //    the screen, is the guarantee. Inert until step C's SQL runs (both stamps NULL).
+                try {
+                    $attRow = DB::table('t_ops_attendance')
+                        ->where('id', $request->input('attendance_id'))
+                        ->first();
+                    $sV = $attRow->meter_start_vehicle_id ?? null;
+                    $eV = $attRow->meter_end_vehicle_id ?? null;
+                    if ($sV && $eV && (int) $sV !== (int) $eV) {
+                        return response()->json([
+                            'success' => false,
+                            'message' => 'That day\'s start and end readings are from two different '
+                                . 'vehicles, so the distance cannot be worked out. Ask your manager '
+                                . 'to correct the readings first.',
+                        ], 422);
+                    }
+                } catch (\Throwable $splitErr) {
+                    // Never block a claim over a lookup failure — the rule above is a safety net,
+                    // not a precondition.
+                    \Log::warning('split-day petrol guard skipped', ['error' => $splitErr->getMessage()]);
+                }
             }
             // ---- FUEL / MAINTENANCE RULES ------------------------------------
             // ⭐ ONE implementation, shared with the manager-on-behalf path
@@ -12250,7 +12447,10 @@ class RiderController extends Controller
             (new \App\Services\Riders\VehicleResolver())->stampClaim(
                 $newRequest->id, (int) $user->id,
                 $validated['expense_category'] ?? null,
-                $validated['expense_date'] ?? null
+                $validated['expense_date'] ?? null,
+                // ⭐ The per-km flow names the attendance row its amount came from; the money then
+                //   follows the same machine as the kilometres. See vehicleFromReadingStamps().
+                isset($validated['attendance_id']) ? (int) $validated['attendance_id'] : null
             );
 
             DB::commit();

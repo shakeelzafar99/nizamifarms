@@ -642,7 +642,46 @@ class VehicleResolver
      * Non-fatal by design: a claim that saved must never be reported as failed
      * because its vehicle could not be worked out.
      */
-    public function stampClaim(?int $requestId, int $forUserId, ?string $category, ?string $expenseDate): void
+    /**
+     * ⭐⭐ A METERED (PER-KM) CLAIM NAMES ITS OWN EVIDENCE — use it (Aug-22 2026).
+     *
+     * The per-km flow sends `attendance_id`: the exact row whose `meter_distance` produced the
+     * amount. That reading knows which machine it was of (step C stamps), so the MONEY can follow
+     * the very same machine as the KILOMETRES it is paying for. No inference, no date guessing.
+     *
+     * ⚠⚠ WHY THE DATE ANSWER IS NOT ENOUGH. These claims are filed the NEXT DAY for YESTERDAY's
+     *    distance — REQ-0262 (Rs 1,007 for 106 km on 20 Aug) was created on the 21st, REQ-0280
+     *    (Rs 323 for 34 km on 21 Aug) on the 22nd. So neither `currentVehicleFor` (wrong day) nor
+     *    `vehicleForDay` (returns whatever he ENDED that day on — the van) can get them right.
+     *    Both were own-bike money and both landed on the van. Only the attendance row can say.
+     *
+     * ⚠ Returns null on a SPLIT day (the two ends stamped to different machines): `end - start`
+     *   then spans two odometers and the distance itself is meaningless, so there is nothing
+     *   honest to attribute. The caller falls back, and the claim is flagged unstamped on the card.
+     */
+    private function vehicleFromReadingStamps(?int $attendanceId): ?int
+    {
+        if (!$attendanceId) return null;
+        try {
+            if (!\Illuminate\Support\Facades\Schema::hasColumn('t_ops_attendance', 'meter_start_vehicle_id')) {
+                return null;
+            }
+            $r = DB::table('t_ops_attendance')->where('id', $attendanceId)
+                ->first(['meter_start_vehicle_id', 'meter_end_vehicle_id']);
+            if (!$r) return null;
+
+            $s = $r->meter_start_vehicle_id ? (int) $r->meter_start_vehicle_id : null;
+            $e = $r->meter_end_vehicle_id ? (int) $r->meter_end_vehicle_id : null;
+
+            if ($s && $e) return $s === $e ? $s : null;   // split day — see the note above
+            return $s ?: $e;
+        } catch (\Throwable $e) {
+            return null;
+        }
+    }
+
+    public function stampClaim(?int $requestId, int $forUserId, ?string $category,
+                               ?string $expenseDate, ?int $attendanceId = null): void
     {
         try {
             if (!$requestId) return;
@@ -651,7 +690,32 @@ class VehicleResolver
             if (!\Illuminate\Support\Facades\Schema::hasColumn('t_req_master', 'vehicle_id')) return;
 
             $date = $expenseDate ? substr((string) $expenseDate, 0, 10) : date('Y-m-d');
-            $vid  = $this->vehicleForDay($forUserId, $date);
+
+            // ⭐⭐ FILING FOR TODAY? ASK WHAT HE IS HOLDING **RIGHT NOW** (Aug-22 2026).
+            //
+            // ⚠⚠ THE PROD INCIDENT. `vehicleForDay` ranks the OPEN assignment first, so it
+            //    answers with whatever he ends the DAY on — and a claim filed at 12:37 on his own
+            //    bike was being stamped with a van handed to him at 12:57, twenty minutes LATER.
+            //    Own-bike per-km money then appears on a company machine's card, which is the one
+            //    thing that must never happen: the two schemes are different money.
+            //
+            // ⭐ Same principle as the meter stamp (`meterStampFields`) and for the same reason —
+            //   a claim is a permanent record of ONE machine at ONE moment, so it is frozen from
+            //   the "right now" answer, not a day-level one.
+            //
+            // ⚠ Only for TODAY. A claim filed for an earlier date is history, and
+            //   `currentVehicleFor` would then be the wrong question entirely — that is precisely
+            //   the mistake this guard exists to avoid making in the other direction.
+            // 1. The claim's OWN evidence, when it has any — the strongest answer by far.
+            $vid = $this->vehicleFromReadingStamps($attendanceId);
+
+            // 2. Otherwise: filing for today = what he holds right now; an earlier date = the
+            //    day-level answer, which is all history can offer.
+            if (!$vid) {
+                $vid = ($date === date('Y-m-d'))
+                    ? ($this->currentVehicleFor($forUserId) ?: $this->vehicleForDay($forUserId, $date))
+                    : $this->vehicleForDay($forUserId, $date);
+            }
             if (!$vid) return;
 
             DB::table('t_req_master')->where('id', $requestId)

@@ -183,28 +183,61 @@ class MachineAttribution
                    // ⭐ WHEN the reading was written down. The day card orders its
                    //   lines by real time, so a handover recorded at 22:49 sits
                    //   after a 21:42 close instead of being guessed into place.
-                   'meter_start_recorded_at', 'home_meter_recorded_at']);
+                   'meter_start_recorded_at', 'home_meter_recorded_at',
+                   ...(VehicleService::stampsAvailable()
+                       ? ['meter_start_vehicle_id', 'meter_end_vehicle_id', 'meter_home_vehicle_id']
+                       : [])]);
 
+        // ⭐⭐ STEP C — a rider-day may now describe TWO machines, so it may produce two rows.
+        //
+        //    R-A ("one machine per rider-day") is still the answer when nothing says otherwise —
+        //    but it was never true of a mid-day handover, and that is how the Van ended up
+        //    showing a 6,434 km reading against a ~73,800 km odometer. Where a reading carries a
+        //    stamp (recorded at the moment it was taken) the stamp WINS over the day map, and the
+        //    row is split so each machine receives only the numbers that are actually its own.
+        //
+        // ⚠ `pointsForRow()` already copes with a partial row — that is its `max($known)` branch —
+        //   so a half-row (close only, or start only) needs no special handling downstream.
+        // ⚠ Unstamped rows take `$vid` exactly as before, so all history is untouched.
+        $stamped = VehicleService::stampsAvailable();
         $rowsByVehicle = [];
         foreach ($att as $a) {
             $uid = (int) $a->user_id;
             $d   = substr((string) $a->attendance_date, 0, 10);
             $vid = $dayMap[$uid . '|' . $d] ?? null;
-            if (!$vid) continue;                       // held nothing that day
-            $rowsByVehicle[$vid][] = [
-                'date'         => $d,
-                'user_id'      => $uid,
-                'keeper'       => $names[$uid] ?? null,
-                'meter_start'  => $this->reading($a->meter_start),
-                'meter_end'    => $this->reading($a->meter_end),
-                'meter_home'   => $this->reading($a->meter_home),
-                'start_source' => $a->meter_start_source ?: null,
-                'leave'        => $a->leave_type ?: null,
-                'worked'       => $a->login_time !== null,
-                'closed'       => $a->logout_time !== null,
-                'start_at'     => $this->clock($a->meter_start_recorded_at ?? null),
-                'end_at'       => $this->clock($a->home_meter_recorded_at ?? null),
+
+            $reads = [
+                'meter_start' => $this->reading($a->meter_start),
+                'meter_end'   => $this->reading($a->meter_end),
+                'meter_home'  => $this->reading($a->meter_home),
             ];
+
+            // Bucket each reading under the machine it belongs to.
+            $buckets = [];
+            foreach ($reads as $col => $val) {
+                $target = $stamped ? ($a->{$col . '_vehicle_id'} ?? null) : null;
+                $target = $target ? (int) $target : $vid;
+                if (!$target) continue;                // held nothing, and nothing said otherwise
+                $buckets[$target][$col] = $val;
+            }
+            if (!$buckets) continue;
+
+            foreach ($buckets as $target => $vals) {
+                $rowsByVehicle[$target][] = [
+                    'date'         => $d,
+                    'user_id'      => $uid,
+                    'keeper'       => $names[$uid] ?? null,
+                    'meter_start'  => $vals['meter_start'] ?? null,
+                    'meter_end'    => $vals['meter_end'] ?? null,
+                    'meter_home'   => $vals['meter_home'] ?? null,
+                    'start_source' => $a->meter_start_source ?: null,
+                    'leave'        => $a->leave_type ?: null,
+                    'worked'       => $a->login_time !== null,
+                    'closed'       => $a->logout_time !== null,
+                    'start_at'     => $this->clock($a->meter_start_recorded_at ?? null),
+                    'end_at'       => $this->clock($a->home_meter_recorded_at ?? null),
+                ];
+            }
         }
 
         $handovers = $this->handoverMeters($from, $to);
@@ -707,6 +740,12 @@ class MachineAttribution
                         'kind' => $c['kind'], 'amount' => $c['amount'], 'meter' => $c['meter'] ?? null,
                         'who'  => $c['by_name'] ?? null, 'pending' => !empty($c['is_pending']),
                         'id'   => $c['id'] ?? null,
+                        // ⭐ the filing clock — see the note on 'at' in claimsForVehicle().
+                        'at'   => $c['at'] ?? null,
+                        // ⭐ stamped = the machine was RECORDED on the claim; unstamped = it was
+                        //   INFERRED from who held what that day, which is exactly how an
+                        //   own-bike claim can surface on a company machine's card.
+                        'stamped' => !empty($c['stamped']),
                     ];
                 }
             }

@@ -75,6 +75,9 @@ class VehicleService
     /** A single unwitnessed stretch beyond this is a typo'd meter, not a distance. */
     public const MAX_GAP_KM = 2000;
 
+    /** The ride home cannot plausibly exceed this. Mirrors MachineAttribution::MAX_HOME_KM. */
+    public const MAX_HOME_KM = 700;
+
     /**
      * ⭐ A MONTH's plausible ceiling — deliberately NOT MAX_GAP_KM (Aug-6 fix).
      *
@@ -429,6 +432,12 @@ class VehicleService
                         'meter'      => $r->meter_at_fill !== null ? (int) $r->meter_at_fill : null,
                         'status'     => (string) $r->status,
                         'is_pending' => $r->status === 'pending',
+                        // ⭐ WHEN it was filed (owner request, Aug-22). The day card already
+                        //   ORDERS by this — a claim filed at 12:37 sits above a 12:57 handover —
+                        //   but never showed it, so a manager could see the sequence and not the
+                        //   clock. On a machine that changed hands mid-day the time is the whole
+                        //   story: it says which side of the handover a claim belongs to.
+                        'at'         => $r->created_at ? substr((string) $r->created_at, 11, 5) : null,
                         // ⭐ who filed it — the confusion-killer
                         'by_user_id' => (int) $r->requester_user_id,
                         'by_name'    => $r->requester_name,
@@ -2061,11 +2070,24 @@ class VehicleService
             //   approved oil change and still showed no schedule. `false` for every
             //   5-figure machine, i.e. this changes nothing anywhere else.
             $floor = $this->isLowMileageMachine($vehicleId) ? 0 : self::MIN_METER;
+
+            // ⭐⭐ Aug-22 2026 — the SAME reading-level rule the odometer window now uses.
+            //    `SANE_ROW_SQL` is the FOURTH copy of the old predicate and carries the identical
+            //    defect: a handover evening (a close with no start) was discarded WHOLE, so a
+            //    machine's "current meter" ignored the very last reading it produced. That number
+            //    is what the fleet cards print and what the service clock derives from, so the
+            //    machine could read stale by a full day's running the moment it changed hands.
+            $readingLevel = $this->readingLevelOn();
+            $rowSql   = $readingLevel ? self::readingRowFilterSql() : self::SANE_ROW_SQL;
+            $highExpr = $readingLevel
+                ? self::readingHighExprSql($vehicleId)
+                : 'GREATEST(COALESCE(meter_end,0), COALESCE(meter_home,0), COALESCE(meter_start,0))';
+
             // 1. The machine's own rows (Phase B onwards).
             $byVehicle = (int) DB::table('t_ops_attendance')
                 ->where('vehicle_id', $vehicleId)
-                ->whereRaw(self::SANE_ROW_SQL)
-                ->selectRaw('MAX(GREATEST(COALESCE(meter_end,0), COALESCE(meter_home,0), COALESCE(meter_start,0))) AS m')
+                ->whereRaw($rowSql)
+                ->selectRaw('MAX(' . $highExpr . ') AS m')
                 ->value('m');
 
             $byFill = (int) DB::table('t_req_master')
@@ -2092,8 +2114,8 @@ class VehicleService
                     ->where('attendance_date', '>=', $w['from'])
                     ->when($w['to'], fn ($q) => $q->where('attendance_date', '<=', $w['to']))
                     ->when($skip, fn ($q) => $q->whereNotIn('attendance_date', $skip))
-                    ->whereRaw(self::SANE_ROW_SQL)
-                    ->selectRaw('MAX(GREATEST(COALESCE(meter_end,0), COALESCE(meter_home,0), COALESCE(meter_start,0))) AS m')
+                    ->whereRaw($rowSql)
+                    ->selectRaw('MAX(' . $highExpr . ') AS m')
                     ->value('m');
 
                 $fill = (int) DB::table('t_req_master')
@@ -2797,16 +2819,231 @@ class VehicleService
         return null;
     }
 
+    /**
+     * ⭐⭐ THE ONE READING-QUALITY RULE (Aug-22 2026) — JUDGE THE READING, NOT THE ROW.
+     *
+     * ⚠⚠ THE PROD BUG THIS EXISTS FOR (Waseem, DCR-799, 21-Aug-2026). The predicate these
+     *    three helpers replace opened with `meter_start > MIN_METER`, which made `meter_start`
+     *    a GATEKEEPER for `meter_end` and `meter_home` — three independent readings judged as
+     *    one row. On a handover the incoming rider CLOSES the day but never OPENED it, so his
+     *    row carries no start and the WHOLE row was discarded, taking the machine's true
+     *    closing reading with it. DCR-799 really closed 20-Aug at 26,530 in Waseem's row; the
+     *    window never saw it, fell back to a fuel fill at 26,441, and accused him of an 89 km
+     *    overnight gap he had not ridden. It had eaten Danish's 19-Aug close the same way, and
+     *    went unnoticed only because his next morning's start happened to repeat the number.
+     *
+     * ⭐ These mirror `MachineAttribution::pointsForRow()` EXACTLY. That engine (the Bikes
+     *   day-by-day view) had the rule right all along — which is precisely why the two screens
+     *   disagreed about the same machine on the same day. ONE rule, and now only one definition:
+     *   `FuelClaimRules::odometerWindow()` used to carry a verbatim copy of the old predicate.
+     *
+     * ⚠ Expressed as SQL rather than a PHP row-walk on purpose: it has to apply INSIDE the same
+     *   MAX/MIN aggregates the odometer window already runs, and a PHP filter would mean pulling
+     *   every attendance row into memory (the same reasoning as `scopeWindowRows`).
+     */
+
+    /**
+     * The only ROW-level rejection left: both ends present and the span impossible. A day that
+     * "ran" 26,261 → 56,403 is a typo and neither of its numbers can be trusted.
+     *
+     * ⚠⚠ Deliberately NOT `meter_start > MIN_METER`. A row with no start is not a bad row — it
+     *   is a handover evening, and its close is the machine's best evidence for that day.
+     */
+    public static function readingRowFilterSql(): string
+    {
+        // ⚠⚠ COALESCE IS LOAD-BEARING, NOT TIDINESS. In SQL's three-valued logic `NULL > 0` is
+        //    NULL, so `NOT (NULL AND TRUE)` is NULL — which a WHERE treats as FALSE and the row
+        //    vanishes. Written without these COALESCEs this predicate silently discards exactly
+        //    the start-less handover rows it exists to rescue, i.e. it reproduces the original
+        //    bug in new clothes. Caught by the replay harness; do not "simplify" them away.
+        // ⭐⭐ STEP C — the span check is only meaningful when BOTH ends are the SAME machine.
+        //    On a split day (own bike at 06:00, the van from lunch) `meter_end - meter_start` is
+        //    67,000 — not a typo, just two different odometers — and the old unconditional test
+        //    threw the whole row away, taking the van's perfectly good close with it. When the
+        //    two stamps disagree there is no span to judge, so the check stands down and each
+        //    reading is left to the per-reading guards in the high/low expressions.
+        $sameMachine = self::stampsAvailable()
+            ? ' AND COALESCE(meter_start_vehicle_id, meter_end_vehicle_id, 0)
+                   = COALESCE(meter_end_vehicle_id, meter_start_vehicle_id, 0)'
+            : '';
+
+        return 'NOT (COALESCE(meter_start,0) > 0 AND COALESCE(meter_end,0) > 0' . $sameMachine . '
+                     AND (meter_end < meter_start OR meter_end - meter_start > ' . self::MAX_DAY_KM . '))';
+    }
+
+    /**
+     * The HIGHEST trustworthy reading on a row — the floor candidate.
+     *
+     * `meter_home` counts as the ride-home extension only when both ends are known and it sits
+     * within MAX_HOME_KM above the close; when they are not known it stands on its own, exactly
+     * as `pointsForRow()`'s `max($known)` branch does.
+     */
+    public static function readingHighExprSql(?int $vehicleId = null): string
+    {
+        $s = self::stampGuardSql('meter_start', $vehicleId);
+        $e = self::stampGuardSql('meter_end',   $vehicleId);
+        $h = self::stampGuardSql('meter_home',  $vehicleId);
+
+        return 'GREATEST(
+                  CASE WHEN meter_start > 0' . $s . ' THEN meter_start ELSE 0 END,
+                  CASE WHEN meter_end   > 0' . $e . ' THEN meter_end   ELSE 0 END,
+                  CASE WHEN meter_home  > 0' . $h . '
+                            AND (meter_start IS NULL OR meter_start <= 0
+                                 OR meter_end IS NULL OR meter_end <= 0
+                                 OR (meter_home > meter_end
+                                     AND meter_home - meter_end <= ' . self::MAX_HOME_KM . '))
+                       THEN meter_home ELSE 0 END)';
+    }
+
+    /**
+     * ⭐⭐ STEP C — the per-reading machine stamp, consulted by the reading expressions.
+     *
+     * `<col>_vehicle_id` is written at the MOMENT the reading is taken (see
+     * `RiderController::meterStampFields`). It answers the one question the old model could not:
+     * on a day a rider used two machines, WHICH machine is this particular number about.
+     *
+     * The guard is deliberately asymmetric and that is the whole safety story:
+     *   • stamp = this vehicle  -> counts
+     *   • stamp = another       -> excluded, even though the rider's day resolves here
+     *   • stamp NULL            -> counts, i.e. EVERY pre-step-C row behaves exactly as before
+     *
+     * ⚠ Returns '' when the column is absent, so the code is safe to upload before the SQL.
+     */
+    private static function stampGuardSql(string $col, ?int $vehicleId): string
+    {
+        if ($vehicleId === null || !self::stampsAvailable()) return '';
+        return ' AND (' . $col . '_vehicle_id IS NULL OR ' . $col . '_vehicle_id = ' . (int) $vehicleId . ')';
+    }
+
+    /**
+     * ⭐ Could this reading be of THIS machine? Rule P's question, asked at WRITE time.
+     *
+     * Used before a meter reading is stamped, so that a rider typing his own bike's 6,606 while
+     * the registry still says he holds the van (a manager forgot to release it) does not freeze
+     * that number onto a ~73,800 km machine. Unstamped is recoverable; a wrong stamp is not,
+     * because it outranks the derivation that would otherwise have caught it.
+     *
+     * ⭐ FAILS OPEN — no spine, or any error, means "can't tell", which must never block a write.
+     */
+    public function readingPlausibleFor(int $vehicleId, int $value): bool
+    {
+        try {
+            $spine = [];
+            foreach ($this->machineKeyedReadings($vehicleId) as $r) {
+                if ((int) $r['m'] > self::MIN_METER) $spine[] = (int) $r['m'];
+            }
+            if (!$spine) {
+                $cur = $this->currentMeterFor($vehicleId);
+                if ($cur !== null && $cur > self::MIN_METER) $spine[] = (int) $cur;
+            }
+            if (!$spine) return true;
+            return $value >= min($spine) - self::MAX_GAP_KM
+                && $value <= max($spine) + self::MAX_GAP_KM;
+        } catch (\Throwable $e) {
+            return true;
+        }
+    }
+
+    /** Has SQL-METER-READING-STAMP-AUG22-2026 been run? Memoised — asked inside query builders. */
+    public static function stampsAvailable(): bool
+    {
+        static $ok = null;
+        if ($ok !== null) return $ok;
+        try {
+            $ok = Schema::hasColumn('t_ops_attendance', 'meter_start_vehicle_id');
+        } catch (\Throwable $e) {
+            $ok = false;
+        }
+        return $ok;
+    }
+
+    /**
+     * The LOWEST trustworthy reading on a row — the ceil candidate (the day's opening).
+     *
+     * ⚠⚠ MIN_METER LIVES HERE AND ONLY HERE NOW, AND THAT IS LOAD-BEARING. Dropping the
+     *    row-level floor lets a dropped-digit typo (2,653 for 26,530) reach the aggregates. On
+     *    the FLOOR (a MAX) that is harmless — a real reading outranks it. On the CEIL (a MIN) it
+     *    is catastrophic: the junk becomes the ceiling and every honest claim above it is
+     *    refused, with no honest way for the rider to get past it. So the bound moves off the
+     *    ROW and onto the CANDIDATE, where it still does exactly the job it always did.
+     */
+    public static function readingLowExprSql(?int $vehicleId = null): string
+    {
+        // Each reading is nulled out when its stamp names a DIFFERENT machine, so the COALESCE
+        // falls through to the next one that really is this machine's.
+        $pick = fn (string $col) => self::stampsAvailable() && $vehicleId !== null
+            ? 'CASE WHEN ' . $col . '_vehicle_id IS NULL OR ' . $col . '_vehicle_id = ' . (int) $vehicleId
+              . ' THEN NULLIF(' . $col . ',0) ELSE NULL END'
+            : 'NULLIF(' . $col . ',0)';
+
+        $c = 'COALESCE(' . $pick('meter_start') . ', ' . $pick('meter_end') . ', ' . $pick('meter_home') . ')';
+        return 'NULLIF(CASE WHEN ' . $c . ' > ' . self::MIN_METER . ' THEN ' . $c . ' ELSE 0 END, 0)';
+    }
+
+    /**
+     * Rollback valve for the reading-level rule above. `t_fin_config` returns the default for an
+     * absent key, so the fix ships ON with NO SQL, and one config row set to 0 reverts every
+     * caller without re-uploading a file.
+     *
+     * ⚠ Memoised per process on purpose: this is asked once per odometer query and
+     *   `meterWindowFor` runs in loops (once per machine per date on the Bikes sheet). An
+     *   un-memoised `config()` would add a DB round trip to each one.
+     * ⚠ A config failure resolves to the FIXED behaviour, not the old one — the old one is the
+     *   bug, and an unreachable config table must not quietly restore it.
+     */
+    private function readingLevelOn(): bool
+    {
+        static $on = null;
+        if ($on !== null) return $on;
+        try {
+            $on = (int) (new \App\Services\Riders\HomeJourneyService())
+                ->config('METER_WINDOW_READING_LEVEL', 1) === 1;
+        } catch (\Throwable $e) {
+            $on = true;
+        }
+        return $on;
+    }
+
     public function meterWindowFor(int $vehicleId, string $date): ?array
     {
         if (!$this->available()) return null;
         try {
-            $sane = 'meter_start > ' . self::MIN_METER . '
+            $readingLevel = $this->readingLevelOn();
+
+            $sane = $readingLevel
+                ? self::readingRowFilterSql()
+                : 'meter_start > ' . self::MIN_METER . '
                      AND (meter_end IS NULL OR (meter_end >= meter_start AND meter_end - meter_start <= 500))
                      AND (meter_home IS NULL OR (meter_home >= meter_start AND meter_home - meter_start <= 700))';
 
+            $highExpr = $readingLevel
+                ? self::readingHighExprSql($vehicleId)
+                : 'GREATEST(COALESCE(meter_end,0), COALESCE(meter_home,0), COALESCE(meter_start,0))';
+
+            $lowExpr = $readingLevel
+                ? self::readingLowExprSql($vehicleId)
+                : 'COALESCE(NULLIF(meter_start,0), NULLIF(meter_end,0), NULLIF(meter_home,0))';
+
+            // ⭐⭐ TWO CLASSES OF EVIDENCE, AND THEY ARE NOT EQUALLY TRUSTWORTHY (Aug-22 2026).
+            //
+            //   $floorC / $ceilC          MACHINE-KEYED — the row itself names this vehicle
+            //                             (day-override, stamped claims, meter log, handover
+            //                             meter). It cannot be about a different machine.
+            //   $riskFloorC / $riskCeilC  RIDER-KEYED — an attendance row or an unstamped claim,
+            //                             pulled in because the RIDER held this machine that DAY.
+            //                             On a day he used two machines, this is how another
+            //                             machine's odometer gets in.
+            //
+            // ⚠⚠ THE PROD INCIDENT (the Van, v4, 20–21 Aug 2026). Rajab photographed his OWN
+            //    bike's meter (6,434) at 11:58, and the Van reached him at 12:09. One meter slot
+            //    per rider-day plus day-level attribution filed that 6,434 against a van whose
+            //    real odometer is ~73,800. The floor shrugged it off (a MAX ignores it) but the
+            //    CEIL would have taken it — 6,434 clears MIN_METER — and every honest Van claim
+            //    above it would have been refused. `rulePlausible()` below is what stops that.
             $floorC = [0];
             $ceilC  = [];
+            $riskFloorC = [];
+            $riskCeilC  = [];
 
             $windows = $this->attributionWindows($vehicleId);
             foreach ($windows as $w) {
@@ -2833,9 +3070,9 @@ class VehicleService
                     ->when($skip, fn ($q) => $q->whereNotIn('attendance_date', $skip))
                     ->where('attendance_date', '<', $date), $vehicleId)
                     ->whereRaw($sane)
-                    ->selectRaw('MAX(GREATEST(COALESCE(meter_end,0), COALESCE(meter_home,0), COALESCE(meter_start,0))) AS m')
+                    ->selectRaw('MAX(' . $highExpr . ') AS m')
                     ->value('m');
-                if ((int) $before > 0) $floorC[] = (int) $before;
+                if ((int) $before > 0) $riskFloorC[] = (int) $before;
 
                 // AFTER the date, still inside his window.
                 $after = $this->scopeWindowRows(DB::table('t_ops_attendance')
@@ -2845,9 +3082,9 @@ class VehicleService
                     ->when($skip, fn ($q) => $q->whereNotIn('attendance_date', $skip))
                     ->where('attendance_date', '>', $date), $vehicleId)
                     ->whereRaw($sane)
-                    ->selectRaw('MIN(COALESCE(NULLIF(meter_start,0), NULLIF(meter_end,0), NULLIF(meter_home,0))) AS m')
+                    ->selectRaw('MIN(' . $lowExpr . ') AS m')
                     ->value('m');
-                if ((int) $after > self::MIN_METER) $ceilC[] = (int) $after;
+                if ((int) $after > self::MIN_METER) $riskCeilC[] = (int) $after;
 
                 // Unstamped legacy claims by this keeper inside his window.
                 if (Schema::hasColumn('t_req_master', 'vehicle_id')) {
@@ -2862,9 +3099,9 @@ class VehicleService
                             'COALESCE(expense_date, DATE(created_at)) <= ?', [$w['to']]))
                         ->when($skipSql, fn ($q) => $q->whereRaw($skipSql, $skip));
                     $lb = $legacyQ()->whereRaw('COALESCE(expense_date, DATE(created_at)) < ?', [$date])->max('meter_at_fill');
-                    if ((int) $lb > 0) $floorC[] = (int) $lb;
+                    if ((int) $lb > 0) $riskFloorC[] = (int) $lb;
                     $la = $legacyQ()->whereRaw('COALESCE(expense_date, DATE(created_at)) > ?', [$date])->min('meter_at_fill');
-                    if ((int) $la > self::MIN_METER) $ceilC[] = (int) $la;
+                    if ((int) $la > self::MIN_METER) $riskCeilC[] = (int) $la;
                 }
             }
 
@@ -2877,7 +3114,7 @@ class VehicleService
                     ->where('vehicle_id', $vehicleId)
                     ->where('attendance_date', '<', $date)
                     ->whereRaw($sane)
-                    ->selectRaw('MAX(GREATEST(COALESCE(meter_end,0), COALESCE(meter_home,0), COALESCE(meter_start,0))) AS m')
+                    ->selectRaw('MAX(' . $highExpr . ') AS m')
                     ->value('m');
                 if ((int) $ovBefore > 0) $floorC[] = (int) $ovBefore;
 
@@ -2885,7 +3122,7 @@ class VehicleService
                     ->where('vehicle_id', $vehicleId)
                     ->where('attendance_date', '>', $date)
                     ->whereRaw($sane)
-                    ->selectRaw('MIN(COALESCE(NULLIF(meter_start,0), NULLIF(meter_end,0), NULLIF(meter_home,0))) AS m')
+                    ->selectRaw('MIN(' . $lowExpr . ') AS m')
                     ->value('m');
                 if ((int) $ovAfter > self::MIN_METER) $ceilC[] = (int) $ovAfter;
             }
@@ -2903,7 +3140,55 @@ class VehicleService
                 if ((int) $sa > self::MIN_METER) $ceilC[] = (int) $sa;
             }
 
-            $floor = max($floorC);
+            // ── STEP C — readings STAMPED to this machine, whoever the rider was and whatever
+            //    the assignment timeline says. The mirror image of the day-override block above,
+            //    and the half that makes stamping actually work: the guards inside $highExpr keep
+            //    another machine's readings OUT, and this keeps THIS machine's readings IN even
+            //    when the rider's day resolves elsewhere — which is exactly the mid-day handover
+            //    (Rajab's evening close belongs to the Van while his day resolves to his own bike,
+            //    or the reverse). Machine-keyed by construction, so it is trusted evidence.
+            if (self::stampsAvailable()) {
+                $stampCols = ['meter_start', 'meter_end', 'meter_home'];
+                $stampedRows = fn (string $op) => DB::table('t_ops_attendance')
+                    ->where('attendance_date', $op, $date)
+                    ->where(function ($q) use ($stampCols, $vehicleId) {
+                        foreach ($stampCols as $c) {
+                            $q->orWhere($c . '_vehicle_id', $vehicleId);
+                        }
+                    })
+                    ->whereRaw($sane);
+
+                $stBefore = $stampedRows('<')->selectRaw('MAX(' . $highExpr . ') AS m')->value('m');
+                if ((int) $stBefore > 0) $floorC[] = (int) $stBefore;
+
+                $stAfter = $stampedRows('>')->selectRaw('MIN(' . $lowExpr . ') AS m')->value('m');
+                if ((int) $stAfter > self::MIN_METER) $ceilC[] = (int) $stAfter;
+            }
+
+            // ── The machine-keyed evidence this window used to ignore completely ──────────
+            //    Both sources name the vehicle in their own row, so they are trusted, and
+            //    MachineAttribution has always read them. This is the window catching up with
+            //    the engine the Bikes page draws from.
+            foreach ($this->machineKeyedReadings($vehicleId) as $r) {
+                if ($r['d'] === null) continue;
+                if ($r['d'] < $date && $r['m'] > 0)               $floorC[] = $r['m'];
+                if ($r['d'] > $date && $r['m'] > self::MIN_METER) $ceilC[]  = $r['m'];
+            }
+
+            // ── RULE P — admit a rider-keyed reading only if it is plausible FOR THIS MACHINE.
+            //    The spine is everything machine-keyed we just collected; see rulePlausible().
+            $spine = array_values(array_filter($floorC, fn ($v) => $v > self::MIN_METER));
+            foreach ($ceilC as $v) {
+                if ($v > self::MIN_METER) $spine[] = $v;
+            }
+            foreach ($riskFloorC as $v) {
+                if ($this->rulePlausible($v, $spine, $vehicleId, 'floor')) $floorC[] = $v;
+            }
+            foreach ($riskCeilC as $v) {
+                if ($this->rulePlausible($v, $spine, $vehicleId, 'ceil'))  $ceilC[]  = $v;
+            }
+
+            $floor = $readingLevel ? $this->guardedFloor($floorC, $vehicleId, $date) : max($floorC);
             return [
                 'floor' => $floor > self::MIN_METER ? $floor : null,
                 'ceil'  => $ceilC ? min($ceilC) : null,
@@ -2912,6 +3197,98 @@ class VehicleService
             Log::warning('meterWindowFor failed', ['vehicle' => $vehicleId, 'error' => $e->getMessage()]);
             return null;   // caller falls back to the rider-keyed window
         }
+    }
+
+    /**
+     * Readings that name THIS machine in their OWN row — the meter log a manager types on the
+     * Vehicles page, and the odometer written down at the moment the machine changed hands.
+     *
+     * ⚠⚠ `meterWindowFor` read NEITHER of these before Aug-22 2026. That is how the Van's day
+     *    card could show a 6,434 km attendance reading while `handover_meter` on the very same
+     *    day said 73,688: the machine's own evidence existed and the window was not looking at
+     *    it. `MachineAttribution` has always read both, which is why the two screens disagreed.
+     */
+    private function machineKeyedReadings(int $vehicleId): array
+    {
+        $out = [];
+        try {
+            if (Schema::hasTable(self::T_METER_LOG)) {
+                foreach (DB::table(self::T_METER_LOG)->where('vehicle_id', $vehicleId)
+                            ->get(['meter_start', 'meter_end', 'log_date']) as $r) {
+                    $d = $r->log_date ? substr((string) $r->log_date, 0, 10) : null;
+                    foreach ([$r->meter_start, $r->meter_end] as $m) {
+                        if ($m !== null && (int) $m > 0) $out[] = ['m' => (int) $m, 'd' => $d];
+                    }
+                }
+            }
+        } catch (\Throwable $e) { /* table absent → no evidence, never an error */ }
+        try {
+            if ($this->hasHandoverMeter()) {
+                foreach (DB::table(self::T_ASSIGN)->where('vehicle_id', $vehicleId)
+                            ->whereNotNull('handover_meter')
+                            ->get(['handover_meter', 'assigned_on']) as $a) {
+                    if ((int) $a->handover_meter > 0 && $a->assigned_on) {
+                        $out[] = ['m' => (int) $a->handover_meter,
+                                  'd' => substr((string) $a->assigned_on, 0, 10)];
+                    }
+                }
+            }
+        } catch (\Throwable $e) { /* column not migrated → nothing to add */ }
+        return $out;
+    }
+
+    /**
+     * ⭐⭐ RULE P — is a RIDER-keyed reading plausible for THIS machine?
+     *
+     * ⚠⚠ THE PROD INCIDENT (the Van, 20–21 Aug 2026). Rajab's own bike reads ~6,500; the Van
+     *    reads ~73,800. He photographed his own bike's meter at 11:58 and the Van reached him at
+     *    12:09 — both entirely correct actions. But `t_ops_attendance` holds ONE meter pair per
+     *    rider-day and the registry ONE open assignment per rider, so his own bike's reading was
+     *    filed against the Van. A magnitude test against the machine's OWN spine is what tells
+     *    the two apart, and it is the same philosophy MachineAttribution states as rule R-B:
+     *    plausibility is relative to the machine's own chain, never an absolute floor.
+     *
+     * ⭐ FAILS OPEN, deliberately. No spine — a machine with no evidence of its own, a brand-new
+     *   bike — means every reading is accepted, exactly as before this rule existed. Rejecting on
+     *   silence would blank out young machines, which is the precise mistake the absolute
+     *   MIN_METER floor made on EDN-198.
+     */
+    private function rulePlausible(int $value, array $spine, int $vehicleId, string $side): bool
+    {
+        if (!$spine) return true;
+        $lo = min($spine);
+        $hi = max($spine);
+        if ($value >= $lo - self::MAX_GAP_KM && $value <= $hi + self::MAX_GAP_KM) {
+            return true;
+        }
+        Log::warning('Rule P: reading rejected as implausible for this machine', [
+            'vehicle' => $vehicleId, 'side' => $side, 'value' => $value,
+            'spine_lo' => $lo, 'spine_hi' => $hi,
+        ]);
+        return false;
+    }
+
+    /**
+     * R2 — the upward-typo guard. Sorted descending, drop the leader while it stands more than
+     * MAX_GAP_KM above the next candidate: an extra digit lands tens of thousands out, a genuine
+     * long gap does not.
+     *
+     * ⭐ Fails OPEN (keeps the value) when there is nothing behind it to compare against, and the
+     *   direction is the safe one: when in doubt the floor lands LOWER, which never blocks a
+     *   rider and never accuses one — it only makes the claim gate slightly more permissive.
+     */
+    private function guardedFloor(array $floorC, int $vehicleId, string $date): int
+    {
+        $c = array_values(array_unique(array_filter($floorC, fn ($v) => $v > 0)));
+        if (count($c) < 2) return $floorC ? max($floorC) : 0;
+        rsort($c);
+        while (count($c) >= 2 && ($c[0] - $c[1]) > self::MAX_GAP_KM) {
+            Log::warning('Floor candidate dropped as an implausible jump', [
+                'vehicle' => $vehicleId, 'date' => $date, 'dropped' => $c[0], 'next' => $c[1],
+            ]);
+            array_shift($c);
+        }
+        return $c[0];
     }
 
     /**

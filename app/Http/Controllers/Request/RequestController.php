@@ -652,7 +652,8 @@ class RequestController extends Controller
             (new \App\Services\Riders\VehicleResolver())->stampClaim(
                 $requestModel->id, (int) $requesterId,
                 $validated['expense_category'] ?? null,
-                $validated['expense_date'] ?? null
+                $validated['expense_date'] ?? null,
+                isset($validated['attendance_id']) ? (int) $validated['attendance_id'] : null
             );
 
             // If auto-approved and it's an expense-type request, post to ledger.

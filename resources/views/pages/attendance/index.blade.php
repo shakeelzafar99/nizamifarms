@@ -2909,8 +2909,19 @@ function renderGraceBreachBanner(data) {
       chips.push('<span style="font-size:12px;font-weight:700;color:#92400E;background:#FEF3C7;border:1px solid #FDE68A;border-radius:6px;padding:1px 7px;">🏠 no home start' + (wj.recorded_at ? ' (' + npWhere + ' ' + wj.recorded_at + ')' : '') + '</span>');
     }
     if (wj && wj.continuity && wj.continuity.breach) {
+      // ⭐ SAY WHOSE READING THE BASELINE IS. This line used to print
+      //   "vs last closing 26441 ()" — a bare pair of brackets, because the machine-keyed
+      //   path returns prev_date = null while the blade printed it unconditionally. The
+      //   empty brackets were the only visible clue that the number came from a different
+      //   source than the reader assumed, and they said nothing. Name the machine when we
+      //   know it, print the date only when there is one, and drop the brackets entirely
+      //   when neither is available.
+      const cparts = [];
+      if (wj.continuity.label) cparts.push(esc(wj.continuity.label));
+      if (wj.continuity.prev_date) cparts.push(esc(wj.continuity.prev_date));
+      const cwhere = cparts.length ? ' (' + cparts.join(' · ') + ')' : '';
       chips.push('<span style="font-size:12px;font-weight:700;color:#B91C1C;background:#FEE2E2;border:1px solid #FCA5A5;border-radius:6px;padding:1px 7px;">🏠 meter gap ' + (wj.continuity.gap > 0 ? '+' : '') + wj.continuity.gap + ' km</span>' +
-        '<span style="font-size:11.5px;color:#6B7280;margin-left:6px;">morning ' + esc(r.meter_start) + ' vs last closing ' + esc(wj.continuity.prev) + ' (' + esc(wj.continuity.prev_date) + ')</span>');
+        '<span style="font-size:11.5px;color:#6B7280;margin-left:6px;">morning ' + esc(r.meter_start) + ' vs last closing ' + esc(wj.continuity.prev) + cwhere + '</span>');
     }
     if (chips.length) rows.push({name: r.fullname || r.name || 'Rider', chips});
   });

@@ -3054,10 +3054,22 @@ function flvCardLine(l, s) {
     }
 
     if (l.type === 'claim') {
+        // ⭐ TIME + PROVENANCE (owner request, Aug-22). The card always ORDERED claims by their
+        //   filing time but never printed it, so on a machine that changed hands mid-day a
+        //   manager could see the sequence and not the clock — and the clock is the whole story:
+        //   it says which side of the handover a claim was filed on.
+        // ⭐ "machine not recorded" marks a claim whose vehicle was INFERRED from who held what
+        //   that day rather than recorded on the claim itself. That inference is exactly how an
+        //   own-bike per-km claim can surface on a company machine's card, so it is labelled
+        //   instead of being presented as a fact.
         return '<div class="fl-dc-l">' + K(flEsc(l.kind))
             + '<span>Rs <b>' + flNum(l.amount) + '</b>'
             + (l.meter ? ' <span class="fl-muted">· meter ' + flNum(l.meter) + '</span>' : '')
-            + ' <span class="fl-muted">· ' + flEsc(l.who || '—') + '</span></span>'
+            + ' <span class="fl-muted">· ' + flEsc(l.who || '—')
+            + (l.at ? ' · ' + flEsc(l.at) : '') + '</span></span>'
+            + (l.stamped === false
+                ? ' <span class="fl-vchip unk" title="This claim does not name a machine — it is shown here because the rider held this one that day. An own-bike claim filed on a day he also held a company machine can land here wrongly.">❓ machine not recorded</span>'
+                : '')
             + (l.pending ? ' <span class="fl-vchip due">waiting</span>' : '')
             + '</div>';
     }
