@@ -1201,9 +1201,37 @@ class VehicleController extends Controller
                         ->leftJoin('t_sys_user as u', 'u.id', '=', 'a.user_id')
                         ->where('a.attendance_date', $date)
                         ->whereNotNull('a.login_time')
-                        ->get(['a.id', 'a.user_id', 'a.meter_start', 'a.meter_end',
-                               'a.meter_start_source', 'u.fullname']) as $a) {
+                        ->get(array_merge(
+                            ['a.id', 'a.user_id', 'a.meter_start', 'a.meter_end',
+                             'a.meter_start_source', 'u.fullname'],
+                            \App\Services\Riders\VehicleService::stampsAvailable()
+                                ? ['a.meter_start_vehicle_id', 'a.meter_end_vehicle_id']
+                                : []
+                        )) as $a) {
                 if ($res->vehicleForDay((int) $a->user_id, $date) !== (int) $id) continue;
+
+                // ⭐⭐ NEVER OFFER A READING THAT IS STAMPED TO A DIFFERENT MACHINE (Aug-22 2026).
+                //
+                // ⚠⚠ THE PROD INCIDENT THIS PREVENTS. `vehicleForDay` answers with whatever the
+                //    rider ENDS the day on, so on a mixed day the VAN's meter editor happily
+                //    offered Rajab's OWN BIKE attendance row for editing. A manager fixing the
+                //    Van's odometer typed the van's 73,9xx into that rider block — and silently
+                //    overwrote his own bike's reading. That single act is what put the Van's
+                //    odometer onto his attendance for 20 and 21 Aug, produced a false
+                //    "overnight -100 km", and broke his per-km fuel basis.
+                //
+                // ⭐ Step C's stamps make the rider's answer authoritative: if the reading says it
+                //   belongs to another machine, this editor has no business touching it. The
+                //   machine-log block below is still shown, which is the correct place to record
+                //   THIS machine's odometer.
+                if (\App\Services\Riders\VehicleService::stampsAvailable()) {
+                    $sV = $a->meter_start_vehicle_id ?? null;
+                    $eV = $a->meter_end_vehicle_id ?? null;
+                    if (($sV && (int) $sV !== (int) $id) || ($eV && (int) $eV !== (int) $id)) {
+                        continue;
+                    }
+                }
+
                 $attendance = [
                     'attendance_id' => (int) $a->id,
                     'user_id'       => (int) $a->user_id,

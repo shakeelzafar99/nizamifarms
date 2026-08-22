@@ -61,6 +61,8 @@ class VehicleService
     private static array $lowMileageMemo = [];
     /** [vehicleId => [['m'=>int,'d'=>?string],…]] raw, floor-free readings + dates. */
     private static array $rawReadingsMemo = [];
+    /** [vehicleId => [[m,d],…]] machine-KEYED readings (meter log + handover meter). */
+    private static array $machineReadMemo = [];
     private static $typesMemo = null;
 
     /**
@@ -1489,9 +1491,22 @@ class VehicleService
 
         try {
             if ($reg !== null) {
+                // ⚠⚠ THE ASYMMETRY THAT WASTED A MANAGER'S AFTERNOON (Aug-22 2026).
+                //    This check sees EVERY vehicle; the fleet list only shows `is_active = 1`
+                //    (retired ones hide inside a collapsed "N retired" block). So a machine saved
+                //    with "In service" unticked vanishes from the page, and trying to add it again
+                //    only said "there is already a vehicle with plate X" — true, unhelpful, and
+                //    with no hint of WHERE it went. The state has to be in the message.
                 $clash = DB::table(self::T_VEHICLE)->where('reg_no', $reg)
-                    ->when($id, fn ($q) => $q->where('id', '!=', $id))->exists();
-                if ($clash) return $this->fail('There is already a vehicle with plate ' . $reg . '.');
+                    ->when($id, fn ($q) => $q->where('id', '!=', $id))
+                    ->first(['id', 'is_active']);
+                if ($clash) {
+                    return $this->fail((int) $clash->is_active === 1
+                        ? 'There is already a vehicle with plate ' . $reg . '.'
+                        : 'Plate ' . $reg . ' already exists but is RETIRED, so it is hidden from the '
+                          . 'list — open the "retired" section at the bottom of Parked & spare and '
+                          . 'reactivate it (Edit → tick "In service") instead of adding it again.');
+                }
             }
 
             $row = [
@@ -2937,8 +2952,8 @@ class VehicleService
                 if ($cur !== null && $cur > self::MIN_METER) $spine[] = (int) $cur;
             }
             if (!$spine) return true;
-            return $value >= min($spine) - self::MAX_GAP_KM
-                && $value <= max($spine) + self::MAX_GAP_KM;
+            $tol = self::spineToleranceKm(max($spine));   // R10 — proportional, see spineToleranceKm()
+            return $value >= min($spine) - $tol && $value <= max($spine) + $tol;
         } catch (\Throwable $e) {
             return true;
         }
@@ -3210,6 +3225,16 @@ class VehicleService
      */
     private function machineKeyedReadings(int $vehicleId): array
     {
+        // ⚠⚠ MEMOISED, AND IT MUST BE. `meterWindowFor()` is called ONCE PER MACHINE PER DATE by
+        //    the Bikes sheet and the month engine, and this method fires TWO queries every time.
+        //    Unmemoised it multiplies the page's query count by the number of dates in the month —
+        //    the same mistake `riderDayMap` documents (999 ms / 318 queries against 458 / 156), and
+        //    on shared hosting that is the difference between a slow page and a 503.
+        //    `rawMachineReadings()` next to it has always had this memo; this one shipped without.
+        if (array_key_exists($vehicleId, self::$machineReadMemo)) {
+            return self::$machineReadMemo[$vehicleId];
+        }
+
         $out = [];
         try {
             if (Schema::hasTable(self::T_METER_LOG)) {
@@ -3234,7 +3259,7 @@ class VehicleService
                 }
             }
         } catch (\Throwable $e) { /* column not migrated → nothing to add */ }
-        return $out;
+        return self::$machineReadMemo[$vehicleId] = $out;
     }
 
     /**
@@ -3253,17 +3278,42 @@ class VehicleService
      *   silence would blank out young machines, which is the precise mistake the absolute
      *   MIN_METER floor made on EDN-198.
      */
+    /**
+     * ⭐⭐ R10 — HOW FAR FROM ITS OWN CHAIN IS STILL "THE SAME MACHINE"? (Aug-22 2026)
+     *
+     * ⚠⚠ A FLAT ±MAX_GAP_KM IS WRONG WHEN THE SPINE IS THIN. Rule P's first day on prod refused a
+     *    perfectly good 47,275 against a lone 49,521 (AY-4771): with a single known point, ±2,000 km
+     *    is a 4,000 km keyhole, and any reading older than a couple of months falls outside it. The
+     *    question Rule P asks is "could this be a DIFFERENT machine's odometer?", and that is a
+     *    question of PROPORTION — 47,275 vs 49,521 is obviously the same bike; 6,639 vs 73,900
+     *    obviously is not.
+     *
+     * ⭐ So the tolerance scales with the odometer: 20% of the machine's own highest reading, never
+     *   less than MAX_GAP_KM. A new bike reading 400 km keeps the flat 2,000 floor (percentages are
+     *   useless there); a 74,000 km van gets ~14,800, which still rejects a 6,639 by a mile.
+     *
+     * ⚠ Deliberately generous. Every failure mode of being too LOOSE is caught downstream (the
+     *   floor is a MAX, the ceil keeps MIN_METER, the typo guard still runs); being too TIGHT
+     *   silently deletes real history, which is what this incident was.
+     */
+    private static function spineToleranceKm(int $spineHigh): int
+    {
+        return (int) max(self::MAX_GAP_KM, round($spineHigh * 0.20));
+    }
+
     private function rulePlausible(int $value, array $spine, int $vehicleId, string $side): bool
     {
         if (!$spine) return true;
         $lo = min($spine);
         $hi = max($spine);
-        if ($value >= $lo - self::MAX_GAP_KM && $value <= $hi + self::MAX_GAP_KM) {
+        $tol = self::spineToleranceKm($hi);
+        if ($value >= $lo - $tol && $value <= $hi + $tol) {
             return true;
         }
         Log::warning('Rule P: reading rejected as implausible for this machine', [
             'vehicle' => $vehicleId, 'side' => $side, 'value' => $value,
-            'spine_lo' => $lo, 'spine_hi' => $hi,
+            'spine_lo' => $lo, 'spine_hi' => $hi, 'tolerance_km' => $tol,
+            'spine_points' => count($spine),
         ]);
         return false;
     }

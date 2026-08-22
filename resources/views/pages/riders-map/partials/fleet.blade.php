@@ -2565,7 +2565,15 @@ function flvLoad() {
     const grid = document.getElementById('flVehGrid');
     grid.innerHTML = '<div class="fl-empty">Loading…</div>';
 
-    fetch(FLV_BASE, { headers: { 'Accept': 'application/json' } })
+    // ⭐⭐ ASK FOR RETIRED MACHINES TOO (Aug-22 2026).
+    //
+    // ⚠⚠ The renderer below has ALWAYS had a "N retired" <details> block, but this fetch never
+    //    sent `include_retired`, and `VehicleService::all()` filters `is_active = 1` without it.
+    //    So `retired` was permanently empty and that block was unreachable code: a machine saved
+    //    with "In service" unticked vanished from the page COMPLETELY, with no way back to it from
+    //    the UI at all — while the duplicate check still insisted the plate existed (CEN-455).
+    //    The retire button was therefore a one-way door, which is not what "retire" means.
+    fetch(FLV_BASE + '?include_retired=1', { headers: { 'Accept': 'application/json' } })
         .then(r => r.status === 403 ? Promise.reject(new Error('403')) : r.json())
         .then(res => {
             if (!res.success) throw new Error(res.message || 'Failed');
@@ -4268,7 +4276,9 @@ async function flvEditDay(uid, date) {
         alert('No vehicles are registered yet, so there is nothing to record against this day.');
         return;
     }
-    const menu = list.map((v, i) => (i + 1) + ' = ' + v.name).join('\n');
+    // ⭐ Retired machines belong in THIS list — a bike retired today may well be the one he rode
+    //   last week, and this picker is about history. Label them so the choice is informed.
+    const menu = list.map((v, i) => (i + 1) + ' = ' + v.name + (v.is_active ? '' : ' (retired)')).join('\n');
     const ans = window.prompt(
         'Which vehicle was he on for ' + date + '?\n\n' + menu +
         '\n\n0 = follow the normal assignment (clear any correction)',
