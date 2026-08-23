@@ -224,6 +224,37 @@ class VehicleResolver
     }
 
     /**
+     * ⭐⭐ "IS HE ON A COMPANY MACHINE RIGHT NOW?" — the HOLDS-NOW question, in ONE place.
+     *
+     * true  → he holds a company machine this minute (the home-meter flow is his)
+     * false → he holds his own bike, or nothing at all
+     * null  → the registry has no opinion (rules off, tables missing, not a rider)
+     *
+     * ⚠⚠ CALLERS MUST TEST `=== false`, NEVER falsy. `null` means "cannot say" and has to fall
+     *    through to the pre-registry behaviour — treating it as "no" would silence the home-meter
+     *    flow for every rider the moment the registry went quiet.
+     *
+     * ⚠ This lived as a private helper on RiderController, which is why the escalation sweep in
+     *   HomeJourneyService could not reach it and shipped without the guard its two siblings had
+     *   (see openEscalations). It belongs here, next to `currentVehicleFor` and `meterRequiredNow`,
+     *   so every surface asks the identical question. RiderController now delegates to this.
+     */
+    public function holdsCompanyMachineNow(int $userId): ?bool
+    {
+        try {
+            if (!$this->available() || !$this->rulesEnabled()) return null;
+            if (!$this->hasRiderProfile($userId))               return null;
+            $vid = $this->currentVehicleFor($userId);
+            if ($vid === null) return false;
+            $v = $this->vehicle($vid);
+            return $v ? ((int) $v->is_company === 1) : false;
+        } catch (\Throwable $e) {
+            Log::warning('holdsCompanyMachineNow failed', ['user' => $userId, 'error' => $e->getMessage()]);
+            return null;                       // no opinion = never block the old flow
+        }
+    }
+
+    /**
      * Who had this vehicle on that date — the reverse question, and the one that
      * makes an alert about a MACHINE reachable: a morning flag on AY-4771 has to
      * go to whoever has it today, not whoever had it last month.

@@ -46,21 +46,40 @@ class ScreenshotPayeeResolver
      * @param string|null $receiverAccount  e.g. "**** ...4237"
      * @param string|null $senderAccount    e.g. "*4343"
      */
-    public function direction(?string $receiverAccount, ?string $senderAccount, ?string $receiverName = null): string
-    {
+    public function direction(
+        ?string $receiverAccount,
+        ?string $senderAccount,
+        ?string $receiverName = null,
+        ?string $senderName = null
+    ): string {
         $receiverIsOurs = $this->matchesOurBank($receiverAccount);
         $senderIsOurs   = $this->matchesOurBank($senderAccount);
 
         if ($receiverIsOurs && !$senderIsOurs) return self::DIR_IN;
         if ($senderIsOurs && !$receiverIsOurs) return self::DIR_OUT;
 
-        // Neither side carried a recognisable account. A receiver NAME that is
-        // plainly us is a weaker but real signal — bank apps print "NIZAMI
-        // FARMS" / "NIZAMI MEAT" as the beneficiary on a customer's proof.
-        // Only ever used to call something money IN, which is the safe verdict:
-        // it routes to the proof flow, which cannot move money out.
-        if (!$receiverIsOurs && !$senderIsOurs && $this->looksLikeUs($receiverName)) {
-            return self::DIR_IN;
+        // Neither side carried a recognisable account. A NAME that is plainly
+        // us is a weaker but real signal — bank apps print "NIZAMI FARMS" /
+        // "NIZAMI MEAT" on whichever side we are.
+        if (!$receiverIsOurs && !$senderIsOurs) {
+            $receiverLooksUs = $this->looksLikeUs($receiverName);
+            $senderLooksUs   = $this->looksLikeUs($senderName);
+
+            // Beneficiary is us → money IN. The safe verdict: it routes to the
+            // proof flow, which cannot move money out.
+            if ($receiverLooksUs && !$senderLooksUs) {
+                return self::DIR_IN;
+            }
+
+            // ⭐ AND THE MIRROR (owner-reported, Aug-2026): "From: Nizami Farms"
+            // on a receipt is us paying somebody. This used to answer "unknown"
+            // and ask "did we pay them or did they pay us?" on a slip that said
+            // so in plain words — twice in one session ("So this is now
+            // happening for the 2nd time"). Still only a PROPOSAL: it fills a
+            // card the user must confirm, and money moves on that tap alone.
+            if ($senderLooksUs && !$receiverLooksUs) {
+                return self::DIR_OUT;
+            }
         }
 
         return self::DIR_UNKNOWN;
@@ -105,6 +124,21 @@ class ScreenshotPayeeResolver
                 if ($rule && $this->nameIsDistinctive($name, $map->entityName($rule))) {
                     return $this->describe($rule, null, 'name_unique');
                 }
+
+                // ⭐ ABBREVIATED FIRST NAMES (owner-reported, Aug-2026). Banks
+                // print "I SAEED" where the taught rule says "IMRAN SAEED", and
+                // exact key matching saw two different people — so a beneficiary
+                // we HAD been taught still came back unknown and Taimur had to
+                // name him by hand. Matches only when every stored word is
+                // either present in full or is a single letter opening one of
+                // the words we do have, AND at least one real (4+ letter) word
+                // agrees. Suggestion only: it pre-fills a card he must confirm.
+                if (!$rule) {
+                    $loose = $this->byNameAbbreviated($name);
+                    if ($loose) {
+                        return $this->describe($loose, null, 'name_abbreviated');
+                    }
+                }
             }
         } catch (\Throwable $e) {
             Log::warning('[ScreenshotPayee] ' . $e->getMessage());
@@ -113,6 +147,100 @@ class ScreenshotPayeeResolver
     }
 
     // ── internals ───────────────────────────────────────────────────────────
+
+    /**
+     * The single active rule whose stored name is this name with initials, e.g.
+     * screenshot "I SAEED" ↔ rule "IMRAN SAEED". Null unless exactly one rule
+     * matches — an abbreviation is by nature less certain, so an ambiguous one
+     * identifies nobody.
+     */
+    private function byNameAbbreviated(string $name): ?object
+    {
+        $queryWords = $this->nameWords($name);
+        if (count($queryWords) < 2) {
+            return null; // one token is not enough to abbreviate against
+        }
+
+        $hits = [];
+        $rows = DB::table('t_ai_counterparty_map')
+            ->where('is_active', 1)
+            ->whereNotNull('name_key')
+            ->get(['id', 'account_key', 'name_key', 'entity_type', 'entity_id', 'entity_label']);
+
+        foreach ($rows as $rule) {
+            $ruleWords = $this->nameWords($rule->name_key);
+            // ⚠ EITHER SIDE MAY BE THE SHORT ONE. The real case is the stored
+            // rule holding the abbreviation ("I SAEED", learned from an SMS)
+            // while the screenshot spells the name out ("IMRAN SAEED") — so
+            // testing only one direction found nothing, which is the bug.
+            if ($this->abbreviationOf($queryWords, $ruleWords)
+                || $this->abbreviationOf($ruleWords, $queryWords)) {
+                $hits[] = $rule;
+            }
+        }
+        return count($hits) === 1 ? $hits[0] : null;
+    }
+
+    /**
+     * Words too common on this side of the world to identify anyone. Same
+     * discipline as PayerNameResolver's corpus-derived generic tokens, but a
+     * fixed list: this matcher runs against VENDOR rules, whose corpus is a few
+     * dozen names — too small to derive frequencies from.
+     */
+    private const GENERIC_NAME_WORDS = [
+        'MUHAMMAD', 'MOHAMMAD', 'MOHD', 'KHAN', 'ALI', 'AHMED', 'AHMAD', 'SYED',
+        'MALIK', 'SHAIKH', 'SHEIKH', 'SHAH', 'HAJI', 'ABDUL', 'HUSSAIN', 'HASSAN',
+        'UR', 'REHMAN', 'RAHMAN', 'QURESHI', 'BHAI',
+        'TRADERS', 'ENTERPRISES', 'BROTHERS', 'SONS', 'COMPANY', 'STORE', 'GENERAL', 'FOODS',
+    ];
+
+    /**
+     * Is $short an abbreviated form of $full? Every word of $short must be a
+     * word of $full or a single letter starting one, each full word used once,
+     * and at least one 4+ letter NON-GENERIC word must match outright — so
+     * "I SAEED" fits "IMRAN SAEED" (SAEED anchors it), while "M KHAN" can never
+     * claim "MUHAMMAD KHAN": KHAN is a third of the phone book, and an initial
+     * plus a generic surname identifies nobody. The single-hit rule in the
+     * caller narrows further, but it must never be the ONLY thing narrowing.
+     */
+    private function abbreviationOf(array $short, array $full): bool
+    {
+        if (empty($short) || empty($full) || count($short) > count($full)) {
+            return false;
+        }
+        $remaining = $full;
+        $strongMatch = false;
+
+        foreach ($short as $word) {
+            $found = null;
+            foreach ($remaining as $i => $candidate) {
+                if ($word === $candidate) {
+                    $found = $i;
+                    if (mb_strlen($word) >= 4 && !in_array($word, self::GENERIC_NAME_WORDS, true)) {
+                        $strongMatch = true;
+                    }
+                    break;
+                }
+                if (mb_strlen($word) === 1 && str_starts_with($candidate, $word)) {
+                    $found = $i;
+                    break;
+                }
+            }
+            if ($found === null) {
+                return false;
+            }
+            unset($remaining[$found]);
+        }
+        return $strongMatch;
+    }
+
+    /** Letters-only uppercase words of a name. */
+    private function nameWords(?string $name): array
+    {
+        return array_values(array_filter(
+            preg_split('/[^\p{L}]+/u', mb_strtoupper((string) $name), -1, PREG_SPLIT_NO_EMPTY) ?: []
+        ));
+    }
 
     /** Is this masked account one of OUR registered banks? */
     private function matchesOurBank(?string $masked): bool
@@ -128,6 +256,37 @@ class ScreenshotPayeeResolver
             ->where('account_last4', '<>', '')
             ->where('account_last4', $last4)
             ->exists();
+    }
+
+    /**
+     * WHICH of our banks this masked account is — or null.
+     *
+     * ⭐ Kills the needless "tap the bank" step (seen twice in the 19–22 Aug
+     * logs): a transfer screenshot names the very account the money left, so
+     * when its tail matches exactly ONE active registry row, the card can carry
+     * receiving_account_id pre-filled instead of showing bank chips. Ambiguity
+     * (which today does not exist — every active last4 is unique — but rows
+     * change) returns null and the chips appear as before.
+     *
+     * @return array{id:int, name:string}|null
+     */
+    public function ourBankAccount(?string $masked): ?array
+    {
+        $tail = $this->tailDigits($masked);
+        if ($tail === null || strlen($tail) < 4) {
+            return null;
+        }
+        $rows = DB::table('t_fin_online_receiving_accounts')
+            ->where('is_active', 1)
+            ->whereNotNull('account_last4')
+            ->where('account_last4', '<>', '')
+            ->where('account_last4', substr($tail, -4))
+            ->limit(2)
+            ->get(['id', 'name']);
+
+        return $rows->count() === 1
+            ? ['id' => (int) $rows[0]->id, 'name' => (string) $rows[0]->name]
+            : null;
     }
 
     /** "NIZAMI FARMS" / "NIZAMI MEAT" on the receiving side = us. */

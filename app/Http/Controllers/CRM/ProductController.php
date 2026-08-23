@@ -2830,12 +2830,83 @@ class ProductController extends Controller
                     : redirect()->back()->with('error', $message);
             }
 
+            // ⚠️ Packets physically sitting in the chiller/freezer right now.
+            //    Unlike the two checks above this is NOT a hard block — the product can
+            //    still be deleted, but its packets must come out with it and the user has
+            //    to say so explicitly. Without this the FK (ON DELETE SET NULL) would
+            //    silently orphan them: they stay "stored" forever, still counted in the
+            //    room's total, with no product to categorise them under.
+            //    ⭐ Only status='stored' matters — historical taken_out rows never block.
+            $storedPackets = \DB::table('t_crm_overnight_item')
+                ->where('product_id', $product->id)
+                ->where('status', 'stored')
+                ->get(['id', 'section', 'quantity', 'unit']);
+
+            if ($storedPackets->isNotEmpty() && !request()->boolean('remove_overnight')) {
+                $summary = $this->describeOvernightPackets($storedPackets);
+                $message = "\"{$product->title}\" has {$summary} in overnight storage right now. "
+                    . 'Deleting it will also take those packets out of the chiller/freezer.';
+
+                return request()->expectsJson()
+                    ? response()->json([
+                        'success' => false,
+                        'requires_confirmation' => 'overnight',
+                        'message' => $message,
+                        'confirm_message' => $message . ' Continue?',
+                        'overnight' => [
+                            'packets' => $storedPackets->count(),
+                            'summary' => $summary,
+                        ],
+                    ], 422)
+                    : redirect()->back()->with('error', $message);
+            }
+
             $productTitle = $product->title;
             $variantCount = $product->variants->count();
 
-            // Delete in correct order: change history → variants → product
+            // Delete in correct order: overnight take-out → change history → variants → product
             \DB::beginTransaction();
             try {
+                // ⭐ Take the packets out through the NORMAL path, inside this same
+                //    transaction: flip status + stamp who/when, and write one 'out' log
+                //    row per packet. The item rows themselves are never hard-deleted —
+                //    the overnight log is append-only and the daily summary walks it, so
+                //    a silent removal would leave the section balance short forever.
+                if ($storedPackets->isNotEmpty()) {
+                    $now = now();
+                    foreach ($storedPackets as $packet) {
+                        \DB::table('t_crm_overnight_item')
+                            ->where('id', $packet->id)
+                            ->update([
+                                'status' => 'taken_out',
+                                'taken_out_at' => $now,
+                                'taken_out_by' => $user->id,
+                                'updated_at' => $now,
+                            ]);
+
+                        \DB::table('t_crm_overnight_log')->insert([
+                            'item_id' => $packet->id,
+                            'action' => 'out',
+                            'from_section' => $packet->section,
+                            'to_section' => null,
+                            'product_id' => $product->id,
+                            'product_name' => $product->title,
+                            'quantity' => $packet->quantity,
+                            'unit' => $packet->unit,
+                            'source' => 'manual',
+                            'created_by' => $user->id,
+                            'created_at' => $now,
+                        ]);
+                    }
+
+                    Log::warning('Overnight packets taken out because their product was deleted', [
+                        'product_id' => $product->id,
+                        'product_title' => $product->title,
+                        'packets' => $storedPackets->count(),
+                        'by' => $user->id,
+                    ]);
+                }
+
                 // Delete change history
                 \DB::table('t_crm_prod_product_change_history')
                     ->where('product_id', $product->id)
@@ -2885,6 +2956,43 @@ class ProductController extends Controller
                 ? response()->json(['success' => false, 'message' => $message], 500)
                 : redirect()->back()->with('error', $message);
         }
+    }
+
+    /**
+     * "6 packets (50.62 kg) in the freezer" — built server-side so the web page and
+     * the app warn with identical wording instead of each formatting its own.
+     *
+     * ⚠️ kg and pcs are never added together (the overnight unit is a kg|pcs enum).
+     */
+    private function describeOvernightPackets($packets): string
+    {
+        $count = $packets->count();
+        $sections = [];
+        $kg = 0.0;
+        $pcs = 0.0;
+
+        foreach ($packets as $packet) {
+            $sections[strtolower((string) $packet->section)] = true;
+            if (strtolower((string) $packet->unit) === 'pcs') {
+                $pcs += (float) $packet->quantity;
+            } else {
+                $kg += (float) $packet->quantity;
+            }
+        }
+
+        $amounts = [];
+        if ($kg > 0) {
+            $amounts[] = round($kg, 2) . ' kg';
+        }
+        if ($pcs > 0) {
+            $amounts[] = round($pcs, 2) . ' pcs';
+        }
+
+        $where = implode(' and the ', array_keys($sections));
+
+        return $count . ' packet' . ($count === 1 ? '' : 's')
+            . (empty($amounts) ? '' : ' (' . implode(' + ', $amounts) . ')')
+            . ($where === '' ? '' : ' in the ' . $where);
     }
 
     /**

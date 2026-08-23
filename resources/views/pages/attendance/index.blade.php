@@ -2897,7 +2897,17 @@ function renderGraceBreachBanner(data) {
     const missEnd = checkedOut && !has(r.meter_end);
     if (missStart || missEnd) {
       const which = (missStart && missEnd) ? 'start & end' : (missStart ? 'start' : 'end');
-      chips.push('<span style="font-size:12px;font-weight:700;color:#92400E;background:#FEF3C7;border:1px solid #FDE68A;border-radius:6px;padding:1px 7px;">⛽ no meter reading (' + which + ' missing)</span>');
+      // ⭐ ON A HANDOVER DAY THIS IS NOT THE RIDER FORGETTING (Aug-22 2026).
+      //   When the machine changed hands, the outgoing rider has no closing reading and the
+      //   incoming one no start — and NEITHER can fix it from his phone, because the bike has
+      //   already moved on. Saying "no meter reading" invites a manager to chase someone who
+      //   cannot act. `transfer_day` is already computed server-side (AttendanceController sets
+      //   it from VehicleResolver::isTransferDay), so name the cause and the one thing that
+      //   actually closes it: the handover meter on the Bikes page.
+      chips.push(r.transfer_day
+        ? '<span style="font-size:12px;font-weight:700;color:#0F766E;background:#CCFBF1;border:1px solid #5EEAD4;border-radius:6px;padding:1px 7px;">🔁 bike changed hands — ' + which + ' meter missing</span>'
+          + '<span style="font-size:11.5px;color:#6B7280;margin-left:6px;">record the handover meter on the Bikes page to close it</span>'
+        : '<span style="font-size:12px;font-weight:700;color:#92400E;background:#FEF3C7;border:1px solid #FDE68A;border-radius:6px;padding:1px 7px;">⛽ no meter reading (' + which + ' missing)</span>');
     }
     // U5 — morning breaches: start typed at the office (skipped home) / reading doesn't
     // match last night within the tolerance. Same banner, same "manager sees it" purpose.

@@ -375,6 +375,43 @@
         .products-table th.col-total, .products-table td.col-total { width: 18% !important; text-align: right !important; }
         
         @endif
+
+        /* WhatsApp-capture compact layout (?wa=1, Aug-2026).
+           Only the hidden-iframe html2canvas captures pass this flag (the
+           server appends it in WhatsAppWebController::getInvoiceImageUrl).
+           Narrower sheet + larger type so the image stays readable when a
+           phone fits it to screen width — 13px text in the 800px layout
+           lands at ~6 logical px fitted, which customers report as
+           "blurred". Print, PDF and the customer app never pass ?wa=1. */
+        @if(request('wa') == '1')
+        .invoice-container { max-width: 560px !important; box-shadow: none !important; }
+        body { padding: 0 !important; background: #ffffff !important; }
+        .invoice-header { padding: 14px 18px 10px 18px !important; min-height: 0 !important; }
+        .logo img { height: 64px !important; }
+        .company-details { font-size: 10px !important; line-height: 1.5 !important; }
+        .invoice-title { padding: 6px 18px !important; }
+        .invoice-title h2 { font-size: 22px !important; letter-spacing: 1px !important; }
+        .invoice-info { padding: 10px 18px !important; gap: 14px !important; }
+        .customer-section h3 { font-size: 11px !important; margin-bottom: 6px !important; }
+        .customer-details { font-size: 14px !important; line-height: 1.35 !important; }
+        .order-section { min-width: 170px !important; }
+        .order-box-header-item { padding: 5px 6px !important; font-size: 9px !important; }
+        .order-box-content-item { padding: 6px 6px !important; font-size: 12px !important; }
+        .products-table { width: calc(100% - 32px) !important; margin: 10px 16px !important; }
+        .products-table th { padding: 8px 7px !important; font-size: 10px !important; letter-spacing: 0.4px !important; }
+        .products-table td { padding: 9px 7px !important; font-size: 15px !important; }
+        .product-name { font-size: 15px !important; margin-bottom: 2px !important; }
+        .product-sku { font-size: 10px !important; }
+        .total-items-row { padding: 8px 16px !important; font-size: 12px !important; }
+        .totals-section { padding: 8px 16px 14px 16px !important; }
+        .totals-table { max-width: 290px !important; }
+        .totals-table td { padding: 7px 10px !important; font-size: 14px !important; }
+        .totals-table .label { font-size: 12px !important; }
+        .totals-table .total-row .label, .totals-table .total-row .amount { font-size: 16px !important; padding: 9px 10px !important; }
+        .footer { padding: 10px 16px !important; margin-top: 8px !important; }
+        .footer-message { font-size: 12px !important; margin-bottom: 4px !important; }
+        .footer-contact { font-size: 10px !important; line-height: 1.45 !important; }
+        @endif
         
         .invoice-container {
             max-width: 800px;

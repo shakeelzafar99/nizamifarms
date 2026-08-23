@@ -639,6 +639,18 @@
                         <div class="text-xs text-gray-500">Categories</div>
                     </div>
                 </div>
+                {{-- ⭐ The ONE figure on this page guaranteed to equal what is physically in
+                     the room. Per-row storage can never add up to it: a category with no
+                     open orders produces no row at all, so its stock has nowhere to show.
+                     Hidden entirely when there is nothing in storage. --}}
+                <div id="storage-total-card" onclick="openStorageDetail('all')" title="Everything in the chiller and freezer right now — including items with no open orders. Click to see the full list."
+                     style="display: none; cursor: pointer;" class="flex items-center gap-2 px-3 py-2 rounded-lg">
+                    <div class="text-2xl">❄️</div>
+                    <div>
+                        <div class="text-lg font-bold" style="color: #0369a1;" id="storage-total-value">-</div>
+                        <div class="text-xs text-gray-500">In Storage</div>
+                    </div>
+                </div>
                 {{-- Shown only when THIS user has set a custom order for the level on
                      screen (set from the mobile Quantities screen). Without it the
                      changed row order would look like a bug. --}}
@@ -674,6 +686,15 @@
         <!-- Breadcrumb Navigation -->
         <div class="breadcrumb-nav" id="breadcrumb-nav" style="display: none;">
             <!-- Dynamically populated -->
+        </div>
+
+        {{-- ⭐ "Also in storage" bar. Shown ONLY when this view has stock that no row on
+             screen carries — the case that made the 12 Mutton packets look like they had
+             vanished. It reports the REMAINDER only, never what a row already shows, so
+             row figures + this bar always add up to the scope total. --}}
+        <div id="storage-gap-bar" onclick="openStorageDetail('scope')" style="display: none; cursor: pointer; margin-bottom: 1rem; padding: 10px 14px; background: #f0f9ff; border: 1px solid #bae6fd; border-radius: 8px; color: #075985; font-size: 13px; font-weight: 600;">
+            <span id="storage-gap-text"></span>
+            <span style="float: right; color: #0284c7;">View &rsaquo;</span>
         </div>
 
         <!-- Level-settings notice. Only shown when /open-quantities/settings could not be
@@ -798,6 +819,26 @@
     </div>
 </div>
 
+{{-- ⭐ Overnight-storage breakdown. Answers "what exactly are those 12 packets?" — the
+     question the bare number could not. Fed entirely from storage_catalog, which every
+     data response already carries, so opening it costs no request.
+     Inline styles on purpose, matching viewOrderModal (utility classes are purged here). --}}
+<div id="storageDetailModal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background-color: rgba(0,0,0,0.5); z-index: 9999;">
+    <div style="position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); background: white; border-radius: 8px; width: 90%; max-width: 720px; max-height: 90vh; display: flex; flex-direction: column; box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.25);">
+        <div style="padding: 18px 20px; border-bottom: 1px solid #e5e7eb; display: flex; justify-content: space-between; align-items: flex-start; gap: 12px;">
+            <div>
+                <h3 id="storageDetailTitle" style="font-size: 17px; font-weight: 700; margin: 0; color: #0c4a6e;">In storage</h3>
+                <div id="storageDetailSubtitle" style="font-size: 12px; color: #6b7280; margin-top: 2px;"></div>
+            </div>
+            <button onclick="closeModal('storageDetailModal')" style="background: none; border: none; font-size: 24px; cursor: pointer; color: #6b7280; padding: 0 5px; line-height: 1;">&times;</button>
+        </div>
+        <div id="storageDetailBody" style="padding: 16px 20px; overflow-y: auto; flex: 1 1 auto;"></div>
+        <div style="padding: 12px 20px; border-top: 1px solid #e5e7eb; text-align: right;">
+            <button onclick="closeModal('storageDetailModal')" class="action-btn secondary" style="padding: 0.45rem 1rem; font-size: 13px;">Close</button>
+        </div>
+    </div>
+</div>
+
 @endsection
 
 @push('demo1_js')
@@ -810,7 +851,13 @@ window.openQtyState = {
     filters: {},
     dateRange: 0, // 0 = all time (open orders only)
     cachedData: new Map(),
-    excludedStatuses: [] // Will be loaded from API
+    excludedStatuses: [], // Will be loaded from API
+    // ⭐ Overnight storage, sent whole with every data response (it is bounded by
+    //    "one night's leftovers"), so every breakdown popup is a local lookup.
+    storageCatalog: [],   // one row per stocked product, both sections, both sources
+    storageScopeIds: [],  // product ids belonging to the view currently on screen
+    storageTotal: null,   // the whole room — chiller + freezer, orders or not
+    lastRows: []          // rows as rendered, so a row's storage_ids survive to the popup
 };
 
 // Permission flag - set after loading settings
@@ -1168,6 +1215,11 @@ async function loadData() {
             }
             console.log('Data received:', result.data.length, 'categories');
             console.log('Summary:', result.summary);
+            // Storage travels with the data, so it can never be one level out of step
+            // with the rows it describes. Defaulted: an older server omits these keys.
+            window.openQtyState.storageCatalog = Array.isArray(result.storage_catalog) ? result.storage_catalog : [];
+            window.openQtyState.storageScopeIds = Array.isArray(result.storage_scope_ids) ? result.storage_scope_ids : [];
+            window.openQtyState.storageTotal = result.storage_total || null;
             updateSummaryCards(result.summary);
             renderTable(result.data, result.summary);
             updateBreadcrumbs();
@@ -1192,6 +1244,28 @@ function updateSummaryCards(summary) {
         weightEl.textContent = Number(summary.total_weight || 0).toLocaleString(undefined, {maximumFractionDigits: 2});
     }
     document.getElementById('category-count').textContent = summary.category_count.toLocaleString();
+
+    // ❄️ In-storage total. Hidden when the room is empty (or on an older server build
+    // that doesn't send it) rather than showing a misleading zero.
+    const storageCard = document.getElementById('storage-total-card');
+    if (storageCard) {
+        const total = window.openQtyState.storageTotal;
+        const packets = total ? (total.chiller.packets + total.freezer.packets) : 0;
+        if (packets > 0) {
+            const kg = total.chiller.kg + total.freezer.kg;
+            const pcs = total.chiller.pcs + total.freezer.pcs;
+            const bits = [];
+            if (kg > 0) bits.push(`${Math.round(kg * 100) / 100} kg`);
+            if (pcs > 0) bits.push(`${Math.round(pcs * 100) / 100} pcs`);
+            document.getElementById('storage-total-value').textContent =
+                `${packets} pkt${bits.length ? ' · ' + bits.join(' + ') : ''}`;
+            storageCard.style.display = 'flex';
+            storageCard.style.background = '#f0f9ff';
+            storageCard.style.border = '1px solid #bae6fd';
+        } else {
+            storageCard.style.display = 'none';
+        }
+    }
 
     // Personal sort indicator. summary.sort_mode is null unless this user set an
     // order for the level being shown; older server builds omit it entirely.
@@ -1225,6 +1299,238 @@ function formatStorageLine(storage) {
     return parts.join('&nbsp;&nbsp;&nbsp;');
 }
 
+// ─── Overnight-storage breakdown ─────────────────────────────────────────────
+// A category's storage figure counts EVERY stocked product in that category —
+// ordered or not — while the table's rows only exist for products that are on an
+// open order. The two populations differ, which is why "Mutton 12 pkt" could drill
+// into a screen showing none of it. These helpers turn that difference into
+// something the page states out loud instead of hiding.
+//
+// ⭐⭐ Which products make up a figure is decided by the SERVER (`storage_ids` per
+//     row, `storage_scope_ids` per view). Never re-derive it here — a second
+//     matching implementation is exactly how the two would drift apart.
+
+function storageCatalogRows(ids) {
+    const wanted = new Set((ids || []).map(Number));
+    return (window.openQtyState.storageCatalog || []).filter(r => r.id !== null && wanted.has(Number(r.id)));
+}
+
+// Rows that belong to no product row at all (their product was deleted). They are
+// physically in the room, so they always count — they just can never be categorised.
+function storageOrphanRows() {
+    return (window.openQtyState.storageCatalog || []).filter(r => r.id === null);
+}
+
+function storageSumRows(rows) {
+    const out = {chiller: {packets: 0, kg: 0, pcs: 0}, freezer: {packets: 0, kg: 0, pcs: 0}};
+    (rows || []).forEach(r => {
+        ['chiller', 'freezer'].forEach(s => {
+            out[s].packets += r[s].packets || 0;
+            out[s].kg += r[s].kg || 0;
+            out[s].pcs += r[s].pcs || 0;
+        });
+    });
+    return out;
+}
+
+// "12 pkt · 87.09 kg" — kg and pcs are never added together.
+function storageTotalLabel(totals) {
+    const packets = totals.chiller.packets + totals.freezer.packets;
+    const kg = totals.chiller.kg + totals.freezer.kg;
+    const pcs = totals.chiller.pcs + totals.freezer.pcs;
+    const bits = [];
+    if (kg > 0) bits.push(`${Math.round(kg * 100) / 100} kg`);
+    if (pcs > 0) bits.push(`${Math.round(pcs * 100) / 100} pcs`);
+    return `${packets} pkt${bits.length ? ' · ' + bits.join(' + ') : ''}`;
+}
+
+// Every product id carried by a row currently on screen.
+function storageVisibleIds(data) {
+    const seen = new Set();
+    (data || []).forEach(row => (row.storage_ids || []).forEach(id => seen.add(Number(id))));
+    return seen;
+}
+
+// In scope for this view but on no row = what the bar reports.
+function storageGapIds(data) {
+    const visible = storageVisibleIds(data);
+    return (window.openQtyState.storageScopeIds || [])
+        .map(Number)
+        .filter(id => !visible.has(id));
+}
+
+// The label of the drill level immediately BELOW whatever was clicked — i.e. the
+// row a product would have appeared under. That name is the whole answer to
+// "where did it go?", so it is worth showing even when we cannot say more.
+function storageUnderField(levelOffset) {
+    const hierarchy = window.openQtyState.hierarchy || [];
+    const field = hierarchy[(window.openQtyState.currentLevel || 0) + levelOffset];
+    return (field && field !== 'orders' && field !== 'product_name') ? field : null;
+}
+
+// ⚠️ drillDown() pushes breadcrumbs as {field, value, label, …} — there is NO `name`
+//    key here (mobile's crumbs use `name`; the two surfaces differ). Reading the wrong
+//    one yields undefined and silently drops the category out of every message.
+function currentScopeName() {
+    const crumbs = window.openQtyState.breadcrumbs || [];
+    if (crumbs.length === 0) return null;
+    const last = crumbs[crumbs.length - 1];
+    return last.label || last.value || last.name || null;
+}
+
+const STORAGE_FIELD_LABELS = {
+    product_type: 'Category',
+    attribute_1: 'Category level 1',
+    attribute_2: 'Category level 2',
+    attribute_3: 'Category level 3'
+};
+
+// The bar. Only appears when this view genuinely has unrepresented stock; when
+// everything in scope is already on a row, silence is the correct output.
+function renderStorageGapBar(data, summary) {
+    const bar = document.getElementById('storage-gap-bar');
+    if (!bar) return;
+
+    // ⚠️ Never at the orders level. There you have already drilled to ONE product, and
+    //    its storage is on every row — the "remainder" would be the rest of the parent
+    //    category, which has nothing to do with the orders you are looking at.
+    if (summary && summary.current_field === 'orders') {
+        bar.style.display = 'none';
+        return;
+    }
+
+    const level = window.openQtyState.currentLevel || 0;
+    const gapIds = storageGapIds(data);
+    // Deleted-product packets have no category, so they can only be reported at the
+    // root — deeper down they belong to no scope and claiming otherwise would be wrong.
+    const orphans = level === 0 ? storageOrphanRows() : [];
+    const rows = storageCatalogRows(gapIds).concat(orphans);
+
+    if (rows.length === 0) {
+        bar.style.display = 'none';
+        return;
+    }
+
+    const totals = storageSumRows(rows);
+    const label = storageTotalLabel(totals);
+    const anyVisible = storageVisibleIds(data).size > 0;
+    const scopeName = currentScopeName();
+    const where = scopeName ? escapeHtml(scopeName) : null;
+
+    let text;
+    if (where && !anyVisible) {
+        text = `❄️ ${label} in storage for ${where} — none of it is in these orders.`;
+    } else if (where) {
+        text = `❄️ ${label} more in storage for ${where} items not on this screen.`;
+    } else {
+        text = `❄️ ${label} in storage for items with no open orders.`;
+    }
+
+    document.getElementById('storage-gap-text').innerHTML = text;
+    bar.style.display = 'block';
+}
+
+// The breakdown popup. `scope` is a row index, 'scope' (this view's stock) or 'all'.
+function openStorageDetail(scope) {
+    const state = window.openQtyState;
+    const data = state.lastRows || [];
+    let rows = [];
+    let title = 'In storage';
+    let subtitle = '';
+    let underField = null;
+    let highlightIds = null; // ids to flag as "not on this screen"
+
+    if (scope === 'all') {
+        rows = (state.storageCatalog || []).slice();
+        title = '❄️ Everything in storage';
+        subtitle = 'The whole chiller and freezer — including items with no open orders, which never appear as a row on this page.';
+        underField = (state.hierarchy || [])[0] || null;
+        if (underField === 'orders' || underField === 'product_name') underField = null;
+    } else if (scope === 'scope') {
+        const gapIds = new Set(storageGapIds(data).map(Number));
+        const level = state.currentLevel || 0;
+        const scopeRows = storageCatalogRows(state.storageScopeIds || []);
+        const orphans = level === 0 ? storageOrphanRows() : [];
+        rows = scopeRows.concat(orphans);
+        highlightIds = gapIds;
+        const where = currentScopeName();
+        title = where ? `❄️ In storage — ${where}` : '❄️ In storage';
+        subtitle = 'Everything physically in storage for this view. Rows marked below have no open order right now, which is why they do not appear in the table.';
+        underField = storageUnderField(0);
+    } else {
+        const row = data[scope];
+        if (!row) return;
+        rows = storageCatalogRows(row.storage_ids || []);
+        title = `❄️ In storage — ${row.group_name || ''}`;
+        subtitle = 'What is physically in the chiller/freezer for this category. Some of these may have no open orders, so they will not appear when you drill in.';
+        underField = storageUnderField(1);
+    }
+
+    document.getElementById('storageDetailTitle').textContent = title;
+    document.getElementById('storageDetailSubtitle').textContent = subtitle;
+    document.getElementById('storageDetailBody').innerHTML = renderStorageDetailBody(rows, underField, highlightIds);
+    document.getElementById('storageDetailModal').style.display = 'block';
+}
+
+function renderStorageDetailBody(rows, underField, highlightIds) {
+    if (!rows || rows.length === 0) {
+        return '<div style="padding: 16px 0; color: #6b7280; font-size: 13px;">Nothing in storage here right now.</div>';
+    }
+
+    const totals = storageSumRows(rows);
+    let html = `<div style="font-size: 13px; font-weight: 700; color: #0c4a6e; margin-bottom: 12px;">Total: ${storageTotalLabel(totals)}</div>`;
+
+    [['freezer', '❄️ FREEZER'], ['chiller', '🧊 CHILLER']].forEach(([section, heading]) => {
+        const inSection = rows.filter(r => (r[section].packets || 0) > 0);
+        const sectionTotal = storageSumRows(inSection);
+        const sectionPackets = sectionTotal[section].packets;
+
+        html += `<div style="display: flex; justify-content: space-between; align-items: baseline; margin: 14px 0 6px; padding-bottom: 4px; border-bottom: 1px solid #e5e7eb;">
+                    <span style="font-size: 11px; font-weight: 700; letter-spacing: 0.05em; color: #6b7280;">${heading}</span>
+                    <span style="font-size: 12px; font-weight: 700; color: ${sectionPackets ? '#0369a1' : '#9ca3af'};">${sectionPackets ? storageSectionLabel(sectionTotal[section]) : 'empty'}</span>
+                 </div>`;
+
+        if (inSection.length === 0) {
+            return;
+        }
+
+        inSection.forEach(r => {
+            const flagged = highlightIds && r.id !== null && highlightIds.has(Number(r.id));
+            const under = underField ? (r[underField] || 'Uncategorized') : null;
+            const meta = [];
+            if (under) meta.push(`under: <strong>${escapeHtml(String(under))}</strong>`);
+            // Frozen figures come from live store inventory, not from a scan, so an
+            // "age" would be meaningless — say where the number comes from instead.
+            if (r.source === 'frozen_inventory') {
+                meta.push('live store inventory');
+            } else if (typeof r.age_days === 'number') {
+                meta.push(r.age_days === 0 ? 'today' : `${r.age_days} day${r.age_days === 1 ? '' : 's'} old`);
+            }
+
+            html += `<div style="padding: 8px 0; border-bottom: 1px solid #f3f4f6;">
+                        <div style="display: flex; justify-content: space-between; gap: 12px; align-items: baseline;">
+                            <span style="font-size: 13px; font-weight: 600; color: #111827;">${escapeHtml(String(r.name || ''))}</span>
+                            <span style="font-size: 13px; font-weight: 700; color: #0369a1; white-space: nowrap;">${storageSectionLabel(r[section])}</span>
+                        </div>
+                        ${meta.length ? `<div style="font-size: 11px; color: #6b7280; margin-top: 2px;">${meta.join(' &middot; ')}</div>` : ''}
+                        ${flagged ? '<div style="font-size: 11px; color: #b45309; font-weight: 600; margin-top: 2px;">⚠ No open order right now — this is why it is not in the table.</div>' : ''}
+                        ${r.deleted_product ? '<div style="font-size: 11px; color: #b45309; font-weight: 600; margin-top: 2px;">⚠ This product was deleted — the packets are still in storage.</div>' : ''}
+                        ${r.warning ? `<div style="font-size: 11px; color: #b91c1c; font-weight: 600; margin-top: 2px;">⚠ ${escapeHtml(String(r.warning))}</div>` : ''}
+                     </div>`;
+        });
+    });
+
+    return html;
+}
+
+// "6 pkt · 50.62 kg" for one section of one row.
+function storageSectionLabel(s) {
+    const bits = [];
+    if (s.kg > 0) bits.push(`${Math.round(s.kg * 100) / 100} kg`);
+    if (s.pcs > 0) bits.push(`${Math.round(s.pcs * 100) / 100} pcs`);
+    return `${s.packets} pkt${bits.length ? ' · ' + bits.join(' + ') : ''}`;
+}
+
 // Render data table
 function renderTable(data, summary) {
     const tbody = document.getElementById('table-body');
@@ -1235,14 +1541,22 @@ function renderTable(data, summary) {
 
     loadingState.style.display = 'none';
 
+    // Keep the rows exactly as rendered: the breakdown popup is opened by row index
+    // and needs the server's storage_ids for that row.
+    window.openQtyState.lastRows = data || [];
+
     if (!data || data.length === 0) {
         table.style.display = 'none';
         emptyState.style.display = 'block';
+        // ⭐ Still report storage on an empty screen — "no rows" is precisely when a
+        //    manager most needs to be told the freezer is not empty.
+        renderStorageGapBar(data || [], summary);
         return;
     }
 
     emptyState.style.display = 'none';
     table.style.display = 'table';
+    renderStorageGapBar(data, summary);
 
     // Check if we're at the orders level
     const isOrdersLevel = summary.current_field === 'orders';
@@ -1337,7 +1651,7 @@ function renderTable(data, summary) {
         `;
     }
 
-    tbody.innerHTML = data.map(item => {
+    tbody.innerHTML = data.map((item, rowIndex) => {
         if (isOrdersLevel) {
             // Orders level: show order details with customer name
             const customerName = item.customer_full_name && item.customer_full_name.trim() 
@@ -1366,6 +1680,7 @@ function renderTable(data, summary) {
                         <span class="text-blue-600 hover:text-blue-800 font-semibold cursor-pointer" onclick="viewOrderDetails(${item.order_id})" title="Click to view order details">
                             ${escapeHtml(item.group_name)}
                         </span>
+                        ${storageLine ? `<div onclick="event.stopPropagation(); openStorageDetail(${rowIndex})" style="display: inline-block; font-size: 11px; font-weight: 600; color: #0369a1; margin-top: 3px; cursor: pointer; text-decoration: underline dotted;" title="What is in the chiller/freezer for the products on this order. Click for the breakdown.">${storageLine} &rsaquo;</div>` : ''}
                     </td>
                     <td>
                         ${customerName}
@@ -1424,7 +1739,7 @@ function renderTable(data, summary) {
                             </span>` :
                             `<strong>${escapeHtml(item.group_name || 'Unknown')}</strong>`
                         }
-                        ${storageLine ? `<div style="font-size: 11px; font-weight: 600; color: #0369a1; margin-top: 3px;" title="In overnight storage right now. Category rows include stocked products that have no open orders.">${storageLine}</div>` : ''}
+                        ${storageLine ? `<div onclick="event.stopPropagation(); openStorageDetail(${rowIndex})" style="display: inline-block; font-size: 11px; font-weight: 600; color: #0369a1; margin-top: 3px; cursor: pointer; text-decoration: underline dotted;" title="Click to see exactly which products are in the chiller/freezer for this row. Category rows include stocked products that have no open orders.">${storageLine} &rsaquo;</div>` : ''}
                     </td>
                     <td class="text-right">
                         <div style="font-size: 18px; font-weight: 700; color: #111827;">${totalQty.toLocaleString()}</div>

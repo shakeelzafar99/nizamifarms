@@ -4468,10 +4468,14 @@ function captureInvoiceImageOrders(invoiceUrl, orderId) {
                 await addScript(iDoc, 'https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js');
                 const node = iDoc.querySelector('.invoice-container');
                 if (!node) { iframe.remove(); reject(new Error('Invoice container not found')); return; }
-                // Jul-2026: 1200px JPEG (was 1600px PNG) — ~3x smaller payload,
-                // visually identical on phones. White background is explicit
-                // because JPEG has no alpha (transparent would render black).
-                const canvas = await iframe.contentWindow.html2canvas(node, {scale: 1.5, useCORS: true, allowTaint: true, backgroundColor: '#ffffff'});
+                // Aug-2026: compact ?wa=1 layout + dynamic scale. The long
+                // side targets <=1600px (WhatsApp re-encodes larger images on
+                // delivery, so extra pixels only slow the capture), width
+                // floor 800px, cap 2.2x. JPEG keeps the explicit white
+                // background (no alpha).
+                const rect = node.getBoundingClientRect();
+                const capScale = Math.max(800 / Math.max(rect.width, 1), Math.min(2.2, 1600 / Math.max(rect.height, 1)));
+                const canvas = await iframe.contentWindow.html2canvas(node, {scale: capScale, useCORS: true, allowTaint: true, backgroundColor: '#ffffff'});
                 const dataUrl = canvas.toDataURL('image/jpeg', 0.85);
                 iframe.remove();
 

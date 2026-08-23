@@ -1224,8 +1224,14 @@ async function loadRiderMapData(riderId) {
             const isDelivered = ['delivered', 'completed'].includes(order.status);
             const color = isDelivered ? '#10b981' : '#f59e0b';
             const hasLoc = order.location !== null;
+            // ⭐ Planned drop position (Aug-23) — same chip as the van cards' vp-oseq.
+            //   Active stops only: on a delivered row the plan is history, and the
+            //   delivered list is date-ordered, where stale stop numbers just confuse.
+            const seqChip = (!isDelivered && order.delivery_priority != null)
+                ? `<span style="flex:0 0 auto;min-width:17px;height:17px;line-height:17px;border-radius:9px;background:#E0E7FF;color:#3730A3;font-weight:800;font-size:10.5px;text-align:center;padding:0 3px;display:inline-block;margin-right:6px;">${order.delivery_priority}</span>`
+                : '';
             return `<div style="display: flex; justify-content: space-between; align-items: center; padding: 10px 16px; border-bottom: 1px solid #f3f4f6;">
-                <div><span style="font-weight: 600; color: #3b82f6;">${order.order_number}</span> <span style="color: #374151; margin-left: 8px;">${order.customer_name}</span></div>
+                <div>${seqChip}<span style="font-weight: 600; color: #3b82f6;">${order.order_number}</span> <span style="color: #374151; margin-left: 8px;">${order.customer_name}</span></div>
                 <div style="display: flex; gap: 8px; align-items: center;">
                     <span style="color: ${color}; font-size: 12px;">${order.status_display}</span>
                     <span style="background: ${hasLoc ? '#d1fae5' : '#fee2e2'}; color: ${hasLoc ? '#065f46' : '#991b1b'}; padding: 2px 6px; border-radius: 4px; font-size: 11px;">${hasLoc ? '📍' : '❌'}</span>

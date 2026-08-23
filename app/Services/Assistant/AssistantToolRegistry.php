@@ -161,6 +161,24 @@ class AssistantToolRegistry
                 ],
             ],
             [
+                'name' => 'remember_payee',
+                'description' => 'Remember that a bank account / beneficiary name belongs to a particular vendor, one of our own accounts, or an expense category — so the NEXT transfer to it is recognised without asking. Use this whenever the user tells you who a beneficiary really is ("the Al Shifa Trust payments will be for ASTEH", "Imran Saeed is Imran Qureshi", "remember this account"). Pass the beneficiary account EXACTLY as the screenshot or SMS showed it (a masked fragment is fine and normal). This is the ONLY way to save that mapping — set_default cannot do it, so never claim you have remembered a payee unless this tool succeeded.',
+                'parameters' => [
+                    'type' => 'OBJECT',
+                    'properties' => [
+                        'account' => ['type' => 'STRING', 'description' => 'Beneficiary account as shown, e.g. "**** ...4237" or "PK16FAYSxx564". Strongly preferred — a rule keyed on the account is the reliable one.'],
+                        'bank'    => ['type' => 'STRING', 'description' => 'Beneficiary bank if shown, e.g. "Meezan"'],
+                        'name'    => ['type' => 'STRING', 'description' => 'Beneficiary name as shown, e.g. "AL SHIFA TRUST RAWALPINDI". Used alone only when no account is available, and then only as a suggestion.'],
+                        'entity_type' => ['type' => 'STRING', 'description' => 'vendor | account | expense | ignore. "account" = one of OUR own accounts (money moved but is still ours). "ignore" = a personal/merchant charge to stop asking about.'],
+                        'vendor_id' => ['type' => 'INTEGER', 'description' => 'Required for entity_type=vendor — the real id from find_vendor, never a guess.'],
+                        'account_id' => ['type' => 'INTEGER', 'description' => 'Required for entity_type=account — an id from get_context.'],
+                        'label' => ['type' => 'STRING', 'description' => 'For entity_type=expense or ignore: the expense category name, or what this merchant is.'],
+                        'force' => ['type' => 'BOOLEAN', 'description' => 'Only after the tool reported a conflict AND the user confirmed moving the account to the new owner.'],
+                    ],
+                    'required' => ['entity_type'],
+                ],
+            ],
+            [
                 'name' => 'draft_expense',
                 'description' => 'Prepare an expense for the user to confirm. This does NOT record anything — it shows them a confirmation card. Always call get_context first so the ids are real. If you are missing the payment source or business unit and the user has no saved default, ASK them instead of guessing.',
                 'parameters' => [
@@ -256,7 +274,7 @@ class AssistantToolRegistry
             ],
             [
                 'name' => 'draft_vendor_purchase',
-                'description' => 'Prepare a vendor PURCHASE (stock/goods bought from a vendor — increases what we owe them; no money moves). Shows a confirmation card. Call find_vendor first for the real vendor_id. Use this when the user says "purchased/bought/khareeda", NOT for paying a vendor.',
+                'description' => 'Prepare a vendor PURCHASE (stock/goods bought from a vendor — increases what we owe them; no money moves). Shows a confirmation card. Call find_vendor first for the real vendor_id. Use this when the user says "purchased/bought/khareeda", NOT for paying a vendor. WHENEVER the user names products and weights — typed, spoken, or read off a slip photo ("13.5 mutton whole", "89 veal raan haddi and 1.2 veal mix") — pass them as `items` and NEVER work out a total yourself: I price every line from that vendor\'s own catalogue. Only use a bare `amount` when the user gives you a lump sum with no products.',
                 'parameters' => [
                     'type' => 'OBJECT',
                     'properties' => [
@@ -265,6 +283,19 @@ class AssistantToolRegistry
                         'transaction_date' => ['type' => 'STRING', 'description' => 'YYYY-MM-DD. Omit for today.'],
                         'description' => ['type' => 'STRING', 'description' => 'Optional note, e.g. what was bought'],
                         'group_title' => ['type' => 'STRING', 'description' => 'When drafting from a WhatsApp purchase log: the group title exactly as passed to read_purchase_log. On confirm the group is remembered as this vendor\'s.'],
+                        'items' => [
+                            'type' => 'ARRAY',
+                            'description' => 'Products and weights as the user gave them. I look the rate up from the vendor\'s catalogue — do NOT pass a rate you inferred, and do NOT also compute `amount`. Anything I cannot match, the card asks about with buttons.',
+                            'items' => [
+                                'type' => 'OBJECT',
+                                'properties' => [
+                                    'product'  => ['type' => 'STRING', 'description' => 'The product words exactly as the user said them, e.g. "mutton whole", "veal raan haddi wali", "chakki"'],
+                                    'quantity' => ['type' => 'NUMBER', 'description' => 'Weight/count for this line, e.g. 13.5'],
+                                    'rate'     => ['type' => 'NUMBER', 'description' => 'ONLY when the user explicitly states a price for this line ("cow brain 350"). Omit otherwise — the catalogue rate is used.'],
+                                ],
+                                'required' => ['product', 'quantity'],
+                            ],
+                        ],
                         '_lines' => [
                             'type' => 'ARRAY',
                             'description' => 'Weighed lines from read_purchase_log, passed through EXACTLY as returned — one per weighing, never summed, each keeping its text.',
@@ -319,6 +350,7 @@ class AssistantToolRegistry
                 'find_order'           => $this->findOrder($args, $user),
                 'list_customer_invoices' => $this->listCustomerInvoices($args, $user),
                 'set_default'          => $this->setDefault($args, $user),
+                'remember_payee'       => $this->rememberPayee($args, $user),
                 'draft_expense'         => $this->drafts->draftExpense($args, $user),
                 'draft_vendor_payment'  => $this->drafts->draftVendorPayment($args, $user),
                 'draft_vendor_purchase' => $this->drafts->draftVendorPurchase($args, $user),
@@ -405,13 +437,19 @@ class AssistantToolRegistry
 
         // Real categories people actually use, so the model reuses existing
         // spellings instead of inventing "Petrol" alongside "Fuel/Petrol".
+        // ⚠ EVERY category, not the top 25 (owner-reported, Aug-2026). Taimur
+        // said "Vaccum seal bags" FOUR times on 19-Aug and each time it was
+        // filed as "Packaging - Bags" — the category exists and he had used it
+        // five times, but it ranks 28th, so the model was literally never shown
+        // it and could not have got this right. There are ~60 of them: short
+        // strings, and being able to see the rare ones is the whole point.
         $categories = DB::table('t_req_master')
             ->whereNotNull('expense_category')
             ->where('expense_category', '!=', '')
             ->select('expense_category', DB::raw('COUNT(*) c'))
             ->groupBy('expense_category')
             ->orderByDesc('c')
-            ->limit(25)
+            ->limit(200)
             ->pluck('expense_category')
             ->all();
 
@@ -871,8 +909,9 @@ class AssistantToolRegistry
         $recvName = trim((string) ($args['receiver_name'] ?? '')) ?: null;
         $recvBank = trim((string) ($args['receiver_bank'] ?? '')) ?: null;
         $sendAcct = trim((string) ($args['sender_account'] ?? '')) ?: null;
+        $sendName = trim((string) ($args['sender_name'] ?? '')) ?: null;
 
-        $direction = $resolver->direction($recvAcct, $sendAcct, $recvName);
+        $direction = $resolver->direction($recvAcct, $sendAcct, $recvName, $sendName);
 
         if ($direction === $resolver::DIR_IN) {
             return [
@@ -892,21 +931,34 @@ class AssistantToolRegistry
             ];
         }
 
+        // ⭐ WHICH of our banks the money left. The screenshot names the sending
+        // account, so the card can carry the bank pre-filled instead of asking
+        // him to tap it — he hit that needless tap twice in the 19–22 Aug logs.
+        $fromBank = $resolver->ourBankAccount($sendAcct);
+        $bankNote = $fromBank
+            ? ' It was paid from our ' . $fromBank['name'] . ' — pass paid_from_bank_account_id as '
+              . 'receiving_account_id on the draft so the bank is already answered.'
+            : '';
+
         // Money OUT — try to name the beneficiary.
         $payee = $resolver->resolvePayee($recvAcct, $recvBank, $recvName);
         if (!$payee) {
-            return [
+            return array_filter([
                 'direction' => 'out',
                 'payee' => null,
+                'paid_from_bank_account_id' => $fromBank['id'] ?? null,
+                'paid_from_bank' => $fromBank['name'] ?? null,
                 'note' => 'Money went OUT of our account, but this beneficiary account is not one I have been '
                         . 'taught. ASK who was paid. Once they tell you, draft it as usual — and afterwards the '
-                        . 'user can save the account against that vendor so it is recognised next time.',
-            ];
+                        . 'user can save the account against that vendor so it is recognised next time.' . $bankNote,
+            ], fn($v) => $v !== null);
         }
 
         $out = [
             'direction'   => 'out',
             'payee'       => $payee,
+            'paid_from_bank_account_id' => $fromBank['id'] ?? null,
+            'paid_from_bank' => $fromBank['name'] ?? null,
             'matched_by'  => $payee['how'],
         ];
 
@@ -921,7 +973,7 @@ class AssistantToolRegistry
             $out['note'] = 'Money went OUT to ' . ($v->vendor_name ?? $payee['label'])
                 . ' — a vendor we know by this account. Draft the vendor payment with the amount and date you '
                 . 'read off the image, and SAY who you matched it to so the user can correct you. '
-                . 'Nothing is recorded until they tap Confirm.';
+                . 'Nothing is recorded until they tap Confirm.' . $bankNote;
         } elseif ($payee['entity_type'] === 'account') {
             $out['to_account_id'] = $payee['entity_id'];
             $out['note'] = 'Money went OUT to ' . $payee['label'] . ' — one of OUR OWN accounts, so this is a '
@@ -929,7 +981,8 @@ class AssistantToolRegistry
         } else { // expense category
             $out['expense_category'] = $payee['label'];
             $out['note'] = 'Money went OUT and this account is remembered as the expense category "'
-                . $payee['label'] . '". Draft the expense with that category and the amount/date from the image.';
+                . $payee['label'] . '". Draft the expense with that category and the amount/date from the image.'
+                . $bankNote;
         }
 
         return $out;
@@ -1105,6 +1158,130 @@ class AssistantToolRegistry
         } catch (\Throwable $e) {
             return null;
         }
+    }
+
+    /**
+     * Remember who a beneficiary account/name really is.
+     *
+     * ⭐ WHY THIS EXISTS (owner-reported, Aug-2026). Al Shifa Trust was filed as
+     * a charity expense two days running when it is really the vendor ASTEH.
+     * Taimur said "save this account for the future" and the model reached for
+     * set_default — which can only store default payment SOURCES — and then
+     * told him "I have linked Al Shifa to ASTEH". Nothing was written anywhere,
+     * so the third mis-file was guaranteed. There was no tool that could do
+     * what he asked; now there is, and the prompt forbids claiming otherwise.
+     *
+     * Writes the SAME `t_ai_counterparty_map` rules the review panel manages,
+     * so anything taught here shows up on the vendor screen and can be
+     * deactivated there.
+     */
+    private function rememberPayee(array $args, $user): array
+    {
+        $type = strtolower(trim((string) ($args['entity_type'] ?? '')));
+        if (!in_array($type, ['vendor', 'account', 'expense', 'ignore'], true)) {
+            return ['error' => 'entity_type must be one of: vendor, account, expense, ignore.'];
+        }
+
+        // The entity must exist — an orphan rule renders as "vendor #57" and
+        // silently recognises nothing.
+        $entityId = null;
+        $label = trim((string) ($args['label'] ?? '')) ?: null;
+
+        if ($type === 'vendor') {
+            $entityId = (int) ($args['vendor_id'] ?? 0);
+            $name = $entityId ? DB::table('t_fin_vendors')->where('id', $entityId)->value('vendor_name') : null;
+            if (!$name) {
+                return ['error' => 'That vendor id does not exist. Use find_vendor first — never guess an id.'];
+            }
+            $label = $name;
+        } elseif ($type === 'account') {
+            $entityId = (int) ($args['account_id'] ?? 0);
+            $name = $entityId ? DB::table('t_fin_accounts')->where('id', $entityId)->value('account_name') : null;
+            if (!$name) {
+                return ['error' => 'That account id does not exist. Use get_context for the real ids.'];
+            }
+            $label = $name;
+        } elseif ($type === 'expense' && !$label) {
+            return ['error' => 'For an expense rule I need the category name in `label`.'];
+        }
+
+        $rawAccount = trim((string) ($args['account'] ?? ''));
+        $rawName    = trim((string) ($args['name'] ?? ''));
+        $key = $rawAccount !== ''
+            ? app(\App\Services\Assistant\BankSmsParser::class)->normalizeKey($rawAccount)
+            : null;
+
+        // ⚠⚠ SCREENSHOT MASKS ARE NOT SMS MASKS. normalizeKey is built for what
+        // a bank SMS carries (MBL*2969, PK16FAYSxx564) and returns NULL for the
+        // dotted form a bank APP prints — "**** ...4237" — which is precisely
+        // what this tool is usually handed. Without this the rule silently
+        // downgraded to name-only: it would look saved and then never fire.
+        // A bare tail is the same shape the parser already produces for "*8303",
+        // and the structural matcher reads it correctly (no bank token = no
+        // contradiction, tails compared suffix-wise).
+        if (!$key && $rawAccount !== '' && preg_match('/(\d{4,})\D*$/', $rawAccount, $m)) {
+            $key = '*' . substr($m[1], -6);
+        }
+
+        // A FULL unmasked IBAN saves fine and then never fires — SMS and
+        // screenshots only ever carry masked fragments. Same refusal the web
+        // panel gives, for the same reason.
+        if ($key && preg_match('/^PK\d{2}[A-Z]{4}[0-9]{14,}$/', $key)) {
+            return ['error' => 'That looks like a full account number. Bank messages only show a masked fragment (e.g. PK96UNILxx322), so a rule on the full number would never match. Use the account exactly as the screenshot showed it.'];
+        }
+        if (!$key && $rawName === '') {
+            return ['error' => 'I need the beneficiary account (as shown) or at least the beneficiary name to remember this by.'];
+        }
+
+        $map = app(\App\Services\Assistant\SmsCounterpartyMap::class);
+
+        // ⚠ NEVER silently steal an account already taught to somebody else —
+        // that would misroute every future transfer to it. Say who owns it and
+        // let the user decide.
+        if ($key && empty($args['force'])) {
+            $existing = $map->byAccount($key);
+            if ($existing
+                && !($existing->entity_type === $type && (int) $existing->entity_id === (int) $entityId)) {
+                return [
+                    'conflict' => true,
+                    'message'  => 'That account is already remembered as ' . $map->entityName($existing)
+                        . ' (' . $existing->entity_type . '). Tell the user and ask whether to move it, '
+                        . 'then call remember_payee again with force=true if they confirm.',
+                    'current'  => ['entity_type' => $existing->entity_type, 'name' => $map->entityName($existing)],
+                    'saved'    => false,
+                ];
+            }
+        }
+
+        $id = $map->save($key, $rawName ?: null, $type, $entityId, $label, (int) $user->id);
+        if (!$id) {
+            return ['error' => 'I could not save that — I need a readable account fragment or name.'];
+        }
+
+        // How many PAST messages this rule would have caught. A key that matches
+        // nothing is usually a typo, and saying so now beats discovering it in
+        // three weeks when the suggestion never appears.
+        $pastHits = 0;
+        if ($key) {
+            try {
+                $pastHits = (int) DB::table('t_ai_bank_sms')->where('counterparty_account', $key)->count();
+            } catch (\Throwable $e) {
+                $pastHits = 0;
+            }
+        }
+
+        return [
+            'saved'       => true,
+            'remembered'  => $label ?: $rawName,
+            'matched_on'  => $key ? 'account ' . $key : 'name only',
+            'past_messages_matching' => $pastHits,
+            'note' => $key
+                ? 'Saved. Tell the user in ONE short line that transfers to this account will be recognised as '
+                    . ($label ?: $rawName) . ' from now on.'
+                    . ($pastHits === 0 ? ' It matches no past message, so if they expected it to, the account fragment may differ from what the bank sends — mention that briefly.' : '')
+                : 'Saved as a NAME-only rule, which is weaker — names collide, so it will be offered as a suggestion rather than acted on automatically. '
+                    . 'Tell the user it is remembered, and that giving you the account number from a screenshot would make it certain.',
+        ];
     }
 
     private function setDefault(array $args, $user): array

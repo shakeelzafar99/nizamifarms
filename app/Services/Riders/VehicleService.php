@@ -2135,6 +2135,16 @@ class VehicleService
 
                 $fill = (int) DB::table('t_req_master')
                     ->where('requester_user_id', $w['user_id'])
+                    // ⚠⚠ UNSTAMPED ONLY (Aug-22 2026). This query walks claims BY THE KEEPER, and
+                    //    without this filter it ingested claims STAMPED TO A DIFFERENT MACHINE:
+                    //    Rajab's own bike (~6,600 km) showed "73,562 km" on its card because his
+                    //    VAN cash claims (stamped vehicle_id=4, filed in his name by a manager)
+                    //    fell inside his window on the bike. A claim that names its machine is
+                    //    already counted by $byFill on THAT machine — counting it here too puts
+                    //    the same money's odometer on two bikes. meterWindowFor's legacy-claims
+                    //    query has always had this filter; this one predates stamping and never did.
+                    ->when(Schema::hasColumn('t_req_master', 'vehicle_id'),
+                        fn ($q) => $q->whereNull('vehicle_id'))
                     ->whereNotNull('meter_at_fill')
                     ->where('meter_at_fill', '>', $floor)
                     ->whereNotIn('status', ['cancelled', 'rejected'])

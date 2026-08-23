@@ -7411,19 +7411,17 @@ class RiderController extends Controller
         }
     }
 
+    /**
+     * ⚠ MOVED to `VehicleResolver::holdsCompanyMachineNow` (Aug-22 2026) and kept here only as a
+     *   thin delegate, so the four call sites in this controller keep working unchanged. The body
+     *   had to move because `HomeJourneyService::openEscalations()` needs the SAME question and
+     *   could not reach a private controller method — so the escalation sweep shipped with no
+     *   guard and kept pushing "hasn't recorded his bike meter" at a rider who had handed the
+     *   machine back. One definition, five callers; do not re-inline it.
+     */
     private function holdsCompanyMachineNow(int $userId): ?bool
     {
-        try {
-            $res = new \App\Services\Riders\VehicleResolver();
-            if (!$res->available() || !$res->rulesEnabled()) return null;
-            if (!$res->hasRiderProfile($userId))             return null;
-            $vid = $res->currentVehicleFor($userId);
-            if ($vid === null) return false;
-            $v = $res->vehicle($vid);
-            return $v ? ((int) $v->is_company === 1) : false;
-        } catch (\Throwable $e) {
-            return null;                       // no opinion = never block the old flow
-        }
+        return (new \App\Services\Riders\VehicleResolver())->holdsCompanyMachineNow($userId);
     }
 
     private function armHomeJourney(int $userId, int $attendanceId, $lat, $lng, string $today): ?array
@@ -9068,6 +9066,10 @@ class RiderController extends Controller
                     'osh.changed_at as delivered_at',
                     // ⭐ ETA from "Get Times" button
                     'o.estimated_delivery_at',
+                    // ⭐ Planned drop position (Aug-23). Every other surface — the
+                    //    store board, the rider app, the van cards — already shows
+                    //    the sequence; this drill-down was the last list without it.
+                    'o.delivery_priority',
                 ])
                 ->orderBy('o.id', 'desc')
                 ->get();
@@ -9168,6 +9170,10 @@ class RiderController extends Controller
                     'estimated_delivery_at_display' => $etaDisplay, // ⭐ ETA time
                     'eta_comparison' => $etaComparison, // ⭐ ETA vs actual
                     'google_maps_url' => $order->verified_location_url,
+                    // ⭐ Planned drop position — null stays null (never 0), so the
+                    //    client can leave un-sequenced stops without a chip.
+                    'delivery_priority' => $order->delivery_priority !== null
+                        ? (int) $order->delivery_priority : null,
                 ];
             });
 
@@ -16168,7 +16174,20 @@ class RiderController extends Controller
                 return $stockService->sumFor($storageMap, $node['_int_product_ids'] ?? []);
             };
 
-            $finalizeNode = function (&$node) use (&$finalizeNode, $sumStorage) {
+            // ⭐ Which products make up this node's figure — published as `storage_ids`
+            //    so the breakdown sheet is a local lookup against `storage_catalog`
+            //    (no request on tap, works on the cached tree) and can never disagree
+            //    with the number that opened it. Same matcher as $sumStorage above.
+            $storageIdsFor = function (array $node) use ($stockService, $storageMap, $storageCatalog) {
+                $field = $node['field'] ?? null;
+                if (in_array($field, \App\Services\CRM\OvernightStockService::CATEGORY_FIELDS, true)) {
+                    return $stockService->matchCategoryIds($storageCatalog, $node['filters'] ?? []) ?? [];
+                }
+
+                return $stockService->stockedIds($storageMap, $node['_int_product_ids'] ?? []);
+            };
+
+            $finalizeNode = function (&$node) use (&$finalizeNode, $sumStorage, $storageIdsFor) {
                 $node['order_count'] = count($node['_order_ids']);
                 $node['product_count'] = count(array_filter(array_keys($node['_product_ids'])));
 
@@ -16176,9 +16195,12 @@ class RiderController extends Controller
                 $node['weight'] = round((float) ($node['weight'] ?? 0), 2);
 
                 // Physical stock for this node. Key omitted when there is none.
+                // ⚠️ Both reads must happen BEFORE the unset() below — _int_product_ids
+                //    is what the product/order branch matches on.
                 $storage = $sumStorage($node);
                 if ($storage !== null) {
                     $node['storage'] = $storage;
+                    $node['storage_ids'] = $storageIdsFor($node);
                 }
 
                 unset($node['_order_ids'], $node['_product_ids'], $node['_children_map'], $node['_int_product_ids']);
@@ -16435,6 +16457,14 @@ class RiderController extends Controller
                 ],
                 'order_status_counts' => $orderStatusCounts,
                 'tree' => $treeClean,
+                // ⭐ Everything physically in the chiller/freezer right now — sent ONCE
+                //    with the tree (bounded by "one night's leftovers"), so a breakdown
+                //    sheet never needs a request and works from the cached tree offline.
+                'storage_catalog' => $stockService->catalogRows(),
+                // The whole room. The tree only contains products that are on open
+                // orders, so summing node storage can never reach this — a category with
+                // no orders has no node at all. This is the honest headline figure.
+                'storage_total' => $stockService->grandTotal(),
             ]);
         } catch (\Exception $e) {
             Log::error('Failed to build open quantities tree', [
@@ -16800,7 +16830,9 @@ class RiderController extends Controller
             $stockService = app(\App\Services\CRM\OvernightStockService::class);
             $isCategoryLevel = in_array($currentField, \App\Services\CRM\OvernightStockService::CATEGORY_FIELDS, true);
             $stockMap = $currentField === 'product_name' ? $stockService->map() : [];
-            $stockCatalog = $isCategoryLevel ? $stockService->catalog() : [];
+            // Full catalog regardless of level: the scope ids + breakdown sheet need it
+            // even at the orders level, where no row carries a storage figure of its own.
+            $stockCatalog = $stockService->catalog();
 
             // Format for mobile - keep it simple and light
             $formattedResults = $results->map(function($item) use ($currentField, $stockService, $stockMap, $stockCatalog, $isCategoryLevel, $filters) {
@@ -16830,12 +16862,11 @@ class RiderController extends Controller
 
                     if ($isCategoryLevel) {
                         // Own value + the ancestor filters = this row's full attribute path.
-                        $storage = $stockService->sumForCategory(
-                            $stockCatalog,
-                            array_merge($filters, [$currentField => $item->name ?? ''])
-                        );
+                        $rowFilters = array_merge($filters, [$currentField => $item->name ?? '']);
+                        $storage = $stockService->sumForCategory($stockCatalog, $rowFilters);
                         if ($storage !== null) {
                             $result['storage'] = $storage;
+                            $result['storage_ids'] = $stockService->matchCategoryIds($stockCatalog, $rowFilters) ?? [];
                         }
                     }
                     if ($currentField === 'product_name') {
@@ -16843,12 +16874,11 @@ class RiderController extends Controller
                         if (!empty($item->has_instructions)) {
                             $result['has_instructions'] = true;
                         }
-                        $storage = $stockService->sumFor(
-                            $stockMap,
-                            $stockService->idsFromConcat($item->internal_product_ids ?? null)
-                        );
+                        $ids = $stockService->idsFromConcat($item->internal_product_ids ?? null);
+                        $storage = $stockService->sumFor($stockMap, $ids);
                         if ($storage !== null) {
                             $result['storage'] = $storage;
+                            $result['storage_ids'] = $stockService->stockedIds($stockMap, $ids);
                         }
                     }
                 }
@@ -16865,9 +16895,14 @@ class RiderController extends Controller
                 'settings' => [
                     'hierarchy' => $hierarchy,
                     'excluded_statuses' => $excludedStatuses
-                ]
+                ],
+                // Same three keys the tree endpoint sends — see the notes there.
+                'storage_catalog' => $stockService->catalogRows(),
+                'storage_scope_ids' => $stockService->matchCategoryIds($stockCatalog, $filters)
+                    ?? array_map('intval', array_keys($stockCatalog)),
+                'storage_total' => $stockService->grandTotal(),
             ]);
-            
+
         } catch (\Exception $e) {
             \Log::error('Failed to fetch open order quantities', [
                 'user_id' => Auth::id(),

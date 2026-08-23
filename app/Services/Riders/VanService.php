@@ -57,6 +57,63 @@ class VanService
      */
     public const STALE_TAG_HOURS = 20;
 
+    /**
+     * ⭐⭐ HOW OLD A GPS FIX MAY BE BEFORE WE STOP TRUSTING IT (Aug-2026).
+     *
+     * Defined ONCE, here, and echoed to every client as a STATE STRING — the
+     * apps and the web card never re-derive freshness from a timestamp, so the
+     * rider's card, the store board and the live map can never disagree about
+     * whether the van's dot is trustworthy.
+     *
+     * ⚠⚠ A STALE FIX MUST NEVER DRIVE A PROMISE. This system has been bitten
+     *    twice by confident-wrong positions — the 2,736 km "Riyadh" ETA and the
+     *    position-blind ETA cache that served a 3,328-minute answer for a 1.6 km
+     *    trip. So `stale` suppresses the ETA entirely and greys the marker at
+     *    its LAST KNOWN spot: showing where he was ten minutes ago is honest,
+     *    animating it as if it were live is not.
+     */
+    public const GPS_LIVE_MINUTES  = 2;    // ≤ this  → live
+    public const GPS_AGING_MINUTES = 10;   // ≤ this  → aging (ETA marked "est")
+                                           // >  this → stale (no ETA at all)
+
+    /** live | aging | stale, from a `lastFix()` payload (null fix = stale). */
+    public static function gpsState(?array $fix): string
+    {
+        if (!$fix || !isset($fix['age_minutes'])) return 'stale';
+        $age = (int) $fix['age_minutes'];
+        if ($age <= self::GPS_LIVE_MINUTES)  return 'live';
+        if ($age <= self::GPS_AGING_MINUTES) return 'aging';
+        return 'stale';
+    }
+
+    /** "GPS live" · "GPS 4 min ago" — the same words on every surface. */
+    public static function gpsLabel(?array $fix): string
+    {
+        $state = self::gpsState($fix);
+        if ($state === 'live') return 'GPS live';
+        if (!$fix || !isset($fix['age_minutes'])) return 'No GPS';
+        return 'GPS ' . (int) $fix['age_minutes'] . ' min ago';
+    }
+
+    /** Metres between two points. Plain haversine — no API call, no cache. */
+    public static function metresBetween(float $lat1, float $lng1, float $lat2, float $lng2): float
+    {
+        $r = 6371000.0;
+        $dLat = deg2rad($lat2 - $lat1);
+        $dLng = deg2rad($lng2 - $lng1);
+        $a = sin($dLat / 2) ** 2
+           + cos(deg2rad($lat1)) * cos(deg2rad($lat2)) * sin($dLng / 2) ** 2;
+        return $r * 2 * atan2(sqrt($a), sqrt(1 - $a));
+    }
+
+    /** "1.2 km" / "450 m" — matches LocationService::formatDistance's shape. */
+    public static function distanceDisplay(float $metres): string
+    {
+        return $metres >= 1000
+            ? round($metres / 1000, 1) . ' km'
+            : ((int) round($metres)) . ' m';
+    }
+
     // =================================================================
     // AVAILABILITY
     // =================================================================

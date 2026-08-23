@@ -786,6 +786,11 @@ Route::middleware(['auth'])->group(function () {
         Route::get('/invoice-image/{orderId}', [\App\Http\Controllers\Web\WhatsAppWebController::class, 'getInvoiceImageUrl'])->name('messages.invoiceImage');
         Route::post('/upload-invoice-image', [\App\Http\Controllers\Web\WhatsAppWebController::class, 'uploadInvoiceImage'])->name('messages.uploadInvoiceImage');
         Route::post('/send-invoice', [\App\Http\Controllers\Web\WhatsAppWebController::class, 'sendInvoice'])->name('messages.sendInvoice');
+        // Aug-2026: manual image attachment from the web composer. Thin
+        // delegate to the API controller's sendImageMessage (already used by
+        // the NF Messages APK) so validation, Meta upload, storage layout and
+        // the outbound row shape stay identical across web and mobile.
+        Route::post('/conversations/{id}/send-image', [\App\Http\Controllers\Web\WhatsAppWebController::class, 'sendImageAttachment'])->name('messages.sendImage');
 
         // Qurbani tab — feature toggle, keywords, active year, rescan.
         Route::get('/qurbani-settings', [\App\Http\Controllers\Web\WhatsAppWebController::class, 'getQurbaniSettings'])->name('messages.qurbaniSettings');

@@ -43,6 +43,32 @@
   </div>
 </div>
 
+{{-- 🗺 LIVE RENDEZVOUS MAP — read-only, van + meet-up point + inbound riders.
+     ⚠ This page has NO map of its own (the Live view is a card grid), so this is
+     a modal of its own rather than markers on an existing canvas. It reuses the
+     SAME Google loader the pin picker above uses, so there is one script tag and
+     one API key on the page. Page level, like the other two modals: a
+     position:fixed element inside a display:none view does not render at all. --}}
+<div id="vpLiveModal" onclick="if(event.target===this)vpCloseLive()"
+     style="display:none;position:fixed;inset:0;z-index:4500;background:rgba(0,0,0,.6);
+            align-items:center;justify-content:center;padding:16px;">
+  <div style="background:#fff;border-radius:12px;width:100%;max-width:860px;
+              box-shadow:0 18px 60px rgba(0,0,0,.4);overflow:hidden;">
+    <div style="display:flex;align-items:center;gap:9px;padding:13px 17px;border-bottom:1px solid #e5e7eb;">
+      <b id="vpLiveTitle" style="font-size:15px;color:#111827;">🗺 Live</b>
+      <span id="vpLiveChip" style="font-size:11px;font-weight:700;padding:2px 9px;border-radius:20px;"></span>
+      <button type="button" onclick="vpCloseLive()" title="Close"
+              style="margin-left:auto;border:none;background:none;font-size:24px;color:#9ca3af;cursor:pointer;line-height:1;">&times;</button>
+    </div>
+    <div id="vpLiveCanvas" style="width:100%;height:min(62vh,520px);background:#eef2f5;"></div>
+    <div style="display:flex;align-items:center;gap:12px;padding:10px 17px;border-top:1px solid #e5e7eb;
+                font-size:11.5px;color:#6b7280;">
+      <span>🚚 Van</span><span>📍 Meet-up</span><span>👤 Rider</span>
+      <span style="margin-left:auto;">Faded = old GPS</span>
+    </div>
+  </div>
+</div>
+
 <div id="vpStopsModal" onclick="if(event.target===this)vpCloseStops()"
      style="display:none;position:fixed;inset:0;z-index:4300;background:rgba(0,0,0,.5);
             align-items:center;justify-content:center;padding:16px;">
@@ -156,6 +182,11 @@
 .vp-orow{display:flex;align-items:center;gap:9px;padding:5px 10px;font-size:12px;
          border-bottom:1px solid #f8fafc;}
 .vp-orow:last-child{border-bottom:none;}
+/* Planned drop position — round chip so it reads as "stop number", not as part
+   of the order number. Same indigo family as the mobile boards' seq chips. */
+.vp-oseq{flex:0 0 auto;min-width:17px;height:17px;line-height:17px;border-radius:9px;
+    background:#E0E7FF;color:#3730A3;font-weight:800;font-size:10.5px;text-align:center;
+    padding:0 3px;}
 .vp-ono{font-weight:700;color:#111827;min-width:78px;}
 .vp-ocust{color:#6b7280;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
 .vp-ostate{font-size:10.5px;font-weight:700;padding:1px 8px;border-radius:20px;white-space:nowrap;}
@@ -163,6 +194,26 @@
 .vp-ostate.ok{background:#dcfce7;color:#166534;}
 .vp-ostate.stale{background:#fee2e2;color:#991b1b;}
 .vp-otime{color:#9ca3af;font-size:11px;font-variant-numeric:tabular-nums;white-space:nowrap;}
+/* GPS freshness chip — the same three states, colours and words as the mobile
+   boards, so "grey dot" means one thing across the whole system. */
+.vp-gps{display:inline-block;font-size:10.5px;font-weight:700;padding:1px 8px;border-radius:20px;
+        vertical-align:middle;margin-left:4px;}
+.vp-gps.live{background:#dcfce7;color:#166534;}
+.vp-gps.aging{background:#fef3c7;color:#92400e;}
+.vp-gps.stale{background:#fee2e2;color:#991b1b;}
+
+/* Journey bars. Clickable — they open the live map on that van. */
+.vp-bars{margin-top:10px;padding-top:9px;border-top:1px solid #ccfbf1;}
+.vp-bar{display:flex;align-items:center;gap:10px;padding:4px 0;cursor:pointer;}
+.vp-bar:hover .vp-bfill{background:#0d9488;}
+.vp-bar.stale{opacity:.55;}
+.vp-bname{font-size:12px;font-weight:700;color:#111827;min-width:130px;
+          overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.vp-btrack{flex:1;height:7px;border-radius:4px;background:#e5e7eb;overflow:hidden;min-width:80px;}
+.vp-bfill{display:block;height:7px;border-radius:4px;background:#0f766e;transition:width .6s ease;}
+.vp-bmeta{font-size:11.5px;color:#6b7280;font-weight:600;white-space:nowrap;
+          font-variant-numeric:tabular-nums;}
+
 /* Abandoned meet-up — same visual weight as a meter / verified-pin bypass. */
 .vp-bypass{background:#fef2f2;border:1px solid #fecaca;border-radius:9px;padding:8px 11px;
            margin-top:10px;font-size:12px;font-weight:700;color:#991b1b;line-height:1.45;}
@@ -225,6 +276,8 @@ function vpRender() {
     const el = document.getElementById('vanPanel');
     if (!el || !vpData) return;
     el.innerHTML = (vpData.vans || []).map(vpCard).join('');
+    // The live map reads the same freshly-polled data — dots move on their own.
+    vpLiveRefresh(false);
 }
 
 function vpCard(v) {
@@ -297,6 +350,29 @@ function vpCard(v) {
           + (stop.is_adhoc ? ' <span class="vp-pill adhoc">one-off spot</span>' : '')
         : '';
 
+    // ⭐ GPS freshness, in the same three states every surface uses. The state
+    //    is the SERVER's — this only paints it.
+    const vpos = v.van_position;
+    const gpsChip = (vpos && vpos.label)
+        ? '<span class="vp-gps ' + (vpos.state || 'stale') + '">'
+          + (vpos.state === 'live' ? '📍 ' : '') + vpEsc(vpos.label) + '</span>'
+        : '';
+
+    // 🗺 Only offer the map when there is something to draw on it.
+    const mapBtn = ((vpos && vpos.lat !== null) || (stop && stop.latitude !== null))
+        ? '<button type="button" class="vp-gear" onclick="vpOpenLive(' + v.driver_user_id + ')">🗺 Live map</button>'
+        : '';
+
+    // ▓▓▓░░ The journey bars — the van's own, then every rider still coming.
+    //    Each is present only when the server could answer honestly; a missing
+    //    bar means "cannot say", never "no progress".
+    let bars = '';
+    if (v.van_progress) bars += vpBar('🚚 ' + vpEsc(v.driver_name || 'Van'), v.van_progress, vpos, v.driver_user_id);
+    (v.inbound || []).forEach(r => {
+        if (r.progress) bars += vpBar('👤 ' + vpEsc(r.name || 'Rider'), r.progress, r.position, v.driver_user_id);
+    });
+    if (bars) bars = '<div class="vp-bars">' + bars + '</div>';
+
     /* ⚠️ ABANDONED MEET-UP — the driver drove off while somebody still had boxes
        aboard. Surfaced like a meter / verified-pin bypass so the store learns of
        it from the board it is already watching, not from tomorrow's report. */
@@ -309,13 +385,15 @@ function vpCard(v) {
     return '<div class="vp-card">'
          +   '<div class="vp-head">'
          +     '<div style="min-width:0;">'
-         +       '<div class="vp-title">🚚 ' + vpEsc(v.headline) + '</div>'
+         +       '<div class="vp-title">🚚 ' + vpEsc(v.headline) + ' ' + gpsChip + '</div>'
          +       '<div class="vp-sub">' + stopLine + '</div>'
          +     '</div>'
+         +     mapBtn
          +     '<button type="button" class="vp-gear" onclick="vpOpenStops()">⚙ Meet-up points</button>'
          +   '</div>'
          +   '<div class="vp-strip">' + stats + '</div>'
          +   forced
+         +   bars
          +   vpTimeline(v)
          +   (nothingYet
                ? '<div class="vp-riders"><div class="vp-empty">Nothing loaded yet — '
@@ -436,7 +514,8 @@ function vpGroups(v) {
                 o.order_number, o.customer || '',
                 o.status === 'on_van' ? 'on the van' : (o.dispatched ? 'delivering' : 'out for delivery'),
                 o.status === 'on_van' ? 'wait' : 'ok',
-                o.dispatched_at ? vpWhen(o.dispatched_at) : ''
+                o.dispatched_at ? vpWhen(o.dispatched_at) : '',
+                o.priority   // planned drop position — see vpORow
             )).join(''));
     }
 
@@ -452,7 +531,8 @@ function vpGroups(v) {
                 o.order_number, o.customer || '',
                 o.handed_over ? 'collected' : (o.dispatched ? 'delivering' : 'on the van'),
                 o.handed_over ? 'ok' : 'wait',
-                o.handover_at ? vpWhen(o.handover_at) : ''
+                o.handover_at ? vpWhen(o.handover_at) : '',
+                o.priority   // planned drop position — see vpORow
             )).join(''));
     });
 
@@ -473,8 +553,16 @@ function vpGrp(vid, key, title, count, right, dflt, rows) {
          + '</div>';
 }
 
-function vpORow(no, cust, state, tone, time) {
+/* ⭐ seq (Aug-23) = the planned drop position (delivery_priority). The manifest
+   has sent it since day one — the store board and the rider app already show
+   this sequence, and the web card was the one surface with no numbers at all.
+   Rendered ONLY when the stop was actually sequenced (null/undefined = no chip):
+   an absent plan must look absent, not like stop zero. The to-load group never
+   passes it — those rows aren't aboard yet, so a drop position would be a
+   promise the load scan hasn't made. */
+function vpORow(no, cust, state, tone, time, seq) {
     return '<div class="vp-orow">'
+         +   (seq != null ? '<span class="vp-oseq">' + vpEsc(seq) + '</span>' : '')
          +   '<span class="vp-ono">' + vpEsc(no) + '</span>'
          +   '<span class="vp-ocust">' + vpEsc(cust) + '</span>'
          +   (time ? '<span class="vp-otime">' + vpEsc(time) + '</span>' : '')
@@ -482,8 +570,131 @@ function vpORow(no, cust, state, tone, time) {
          + '</div>';
 }
 
+/* ▓▓▓░░ One journey bar. Clicking it opens the live map focused on this van.
+   ⚠ The bar is a GLANCE — the km labels beside it carry the real information, so
+   a viewer never has to estimate anything from a pixel width. */
+function vpBar(name, p, pos, driverId) {
+    const pct = Math.max(0, Math.min(100, Number(p.percent) || 0));
+    const stale = pos && pos.state === 'stale';
+    return '<div class="vp-bar' + (stale ? ' stale' : '') + '"'
+         + ' onclick="vpOpenLive(' + driverId + ')" title="Open the live map">'
+         +   '<span class="vp-bname">' + name + '</span>'
+         +   '<span class="vp-btrack"><span class="vp-bfill" style="width:' + pct + '%;"></span></span>'
+         +   '<span class="vp-bmeta">' + vpEsc(p.covered_display) + ' done · '
+         +     vpEsc(p.remaining_display) + ' left</span>'
+         + '</div>';
+}
+
 function vpStat(label, value) {
     return '<div class="vp-stat"><span class="lab">' + label + '</span><b>' + value + '</b></div>';
+}
+
+/* ═══ 🗺 THE LIVE RENDEZVOUS MAP ══════════════════════════════════════════
+   Van + meet-up point + every inbound rider on one canvas, refreshed by the
+   panel's own 30s poll while it is open.
+
+   ⚠⚠ HELD BY DRIVER ID, NEVER BY THE VAN OBJECT. `vpData` is replaced wholesale
+   on every poll, so a captured object would freeze the map on the snapshot taken
+   when it opened — markers that never move, on a screen whose entire job is to
+   move them. `vpLiveVan()` re-reads the current object each refresh. */
+let vpLiveId = null, vpLiveMap = null, vpLiveMarkers = [];
+
+function vpLiveVan() {
+    if (vpLiveId === null || !vpData) return null;
+    return (vpData.vans || []).find(v => Number(v.driver_user_id) === Number(vpLiveId)) || null;
+}
+
+function vpOpenLive(driverId) {
+    vpLiveId = driverId;
+    document.getElementById('vpLiveModal').style.display = 'flex';
+    vpLoadMaps(() => {
+        const v = vpLiveVan();
+        const start = (v && v.van_position && v.van_position.lat !== null)
+            ? {lat: v.van_position.lat, lng: v.van_position.lng}
+            : (v && v.stop && v.stop.latitude !== null
+                ? {lat: Number(v.stop.latitude), lng: Number(v.stop.longitude)}
+                : {lat: 33.6844, lng: 73.0479});
+        const el = document.getElementById('vpLiveCanvas');
+        if (!el || !window.google) return;
+        vpLiveMap = new google.maps.Map(el, {
+            center: start, zoom: 13, mapTypeControl: false, streetViewControl: false,
+        });
+        vpLiveRefresh(true);
+    });
+}
+
+function vpCloseLive() {
+    document.getElementById('vpLiveModal').style.display = 'none';
+    vpLiveId = null;
+    vpLiveMarkers.forEach(m => m.setMap(null));
+    vpLiveMarkers = [];
+    vpLiveMap = null;
+}
+
+/* Redraw the markers from the CURRENT poll data. Called on open and from vpLoad,
+   so the dots move without anyone pressing anything. */
+function vpLiveRefresh(fit) {
+    if (!vpLiveMap || !window.google) return;
+    const v = vpLiveVan();
+    if (!v) { vpCloseLive(); return; }   // trip ended — don't linger on a corpse
+
+    vpLiveMarkers.forEach(m => m.setMap(null));
+    vpLiveMarkers = [];
+    const bounds = new google.maps.LatLngBounds();
+    let any = false;
+
+    const add = (lat, lng, label, state, colour, initial) => {
+        const pos = {lat: Number(lat), lng: Number(lng)};
+        vpLiveMarkers.push(new google.maps.Marker({
+            position: pos, map: vpLiveMap, title: label,
+            // A stale dot is visibly faded — the map must never imply that a
+            // ten-minute-old fix is where somebody is standing now.
+            opacity: state === 'stale' ? 0.45 : 1,
+            // ⭐ An INITIAL inside the circle — with two riders inbound, two
+            //    identical blue dots are only tellable apart by hovering each
+            //    one. The full name stays in the hover title.
+            label: initial
+                ? {text: String(initial).toUpperCase(), color: '#fff',
+                   fontSize: '10px', fontWeight: '800'}
+                : null,
+            icon: {
+                path: google.maps.SymbolPath.CIRCLE, scale: initial ? 11 : 9,
+                fillColor: state === 'stale' ? '#9ca3af' : colour,
+                fillOpacity: 1, strokeColor: '#fff', strokeWeight: 2,
+            },
+        }));
+        bounds.extend(pos); any = true;
+    };
+
+    const vp = v.van_position;
+    if (vp && vp.lat !== null) {
+        add(vp.lat, vp.lng, '🚚 ' + (v.driver_name || 'Van') + ' — ' + (vp.label || ''), vp.state, '#b45309');
+    }
+    if (v.stop && v.stop.latitude !== null && v.stop.latitude !== undefined) {
+        add(v.stop.latitude, v.stop.longitude, '📍 ' + (v.stop.label || 'Meet-up'), 'fixed', '#0f766e');
+    }
+    (v.inbound || []).forEach(r => {
+        if (!r.position || r.position.lat === null) return;
+        add(r.position.lat, r.position.lng,
+            '👤 ' + (r.name || 'Rider') + ' — ' + (r.position.label || ''), r.position.state, '#2563eb',
+            (r.name || 'R').trim().charAt(0));
+    });
+
+    document.getElementById('vpLiveTitle').textContent = '🗺 ' + (v.driver_name || 'Van') + ' — live';
+    const chip = document.getElementById('vpLiveChip');
+    if (vp) {
+        const tone = vp.state === 'live' ? ['#dcfce7', '#166534']
+                   : vp.state === 'aging' ? ['#fef3c7', '#92400e'] : ['#fee2e2', '#991b1b'];
+        chip.style.background = tone[0]; chip.style.color = tone[1];
+        chip.textContent = (vp.state === 'live' ? '📍 ' : '') + (vp.label || '');
+    } else { chip.textContent = ''; chip.style.background = 'transparent'; }
+
+    // Only fit on open: re-fitting every 30s would yank the view out from under
+    // a manager who has zoomed in on someone.
+    if (fit && any) {
+        vpLiveMap.fitBounds(bounds, 60);
+        if (vpLiveMarkers.length === 1) vpLiveMap.setZoom(15);
+    }
 }
 
 /* ── the ⚙ stops manager ─────────────────────────────────────────────── */

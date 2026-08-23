@@ -291,6 +291,13 @@ class FuelClaimRules
 
             $fillBefore = DB::table('t_req_master')
                 ->where('requester_user_id', $userId)
+                // ⚠ UNSTAMPED only (Aug-22 2026) — a claim stamped to a machine belongs to THAT
+                //   machine's window. Counting it in the rider-keyed fallback re-creates the
+                //   man-not-machine bug this method's own docblock describes: Rajab's van cash
+                //   claims (stamped v4, filed in his name) would set HIS floor at 73,872 and
+                //   refuse his own bike's honest 6,6xx. Same fix as computeCurrentMeter.
+                ->when(\Illuminate\Support\Facades\Schema::hasColumn('t_req_master', 'vehicle_id'),
+                    fn ($q) => $q->whereNull('vehicle_id'))
                 ->whereNotNull('meter_at_fill')
                 ->whereNotIn('status', ['cancelled', 'rejected'])
                 ->whereRaw('COALESCE(expense_date, DATE(created_at)) < ?', [$date])
@@ -310,6 +317,11 @@ class FuelClaimRules
 
             $fillAfter = DB::table('t_req_master')
                 ->where('requester_user_id', $userId)
+                // ⚠ UNSTAMPED only — see $fillBefore. On the CEIL side the stamped-claim leak is
+                //   worse: the van's 73,8xx as a MIN ceiling would refuse every honest own-bike
+                //   reading above it, with no honest way past.
+                ->when(\Illuminate\Support\Facades\Schema::hasColumn('t_req_master', 'vehicle_id'),
+                    fn ($q) => $q->whereNull('vehicle_id'))
                 ->whereNotNull('meter_at_fill')
                 ->where('meter_at_fill', '>', self::MIN_PLAUSIBLE_METER)
                 ->whereNotIn('status', ['cancelled', 'rejected'])

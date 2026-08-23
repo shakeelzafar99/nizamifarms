@@ -139,7 +139,7 @@ class AssistantDraftService
         // Never for SMS-originated cards: the "latest chat image" belongs to
         // some other conversation turn, not to this bank SMS.
         if (empty($args['_from_sms'])) {
-            [$payload, $display] = $this->attachChatImage($payload, $display, $user);
+            [$payload, $display] = $this->attachChatImage($payload, $display, $user, $this->replacesId($args));
         }
 
         return $this->store($user, 'expense',
@@ -581,7 +581,7 @@ class AssistantDraftService
         )));
 
         if (empty($args['_from_sms'])) {
-            [$payload, $display] = $this->attachChatImage($payload, $display, $user);
+            [$payload, $display] = $this->attachChatImage($payload, $display, $user, $this->replacesId($args));
         }
 
         $summary = $transfers
@@ -716,10 +716,52 @@ class AssistantDraftService
         // the clubbed payment card).
         $lines = $this->cleanPurchaseLines($args['_lines'] ?? null);
 
+        // ⭐ TYPED / PHOTOGRAPHED PURCHASES ARE PRICED FROM THE CATALOGUE TOO
+        // (owner-reported, Aug-2026). `items` is what the user actually says —
+        // "13.5 mutton whole", "89 veal raan haddi, 1.2 veal mix" — and the
+        // rate is looked up HERE, from t_fin_vendor_products, never guessed by
+        // the model. Before this, catalogue pricing existed only inside the
+        // WhatsApp-log reader, so a slip or a typed line either got an invented
+        // rate (13.5 kg booked at 1,650 against a 2,575 catalogue — ledger
+        // 19595, deleted and re-entered by hand) or was refused five times for
+        // want of a rate we already had. Anything not confidently matched goes
+        // to _unplaced and the card ASKS with chips, exactly like the log path.
+        // Weighings whose product we could not name ("Chakki . 650"). They are
+        // asked about one at a time with chips — the SAME `_pending_choice`
+        // slot the bank picker and the drop-chips use, so it renders on the
+        // shipped app with no build, and Confirm stays blocked until answered.
+        // ⚠⚠ Blocking is the point: an unplaced weighing is meat that was
+        // bought, so confirming without it would under-record the day AND
+        // (because dedup compares the shape of a day) make the same screenshot
+        // look new next time.
+        $unplaced = $this->cleanUnplaced($args['_unplaced'] ?? null);
+
+        // ⚠ BOTH SHAPES AT ONCE IS A MODEL MISTAKE, AND A SILENT ONE. `_lines`
+        // comes from read_purchase_log already priced; `items` is what the user
+        // said. Sending both is ambiguous — merge and we may double-count the
+        // day, ignore and we may drop a correction he just made. Neither may
+        // happen quietly with money involved, so refuse and say which to use.
+        if ($lines && !empty($args['items'])) {
+            return ['error' => 'You passed BOTH _lines and items. Use ONE: _lines exactly as '
+                . 'read_purchase_log returned them, OR items for what the user typed or read off a slip. '
+                . 'To correct a line from a log card, re-send the full _lines with that line fixed.'];
+        }
+
+        if (!$lines && !empty($args['items'])) {
+            [$lines, $itemUnplaced] = $this->priceItems($vendorId, $args['items']);
+            // Items we could not place join anything the caller already had, so
+            // one card asks about all of them in turn.
+            $unplaced = $this->cleanUnplaced(array_merge($unplaced ?? [], $itemUnplaced));
+        }
+
         $amount = $lines
             ? round(array_sum(array_map(fn($l) => $l['quantity'] * $l['rate'], $lines)), 2)
             : (float) ($args['amount'] ?? 0);
-        if ($amount <= 0) {
+        // Zero is legitimate ONLY while chips are still pending — a card that
+        // is all questions has nothing to total yet. It cannot be confirmed in
+        // that state (the pending choice blocks it), so no zero-value purchase
+        // can ever post.
+        if ($amount <= 0 && !$unplaced) {
             return ['error' => 'I need an amount greater than zero.'];
         }
 
@@ -730,15 +772,34 @@ class AssistantDraftService
 
         $balance = round((float) ($vendor->current_balance ?? 0), 2);
 
-        // Weighings whose product we could not name ("Chakki . 650"). They are
-        // asked about one at a time with chips — the SAME `_pending_choice`
-        // slot the bank picker and the drop-chips use, so it renders on the
-        // shipped app with no build, and Confirm stays blocked until answered.
-        // ⚠⚠ Blocking is the point: an unplaced weighing is meat that was
-        // bought, so confirming without it would under-record the day AND
-        // (because dedup compares the shape of a day) make the same screenshot
-        // look new next time.
-        $unplaced = $this->cleanUnplaced($args['_unplaced'] ?? null);
+        // ⭐⭐ DEDUP APPLIES HOWEVER THE DAY ARRIVES (owner ask, Aug-2026: "whether
+        // he sends the screenshot or types, they should all work"). The 2-day
+        // look-back lived ONLY inside read_purchase_log, so a day already
+        // recorded from a screenshot could be TYPED again — or a photographed
+        // slip re-entered — and it double-booked the khata and the stock in
+        // silence. Same service, same rules, now on every purchase card.
+        //
+        // ⚠ Deliberately quieter than the screenshot path: it warns only when
+        // the day looks like the SAME purchase, or a look-alike sits within two
+        // days. It does NOT warn merely because the vendor already has an entry
+        // that date — 16% of vendor-days since June genuinely carry more than
+        // one purchase (Jilani alone has 3-in-a-day), so that warning would fire
+        // on legitimate entries, and noise is what gets ignored.
+        $dupNotice = null;
+        try {
+            $verdict = app(PurchaseLogService::class)
+                ->dedupeVerdict($vendorId, $date, $lines ?? [], $unplaced ?? []);
+            $seen = $verdict['existing'] ?? null;
+            if ($seen && in_array($verdict['verdict'], ['skip', 'ask_near'], true)) {
+                $dupNotice = $verdict['verdict'] === 'skip'
+                    ? 'This day already has Rs ' . number_format($seen['amount'], 0) . ' from this vendor ('
+                      . $seen['lines'] . ' lines) — a second purchase, or already entered?'
+                    : $seen['date'] . ' has a very similar purchase (Rs ' . number_format($seen['amount'], 0)
+                      . ') — the same one on the wrong date, or a genuinely new day?';
+            }
+        } catch (\Throwable $e) {
+            $dupNotice = null; // a check we cannot run must never block a real entry
+        }
 
         $payload = array_filter([
             'vendor_id' => $vendorId,
@@ -753,6 +814,15 @@ class AssistantDraftService
         if ($unplaced) {
             $first = $unplaced[0];
             $products = app(PurchaseLogService::class)->vendorProducts($vendorId);
+            // ⚠ NO CATALOGUE = NO CHIPS. Sajid (Desi Chicken) has zero products,
+            // so "desi chicken 8070" as items would raise a card whose ONLY
+            // button is "skip" — a dead end that blocks Confirm forever. This
+            // vendor's purchases are by-total; say so instead of trapping him.
+            if (empty($products)) {
+                return ['error' => $vendor->vendor_name . ' has no product catalogue, so I cannot price '
+                    . 'items for them. Ask the user for the TOTAL amount and record it as a plain purchase '
+                    . '(amount only, the products in the description).'];
+            }
             $payload['_pending_choice'] = [
                 'field'   => '_place_line',
                 'label'   => 'What was "' . $first['text'] . '"? (' . $first['quantity'] . ')',
@@ -796,6 +866,7 @@ class AssistantDraftService
                           . ($unplaced ? ' so far' : '')],
                 ['label' => 'Date', 'value' => $date],
                 ['label' => 'We will owe them', 'value' => 'Rs ' . number_format($balance + $amount, 0)],
+                $dupNotice ? ['label' => '⚠ Check', 'value' => $dupNotice] : null,
                 $lines ? ['label' => 'To change a rate',
                           'value' => 'reply e.g. "cow brain 350" and I will redo this card'] : null,
             ]
@@ -803,15 +874,25 @@ class AssistantDraftService
 
         // The screenshot IS the receipt for a weighed day — attaching it is the
         // whole point, and attachChatImage already does exactly that.
-        [$payload, $display] = $this->attachChatImage($payload, $display, $user);
+        [$payload, $display] = $this->attachChatImage($payload, $display, $user, $this->replacesId($args));
 
         $summary = $lines
             ? 'Purchase from ' . $vendor->vendor_name . ': ' . count($lines)
               . ' weighings, Rs ' . number_format($amount, 0) . ' (' . $date . ')'
             : 'Purchase from ' . $vendor->vendor_name . ': Rs ' . number_format($amount, 0);
 
-        return $this->store($user, 'vendor_purchase', $summary,
+        $stored = $this->store($user, 'vendor_purchase', $summary,
             $payload, $display, $this->replacesId($args));
+
+        // A possible duplicate must be SAID, not just drawn on the card — he
+        // confirms from the chat as often as from the rows.
+        if ($dupNotice && empty($stored['error'])) {
+            $stored['possible_duplicate'] = $dupNotice;
+            $stored['note'] = ($stored['note'] ?? '')
+                . ' ⚠ POSSIBLE DUPLICATE: ' . $dupNotice
+                . ' Say this to the user in one short line and let them decide before they confirm.';
+        }
+        return $stored;
     }
 
     /**
@@ -828,6 +909,69 @@ class AssistantDraftService
      * @return array<int, array{product_id:int, product_name:string, unit:string,
      *         quantity:float, rate:float, rate_varies:bool}>|null
      */
+    /**
+     * Price what the user SAID against the vendor's own catalogue.
+     *
+     * Each item is {product, quantity, rate?}. The rate is looked up here and
+     * only overridden when the user actually named one ("cow brain 350") — the
+     * model must never supply a price it invented. A product we cannot match
+     * confidently is NOT guessed: it becomes an unplaced line so the card asks
+     * with chips, which is also how the answer gets remembered for next time.
+     *
+     * @return array{0: array|null, 1: array}  [priced lines, unplaced]
+     */
+    private function priceItems(int $vendorId, $items): array
+    {
+        if (!is_array($items)) {
+            return [null, []];
+        }
+        $svc = app(PurchaseLogService::class);
+        $lines = [];
+        $unplaced = [];
+
+        foreach ($items as $item) {
+            if (!is_array($item)) {
+                continue;
+            }
+            $name = trim((string) ($item['product'] ?? ''));
+            $qty  = round((float) ($item['quantity'] ?? 0), 3);
+            if ($qty <= 0) {
+                continue; // a line with no weight is not a purchase line
+            }
+
+            $product = $name !== '' ? $svc->resolveProduct($vendorId, $name) : null;
+            if (!$product) {
+                $unplaced[] = [
+                    'text'     => ($name !== '' ? $name : 'item') . ' ' . rtrim(rtrim(number_format($qty, 3, '.', ''), '0'), '.'),
+                    'quantity' => $qty,
+                ];
+                continue;
+            }
+
+            // A rate the user NAMED wins (the Cow Brain exception); otherwise
+            // the catalogue decides. Never the model.
+            $told = round((float) ($item['rate'] ?? 0), 2);
+            $rate = $told > 0 ? $told : $svc->rateFor($product);
+            if ($rate <= 0) {
+                $unplaced[] = ['text' => $product->product_name . ' ' . $qty, 'quantity' => $qty];
+                continue;
+            }
+
+            $lines[] = [
+                'product_id'   => (int) $product->id,
+                'product_name' => $product->product_name,
+                'unit'         => $product->unit,
+                'quantity'     => $qty,
+                'rate'         => $rate,
+                'rate_varies'  => $told > 0 ? false : ($svc->rateSourceFor($product)['varies'] ?? false),
+                // What he called it — so confirming teaches the alias.
+                'text'         => $name,
+            ];
+        }
+
+        return [$lines ?: null, $unplaced];
+    }
+
     private function cleanPurchaseLines($raw): ?array
     {
         if (!is_array($raw) || empty($raw)) {
@@ -1776,6 +1920,18 @@ class AssistantDraftService
             ];
         }
 
+        // Skipping the ONLY line leaves nothing to record — that is a cancel,
+        // not a rebuild. Without this the rebuild fails on the zero-amount
+        // guard and the card sits there repeating "I need an amount" at a user
+        // who just told us the whole thing was not a purchase.
+        if (empty($lines) && empty($unplaced)) {
+            DB::table('t_ai_drafts')->where('id', $draft->id)->update([
+                'status' => 'cancelled', 'cancelled_at' => now(),
+                'error' => 'Nothing left on the card after skipping.', 'updated_at' => now(),
+            ]);
+            return ['ok' => true, 'message' => 'Skipped — nothing left to record, so I removed the card.'];
+        }
+
         $rebuilt = $this->draftVendorPurchase([
             'vendor_id'         => (int) ($payload['vendor_id'] ?? 0),
             'transaction_date'  => $payload['transaction_date'] ?? null,
@@ -2427,20 +2583,52 @@ class AssistantDraftService
         $convId = DB::table('t_ai_conversations')->where('user_id', $userId)->value('id');
         if (!$convId) return null;
 
-        $row = DB::table('t_ai_messages')
+        // ⭐ LOOK BACK A FEW TURNS, NOT JUST THIS ONE (owner-reported, Aug-2026).
+        // This read only the newest user message, so the screenshot was lost the
+        // moment a word was typed after it — "Sajid desi chicken" [photo] then
+        // "only for today" recorded with no attachment, and every corrected card
+        // (Al Shifa → ASTEH, twice) dropped the proof it was drafted from.
+        // A few turns back within the same 10-minute window is still plainly
+        // "the picture we are talking about".
+        $rows = DB::table('t_ai_messages')
             ->where('conversation_id', $convId)
             ->where('role', 'user')
+            ->where('created_at', '>=', now()->subMinutes(10))
             ->orderByDesc('id')
-            ->first(['media_path', 'input_type', 'created_at']);
+            ->limit(6)
+            ->get(['media_path', 'input_type', 'created_at']);
 
-        if (!$row || !$row->media_path) return null;
-        // Must be an IMAGE (not a voice note's audio path).
-        if (($row->input_type ?? '') !== 'image' && !str_contains($row->media_path, 'img-')) {
-            return null;
+        $row = null;
+        foreach ($rows as $candidate) {
+            if (!$candidate->media_path) {
+                continue;
+            }
+            // Must be an IMAGE (not a voice note's audio path).
+            if (($candidate->input_type ?? '') !== 'image'
+                && !str_contains($candidate->media_path, 'img-')) {
+                continue;
+            }
+            // ⚠ SPENT IMAGES ARE NOT REUSED. Once a screenshot is attached to a
+            // card the user CONFIRMED, it belongs to that record — pulling it
+            // onto the next, unrelated card would file a Petrol expense with
+            // last transfer's receipt on it. A cancelled/replaced card's image
+            // is still fair game: that is the correction case.
+            // ⚠⚠ Matched on the BASENAME, deliberately: json_encode stores the
+            // path with escaped slashes ("assistant\/2026\/..."), so a LIKE on
+            // the raw path matches NOTHING — proven live. The filename part is
+            // uniqid-based and slash-free, so it survives the escaping.
+            $spent = DB::table('t_ai_drafts')
+                ->where('user_id', $userId)
+                ->where('status', 'confirmed')
+                ->where('payload_json', 'like', '%' . basename($candidate->media_path) . '%')
+                ->exists();
+            if (!$spent) {
+                $row = $candidate;
+            }
+            break; // only ever the newest image — an older one is not "this" one
         }
-        if ($row->created_at && \Carbon\Carbon::parse($row->created_at)->lt(now()->subMinutes(10))) {
-            return null;
-        }
+
+        if (!$row) return null;
         try {
             $disk = Storage::disk(config('whatsapp.media_disk', 'public'));
             if (!$disk->exists($row->media_path) || $disk->size($row->media_path) > 5 * 1024 * 1024) {
@@ -2458,14 +2646,46 @@ class AssistantDraftService
      * real uploaded file. Used by expense / vendor-payment / vendor-purchase
      * drafts. Returns [payload, display].
      */
-    private function attachChatImage(array $payload, array $display, $user): array
+    private function attachChatImage(array $payload, array $display, $user, ?int $replacesDraftId = null): array
     {
         $img = $this->currentTurnImage((int) $user->id);
+
+        // ⭐ A CORRECTED CARD KEEPS ITS PROOF (owner-reported, Aug-2026).
+        // "This is a vendor payment" re-drafts from scratch, and the screenshot
+        // the first card carried used to vanish — the ledger row then had no
+        // receipt at all (drafts 159→160 and 165→166, both Al Shifa/ASTEH).
+        // Inheriting from the card being replaced also covers a correction made
+        // long after the image was sent, where the time window has closed.
+        if (!$img && $replacesDraftId) {
+            $img = $this->attachmentOfDraft($replacesDraftId, (int) $user->id);
+        }
+
         if ($img) {
             $payload['attachment_path'] = $img;           // non-underscore: survives to replay
             $display[] = ['label' => 'Attachment', 'value' => '📎 Screenshot'];
         }
         return [$payload, $display];
+    }
+
+    /** The screenshot a draft carries, if it is this user's and still readable. */
+    private function attachmentOfDraft(int $draftId, int $userId): ?string
+    {
+        $row = DB::table('t_ai_drafts')
+            ->where('id', $draftId)
+            ->where('user_id', $userId)
+            ->first(['payload_json']);
+        if (!$row) {
+            return null;
+        }
+        $path = (json_decode($row->payload_json, true) ?: [])['attachment_path'] ?? null;
+        if (!$path) {
+            return null;
+        }
+        try {
+            return Storage::disk(config('whatsapp.media_disk', 'public'))->exists($path) ? $path : null;
+        } catch (\Throwable $e) {
+            return null;
+        }
     }
 
     /**
@@ -2575,8 +2795,34 @@ class AssistantDraftService
     private function cleanDate($value): ?string
     {
         if (!$value) return null;
+        $raw = trim((string) $value);
+
+        // ⭐ HE WRITES DATES DAY-FIRST (owner-reported, Aug-2026). "Lacarne
+        // 8.8.26" was recorded as 21-Aug — twice — and the ledger row had to be
+        // edited by hand afterwards (row 19590, corrected to 2026-08-08).
+        // Carbon reads 8/8/26 American-style and 13.8.26 not at all, so d.m.y
+        // is settled HERE before it ever reaches the parser. Day-first is the
+        // only reading that is ever right for this user; where the two agree
+        // (8.8) it costs nothing, and where they differ it is the correct one.
+        if (preg_match('/^(\d{1,2})[.\/-](\d{1,2})[.\/-](\d{2}|\d{4})$/', $raw, $m)) {
+            [$d, $mo, $y] = [(int) $m[1], (int) $m[2], (int) $m[3]];
+            if ($y < 100) {
+                $y += 2000;
+            }
+            // If the first number cannot be a month but the second can, the
+            // model sent it month-first — read it that way rather than reject a
+            // date whose meaning is unambiguous.
+            if ($mo > 12 && $d <= 12) {
+                [$d, $mo] = [$mo, $d];
+            }
+            if ($d >= 1 && $d <= 31 && $mo >= 1 && $mo <= 12 && checkdate($mo, $d, $y)) {
+                return sprintf('%04d-%02d-%02d', $y, $mo, $d);
+            }
+            return null; // a real date was meant and it did not exist — don't guess
+        }
+
         try {
-            return \Carbon\Carbon::parse((string) $value)->toDateString();
+            return \Carbon\Carbon::parse($raw)->toDateString();
         } catch (\Throwable $e) {
             return null;
         }

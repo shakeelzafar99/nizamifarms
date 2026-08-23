@@ -4923,6 +4923,11 @@ class OrderController extends Controller
                         // ⭐ No longer calculating preparing_quantity - prepared items are now excluded from query
                         \DB::raw('COUNT(DISTINCT li.id) as line_item_count'),
                         \DB::raw('GROUP_CONCAT(DISTINCT li.product_id) as product_ids'),
+                        // ⚠️ product_ids above is MIXED (li.product_id is an EXTERNAL id on
+                        //    synced orders and can collide with an unrelated internal id).
+                        //    Overnight stock is keyed by the internal id, so it gets its own
+                        //    list — never look stock up with the mixed one.
+                        \DB::raw('GROUP_CONCAT(DISTINCT p.id) as internal_product_ids'),
                     ])
                     ->groupBy('o.id', 'o.order_number', 'o.order_status', 'o.order_date', 'o.name', 'o.address_first_name', 'o.address_last_name', 'c.first_name', 'c.last_name')
                     ->orderBy('o.order_date', 'desc');
@@ -5027,30 +5032,34 @@ class OrderController extends Controller
             //    Never throws if the overnight tables are absent.
             $stockService = app(\App\Services\CRM\OvernightStockService::class);
             $isCategoryLevel = in_array($currentField, \App\Services\CRM\OvernightStockService::CATEGORY_FIELDS, true);
+            $stockCatalog = $stockService->catalog();
 
-            if ($currentField === 'product_name') {
+            // ⭐ `storage_ids` = exactly which products make up this row's figure, so the
+            //    breakdown popup is a local lookup against `storage_catalog` and can never
+            //    disagree with the number that opened it. Omitted with `storage` itself.
+            // 'orders' rows carry the internal ids too, so an order shows what is in the
+            // chiller for the products on it — the same figure the mobile order card has
+            // shown since Aug-12. Web computed it and then rendered nothing.
+            if ($currentField === 'product_name' || $currentField === 'orders') {
                 $stockMap = $stockService->map();
                 if (!empty($stockMap)) {
                     foreach ($results as $row) {
-                        $storage = $stockService->sumFor(
-                            $stockMap,
-                            $stockService->idsFromConcat($row->internal_product_ids ?? null)
-                        );
+                        $ids = $stockService->idsFromConcat($row->internal_product_ids ?? null);
+                        $storage = $stockService->sumFor($stockMap, $ids);
                         if ($storage !== null) {
                             $row->storage = $storage;
+                            $row->storage_ids = $stockService->stockedIds($stockMap, $ids);
                         }
                     }
                 }
             } elseif ($isCategoryLevel) {
-                $stockCatalog = $stockService->catalog();
                 if (!empty($stockCatalog)) {
                     foreach ($results as $row) {
-                        $storage = $stockService->sumForCategory(
-                            $stockCatalog,
-                            array_merge($filters, [$currentField => $row->group_name ?? ''])
-                        );
+                        $rowFilters = array_merge($filters, [$currentField => $row->group_name ?? '']);
+                        $storage = $stockService->sumForCategory($stockCatalog, $rowFilters);
                         if ($storage !== null) {
                             $row->storage = $storage;
+                            $row->storage_ids = $stockService->matchCategoryIds($stockCatalog, $rowFilters) ?? [];
                         }
                     }
                 }
@@ -5114,7 +5123,18 @@ class OrderController extends Controller
                     'current_field' => $currentField,
                     'has_next_level' => $hasNextLevel
                 ],
-                'hierarchy' => $hierarchy
+                'hierarchy' => $hierarchy,
+                // ⭐ Everything physically in the chiller/freezer right now — sent once
+                //    per response so every breakdown popup on the page is a local lookup.
+                'storage_catalog' => $stockService->catalogRows(),
+                // Ids in scope for THIS view. Rows carry `storage_ids`; anything in scope
+                // but on no row is what the "also in storage" bar reports. At the root
+                //    there is no category filter, so the scope is the whole room.
+                'storage_scope_ids' => $stockService->matchCategoryIds($stockCatalog, $filters)
+                    ?? array_map('intval', array_keys($stockCatalog)),
+                // The one figure guaranteed to equal what is in the room: a category with
+                // no open orders has no row, so per-row storage can never add up to this.
+                'storage_total' => $stockService->grandTotal(),
             ]);
 
         } catch (\Exception $e) {

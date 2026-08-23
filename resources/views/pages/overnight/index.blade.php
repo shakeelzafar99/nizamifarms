@@ -211,6 +211,40 @@
         @endforeach
     </div>
 
+    {{-- ⭐ FROZEN — live store inventory. READ-ONLY on purpose.
+         These are not overnight packets and can never become any: the figure IS
+         variant.inventory_quantity, which the transfer-accept and prepare/deduct flows
+         already maintain, so the freezer figure and the inventory figure are the same
+         number. No checkbox, no move, no take-out, no verify — managing this stock
+         stays in Khaas transfers / the prepare flow / the store adjustment screen. --}}
+    @if(!empty($frozen['products']))
+    <div class="mt-4 bg-white border border-gray-200 rounded-xl overflow-hidden">
+        <div class="px-4 py-3 border-b" style="background-color:#EEF2FF; border-color:#C7D2FE;">
+            <div class="flex items-center justify-between">
+                <p class="text-sm font-bold" style="color:#3730A3;">🧊❄️ Frozen — live inventory ({{ $frozen['total_packs'] }})</p>
+                <span class="text-xs font-medium" style="color:#4F46E5;">{{ $frozen['product_count'] }} product{{ $frozen['product_count'] === 1 ? '' : 's' }}</span>
+            </div>
+            <p class="text-xs mt-1" style="color:#4F46E5;">
+                Yeh store inventory hai — transfer accept aur prepare se khud update hoti hai. Ise yahan se
+                move/take-out nahi karte.
+            </p>
+        </div>
+        <div class="divide-y divide-gray-100">
+            @foreach($frozen['products'] as $fp)
+            <div class="px-4 py-2.5 flex items-center justify-between gap-3">
+                <div class="min-w-0">
+                    <p class="text-sm font-semibold text-gray-900 truncate">{{ $fp['name'] }}</p>
+                    @if(!empty($fp['warning']))
+                    <p class="text-xs font-semibold" style="color:#B91C1C;">⚠ {{ $fp['warning'] }}</p>
+                    @endif
+                </div>
+                <span class="text-sm font-bold whitespace-nowrap" style="color:#4338CA;">{{ $fp['packets'] }} pkt</span>
+            </div>
+            @endforeach
+        </div>
+    </div>
+    @endif
+
     {{-- Bulk action bar (fixed; appears when anything is selected).
          Inline-styled: the purged styles.css drops fixed-position utility combos. --}}
     <div id="ovBulkBar" style="display:none; position:fixed; left:50%; transform:translateX(-50%); bottom:1.25rem; z-index:9999; background:#111827; color:#fff; border-radius:1rem; box-shadow:0 10px 25px rgba(0,0,0,0.3); padding:0.6rem 1rem; align-items:center; gap:0.6rem;">

@@ -336,6 +336,41 @@ class PurchaseLogService
         return ['verdict' => 'ok', 'existing' => null];
     }
 
+    /**
+     * ⭐ ONE product resolver for BOTH entry paths (owner-reported, Aug-2026).
+     *
+     * The WhatsApp-log reader could price a line from the vendor catalogue, but
+     * a slip photographed or a line TYPED in chat ("Jilani mutton whole 13.5")
+     * went nowhere near this class — the model had no way to see the catalogue,
+     * so it either invented a rate (13.5 kg booked at 1,650 when the catalogue
+     * says 2,575 — ledger 19595, deleted and re-entered by hand) or refused
+     * five times in a row for want of a rate it already had (Imran Qureshi,
+     * 21-Aug 02:37→02:40). Same lookup, same taught aliases, either way in.
+     *
+     * @return object|null a t_fin_vendor_products row
+     */
+    public function resolveProduct(int $vendorId, ?string $name): ?object
+    {
+        $token = trim((string) $name);
+        if ($token === '') {
+            return null;
+        }
+        // Strip a trailing quantity if the caller passed the raw phrase.
+        $token = $this->tokenFrom($token) ?: $token;
+
+        $taught = $this->taughtProduct($vendorId, $token);
+        if ($taught) {
+            return $taught;
+        }
+        $products = $this->vendorProducts($vendorId);
+        // ⚠ NO default fallback here. parseLines() may fall back to the default
+        // product for a BARE NUMBER in a chat log, where the vendor's own habit
+        // makes that unambiguous. A name we could not match is the opposite
+        // signal — guessing "the usual" would book meat against the wrong
+        // product. Unmatched returns null so the caller asks with chips.
+        return $this->matchProduct($token, $products, null);
+    }
+
     /** The vendor's purchase products (NEVER the sales catalog). */
     public function vendorProducts(int $vendorId): array
     {
@@ -456,32 +491,72 @@ class PurchaseLogService
         return null;
     }
 
-    /** Product whose name shares a real word with the token, else null. */
+    /**
+     * The vendor product a spoken/typed phrase names, or null to ask.
+     *
+     * ⚠⚠ REWRITTEN Aug-2026 — the old substring rules got two things wrong on
+     * the REAL catalogues, both of which mis-price money:
+     *   • Products are numbered ("1. Mutton Whole", "3. Veal boneless"), so the
+     *     old "does the phrase contain the product's first word" test matched
+     *     "3." inside the quantity "13.5" — a weight could pick a product.
+     *   • Its fallback returned the FIRST product sharing any 4-letter word, in
+     *     alphabetical order, so "veal undercut" resolved to "Veal boneless"
+     *     (Rs 1,650 instead of Rs 2,500) — and every other "veal …" phrase with
+     *     it. Verified against Jilani, Imran, Ghousia and Meat Inn.
+     *
+     * Now scored on WORD OVERLAP, which is what a human reads:
+     *   1. most query words matched wins  ("veal undercut" → 4. Veal Undercut)
+     *   2. then the vendor's DEFAULT product ("Mutton" → 1. Mutton Whole, not
+     *      Mutton Paaye — the bare word means his usual cut)
+     *   3. then the tightest name (fewest words the phrase didn't ask for)
+     * A genuine tie returns null so the caller asks with chips: "veal" alone
+     * really is ambiguous between Trotters, Bong and Nalli.
+     */
     private function matchProduct(string $token, array $products, ?object $default): ?object
     {
-        $t = mb_strtolower(trim($token));
-        if ($t === '') {
+        $qt = $this->words($token);
+        if (empty($qt)) {
+            // Nothing nameable in the phrase (a bare weight). Only parseLines
+            // passes a default here, and only because the vendor's own habit
+            // makes a bare number mean his usual product.
             return $default;
         }
-        $hits = [];
+
+        $best = null;
+        $bestKey = null;
+        $tied = false;
+
         foreach ($products as $p) {
-            $name = mb_strtolower($p->product_name);
-            if (str_contains($name, $t) || str_contains($t, mb_strtolower(explode(' ', trim($p->product_name))[0] ?? ''))) {
-                $hits[] = $p;
+            $pt = $this->words($p->product_name);
+            if (empty($pt)) {
+                continue;
+            }
+            $overlap = count(array_intersect($qt, $pt));
+            if ($overlap === 0) {
+                continue;
+            }
+            $key = [$overlap, (int) ($p->is_default ?? 0), -(count($pt) - $overlap)];
+            if ($bestKey === null || $key > $bestKey) {
+                $bestKey = $key;
+                $best = $p;
+                $tied = false;
+            } elseif ($key === $bestKey) {
+                $tied = true;
             }
         }
-        if (count($hits) === 1) {
-            return $hits[0];
-        }
-        // "Wahab mutton" — the vendor's own name in front of the product word.
-        foreach ($products as $p) {
-            foreach (preg_split('/[^\p{L}]+/u', mb_strtolower($p->product_name), -1, PREG_SPLIT_NO_EMPTY) ?: [] as $w) {
-                if (mb_strlen($w) >= 4 && str_contains($t, $w)) {
-                    return $p;
-                }
-            }
-        }
-        return null; // caller asks
+
+        return ($best && !$tied) ? $best : null; // ambiguous → caller asks
+    }
+
+    /**
+     * Comparable words of a name: letters only, lowercased, 2+ chars. Drops the
+     * "1." / "4." ordering prefixes the catalogues use and every punctuation
+     * separator, so "4. Veal Undercut - Imran" reads as [veal, undercut, imran].
+     */
+    private function words(string $s): array
+    {
+        $parts = preg_split('/[^\p{L}]+/u', mb_strtolower($s), -1, PREG_SPLIT_NO_EMPTY) ?: [];
+        return array_values(array_unique(array_filter($parts, fn($w) => mb_strlen($w) >= 2)));
     }
 
     /** Line count / quantity / total of an existing purchase, for comparison. */

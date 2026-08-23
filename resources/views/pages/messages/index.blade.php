@@ -1511,7 +1511,12 @@ select.wa-mgr-input { background: #fff; cursor: pointer; }
                 <div class="wa-tpl-link" style="display:flex;gap:12px;">
                     <a onclick="openTemplatePicker()">📋 Templates</a>
                     <a onclick="openInvoicePicker()" style="color:#d97706;cursor:pointer;">📄 Send Invoice</a>
+                    {{-- Aug-2026: manual image attachment (session messages only —
+                         the 24h-window bar above replaces this whole block when the
+                         window has closed, so no expiry guard is needed here). --}}
+                    <a onclick="document.getElementById('waAttachInput').click()" style="color:#2563eb;cursor:pointer;">📎 Attach Image</a>
                 </div>
+                <input type="file" id="waAttachInput" accept="image/jpeg,image/png" style="display:none;" onchange="waAttachPicked(this)">
             </div>
         </div>
     </div>
@@ -3755,6 +3760,82 @@ select.wa-mgr-input { background: #fff; cursor: pointer; }
         }).catch(() => { btn.disabled = false; alert('Failed to send message'); });
     }
 
+    // ── Attach image (Aug-2026) ────────────────────────────────────────
+    // Manual picture send for an OPEN session. Used to push a readable copy
+    // of an invoice when a customer says the template image is hard to read:
+    // a plain image message skips the template header path. Client-side caps
+    // mirror the server (5 MB, JPEG/PNG) so the operator gets an instant
+    // answer instead of a round-trip rejection.
+    window.waAttachPicked = function(input) {
+        const file = input.files && input.files[0];
+        input.value = ''; // allow re-picking the same file after a cancel
+        if (!file || !activeConvId) return;
+        if (!['image/jpeg', 'image/png'].includes(file.type)) {
+            alert('Only JPEG or PNG images can be sent.');
+            return;
+        }
+        if (file.size > 5 * 1024 * 1024) {
+            alert('Image is ' + (file.size / 1048576).toFixed(1) + ' MB. WhatsApp\u2019s limit is 5 MB \u2014 please pick a smaller file.');
+            return;
+        }
+        const url = URL.createObjectURL(file);
+        const old = document.getElementById('waAttachDialog');
+        if (old) old.remove();
+        const dlg = document.createElement('div');
+        dlg.id = 'waAttachDialog';
+        dlg.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:100000;display:flex;align-items:center;justify-content:center;';
+        dlg.innerHTML =
+            '<div style="background:#fff;border-radius:10px;padding:18px;max-width:420px;width:92%;max-height:90vh;overflow:auto;">' +
+              '<h3 style="margin:0 0 12px;font-size:16px;">Send image</h3>' +
+              '<img src="' + url + '" style="max-width:100%;max-height:45vh;display:block;margin:0 auto 12px;border:1px solid #e5e7eb;border-radius:6px;">' +
+              '<div style="font-size:12px;color:#6b7280;margin-bottom:10px;">' + (file.name || 'image') + ' \u00b7 ' + (file.size / 1024).toFixed(0) + ' KB</div>' +
+              '<input id="waAttachCaption" maxlength="1024" placeholder="Caption (optional)" style="width:100%;padding:8px;border:1px solid #d1d5db;border-radius:6px;margin-bottom:12px;font-size:14px;">' +
+              '<div id="waAttachStatus" style="display:none;font-size:13px;margin-bottom:8px;"></div>' +
+              '<div style="display:flex;gap:8px;justify-content:flex-end;">' +
+                '<button id="waAttachCancel" style="padding:8px 14px;border:1px solid #d1d5db;background:#fff;border-radius:6px;cursor:pointer;">Cancel</button>' +
+                '<button id="waAttachSend" style="padding:8px 16px;border:none;background:#16a34a;color:#fff;border-radius:6px;cursor:pointer;font-weight:600;">Send</button>' +
+              '</div>' +
+            '</div>';
+        document.body.appendChild(dlg);
+        const close = () => { URL.revokeObjectURL(url); dlg.remove(); };
+        document.getElementById('waAttachCancel').onclick = close;
+        dlg.addEventListener('click', e => { if (e.target === dlg) close(); });
+
+        document.getElementById('waAttachSend').onclick = function() {
+            const btn = this;
+            const status = document.getElementById('waAttachStatus');
+            btn.disabled = true; btn.textContent = 'Sending...';
+            const fd = new FormData();
+            fd.append('image', file);
+            fd.append('caption', (document.getElementById('waAttachCaption').value || '').trim());
+            // Raw fetch, not apiFetch: that helper forces a JSON content-type,
+            // which would break the multipart boundary.
+            fetch('/messages/conversations/' + activeConvId + '/send-image', {
+                method: 'POST',
+                headers: { 'X-CSRF-TOKEN': CSRF, 'Accept': 'application/json' },
+                body: fd
+            }).then(r => r.json()).then(d => {
+                if (d.success) {
+                    close();
+                    apiFetch('/messages/conversations/' + activeConvId).then(r => {
+                        if (r.success) {
+                            renderMessages(r.messages, r.has_more);
+                            if (r.conversation) updateSessionUI(r.conversation);
+                        }
+                    });
+                } else {
+                    btn.disabled = false; btn.textContent = 'Send';
+                    status.style.display = 'block'; status.style.color = '#dc2626';
+                    status.textContent = d.message || 'Failed to send image';
+                }
+            }).catch(() => {
+                btn.disabled = false; btn.textContent = 'Send';
+                status.style.display = 'block'; status.style.color = '#dc2626';
+                status.textContent = 'Network error \u2014 please try again.';
+            });
+        };
+    };
+
     // ── Back button ──
     document.getElementById('waChatBack').addEventListener('click', function() {
         activeConvId = null;
@@ -5029,10 +5110,14 @@ select.wa-mgr-input { background: #fff; cursor: pointer; }
                     await addScript(iDoc, 'https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js');
                     const node = iDoc.querySelector('.invoice-container');
                     if (!node) { iframe.remove(); reject(new Error('Invoice container not found')); return; }
-                    // Jul-2026: 1200px JPEG (was 1600px PNG) — ~3x smaller payload,
-                    // visually identical on phones. White background is explicit
-                    // because JPEG has no alpha (transparent would render black).
-                    const canvas = await iframe.contentWindow.html2canvas(node, {scale: 1.5, useCORS: true, allowTaint: true, backgroundColor: '#ffffff'});
+                    // Aug-2026: compact ?wa=1 layout + dynamic scale. The long
+                    // side targets <=1600px (WhatsApp re-encodes larger images
+                    // on delivery, so extra pixels only slow the capture),
+                    // width floor 800px, cap 2.2x. JPEG keeps the explicit
+                    // white background (no alpha).
+                    const rect = node.getBoundingClientRect();
+                    const capScale = Math.max(800 / Math.max(rect.width, 1), Math.min(2.2, 1600 / Math.max(rect.height, 1)));
+                    const canvas = await iframe.contentWindow.html2canvas(node, {scale: capScale, useCORS: true, allowTaint: true, backgroundColor: '#ffffff'});
                     const dataUrl = canvas.toDataURL('image/jpeg', 0.85);
                     iframe.remove();
 

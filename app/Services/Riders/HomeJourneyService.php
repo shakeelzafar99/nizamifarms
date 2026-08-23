@@ -268,8 +268,26 @@ class HomeJourneyService
                 return $out;
             }
             $names = DB::table('t_sys_user')->whereIn('id', $rows->pluck('user_id')->all())->pluck('fullname', 'id');
+            $resolver = new VehicleResolver();
             foreach ($rows as $r) {
                 if (!$this->needsMgmtAlert($r)) { continue; }
+
+                // ⭐⭐ HOLDS-NOW GUARD — the one this sweep shipped without (Aug-22 2026).
+                //
+                // ⚠⚠ THE PROD SYMPTOM. Waseem's journey was armed in the morning while he still
+                //    held DCR-799; the bike went to Danish during the day. `armHomeJourney` and
+                //    `buildHomeJourneyPayload` both refuse to arm or show a card without a company
+                //    machine — but THIS query selects purely on "journey armed + no home meter",
+                //    so it kept pushing "Waseem is home but hasn't recorded his bike meter" at
+                //    management for a bike he no longer had and could not read. His phone showed
+                //    no card at the same moment: the two surfaces disagreed.
+                //
+                // ⚠ `=== false` ONLY. null means the registry has no opinion and MUST fall through
+                //   to the old behaviour, or one quiet registry silences every real alert.
+                if ($resolver->holdsCompanyMachineNow((int) $r->user_id) === false) {
+                    continue;
+                }
+
                 $out[] = [
                     'attendance_id' => (int) $r->id,
                     'user_id'       => (int) $r->user_id,

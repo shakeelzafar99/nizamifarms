@@ -33,6 +33,7 @@ class AssistantWorkspaceController extends Controller
 
         $this->reclassifyUnknownDirections((int) $user->id);
         $this->revertOrphanedSms((int) $user->id);
+        $this->retireOrphanedSmsCards((int) $user->id);
         $this->closeCorroboratedSms((int) $user->id);
         $this->reconcileRecordedDebits((int) $user->id);
         // Give held bank credits another look at the invoice that had not yet
@@ -89,6 +90,7 @@ class AssistantWorkspaceController extends Controller
 
         $this->reclassifyUnknownDirections((int) $user->id);
         $this->revertOrphanedSms((int) $user->id);
+        $this->retireOrphanedSmsCards((int) $user->id);
         $this->closeCorroboratedSms((int) $user->id);
         $this->reconcileRecordedDebits((int) $user->id);
         // Give held bank credits another look at the invoice that had not yet
@@ -993,6 +995,50 @@ class AssistantWorkspaceController extends Controller
         if ($ids->isNotEmpty()) {
             DB::table('t_ai_bank_sms')->whereIn('id', $ids)
                 ->update(['status' => 'new', 'linked_draft_id' => null, 'updated_at' => now()]);
+        }
+    }
+
+    /**
+     * The mirror of revertOrphanedSms: retire an auto-raised bank-SMS CARD whose
+     * SMS has moved on without it.
+     *
+     * ⭐ WHY (owner-reported, Aug-2026). The "Pay Jilani Meat: Rs 150,000" card
+     * of 20-Aug 22:52 sat on screen for a full day after Taimur recorded that
+     * very payment from the screenshot a minute later. Its SMS had been filed
+     * against the real ledger row, so nothing was wrong with the books — but a
+     * live Confirm button for money already paid is exactly the button nobody
+     * should be able to press by accident.
+     *
+     * An SMS card is only ever raised WITH its SMS pointed at it, so a card with
+     * no SMS still pointing at it has been superseded. The age guard keeps this
+     * clear of the moment between insert and link.
+     */
+    private function retireOrphanedSmsCards(int $userId): void
+    {
+        try {
+            $ids = DB::table('t_ai_drafts as d')
+                ->where('d.user_id', $userId)
+                ->where('d.status', 'pending')
+                ->where('d.created_at', '<', now()->subMinutes(5))
+                ->where('d.payload_json', 'like', '%"_from_sms":true%')
+                ->whereNotExists(function ($q) {
+                    $q->select(DB::raw(1))
+                      ->from('t_ai_bank_sms as b')
+                      ->whereColumn('b.linked_draft_id', 'd.id');
+                })
+                ->pluck('d.id');
+
+            if ($ids->isNotEmpty()) {
+                DB::table('t_ai_drafts')->whereIn('id', $ids)->update([
+                    'status'       => 'cancelled',
+                    'cancelled_at' => now(),
+                    'error'        => 'This bank message was handled another way, so the card was withdrawn.',
+                    'updated_at'   => now(),
+                ]);
+            }
+        } catch (\Throwable $e) {
+            // Housekeeping must never break the inbox.
+            \Log::warning('[retireOrphanedSmsCards] ' . $e->getMessage(), ['user' => $userId]);
         }
     }
 

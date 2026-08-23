@@ -261,8 +261,46 @@ class OvernightStorageController extends Controller
         return view('pages.overnight.index', [
             'activeTab' => $activeTab,
             'sections' => $this->buildSections(),
+            'frozen' => $this->buildFrozenPanel(),
             'canVerify' => $this->canVerify(),
         ]);
+    }
+
+    /**
+     * Frozen (BU-2) products sitting in the freezer — READ-ONLY.
+     *
+     * ⭐⭐ These are NOT overnight packets and must never become any. Their figure IS
+     *     the live store inventory (variant.inventory_quantity), already maintained by
+     *     the transfer-accept (+) and prepare/deduct (−) flows, so the freezer figure
+     *     and the inventory figure are the same number by construction — nothing to
+     *     backfill, nothing to reconcile, and no way for the two to drift.
+     *
+     * ⚠️ Deliberately returned SEPARATELY from buildSections(): the section arrays feed
+     *    the balance identity, the verify flow and take-out. Frozen entering any of
+     *    those would corrupt a ledger it does not belong to. It is display-only here,
+     *    with no checkbox, no move, no take-out and no verify.
+     *
+     * Managing this stock stays where it already lives — Khaas transfers, the prepare
+     * flow, and the store adjustment screen, each with its own permission and audit.
+     */
+    private function buildFrozenPanel(): array
+    {
+        $rows = collect(app(\App\Services\CRM\OvernightStockService::class)->catalogRows())
+            ->filter(fn ($row) => ($row['source'] ?? null) === \App\Services\CRM\OvernightStockService::SOURCE_FROZEN)
+            ->map(fn ($row) => [
+                'product_id' => $row['id'],
+                'name' => $row['name'],
+                'packets' => (int) $row['freezer']['packets'],
+                'warning' => $row['warning'] ?? null,
+            ])
+            ->values()
+            ->all();
+
+        return [
+            'products' => $rows,
+            'product_count' => count($rows),
+            'total_packs' => array_sum(array_column($rows, 'packets')),
+        ];
     }
 
     /**
@@ -277,6 +315,9 @@ class OvernightStorageController extends Controller
         return response()->json([
             'success' => true,
             'sections' => $this->buildSections(),
+            // ⚠️ Separate from `sections` on purpose — read-only, and never part of the
+            //    packet balance, verify or take-out flows. See buildFrozenPanel().
+            'frozen' => $this->buildFrozenPanel(),
             // Sent so the client reflects a permission change without waiting for
             // its cached permission list to refresh.
             'can_verify' => $this->canVerify(),
@@ -352,8 +393,29 @@ class OvernightStorageController extends Controller
 
         $productIds = collect($validated['items'])->pluck('product_id')->unique()->values();
         $products = ProductModel::whereIn('id', $productIds)
-            ->get(['id', 'title', 'czerlop_product_id'])
+            ->get(['id', 'title', 'czerlop_product_id', 'business_unit_id'])
             ->keyBy('id');
+
+        // 🔒 Frozen (BU-2) products are tracked by STORE INVENTORY, never by overnight
+        //    packets. Their freezer figure is DERIVED live from
+        //    variant.inventory_quantity (see OvernightStockService::loadFrozenInventory),
+        //    which the transfer-accept and prepare/deduct flows already maintain — so a
+        //    stored packet here would count the same physical pack TWICE, and it would
+        //    go stale the moment that pack is sold (overnight touches no other inventory).
+        //    ⭐ The product picker already excludes BU-2, but that is UI-only: this rail
+        //    is what makes the no-double-count rule impossible to violate from a stale
+        //    APK, a widened picker, or a direct API call.
+        $frozen = $products->first(function ($product) {
+            return (int) $product->business_unit_id === \App\Services\CRM\OvernightStockService::FROZEN_BUSINESS_UNIT_ID;
+        });
+        if ($frozen) {
+            return response()->json([
+                'success' => false,
+                'message' => '"' . $frozen->title . '" is a Frozen item. Frozen stock is tracked by '
+                    . 'store inventory, not by overnight packets — it already shows in the freezer '
+                    . 'automatically.',
+            ], 422);
+        }
 
         // Validate every barcode BEFORE the transaction so the whole batch fails fast.
         $decodedByIndex = [];

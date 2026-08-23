@@ -2641,7 +2641,11 @@ class WhatsAppWebController extends Controller
             return response()->json([
                 'success' => true,
                 'needs_capture' => true,
-                'invoice_url' => url('/orders/' . $orderId . '/invoice'),
+                // Aug-2026: ?wa=1 switches the invoice blade to the compact
+                // WhatsApp-capture layout (560px sheet, larger type) so the
+                // sent image reads fitted on a phone. Only this capture URL
+                // carries the flag - print/PDF/customer app are untouched.
+                'invoice_url' => url('/orders/' . $orderId . '/invoice') . '?wa=1',
                 'order_number' => $orderNum,
                 'order_id' => $orderId,
             ]);
@@ -2844,6 +2848,29 @@ class WhatsAppWebController extends Controller
         }
 
         return $viaLink;
+    }
+
+    /**
+     * Send a manually-picked image into the conversation from the WEB
+     * composer (Aug-2026).
+     *
+     * Delegates to the API controller's sendImageMessage(), which the NF
+     * Messages APK already uses: same 5 MB / JPEG-PNG validation, same
+     * content-sniffed mime check, same whatsapp-media storage layout, same
+     * Meta media upload, and the same outbound `type=image` row shape — so a
+     * picture sent from web and one sent from the app are indistinguishable
+     * in the thread. Keeping ONE implementation means the 24-hour-window
+     * rule and the orphan-file cleanup can never drift between the two.
+     *
+     * Why this exists: the invoice template renders as a WhatsApp IMAGE
+     * header, which WhatsApp re-encodes on delivery. Sending the same file
+     * as a normal attachment inside an open session gives staff a way to
+     * push a copy that skips the template path entirely.
+     */
+    public function sendImageAttachment(Request $request, $conversationId)
+    {
+        return app(\App\Http\Controllers\API\WhatsAppController::class)
+            ->sendImageMessage($request, $conversationId);
     }
 
     /**

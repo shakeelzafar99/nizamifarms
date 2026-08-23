@@ -639,9 +639,27 @@ class VanController extends Controller
             //    now → direct; delivering his own stops first → chained after
             //    them. Cached-or-approximate, never blocking, and absent rather
             //    than wrong when GPS is stale.
+            // ⭐ WHERE IS THE VAN, RIGHT NOW (Aug-2026). The rider standing at the
+            //    meet-up point had no way to tell "he is two minutes away" from
+            //    "he has not left yet" — the card only ever quoted an ETA, and an
+            //    ETA is silent about whether the number is built on a fresh fix.
+            //    Position + age + state travel together so the card can show the
+            //    van's dot and say how much to trust it.
+            $driverFix = $this->lastFix($driverId);
+            $vanPosition = $this->positionPayload(
+                $driverFix,
+                $stop['latitude'] ?? null,
+                $stop['longitude'] ?? null
+            );
+
             $vanEta = null;
             if ($departed && $stop && ($stop['latitude'] ?? null) !== null && empty($stop['reached_at'])) {
-                $dpos = $this->lastFix($driverId);
+                // ⚠⚠ A STALE FIX MUST NOT PRODUCE A PROMISE. `lastFix` already
+                //   drops anything older than 30 min, but 10-to-30-minute-old GPS
+                //   still yields a confident-looking ETA off a position the van
+                //   has long left. Better silent than wrong — the card shows the
+                //   last known dot, greyed, and no time at all.
+                $dpos = VanService::gpsState($driverFix) === 'stale' ? null : $driverFix;
                 if ($dpos) {
                     if ((string) $trip->current_leg === VanService::LEG_TO_STOP) {
                         $vanEta = $this->etaBetween($dpos, $stop['latitude'], $stop['longitude'],
@@ -731,6 +749,15 @@ class VanController extends Controller
                 // carries both; these are for clients that render them apart.
                 'van_eta'      => $vanEta,
                 'your_eta'     => $yourEta,
+                // 🗺 THE LIVE MAP'S MARKERS. The van, and him — the third marker
+                //    (the rendezvous) is already in `stop`. Each carries its own
+                //    freshness state so a dot can be greyed rather than trusted.
+                'van_position' => $vanPosition,
+                'my_position'  => $this->positionPayload(
+                    $this->lastFix($uid),
+                    $stop['latitude'] ?? null,
+                    $stop['longitude'] ?? null
+                ),
                 // ⭐ THE COLLECT CHECKLIST, FROM THE SERVER. The app used to build
                 //    it from /rider/orders, which is scoped to him but NOT to a
                 //    van: it listed boxes merely TAGGED "On Van" (still at the
@@ -913,8 +940,14 @@ class VanController extends Controller
                 //                 declared intent outranks the schedule);
                 //    delivering → stops first, THEN the rendezvous: arrival is
                 //                 chained after his remaining promised stops.
+                // ⚠⚠ Same rule as the rider's card: a STALE fix produces no ETA.
+                //   `lastFix` only drops fixes older than 30 min, and a
+                //   20-minute-old position still yields a confident-looking
+                //   arrival time built on a place the van left long ago.
+                $etaPos = ($pos && VanService::gpsState($pos) !== 'stale') ? $pos : null;
+
                 $vanEta = null;
-                if ($pos && $stop && $stop['latitude'] !== null && empty($stop['reached_at'])
+                if ($etaPos && $stop && $stop['latitude'] !== null && empty($stop['reached_at'])
                     && in_array($mode, ['to_stop', 'delivering'], true)) {
                     if ($mode === 'to_stop') {
                         $vanEta = $this->etaBetween($pos, $stop['latitude'], $stop['longitude'],
@@ -933,7 +966,9 @@ class VanController extends Controller
                     if (!empty($g['complete'])) continue;
                     $rpos = $this->lastFix($g['user_id']);
                     $eta  = null;
-                    if ($rpos && $stop && $stop['latitude'] !== null) {
+                    // Same stale rule as the van's own ETA above.
+                    if ($rpos && VanService::gpsState($rpos) !== 'stale'
+                        && $stop && $stop['latitude'] !== null) {
                         // ⭐ AFTER HIS REMAINING STOPS. A rider four drops from
                         //    finishing used to read "6 min" here, so the store and
                         //    the driver both planned around a meeting that could
@@ -950,6 +985,17 @@ class VanController extends Controller
                         'packets'  => $g['packets'],
                         'eta'      => $eta,
                         'has_gps'  => $rpos !== null,
+                        // 🗺 His marker on the live map, and how far he still has
+                        //    to come — same shape as the van's.
+                        'position' => $this->positionPayload($rpos,
+                            $stop['latitude'] ?? null, $stop['longitude'] ?? null),
+                        // ▓▓▓░░ How much of HIS journey to the rendezvous is done.
+                        //    Null while he is still finishing his own stops: his
+                        //    ETA is chained through them, so there is no single
+                        //    leg to fill a bar with and a fake one would lie.
+                        'progress' => (!empty($eta['after_stops']))
+                            ? null
+                            : $this->journeyProgress('r' . $g['user_id'], $stop, $rpos),
                     ];
                 }
 
@@ -987,7 +1033,12 @@ class VanController extends Controller
                     ] : null,
                     'stop'           => $stop,
                     'van_eta'        => $vanEta,
-                    'van_position'   => $pos,
+                    // ⚠ `van_position` was a bare {lat,lng} with no age — a dot
+                    //   nobody could tell was ten minutes old. Now the same
+                    //   freshness-carrying shape every other marker uses.
+                    'van_position'   => $this->positionPayload($pos,
+                        $stop['latitude'] ?? null, $stop['longitude'] ?? null),
+                    'van_progress'   => $this->journeyProgress('van', $stop, $pos),
                     'inbound'        => $inbound,
                     // Every rider group incl. COMPLETED ones — `inbound` filters
                     // to who is still coming, but the store board must also show
@@ -1091,6 +1142,18 @@ class VanController extends Controller
 
             $g['remaining_stops'] = $remaining;
             $g['eta'] = $eta;
+            // 🗺 …and WHERE he is, for the driver's own live map (Aug-2026).
+            //
+            // ⭐ FREE. This method already fetched `$pos` to compute the ETA and
+            //    then threw it away, shipping only the derived words. The driver
+            //    was the one person on the rendezvous who could not see the
+            //    others on a map, and the data to draw them was already in hand.
+            //
+            // ⚠ A COLLECTED rider never reaches here (the branch above returns
+            //   early), so he carries no position and drops off the map — the
+            //   same rule the store board's `inbound` list already follows.
+            $g['position'] = $this->positionPayload($pos,
+                $stop['latitude'] ?? null, $stop['longitude'] ?? null);
             if ($remaining > 0) {
                 // Now that the ETA is chained through those stops, say WHEN — the
                 // driver could see "3 stops first" but never how long that meant.
@@ -1118,6 +1181,100 @@ class VanController extends Controller
     }
 
     /** Most recent usable GPS fix, or null. */
+    /**
+     * ⭐ ONE SHAPE FOR "WHERE SOMEBODY IS", used by the rider card, the store
+     *    board and the web map alike — position, how old it is, the state string
+     *    the UIs colour by, and (when a destination is given) how far away.
+     *
+     * ⚠ The `state` is computed HERE, never in a client. Three surfaces deriving
+     *   freshness from a timestamp is three chances to disagree about whether a
+     *   dot can be trusted.
+     *
+     * @param array|null $fix  a `lastFix()` payload
+     */
+    /**
+     * ▓▓▓▓░░░░ How far along a journey to the rendezvous somebody is.
+     *
+     * ⭐ THE BASELINE IS THE HARD PART. "Distance covered" needs a starting
+     *    distance, and nothing records one — so the FIRST position seen for this
+     *    party after this stop was set becomes the anchor, cached for the day.
+     *    No schema, no write path, and it dies with the stop it belongs to.
+     *
+     * ⚠ Keyed on the STOP id, not the driver: setting a new meet-up point starts
+     *   a genuinely new journey and must re-anchor, or the bar would measure
+     *   progress towards a place nobody is going any more.
+     *
+     * ⚠ If the cache is lost (a restart) the anchor simply re-forms at the
+     *   current position: the bar jumps back once and then behaves. The km
+     *   labels never lie either way — they are measured live, not derived from
+     *   the anchor.
+     *
+     * Returns null when it cannot be answered honestly — no stop, no pin, no
+     * usable fix, or a stale one.
+     */
+    private function journeyProgress(string $who, ?array $stop, ?array $fix): ?array
+    {
+        try {
+            if (!$stop || ($stop['latitude'] ?? null) === null) return null;
+            if (!empty($stop['reached_at'])) return null;          // already there
+            if (!$fix || VanService::gpsState($fix) === 'stale') return null;
+
+            $remaining = VanService::metresBetween(
+                (float) $fix['lat'], (float) $fix['lng'],
+                (float) $stop['latitude'], (float) $stop['longitude']
+            );
+
+            $key = 'van_journey_start:' . (int) ($stop['id'] ?? 0) . ':' . $who;
+            $initial = \Cache::get($key);
+            if (!is_numeric($initial) || $initial <= 0 || $remaining > $initial) {
+                // First sighting for this stop — or he has moved further away
+                // than the anchor (went the wrong way, or a detour). Re-anchor
+                // rather than render a negative bar.
+                $initial = $remaining;
+                \Cache::put($key, $initial, now()->endOfDay());
+            }
+
+            $pct = $initial > 0 ? (1 - ($remaining / $initial)) * 100 : 0;
+            return [
+                'initial_m'        => (int) round($initial),
+                'remaining_m'      => (int) round($remaining),
+                'covered_m'        => (int) round(max(0, $initial - $remaining)),
+                'percent'          => (int) max(0, min(100, round($pct))),
+                'remaining_display' => VanService::distanceDisplay($remaining),
+                'covered_display'   => VanService::distanceDisplay(max(0, $initial - $remaining)),
+            ];
+        } catch (\Throwable $e) {
+            return null;   // a progress bar must never cost a board its render
+        }
+    }
+
+    private function positionPayload(?array $fix, ?float $toLat = null, ?float $toLng = null): ?array
+    {
+        if (!$fix) {
+            // A missing fix is still an answer — the UI must be able to say
+            // "no GPS" rather than silently render nothing.
+            return ['lat' => null, 'lng' => null, 'age_minutes' => null,
+                    'state' => 'stale', 'label' => 'No GPS',
+                    'distance_m' => null, 'distance_display' => null];
+        }
+        $out = [
+            'lat'         => (float) $fix['lat'],
+            'lng'         => (float) $fix['lng'],
+            'captured_at' => $fix['captured_at'] ?? null,
+            'age_minutes' => (int) ($fix['age_minutes'] ?? 0),
+            'state'       => VanService::gpsState($fix),
+            'label'       => VanService::gpsLabel($fix),
+            'distance_m'  => null,
+            'distance_display' => null,
+        ];
+        if ($toLat !== null && $toLng !== null) {
+            $m = VanService::metresBetween((float) $fix['lat'], (float) $fix['lng'], $toLat, $toLng);
+            $out['distance_m']      = (int) round($m);
+            $out['distance_display'] = VanService::distanceDisplay($m);
+        }
+        return $out;
+    }
+
     private function lastFix(int $userId): ?array
     {
         try {
