@@ -1,7 +1,4 @@
-{{-- resources/views/auth/login.blade.php --}}
-
 @extends('layouts.app')
-
 @section('title', 'Orders')
 
 @push('custom_css')
@@ -1035,29 +1032,19 @@ button[onclick*="switchToShopifyApprovals"] { display: none !important; }
 
 <!-- Modern Orders Layout -->
 <div class="min-h-screen bg-gray-50" style="overflow-x: clip; position: relative; z-index: 0;">
-    {{-- NF UI (Jul-2026): this div is its OWN stacking context (position:relative + z-index:0).
-         The fixed sidebar lives OUTSIDE it at the body level (z-20), so EVERY z-indexed element
-         inside this page (sticky header z-30, sticky search z-25, the bulk-action bar z-40, the
-         table's sticky header/first-column) is now contained BELOW the sidebar and can never paint
-         over it — the page-scoped fix for the "content scrolls over the sidebar" bug. Modals live
-         after this div's closing tag (~L1540) at body level (z-9999+), so they are unaffected and
-         still render above the sidebar as intended. Relative order INSIDE the page is unchanged.
-         overflow-x: clip (vs hidden) still doesn't create a scroll container, so sticky keeps working. --}}
+    
 
     <!-- Modern Sticky Header with Blur -->
     <div class="sticky top-0 z-30 bg-white/95 backdrop-blur-md border-b border-gray-200 shadow-sm">
-        {{-- NF UI: full content width (dropped max-w-7xl) so the top bar lines up with the widened table card below. --}}
+        
         <div class="px-4 lg:px-6 min-w-0">
-            {{-- NF: Phase 1 — compact top. H1 kept accessible via sr-only; tabs below already identify the page.
-                 The standalone title row used to consume ~40px of vertical space. --}}
+            
             <div class="py-1">
                 <h1 class="sr-only">{{ $source === 'shopify' ? 'Shopify Orders' : 'Orders' }}</h1>
 
-                {{-- NF: two-column header — left = tabs (with compact toolbar) + status/rider cards,
-                     right = Rider Live Board (Open Orders tab only). --}}
+                
                 <div class="flex items-start gap-3">
-                  {{-- left column sizes to its content (flex-initial) so the board
-                       sits right after the toolbar with no empty gap between them. --}}
+                  
                   <div class="flex-initial min-w-0">
                 <!-- Tabs Row (tabs + compact action toolbar, left-aligned together) -->
                 <div class="flex items-center justify-start gap-2 flex-wrap">
@@ -1103,8 +1090,7 @@ button[onclick*="switchToShopifyApprovals"] { display: none !important; }
                         @endif
                     </div>
 
-                    {{-- NF: action toolbar — compact, inline next to the tabs.
-                         All original IDs / handlers preserved verbatim. --}}
+                    
                     <div class="sticky-action-toolbar">
                         @if($user->hasPermission('create_orders'))
                         <button onclick="createNewOrder()" class="action-btn action-btn-primary">
@@ -1213,10 +1199,7 @@ button[onclick*="switchToShopifyApprovals"] { display: none !important; }
                     </div>
                 </div>
 
-                {{-- NF (Jul-2026): status cards + Riders-Live cards live INSIDE the left column.
-                     They were briefly moved to a separate row after the two-column header, but in
-                     this div-imbalanced blade that re-parented the orders-table card into a
-                     zero-height context and hid the table — so they stay here. --}}
+                
                 <div class="mt-2 mb-2" id="openOrdersStatusCards" style="display: {{ ($source === 'other' && ($tab ?? 'all') === 'open') ? 'block' : 'none' }};">
                     <div class="flex gap-2 flex-wrap" id="statusCardsContainer">
                         <div class="flex items-center justify-center py-3 text-gray-400 text-sm">Loading…</div>
@@ -1243,15 +1226,12 @@ button[onclick*="switchToShopifyApprovals"] { display: none !important; }
                         </div>
                     </div>
                 </div>
-                  </div> {{-- /left column --}}
+                  </div> 
 
-                  {{-- NF (Jul-2026): header right slot — the search + filters row is MOVED here
-                       at DOMContentLoaded (JS appendChild keeps every id/handler intact), filling
-                       the space freed when the old rider board was consolidated away. --}}
+                  
                   <div id="nfHeaderRight" class="flex-1 min-w-0 flex justify-end items-start" style="min-width:300px;"></div>
 
-                  {{-- NF: Rider Live Board — quick-glance per-rider status above the table.
-                       Open Orders tab only; scrollable; click a row for full detail. --}}
+                  
                   <div id="riderLiveBoardCol"
                        class="flex-col flex-shrink-0 border border-gray-200 rounded-xl bg-white shadow-sm overflow-hidden"
                        style="flex:0 1 430px; min-width:360px; max-width:44vw; max-height:236px; display:none;">
@@ -1266,14 +1246,14 @@ button[onclick*="switchToShopifyApprovals"] { display: none !important; }
                           <div class="px-3 py-3 text-xs text-gray-400">Loading…</div>
                       </div>
                   </div>
-                </div> {{-- /two-column header --}}
+                </div> 
             </div>
         </div>
     </div>
 
     <!-- Sticky Search and Filters Bar - Stays visible when scrolling -->
     <div class="sticky top-0 z-20 bg-gray-50 border-b border-gray-200 shadow-sm">
-        {{-- NF UI: full content width (dropped max-w-7xl) to match the widened table card. --}}
+        
         <div class="px-4 lg:px-6 py-2 min-w-0">
             <!-- Search and Filters in one compact row -->
             <div class="flex flex-wrap items-center gap-3">
@@ -1350,24 +1330,8 @@ button[onclick*="switchToShopifyApprovals"] { display: none !important; }
             </div>
         </div>
 
-    {{-- NF (Jul-2026): live WhatsApp-automation strips. A SEASONAL automation
-         (monsoon storage guidelines) is easy to switch on and then forget, so
-         every registry rule with `orders_banner` announces itself here while it
-         is genuinely live (master switch + rule both on). Turn off acts on the
-         rule immediately; ✕ hides it for TODAY only and it returns tomorrow.
-
-         Placed OUTSIDE the sticky header on purpose: the header's contents are
-         re-parented into #nfTopFlex at DOMContentLoaded, and anything sitting
-         next to the status cards gets moved with them. --}}
-    {{-- NF (Aug-2026): a rider is standing at a customer's door and the verified
-         pin is LOCKED, so he cannot correct it. Pressing "verify" on his phone
-         raised this; one click here unlocks and his app picks it up within ~20s.
-
-         Rendered EMPTY and filled by a 30s poll — never server-rendered — so it
-         cannot show a request that has already been answered. The feed itself
-         only returns requests that are still unanswered AND still locked, so the
-         banner disappears the moment anyone acts, on this screen or any other.
-         Deliberately NOT tab-gated: this is rare and someone is waiting. --}}
+    
+    
     <div id="nfPinUnlockBanners" class="px-4 lg:px-6 pt-2 min-w-0" style="display:none;"></div>
 
     @if(!empty($automationBanners))
@@ -1396,7 +1360,7 @@ button[onclick*="switchToShopifyApprovals"] { display: none !important; }
     @endif
 
     <!-- Modern Orders Table Container -->
-    {{-- NF UI: dropped max-w-7xl so the table uses the full content width (less horizontal scroll); card is now a flex column that caps its height so pagination is always visible inside it. --}}
+    
     <div class="px-4 lg:px-6 pt-2 pb-6 min-w-0">
         <div class="bg-white border border-gray-200 rounded-2xl overflow-hidden shadow-sm flex flex-col" style="max-height: calc(100vh - 180px);">
             <div class="orders-table-container relative flex-1 min-h-0" style="overflow: auto;">
@@ -1541,7 +1505,7 @@ button[onclick*="switchToShopifyApprovals"] { display: none !important; }
                         @endif
                         
                         @for($page = $start; $page <= $end; $page++)
-                            @if ($page == $current)
+                            @if($page == $current)
                                 <span class="px-3 py-2 text-sm bg-blue-600 text-white rounded-md font-medium">{{ $page }}</span>
                             @else
                                 <a href="{{ $orders->url($page) }}" class="px-3 py-2 text-sm text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50">{{ $page }}</a>
@@ -1568,8 +1532,8 @@ button[onclick*="switchToShopifyApprovals"] { display: none !important; }
                 </div>
             </div>
         </div>
-        </div>{{-- /card --}}
-    </div>{{-- /Modern Orders Table Container wrapper --}}
+        </div>
+    </div>
                         </div>
 
                         <!-- <div class="flex items-center gap-2 order-2 md:order-1">
@@ -1676,16 +1640,7 @@ button[onclick*="switchToShopifyApprovals"] { display: none !important; }
 
 </div>
 
-{{-- ===================================================================
-     Riders-Live full-width cards (2026-07, S3). ADDITIVE — runs ALONGSIDE
-     the existing side board (#riderLiveBoardCol) during the parity period;
-     fed from the SAME single fetch loadRiderLiveBoard() already does (no
-     extra load). Card body click reuses openRiderDispatchPopup() (the
-     existing dispatch tracker); the funnel filters the current table rows
-     by rider (client-side, reversible — touches no renderer). Prefixed
-     nfrc-/nf to avoid collisions. Container markup is up near the toolbar
-     (#nfRiderCards); this block is just its CSS + behaviour.
-     ==================================================================== --}}
+
 <style>
 /* Riders-Live = compact panel of ROWS (fits ~5 riders on the right of row 2,
    like the old board). Row click = dispatch tracker; filter icon = filter table. */
@@ -2287,14 +2242,7 @@ document.addEventListener('DOMContentLoaded', function(){
 </script>
 
 @if($canViewShopify)
-{{-- ===================================================================
-     Approvals right-drawer (2026-07, S2). ADDITIVE — runs ALONGSIDE the
-     existing "Order Approvals" tab (nothing removed). Reuses the existing
-     endpoints: /orders/filter?source=shopify (list), /orders/{id}/convert
-     (Approve = same SKU recalc), /orders/{id}/ignore. All ids are staging
-     ids sent only to source=shopify-scoped endpoints. Everything here is
-     prefixed nfad-/nfApprovals to avoid any collision with page code.
-     ==================================================================== --}}
+
 <style>
 #nfadFab{position:fixed;right:22px;bottom:22px;z-index:70}
 #nfadFab button{font-family:inherit;font-size:13.5px;font-weight:700;color:#fff;background:#0f172a;border:0;border-radius:999px;padding:12px 18px;cursor:pointer;box-shadow:0 8px 24px rgba(15,23,42,.28);display:flex;align-items:center;gap:9px}
@@ -4125,14 +4073,14 @@ function openSendInvoiceWhatsApp() {
                 <div id="regWaInvoicePanel">
                     <div style="margin-bottom:12px;">
                         <label style="font-size:12px;color:#6b7280;display:block;margin-bottom:4px;">Invoice Template</label>
-                        <select id="waInvTemplate" style="width:100%;padding:8px 12px;border:1px solid #d1d5db;border-radius:6px;font-size:14px;background:#fff;" onchange="onRegularInvoiceTemplateChange()">
+                        <select id="waInvTemplate" style="width:100%;padding:8px 12px;border:1px solid #d1d5db;border-radius:6px;font-size:14px;background:#fff;" onchange="onRegularInvoiceTemplateChange(true)">
                             <option value="">Loading templates...</option>
                         </select>
                         <div style="font-size:11px;color:#9ca3af;margin-top:4px;">Templates tagged as "Invoice" in Manage Templates</div>
                     </div>
                     <div style="margin-bottom:12px;">
                         <label style="font-size:12px;color:#6b7280;display:block;margin-bottom:4px;">Body Variables (comma-separated)</label>
-                        <input id="waInvBodyParams" type="text" value="${escHtml(custName)}, ${escHtml(orderNum)}" style="width:100%;padding:8px 12px;border:1px solid #d1d5db;border-radius:6px;font-size:14px;" />
+                        <input id="waInvBodyParams" type="text" value="${escHtml(custName)}, ${escHtml(orderNum)}" oninput="this.dataset.dirty='1'" style="width:100%;padding:8px 12px;border:1px solid #d1d5db;border-radius:6px;font-size:14px;" />
                         <div id="waInvVarHint" style="font-size:11px;color:#9ca3af;margin-top:4px;">Variables are passed to the template in order (e.g. 1=Name, 2=Order#)</div>
                     </div>
                     <div id="waInvPreviewArea" style="margin-bottom:12px;display:none;">
@@ -4171,7 +4119,20 @@ function openSendInvoiceWhatsApp() {
             </div>
         </div>`;
     document.body.appendChild(dialog);
-    dialog.addEventListener('click', function(e) { if (e.target === dialog) dialog.remove(); });
+    // Aug-2026 — backdrop close must require the press AND the release on the
+    // backdrop. A plain `click` closer fired while EDITING THE PHONE NUMBER:
+    // per the DOM spec, when mousedown and mouseup land on different elements
+    // the click event is dispatched to their nearest COMMON ANCESTOR. Drag-
+    // selecting the number in the full-width input and releasing past the card
+    // edge = mousedown(input) + mouseup(overlay) => click on the backdrop =>
+    // the dialog vanished mid-edit. Tracking mousedown fixes it without
+    // changing the intended behaviour (a real click on the backdrop closes).
+    let _regWaDownOnBackdrop = false;
+    dialog.addEventListener('mousedown', function(e) { _regWaDownOnBackdrop = (e.target === dialog); });
+    dialog.addEventListener('click', function(e) {
+        if (e.target === dialog && _regWaDownOnBackdrop) dialog.remove();
+        _regWaDownOnBackdrop = false;
+    });
 
     regWaLoadInvoiceTemplates(order && order.payment_method ? order.payment_method : '');
     regWaLoadOtherTemplates();
@@ -4417,11 +4378,24 @@ function sendRegularOtherMessage() {
     });
 }
 
-function onRegularInvoiceTemplateChange() {
+// userSwitched=true when the operator changed the template themselves (the
+// select's onchange) — then the body vars are always rebuilt and the hand-edit
+// flag cleared, because the new template genuinely needs different variables.
+// The ASYNC callers (template load + the send-plan fetch, which lands hundreds
+// of ms after the dialog opens) call this with no argument, and must NOT clobber
+// something the operator has already typed. Aug-2026: before this guard, editing
+// the variables right after opening the dialog got silently overwritten when the
+// send-plan reply arrived.
+function onRegularInvoiceTemplateChange(userSwitched) {
     var sel = document.getElementById('waInvTemplate');
     var paramsInput = document.getElementById('waInvBodyParams');
     var hintEl = document.getElementById('waInvVarHint');
     if (!sel || !paramsInput) return;
+    if (userSwitched) {
+        delete paramsInput.dataset.dirty;
+    } else if (paramsInput.dataset.dirty === '1') {
+        return; // operator owns this field now
+    }
     var selectedOpt = sel.options[sel.selectedIndex];
     var varCount = parseInt(selectedOpt?.dataset?.varCount || '0');
     var custName = _regWaCustName || '';
@@ -4459,9 +4433,31 @@ function captureInvoiceImageOrders(invoiceUrl, orderId) {
     return new Promise((resolve, reject) => {
         const iframe = document.createElement('iframe');
         iframe.style.cssText = 'position:fixed;left:-9999px;top:0;width:900px;height:1400px;border:none;opacity:0;';
+        // Aug-2026 — the capture must never steal the operator's cursor. The
+        // preview runs automatically when the dialog opens, so this iframe
+        // loads WHILE the phone number is being edited; a loading iframe takes
+        // focus, which dropped the caret out of the field mid-typing and read
+        // as "the dialog refreshed itself". tabindex=-1 keeps it out of the tab
+        // order, and the caret (plus its selection range) is restored on load.
+        iframe.setAttribute('tabindex', '-1');
+        iframe.setAttribute('aria-hidden', 'true');
+        const _focusSnap = document.activeElement;
+        const _selSnap = (_focusSnap && typeof _focusSnap.selectionStart === 'number')
+            ? { start: _focusSnap.selectionStart, end: _focusSnap.selectionEnd } : null;
+        const restoreFocus = () => {
+            try {
+                if (!_focusSnap || !document.body.contains(_focusSnap)) return;
+                if (document.activeElement === _focusSnap) return; // never moved
+                _focusSnap.focus({ preventScroll: true });
+                if (_selSnap && typeof _focusSnap.setSelectionRange === 'function') {
+                    _focusSnap.setSelectionRange(_selSnap.start, _selSnap.end);
+                }
+            } catch (e) { /* focus restore is best-effort, never fatal */ }
+        };
         document.body.appendChild(iframe);
         iframe.src = invoiceUrl;
         iframe.onload = async function() {
+            restoreFocus();
             try {
                 const addScript = (doc, src) => new Promise(r => { const s = doc.createElement('script'); s.src = src; s.onload = r; doc.head.appendChild(s); });
                 const iDoc = iframe.contentDocument || iframe.contentWindow.document;
@@ -5758,6 +5754,23 @@ function loadEditForm(order) {
             </div>
             </div><!-- End of notesPacketsExpanded -->
 
+            <!-- ⭐ MONEY PROMPTS SIT ABOVE THE LINE ITEMS ON PURPOSE.
+                 Both were originally below the whole Line Items block, which on
+                 a real order pushed them far below the fold — the owner opened
+                 an order and could not find the payment control at all. They
+                 belong with the order header, where "has this been paid / does
+                 this customer have credit" is actually asked. -->
+
+            <!-- Customer account balance ("bucket"). Filled in by
+                 nfLoadCreditBanner() after the modal renders; stays empty when
+                 the customer has no balance, so nothing moves for most orders. -->
+            <div id="nfCreditBanner" style="display:none; margin-bottom: 16px;"></div>
+
+            <!-- ✍️ Payments claimed against this order. This is the PREPAYMENT
+                 door: money can be recorded here before the order is delivered.
+                 It writes evidence (a payment signal), never an order payment,
+                 so a regular order's invoicing is untouched. -->
+            <div id="nfPaymentStrip" style="display:none; margin-bottom: 16px;"></div>
             <!-- Line Items Section -->
             <div style="background-color: #fefefe; border: 1px solid #e5e7eb; border-radius: 8px; margin-bottom: 20px;">
                 <div style="padding: 16px; border-bottom: 1px solid #e5e7eb; display: flex; justify-content: space-between; align-items: center;">
@@ -5899,6 +5912,7 @@ function loadEditForm(order) {
                 </div>
             </div>
 
+
             <!-- Order Totals -->
             <div style="background-color: #eff6ff; padding: 16px; border-radius: 8px; margin-bottom: 20px;">
                 <h4 style="font-weight: 600; color: #374151; margin: 0 0 16px 0;">Order Totals</h4>
@@ -5920,6 +5934,14 @@ function loadEditForm(order) {
                         <div style="margin-top: 8px; padding: 8px; background: #f3f4f6; border-radius: 4px; display: flex; justify-content: space-between; align-items: center;">
                             <span style="font-weight: 600; color: #374151;">Total Discount:</span>
                             <span id="totalDiscountDisplay" style="font-weight: 700; color: #ef4444; font-size: 16px;">Rs. 0.00</span>
+                        </div>
+                        {{-- ⭐ Shown on its OWN line, never inside "Total Discount".
+                             The customer's balance is their money being spent, not a
+                             concession — and lumping it in produced a discount total
+                             with no discount row to explain it. --}}
+                        <div id="nfBalanceUsedRow" style="display:none; margin-top: 6px; padding: 8px; background: #ECFDF5; border: 1px solid #A7F3D0; border-radius: 4px; justify-content: space-between; align-items: center;">
+                            <span style="font-weight: 600; color: #065F46;">💰 Account balance used:</span>
+                            <span id="nfBalanceUsedDisplay" style="font-weight: 700; color: #059669; font-size: 16px;">Rs. 0.00</span>
                         </div>
                     </div>
                 </div>
@@ -6025,7 +6047,23 @@ function loadEditForm(order) {
     } catch (e) {
         console.warn('Failed to initialize discounts', e);
     }
-    
+
+    // ⭐ Customer account balance. Asks the server whether this order's customer
+    // has money sitting with us — this is what makes a converted Shopify order
+    // announce "Rs X available" the moment the manager opens it to edit.
+    try {
+        nfLoadCreditBanner(order.id);
+    } catch (e) {
+        console.warn('Failed to load credit banner', e);
+    }
+
+    // ✍️ Payments already claimed against this order (incl. before delivery).
+    try {
+        nfLoadPaymentStrip(order.id, order.order_number);
+    } catch (e) {
+        console.warn('Failed to load payment strip', e);
+    }
+
     // Populate qurbani field dropdowns if this is a qurbani order (check order-level, is_qurbani flag, and line items)
     if (order.qurbani_day || order.qurbani_slot || order.qurbani_region || order.qurbani_sub_region || order.qurbani_delivery_type || order.is_qurbani || (order.line_items || []).some(li => li.qurbani_day || li.qurbani_slot || li.qurbani_region || li.qurbani_sub_region || li.qurbani_delivery_type)) {
         try { populateQurbaniEditSelects(); } catch (e) { console.warn('Failed to populate qurbani selects', e); }
@@ -8555,7 +8593,7 @@ function openQuickStatusChange(orderId, currentStatus) {
             const btn = document.getElementById('quickStatusSave');
             
             // Helper function to actually change the status
-            const changeStatus = async function(confirmed = false, bringBack = undefined) {
+            const changeStatus = async function(confirmed = false, bringBack = undefined, creditStranded = undefined) {
                 try {
                 const status_code = document.getElementById('quickStatusSelect').value;
                 const notes = document.getElementById('quickStatusNotes').value;
@@ -8591,7 +8629,13 @@ function openQuickStatusChange(orderId, currentStatus) {
                     if (bringBack === true) {
                         payload.bring_back = true;
                     }
-                    
+                    // Cancellation: the manager's answer to "move the money we
+                    // already received to this customer's balance?". Only ever
+                    // sent when they were actually asked.
+                    if (creditStranded !== undefined) {
+                        payload.credit_stranded_payment = creditStranded === true;
+                    }
+
                     btn.textContent = 'Saving...';
                     btn.disabled = true;
                     
@@ -8611,29 +8655,79 @@ function openQuickStatusChange(orderId, currentStatus) {
                     // Check if confirmation is required (ledger will be reversed)
                     if (!j.success && j.requires_confirmation && j.confirmation_data) {
                         const data = j.confirmation_data;
-                        const confirmMsg = 
-                            `⚠️ LEDGER REVERSAL REQUIRED\n\n` +
-                            `This order has been posted to the ledger.\n` +
-                            `Cancelling will reverse the ledger entry.\n\n` +
-                            `Order: ${data.order_number}\n` +
-                            `Amount: Rs. ${parseFloat(data.amount).toFixed(2)}\n` +
-                            `Posted to: ${data.account_name}\n` +
-                            `Mode: ${data.ledger_mode === 'cash' ? 'Cash' : 'Online'}\n\n` +
-                            `The ledger entry will be reversed and account balances will be updated.\n\n` +
-                            `Do you want to proceed with cancellation?`;
-                        
+                        const stranded = data.stranded || {};
+                        const strandedAmt = parseFloat(stranded.amount || 0);
+                        const creditApplied = parseFloat(data.credit_applied || 0);
+
+                        let confirmMsg;
+                        if (data.ledger_id && data.account_name) {
+                            confirmMsg =
+                                `⚠️ LEDGER REVERSAL REQUIRED\n\n` +
+                                `This order has been posted to the ledger.\n` +
+                                `Cancelling will reverse the ledger entry.\n\n` +
+                                `Order: ${data.order_number}\n` +
+                                `Amount: Rs. ${parseFloat(data.amount).toFixed(2)}\n` +
+                                `Posted to: ${data.account_name}\n` +
+                                `Mode: ${data.ledger_mode === 'cash' ? 'Cash' : 'Online'}\n\n` +
+                                `The ledger entry will be reversed and account balances will be updated.\n\n`;
+                        } else {
+                            confirmMsg =
+                                `⚠️ THIS ORDER HAS PAYMENTS RECORDED\n\n` +
+                                `Order: ${data.order_number}\n` +
+                                `Amount: Rs. ${parseFloat(data.amount).toFixed(2)}\n\n`;
+                        }
+
+                        if (creditApplied > 0) {
+                            confirmMsg += `Rs. ${creditApplied.toFixed(2)} of account balance was used on this ` +
+                                          `order — it will be returned to the customer automatically.\n\n`;
+                        }
+                        if (strandedAmt > 0) {
+                            confirmMsg += `Rs. ${strandedAmt.toFixed(2)} already received stays in our account.\n\n`;
+                        }
+
+                        confirmMsg += `Do you want to proceed with cancellation?`;
+
                         btn.textContent = 'Save';
                         btn.disabled = false;
-                        
-                        if (confirm(confirmMsg)) {
-                            // User confirmed - retry with confirmation flag
-                            await changeStatus(true);
+
+                        if (!confirm(confirmMsg)) {
+                            return;
                         }
+
+                        // Second, separate question — never assumed either way.
+                        let creditChoice = undefined;
+                        if (strandedAmt > 0 && stranded.can_credit) {
+                            creditChoice = confirm(
+                                `Rs. ${strandedAmt.toFixed(2)} was already received for this order.\n\n` +
+                                `Add it to ${stranded.customer_name || 'the customer'}'s account balance so it ` +
+                                `can pay for a future order?\n\n` +
+                                `OK = add to their balance\n` +
+                                `Cancel = leave it as it is`
+                            );
+                        } else if (strandedAmt > 0 && stranded.reason) {
+                            alert(`Note: Rs. ${strandedAmt.toFixed(2)} was received on this order, but it cannot ` +
+                                  `become an account balance.\n\n${stranded.reason}`);
+                        }
+
+                        await changeStatus(true, bringBack, creditChoice);
                         return;
                     }
                     
                     // Check for other errors
                 if (j && j.success) {
+                    // Tell the user what happened to the customer's money rather
+                    // than leaving it to the log.
+                    const notes = [];
+                    if (j.credit_released) {
+                        notes.push(`Rs. ${parseFloat(j.credit_released).toFixed(2)} of account balance was returned to the customer.`);
+                    }
+                    if (j.credited_to_balance) {
+                        notes.push(j.credited_status === 'active'
+                            ? `Rs. ${parseFloat(j.credited_to_balance).toFixed(2)} was added to the customer's balance.`
+                            : `Rs. ${parseFloat(j.credited_to_balance).toFixed(2)} was sent for approval to be added to the customer's balance.`);
+                    }
+                    if (notes.length) { alert(notes.join('\n\n')); }
+
                     document.getElementById('quickStatusModal').remove();
                     location.reload();
                 } else {
@@ -10516,28 +10610,56 @@ function getCurrentLocalDateTime() {
     return `${year}-${month}-${day}T${hours}:${minutes}`;
 }
 
+/* Which order the edit modal is currently showing — the ONE thing the async
+   loaders check before painting (comparing DOM nodes was fragile: the modal is
+   re-rendered while those fetches are in flight). */
+let nfCurrentEditOrderId = null;
+
+/* Orders already asked about in this tab, so the hard prompt fires once per
+   order rather than every time the editor is re-opened. */
+const nfCreditPrompted = new Set();
+
+// Account balance currently applied to the order being edited. It is NOT a
+// discount row (the server owns that line), so it must be added into the totals
+// here or the edit form would show a total the customer is not being charged.
+// Set by nfRenderCreditBanner; reset to 0 whenever a different order is opened.
+let nfCreditAppliedAmount = 0;
+
 // Update order total calculations
 function updateOrderTotal() {
     const subtotal = parseFloat(document.querySelector('input[name="subtotal_price"]')?.value) || 0;
-    
+
     // Calculate total discount from all discount rows
     let totalDiscount = 0;
     document.querySelectorAll('.discount-row').forEach(row => {
         const amount = parseFloat(row.querySelector('[name$="[amount]"]')?.value) || 0;
         totalDiscount += amount;
     });
-    
+
+    const creditApplied = parseFloat(nfCreditAppliedAmount) || 0;
     const shipping = parseFloat(document.querySelector('input[name="shipping_total"]')?.value) || 0;
     const tip = parseFloat(document.querySelector('input[name="tip_amount"]')?.value) || 0;
-    
-    // Update discount display
+
+    // Update discount display — DISCOUNTS ONLY. The account balance gets its own
+    // line below; adding it here produced "Total Discount: Rs 880" with no
+    // discount row on screen to account for it.
     const discountDisplay = document.getElementById('totalDiscountDisplay');
     if (discountDisplay) {
         discountDisplay.textContent = 'Rs. ' + totalDiscount.toFixed(2);
     }
-    
-    // Calculate final total (subtotal - discount + shipping + tip)
-    const total = subtotal - totalDiscount + shipping + tip;
+    const balRow = document.getElementById('nfBalanceUsedRow');
+    const balDisp = document.getElementById('nfBalanceUsedDisplay');
+    if (balRow && balDisp) {
+        if (creditApplied > 0) {
+            balDisp.textContent = 'Rs. ' + creditApplied.toFixed(2);
+            balRow.style.display = 'flex';
+        } else {
+            balRow.style.display = 'none';
+        }
+    }
+
+    // Calculate final total (subtotal - discount - account balance + shipping + tip)
+    const total = subtotal - totalDiscount - creditApplied + shipping + tip;
     const totalInput = document.querySelector('input[name="total_price"]');
     if (totalInput) {
         totalInput.value = total.toFixed(2);
@@ -10686,6 +10808,345 @@ function removeDiscountRow(index) {
     }
 }
 
+// =====================================================================
+// Customer account balance ("bucket") — the prompt in the order editor.
+//
+// The server decides everything (eligibility, how much may be used, whether
+// the invoice is still open). This code only paints the answer and sends the
+// manager's decision back. Amounts are never computed here.
+// =====================================================================
+
+function nfCreditCsrf() {
+    return document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || '';
+}
+
+/* ⚠ nfEsc is ALREADY defined earlier in this same script block. A second
+   definition here silently replaced it for every existing caller (function
+   declarations hoist, last one wins), so it was removed — use the one above. */
+
+async function nfLoadCreditBanner(orderId) {
+    const box = document.getElementById('nfCreditBanner');
+    if (!box || !orderId) return;
+
+    nfCreditAppliedAmount = 0;
+    box.style.display = 'none';
+    box.innerHTML = '';
+    // Which order the editor is showing. Checked at paint time instead of
+    // comparing DOM nodes: the modal can be re-rendered while this fetch is in
+    // flight, and a node comparison would then silently refuse to paint a
+    // perfectly valid banner — invisible, with no error anywhere.
+    nfCurrentEditOrderId = orderId;
+
+    let data;
+    try {
+        const res = await fetch(`/orders/${orderId}/credit-offer`, {
+            headers: { 'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+            credentials: 'same-origin'
+        });
+        const json = await res.json();
+        if (!json || !json.success) return;
+        data = json.data;
+    } catch (e) {
+        console.warn('credit-offer failed', e);
+        return;
+    }
+
+    // Only a DIFFERENT order cancels this paint — not a re-render of the same
+    // one. Paint into whichever node is live now.
+    if (String(nfCurrentEditOrderId) !== String(orderId)) return;
+    const liveBox = document.getElementById('nfCreditBanner') || box;
+
+    // Nothing applied and nothing to offer -> stay invisible.
+    if (!data.eligible || (!data.should_prompt && !(data.applied > 0))) return;
+
+    nfCreditAppliedAmount = parseFloat(data.applied || 0);
+    liveBox.style.display = 'block';
+    liveBox.innerHTML = data.applied > 0
+        ? nfCreditAppliedMarkup(data)
+        : nfCreditOfferMarkup(data);
+
+    try { updateOrderTotal(); } catch (e) { /* totals not ready yet */ }
+
+    // ⭐ HARD PROMPT (owner ruling): a banner is passive — someone opening the
+    // order to do something else scrolls straight past it and the customer's
+    // money goes unused. So the first time this order is opened in this tab,
+    // ASK outright. Once per order per page load: re-opening the same order
+    // while working on it must not nag, and the banner stays either way.
+    if (data.should_prompt && !nfCreditPrompted.has(String(orderId))) {
+        nfCreditPrompted.add(String(orderId));
+        const use = confirm(
+            `This customer has Rs. ${data.balance_display} sitting in their account balance.\n\n` +
+            `Use it on this order? Up to Rs. ${Number(data.suggested).toFixed(2)} can come off the total.\n\n` +
+            `OK = use it now\nCancel = leave it (the green bar above stays if you change your mind)`
+        );
+        if (use) { nfApplyCredit(orderId); }
+    }
+}
+
+/** "Rs X is available — use it?" */
+function nfCreditOfferMarkup(d) {
+    return `
+        <div style="background:#ecfdf5;border:1px solid #6ee7b7;border-left:4px solid #059669;border-radius:8px;padding:14px 16px;">
+            <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:16px;flex-wrap:wrap;">
+                <div style="flex:1;min-width:240px;">
+                    <div style="font-weight:700;color:#065f46;font-size:15px;margin-bottom:4px;">
+                        💰 This customer has Rs. ${parseFloat(d.balance).toFixed(2)} account balance
+                    </div>
+                    <div style="color:#047857;font-size:13px;">
+                        Use it on this order? Up to
+                        <strong>Rs. ${parseFloat(d.suggested).toFixed(2)}</strong> can come off the total.
+                    </div>
+                    ${nfCreditHistoryMarkup(d.history)}
+                </div>
+                <div style="display:flex;gap:8px;align-items:center;">
+                    <input type="number" step="0.01" min="0.01" id="nfCreditAmountInput"
+                           value="${parseFloat(d.suggested).toFixed(2)}"
+                           style="width:120px;padding:8px 10px;border:1px solid #6ee7b7;border-radius:6px;font-size:14px;font-weight:600;">
+                    <button type="button" onclick="nfApplyCredit(${d.order_id})"
+                            style="padding:9px 16px;background:#059669;color:#fff;border:0;border-radius:6px;cursor:pointer;font-size:13px;font-weight:600;white-space:nowrap;">
+                        Use balance
+                    </button>
+                </div>
+            </div>
+        </div>`;
+}
+
+/** "Rs X is already applied — remove it?" */
+function nfCreditAppliedMarkup(d) {
+    const pending = d.applied_state === 'reserved';
+    // Once the invoice is approved the applied balance is locked in — offering
+    // a Remove button that always fails would just be a stale alert.
+    const action = d.removable
+        ? `<button type="button" onclick="nfRemoveCredit(${d.order_id})"
+                style="padding:9px 16px;background:#fff;color:#1e40af;border:1px solid #93c5fd;border-radius:6px;cursor:pointer;font-size:13px;font-weight:600;white-space:nowrap;">
+             Remove
+           </button>`
+        : `<span style="padding:8px 12px;background:#eef2ff;color:#4338ca;border-radius:6px;font-size:12px;font-weight:600;white-space:nowrap;">
+             🔒 Locked (invoice approved)
+           </span>`;
+    return `
+        <div style="background:#eff6ff;border:1px solid #93c5fd;border-left:4px solid #2563eb;border-radius:8px;padding:14px 16px;">
+            <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:16px;flex-wrap:wrap;">
+                <div style="flex:1;min-width:240px;">
+                    <div style="font-weight:700;color:#1e40af;font-size:15px;margin-bottom:4px;">
+                        ✓ Rs. ${parseFloat(d.applied).toFixed(2)} paid from the account balance
+                    </div>
+                    <div style="color:#1d4ed8;font-size:13px;">
+                        Already taken off this order's total.
+                        ${pending ? 'It is held until the order is delivered, and comes back automatically if the order is cancelled.' : ''}
+                    </div>
+                    <div style="color:#1d4ed8;font-size:12px;margin-top:4px;">
+                        Remaining balance: Rs. ${parseFloat(d.balance).toFixed(2)}
+                    </div>
+                </div>
+                ${action}
+            </div>
+        </div>`;
+}
+
+/** The "where did this money come from?" list the owner asked for. */
+function nfCreditHistoryMarkup(history) {
+    const rows = (history || []).filter(h => h.counts && h.is_credit).slice(0, 3);
+    if (!rows.length) return '';
+
+    const items = rows.map(h => {
+        const from = h.order_number ? ` from order ${nfEsc(h.order_number)}` : '';
+        return `<li style="margin:0;">Rs. ${nfEsc(h.amount_abs)}${from} &middot; ${nfEsc(h.date || '')}</li>`;
+    }).join('');
+
+    return `
+        <details style="margin-top:8px;">
+            <summary style="cursor:pointer;color:#047857;font-size:12px;font-weight:600;">Where is this from?</summary>
+            <ul style="margin:6px 0 0 18px;padding:0;color:#065f46;font-size:12px;line-height:1.7;">${items}</ul>
+        </details>`;
+}
+
+async function nfApplyCredit(orderId) {
+    const input = document.getElementById('nfCreditAmountInput');
+    const amount = parseFloat(input?.value || 0);
+    if (!(amount > 0)) { alert('Enter an amount to use.'); return; }
+
+    try {
+        const res = await fetch(`/orders/${orderId}/credit/apply`, {
+            method: 'POST',
+            headers: {
+                'Accept': 'application/json',
+                'Content-Type': 'application/json',
+                'X-Requested-With': 'XMLHttpRequest',
+                'X-CSRF-TOKEN': nfCreditCsrf()
+            },
+            credentials: 'same-origin',
+            body: JSON.stringify({ amount })
+        });
+        const json = await res.json();
+        if (!json.success) { alert(json.message || 'Could not use the balance.'); return; }
+
+        alert(json.message);
+        // The order's totals changed server-side, so reload the editor from the
+        // server rather than guessing at the new numbers here.
+        editOrderDetails(orderId);
+    } catch (e) {
+        alert('Could not use the balance: ' + e.message);
+    }
+}
+
+async function nfRemoveCredit(orderId) {
+    if (!confirm('Take the account balance back off this order?\n\nThe money returns to the customer\'s balance.')) return;
+
+    try {
+        const res = await fetch(`/orders/${orderId}/credit/remove`, {
+            method: 'POST',
+            headers: {
+                'Accept': 'application/json',
+                'Content-Type': 'application/json',
+                'X-Requested-With': 'XMLHttpRequest',
+                'X-CSRF-TOKEN': nfCreditCsrf()
+            },
+            credentials: 'same-origin'
+        });
+        const json = await res.json();
+        if (!json.success) { alert(json.message || 'Could not remove it.'); return; }
+
+        alert(json.message);
+        editOrderDetails(orderId);
+    } catch (e) {
+        alert('Could not remove it: ' + e.message);
+    }
+}
+
+// =====================================================================
+// ✍️ Payments claimed against this order
+//
+// Shows what has been recorded as received — a customer's screenshot, a bank
+// alert, or a hand-entered claim — and lets the two people allowed to do it
+// record another. Crucially this works BEFORE delivery: it writes a payment
+// SIGNAL (evidence), never an order payment, so a regular order's invoicing
+// path is untouched by anything here.
+// =====================================================================
+
+/* The order number for the strip currently on screen. Held here rather than
+   interpolated into an onclick: the shared nfEsc escapes for TEXT, not for a
+   quoted attribute, so an order number containing a quote would break the
+   handler. A variable sidesteps the escaping question entirely. */
+let nfPaymentStripOrderNumber = '';
+
+async function nfLoadPaymentStrip(orderId, orderNumber) {
+    const box = document.getElementById('nfPaymentStrip');
+    if (!box || !orderId) return;
+    nfPaymentStripOrderNumber = orderNumber || '';
+    box.style.display = 'none';
+    box.innerHTML = '';
+    nfCurrentEditOrderId = orderId;
+
+    let signals = [], canRecord = false, overpay = null;
+    try {
+        const [sigRes, ovRes] = await Promise.all([
+            fetch(`/admin/payments/order/${orderId}/signals`, {
+                headers: { 'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest' }}),
+            fetch(`/admin/payments/order/${orderId}/overpay`, {
+                headers: { 'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest' }})
+        ]);
+        const sig = await sigRes.json();
+        const ov = await ovRes.json();
+        signals = (sig && sig.signals) || [];
+        canRecord = !!(ov && ov.can_record);
+        overpay = ov && ov.overpay;
+    } catch (e) { return; }
+
+    // Nothing recorded and nothing this user can do → stay out of the way.
+    if (!signals.length && !canRecord) return;
+    // A late response must not paint into a different order's modal.
+    if (String(nfCurrentEditOrderId) !== String(orderId)) return;
+    const live = document.getElementById('nfPaymentStrip') || box;
+
+    const rows = signals.map(s => {
+        const manual = String(s.extractor_version || '').startsWith('manual_');
+        const icon = manual ? '✍️' : (s.source === 'whatsapp' ? '📷' : (s.source === 'bank_sms' ? '📱' : '✉️'));
+        const who = manual && s.recorded_by_name ? ` · by ${nfEsc(s.recorded_by_name)}` : '';
+        const ref = s.reference ? ` · ref ${nfEsc(s.reference)}` : '';
+        return `<div style="display:flex; justify-content:space-between; gap:10px; padding:4px 0; font-size:12.5px; border-bottom:1px solid #F3F4F6;">
+            <span>${icon} <b>Rs ${Number(s.amount || 0).toLocaleString('en-PK')}</b>${ref}</span>
+            <span style="color:#6B7280; font-size:11.5px;">${nfEsc(s.when_short || s.when || '')}${who}</span>
+        </div>`;
+    }).join('');
+
+    const extra = overpay && parseFloat(overpay.amount || 0) > 0 && overpay.eligible
+        ? `<div style="margin-top:8px; padding:8px 10px; background:#ECFDF5; border:1px solid #A7F3D0; border-radius:6px; font-size:12.5px; color:#065F46;">
+             Rs ${Number(overpay.amount).toLocaleString('en-PK')} more than this order owed.
+             <button type="button" onclick="nfOrderOverpayToBalance(${orderId})"
+                style="margin-left:6px; padding:3px 10px; background:#059669; color:#fff; border:0; border-radius:5px; cursor:pointer; font-size:11.5px; font-weight:600;">Add to balance</button>
+           </div>` : '';
+
+    live.style.display = 'block';
+    live.innerHTML = `
+      <div style="background:#FAFAFA; border:1px solid #E5E7EB; border-radius:8px; padding:12px 14px;">
+        <div style="display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap; margin-bottom:${rows ? '8px' : '0'};">
+            <div style="font-weight:600; color:#374151; font-size:13px;">
+                ✍️ Payments claimed ${signals.length ? `<span style="color:#6B7280; font-weight:400;">(${signals.length})</span>` : ''}
+            </div>
+            ${canRecord ? `<button type="button" onclick="nfOrderRecordPayment(${orderId})"
+                style="padding:5px 12px; background:#fff; color:#065F46; border:1px solid #6EE7B7; border-radius:6px; cursor:pointer; font-size:12px; font-weight:600;">+ Record a payment</button>` : ''}
+        </div>
+        ${rows || '<div style="font-size:12px; color:#9CA3AF;">Nothing recorded yet for this order.</div>'}
+        ${extra}
+      </div>`;
+}
+
+/** Same dialog as the approvals screen, kept minimal here. */
+function nfOrderRecordPayment(orderId, orderNumber) {
+    orderNumber = orderNumber || nfPaymentStripOrderNumber;
+    const amount = prompt(
+        `Record a payment for order ${orderNumber || '#' + orderId}\n\n` +
+        `Use this when the customer has paid but no screenshot or bank alert arrived.\n` +
+        `It is recorded as your word, with your name on it.\n\nAmount received:`
+    );
+    if (amount === null) return;
+    const amt = parseFloat(amount);
+    if (!(amt > 0)) { alert('Enter a valid amount.'); return; }
+    const ref = prompt('Reference / transaction ID (optional) — helps the bank alert match it automatically:') || null;
+
+    fetch(`/admin/payments/order/${orderId}/manual-proof`, {
+        method: 'POST',
+        headers: {
+            'Accept': 'application/json', 'Content-Type': 'application/json',
+            'X-Requested-With': 'XMLHttpRequest', 'X-CSRF-TOKEN': nfCreditCsrf(),
+        },
+        body: JSON.stringify({ amount: amt, reference: ref })
+    })
+    .then(r => r.json())
+    .then(d => {
+        if (!d.success) { alert(d.message || 'Could not record the payment.'); return; }
+        const extra = d.overpay && parseFloat(d.overpay.amount || 0);
+        if (extra > 0 && d.overpay.eligible) {
+            if (confirm(`${d.message}\n\nThat is Rs ${extra.toLocaleString('en-PK')} MORE than this order owed.\n\n` +
+                        `OK = add it to the customer's account balance\nCancel = leave it`)) {
+                nfOrderOverpayToBalance(orderId, true);
+                return;
+            }
+        } else {
+            alert(d.message);
+        }
+        nfLoadPaymentStrip(orderId, orderNumber);
+    })
+    .catch(e => alert('Could not record the payment: ' + e.message));
+}
+
+function nfOrderOverpayToBalance(orderId, silentReload) {
+    fetch(`/admin/payments/order/${orderId}/overpay-to-balance`, {
+        method: 'POST',
+        headers: {
+            'Accept': 'application/json', 'Content-Type': 'application/json',
+            'X-Requested-With': 'XMLHttpRequest', 'X-CSRF-TOKEN': nfCreditCsrf(),
+        }
+    })
+    .then(r => r.json())
+    .then(d => {
+        alert(d.message || (d.success ? 'Added.' : 'Could not add it.'));
+        nfLoadPaymentStrip(orderId, null);
+    })
+    .catch(e => alert('Could not add it: ' + e.message));
+}
+
 function initializeDiscountsFromOrder(order) {
     // Clear existing discount rows
     const container = document.getElementById('discountsContainer');
@@ -10693,13 +11154,22 @@ function initializeDiscountsFromOrder(order) {
     
     container.innerHTML = '';
     discountRowIndex = 0;
-    
+
+    // ⭐ The account-balance line is the customer's own money, owned by the
+    // server. It is deliberately NOT an editable discount row — it lives in the
+    // credit banner above, with its own Remove button. Editing it here would
+    // just snap back on save. (Kept out of the rows, but still counted in the
+    // totals by nfCreditAppliedAmount inside updateOrderTotal.)
+    const editableDiscounts = (order.discounts || []).filter(
+        d => d.coupon_code !== 'ACCOUNT_BALANCE'
+    );
+
     // If order has discount details, populate them
-    if (order.discounts && order.discounts.length > 0) {
-        order.discounts.forEach(discount => {
+    if (editableDiscounts.length > 0) {
+        editableDiscounts.forEach(discount => {
             addDiscountRow(discount.discount_title, discount.discount_amount);
         });
-    } else if (order.discount_total && order.discount_total > 0) {
+    } else if (order.discount_total && order.discount_total > 0 && !order.discounts?.length) {
         // Fallback: if no detail but has total, create single discount
         const title = order.coupon_code ? `Discount (${order.coupon_code})` : 'Discount';
         addDiscountRow(title, order.discount_total);
@@ -11117,10 +11587,7 @@ function openQurbaniPaymentModal(orderId) {
             </div>
             <div style="margin-bottom:12px;">
                 <label style="font-size:13px; font-weight:600; color:#374151;">Payment Method *</label>
-                {{-- Server-side pre-select: reads qurbani_default_payment_method
-                     from t_fin_config so the team's configured default for new
-                     orders lights up when the modal opens. Falls back to 'cash'
-                     if the admin hasn't picked one. --}}
+                
                 @php
                     $_qpmDefault = \App\Models\FIN\ConfigModel::get('qurbani_default_payment_method', 'cash');
                     if (!in_array($_qpmDefault, ['cash','online'], true)) { $_qpmDefault = 'cash'; }
@@ -13306,8 +13773,41 @@ function saveNewOrder() {
         body: JSON.stringify(orderData)
     })
     .then(response => response.json())
-    .then(data => {
+    .then(async data => {
         if (data.success) {
+            // 💰 Customer credit: if this customer has a balance, offer to open
+            // the new order right away so it can be applied. The balance is
+            // re-fetched HERE (not reused from the selection-time hint) so a
+            // balance spent in the meantime never produces a stale prompt.
+            const newOrderId = data.order?.id;
+            const custId = document.getElementById('selectedCustomerId')?.value;
+            if (newOrderId && custId) {
+                try {
+                    const res = await fetch(`/customer-credit/${custId}/summary?limit=1`, {
+                        headers: { 'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+                        credentials: 'same-origin'
+                    });
+                    const cj = await res.json();
+                    const cd = cj && cj.success ? cj.data : null;
+                    if (cd && cd.eligible && cd.has_balance) {
+                        if (confirm(`Order created!\n\nThis customer has Rs. ${cd.balance_display} account balance.\nOpen the order now to apply it?`)) {
+                            // Reload WITH edit_order_id so the fresh page auto-opens
+                            // the edit modal, where the green balance banner offers
+                            // the apply. Reusing that one flow keeps a single path.
+                            const url = new URL(window.location.href);
+                            url.searchParams.set('edit_order_id', newOrderId);
+                            // ⚠ id-collision guard: the new order is a PRODUCTION
+                            // order — never let a lingering ?source=shopify resolve
+                            // its id against the staging table.
+                            url.searchParams.delete('source');
+                            url.searchParams.delete('tab');
+                            window.location.href = url.toString();
+                            return;
+                        }
+                    }
+                } catch (e) { /* fall through to the normal flow */ }
+            }
+
             alert('Order created successfully!');
             closeModal('editOrderModal');
             // Refresh the page to show the new order
@@ -13397,6 +13897,10 @@ function selectCustomerMode(mode) {
     const detailsDiv = document.getElementById('selectedCustomerDetails');
 
     if (!existingSection || !newSection || !existingBtn || !newBtn) return;
+
+    // Customer credit: the hint belongs to a picked existing customer — a mode
+    // switch (or switching to a brand-new customer) makes it stale, so drop it.
+    document.getElementById('nfCreateCreditHint')?.remove();
 
     if (mode === 'existing') {
         existingSection.style.display = '';
@@ -13728,8 +14232,8 @@ function renderOrderTemplates(tpls) {
     var html = '';
     tpls.forEach(function(t, idx) {
         var bodyPreview = (t.body_text || '').replace(/\\n/g, '\n');
-        if (whatsappData.customerName) bodyPreview = bodyPreview.replace('{{1}}', whatsappData.customerName);
-        if (whatsappData.orderNumber) bodyPreview = bodyPreview.replace('{{2}}', whatsappData.orderNumber);
+        if (whatsappData.customerName) bodyPreview = bodyPreview.replace('{{ 1 }}', whatsappData.customerName);
+        if (whatsappData.orderNumber) bodyPreview = bodyPreview.replace('{{ 2 }}', whatsappData.orderNumber);
         html += '<div id="orderTpl_' + idx + '" style="width:100%;margin-bottom:10px;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px;overflow:hidden;">';
         html += '<div onclick="toggleOrderTplDetail(' + idx + ')" style="padding:14px 16px;cursor:pointer;display:flex;align-items:center;gap:12px;">';
         html += '<span style="font-size:24px;">📋</span>';
@@ -13747,7 +14251,7 @@ function renderOrderTemplates(tpls) {
                 var defVal = '';
                 if (i === 1) defVal = whatsappData.customerName || '';
                 if (i === 2) defVal = whatsappData.orderNumber || '';
-                html += '<input id="orderTplVar_' + idx + '_' + i + '" style="width:100%;padding:8px 10px;border:1px solid #d1d5db;border-radius:6px;font-size:13px;margin-bottom:4px;" placeholder="Variable {{' + i + '}}" value="' + escapeHtml(defVal) + '" />';
+                html += '<input id="orderTplVar_' + idx + '_' + i + '" style="width:100%;padding:8px 10px;border:1px solid #d1d5db;border-radius:6px;font-size:13px;margin-bottom:4px;" placeholder="Variable {{ ' + i + ' }}" value="' + escapeHtml(defVal) + '" />';
             }
             html += '</div>';
         }
@@ -13989,6 +14493,11 @@ function selectCustomerFromData(customerData) {
     // Show detailed customer information after selection
     showSelectedCustomerDetails(customerData);
 
+    // 💰 Customer credit: tell the manager NOW, while they are placing the
+    // order, that this customer has money with us. Re-fetched on every
+    // selection so a spent balance never shows a stale hint.
+    try { nfShowCreateCreditHint(customerData.id); } catch (e) { console.warn('credit hint failed', e); }
+
     // ⭐ Pre-select the payment method for this customer (user can still change it).
     try {
         // Scope to the form holding the customer search (the Create-Order form)
@@ -14069,6 +14578,48 @@ function selectCustomer(customerId, customerName, encodedData) {
         selectCustomerFromData({ id: customerId, name: customerName });
     }
 }
+/**
+ * 💰 Green hint in the CREATE-order form: "this customer has Rs X with us."
+ * Purely informational — credit can only attach to an order that exists, so
+ * the actual apply happens right after save (saveNewOrder offers to open the
+ * new order, where the full banner does the work). Removed and re-fetched on
+ * every customer selection so it can never show a stale balance.
+ */
+async function nfShowCreateCreditHint(customerId) {
+    document.getElementById('nfCreateCreditHint')?.remove();
+    if (!customerId) return;
+
+    let d;
+    try {
+        const res = await fetch(`/customer-credit/${customerId}/summary?limit=3`, {
+            headers: { 'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+            credentials: 'same-origin'
+        });
+        const json = await res.json();
+        if (!json || !json.success) return;
+        d = json.data;
+    } catch (e) { return; }
+
+    if (!d.eligible || !d.has_balance) return;
+
+    // Guard against a slow response landing after the manager switched customer.
+    const currentSel = document.getElementById('selectedCustomerId')?.value;
+    if (String(currentSel) !== String(customerId)) return;
+
+    const details = document.getElementById('selectedCustomerDetails');
+    if (!details) return;
+
+    const src = (d.history || []).find(h => h.is_credit && h.counts);
+    const from = src ? ` (from ${src.order_number ? 'order ' + src.order_number : src.type_label.toLowerCase()} · ${src.date || ''})` : '';
+
+    const hint = document.createElement('div');
+    hint.id = 'nfCreateCreditHint';
+    hint.style.cssText = 'margin-top:8px;padding:10px 12px;background:#ecfdf5;border:1px solid #6ee7b7;border-left:4px solid #059669;border-radius:6px;font-size:13px;color:#065f46;';
+    hint.innerHTML = `💰 <strong>Rs. ${nfEsc(d.balance_display)}</strong> account balance available${nfEsc(from)}.
+        After saving, you'll be asked whether to use it on this order.`;
+    details.insertAdjacentElement('afterend', hint);
+}
+
 function showSelectedCustomerDetails(customerData) {
     // Find or create customer details display area
     let detailsDiv = document.getElementById('selectedCustomerDetails');

@@ -32,7 +32,13 @@ class OrderStatusService
     /**
      * Change order status with validation
      */
-    public function changeOrderStatus(int $orderId, string $statusCode, ?string $notes = null, ?int $userId = null): array
+    /**
+     * @param array $options Per-call answers the caller collected from the user.
+     *        'credit_stranded_payment' => true moves money already received on a
+     *        cancelled order to the customer's account balance instead of
+     *        leaving it unowned. Absent/false keeps the historical behaviour.
+     */
+    public function changeOrderStatus(int $orderId, string $statusCode, ?string $notes = null, ?int $userId = null, array $options = []): array
     {
         try {
             $order = OrderModel::find($orderId);
@@ -47,13 +53,28 @@ class OrderStatusService
                 return ['success' => false, 'message' => $vanBlock];
             }
 
+            $order->creditStrandedPaymentOnCancel = !empty($options['credit_stranded_payment']);
+
             $success = $order->changeStatus($statusCode, $notes, $userId ?? auth()->id());
-            
-            return [
+
+            $result = [
                 'success' => $success,
                 'message' => $success ? 'Status updated successfully' : 'Failed to update status',
                 'order' => $success ? $order->fresh() : null
             ];
+
+            // Surface what the cancellation did with the customer's money, so
+            // the caller can tell them rather than leaving it to the log.
+            if ($success && $order->strandedPaymentCredited) {
+                $result['credited_to_balance'] = $order->strandedPaymentCredited;
+                // 'active' = auto-approved (Shabib/Taimur), 'pending' = queued.
+                $result['credited_status'] = $order->strandedPaymentCreditStatus;
+            }
+            if ($success && $order->creditReleasedOnCancel) {
+                $result['credit_released'] = $order->creditReleasedOnCancel;
+            }
+
+            return $result;
         } catch (\Exception $e) {
             Log::error('OrderStatusService::changeOrderStatus failed', [
                 'order_id' => $orderId,

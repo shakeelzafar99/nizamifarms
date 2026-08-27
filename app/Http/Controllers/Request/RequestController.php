@@ -205,6 +205,18 @@ class RequestController extends Controller
             // bucket and ignores whatever the client sent for it.
             'maintenance_type_id' => 'nullable|integer',
             'meter_at_fill' => 'nullable|integer|min:0|max:9999999',
+            // ⭐⭐ METERED (per-km) PETROL FILED ON A RIDER'S BEHALF (Aug-27 2026).
+            //   This path could only ever create the FLAT cash kind, so when a manager
+            //   filed a per-km rider's own-bike petrol it landed as an untethered cash
+            //   claim: no attendance row, no distance, no rate — invisible to the
+            //   one-per-day rule and to the rider's own screen, which then still showed
+            //   the day as unclaimed. With these three it files the very same
+            //   self-auditing row the rider's app files.
+            'attendance_id'  => 'nullable|integer',
+            'meter_distance' => 'nullable|numeric|min:0',
+            'petrol_rate'    => 'nullable|numeric|min:0',
+            // Which machine the claim is for — the manager picks it off the rider's day.
+            'vehicle_id'     => 'nullable|integer',
             'payment_source_account_id' => 'nullable|exists:t_fin_accounts,id', // Payment source selection
             'receiving_account_id' => 'nullable|integer|exists:t_fin_online_receiving_accounts,id', // Which bank an ONLINE expense is paid from
             'business_unit_id' => 'nullable|exists:t_fin_business_units,id', // ⭐ Business unit for expense
@@ -225,18 +237,23 @@ class RequestController extends Controller
             ], 422);
         }
 
+        // A per-km claim anchored to a real attendance row + meter reading. Same
+        // discriminator the rider's own endpoint uses, so the two agree by construction.
+        $isMeteredPetrol = $request->filled('attendance_id')
+            && (($validated['expense_category'] ?? null) === 'Petrol');
+
         // ⭐ Validate expense_date is within allowed backdate range
         if ($request->filled('expense_date')) {
             $loggedInUser = auth()->user();
             $expenseDate = \Carbon\Carbon::parse($validated['expense_date']);
             $today = \Carbon\Carbon::today();
-            
+
             // Get user's max backdate days from their roles
             $maxBackdateDays = DB::table('t_sys_user_role as ur')
                 ->join('t_sys_role as r', 'r.id', '=', 'ur.role_id')
                 ->where('ur.user_id', $loggedInUser->id)
                 ->max('r.expense_backdate_days') ?? 0;
-            
+
             // Check if date is in the future
             if ($expenseDate->gt($today)) {
                 return response()->json([
@@ -244,14 +261,31 @@ class RequestController extends Controller
                     'message' => 'Expense date cannot be in the future'
                 ], 422);
             }
-            
-            // Check if date is too far in the past
-            $daysDiff = $today->diffInDays($expenseDate);
-            if ($daysDiff > $maxBackdateDays) {
-                return response()->json([
-                    'success' => false,
-                    'message' => "You can only backdate expenses up to {$maxBackdateDays} days. Selected date is {$daysDiff} days ago."
-                ], 422);
+
+            // ⭐ Metered petrol has its OWN window and is exempt from the per-role cap —
+            //   exactly as on the rider's endpoint. The claim is anchored to an attendance
+            //   row and its meter readings, so the generic cap (which can be 0) would
+            //   otherwise stop a manager recording yesterday's kilometres for a rider,
+            //   which is the entire purpose of the on-behalf path.
+            if ($isMeteredPetrol) {
+                $petrolWindow = (int) (DB::table('t_fin_config')
+                    ->where('config_key', 'PETROL_WINDOW_DAYS')->value('config_value') ?: 5);
+                if ($petrolWindow < 1) { $petrolWindow = 5; }
+                if ($expenseDate->lt($today->copy()->subDays($petrolWindow))) {
+                    return response()->json([
+                        'success' => false,
+                        'message' => "Petrol requests from meter readings can only be raised for the last {$petrolWindow} days."
+                    ], 422);
+                }
+            } else {
+                // Check if date is too far in the past
+                $daysDiff = $today->diffInDays($expenseDate);
+                if ($daysDiff > $maxBackdateDays) {
+                    return response()->json([
+                        'success' => false,
+                        'message' => "You can only backdate expenses up to {$maxBackdateDays} days. Selected date is {$daysDiff} days ago."
+                    ], 422);
+                }
             }
         }
 
@@ -476,10 +510,14 @@ class RequestController extends Controller
                     'expense_date'  => $validated['expense_date'] ?? null,
                     'meter_at_fill' => $validated['meter_at_fill'] ?? null,
                     'service_type'  => $svcResolved[0],
-                    // This path never creates the self-auditing metered petrol row
-                    // (that comes from the rider's attendance screen), so there is
-                    // no attendance_id to pass — every claim here is the flat kind.
-                    'attendance_id' => null,
+                    // ⭐ Aug-27 2026: this path CAN now create the self-auditing metered
+                    //   row — a manager filing a rider's own-bike kilometres files the
+                    //   same kind of claim the rider's own screen would, and it is judged
+                    //   by the same rule (`checkMeteredPetrol`): the kilometres must be on
+                    //   a machine the rider owns, and must match what is recorded.
+                    'attendance_id'  => $request->filled('attendance_id') ? (int) $validated['attendance_id'] : null,
+                    'meter_distance' => $validated['meter_distance'] ?? null,
+                    'vehicle_id'     => $validated['vehicle_id'] ?? null,
                 ],
                 // WHO is filing. When a manager picks a rider, actor ≠ requester and
                 // the own-bike "don't file your own petrol" rule steps aside — that
@@ -491,6 +529,9 @@ class RequestController extends Controller
                 DB::rollBack();
                 return response()->json(['success' => false, 'message' => $fuelRules['message']], 422);
             }
+            // The machine the rules settled on — stamped onto the claim below, so the
+            // money follows the same machine as the kilometres that earned it.
+            $claimVehicleId = $fuelRules['vehicle_id'] ?? ($validated['vehicle_id'] ?? null);
             // Soft flag (2nd cash claim of the day, or a day the meter already paid
             // for) — carried into the description so the approver sees it.
             if (!empty($fuelRules['notice'])) {
@@ -620,6 +661,13 @@ class RequestController extends Controller
                 // and to the Bikes tank economics. Both categories keep it now.
                 'meter_at_fill' => in_array($validated['expense_category'] ?? null, ['Maintenance', 'Petrol'], true)
                     ? ($validated['meter_at_fill'] ?? null) : null,
+                // ⭐ The per-km trio — written ONLY for a metered petrol claim, so a stale
+                //   form sending stray fields on some other category cannot turn it into
+                //   one. These three are what make the row self-auditing: they tie it to
+                //   the day, the distance and the rate it was computed from.
+                'attendance_id'  => $isMeteredPetrol ? (int) $validated['attendance_id'] : null,
+                'meter_distance' => $isMeteredPetrol ? ($validated['meter_distance'] ?? null) : null,
+                'petrol_rate'    => $isMeteredPetrol ? ($validated['petrol_rate'] ?? null) : null,
                 'payment_source_account_id' => $validated['payment_source_account_id'] ?? null,
                 'receiving_account_id' => $expenseBankId,
                 'business_unit_id' => $validated['business_unit_id'] ?? 1,
@@ -653,7 +701,11 @@ class RequestController extends Controller
                 $requestModel->id, (int) $requesterId,
                 $validated['expense_category'] ?? null,
                 $validated['expense_date'] ?? null,
-                isset($validated['attendance_id']) ? (int) $validated['attendance_id'] : null
+                isset($validated['attendance_id']) ? (int) $validated['attendance_id'] : null,
+                // ⭐⭐ The manager PICKED the machine on the modal, or the rules resolved it
+                //   from the rider's day. Either way somebody knows, and being told beats
+                //   the date guess that put own-bike money on the van in the first place.
+                $claimVehicleId ? (int) $claimVehicleId : null
             );
 
             // If auto-approved and it's an expense-type request, post to ledger.

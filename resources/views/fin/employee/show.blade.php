@@ -1734,14 +1734,25 @@
                 <!-- Internal Account Section -->
                 <div id="receipt_account_section" class="mb-4" @if($canReceiveExternal) style="display: none;" @endif>
                     <label for="receipt_from_account" class="block text-sm font-medium text-gray-700">From Account</label>
-                    <select id="receipt_from_account" name="from_account_id" class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md">
+                    <select id="receipt_from_account" name="from_account_id" onchange="renderCompanyBankPicker('receipt')" class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md">
                         <option value="">Select account...</option>
                         @foreach(\App\Models\FIN\AccountModel::where('is_active', 1)->whereIn('account_category', ['cash', 'bank', 'employee_cash'])->get() as $acc)
                             @if($acc->id != $account->id)
-                                <option value="{{ $acc->id }}">{{ $acc->account_name }} (Rs. {{ number_format($acc->current_balance, 2) }})</option>
+                                <option value="{{ $acc->id }}" data-account-category="{{ $acc->account_category }}">{{ $acc->account_name }} (Rs. {{ number_format($acc->current_balance, 2) }})</option>
                             @endif
                         @endforeach
                     </select>
+                </div>
+
+                {{-- 🏦 WHICH bank, when this receipt touches a bank account on exactly
+                     one side (this page's account, or the internal source). Without the
+                     tag the per-bank balances never see the money — receipts into
+                     Online Bank were the sanctioned door for outside money, and every
+                     one of them landed untagged. Mirrors the Deposit modal's picker. --}}
+                <div id="receiptBankField" class="mb-4" style="display:none;">
+                    <label class="block text-sm font-medium text-gray-700">🏦 Which bank? *</label>
+                    <div id="receiptBankChips" class="mt-2 flex flex-wrap gap-2"></div>
+                    <input type="hidden" name="receiving_account_id" id="receipt_receiving_account_id" value="">
                 </div>
 
                 <!-- Amount -->
@@ -1818,14 +1829,22 @@
                 <!-- Internal Account Section -->
                 <div id="payment_account_section" class="mb-4" style="display: none;">
                     <label for="payment_to_account" class="block text-sm font-medium text-gray-700">To Account</label>
-                    <select id="payment_to_account" name="to_account_id" class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md">
+                    <select id="payment_to_account" name="to_account_id" onchange="renderCompanyBankPicker('payment')" class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md">
                         <option value="">Select account...</option>
                         @foreach(\App\Models\FIN\AccountModel::where('is_active', 1)->whereIn('account_category', ['cash', 'bank', 'employee_cash'])->get() as $acc)
                             @if($acc->id != $account->id)
-                                <option value="{{ $acc->id }}">{{ $acc->account_name }} (Rs. {{ number_format($acc->current_balance, 2) }})</option>
+                                <option value="{{ $acc->id }}" data-account-category="{{ $acc->account_category }}">{{ $acc->account_name }} (Rs. {{ number_format($acc->current_balance, 2) }})</option>
                             @endif
                         @endforeach
                     </select>
+                </div>
+
+                {{-- 🏦 Same rule as the receipt modal: a payment out of Online Bank (or
+                     into a bank from this cash account) must name the physical bank. --}}
+                <div id="paymentBankField" class="mb-4" style="display:none;">
+                    <label class="block text-sm font-medium text-gray-700">🏦 Which bank? *</label>
+                    <div id="paymentBankChips" class="mt-2 flex flex-wrap gap-2"></div>
+                    <input type="hidden" name="receiving_account_id" id="payment_receiving_account_id" value="">
                 </div>
 
                 <!-- Expense Category (Optional) -->
@@ -3476,6 +3495,7 @@ function resetExpenseFilter() {
 function openCompanyReceiveModal() {
     document.getElementById('companyReceiveModal').classList.remove('hidden');
     document.getElementById('receipt_date').valueAsDate = new Date();
+    renderCompanyBankPicker('receipt');   // fresh chips after any earlier reset
 }
 
 function closeCompanyReceiveModal() {
@@ -3486,6 +3506,7 @@ function closeCompanyReceiveModal() {
 function openCompanyPaymentModal() {
     document.getElementById('companyPaymentModal').classList.remove('hidden');
     document.getElementById('payment_date').valueAsDate = new Date();
+    renderCompanyBankPicker('payment');   // fresh chips after any earlier reset
 }
 
 function closeCompanyPaymentModal() {
@@ -3562,13 +3583,92 @@ function toggleReceiptSource() {
     const sourceType = document.querySelector('input[name="receipt_source_type"]:checked').value;
     document.getElementById('receipt_account_section').style.display = sourceType === 'internal' ? 'block' : 'none';
     document.getElementById('receipt_external_section').style.display = sourceType === 'external' ? 'block' : 'none';
+    renderCompanyBankPicker('receipt');
 }
 
 function togglePaymentDestination() {
     const destType = document.querySelector('input[name="payment_dest_type"]:checked').value;
     document.getElementById('payment_account_section').style.display = destType === 'internal' ? 'block' : 'none';
     document.getElementById('payment_external_section').style.display = destType === 'external' ? 'block' : 'none';
+    renderCompanyBankPicker('payment');
 }
+
+// ── 🏦 "Which bank?" for the company Receive / Payment modals ─────────────────
+// A movement that touches a bank account on exactly ONE side must name the
+// physical bank (receiving_account_id) or the per-bank balances never see it.
+// Both sides bank = the same money moving internally — nets to zero per bank, so
+// the picker hides and the tag is cleared. Mirrors the Deposit modal's picker
+// (and the server enforces the same rule in EmployeeCashController::bankTagFor).
+const companyPageIsBank = {{ $account->account_category === \App\Models\FIN\AccountModel::CATEGORY_BANK ? 'true' : 'false' }};
+
+function companyBankNeeded(kind) {
+    // The other side of the movement: internal account if that radio is chosen
+    // (and one is picked), external/equity otherwise — never a bank.
+    const radioName = kind === 'receipt' ? 'receipt_source_type' : 'payment_dest_type';
+    const selId = kind === 'receipt' ? 'receipt_from_account' : 'payment_to_account';
+    const radio = document.querySelector('input[name="' + radioName + '"]:checked');
+    let otherIsBank = false;
+    if (radio && radio.value === 'internal') {
+        const sel = document.getElementById(selId);
+        const opt = sel && sel.options[sel.selectedIndex];
+        otherIsBank = !!(opt && opt.dataset && opt.dataset.accountCategory === 'bank');
+    }
+    return companyPageIsBank !== otherIsBank;   // exactly one side
+}
+
+function selectCompanyBank(kind, id) {
+    const h = document.getElementById(kind + '_receiving_account_id');
+    if (h) h.value = id;
+    renderCompanyBankPicker(kind);
+}
+
+function renderCompanyBankPicker(kind) {
+    const field = document.getElementById(kind + 'BankField');
+    const chips = document.getElementById(kind + 'BankChips');
+    const hidden = document.getElementById(kind + '_receiving_account_id');
+    if (!field || !chips || !hidden) return;
+    const banks = (typeof empTransferReceivingBanks !== 'undefined') ? empTransferReceivingBanks : [];
+    if (!companyBankNeeded(kind) || banks.length === 0) {
+        field.style.display = 'none';
+        hidden.value = '';                     // never leave a stale tag behind
+        return;
+    }
+    field.style.display = 'block';
+    const current = hidden.value;
+    chips.innerHTML = banks.map(function (b) {
+        const active = String(current) === String(b.id);
+        const color = b.color_hex || '#3B82F6';
+        const bal = (b.balance !== undefined && b.balance !== null)
+            ? ' · Rs ' + Math.round(Number(b.balance)).toLocaleString() : '';
+        return '<button type="button" onclick="selectCompanyBank(\'' + kind + '\',' + b.id + ')" style="padding:6px 14px; border-radius:16px; border:1px solid ' + (active ? color : '#CBD5E1') + '; background:' + (active ? color : '#F1F5F9') + '; color:' + (active ? '#fff' : '#475569') + '; font-size:13px; font-weight:600; cursor:pointer;">' + (b.short_code || b.name) + '<span style="font-weight:500; opacity:0.85;">' + bal + '</span></button>';
+    }).join('');
+}
+
+document.addEventListener('DOMContentLoaded', function () {
+    // Initial visibility (a bank-account page needs the picker from the start),
+    // and the submit gates — the server refuses too, but this keeps the typed
+    // form intact instead of losing it to a redirect.
+    renderCompanyBankPicker('receipt');
+    renderCompanyBankPicker('payment');
+    const recForm = document.getElementById('companyReceiveForm');
+    if (recForm) {
+        recForm.addEventListener('submit', function (e) {
+            if (companyBankNeeded('receipt') && !document.getElementById('receipt_receiving_account_id').value) {
+                e.preventDefault();
+                alert('Select which bank this receipt goes into.');
+            }
+        });
+    }
+    const payForm = document.getElementById('companyPaymentForm');
+    if (payForm) {
+        payForm.addEventListener('submit', function (e) {
+            if (companyBankNeeded('payment') && !document.getElementById('payment_receiving_account_id').value) {
+                e.preventDefault();
+                alert('Select which bank this payment leaves from.');
+            }
+        });
+    }
+});
 
 // Online Approvals Modal Functions
 function openOnlineApprovalsModal() {

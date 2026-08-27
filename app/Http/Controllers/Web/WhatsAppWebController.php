@@ -1054,6 +1054,9 @@ class WhatsAppWebController extends Controller
             'template_name' => 'required',
             'conversation_id' => 'nullable|integer',
             'order_id' => 'nullable|integer',
+            // Aug-2026: stamp send history without triggering the invoice-image
+            // attach that order_id implies (see resolveRelatedOrderNumber).
+            'related_order_number' => 'nullable|string|max:50',
         ]);
 
         $service = app(WhatsAppService::class);
@@ -1139,7 +1142,11 @@ class WhatsAppWebController extends Controller
                 auth()->id(),
                 $request->template_name,
                 $bodyParams,
-                $force && $service->canOverrideMarketingDedup(auth()->user())
+                $force && $service->canOverrideMarketingDedup(auth()->user()),
+                $service->resolveRelatedOrderNumber(
+                    $request->input('related_order_number'),
+                    $request->input('order_id')
+                )
             );
         }
         return response()->json(['success' => true]);

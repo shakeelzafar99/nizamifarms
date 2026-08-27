@@ -418,9 +418,45 @@ class OrderModel extends BaseModel
                 ]
             ]);
         }
-        
+
         // No discounts at all
         return collect([]);
+    }
+
+    /**
+     * How much of this order was paid from the customer's OWN account balance.
+     *
+     * ⭐⭐ This is NOT a discount and must never be printed as one. A discount is
+     * money the business gave up; this is money the customer had already paid us,
+     * now being spent. Every invoice surface (web, print, PDF, the WhatsApp
+     * image, and the mobile receipt) reads it from HERE so they all say the same
+     * thing — the alternative was each renderer summing the discount rows and
+     * silently calling the customer's own money a "Discount".
+     *
+     * It is stored as a sentinel discount row so it reduces total_price exactly
+     * like any other line; only the WORDING differs.
+     */
+    public function accountBalanceApplied(): float
+    {
+        if (!$this->relationLoaded('discounts')) {
+            $this->load('discounts');
+        }
+
+        return round((float) $this->discounts
+            ->where('coupon_code', \App\Models\CRM\CustomerCreditModel::DISCOUNT_CODE)
+            ->sum('discount_amount'), 2);
+    }
+
+    /**
+     * The discount total with the account balance TAKEN OUT, for renderers that
+     * show the two on separate lines. Pair it with accountBalanceApplied();
+     * together they still add up to the full reduction, so totals never move.
+     */
+    public function realDiscountTotal(): float
+    {
+        $all = (float) $this->getDiscountBreakdown()->sum('discount_amount');
+
+        return round($all - $this->accountBalanceApplied(), 2);
     }
 
     // Helper methods
@@ -636,7 +672,36 @@ class OrderModel extends BaseModel
                     // Now update order - status already removed if needed
                     $existingOrder->update($orderAttributes);
                     $order = $existingOrder;
-                    
+
+                    // ⭐ Customer credit (Aug-2026): an external re-sync writes the
+                    // platform's own totals, which know nothing about an account
+                    // balance applied here — so it would silently un-discount the
+                    // order while the credit row still says "spent". Re-assert the
+                    // reduction from the credit row (the money authority) whenever
+                    // the sync touched the totals.
+                    if (array_key_exists('total_price', $orderAttributes)
+                        || array_key_exists('discount_total', $orderAttributes)) {
+                        try {
+                            $liveConsume = (new \App\Services\CustomerCreditService())
+                                ->liveConsumeForOrder((int) $order->id);
+                            if ($liveConsume) {
+                                $credit = round(abs((float) $liveConsume->amount), 2);
+                                $order->discount_total = round((float) $order->discount_total + $credit, 2);
+                                $order->total_price    = round(max(0, (float) $order->total_price - $credit), 2);
+                                $order->save();
+                                \Log::info('Customer credit re-asserted after external sync', [
+                                    'order_id' => $order->id,
+                                    'credit'   => $credit,
+                                ]);
+                            }
+                        } catch (\Throwable $e) {
+                            \Log::error('Failed to re-assert customer credit after external sync', [
+                                'order_id' => $order->id,
+                                'error'    => $e->getMessage(),
+                            ]);
+                        }
+                    }
+
                     // If status change was allowed, apply it using changeStatus method
                     if ($shouldUseChangeStatus && $incomingNormalized) {
                         $order->changeStatus($incomingNormalized, 'WooCommerce sync');
@@ -1347,10 +1412,43 @@ class OrderModel extends BaseModel
      */
     public ?string $lastInvoiceNote = null;
 
+    /**
+     * Customer credit — transient IN flag (Aug-2026), same non-persisted contract
+     * as the two properties above. Set by the CALLER before cancelling an order
+     * that still holds received money, to answer the owner-mandated question
+     * "move this payment to the customer's account balance?". Left false, the
+     * cancellation behaves exactly as it always has. Deliberately a property
+     * rather than a changeStatus() argument so none of the five cancel doors
+     * need their signatures changed.
+     */
+    public bool $creditStrandedPaymentOnCancel = false;
+
+    /**
+     * Transient OUT companion: the amount actually moved to the customer's
+     * balance by this cancellation, so the caller can confirm it to the user.
+     */
+    public ?float $strandedPaymentCredited = null;
+
+    /**
+     * Transient OUT companion to the above: the grant's resulting status —
+     * 'active' when the canceller was Shabib/Taimur (auto-approved), 'pending'
+     * otherwise — so the caller's message can say which actually happened.
+     */
+    public ?string $strandedPaymentCreditStatus = null;
+
+    /**
+     * Transient OUT: credit that was returned to the customer's balance because
+     * this order was cancelled (money they had already spent on it).
+     */
+    public ?float $creditReleasedOnCancel = null;
+
     public function changeStatus(string $statusCode, ?string $notes = null, ?int $changedBy = null): bool
     {
         $this->lastInvoicePostError = null;
         $this->lastInvoiceNote = null;
+        $this->strandedPaymentCredited = null;
+        $this->strandedPaymentCreditStatus = null;
+        $this->creditReleasedOnCancel = null;
         // Phase 1 (May-2026) — capture the prior NF status BEFORE the
         // transaction mutates $this->order_status, so the customer-app
         // webhook emitter (called post-commit below) can include it as
@@ -1543,6 +1641,11 @@ class OrderModel extends BaseModel
                             ->pluck('ledger_transaction_id');
 
                         $reversedCount = 0;
+                        // Money that stays in our accounts because its ledger row could
+                        // not be reversed. Historically this just sat there owned by
+                        // nobody; it is what the customer-credit prompt offers to move
+                        // to the customer's balance.
+                        $strandedAmount = 0.0;
                         foreach ($paymentLedgerIds as $ledgerId) {
                             $ledger = \App\Models\FIN\LedgerModel::find($ledgerId);
                             if ($ledger && $ledger->approval_status !== \App\Models\FIN\LedgerModel::STATUS_REVERSED) {
@@ -1551,6 +1654,7 @@ class OrderModel extends BaseModel
                                         'order_id' => $this->id,
                                         'ledger_id' => $ledgerId,
                                     ]);
+                                    $strandedAmount += (float) $ledger->amount;
                                     continue;
                                 }
                                 $this->reverseLedgerForCancellation($ledger);
@@ -1574,12 +1678,60 @@ class OrderModel extends BaseModel
                                 'reversed_count' => $reversedCount,
                             ]);
                         }
+
+                        // Owner rule (Aug-2026): money already received on a cancelled
+                        // order is NEVER moved automatically — the manager is asked, and
+                        // only an explicit yes reaches here. The grant is created pending
+                        // so it still passes through the normal approval queue.
+                        if ($this->creditStrandedPaymentOnCancel && $strandedAmount > 0 && $this->customer_id) {
+                            $creditService = new \App\Services\CustomerCreditService();
+                            if ($creditService->isEligibleId((int) $this->customer_id)) {
+                                $grant = $creditService->requestGrant(
+                                    (int) $this->customer_id,
+                                    round($strandedAmount, 2),
+                                    $changedBy ?? (auth()->check() ? auth()->id() : 1),
+                                    [
+                                        'order_id' => $this->id,
+                                        'source'   => \App\Models\CRM\CustomerCreditModel::SOURCE_CANCELLATION,
+                                        'reason'   => 'Payment received on cancelled order ' . $this->order_number,
+                                    ]
+                                );
+                                $this->strandedPaymentCredited = round($strandedAmount, 2);
+                                // 'active' when the canceller auto-approves, 'pending' otherwise.
+                                $this->strandedPaymentCreditStatus = $grant->status;
+                            }
+                        }
                     } catch (\Exception $e) {
                         \Log::error("Failed to reverse payment ledger entries for cancelled order", [
                             'order_id' => $this->id,
                             'error' => $e->getMessage()
                         ]);
                         // Don't block cancellation for payment reversal failures
+                    }
+                }
+
+                // 4c. Cancelled: hand back any account balance the customer had
+                // already spent on this order. Unlike the payment question above
+                // this is automatic — it is the customer's own money returning,
+                // not a decision. Every cancel door reaches this one place.
+                if ($statusCode === 'cancelled') {
+                    try {
+                        $released = (new \App\Services\CustomerCreditService())->releaseFromOrder(
+                            (int) $this->id,
+                            $changedBy ?? (auth()->check() ? auth()->id() : null),
+                            'Order ' . $this->order_number . ' cancelled'
+                        );
+                        if ($released) {
+                            $this->creditReleasedOnCancel = $released;
+                            $this->refresh();
+                        }
+                    } catch (\Exception $e) {
+                        // A failure here would strand the customer's credit on a dead
+                        // order, so it is loud — but it must not block the cancellation.
+                        \Log::error('Failed to release customer credit on cancellation', [
+                            'order_id' => $this->id,
+                            'error'    => $e->getMessage(),
+                        ]);
                     }
                 }
 
@@ -1727,6 +1879,27 @@ class OrderModel extends BaseModel
                         // Don't fail the status change if ledger posting fails —
                         // but surface it to the caller (see property docblock above)
                         $this->lastInvoicePostError = $e->getMessage();
+                    }
+                }
+
+                // 7. Delivered: the account balance this order reserved is now
+                // really spent, so it posts to the ledger (liability cleared,
+                // revenue recognised). Runs AFTER the invoice posting above so
+                // the invoice — already at the discounted total — plus this row
+                // add up to the full value of the sale.
+                if ($statusCode === 'delivered') {
+                    try {
+                        (new \App\Services\CustomerCreditService())->finaliseForOrder(
+                            $this,
+                            $changedBy ?? (auth()->check() ? auth()->id() : null)
+                        );
+                    } catch (\Exception $e) {
+                        \Log::error('Failed to finalise customer credit on delivery', [
+                            'order_id' => $this->id,
+                            'error'    => $e->getMessage(),
+                        ]);
+                        // Never block a delivery; the reservation stays and can be
+                        // finalised again on a later save.
                     }
                 }
 

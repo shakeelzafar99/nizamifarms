@@ -420,10 +420,22 @@
                 </div>
             @endif
             <div class="totals">
-                @if($totalDiscounts > 0)
+                {{-- ⭐ Account balance is the customer's OWN money, never a discount.
+                     Split lines; the sum (and the total below) is unchanged. --}}
+                @php
+                    $__balanceUsed = $order->accountBalanceApplied();
+                    $__realDiscount = round($totalDiscounts - $__balanceUsed, 2);
+                @endphp
+                @if($__realDiscount > 0)
                 <div class="totals-row">
                     <div class="totals-label">DISCOUNT</div>
-                    <div class="totals-amount">- Rs&nbsp;{{ number_format($totalDiscounts, 0) }}</div>
+                    <div class="totals-amount">- Rs&nbsp;{{ number_format($__realDiscount, 0) }}</div>
+                </div>
+                @endif
+                @if($__balanceUsed > 0)
+                <div class="totals-row">
+                    <div class="totals-label">ACCOUNT BALANCE USED</div>
+                    <div class="totals-amount">- Rs&nbsp;{{ number_format($__balanceUsed, 0) }}</div>
                 </div>
                 @endif
                 <div class="totals-row">

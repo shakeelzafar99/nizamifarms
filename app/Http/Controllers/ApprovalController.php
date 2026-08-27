@@ -437,6 +437,11 @@ class ApprovalController extends Controller
             'id' => $ledger->id,
             'number' => $displayNumber,
             'order_number' => $orderNumber, // ⭐ Separate field for order number
+            // Needed so the dashboard can ask about an overpayment after it
+            // settles an invoice — the same question the Online Approvals
+            // screen asks. Null for non-invoice ledger rows, which is the
+            // signal to skip the question entirely.
+            'order_id' => $ledger->order_id,
             'category' => ucfirst(str_replace('_', ' ', $ledger->transaction_type)),
             'category_code' => $ledger->transaction_type,
             'requester' => $requester,
@@ -1060,6 +1065,13 @@ class ApprovalController extends Controller
         $isTaimur = $user->roles()
             ->whereRaw('LOWER(urole_name) = ?', ['taimur'])
             ->exists();
+
+        // Aug-2026 — who may type a payment in by hand (Shabib and Taimur only).
+        // Resolved server-side so the button simply is not drawn for anyone else,
+        // rather than being drawn and then 403-ing on click. The endpoint enforces
+        // the same rule independently — this only decides what is shown.
+        $canRecordPayment = app(\App\Http\Controllers\FIN\PaymentSignalsController::class)
+            ->userMayRecordManualPayment($user);
         
         // Held bank credits get another look at invoices that appeared after
         // they arrived — this screen is exactly where that money is judged, so
@@ -1072,7 +1084,8 @@ class ApprovalController extends Controller
             'hasLevel1Rights',
             'hasLevel2Rights',
             'receivingAccounts',
-            'isTaimur'
+            'isTaimur',
+            'canRecordPayment'
         ));
     }
 

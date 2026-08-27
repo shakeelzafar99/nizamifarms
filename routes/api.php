@@ -213,6 +213,10 @@ Route::middleware('auth:sanctum')->group(function () {
         // caller's own assignment and can return nothing else. Everyone else's
         // costs stay behind `view_bike_costs`, which this never touches.
         Route::get('/my-vehicle', [\App\Http\Controllers\API\MyVehicleController::class, 'show']);
+        // ⭐ His OWN bike's meter for a day the van owns his attendance readings. Same
+        //   writer as the manager's Vehicles page (VehicleService::saveMeterLog); the
+        //   gates (his machine, his window, plausible, his own row) are in the controller.
+        Route::post('/my-vehicle/meter', [\App\Http\Controllers\API\MyVehicleController::class, 'saveMeter']);
         
         // Orders - reusing existing filter endpoint (enhanced with customer order count)
         Route::get('/orders', [\App\Http\Controllers\CRM\OrderController::class, 'filter']);
@@ -358,6 +362,16 @@ Route::middleware('auth:sanctum')->group(function () {
         // never disagree about what removal means.
         Route::post('/signal/{signalId}/unmark', [\App\Http\Controllers\FIN\PaymentSignalsController::class, 'unmark'])
             ->whereNumber('signalId');
+        // Aug-2026 — "customer paid more than the invoice". SAME controller as the
+        // web approvals screen, so the two surfaces can never disagree about what
+        // counts as an overpayment or what happens to it.
+        Route::get('/order/{orderId}/overpay', [\App\Http\Controllers\FIN\PaymentSignalsController::class, 'overpayInfo'])
+            ->whereNumber('orderId');
+        Route::post('/order/{orderId}/overpay-to-balance', [\App\Http\Controllers\FIN\PaymentSignalsController::class, 'overpayToBalance'])
+            ->whereNumber('orderId');
+        Route::post('/order/{orderId}/overpay-to-tip', [\App\Http\Controllers\FIN\PaymentSignalsController::class, 'overpayToTip'])
+            ->whereNumber('orderId');
+        Route::post('/overpay-batch', [\App\Http\Controllers\FIN\PaymentSignalsController::class, 'overpayBatch']);
     });
     
     // Mobile Permissions

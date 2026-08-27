@@ -225,7 +225,11 @@ class OrderStatusController extends Controller
             'status_code' => 'required|string|exists:t_crm_order_status_master,status_code',
             'notes' => 'nullable|string|max:1000',
             'confirmed' => 'nullable|boolean', // For ledger reversal confirmation
-            'bring_back' => 'nullable|boolean' // Operator chose to return prepared items to the queue
+            'bring_back' => 'nullable|boolean', // Operator chose to return prepared items to the queue
+            // Cancellation only: the manager's answer to "move the money we
+            // already received to this customer's account balance?" Owner rule
+            // (Aug-2026) — never assumed, always asked.
+            'credit_stranded_payment' => 'nullable|boolean'
         ]);
 
         // Capture the status the order is in BEFORE the change, for the bring-back check below.
@@ -237,10 +241,39 @@ class OrderStatusController extends Controller
         // Check if changing to 'cancelled' and order has ledger entry
         if ($request->status_code === 'cancelled') {
             $order = OrderModel::find($request->order_id);
-            
+
+            // Money already received that this cancellation cannot reverse, plus
+            // any account balance the customer had spent on the order. Both are
+            // shown in the confirmation so nobody cancels blind.
+            $stranded = $order
+                ? (new \App\Services\CustomerCreditService())->strandedPaymentInfoFor($order)
+                : ['amount' => 0.0, 'can_credit' => false, 'customer_name' => null, 'reason' => null];
+
+            $appliedCredit = $order
+                ? (new \App\Services\CustomerCreditService())->liveConsumeForOrder((int) $order->id)
+                : null;
+
+            // An order with received money but NO invoice ledger row (qurbani,
+            // pre-paid) never reached the confirmation below, so it was
+            // cancelled silently. Ask here instead.
+            if ($order && $stranded['amount'] > 0 && !$request->boolean('confirmed')) {
+                return response()->json([
+                    'success' => false,
+                    'requires_confirmation' => true,
+                    'confirmation_data' => [
+                        'message'        => 'This order has payments recorded against it',
+                        'order_number'   => $order->order_number,
+                        'amount'         => $order->total_price,
+                        'stranded'       => $stranded,
+                        'credit_applied' => $appliedCredit ? round(abs((float) $appliedCredit->amount), 2) : 0.0,
+                        'ledger_id'      => $order->ledger_transaction_id,
+                    ]
+                ], 200);
+            }
+
             if ($order && $order->ledger_transaction_id) {
                 $ledger = \App\Models\FIN\LedgerModel::find($order->ledger_transaction_id);
-                
+
                 if ($ledger && $ledger->approval_status !== \App\Models\FIN\LedgerModel::STATUS_REVERSED) {
                     // Check if ledger is settled
                     if ($ledger->settlement_status === 'settled') {
@@ -280,7 +313,9 @@ class OrderStatusController extends Controller
                                 'amount' => $order->total_price,
                                 'ledger_mode' => $ledger->mode,
                                 'account_name' => $riderName,
-                                'ledger_id' => $ledger->id
+                                'ledger_id' => $ledger->id,
+                                'stranded' => $stranded,
+                                'credit_applied' => $appliedCredit ? round(abs((float) $appliedCredit->amount), 2) : 0.0,
                             ]
                         ], 200);
                     }
@@ -292,7 +327,9 @@ class OrderStatusController extends Controller
         $result = $this->statusService->changeOrderStatus(
             $request->order_id,
             $request->status_code,
-            $request->notes
+            $request->notes,
+            null,
+            ['credit_stranded_payment' => $request->boolean('credit_stranded_payment')]
         );
 
         // BRING-BACK: the operator moved an order back across the "out the door" line and chose to

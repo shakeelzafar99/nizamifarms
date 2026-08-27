@@ -1750,9 +1750,29 @@ function captureQurbaniInvoiceImage(invoiceUrl, orderId) {
     return new Promise(function(resolve, reject) {
         var iframe = document.createElement('iframe');
         iframe.style.cssText = 'position:fixed;left:-9999px;top:0;width:900px;height:1400px;border:none;opacity:0;';
+        // Aug-2026 — see the twin fix in pages/orders/index.blade.php. The
+        // auto-preview loads this iframe while the Phone Number field is being
+        // edited; a loading iframe takes focus and drops the caret. Keep it out
+        // of the tab order and put the caret (and its selection) back on load.
+        iframe.setAttribute('tabindex', '-1');
+        iframe.setAttribute('aria-hidden', 'true');
+        var _focusSnap = document.activeElement;
+        var _selSnap = (_focusSnap && typeof _focusSnap.selectionStart === 'number')
+            ? { start: _focusSnap.selectionStart, end: _focusSnap.selectionEnd } : null;
+        var restoreFocus = function() {
+            try {
+                if (!_focusSnap || !document.body.contains(_focusSnap)) return;
+                if (document.activeElement === _focusSnap) return;
+                _focusSnap.focus({ preventScroll: true });
+                if (_selSnap && typeof _focusSnap.setSelectionRange === 'function') {
+                    _focusSnap.setSelectionRange(_selSnap.start, _selSnap.end);
+                }
+            } catch (e) { /* best-effort */ }
+        };
         document.body.appendChild(iframe);
         iframe.src = invoiceUrl;
         iframe.onload = function() {
+            restoreFocus();
             try {
                 var iDoc = iframe.contentDocument || iframe.contentWindow.document;
                 var script = iDoc.createElement('script');
@@ -1885,7 +1905,18 @@ function openWhatsAppInvoiceModal(orderId, customerName, orderNumber, customerPh
         </div>
     `;
     document.body.appendChild(overlay);
-    overlay.addEventListener('click', function(e) { if (e.target === overlay) overlay.remove(); });
+    // Aug-2026 — see the twin fix in pages/orders/index.blade.php. Backdrop
+    // close must require the press AND the release on the backdrop: a plain
+    // `click` closer fires when a drag-select inside the Phone Number input
+    // releases past the card edge (mousedown+mouseup on different elements =>
+    // click dispatched to their common ancestor = the overlay), killing the
+    // dialog mid-edit.
+    let _qurWaDownOnBackdrop = false;
+    overlay.addEventListener('mousedown', function(e) { _qurWaDownOnBackdrop = (e.target === overlay); });
+    overlay.addEventListener('click', function(e) {
+        if (e.target === overlay && _qurWaDownOnBackdrop) overlay.remove();
+        _qurWaDownOnBackdrop = false;
+    });
 
     qurWaLoadInvoiceTemplates();
     qurWaLoadOtherTemplates();

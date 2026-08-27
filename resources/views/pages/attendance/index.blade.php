@@ -632,6 +632,20 @@
         <input type="number" min="0" step="1" id="meterEditEnd" style="width:100%;border:2px solid #d1d5db;border-radius:8px;padding:9px 10px;font-size:14px;">
       </div>
     </div>
+    {{-- ⭐⭐ WHICH MACHINE THESE READINGS ARE OF (Aug-27 2026).
+         A rider gets ONE meter pair a day. On a day he arrives on his own bike and takes
+         the company van out, that pair has to describe two machines — and until somebody
+         says which is which, his own-bike petrol claim has no evidence to stand on and
+         the van's odometer can silently absorb his bike's numbers (exactly what happened
+         in the Aug-22 incident). The manager is the only one who knows, so this is where
+         he says it. Left alone, nothing changes: any existing stamp is preserved. --}}
+    <div id="meterEditVehWrap" style="display:none;margin-top:12px;">
+      <label style="display:block;font-size:12px;font-weight:600;color:#374151;margin-bottom:4px;">Which vehicle are these readings for?</label>
+      <select id="meterEditVehicle" style="width:100%;border:2px solid #d1d5db;border-radius:8px;padding:9px 10px;font-size:14px;">
+        <option value="">— leave as recorded —</option>
+      </select>
+      <div id="meterEditVehHint" style="font-size:11px;color:#6b7280;margin-top:4px;"></div>
+    </div>
     <div style="font-size:11px;color:#9ca3af;margin-top:8px;">Leave a field blank to keep it unchanged. This only fixes the attendance meter — the rider re-raises his petrol request to recompute the amount.</div>
     <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:16px;">
       <button type="button" onclick="closeMeterEdit()" style="padding:9px 14px;border-radius:8px;border:1px solid #e5e7eb;background:#fff;color:#374151;font-weight:600;cursor:pointer;">Cancel</button>
@@ -1573,7 +1587,7 @@ function renderAttendanceTable(data) {
         <!-- Day cell: meter (km + photos + gps audit) · hours, with ✎ meter + integrity flags -->
         <td class="px-4 py-3 text-sm" style="white-space:nowrap;">
           <div>${getDistanceBadge(r)}${hours !== '-' ? `<span style="color:#D1D5DB;margin:0 6px;">·</span><span style="color:#4B5563;">${hours}</span>` : ''}
-            ${r.attendance_id ? `<button type="button" onclick="openMeterEdit(${r.attendance_id}, ${r.meter_start != null && r.meter_start !== '' ? Number(r.meter_start) : 'null'}, ${r.meter_end != null && r.meter_end !== '' ? Number(r.meter_end) : 'null'}, '${(r.fullname || '').replace(/'/g, "\\'").replace(/"/g, '&quot;')}')" title="Correct meter reading" style="margin-left:6px;font-size:11px;color:#2563EB;background:#EFF6FF;border:1px solid #BFDBFE;border-radius:5px;padding:1px 6px;cursor:pointer;">✎ meter</button>` : ''}
+            ${r.attendance_id ? `<button type="button" onclick="openMeterEdit(${r.attendance_id}, ${r.meter_start != null && r.meter_start !== '' ? Number(r.meter_start) : 'null'}, ${r.meter_end != null && r.meter_end !== '' ? Number(r.meter_end) : 'null'}, '${(r.fullname || '').replace(/'/g, "\\'").replace(/"/g, '&quot;')}', ${r.user_id})" title="Correct meter reading" style="margin-left:6px;font-size:11px;color:#2563EB;background:#EFF6FF;border:1px solid #BFDBFE;border-radius:5px;padding:1px 6px;cursor:pointer;">✎ meter</button>` : ''}
           </div>
           ${getMeterFlags(r)}
         </td>
@@ -3572,11 +3586,45 @@ function closeQuickTime() {
 
 // ---- Meter correction (R7c) ----
 let meterEditAttId = null;
-function openMeterEdit(attendanceId, meterStart, meterEnd, name) {
+let meterEditSeq = 0;
+function openMeterEdit(attendanceId, meterStart, meterEnd, name, userId) {
   meterEditAttId = attendanceId;
-  document.getElementById('meterEditWho').textContent = (name || '') + ' · ' + (document.getElementById('tableDate') ? document.getElementById('tableDate').value : '');
+  const dateVal = document.getElementById('tableDate') ? document.getElementById('tableDate').value : '';
+  document.getElementById('meterEditWho').textContent = (name || '') + ' · ' + dateVal;
   document.getElementById('meterEditStart').value = (meterStart != null) ? meterStart : '';
   document.getElementById('meterEditEnd').value = (meterEnd != null) ? meterEnd : '';
+
+  // ⭐ Offer the machines he actually rode that day. Additive and fail-quiet: if the
+  //   registry cannot answer, the block simply stays hidden and this modal behaves
+  //   exactly as it always has.
+  const wrap = document.getElementById('meterEditVehWrap');
+  const sel  = document.getElementById('meterEditVehicle');
+  const hint = document.getElementById('meterEditVehHint');
+  wrap.style.display = 'none';
+  sel.innerHTML = '<option value="">— leave as recorded —</option>';
+  hint.textContent = '';
+  const seq = ++meterEditSeq;
+  if (userId && dateVal) {
+    fetch('/orders/riders-map/fleet/vehicles/petrol-context?user_id=' + encodeURIComponent(userId)
+          + '&date=' + encodeURIComponent(dateVal), { headers: { 'Accept': 'application/json' } })
+      .then(r => r.json())
+      .then(res => {
+        if (seq !== meterEditSeq) return;               // last answer wins
+        const list = (res && res.vehicles) ? res.vehicles : [];
+        if (!list.length) return;
+        // ⚠ This blade has no global escaper (every `esc` here is function-local), and a
+        //   plate/nickname is manager-typed text going into innerHTML.
+        const escV = s => String(s == null ? '' : s)
+          .replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+        sel.innerHTML = '<option value="">— leave as recorded —</option>'
+          + list.map(v => '<option value="' + v.vehicle_id + '">'
+              + (v.is_company ? '🚚 ' : '🏍️ ') + escV(v.label)
+              + (v.km != null ? ' · ' + v.km + ' km' : '') + '</option>').join('');
+        wrap.style.display = 'block';
+        hint.textContent = 'Naming the vehicle is what lets his own-bike petrol claim use these readings.';
+      })
+      .catch(() => {});
+  }
   document.getElementById('meterEditModal').style.display = 'flex';
 }
 function closeMeterEdit() {
@@ -3590,6 +3638,10 @@ async function saveMeterEdit() {
   const payload = { attendance_id: meterEditAttId };
   if (startRaw !== '') payload.meter_start = parseInt(startRaw, 10);
   if (endRaw !== '') payload.meter_end = parseInt(endRaw, 10);
+  // ⭐ Only when the manager actually named one — an untouched dropdown must leave
+  //   whatever stamp the row already carries exactly as it is.
+  const vehSel = document.getElementById('meterEditVehicle');
+  if (vehSel && vehSel.value) payload.vehicle_id = parseInt(vehSel.value, 10);
   if (payload.meter_start == null && payload.meter_end == null) { alert('Enter a start or end meter value.'); return; }
   if (payload.meter_start != null && payload.meter_end != null && payload.meter_end < payload.meter_start) {
     if (!confirm('End meter is less than start meter. Save anyway?')) return;

@@ -1738,7 +1738,85 @@ class OrderController extends Controller
             }
             
             $validated = $request->validate($validationRules);
-            
+
+            // ================================================================
+            // ⭐ CUSTOMER CREDIT — protect the account-balance line (Aug-2026)
+            // ================================================================
+            // This save DELETES and RECREATES every discount row from what the
+            // browser sent, so an untouched payload would silently destroy the
+            // account-balance line while the credit row still says it is spent.
+            //
+            // The rule is therefore simple and one-directional: THE SERVER OWNS
+            // THAT LINE. An ordinary order save can neither create it nor remove
+            // it — it is stripped from the payload and re-added from the credit
+            // row itself. Applying and removing credit happen ONLY through
+            // /orders/{id}/credit/apply and /credit/remove.
+            //
+            // ⚠ Do NOT "improve" this by releasing the credit when the line is
+            // missing from the payload: the edit form does not send coupon_code
+            // at all, so every normal save would look like a removal and would
+            // hand the money back behind the manager's back.
+            //
+            // Done before the totals are computed below, so discount_total and
+            // total_price come out right with no other edits.
+            $creditService  = new \App\Services\CustomerCreditService();
+            $creditSentinel = \App\Models\CRM\CustomerCreditModel::DISCOUNT_CODE;
+
+            if (isset($validated['discounts']) && is_array($validated['discounts'])
+                && !($order instanceof \App\Models\CRM\ShopifyOrderModel)) {
+
+                $cleanDiscounts = [];
+                foreach ($validated['discounts'] as $d) {
+                    // Never take this line from the client — it is real money.
+                    if (($d['coupon_code'] ?? null) === $creditSentinel) {
+                        continue;
+                    }
+                    // A client can't mint credit by copying the title either.
+                    if (trim((string) ($d['title'] ?? '')) === 'Account balance applied') {
+                        continue;
+                    }
+                    $cleanDiscounts[] = $d;
+                }
+
+                $liveConsume = $creditService->liveConsumeForOrder((int) $order->id);
+                if ($liveConsume) {
+                    $creditAmount = round(abs((float) $liveConsume->amount), 2);
+
+                    // Guard: if this edit shrinks the order below the applied
+                    // credit, the recomputed total would go NEGATIVE. Refuse
+                    // with instructions rather than silently booking a negative
+                    // invoice — the manager removes the balance (banner →
+                    // Remove), makes the change, then re-applies what fits.
+                    if (isset($validated['items']) && is_array($validated['items'])) {
+                        $prospectiveSubtotal = collect($validated['items'])->sum(function ($item) {
+                            return !empty($item['is_free']) ? 0 : floatval($item['line_total'] ?? ($item['quantity'] * $item['unit_price']));
+                        });
+                        $otherDiscounts = collect($cleanDiscounts)->sum('amount');
+                        $prospectiveBeforeCredit = $prospectiveSubtotal - $otherDiscounts
+                            + floatval($validated['shipping_total'] ?? 0)
+                            + floatval($validated['tip_amount'] ?? 0);
+                        if ($creditAmount > $prospectiveBeforeCredit + 0.005) {
+                            return response()->json([
+                                'success' => false,
+                                'message' => 'This change would make the order total (Rs ' . number_format(max(0, $prospectiveBeforeCredit), 2)
+                                    . ') smaller than the Rs ' . number_format($creditAmount, 2)
+                                    . ' account balance applied to it. Remove the account balance from the order first, save your change, then apply the balance again.',
+                            ], 422);
+                        }
+                    }
+
+                    $cleanDiscounts[] = [
+                        'title'       => 'Account balance applied',
+                        'amount'      => $creditAmount,
+                        'type'        => 'fixed',
+                        'coupon_code' => $creditSentinel,
+                        'notes'       => 'Paid from the customer\'s account balance.',
+                    ];
+                }
+
+                $validated['discounts'] = $cleanDiscounts;
+            }
+
             // ================================================================
             // ⭐ SERVER-SIDE TOTAL RECALCULATION (Feb 2026)
             // Always recalculate totals from line items to prevent frontend/backend mismatches
@@ -2632,7 +2710,19 @@ class OrderController extends Controller
                 'qurbani_region' => 'nullable|string|max:100',
                 'qurbani_delivery_type' => 'nullable|string|max:50',
             ]);
-            
+
+            // ⭐ Customer credit: the ACCOUNT_BALANCE line is server-owned money —
+            // a brand-new order can never arrive with one (credit is applied via
+            // /orders/{id}/credit/apply AFTER the order exists), so any such line
+            // in a create payload is fabricated. Dropped HERE, before the total
+            // recalculation below, so the totals never include it either.
+            if (isset($validated['discounts']) && is_array($validated['discounts'])) {
+                $validated['discounts'] = array_values(array_filter($validated['discounts'], function ($d) {
+                    return ($d['coupon_code'] ?? null) !== \App\Models\CRM\CustomerCreditModel::DISCOUNT_CODE
+                        && trim((string) ($d['title'] ?? '')) !== 'Account balance applied';
+                }));
+            }
+
             // ================================================================
             // ⭐ SERVER-SIDE TOTAL RECALCULATION (Feb 2026)
             // Always recalculate totals from line items to prevent frontend/backend mismatches
@@ -2943,7 +3033,9 @@ class OrderController extends Controller
                 ]);
             }
             
-            // Create discount detail records if multiple discounts were provided
+            // Create discount detail records if multiple discounts were provided.
+            // (Any fabricated ACCOUNT_BALANCE line was already stripped above,
+            // before the totals were computed.)
             if (isset($validated['discounts']) && is_array($validated['discounts']) && !empty($validated['discounts'])) {
                 foreach ($validated['discounts'] as $index => $discountData) {
                     \App\Models\CRM\OrderDiscountModel::create([

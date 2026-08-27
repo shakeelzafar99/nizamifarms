@@ -508,10 +508,23 @@
                     $subtotal = $order->lineItems->sum(function($item) { return $item->is_free ? 0 : ($item->line_total ?: ($item->quantity * $item->unit_price)); });
                 @endphp
                 
-                @if($totalDiscounts > 0)
+                {{-- ⭐ This template is what the customer receives on WhatsApp, so
+                     it especially must not call their own balance a "Discount".
+                     Split lines; the total is unchanged. --}}
+                @php
+                    $__balanceUsed = $order->accountBalanceApplied();
+                    $__realDiscount = round($totalDiscounts - $__balanceUsed, 2);
+                @endphp
+                @if($__realDiscount > 0)
                 <tr>
                     <td class="label">Discount</td>
-                    <td class="amount">- Rs {{ number_format($totalDiscounts, 0) }}</td>
+                    <td class="amount">- Rs {{ number_format($__realDiscount, 0) }}</td>
+                </tr>
+                @endif
+                @if($__balanceUsed > 0)
+                <tr>
+                    <td class="label">Account balance used</td>
+                    <td class="amount">- Rs {{ number_format($__balanceUsed, 0) }}</td>
                 </tr>
                 @endif
                 

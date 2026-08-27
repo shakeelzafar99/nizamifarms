@@ -626,7 +626,7 @@ class CustomerController extends Controller
         ", $customerIds);
 
         foreach ($customerIds as $cid) {
-            $result[$cid] = ['shop_owed' => 0.0, 'shop_count' => 0, 'reg_pending' => 0.0, 'reg_count' => 0];
+            $result[$cid] = ['shop_owed' => 0.0, 'shop_count' => 0, 'reg_pending' => 0.0, 'reg_count' => 0, 'credit_balance' => 0.0];
         }
         foreach ($shop as $r) {
             $result[$r->customer_id]['shop_owed'] = (float) $r->owed;
@@ -636,6 +636,24 @@ class CustomerController extends Controller
             $result[$r->customer_id]['reg_pending'] = (float) $r->pending;
             $result[$r->customer_id]['reg_count'] = (int) $r->cnt;
         }
+
+        // 💰 Customer credit ("bucket") — one grouped SUM for the whole page,
+        // same batching pattern as the two queries above. Balance = SUM of the
+        // counting rows (active + reserved); dormant (all zero) until the
+        // customer-credit SQL has been run.
+        if ((new \App\Services\CustomerCreditService())->tableReady()) {
+            $credit = DB::select("
+                SELECT customer_id, COALESCE(SUM(amount), 0) AS bal
+                FROM t_crm_customer_credit
+                WHERE customer_id IN ($ph)
+                  AND status IN ('active', 'reserved')
+                GROUP BY customer_id
+            ", $customerIds);
+            foreach ($credit as $r) {
+                $result[$r->customer_id]['credit_balance'] = (float) $r->bal;
+            }
+        }
+
         return $result;
     }
 
@@ -651,6 +669,9 @@ class CustomerController extends Controller
         $customer->receivable_amount = $rec ? (float) ($isShop ? $rec['shop_owed'] : $rec['reg_pending']) : 0.0;
         $customer->receivable_count  = $rec ? (int) ($isShop ? $rec['shop_count'] : $rec['reg_count']) : 0;
         $customer->receivable_label  = $isShop ? 'Outstanding' : 'Pending approval';
+        // 💰 Account balance we hold FOR the customer (regular customers only —
+        // shops don't use the bucket, and their chip stays receivable-only).
+        $customer->credit_balance = ($rec && !$isShop) ? (float) $rec['credit_balance'] : 0.0;
     }
 
     public function orders($id)
@@ -749,6 +770,15 @@ class CustomerController extends Controller
                     $ledgerRows = \App\Models\FIN\LedgerModel::whereIn('order_id', $prodIds)
                         ->where('mode', 'online')
                         ->whereNull('request_id')
+                        // Invoice-queue types only, matching the approvals page.
+                        // A customer-credit grant/consume also carries order_id,
+                        // and counting one here would inflate the order's
+                        // "pending approval" amount with money that is not the
+                        // invoice. See PaymentProofStatusService::settledOrderIds.
+                        ->whereIn('transaction_type', [
+                            \App\Models\FIN\LedgerModel::TYPE_INVOICE,
+                            \App\Models\FIN\LedgerModel::TYPE_ORDER_PAYMENT,
+                        ])
                         ->whereIn('approval_status', [
                             \App\Models\FIN\LedgerModel::STATUS_PENDING,
                             \App\Models\FIN\LedgerModel::STATUS_PENDING_L1,
@@ -1514,7 +1544,24 @@ class CustomerController extends Controller
                         ->update(['customer_id' => $primaryId, 'updated_at' => now()]);
                     $stats['history_orders_updated'] += $historyUpdated;
                 }
-                
+
+                // Move any account balance onto the surviving customer. Without
+                // this the money would be stranded on a record that is hidden
+                // from every screen. (Balance reads also follow the merge chain,
+                // so this is belt-and-braces — but the rows should live with
+                // the customer who can actually spend them.)
+                if (DB::getSchemaBuilder()->hasTable('t_crm_customer_credit')) {
+                    $creditMoved = (new \App\Services\CustomerCreditService())
+                        ->repointOnMerge((int) $duplicateId, (int) $primaryId);
+                    if ($creditMoved > 0) {
+                        \Log::info('Customer credit re-pointed on merge', [
+                            'from' => $duplicateId,
+                            'to'   => $primaryId,
+                            'rows' => $creditMoved,
+                        ]);
+                    }
+                }
+
                 // Mark duplicate as merged
                 $duplicate->update([
                     'merged_into_customer_id' => $primaryId,

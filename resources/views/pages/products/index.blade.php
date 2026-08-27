@@ -268,6 +268,10 @@ tr.bg-indigo-50:hover {
                     <i class="ki-filled ki-category"></i>
                     Category
                 </a>
+                <a href="{{ route('products.category_report') }}" class="action-btn">
+                    <i class="ki-filled ki-chart-line-up"></i>
+                    Sales vs Purchase
+                </a>
                 <button onclick="openBulkAdjustPricesModal()" class="action-btn">
                     <i class="ki-filled ki-price-tag"></i>
                     Prices

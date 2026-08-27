@@ -169,6 +169,10 @@ class PaymentSignal extends Model
         'extraction_attempts',
         'extraction_raw_text',
         'extractor_version',
+        // ⚠ Must stay in $fillable: a manual entry sets this and mass-assignment
+        // would otherwise DROP it silently, leaving the row with no author —
+        // which is the whole point of the column.
+        'created_by',
         'status',
         'matched_order_id',
         'matched_customer_id',

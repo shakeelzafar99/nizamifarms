@@ -169,120 +169,180 @@
 
     <!-- No separate pending settlements section - they'll be shown inline with invoices -->
 
-    <!-- ⭐ Online WhatsApp Message Tracking Section (Today's deliveries) -->
-    @if(isset($onlineMessageTracking) && $onlineMessageTracking)
+    <!-- 💰 Payment Follow-ups (Aug-2026) — replaces the old today-only "Online
+         WhatsApp Messages" panel. Three tiers: chase / proof-in / settled, held
+         for a 3-day window. Built by OnlineFollowUpService. -->
+    @if(isset($onlineFollowUp) && $onlineFollowUp)
+    @php
+        $fuChase = $onlineFollowUp['chase'];
+        $fuNeedsAction = $onlineFollowUp['chase_count'] > 0;
+        // The panel's own colour reports its state: red while anything needs a
+        // message, green once the chase list is clear.
+        $fuHeadGradient = $fuNeedsAction
+            ? 'linear-gradient(to right, #e11d48, #be123c)'
+            : 'linear-gradient(to right, #059669, #047857)';
+        $fuBodyBg = $fuNeedsAction
+            ? 'linear-gradient(to right, #fff1f2, #ffe4e6)'
+            : 'linear-gradient(to right, #f0fdf4, #dcfce7)';
+        $fuBorder = $fuNeedsAction ? '#fda4af' : '#86efac';
+    @endphp
     <div class="mb-4">
-        <div style="background: linear-gradient(to right, #f0fdf4, #dcfce7); border: 2px solid #86efac;" class="rounded-lg shadow-sm overflow-hidden">
+        <div style="background: {{ $fuBodyBg }}; border: 2px solid {{ $fuBorder }};" class="rounded-lg shadow-sm overflow-hidden">
             <!-- Header -->
-            <div style="background: linear-gradient(to right, #059669, #047857);" class="px-4 py-3 flex items-center justify-between cursor-pointer" onclick="document.getElementById('online-msg-tracking-body').classList.toggle('hidden')">
+            <div style="background: {{ $fuHeadGradient }};" class="px-4 py-3 flex items-center justify-between cursor-pointer" onclick="document.getElementById('followup-body').classList.toggle('hidden')">
                 <div class="flex items-center gap-3">
-                    <span class="text-lg">📱</span>
-                    <h3 class="text-sm font-bold text-white">Online Payment - WhatsApp Messages (Today)</h3>
+                    <span class="text-lg">💰</span>
+                    <h3 class="text-sm font-bold text-white">Payment Follow-ups</h3>
+                    <span class="text-xs text-white opacity-75">online deliveries · last {{ $onlineFollowUp['window_days'] }} days</span>
                 </div>
-                <div class="flex items-center gap-3">
-                    @if($onlineMessageTracking['pending_count'] > 0)
-                    <span class="animate-pulse text-xs bg-red-500 text-white px-2 py-0.5 rounded-full font-bold">{{ $onlineMessageTracking['pending_count'] }} Pending</span>
+                <div class="flex items-center gap-2">
+                    @if($onlineFollowUp['chase_count'] > 0)
+                    <span class="animate-pulse text-xs bg-white text-red-700 px-2 py-0.5 rounded-full font-bold">{{ $onlineFollowUp['chase_count'] }} to chase</span>
                     @endif
-                    @if($onlineMessageTracking['sent_count'] > 0)
-                    <span class="text-xs bg-white text-green-700 px-2 py-0.5 rounded-full font-bold">{{ $onlineMessageTracking['sent_count'] }} Sent</span>
+                    @if($onlineFollowUp['new_customer_count'] > 0)
+                    <span class="text-xs bg-amber-300 text-amber-900 px-2 py-0.5 rounded-full font-bold" style="background-color:#fcd34d; color:#78350f;">⚠ {{ $onlineFollowUp['new_customer_count'] }} new</span>
                     @endif
-                    <svg class="w-4 h-4 text-white transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path></svg>
+                    @if($onlineFollowUp['proof_in_count'] > 0)
+                    <span class="text-xs px-2 py-0.5 rounded-full font-bold" style="background-color:#fef3c7; color:#92400e;">{{ $onlineFollowUp['proof_in_count'] }} proof in</span>
+                    @endif
+                    @if($onlineFollowUp['settled_count'] > 0)
+                    <span class="text-xs px-2 py-0.5 rounded-full font-bold" style="background-color:#dcfce7; color:#166534;">✅ {{ $onlineFollowUp['settled_count'] }} settled</span>
+                    @endif
+                    <svg class="w-4 h-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path></svg>
                 </div>
             </div>
-            <!-- Body -->
-            <div id="online-msg-tracking-body" class="{{ $onlineMessageTracking['pending_count'] > 0 ? '' : 'hidden' }}">
-                <!-- Summary Row -->
-                <div class="px-4 py-2 flex gap-4 border-b" style="border-color: #bbf7d0;">
-                    <div class="flex items-center gap-2">
-                        <span class="text-xs font-semibold text-gray-600">Total Online Delivered:</span>
-                        <span class="text-xs font-bold text-gray-900">{{ $onlineMessageTracking['total_count'] }}</span>
+
+            <!-- Body (open whenever something needs chasing) -->
+            <div id="followup-body" class="{{ $fuNeedsAction ? '' : 'hidden' }}">
+
+                <!-- ── TIER 1 · CHASE ───────────────────────────────────── -->
+                @if($onlineFollowUp['chase_count'] > 0)
+                <div class="px-4 py-2 border-b" style="border-color: {{ $fuBorder }};">
+                    <div class="flex items-center justify-between mb-2">
+                        <span class="text-xs font-bold text-red-700">🔴 No payment proof yet — chase these</span>
+                        <span class="text-xs font-semibold text-gray-600">Rs. {{ number_format($onlineFollowUp['chase_amount']) }}</span>
                     </div>
-                    <div class="flex items-center gap-2">
-                        <span class="inline-block w-2 h-2 rounded-full bg-green-500"></span>
-                        <span class="text-xs font-semibold text-green-700">Sent: {{ $onlineMessageTracking['sent_count'] }} (Rs. {{ number_format($onlineMessageTracking['sent_amount']) }})</span>
+
+                    @foreach($fuChase as $row)
+                    @php
+                        $proof = $row['payment_proof'] ?? null;
+                        $proofLabel = ($proof && ($proof['status'] ?? 'none') !== 'none') ? $proof['label'] : '';
+                        // Everything the send flow needs, handed over as one JSON
+                        // blob on a data attribute. Blade escapes it, so an
+                        // apostrophe in a customer name can no longer break the
+                        // JS the way the old 8-positional-argument onclick did.
+                        $payload = [
+                            'id'            => $row['id'],
+                            'order_number'  => $row['order_number'],
+                            'customer_name' => $row['customer_name'],
+                            'customer_phone'=> $row['customer_phone'],
+                            'rider_name'    => $row['rider_name'],
+                            'delivery_date' => $row['delivery_date'],
+                            'delivery_time' => $row['delivery_time'],
+                            'amount'        => $row['amount'],
+                            'template'      => $row['template'],
+                            'day_number'    => $row['day_number'],
+                            'proof_label'   => $proofLabel,
+                        ];
+                        $dayColors = [1 => ['#f1f5f9', '#475569'], 2 => ['#fef3c7', '#92400e'], 3 => ['#fee2e2', '#991b1b']];
+                        [$dayBg, $dayFg] = $dayColors[$row['day_number']] ?? $dayColors[3];
+                        $rowBg = $row['is_new_customer'] ? '#fffbeb' : ($row['reminded_today'] ? '#f8fafc' : '#fef2f2');
+                    @endphp
+                    <div id="fu-row-{{ $row['id'] }}" class="flex items-center justify-between py-2 px-3 mb-1.5 rounded-lg"
+                         style="background-color: {{ $rowBg }};{{ $row['is_new_customer'] ? ' border-left: 4px solid #f59e0b;' : '' }}">
+                        <div class="flex items-center gap-2 flex-1 min-w-0 flex-wrap">
+                            @if($row['is_new_customer'])
+                            <span class="text-xs font-bold px-2 py-0.5 rounded-full whitespace-nowrap" style="background-color:#f59e0b; color:#fff;"
+                                  title="Only {{ $row['lifetime_orders'] }} delivered order(s) — needs immediate follow-up">
+                                ⚠ NEW · {{ $row['customer_ordinal'] }}
+                            </span>
+                            @endif
+                            <span class="text-xs font-bold whitespace-nowrap px-1.5 py-0.5 rounded" style="background-color: {{ $dayBg }}; color: {{ $dayFg }};"
+                                  title="Delivered {{ $row['delivery_date'] }} at {{ $row['delivery_time'] }}">Day {{ $row['day_number'] }}</span>
+                            <span class="text-xs font-mono font-bold text-gray-700">{{ $row['order_number'] }}</span>
+                            <span class="text-xs text-gray-700 truncate">{{ $row['customer_name'] }}</span>
+                            @if($row['is_shop'])
+                            <span class="text-xs font-bold px-1.5 py-0.5 rounded whitespace-nowrap" style="background-color:#e0e7ff; color:#3730a3;"
+                                  title="Shop (B2B) account — normally settled from the Shop tab of Online Approvals against a running balance, not chased per order">shop</span>
+                            @endif
+                            <span class="text-xs text-gray-400">{{ $row['rider_name'] }}</span>
+                            <span class="text-xs font-semibold text-gray-800">Rs. {{ number_format($row['amount']) }}</span>
+                            @if($row['reminded_label'])
+                            <span class="text-xs text-gray-500 italic">{{ $row['reminded_label'] }}</span>
+                            @endif
+                            @if($row['is_last_day'])
+                            <span class="text-xs font-semibold" style="color:#b91c1c;" title="Last day in this list — after today it moves to Online Approvals">last day</span>
+                            @endif
+                        </div>
+                        <div class="flex items-center gap-2 ml-3">
+                            <span class="fu-status text-xs text-gray-500"></span>
+                            <button type="button"
+                                data-row="{{ json_encode($payload) }}"
+                                onclick="sendFollowUp(this)"
+                                @if($row['reminded_today']) disabled title="Already reminded today — try again tomorrow" @endif
+                                style="background-color: {{ $row['reminded_today'] ? '#cbd5e1' : ($proofLabel ? '#f59e0b' : '#25D366') }}; min-width: 132px;"
+                                class="text-sm hover:opacity-90 text-white px-3 py-1.5 rounded-lg font-bold transition-all cursor-pointer whitespace-nowrap flex items-center justify-center gap-1.5 shadow-sm">
+                                {{ $row['reminded_today'] ? '✓ Reminded today' : '📱 ' . $row['button_label'] }}
+                            </button>
+                        </div>
                     </div>
-                    <div class="flex items-center gap-2">
-                        <span class="inline-block w-2 h-2 rounded-full bg-red-500"></span>
-                        <span class="text-xs font-semibold text-red-700">Pending: {{ $onlineMessageTracking['pending_count'] }} (Rs. {{ number_format($onlineMessageTracking['pending_amount']) }})</span>
-                    </div>
+                    @endforeach
                 </div>
-                
-                <!-- Rider Cards -->
-                @foreach($onlineMessageTracking['by_rider'] as $riderIdx => $riderData)
-                <div class="border-b last:border-b-0" style="border-color: #bbf7d0;">
-                    <!-- Rider Header -->
-                    <div class="px-4 py-2 flex items-center justify-between cursor-pointer hover:bg-green-50 transition-colors" 
-                         onclick="document.getElementById('msg-rider-{{ $riderIdx }}').classList.toggle('hidden')">
-                        <div class="flex items-center gap-3">
-                            <span class="text-sm font-bold text-gray-800">{{ $riderData['rider_name'] }}</span>
-                            <span class="text-xs text-gray-500">Rs. {{ number_format($riderData['total_amount']) }}</span>
-                        </div>
-                        <div class="flex items-center gap-2">
-                            @if($riderData['sent_count'] > 0)
-                            <span class="text-xs bg-green-100 text-green-700 px-2 py-0.5 rounded-full font-medium">✅ {{ $riderData['sent_count'] }} sent</span>
-                            @endif
-                            @if($riderData['pending_count'] > 0)
-                            <span class="text-xs bg-red-100 text-red-700 px-2 py-0.5 rounded-full font-medium">⏳ {{ $riderData['pending_count'] }} pending</span>
-                            @endif
-                            <svg class="w-3 h-3 text-gray-400 transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path></svg>
-                        </div>
-                    </div>
-                    
-                    <!-- Rider Order Details (collapsed by default, open if has pending) -->
-                    <div id="msg-rider-{{ $riderIdx }}" class="{{ $riderData['pending_count'] > 0 ? '' : 'hidden' }}">
-                        <!-- Pending Messages -->
-                        @if($riderData['pending_count'] > 0)
-                        <div class="px-4 py-1">
-                            <div class="text-xs font-bold text-red-600 mb-1">⏳ Message Pending</div>
-                            @foreach($riderData['message_pending'] as $order)
-                            <div id="msg-order-{{ $order['id'] }}" class="flex items-center justify-between py-2 px-3 mb-1.5 rounded-lg" style="background-color: #fef2f2;">
-                                <div class="flex items-center gap-3 flex-1 min-w-0">
-                                    <span class="text-xs font-mono font-bold text-gray-700">{{ $order['order_number'] }}</span>
-                                    <span class="text-xs text-gray-600 truncate">{{ $order['customer_name'] }}</span>
-                                    @if($order['delivery_time'])<span class="text-xs text-gray-400">{{ $order['delivery_time'] }}</span>@endif
-                                    <span class="text-xs font-semibold text-gray-800">Rs. {{ number_format($order['amount']) }}</span>
-                                    @php $proof = $order['payment_proof'] ?? null; @endphp
-                                    @if($proof && ($proof['status'] ?? 'none') !== 'none')
-                                    <span class="text-xs font-bold px-2 py-0.5 rounded-full text-white whitespace-nowrap"
-                                          style="background-color: {{ $proof['color'] }}; cursor: pointer;"
-                                          onclick="event.stopPropagation(); openProofModal({{ $order['id'] }}, '{{ addslashes($order['order_number']) }}')"
-                                          title="{{ $proof['label'] }} — click to view the screenshot / bank email">
-                                        {{ $proof['has_whatsapp'] ? '📷' : '' }}{{ !empty($proof['has_sms']) ? '📱' : '' }}{{ $proof['has_email'] ? '✉️' : '' }} {{ $proof['label'] }} 🔍
-                                    </span>
-                                    @endif
-                                </div>
-                                <button type="button" 
-                                    onclick="sendOnlineWhatsApp({{ $order['id'] }}, '{{ addslashes($order['customer_name']) }}', '{{ $order['customer_phone'] }}', '{{ $order['order_number'] }}', '{{ addslashes($order['rider_name']) }}', '{{ $order['delivery_date'] }}', '{{ $order['delivery_time'] }}', '{{ ($proof && ($proof['status'] ?? 'none') !== 'none') ? addslashes($proof['label']) : '' }}')"
-                                    style="background-color: {{ ($proof && ($proof['status'] ?? 'none') !== 'none') ? '#f59e0b' : '#25D366' }}; min-width: 140px;"
-                                    class="text-sm hover:opacity-90 text-white px-4 py-1.5 rounded-lg font-bold transition-all cursor-pointer whitespace-nowrap flex items-center justify-center gap-1.5 ml-3 shadow-sm">
-                                    📱 Send WhatsApp
-                                </button>
-                            </div>
+                @else
+                <div class="px-4 py-3 text-xs font-semibold text-green-700">
+                    ✅ Nothing to chase — every online delivery from the last {{ $onlineFollowUp['window_days'] }} days has proof or is settled.
+                </div>
+                @endif
+
+                <!-- ── TIER 2 · PROOF IN (collapsed) ─────────────────────── -->
+                @if($onlineFollowUp['proof_in_count'] > 0)
+                <div class="border-b" style="border-color: {{ $fuBorder }};">
+                    <div class="px-4 py-2 flex items-center justify-between cursor-pointer hover:bg-white"
+                         onclick="document.getElementById('followup-proof').classList.toggle('hidden')">
+                        <div class="flex items-center gap-2 flex-wrap">
+                            <span class="text-xs font-bold" style="color:#92400e;">🟡 {{ $onlineFollowUp['proof_in_count'] }} orders · Rs. {{ number_format($onlineFollowUp['proof_in_amount']) }}</span>
+                            <span class="text-xs text-gray-500">proof received — waiting on Online Approvals, no action here</span>
+                            @foreach($onlineFollowUp['proof_in_breakdown'] as $b)
+                            <span class="text-xs font-semibold px-2 py-0.5 rounded-full text-white" style="background-color: {{ $b['color'] }};">{{ $b['count'] }} {{ $b['label'] }}</span>
                             @endforeach
                         </div>
-                        @endif
-                        
-                        <!-- Sent Messages -->
-                        @if($riderData['sent_count'] > 0)
-                        <div class="px-4 py-1 pb-2">
-                            <div class="text-xs font-bold text-green-600 mb-1">✅ Message Sent</div>
-                            @foreach($riderData['message_sent'] as $order)
-                            <div class="flex items-center justify-between py-1 px-3 mb-1 rounded" style="background-color: #f0fdf4;">
-                                <div class="flex items-center gap-3">
-                                    <span class="text-xs font-mono font-bold text-gray-700">{{ $order['order_number'] }}</span>
-                                    <span class="text-xs text-gray-600">{{ $order['customer_name'] }}</span>
-                                </div>
-                                <div class="flex items-center gap-2">
-                                    <span class="text-xs font-semibold text-gray-800">Rs. {{ number_format($order['amount']) }}</span>
-                                    <span class="text-xs bg-green-500 text-white px-1.5 py-0.5 rounded font-medium">Sent {{ $order['sent_at'] }}</span>
-                                </div>
+                        <span class="text-xs text-gray-400">▸</span>
+                    </div>
+                    <div id="followup-proof" class="hidden px-4 pb-2">
+                        @foreach($onlineFollowUp['proof_in'] as $row)
+                        @php $proof = $row['payment_proof'] ?? null; @endphp
+                        <div class="flex items-center justify-between py-1.5 px-3 mb-1 rounded" style="background-color: #fffdf5;">
+                            <div class="flex items-center gap-2 flex-1 min-w-0 flex-wrap">
+                                <span class="text-xs text-gray-400">Day {{ $row['day_number'] }}</span>
+                                <span class="text-xs font-mono font-bold text-gray-700">{{ $row['order_number'] }}</span>
+                                <span class="text-xs text-gray-600 truncate">{{ $row['customer_name'] }}</span>
+                                @if($row['is_new_customer'])
+                                <span class="text-xs font-bold px-1.5 py-0.5 rounded" style="background-color:#fef3c7; color:#92400e;">new</span>
+                                @endif
                             </div>
-                            @endforeach
+                            <div class="flex items-center gap-2">
+                                <span class="text-xs font-semibold text-gray-800">Rs. {{ number_format($row['amount']) }}</span>
+                                @if($proof && ($proof['status'] ?? 'none') !== 'none')
+                                <span class="text-xs font-bold px-2 py-0.5 rounded-full text-white whitespace-nowrap"
+                                      style="background-color: {{ $proof['color'] }}; cursor: pointer;"
+                                      onclick="event.stopPropagation(); openProofModal({{ $row['id'] }}, '{{ addslashes($row['order_number']) }}')"
+                                      title="{{ $proof['label'] }} — click to view the screenshot / bank email">
+                                    {{ $proof['has_whatsapp'] ? '📷' : '' }}{{ !empty($proof['has_sms']) ? '📱' : '' }}{{ $proof['has_email'] ? '✉️' : '' }} {{ $proof['label'] }} 🔍
+                                </span>
+                                @endif
+                            </div>
                         </div>
-                        @endif
+                        @endforeach
                     </div>
                 </div>
-                @endforeach
+                @endif
+
+                <!-- ── TIER 3 · SETTLED (count only) ─────────────────────── -->
+                @if($onlineFollowUp['settled_count'] > 0)
+                <div class="px-4 py-2 text-xs font-semibold" style="color:#166534;">
+                    ✅ {{ $onlineFollowUp['settled_count'] }} settled · Rs. {{ number_format($onlineFollowUp['settled_amount']) }} — approved in the ledger, nothing to do.
+                </div>
+                @endif
             </div>
         </div>
     </div>
@@ -388,16 +448,12 @@
                                 </div>
                                 @endif
                                 <div class="flex items-center gap-2 mt-2">
-                                    <div class="flex items-center gap-1.5">
-                                        <span class="text-xs text-gray-500">Pay from:</span>
-                                        <select id="petrol-pay-src-{{ $petrolReq['id'] }}" 
-                                            style="color: #1f2937; background-color: white; border: 1px solid #d1d5db;"
-                                            class="text-xs px-2 py-1 rounded-md focus:outline-none focus:ring-1 focus:ring-orange-400">
-                                            @foreach($petrolPaymentAccounts as $acc)
-                                            <option value="{{ $acc->id }}" {{ $acc->account_code === 'NF_CASH' ? 'selected' : '' }}>{{ $acc->account_name }}</option>
-                                            @endforeach
-                                        </select>
-                                    </div>
+                                    @include('fin.employee.partials.pay-source-row', [
+                                        'req' => $petrolReq,
+                                        'accounts' => $petrolPaymentAccounts,
+                                        'banks' => $petrolPayBanks,
+                                        'ringClass' => 'focus:ring-orange-400',
+                                    ])
                                     <button type="button" 
                                         onclick="approvePetrolRequest({{ $petrolReq['id'] }}, {{ $petrolReq['requires_level_1'] ? '1' : '2' }})"
                                         style="background-color: #16a34a;"
@@ -498,16 +554,12 @@
                                 </div>
                                 @endif
                                 <div class="flex items-center gap-2 mt-2">
-                                    <div class="flex items-center gap-1.5">
-                                        <span class="text-xs text-gray-500">Pay from:</span>
-                                        <select id="petrol-pay-src-{{ $mReq['id'] }}"
-                                            style="color: #1f2937; background-color: white; border: 1px solid #d1d5db;"
-                                            class="text-xs px-2 py-1 rounded-md focus:outline-none focus:ring-1 focus:ring-teal-400">
-                                            @foreach($petrolPaymentAccounts as $acc)
-                                            <option value="{{ $acc->id }}" {{ $acc->account_code === 'NF_CASH' ? 'selected' : '' }}>{{ $acc->account_name }}</option>
-                                            @endforeach
-                                        </select>
-                                    </div>
+                                    @include('fin.employee.partials.pay-source-row', [
+                                        'req' => $mReq,
+                                        'accounts' => $petrolPaymentAccounts,
+                                        'banks' => $petrolPayBanks,
+                                        'ringClass' => 'focus:ring-teal-400',
+                                    ])
                                     <button type="button"
                                         onclick="approvePetrolRequest({{ $mReq['id'] }}, {{ $mReq['requires_level_1'] ? '1' : '2' }})"
                                         style="background-color: #16a34a;"
@@ -1278,117 +1330,266 @@ function formatPhoneForWhatsApp(phone) {
     return null;
 }
 
-function sendOnlineWhatsApp(orderId, customerName, customerPhone, orderNumber, riderName, deliveryDate, deliveryTime, proofLabel) {
-    var formatted = formatPhoneForWhatsApp(customerPhone);
-    if (!formatted) {
-        alert('No valid phone number available for this customer.');
-        return;
+// ── Payment Follow-ups send flow (Aug-2026) ────────────────────────────────
+// Replaces sendOnlineWhatsApp(). Three behavioural changes over the old one:
+//
+//  1. TEMPLATE LADDER. Day 1 sends delivery_confirmation_online ("delivered,
+//     here are the bank details"). Day 2-3 sends payment_reminder_single, which
+//     carries the invoice image — re-sending "your order was delivered today!"
+//     three days running reads badly and burns trust. Both templates are already
+//     approved by Meta; nothing new was submitted.
+//
+//  2. HONEST STAMPING. The old flow marked the order "sent" even when the API
+//     call failed and it merely opened a wa.me tab — a green tick could mean
+//     nothing was sent. Chasing over several days is worthless if "reminded
+//     yesterday" might be a lie, so we now stamp only on a confirmed API send,
+//     or after the operator confirms they really sent the manual fallback.
+//
+//  3. RAW PHONE TO THE SERVER. The page-local formatPhoneForWhatsApp() mangles
+//     already-international numbers (it turns 00923215793000 into
+//     +920923215793000 — see WHATSAPP-PHONE-HANDLING.md). The server's
+//     resolveDialPhone() handles this correctly and is a no-op for PK numbers,
+//     so the API send passes the number through untouched. The local formatter
+//     is still used for the wa.me fallback only, which has no server in the path.
+const FU_TEMPLATE_DAY_ONE = 'delivery_confirmation_online';
+const FU_TEMPLATE_FOLLOW_UP = 'payment_reminder_single';
+
+function fuBankDetailsMessage(row) {
+    var deliveryInfo = row.delivery_date + (row.delivery_time ? ' at ' + row.delivery_time : '');
+    return 'Dear ' + row.customer_name + ',\n\n'
+        + 'We are happy to confirm that your order #' + row.order_number + ' has been successfully delivered on ' + deliveryInfo + ' by our rider ' + row.rider_name + '.\n\n'
+        + 'Your payment method is Online Bank Transfer. Please share a screenshot of the transfer here once the transaction has been made.\n\n'
+        + 'Account Title: "Nizami Farms"\n'
+        + '- Bank: Habib Bank Limited (HBL)\n'
+        + '   Account no: 23297901934403\n'
+        + '   IBAN: PK35HABB0023297901934403\n\n'
+        + '- Bank: Meezan Bank Limited\n'
+        + '   Account no: 03050106554237\n'
+        + '   IBAN: PK75MEZN0003050106554237\n\n'
+        + 'Thank you for choosing Nizami Farms!';
+}
+
+function fuBodyParams(templateName, row) {
+    if (templateName === FU_TEMPLATE_FOLLOW_UP) {
+        // Same three params the Online Approvals reminder uses.
+        return [row.customer_name, row.order_number, Number(row.amount).toLocaleString()];
+    }
+    var deliveryInfo = row.delivery_date + (row.delivery_time ? ' at ' + row.delivery_time : '');
+    return [row.customer_name, row.order_number, deliveryInfo, row.rider_name];
+}
+
+function fuStatus(btn, text, color) {
+    var wrap = btn.closest('div');
+    var el = wrap ? wrap.querySelector('.fu-status') : null;
+    if (el) {
+        el.textContent = text || '';
+        el.style.color = color || '#6b7280';
+    }
+}
+
+function fuCsrf() {
+    var meta = document.querySelector('meta[name="csrf-token"]');
+    return meta ? meta.getAttribute('content') : '';
+}
+
+function fuPostTemplate(row, templateName) {
+    var payload = {
+        phone: row.customer_phone,
+        template_name: templateName,
+        body_params: fuBodyParams(templateName, row)
+    };
+
+    if (templateName === FU_TEMPLATE_FOLLOW_UP) {
+        // order_id drives the invoice-image auto-attach AND the history stamp.
+        payload.order_id = row.id;
+    } else {
+        // delivery_confirmation_online has NO media header — passing order_id
+        // would attach an invoice image and Meta rejects a header component on a
+        // template that doesn't declare one. related_order_number stamps the send
+        // history without touching the header.
+        payload.related_order_number = row.order_number;
     }
 
-    // Jun-2026 — Warn before sending a payment reminder if this customer has
-    // already sent payment proof (WhatsApp screenshot and/or bank email).
-    if (proofLabel && proofLabel.length > 0) {
-        var ok = confirm(
-            '⚠️ Payment proof already received for order #' + orderNumber + '\n\n'
-            + 'Status: ' + proofLabel + '\n\n'
-            + customerName + ' has already sent proof of payment. Sending a payment '
-            + 'reminder now may confuse the customer.\n\n'
-            + 'Are you sure you still want to send this message?'
-        );
-        if (!ok) {
-            return;
-        }
-    }
-
-    var timeStr = deliveryTime ? ' at ' + deliveryTime : '';
-    var deliveryInfo = deliveryDate + timeStr;
-
-    var csrfToken = document.querySelector('meta[name="csrf-token"]');
-    var csrfVal = csrfToken ? csrfToken.getAttribute('content') : '';
-
-    fetch('/messages/send-template', {
+    return fetch('/messages/send-template', {
         method: 'POST',
         headers: {
             'Content-Type': 'application/json',
-            'X-CSRF-TOKEN': csrfVal,
+            'X-CSRF-TOKEN': fuCsrf(),
             'Accept': 'application/json'
         },
-        body: JSON.stringify({
-            phone: formatted,
-            template_name: 'delivery_confirmation_online',
-            body_params: [customerName, orderNumber, deliveryInfo, riderName]
-        })
-    })
-    .then(function(resp) { return resp.json(); })
-    .then(function(apiData) {
-        var apiSent = apiData && apiData.success;
-
-        if (!apiSent) {
-            var msg = 'Dear ' + customerName + ',\n\n'
-                + 'We are happy to confirm that your order #' + orderNumber + ' has been successfully delivered on ' + deliveryInfo + ' by our rider ' + riderName + '.\n\n'
-                + 'Your payment method is Online Bank Transfer. Please share a screenshot of the transfer here once the transaction has been made.\n\n'
-                + 'Account Title: "Nizami Farms"\n'
-                + '- Bank: Habib Bank Limited (HBL)\n'
-                + '   Account no: 23297901934403\n'
-                + '   IBAN: PK35HABB0023297901934403\n\n'
-                + '- Bank: Meezan Bank Limited\n'
-                + '   Account no: 03050106554237\n'
-                + '   IBAN: PK75MEZN0003050106554237\n\n'
-                + 'Thank you for choosing Nizami Farms!';
-            var waUrl = 'https://wa.me/' + formatted.replace('+', '') + '?text=' + encodeURIComponent(msg);
-            window.open(waUrl, '_blank');
-        }
-
-        fetch('{{ route("fin.employee.mark-online-message-sent", ["orderId" => "__ID__"]) }}'.replace('__ID__', orderId), {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'X-CSRF-TOKEN': csrfVal,
-                'Accept': 'application/json'
-            },
-            body: JSON.stringify({})
-        })
-        .then(function(resp) { return resp.json(); })
-        .then(function(data) {
-            if (data.success) {
-                var row = document.getElementById('msg-order-' + orderId);
-                if (row) {
-                    row.style.backgroundColor = '#f0fdf4';
-                    row.querySelector('button').outerHTML = '<span class="text-xs bg-green-500 text-white px-1.5 py-0.5 rounded font-medium">Sent ' + (data.sent_at || 'now') + '</span>';
-                }
-            }
-        })
-        .catch(function(err) {
-            console.error('Failed to mark message sent:', err);
+        body: JSON.stringify(payload)
+    }).then(function (resp) {
+        return resp.json().catch(function () { return {}; }).then(function (data) {
+            return { ok: resp.ok && data && data.success, status: resp.status, data: data || {} };
         });
-    })
-    .catch(function(err) {
-        console.error('API template send failed, falling back to wa.me:', err);
-        var msg = 'Dear ' + customerName + ',\n\n'
-            + 'We are happy to confirm that your order #' + orderNumber + ' has been successfully delivered on ' + deliveryDate + (deliveryTime ? ' at ' + deliveryTime : '') + ' by our rider ' + riderName + '.\n\n'
-            + 'Your payment method is Online Bank Transfer. Please share a screenshot of the transfer here once the transaction has been made.\n\n'
-            + 'Thank you for choosing Nizami Farms!';
-        var waUrl = 'https://wa.me/' + formatted.replace('+', '') + '?text=' + encodeURIComponent(msg);
-        window.open(waUrl, '_blank');
     });
 }
 
-function approvePetrolRequest(requestId, level) {
-    if (!confirm('Approve this request?')) return;
-    
-    var btn = event.target;
+function fuMarkReminded(row, btn, note) {
+    return fetch('{{ route("fin.employee.mark-online-message-sent", ["orderId" => "__ID__"]) }}'.replace('__ID__', row.id), {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'X-CSRF-TOKEN': fuCsrf(),
+            'Accept': 'application/json'
+        },
+        body: JSON.stringify({})
+    })
+    .then(function (resp) { return resp.json(); })
+    .then(function (data) {
+        if (!data.success) {
+            fuStatus(btn, 'Sent, but not recorded — refresh', '#b91c1c');
+            return;
+        }
+        // The row stays in the list (it only leaves when proof arrives, the money
+        // is approved, or it ages out of the window) — but it can't be reminded
+        // again until tomorrow.
+        btn.disabled = true;
+        btn.style.backgroundColor = '#cbd5e1';
+        btn.textContent = '✓ Reminded today';
+        btn.title = 'Already reminded today — try again tomorrow';
+        fuStatus(btn, note || ('sent ' + (data.sent_at || 'now')), '#166534');
+    })
+    .catch(function () {
+        fuStatus(btn, 'Sent, but not recorded — refresh', '#b91c1c');
+    });
+}
+
+function fuManualFallback(row, btn, reason) {
+    var formatted = formatPhoneForWhatsApp(row.customer_phone);
+    if (!formatted) {
+        fuStatus(btn, 'No usable phone number', '#b91c1c');
+        btn.disabled = false;
+        return;
+    }
+    var waUrl = 'https://wa.me/' + formatted.replace('+', '') + '?text=' + encodeURIComponent(fuBankDetailsMessage(row));
+    window.open(waUrl, '_blank');
+
+    // Only the operator knows whether they actually pressed send in WhatsApp, so
+    // ask rather than assume. Answering "no" leaves the row chaseable.
+    setTimeout(function () {
+        var sent = confirm(
+            (reason ? reason + '\n\n' : '')
+            + 'WhatsApp was opened for ' + row.customer_name + ' (' + row.order_number + ').\n\n'
+            + 'Did you send the message?\n\n'
+            + 'OK = yes, record it.   Cancel = no, leave it on the list.'
+        );
+        if (sent) {
+            fuMarkReminded(row, btn, 'sent manually');
+        } else {
+            btn.disabled = false;
+            fuStatus(btn, 'not sent', '#b91c1c');
+        }
+    }, 400);
+}
+
+function sendFollowUp(btn) {
+    var row;
+    try {
+        row = JSON.parse(btn.dataset.row);
+    } catch (e) {
+        alert('Could not read this row. Please refresh the page.');
+        return;
+    }
+
+    if (!row.customer_phone) {
+        fuStatus(btn, 'No phone number on this order', '#b91c1c');
+        return;
+    }
+
+    // Proof landed between page load and this click? Warn before nagging someone
+    // who has already paid. (Rows WITH proof normally sit in Tier 2 and have no
+    // button at all; this catches the stale-page case.)
+    if (row.proof_label) {
+        var ok = confirm(
+            '⚠️ Payment proof already received for ' + row.order_number + '\n\n'
+            + 'Status: ' + row.proof_label + '\n\n'
+            + row.customer_name + ' has already sent proof of payment. Sending a payment '
+            + 'reminder now may confuse the customer.\n\nAre you sure you still want to send?'
+        );
+        if (!ok) return;
+    }
+
     btn.disabled = true;
-    btn.textContent = 'Approving...';
-    
+    fuStatus(btn, 'sending…', '#6b7280');
+
+    var template = row.template || FU_TEMPLATE_DAY_ONE;
+
+    fuPostTemplate(row, template)
+        .then(function (res) {
+            if (res.ok) {
+                return fuMarkReminded(row, btn);
+            }
+
+            // payment_reminder_single is refused (422) when the invoice image was
+            // never captured for this order — the PNG is produced in the browser
+            // on the invoice page, not server-side, so it simply may not exist.
+            // Fall back to the day-1 template, which needs no image and still
+            // carries the bank details, rather than leaving a dead button.
+            if (res.status === 422 && template === FU_TEMPLATE_FOLLOW_UP) {
+                fuStatus(btn, 'no invoice image — sending confirmation…', '#92400e');
+                return fuPostTemplate(row, FU_TEMPLATE_DAY_ONE).then(function (res2) {
+                    if (res2.ok) {
+                        return fuMarkReminded(row, btn, 'sent (delivery confirmation — no invoice image)');
+                    }
+                    fuManualFallback(row, btn, 'Automatic send failed: ' + (res2.data.message || 'unknown error'));
+                });
+            }
+
+            fuManualFallback(row, btn, 'Automatic send failed: ' + (res.data.message || ('HTTP ' + res.status)));
+        })
+        .catch(function (err) {
+            console.error('Follow-up send failed:', err);
+            fuManualFallback(row, btn, 'Could not reach the server.');
+        });
+}
+
+// ⭐ Show the 🏦 bank select only while a BANK account is chosen, and never leave a
+// stale bank id behind on a cash source — a bank tag on a cash row is drift in the
+// opposite direction (it credits a bank that never moved).
+function petrolSourceChanged(requestId) {
+    var sel  = document.getElementById('petrol-pay-src-' + requestId);
+    var wrap = document.getElementById('petrol-bank-wrap-' + requestId);
+    var bank = document.getElementById('petrol-pay-bank-' + requestId);
+    if (!sel || !wrap) return;
+    var opt = sel.options[sel.selectedIndex];
+    var isOnline = opt && opt.getAttribute('data-online') === '1';
+    wrap.style.display = isOnline ? 'flex' : 'none';
+    if (!isOnline && bank) bank.value = '';
+}
+
+function approvePetrolRequest(requestId, level) {
     // Read the selected payment source for this request
     var paymentSourceSelect = document.getElementById('petrol-pay-src-' + requestId);
     var paymentSourceAccountId = paymentSourceSelect ? paymentSourceSelect.value : null;
-    
+
+    // ⭐ An ONLINE source must say WHICH bank it left from, or BankBalanceService
+    // never sees the money and the per-bank split drifts by this amount. Checked
+    // BEFORE the confirm so the manager is not asked twice.
+    var srcOpt = paymentSourceSelect ? paymentSourceSelect.options[paymentSourceSelect.selectedIndex] : null;
+    var srcIsOnline = srcOpt && srcOpt.getAttribute('data-online') === '1';
+    var bankSelect = document.getElementById('petrol-pay-bank-' + requestId);
+    var bankId = bankSelect ? bankSelect.value : '';
+    if (srcIsOnline && bankSelect && !bankId) {
+        alert('This is paid from an online account — choose which bank it leaves from first.');
+        if (bankSelect.focus) bankSelect.focus();
+        return;
+    }
+
+    if (!confirm('Approve this request?')) return;
+
+    var btn = event.target;
+    btn.disabled = true;
+    btn.textContent = 'Approving...';
+
     var payload = { level: level, comments: 'Approved from daily closing' };
     if (paymentSourceAccountId) {
         payload.payment_source_account_id = parseInt(paymentSourceAccountId);
     }
-    
+    if (srcIsOnline && bankId) {
+        payload.receiving_account_id = parseInt(bankId, 10);
+    }
+
     fetch('/requests/' + requestId + '/approve', {
         method: 'POST',
         headers: {
@@ -1551,7 +1752,30 @@ function fmClose() { document.getElementById('fmModal').style.display = 'none'; 
  * payload as the panel behind this popup, so money is booked identically. The
  * panel row is greyed out too, so the approver never acts on it twice.
  */
+// ⭐ Show the 🏦 bank select only while a BANK account is chosen; clear it otherwise
+// so a cash-funded approval can never carry a stale bank tag.
+function fmSrcChanged(id) {
+    const sel = document.getElementById('fmSrc' + id);
+    const bankSel = document.getElementById('fmBank' + id);
+    if (!sel || !bankSel) return;
+    const opt = sel.options[sel.selectedIndex];
+    const isOnline = opt && opt.getAttribute('data-online') === '1';
+    bankSel.style.display = isOnline ? '' : 'none';
+    if (!isOnline) bankSel.value = '';
+}
+
 function fmAct(id, level, action) {
+    // 🏦 Asked BEFORE the confirm, so the approver is not made to answer twice.
+    if (action === 'approve') {
+        const src = document.getElementById('fmSrc' + id);
+        const opt = src ? src.options[src.selectedIndex] : null;
+        const bankSel = document.getElementById('fmBank' + id);
+        if (opt && opt.getAttribute('data-online') === '1' && bankSel && !bankSel.value) {
+            alert('This is paid from an online account — choose which bank it leaves from first.');
+            if (bankSel.focus) bankSel.focus();
+            return;
+        }
+    }
     if (action === 'approve') {
         if (!confirm('Approve this claim?')) return;
     }
@@ -1567,6 +1791,13 @@ function fmAct(id, level, action) {
     if (action === 'approve') {
         const sel = document.getElementById('fmSrc' + id);
         if (sel && sel.value) payload.payment_source_account_id = parseInt(sel.value, 10);
+        // 🏦 Already demanded above; only a bank source may carry the tag, so a
+        // cash approval never sends one.
+        const opt = sel ? sel.options[sel.selectedIndex] : null;
+        const bankSel = document.getElementById('fmBank' + id);
+        if (opt && opt.getAttribute('data-online') === '1' && bankSel && bankSel.value) {
+            payload.receiving_account_id = parseInt(bankSel.value, 10);
+        }
     }
 
     const box = document.getElementById('fmAct' + id);
@@ -1672,10 +1903,20 @@ function fmRender(r) {
             let actions = '';
             if (c.status === 'pending' && fmApproval && fmApproval.can_approve
                 && c.next_level && fmApproval.levels.indexOf(c.next_level) !== -1) {
+                // data-online carries the ONE test for "does this need a bank?" —
+                // never an account-code match, which misses QURBANI_ONLINE and any
+                // bank account added later.
                 const accs = (fmApproval.accounts || []).map(a =>
-                    '<option value="' + a.id + '">' + esc(a.account_name) + '</option>').join('');
+                    '<option value="' + a.id + '" data-online="' + (a.is_online ? '1' : '0') + '">'
+                    + esc(a.display_name || a.name || a.account_name) + '</option>').join('');
+                // 🏦 An ONLINE source must say WHICH bank it left from, or the
+                // per-bank balances never see this claim. Hidden until one is chosen.
+                const fmBanks = (fmApproval.banks || []);
+                const bankOpts = fmBanks.map(b =>
+                    '<option value="' + b.id + '">' + esc(b.name) + '</option>').join('');
                 actions = '<span style="margin-left:auto; display:flex; gap:6px; align-items:center; flex-wrap:wrap;" id="fmAct' + c.id + '">' +
-                    (accs ? '<select id="fmSrc' + c.id + '" style="border:1px solid #d1d5db; border-radius:6px; padding:3px 6px; font-size:11px; max-width:140px;">' + accs + '</select>' : '') +
+                    (accs ? '<select id="fmSrc' + c.id + '" onchange="fmSrcChanged(' + c.id + ')" style="border:1px solid #d1d5db; border-radius:6px; padding:3px 6px; font-size:11px; max-width:140px;">' + accs + '</select>' : '') +
+                    (bankOpts ? '<select id="fmBank' + c.id + '" style="display:none; border:1px solid #d1d5db; border-radius:6px; padding:3px 6px; font-size:11px; max-width:140px;"><option value="">🏦 Which bank?</option>' + bankOpts + '</select>' : '') +
                     '<button onclick="fmAct(' + c.id + ',' + c.next_level + ',\'approve\')" style="background:#16a34a; color:#fff; border:none; border-radius:6px; padding:4px 10px; font-size:11px; font-weight:700; cursor:pointer;">✅ Approve</button>' +
                     '<button onclick="fmAct(' + c.id + ',' + c.next_level + ',\'reject\')" style="background:#dc2626; color:#fff; border:none; border-radius:6px; padding:4px 10px; font-size:11px; font-weight:700; cursor:pointer;">❌ Reject</button>' +
                     '</span>';
@@ -1754,6 +1995,14 @@ function fmRender(r) {
     }
 
     document.getElementById('fmBody').innerHTML = html;
+
+    // The rows are built as an HTML string, so no change event has fired yet —
+    // sync each 🏦 select to the account that came up preselected, or a claim whose
+    // default source is a bank would show the Approve button with the bank picker
+    // still hidden (and then refuse on click for a reason the approver can't see).
+    document.querySelectorAll('#fmBody select[id^="fmSrc"]').forEach(function (sel) {
+        fmSrcChanged(sel.id.substring(5));
+    });
 }
 </script>
 

@@ -711,8 +711,22 @@ class VehicleResolver
         }
     }
 
+    /**
+     * ⭐⭐ `$explicitVehicleId` — SOMEBODY SAID SO, AND THAT OUTRANKS EVERY GUESS (Aug-27 2026).
+     *
+     * Two callers now know the machine for certain and could never tell us: the manager's
+     * petrol modal, where he picks the vehicle off the rider's own day, and the per-km
+     * claim, where the legs builder has already decided which machine's kilometres are
+     * being paid for. Before this, both fell through to the date guess below — which is
+     * exactly how own-bike money landed on the van (see the note above).
+     *
+     * ⚠ It is first in the order of authority but still cannot overwrite an existing
+     *   value: the `whereNull('vehicle_id')` guard stays, because a correction someone
+     *   made deliberately must survive a re-file.
+     */
     public function stampClaim(?int $requestId, int $forUserId, ?string $category,
-                               ?string $expenseDate, ?int $attendanceId = null): void
+                               ?string $expenseDate, ?int $attendanceId = null,
+                               ?int $explicitVehicleId = null): void
     {
         try {
             if (!$requestId) return;
@@ -737,8 +751,11 @@ class VehicleResolver
             // ⚠ Only for TODAY. A claim filed for an earlier date is history, and
             //   `currentVehicleFor` would then be the wrong question entirely — that is precisely
             //   the mistake this guard exists to avoid making in the other direction.
+            // 0. Somebody named the machine outright — nothing beats being told.
+            $vid = $explicitVehicleId ?: null;
+
             // 1. The claim's OWN evidence, when it has any — the strongest answer by far.
-            $vid = $this->vehicleFromReadingStamps($attendanceId);
+            if (!$vid) $vid = $this->vehicleFromReadingStamps($attendanceId);
 
             // 2. Otherwise: filing for today = what he holds right now; an earlier date = the
             //    day-level answer, which is all history can offer.

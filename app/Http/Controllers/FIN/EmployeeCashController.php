@@ -2631,11 +2631,21 @@ class EmployeeCashController extends Controller
             }
             
             // ============================================================
-            // ⭐ Online WhatsApp Message Tracking (separate from ledger/settlement)
-            // Shows today's online delivered orders and whether rider sent payment reminder
-            // This does NOT affect any settlement, ledger, or invoice logic
+            // 💰 Payment Follow-ups (Aug-2026) — replaces the old today-only
+            // "Online WhatsApp Messages" panel. Splits online deliveries from the
+            // last 3 days into chase / proof-in / settled so the badge counts
+            // only what actually needs a message. See OnlineFollowUpService.
+            // Purely informational: no ledger, settlement or invoice impact.
+            // Wrapped so a surprise here can never take down daily closing.
             // ============================================================
-            $onlineMessageTracking = $this->fetchOnlineMessageTracking($riderFilter);
+            $onlineFollowUp = null;
+            try {
+                $onlineFollowUp = app(\App\Services\Payments\OnlineFollowUpService::class)->build($riderFilter);
+            } catch (\Exception $followUpEx) {
+                \Log::warning('Payment follow-ups panel failed (non-critical)', [
+                    'error' => $followUpEx->getMessage(),
+                ]);
+            }
             
             // ============================================================
             // ⛽ Petrol Requests from Rider Attendance
@@ -2646,24 +2656,38 @@ class EmployeeCashController extends Controller
             // closing manager approves both from one screen (same approval path).
             $pendingMaintenanceRequests = $this->fetchPendingExpenseRequests('Maintenance');
 
-            // Fetch payment source accounts for the petrol/maintenance approval dropdowns
+            // Fetch payment source accounts for the petrol/maintenance approval dropdowns.
+            // ⭐ Aug-27-2026: was a hardcoded four-code list (NF_CASH/EXP_FUND/ONLINE/
+            // PETTY_CASH) with NF Cash forced first — the LAST surviving copy of "which
+            // accounts may this person pay from", and it ignored the account tags entirely,
+            // so it offered accounts the approve endpoint would then refuse. Now the one
+            // service, exactly as the mobile Daily Closing does.
+            // ⚠ Shape change: arrays, not AccountModel rows — the Blade reads $acc['id'].
             $petrolPaymentAccounts = [];
+            $petrolPayBanks = [];
             if ($pendingPetrolRequests || $pendingMaintenanceRequests) {
-                $petrolPaymentAccounts = AccountModel::whereIn('account_code', ['NF_CASH', 'EXP_FUND', 'ONLINE', 'PETTY_CASH'])
-                    ->where('is_active', 1)
-                    ->orderByRaw("CASE WHEN account_code = 'NF_CASH' THEN 1 WHEN account_code = 'EXP_FUND' THEN 2 WHEN account_code = 'ONLINE' THEN 3 ELSE 4 END")
-                    ->select('id', 'account_code', 'account_name')
-                    ->get();
+                $paySvc = app(\App\Services\FIN\PaymentSourceService::class);
+                $petrolPaymentAccounts = $paySvc->sourcesFor(
+                    auth()->user(), 1, \App\Services\FIN\PaymentSourceService::PURPOSE_EXPENSE
+                );
+                // ⭐ A bank source has to name WHICH bank or the per-bank balances never
+                // see the money (BankAttributionService). This list is what the 🏦 select
+                // next to each approve button is built from.
+                $needsBanks = (bool) array_filter($petrolPaymentAccounts, fn ($s) => !empty($s['is_online']));
+                if ($needsBanks) {
+                    $petrolPayBanks = $paySvc->banks();
+                }
             }
 
             return view('fin.employee.outstanding-invoices', [
                 'invoicesByRider' => $invoicesByRider,
                 'invoicesByDate' => $invoicesByDate,
                 'onlineData' => $onlineData,
-                'onlineMessageTracking' => $onlineMessageTracking,
+                'onlineFollowUp' => $onlineFollowUp,
                 'pendingPetrolRequests' => $pendingPetrolRequests,
                 'pendingMaintenanceRequests' => $pendingMaintenanceRequests,
                 'petrolPaymentAccounts' => $petrolPaymentAccounts,
+                'petrolPayBanks' => $petrolPayBanks, // 🏦 which bank an ONLINE approval left from
                 'stats' => $stats,
                 'pendingSettlements' => $pendingSettlements,
                 'allRiders' => $allRiders,
@@ -2680,124 +2704,6 @@ class EmployeeCashController extends Controller
         } catch (\Exception $e) {
             \Log::error("Error fetching all outstanding invoices: " . $e->getMessage());
             return back()->with('error', 'Error loading outstanding invoices: ' . $e->getMessage());
-        }
-    }
-
-    /**
-     * ⭐ Fetch Online WhatsApp Message Tracking for Today
-     * Returns today's online delivered orders grouped by rider with message sent/pending status
-     * This is purely informational - does NOT affect any ledger, settlement, or invoice logic
-     */
-    private function fetchOnlineMessageTracking($riderFilter = 'all')
-    {
-        try {
-            $onlinePaymentMethods = ['online', 'Online', 'bank_transfer', 'card', 'online_payment', 'direct_bank_transfer', 'bacs'];
-            
-            // Find orders delivered today with online payment methods
-            $query = \App\Models\CRM\OrderModel::whereIn('order_status', ['delivered', 'completed'])
-                ->whereIn('payment_method', $onlinePaymentMethods)
-                ->whereExists(function($q) {
-                    $q->select(\DB::raw(1))
-                      ->from('t_crm_order_status_history as h')
-                      ->whereColumn('h.order_id', 't_crm_prod_order.id')
-                      ->where('h.status_code', 'delivered')
-                      ->whereDate('h.changed_at', today());
-                })
-                ->with(['customer', 'assignedRider']);
-            
-            // Apply rider filter if specific rider selected
-            if ($riderFilter !== 'all') {
-                $riderAccount = AccountModel::find($riderFilter);
-                if ($riderAccount && $riderAccount->user_id) {
-                    $query->where('assigned_rider_user_id', $riderAccount->user_id);
-                }
-            }
-            
-            $orders = $query->orderBy('order_number', 'desc')->get();
-            
-            if ($orders->isEmpty()) {
-                return null;
-            }
-            
-            // Pre-fetch delivery timestamps from status history
-            $orderIds = $orders->pluck('id')->all();
-            $deliveryHistory = \DB::table('t_crm_order_status_history')
-                ->whereIn('order_id', $orderIds)
-                ->where('status_code', 'delivered')
-                ->get()
-                ->keyBy('order_id');
-            
-            $messageSent = $orders->whereNotNull('online_message_sent_at');
-            $messagePending = $orders->whereNull('online_message_sent_at');
-            
-            // Jun-2026 — Bulk payment-proof lookup so the daily-closing reminder
-            // flow can warn the user when a customer has already sent proof.
-            $paymentProofMap = [];
-            if (config('payment_signals.enabled')) {
-                // Daily Closing reminder flow is a RECORD surface — keep
-                // proof/verified badges after approval (suppressSettled: false).
-                $paymentProofMap = app(\App\Services\Payments\Signals\PaymentProofStatusService::class)
-                    ->forOrders($orderIds, suppressSettled: false);
-            }
-            
-            // Group by rider
-            $byRider = $orders->groupBy('assigned_rider_user_id')->map(function($riderOrders) use ($deliveryHistory, $paymentProofMap) {
-                $rider = $riderOrders->first()->assignedRider;
-                $riderName = $rider ? $rider->fullname : 'Unknown Rider';
-                
-                return [
-                    'rider_name' => $riderName,
-                    'sent_count' => $riderOrders->whereNotNull('online_message_sent_at')->count(),
-                    'pending_count' => $riderOrders->whereNull('online_message_sent_at')->count(),
-                    'total_amount' => round($riderOrders->sum('total_price')),
-                    'message_sent' => $riderOrders->whereNotNull('online_message_sent_at')->map(function($order) {
-                        return [
-                            'order_number' => $order->order_number,
-                            'customer_name' => trim(($order->address_first_name ?? '') . ' ' . ($order->address_last_name ?? ''))
-                                ?: ($order->customer ? trim($order->customer->first_name . ' ' . $order->customer->last_name) : 'N/A'),
-                            'amount' => round($order->total_price),
-                            'sent_at' => $order->online_message_sent_at ? $order->online_message_sent_at->format('h:i A') : null,
-                        ];
-                    })->values(),
-                    'message_pending' => $riderOrders->whereNull('online_message_sent_at')->map(function($order) use ($deliveryHistory, $paymentProofMap) {
-                        $customerName = trim(($order->address_first_name ?? '') . ' ' . ($order->address_last_name ?? ''))
-                            ?: ($order->customer ? trim($order->customer->first_name . ' ' . $order->customer->last_name) : 'N/A');
-                        $customerPhone = $order->address_phone ?: ($order->customer ? ($order->customer->phone_original ?? $order->customer->phone ?? '') : '');
-                        $riderUser = $order->assignedRider;
-                        $riderFullName = $riderUser ? $riderUser->fullname : 'your rider';
-                        
-                        $deliveryRecord = $deliveryHistory->get($order->id);
-                        $deliveryDate = $deliveryRecord ? \Carbon\Carbon::parse($deliveryRecord->changed_at)->format('M d, Y') : ($order->delivery_date ?? now()->format('M d, Y'));
-                        $deliveryTime = $deliveryRecord ? \Carbon\Carbon::parse($deliveryRecord->changed_at)->format('h:i A') : '';
-                        
-                        return [
-                            'id' => $order->id,
-                            'order_number' => $order->order_number,
-                            'customer_name' => $customerName,
-                            'customer_phone' => $customerPhone,
-                            'rider_name' => $riderFullName,
-                            'delivery_date' => $deliveryDate,
-                            'delivery_time' => $deliveryTime,
-                            'amount' => round($order->total_price),
-                            // Jun-2026: payment-proof status (null when none received).
-                            'payment_proof' => $paymentProofMap[$order->id] ?? null,
-                        ];
-                    })->values(),
-                ];
-            })->values();
-            
-            return [
-                'total_count' => $orders->count(),
-                'sent_count' => $messageSent->count(),
-                'pending_count' => $messagePending->count(),
-                'sent_amount' => round($messageSent->sum('total_price')),
-                'pending_amount' => round($messagePending->sum('total_price')),
-                'by_rider' => $byRider,
-            ];
-            
-        } catch (\Exception $e) {
-            \Log::error('fetchOnlineMessageTracking error: ' . $e->getMessage());
-            return null;
         }
     }
 
@@ -2861,6 +2767,11 @@ class EmployeeCashController extends Controller
                             'level_1_status' => $req->level_1_status,
                             'requires_level_1' => $req->requires_level_1,
                             'requires_level_2' => $req->requires_level_2,
+                            // What it was FILED against, so the approve row can preselect it
+                            // (and reuse its bank) instead of defaulting to NF Cash and
+                            // silently rebooking the claim to a different account.
+                            'filed_source_id' => $req->payment_source_account_id,
+                            'filed_bank_id' => $req->receiving_account_id,
                         ];
                     })->values(),
                 ];
@@ -2878,8 +2789,19 @@ class EmployeeCashController extends Controller
     }
 
     /**
-     * Mark that the WhatsApp delivery confirmation message was sent for an online order
-     * Called from the daily closing page by the manager
+     * Stamp "last reminded at" on an online order. Called from the Daily Closing
+     * Payment Follow-ups panel after a reminder actually goes out.
+     *
+     * Aug-2026 — SEMANTIC CHANGE: online_message_sent_at used to mean "reminded,
+     * ever", which permanently greyed the row out and made chasing a customer over
+     * several days impossible. It now means LAST reminded, and re-stamping is the
+     * normal case (day 1, then again on day 2/3 while no proof has arrived). The
+     * 1,786 historic values stay valid and read as "last reminded then".
+     *
+     * The caller must only hit this when a send really happened — the old panel
+     * stamped even when the API failed and it merely opened a wa.me tab, so a
+     * green tick could mean nothing was sent. Multi-day chasing is worthless if
+     * "reminded yesterday" might be a lie.
      */
     public function markOnlineMessageSentWeb(Request $request, $orderId)
     {
@@ -3305,6 +3227,34 @@ class EmployeeCashController extends Controller
     }
 
     /**
+     * 🏦 The bank tag a two-sided ledger row must carry, or null.
+     *
+     * Exactly ONE side a bank account → the tag is REQUIRED (throws into the
+     * caller's catch, which redirects back with the message — the Blade gates the
+     * submit first, so a user only ever sees this on a crafted/stale form).
+     * Both sides banks → same physical money, nets to zero per bank, tag FORCED
+     * null. Neither side → null, so a cash row can never credit a bank.
+     * The is-a-bank test is BankAttributionService's — never an account-code match.
+     */
+    private function bankTagFor($fromAccountId, $toAccountId, $bankId): ?int
+    {
+        $svc = app(\App\Services\FIN\BankAttributionService::class);
+        $fromIsBank = $svc->requiresBank($fromAccountId);
+        $toIsBank   = $svc->requiresBank($toAccountId);
+
+        if ($fromIsBank === $toIsBank) {
+            return null;                       // neither, or an internal bank↔bank move
+        }
+        if (!$bankId) {
+            throw new \Exception('Select which bank this online movement goes through (per-bank tracking).');
+        }
+        if (!$svc->isValidBank($bankId)) {
+            throw new \Exception('That bank is not a recognised receiving account.');
+        }
+        return (int) $bankId;
+    }
+
+    /**
      * Record money received into a company account
      */
     public function recordCompanyReceipt(Request $request, $id)
@@ -3315,7 +3265,9 @@ class EmployeeCashController extends Controller
             'from_external' => 'nullable|string|max:255',
             'description' => 'required|string|max:500',
             'transaction_date' => 'required|date',
-            'requires_approval' => 'boolean'
+            'requires_approval' => 'boolean',
+            // 🏦 WHICH bank, when either side of this receipt is a bank account.
+            'receiving_account_id' => 'nullable|integer|exists:t_fin_online_receiving_accounts,id',
         ]);
 
         try {
@@ -3353,6 +3305,16 @@ class EmployeeCashController extends Controller
                 }
             }
 
+            // 🏦 Aug-27-2026: ONLINE is one of the two sanctioned doors for outside
+            // money, yet this writer never named WHICH bank it landed in — so every
+            // external receipt into Online Bank was invisible to the per-bank split
+            // (BankBalanceService counts TAGGED rows only). Required when exactly one
+            // side is a bank account; a bank↔bank internal move nets to zero there
+            // and must NOT carry a tag. Same rule as recordCompanyTransfer below.
+            // Hard requirement (no staged flag): this form is web-only, and the
+            // Blade that demands the pick ships in the same upload.
+            $receiptBankId = $this->bankTagFor($fromAccountId, $companyAccount->id, $request->receiving_account_id);
+
             // Create ledger entry
             $ledger = LedgerModel::create([
                 'transaction_date' => $request->transaction_date,
@@ -3360,6 +3322,7 @@ class EmployeeCashController extends Controller
                 'description' => $description,
                 'from_account_id' => $fromAccountId,
                 'to_account_id' => $companyAccount->id,
+                'receiving_account_id' => $receiptBankId,
                 'amount' => $request->amount,
                 'mode' => LedgerModel::MODE_CASH,
                 'approval_status' => $approvalStatus,
@@ -3404,7 +3367,9 @@ class EmployeeCashController extends Controller
             'expense_category' => 'nullable|string|max:100',
             'description' => 'required|string|max:500',
             'transaction_date' => 'required|date',
-            'requires_approval' => 'boolean'
+            'requires_approval' => 'boolean',
+            // 🏦 WHICH bank, when either side of this payment is a bank account.
+            'receiving_account_id' => 'nullable|integer|exists:t_fin_online_receiving_accounts,id',
         ]);
 
         try {
@@ -3445,6 +3410,11 @@ class EmployeeCashController extends Controller
                 $description = "[{$request->expense_category}] {$description}";
             }
 
+            // 🏦 Same rule as the receipt above: a payment OUT of Online Bank (or into
+            // a bank from a cash account) must name the physical bank, or the per-bank
+            // split loses the amount. Bank↔bank internal moves need no tag.
+            $paymentBankId = $this->bankTagFor($companyAccount->id, $toAccountId, $request->receiving_account_id);
+
             // Create ledger entry
             $ledger = LedgerModel::create([
                 'transaction_date' => $request->transaction_date,
@@ -3452,6 +3422,7 @@ class EmployeeCashController extends Controller
                 'description' => $description,
                 'from_account_id' => $companyAccount->id,
                 'to_account_id' => $toAccountId,
+                'receiving_account_id' => $paymentBankId,
                 'amount' => $request->amount,
                 'mode' => LedgerModel::MODE_CASH,
                 'approval_status' => $approvalStatus,

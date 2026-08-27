@@ -1247,7 +1247,40 @@ class WhatsAppService
     /**
      * Save an outbound message to the database after sending
      */
-    public function saveOutboundMessage(int $conversationId, array $apiResponse, string $type, string $content, ?int $sentBy = null, ?string $templateName = null, ?array $templateParams = null, bool $forcedDedupOverride = false): ?MessageModel
+    /**
+     * Work out which order_number an outbound template send should be stamped
+     * with. Callers may pass it explicitly (`related_order_number`) or imply it
+     * with `order_id`.
+     *
+     * WHY BOTH: `order_id` on the send endpoints also triggers the invoice-image
+     * auto-attach. A template with no media header (e.g.
+     * delivery_confirmation_online) is REJECTED by Meta when a header component
+     * is attached, so a caller that only wants send history — not an image —
+     * must be able to say so without passing order_id. Hence the explicit field.
+     *
+     * Returns null when neither is usable; never throws.
+     */
+    public function resolveRelatedOrderNumber(?string $explicit, $orderId = null): ?string
+    {
+        $explicit = is_string($explicit) ? trim($explicit) : '';
+        if ($explicit !== '') {
+            return $explicit;
+        }
+
+        if (!$orderId) {
+            return null;
+        }
+
+        try {
+            $num = \App\Models\CRM\OrderModel::whereKey((int) $orderId)->value('order_number');
+            return $num !== null && $num !== '' ? (string) $num : null;
+        } catch (\Throwable $e) {
+            // History stamping is decoration — never cost the caller its send.
+            return null;
+        }
+    }
+
+    public function saveOutboundMessage(int $conversationId, array $apiResponse, string $type, string $content, ?int $sentBy = null, ?string $templateName = null, ?array $templateParams = null, bool $forcedDedupOverride = false, ?string $relatedOrderNumber = null): ?MessageModel
     {
         $waMessageId = $apiResponse['messages'][0]['id'] ?? null;
 
@@ -1275,6 +1308,18 @@ class WhatsAppService
         // we don't want every outbound row carrying a redundant 0.
         if ($forcedDedupOverride && \Illuminate\Support\Facades\Schema::hasColumn('t_wa_messages', 'forced_dedup_override')) {
             $payload['forced_dedup_override'] = 1;
+        }
+
+        // Aug-2026: stamp the order this message is ABOUT so send history can be
+        // read back per order (the Daily Closing follow-up panel counts reminders
+        // this way). Invoice sends already stamped it by direct assignment after
+        // the fact; template sends never did, so the column was NULL on every
+        // reminder ever sent. Same hasColumn guard as above for DBs that predate
+        // the column. Callers pass order_number (matches how every existing
+        // reader joins it), never the id.
+        if ($relatedOrderNumber !== null && $relatedOrderNumber !== ''
+            && \Illuminate\Support\Facades\Schema::hasColumn('t_wa_messages', 'related_order_number')) {
+            $payload['related_order_number'] = $relatedOrderNumber;
         }
 
         $message = MessageModel::create($payload);

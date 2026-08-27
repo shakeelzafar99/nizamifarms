@@ -22,6 +22,19 @@ use App\Services\LocationService;
 class RiderController extends Controller
 {
     /**
+     * ⚠ STAGED ROLLOUT (Aug-27-2026). Money paid out of a BANK account has to name
+     * WHICH bank (`receiving_account_id`) or the per-bank balances never see it —
+     * see App\Services\FIN\BankAttributionService. The store-mode salary advance
+     * never asked, and the APK already in the field still does not send one, so
+     * refusing outright would stop advances the day the web files go up.
+     *
+     * Flip to true once the APK carrying the 🏦 picker is out, and delete the
+     * warn-log branch in createSalaryAdvance(). Same pattern (and the same reason)
+     * as RequestApprovalController::ENFORCE_APPROVE_BANK.
+     */
+    private const ENFORCE_ADVANCE_BANK = false;
+
+    /**
      * May-2026 — single source of truth for "what counts as a FRESH
      * rider GPS reading" when picking the origin for Qurbani route
      * planning. Used by Auto Route, Dispatch (Start), the manager-
@@ -400,6 +413,10 @@ class RiderController extends Controller
                 return [
                     'discount_amount' => $discount->discount_amount,
                     'discount_type' => $discount->discount_type,
+                    // Lets the mobile invoice separate the customer's own account
+                    // balance from a real discount instead of printing it as one.
+                    'coupon_code' => $discount->coupon_code,
+                    'discount_title' => $discount->discount_title,
                 ];
             })->toArray() : [];
 
@@ -7388,10 +7405,42 @@ class RiderController extends Controller
                 }
                 if ($val !== null
                     && !(new \App\Services\Riders\VehicleService())->readingPlausibleFor((int) $vid, $val)) {
-                    \Log::warning('Meter stamp skipped — reading implausible for the held machine', [
-                        'user_id' => $userId, 'vehicle_id' => (int) $vid, 'reading' => $val,
+
+                    // ⭐⭐ SECOND CHANCE — ASK HIS OWN MACHINES (Aug-27 2026).
+                    //
+                    // Refusing the stamp was the right call and only half the answer. The
+                    // reading is not nonsense; it is simply not of the machine the registry
+                    // says he is holding — the everyday case being a rider who arrives on
+                    // his own bike while the van is still assigned to him. Leaving it
+                    // UNSTAMPED means the day is half-labelled, which then defeats the
+                    // split-day detection and lets the claim guess its machine from the
+                    // date. Prod carries exactly such a row (22-Aug: start stamped to the
+                    // own bike, close stamped to nothing).
+                    //
+                    // ⚠ Only when EXACTLY ONE of his own machines can own the reading.
+                    //   Ambiguity stays unstamped — a wrong stamp outranks every derivation
+                    //   that would otherwise have caught it, so silence beats a guess.
+                    $alt = [];
+                    try {
+                        $svc = new \App\Services\Riders\VehicleService();
+                        foreach ((new \App\Services\Riders\RiderDayLegs())->ownMachineIdsFor($userId) as $ownId) {
+                            if ((int) $ownId === (int) $vid) continue;
+                            if ($svc->readingPlausibleFor((int) $ownId, $val)) $alt[] = (int) $ownId;
+                        }
+                    } catch (\Throwable $altErr) { $alt = []; }
+
+                    if (count($alt) !== 1) {
+                        \Log::warning('Meter stamp skipped — reading implausible for the held machine', [
+                            'user_id' => $userId, 'vehicle_id' => (int) $vid, 'reading' => $val,
+                            'own_candidates' => count($alt),
+                        ]);
+                        return [];
+                    }
+
+                    \Log::info('Meter stamped to the rider\'s own machine instead of the held one', [
+                        'user_id' => $userId, 'held' => (int) $vid, 'stamped' => $alt[0], 'reading' => $val,
                     ]);
-                    return [];
+                    $vid = $alt[0];
                 }
             } catch (\Throwable $e) { /* plausibility is a safety net, never a gate */ }
 
@@ -11849,11 +11898,154 @@ class RiderController extends Controller
                 ->where('r.expense_category', 'Petrol')
                 ->whereNotNull('r.attendance_id')
                 ->whereBetween('r.expense_date', [$startDate, $endDate])
-                ->select('r.id', 'r.attendance_id', 'r.expense_date', 'r.amount', 'r.status', 'r.meter_distance', 'r.petrol_rate')
+                ->select('r.id', 'r.attendance_id', 'r.expense_date', 'r.amount', 'r.status',
+                         'r.meter_distance', 'r.petrol_rate',
+                         // ⭐ Which machine each claim was for — a mixed day can carry one
+                         //   per machine, so the per-leg rows below need to tell them apart.
+                         //   Selected defensively: absent before batch 13, and this endpoint
+                         //   must not 500 on a server that has not run it.
+                         ...(\Illuminate\Support\Facades\Schema::hasColumn('t_req_master', 'vehicle_id')
+                             ? ['r.vehicle_id'] : []))
                 ->orderByRaw("(r.status IN ('rejected','cancelled')) DESC")
                 ->orderBy('r.id')
-                ->get()
-                ->keyBy('attendance_id');
+                ->get();
+
+            // ⚠ The flat map keeps its original shape and meaning — one entry per
+            //   attendance day, the ACTIVE claim winning — because every APK in the field
+            //   reads it that way. The per-machine detail rides in `vehicles[]` below.
+            $petrolRequestsByDay = $petrolRequests->keyBy('attendance_id');
+
+            // ── 🏍️🚚 WHAT HE ACTUALLY RODE THAT DAY, PER MACHINE ────────────────────
+            // ⭐⭐ ONE meter pair per rider-day is the storage reality, and it stopped being
+            //    the whole truth the day a rider started arriving on his own bike and taking
+            //    the van out mid-shift. `RiderDayLegs` reassembles the day from the reading
+            //    stamps and the vehicle meter log; everything below simply renders it.
+            $petrolWindowDays = (int) $this->attnConfig('PETROL_WINDOW_DAYS', 5);
+            if ($petrolWindowDays < 1) { $petrolWindowDays = 5; }
+            $windowStart = date('Y-m-d', strtotime('-' . $petrolWindowDays . ' days'));
+
+            try {
+                $legsByDate = (new \App\Services\Riders\RiderDayLegs())->forRange(
+                    (int) $user->id, $startDate, $effectiveEndDate, $attendanceRecords->toArray()
+                );
+            } catch (\Throwable $legErr) {
+                \Log::warning('day legs skipped (non-fatal)', ['error' => $legErr->getMessage()]);
+                $legsByDate = [];
+            }
+
+            // Claims already filed, keyed by day+machine, so a leg can say for itself
+            // whether it has been claimed and what happened to it.
+            $claimByDayVehicle = [];
+            foreach ($petrolRequests as $pr) {
+                $vid = $pr->vehicle_id ?? null;
+                if ($vid) $claimByDayVehicle[$pr->attendance_id . '|' . (int) $vid] = $pr;
+            }
+
+            // ⭐⭐ HIS OWN MACHINE — so he can record ITS meter on a day the company van
+            //    owns his attendance readings (owner ruling q2, Aug-27 2026). Only when
+            //    there is exactly one, because "add my bike's meter" has to mean one bike.
+            $ownVehicle = null;
+            try {
+                $ownIds = (new \App\Services\Riders\RiderDayLegs())->ownMachineIdsFor((int) $user->id);
+                if (count($ownIds) === 1) {
+                    $ov = DB::table('t_ops_vehicle')->where('id', $ownIds[0])
+                        ->first(['id', 'reg_no', 'nickname']);
+                    if ($ov) {
+                        $lbl = trim((string) ($ov->reg_no ?? '')) ?: trim((string) ($ov->nickname ?? ''));
+                        $ownVehicle = ['id' => (int) $ov->id, 'label' => $lbl ?: ('Vehicle #' . $ov->id)];
+                    }
+                }
+            } catch (\Throwable $ovErr) { $ownVehicle = null; }
+
+            foreach ($history as &$h) {
+                // ⚠ A per-km claim is ANCHORED to an attendance row — that is what makes
+                //   it the self-auditing kind and what the one-per-day rule keys on. A
+                //   day he never checked in on can still carry a meter-log leg (a manager
+                //   recording the machine), but offering a claim button there would post
+                //   a claim with no attendance id, which the server then treats as a flat
+                //   cash claim and refuses. Show nothing rather than a door that fails.
+                if (empty($h['id'])) continue;
+
+                $legs = $legsByDate[$h['date']] ?? [];
+                if (!$legs) continue;
+
+                $inWindow = $h['date'] >= $windowStart;
+                $rows = [];
+                foreach ($legs as $l) {
+                    $claim = $claimByDayVehicle[$h['id'] . '|' . $l['vehicle_id']] ?? null;
+                    // An unstamped claim for this day belongs to whichever machine the
+                    // day's own kilometres are on — the pre-stamping shape.
+                    if (!$claim && empty($l['is_company'])) {
+                        $flat = $petrolRequestsByDay[$h['id']] ?? null;
+                        if ($flat && empty($flat->vehicle_id)) $claim = $flat;
+                    }
+                    $active = $claim && !in_array($claim->status, ['rejected', 'cancelled'], true);
+
+                    $rows[] = [
+                        'vehicle_id'   => $l['vehicle_id'],
+                        'label'        => $l['label'],
+                        'is_company'   => (bool) $l['is_company'],
+                        'km'           => $l['km'],
+                        'meter_start'  => $l['meter_start'],
+                        'meter_end'    => $l['meter_end'],
+                        'source'       => $l['source'],
+                        'entered_by_name' => $l['entered_by_name'],
+                        'self_entered'    => (bool) $l['self_entered'],
+                        // ⭐ SERVER-AUTHORITATIVE: the app renders a claim button on this
+                        //   flag alone, so a rider can never be offered a claim the server
+                        //   is about to refuse (the exact shape of today's bug).
+                        'can_claim'    => (empty($l['is_company']) && ($l['km'] ?? 0) > 0
+                                           && $petrolRate > 0 && $inWindow && !$active),
+                        'claim_status' => $claim->status ?? null,
+                        'claim_id'     => $claim->id ?? null,
+                        'claim_amount' => $claim->amount ?? null,
+                    ];
+                }
+                $h['vehicles'] = $rows;
+
+                // ⭐ May he add his OWN vehicle's readings for this day? Only inside the
+                //   window a claim could still be made for, and only while his own bike
+                //   has no complete pair yet — a manager-entered row is read-only to him.
+                $ownLeg = $ownVehicle
+                    ? \App\Services\Riders\RiderDayLegs::forVehicle($legs, $ownVehicle['id'])
+                    : null;
+                $h['can_add_own_meter'] = (bool) ($ownVehicle && $inWindow
+                    && (!$ownLeg || ($ownLeg['km'] ?? null) === null));
+
+                // ── the installed APK, which knows nothing about legs ──────────────
+                // ⚠⚠ It renders the claim button on `meter_distance > 0` and the amount on
+                //    that number alone. On a van day that number was the VAN's distance —
+                //    Rs 1,586.50 of per-km allowance for fuel the firm had already bought.
+                //    Correcting the field corrects the phone, with no new APK.
+                // ⚠ Scoped to riders on the per-km scheme (they alone have a rate). A
+                //   company-bike rider is in no rate group, so his kilometres display
+                //   exactly as they always have.
+                if (!($petrolRate > 0)) continue;
+
+                $claimable = \App\Services\Riders\RiderDayLegs::claimable($legs);
+                $hasCompany = \App\Services\Riders\RiderDayLegs::hasCompany($legs);
+
+                if (count($claimable) === 1) {
+                    // Show HIS vehicle's numbers, so distance, readings and the amount
+                    // the app computes from them can never disagree.
+                    $leg = $claimable[0];
+                    $h['meter_start']    = (float) $leg['meter_start'];
+                    $h['meter_end']      = (float) $leg['meter_end'];
+                    $h['meter_distance'] = (float) $leg['km'];
+                    $h['meter_warning']  = $hasCompany
+                        ? ('Showing ' . $leg['label'] . ' — your own vehicle. The other '
+                           . 'vehicle\'s kilometres are recorded against it.')
+                        : $h['meter_warning'];
+                } elseif ($hasCompany && !$claimable) {
+                    $company = null;
+                    foreach ($legs as $l) { if (!empty($l['is_company'])) { $company = $l; break; } }
+                    $h['meter_distance'] = null;      // this is what hides the button
+                    $h['meter_warning']  = 'These kilometres are on ' . ($company['label'] ?? 'a company vehicle')
+                        . ', and the company buys its fuel — so there is no per-kilometre claim '
+                        . 'for them.';
+                }
+            }
+            unset($h);
 
             // 🏢 Company-bike riders: show the SAME work/off-duty split management
             // sees on the Fleet tab. Off-duty km (the ride home and personal use)
@@ -11872,8 +12064,14 @@ class RiderController extends Controller
                 'summary' => $summary,
                 'history' => $history,
                 'petrol_rate' => $petrolRate,
-                'petrol_requests' => $petrolRequests,
-                'petrol_window_days' => (int) $this->attnConfig('PETROL_WINDOW_DAYS', 5),
+                // ⚠ MUST stay the attendance-id-keyed MAP — every APK in the field does
+                //   `petrol_requests[record.id]`, and handing it a plain list would break
+                //   the status badge on every day at once.
+                'petrol_requests' => $petrolRequestsByDay,
+                'petrol_window_days' => $petrolWindowDays,
+                // Additive: the app shows an "add my bike's meter" door only when this
+                // is present, so an older app and an older server both stay as they were.
+                'own_vehicle' => $ownVehicle,
                 'bike_usage' => $bikeUsage,
             ]);
         } catch (\Exception $e) {
@@ -12110,6 +12308,9 @@ class RiderController extends Controller
                 'expense_date' => 'nullable|date',
                 'meter_distance' => 'nullable|numeric|min:0',
                 'petrol_rate' => 'nullable|numeric|min:0',
+                // Which machine these kilometres were on. Optional: no APK in the field
+                // sends it, and the rules resolve the day's machine when it is absent.
+                'vehicle_id' => 'nullable|integer',
                 // Fuel capture (Jul-2026). meter_at_fill is the odometer at the
                 // moment of filling — it puts the fill on the bike's km timeline.
                 'meter_at_fill' => 'nullable|integer|min:0|max:9999999',
@@ -12152,46 +12353,21 @@ class RiderController extends Controller
                     }
                 }
 
-                $existingPetrol = DB::table('t_req_master as r')
-                    ->join('t_req_category as c', 'c.id', '=', 'r.category_id')
-                    ->where('c.category_code', 'expense')
-                    ->where('r.requester_user_id', $user->id)
-                    ->where('r.expense_category', 'Petrol')
-                    ->where('r.attendance_id', $request->input('attendance_id'))
-                    ->whereNotIn('r.status', ['cancelled', 'rejected'])
-                    ->exists();
-
-                if ($existingPetrol) {
-                    return response()->json([
-                        'success' => false,
-                        'message' => 'A petrol request has already been submitted for this day.'
-                    ], 422);
-                }
-
-                // ⭐⭐ SPLIT DAY = NO CLAIMABLE DISTANCE. The screen already hides the button when
-                //    the server sends `meter_distance = null`, but a phone holding a stale screen
-                //    can still post the old number — and this one is money: opening on the own
-                //    bike (6,434) and closing on the van (73,959) is 67,525 "km". The server, not
-                //    the screen, is the guarantee. Inert until step C's SQL runs (both stamps NULL).
-                try {
-                    $attRow = DB::table('t_ops_attendance')
-                        ->where('id', $request->input('attendance_id'))
-                        ->first();
-                    $sV = $attRow->meter_start_vehicle_id ?? null;
-                    $eV = $attRow->meter_end_vehicle_id ?? null;
-                    if ($sV && $eV && (int) $sV !== (int) $eV) {
-                        return response()->json([
-                            'success' => false,
-                            'message' => 'That day\'s start and end readings are from two different '
-                                . 'vehicles, so the distance cannot be worked out. Ask your manager '
-                                . 'to correct the readings first.',
-                        ], 422);
-                    }
-                } catch (\Throwable $splitErr) {
-                    // Never block a claim over a lookup failure — the rule above is a safety net,
-                    // not a precondition.
-                    \Log::warning('split-day petrol guard skipped', ['error' => $splitErr->getMessage()]);
-                }
+                // ⭐⭐ THE DUPLICATE AND SPLIT-DAY GUARDS NOW LIVE IN `FuelClaimRules`
+                //    (Aug-27 2026) — see `checkMeteredPetrol`, called through `check()`
+                //    a few lines below. Both had to move for the same reason:
+                //
+                //    • the duplicate rule became MACHINE-aware ("one claim per machine
+                //      per day"), because a mixed day can legitimately carry his own
+                //      bike's claim beside the company machine's fuel;
+                //    • the split-day rule was a blanket refusal, and a blanket refusal
+                //      is precisely the bug — a day split between his own bike and the
+                //      van is not unclaimable, it is claimable for ONE of the two. The
+                //      leg-based check pays the own bike and declines the van.
+                //
+                //    ⚠ Keeping copies here would re-create the very drift this codebase
+                //      has been bitten by before; the manager's on-behalf path calls the
+                //      same rules object and must reach the identical answer.
             }
             // ---- FUEL / MAINTENANCE RULES ------------------------------------
             // ⭐ ONE implementation, shared with the manager-on-behalf path
@@ -12220,6 +12396,12 @@ class RiderController extends Controller
                     "meter_at_fill" => $request->input("meter_at_fill"),
                     "service_type"  => $svcResolved[0],
                     "attendance_id" => $request->input("attendance_id"),
+                    // ⭐ The per-km claim is judged against the kilometres actually
+                    //   recorded on the machine it names. `vehicle_id` is optional —
+                    //   every APK in the field today sends none, and the rules resolve
+                    //   the machine from the day itself when it is absent.
+                    "meter_distance" => $request->input("meter_distance"),
+                    "vehicle_id"     => $request->input("vehicle_id"),
                 ],
                 // This endpoint IS the rider's own app — he is always filing for
                 // himself, which is what makes the own-bike petrol block apply here
@@ -12230,6 +12412,9 @@ class RiderController extends Controller
                 return response()->json(["success" => false, "message" => $fuelRules["message"]], 422);
             }
             $flatNotice = $fuelRules["notice"] ?? null;
+            // The machine the rules settled on — stamped onto the claim below so the
+            // money follows the same machine as the kilometres that earned it.
+            $claimVehicleId = $fuelRules["vehicle_id"] ?? null;
 
 
             // ⭐ Validate expense_date is within allowed backdate range
@@ -12456,7 +12641,13 @@ class RiderController extends Controller
                 $validated['expense_date'] ?? null,
                 // ⭐ The per-km flow names the attendance row its amount came from; the money then
                 //   follows the same machine as the kilometres. See vehicleFromReadingStamps().
-                isset($validated['attendance_id']) ? (int) $validated['attendance_id'] : null
+                isset($validated['attendance_id']) ? (int) $validated['attendance_id'] : null,
+                // ⭐⭐ …and on a MIXED day the reading stamps cannot answer (they name two
+                //    different machines, so that helper returns null by design). The rules
+                //    already worked out which machine's kilometres are being paid for, so
+                //    hand that answer over rather than letting the date guess again — this
+                //    is what stops own-bike money landing on the van.
+                $claimVehicleId ? (int) $claimVehicleId : null
             );
 
             DB::commit();
@@ -12714,6 +12905,12 @@ class RiderController extends Controller
             
             // Get company accounts that can be used for disbursement
             // Include: All cash/asset accounts that can be payment sources
+            // ⚠ This list is NOT tag-aware (unlike every other picker, which asks
+            //   PaymentSourceService). Left as-is deliberately: narrowing it here
+            //   would silently remove accounts store managers use today. What IS
+            //   fixed below is that a bank account now carries an honest is_online
+            //   flag and the banks list travels with it.
+            $bankSvc = app(\App\Services\FIN\BankAttributionService::class);
             $accounts = \DB::table('t_fin_accounts')
                 ->where(function($q) {
                     $q->whereIn('account_code', ['NF_CASH', 'EXP_FUND', 'PETTY_CASH', 'ONLINE', 'NF_ONLINE', 'BANK', 'NF_FOOD'])
@@ -12743,22 +12940,24 @@ class RiderController extends Controller
                     ELSE 4
                 END")
                 ->get()
-                ->map(function($acc) {
-                    // Determine icon based on account type
-                    $icon = '💵';
-                    $isOnline = in_array($acc->account_category, ['online', 'bank']) 
-                        || in_array($acc->account_type, ['online', 'bank'])
-                        || stripos($acc->account_name, 'online') !== false
-                        || stripos($acc->account_name, 'bank') !== false
-                        || stripos($acc->account_name, 'jazzcash') !== false
-                        || stripos($acc->account_name, 'easypaisa') !== false;
-                    
+                ->map(function($acc) use ($bankSvc) {
+                    // Determine icon based on account type.
+                    // ⭐ Aug-27-2026: `is_online` used to be guessed from the account
+                    // NAME ("…bank…", "…jazzcash…"). That guess decides whether the app
+                    // asks which bank the money left — and it disagreed with the server,
+                    // which goes by account_category. A cash account merely NAMED
+                    // "bank" was asked for one; a real bank account named otherwise was
+                    // not. One test now, the same one BankBalanceService counts by.
+                    $isOnline = $bankSvc->requiresBank($acc->id);
+
                     if ($isOnline) {
                         $icon = '🏦';
                     } elseif ($acc->account_code === 'EXP_FUND') {
                         $icon = '📋';
+                    } else {
+                        $icon = '💵';
                     }
-                    
+
                     return [
                         'id' => $acc->id,
                         'code' => $acc->account_code,
@@ -12773,6 +12972,13 @@ class RiderController extends Controller
             return response()->json([
                 'success' => true,
                 'accounts' => $accounts,
+                // 🏦 The banks a disbursement from an ONLINE account can be attributed
+                // to. Advances and loans paid from a bank used to post with no bank
+                // named at all, so the per-bank balances never saw them. Additive key —
+                // an older APK ignores it and behaves exactly as before.
+                'banks' => $accounts->contains(fn ($a) => !empty($a['is_online']))
+                    ? app(\App\Services\FIN\PaymentSourceService::class)->banks()
+                    : [],
                 // Add "Outside Cash" option for loans
                 'outside_cash_option' => [
                     'id' => null,
@@ -12813,7 +13019,36 @@ class RiderController extends Controller
                 'reason' => 'nullable|string|max:500',
                 'auto_approve' => 'nullable|boolean',
                 'payment_source_account_id' => 'nullable|integer|exists:t_fin_accounts,id', // ⭐ Payment source
+                // 🏦 WHICH bank an advance paid from an online account left from.
+                'receiving_account_id' => 'nullable|integer|exists:t_fin_online_receiving_accounts,id',
             ]);
+
+            // ⭐ Aug-27-2026: this endpoint took a payment source but no bank, while its
+            // own picker (getDisbursementAccounts) deliberately offers 🏦 bank accounts.
+            // An advance paid from Online Bank therefore posted a bank outflow that
+            // BankBalanceService cannot see, and the per-bank split drifted by the
+            // amount — silently, because the row itself looks perfectly normal.
+            //
+            // ⚠ STAGED, exactly like RequestApprovalController::ENFORCE_APPROVE_BANK:
+            // the APK in the field does not send a bank yet, and refusing outright would
+            // stop store managers issuing advances the day the web files go up. Warn
+            // now; flip ENFORCE_ADVANCE_BANK once the APK is out.
+            $bankSvc  = app(\App\Services\FIN\BankAttributionService::class);
+            $sourceId = $validated['payment_source_account_id'] ?? null;
+            $bankId   = $validated['receiving_account_id'] ?? null;
+            $problem  = $bankSvc->problemWith($sourceId, $bankId);
+            if ($problem) {
+                if (self::ENFORCE_ADVANCE_BANK) {
+                    return response()->json(['success' => false, 'message' => $problem], 422);
+                }
+                \Log::warning('Salary advance created without naming a bank', [
+                    'source_account_id' => $sourceId,
+                    'bank_id'           => $bankId,
+                    'problem'           => $problem,
+                    'created_by'        => $user->id,
+                ]);
+                $bankId = null;                     // never store a half-valid pairing
+            }
             
             // Get salary_advance category
             $category = \App\Models\Request\RequestCategoryModel::where('category_code', 'salary_advance')->first();
@@ -12844,7 +13079,10 @@ class RiderController extends Controller
                 'status' => 'pending', // Start as pending
                 'submitted_at' => now(),
                 'created_by' => $user->id,
-                'payment_source_account_id' => $validated['payment_source_account_id'] ?? null,
+                'payment_source_account_id' => $sourceId,
+                // 🏦 Null for every cash source, so a cash-funded advance can never
+                // carry a bank tag that would credit a bank nothing left.
+                'receiving_account_id' => $bankSvc->bankIdToStore($sourceId, $bankId),
                 // No approval workflow required for store manager
                 'requires_level_1' => false,
                 'requires_level_2' => false,
@@ -13481,6 +13719,12 @@ class RiderController extends Controller
                         return [
                             'discount_amount' => $discount->discount_amount,
                             'discount_type' => $discount->discount_type,
+                            // ⭐ The mobile receipt/invoice needs these to tell the
+                            // customer's own ACCOUNT_BALANCE line apart from a real
+                            // discount — without them it printed their money as a
+                            // "Discount". Additive: older APKs ignore extra keys.
+                            'coupon_code' => $discount->coupon_code,
+                            'discount_title' => $discount->discount_title,
                         ];
                     })->toArray() : [],
                     'preparation_summary' => [
@@ -13945,6 +14189,12 @@ class RiderController extends Controller
                         return [
                             'discount_amount' => $discount->discount_amount,
                             'discount_type' => $discount->discount_type,
+                            // ⭐ The mobile receipt/invoice needs these to tell the
+                            // customer's own ACCOUNT_BALANCE line apart from a real
+                            // discount — without them it printed their money as a
+                            // "Discount". Additive: older APKs ignore extra keys.
+                            'coupon_code' => $discount->coupon_code,
+                            'discount_title' => $discount->discount_title,
                         ];
                     })->toArray() : [],
                     'line_items' => $order->lineItems->map(function($item) use ($skuCzerlop, $skuWeightFactor) {
@@ -15057,6 +15307,12 @@ class RiderController extends Controller
                         return [
                             'discount_amount' => $discount->discount_amount,
                             'discount_type' => $discount->discount_type,
+                            // ⭐ The mobile receipt/invoice needs these to tell the
+                            // customer's own ACCOUNT_BALANCE line apart from a real
+                            // discount — without them it printed their money as a
+                            // "Discount". Additive: older APKs ignore extra keys.
+                            'coupon_code' => $discount->coupon_code,
+                            'discount_title' => $discount->discount_title,
                         ];
                     })->toArray() : [],
                     'invoice' => [
@@ -21305,9 +21561,29 @@ class RiderController extends Controller
             // (id/code/name are all still present), so an existing APK keeps working.
             // Daily Closing is Nizami Farms operations → business unit 1.
             $petrolPaymentAccounts = [];
+            $petrolPaymentBanks    = [];
             if ($petrolRequestsData->count() > 0 || $maintenanceRequestsData->count() > 0) {
-                $petrolPaymentAccounts = app(\App\Services\FIN\PaymentSourceService::class)
+                $paySvc = app(\App\Services\FIN\PaymentSourceService::class);
+                $petrolPaymentAccounts = $paySvc
                     ->sourcesFor($user, 1, \App\Services\FIN\PaymentSourceService::PURPOSE_EXPENSE);
+
+                // ⭐ Aug-27-2026: the banks an ONLINE approval can be attributed to.
+                // "Online Bank" is ONE chart account — WHICH bank the money left
+                // (HBL / Meezan / …) lives in receiving_account_id. This screen never
+                // received that list, so it could not offer the second pick, and every
+                // online approval taken here booked an UNTAGGED bank outflow: the
+                // per-bank balances drifted by the amount approved. Same list the
+                // Fleet strip (pay_banks) and the web approve page already use.
+                // Additive key — an APK that does not know it simply ignores it.
+                // Only fetched when the approver actually has a bank source in his
+                // list, because banks() computes per-bank balances.
+                $hasBankSource = (bool) array_filter(
+                    $petrolPaymentAccounts,
+                    fn ($s) => !empty($s['is_online'])
+                );
+                if ($hasBankSource) {
+                    $petrolPaymentBanks = $paySvc->banks();
+                }
             }
 
             // Get all riders for filter dropdown
@@ -21487,122 +21763,31 @@ class RiderController extends Controller
             }
             
             // ============================================================
-            // ⭐ Online WhatsApp Message Tracking (separate from ledger/settlement)
-            // Shows today's online delivered orders and whether rider sent payment reminder
-            // This does NOT affect any settlement, ledger, or invoice logic
-            // Wrapped in its own try-catch so it NEVER crashes the daily closing
+            // 💰 Payment Follow-ups (Aug-2026) — same source of truth as the web
+            // Daily Closing panel. This block used to be a copy-paste of the web
+            // implementation; both now go through OnlineFollowUpService so the
+            // two screens can never drift apart again.
+            //
+            // `online_message_tracking` keeps the EXACT shape the installed APK
+            // reads, so this deploys web-only with no rebuild. `payment_follow_up`
+            // carries the new chase/proof-in/settled tiers for the next mobile
+            // build. Purely informational: no ledger, settlement or invoice impact.
+            // Wrapped in its own try-catch so it NEVER crashes daily closing.
             // ============================================================
             $onlineMessageTracking = null;
+            $paymentFollowUp = null;
             try {
-                $onlinePaymentMethods = ['online', 'Online', 'bank_transfer', 'card', 'online_payment', 'direct_bank_transfer', 'bacs'];
-                
-                // Use status history to find orders delivered today (delivery_date is computed, not a real column)
-                $onlineMessageQuery = \App\Models\CRM\OrderModel::whereIn('order_status', ['delivered', 'completed'])
-                    ->where(function($q) use ($onlinePaymentMethods) {
-                        $q->whereIn('payment_method', $onlinePaymentMethods);
-                    })
-                    ->whereExists(function($q) {
-                        $q->select(\DB::raw(1))
-                          ->from('t_crm_order_status_history as h')
-                          ->whereColumn('h.order_id', 't_crm_prod_order.id')
-                          ->where('h.status_code', 'delivered')
-                          ->whereDate('h.changed_at', today());
-                    })
-                    ->with(['customer']);
-                
-                // Apply rider filter if specific rider selected
-                if ($riderFilter !== 'all') {
-                    // Need to find the user_id from the account_id
-                    $riderAccount = AccountModel::find($riderFilter);
-                    if ($riderAccount && $riderAccount->user_id) {
-                        $onlineMessageQuery->where('assigned_rider_user_id', $riderAccount->user_id);
-                    }
+                $followUpService = app(\App\Services\Payments\OnlineFollowUpService::class);
+                $paymentFollowUp = $followUpService->build($riderFilter);
+                if ($paymentFollowUp) {
+                    $onlineMessageTracking = $followUpService->legacyMobilePayload($paymentFollowUp);
                 }
-                
-                // Note: delivery_date is a computed accessor, not a real column - use id for ordering
-                $onlineMessageOrders = $onlineMessageQuery->orderBy('id', 'desc')->get();
-                
-                // Separate into message sent and pending
-                $messageSentOrders = $onlineMessageOrders->whereNotNull('online_message_sent_at');
-                $messagePendingOrders = $onlineMessageOrders->whereNull('online_message_sent_at');
-                
-                // Pre-fetch delivery timestamps for pending orders
-                $pendingOrderIds = $messagePendingOrders->pluck('id')->all();
-                $deliveryHistory = [];
-                if (!empty($pendingOrderIds)) {
-                    $deliveryHistory = \DB::table('t_crm_order_status_history')
-                        ->whereIn('order_id', $pendingOrderIds)
-                        ->where('status_code', 'delivered')
-                        ->get()
-                        ->keyBy('order_id');
-                }
-                
-                // Jun-2026 — Bulk payment-proof lookup so the app can warn before
-                // sending a reminder to a customer who already sent proof.
-                $paymentProofMap = [];
-                if (config('payment_signals.enabled') && !empty($pendingOrderIds)) {
-                    $paymentProofMap = app(\App\Services\Payments\Signals\PaymentProofStatusService::class)
-                        ->forOrders($pendingOrderIds);
-                }
-                
-                // Group by rider
-                $onlineMessageByRider = $onlineMessageOrders->groupBy('assigned_rider_user_id')->map(function($riderOrders) use ($deliveryHistory, $paymentProofMap) {
-                    $riderUser = $riderOrders->first()->assignedRider ?? null;
-                    $riderName = $riderUser ? $riderUser->fullname : 'Unknown';
-                    
-                    return [
-                        'rider_name' => $riderName,
-                        'rider_user_id' => $riderOrders->first()->assigned_rider_user_id,
-                        'message_sent' => $riderOrders->whereNotNull('online_message_sent_at')->map(function($order) {
-                            return [
-                                'id' => $order->id,
-                                'order_number' => $order->order_number,
-                                'customer_name' => trim(($order->address_first_name ?? '') . ' ' . ($order->address_last_name ?? '')) ?: ($order->customer ? trim($order->customer->first_name . ' ' . $order->customer->last_name) : 'N/A'),
-                                'amount' => round($order->total_price),
-                                'message_sent_at' => $order->online_message_sent_at ? $order->online_message_sent_at->format('H:i') : null,
-                            ];
-                        })->values(),
-                        'message_pending' => $riderOrders->whereNull('online_message_sent_at')->map(function($order) use ($deliveryHistory, $paymentProofMap) {
-                            $customerName = trim(($order->address_first_name ?? '') . ' ' . ($order->address_last_name ?? '')) ?: ($order->customer ? trim($order->customer->first_name . ' ' . $order->customer->last_name) : 'N/A');
-                            $customerPhone = $order->address_phone ?: ($order->customer ? ($order->customer->phone_original ?? $order->customer->phone ?? '') : '');
-                            $orderRider = $order->assignedRider;
-                            $riderFullName = $orderRider ? $orderRider->fullname : 'your rider';
-                            
-                            $deliveryRecord = $deliveryHistory->get($order->id);
-                            $deliveryDate = $deliveryRecord ? \Carbon\Carbon::parse($deliveryRecord->changed_at)->format('M d, Y') : ($order->delivery_date ?? now()->format('M d, Y'));
-                            $deliveryTime = $deliveryRecord ? \Carbon\Carbon::parse($deliveryRecord->changed_at)->format('h:i A') : '';
-                            
-                            return [
-                                'id' => $order->id,
-                                'order_number' => $order->order_number,
-                                'customer_name' => $customerName,
-                                'customer_phone' => $customerPhone,
-                                'rider_name' => $riderFullName,
-                                'delivery_date' => $deliveryDate,
-                                'delivery_time' => $deliveryTime,
-                                'amount' => round($order->total_price),
-                                'payment_proof' => $paymentProofMap[$order->id] ?? null,
-                            ];
-                        })->values(),
-                        'sent_count' => $riderOrders->whereNotNull('online_message_sent_at')->count(),
-                        'pending_count' => $riderOrders->whereNull('online_message_sent_at')->count(),
-                        'total_amount' => round($riderOrders->sum('total_price')),
-                    ];
-                })->values();
-                
-                $onlineMessageTracking = [
-                    'total_online_delivered' => $onlineMessageOrders->count(),
-                    'message_sent_count' => $messageSentOrders->count(),
-                    'message_pending_count' => $messagePendingOrders->count(),
-                    'message_sent_amount' => round($messageSentOrders->sum('total_price')),
-                    'message_pending_amount' => round($messagePendingOrders->sum('total_price')),
-                    'by_rider' => $onlineMessageByRider,
-                ];
             } catch (\Exception $msgEx) {
-                \Log::warning('Online message tracking failed in daily closing (non-critical)', [
+                \Log::warning('Payment follow-ups failed in daily closing (non-critical)', [
                     'error' => $msgEx->getMessage()
                 ]);
                 $onlineMessageTracking = null;
+                $paymentFollowUp = null;
             }
 
             return response()->json([
@@ -21611,10 +21796,12 @@ class RiderController extends Controller
                 'invoices_by_rider' => $invoicesByRider,
                 'invoices_by_date' => $invoicesByDate, // ⭐ New: date-grouped data for settled view
                 'online_summary' => $onlineData, // ⭐ New: online summary
-                'online_message_tracking' => $onlineMessageTracking, // ⭐ WhatsApp message tracking (no ledger impact)
+                'online_message_tracking' => $onlineMessageTracking, // legacy shape — the installed APK reads this
+                'payment_follow_up' => $paymentFollowUp, // Aug-2026 tiers — for the next mobile build
                 'petrol_requests' => $petrolRequestsData,
                 'maintenance_requests' => $maintenanceRequestsData,
                 'petrol_payment_accounts' => $petrolPaymentAccounts,
+                'petrol_payment_banks' => $petrolPaymentBanks, // ⭐ which bank an ONLINE approval left from
                 'pending_settlements' => $pendingSettlements->map(function($settlement) {
                     return [
                         'id' => $settlement->id,
@@ -25422,7 +25609,10 @@ class RiderController extends Controller
                     'shipping_total' => $order->shipping_total ?? 0,
                     'tip_amount' => $order->tip_amount ?? 0,
                     'discounts' => $order->discounts ? $order->discounts->map(function($d) {
-                        return ['discount_amount' => $d->discount_amount, 'discount_type' => $d->discount_type];
+                        // coupon_code/title let the mobile receipt tell the customer's
+                        // own ACCOUNT_BALANCE line apart from a real discount.
+                        return ['discount_amount' => $d->discount_amount, 'discount_type' => $d->discount_type,
+                                'coupon_code' => $d->coupon_code, 'discount_title' => $d->discount_title];
                     })->toArray() : [],
                     'has_verified_location' => ($order->customer && (
                         (!empty($order->customer->latitude) && !empty($order->customer->longitude))

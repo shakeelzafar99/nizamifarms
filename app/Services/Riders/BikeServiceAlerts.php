@@ -65,6 +65,34 @@ class BikeServiceAlerts
                     ? (int) $v['current_meter'] : null;
                 if ($meter === null) continue;      // no reading = nothing measurable
 
+                // ⭐⭐ AN OWN BIKE'S ALERTS BELONG TO ITS OWNER (Aug-27 2026).
+                //
+                // ⚠⚠ THE GAP THIS CLOSES. `keeper_user_id` is the OPEN assignment —
+                //    and an own bike loses its open assignment the moment its rider
+                //    is handed a company machine (one open row per rider, enforced).
+                //    So exactly the rider this round is about — own bike at home, van
+                //    in custody — had NOBODY pushed when his own bike fell due: no
+                //    keeper row, and the banner filter only knew the machine he was
+                //    HOLDING. Managers still heard; the one man who has to actually
+                //    take the bike to the mechanic did not.
+                //
+                // Ownership is answered by the same rule the day-legs engine uses
+                // (`ownerOf` / `ownMachineIdsFor` — one definition, two directions),
+                // so "whose alert is this" can never disagree with "whose km are
+                // these". A company machine with no keeper stays managers-only:
+                // a parked spare is the fleet's problem, not a rider's.
+                $keeperId   = $v['keeper_user_id'] ?? null;
+                $keeperName = $v['keeper_name'] ?? null;
+                if (!$keeperId) {
+                    $owner = (new RiderDayLegs())->ownerOf((int) $v['id']);
+                    if ($owner) {
+                        $keeperId = $owner;
+                        try {
+                            $keeperName = DB::table('t_sys_user')->where('id', $owner)->value('fullname');
+                        } catch (\Throwable $e) { $keeperName = null; }
+                    }
+                }
+
                 foreach ($svc->serviceScheduleFor((int) $v['id'], $meter) as $t) {
                     // 'unknown' = never recorded, so there is no clock to be late
                     // against. Nagging about a job that has no baseline would be
@@ -81,8 +109,8 @@ class BikeServiceAlerts
                         'interval_km'    => $t['interval_km'],
                         'last_meter'     => $t['last_meter'],
                         'current_meter'  => $meter,
-                        'keeper_user_id' => $v['keeper_user_id'] ?? null,
-                        'keeper_name'    => $v['keeper_name'] ?? null,
+                        'keeper_user_id' => $keeperId,
+                        'keeper_name'    => $keeperName,
                         'alert_key'      => $this->keyFor((int) $v['id'], (int) $t['id'],
                                                           $t['last_meter'], $t['state']),
                         'message'        => $this->message($v['name'], $t),
@@ -148,12 +176,22 @@ class BikeServiceAlerts
 
             // "The rider holding it" — the OPEN assignment, not a date window: the
             // man who has the bike right now is the one who must get it serviced.
-            $hisVehicle = (new VehicleResolver())->currentVehicleFor((int) $user->id);
+            // ⭐⭐ PLUS HIS OWN MACHINES (Aug-27 2026). Holding the company van does
+            //    not make his own bike someone else's problem — but it DOES release
+            //    the bike's open assignment (one open row per rider), which used to
+            //    drop it from this filter entirely. His day-legs, his claims and his
+            //    alerts now all answer ownership with the same rule.
+            $his = [];
+            $held = (new VehicleResolver())->currentVehicleFor((int) $user->id);
+            if ($held) $his[$held] = true;
+            foreach ((new RiderDayLegs())->ownMachineIdsFor((int) $user->id) as $own) {
+                $his[(int) $own] = true;
+            }
 
-            if (!$isManager && !$hisVehicle) return [];
+            if (!$isManager && !$his) return [];
 
-            $alerts = array_values(array_filter($this->due(), function ($a) use ($isManager, $hisVehicle) {
-                return $isManager || $a['vehicle_id'] === $hisVehicle;
+            $alerts = array_values(array_filter($this->due(), function ($a) use ($isManager, $his) {
+                return $isManager || isset($his[$a['vehicle_id']]);
             }));
             if (!$alerts) return [];
 

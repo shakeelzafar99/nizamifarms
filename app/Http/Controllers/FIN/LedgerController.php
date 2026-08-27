@@ -1027,6 +1027,10 @@ class LedgerController extends Controller
                     'success' => true,
                     'message' => $successMessage,
                     'new_balance' => $updatedToAccount ? $updatedToAccount->current_balance : null,
+                    // Aug-2026 — lets the approvals screen ask about an overpayment
+                    // straight after settling the invoice. Purely informational; the
+                    // approval is already committed by this point.
+                    'order_id' => $ledger->order_id,
                 ]);
             }
 
@@ -1184,6 +1188,10 @@ class LedgerController extends Controller
                     'success' => true,
                     'message' => $successMessage,
                     'new_balance' => $updatedToAccount ? $updatedToAccount->current_balance : null,
+                    // Aug-2026 — lets the approvals screen ask about an overpayment
+                    // straight after settling the invoice. Purely informational; the
+                    // approval is already committed by this point.
+                    'order_id' => $ledger->order_id,
                 ]);
             }
 
@@ -1282,6 +1290,10 @@ class LedgerController extends Controller
                     'success' => true,
                     'message' => $successMessage,
                     'new_balance' => $updatedToAccount ? $updatedToAccount->current_balance : null,
+                    // Aug-2026 — lets the approvals screen ask about an overpayment
+                    // straight after settling the invoice. Purely informational; the
+                    // approval is already committed by this point.
+                    'order_id' => $ledger->order_id,
                 ]);
             }
 

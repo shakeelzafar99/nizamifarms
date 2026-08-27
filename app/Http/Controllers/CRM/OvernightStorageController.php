@@ -1064,6 +1064,51 @@ class OvernightStorageController extends Controller
         }
         $days = array_reverse($days); // newest first
 
+        // ❄️ Per-day CATEGORY breakdown (Aug-2026). The day rows above answer
+        // "how much moved"; this answers "of what" — the question a manager
+        // comparing storage against sales actually asks. Read from the same log
+        // in ONE grouped query (never per-day queries), joined out to the
+        // product's Level-1 category, which is the same vocabulary the sales
+        // reports use. Kept as a separate map so the day totals above are
+        // untouched: a product deleted since, or a packet with no category,
+        // still counts in the day total and simply lands under "Uncategorized".
+        $catRows = DB::table('t_crm_overnight_log as l')
+            ->leftJoin('t_crm_prod_product as p', 'p.id', '=', 'l.product_id')
+            ->whereIn('l.action', ['in', 'out'])
+            ->where('l.created_at', '>=', $monthStart->toDateTimeString())
+            ->where('l.created_at', '<', $monthEndExclusive->toDateTimeString())
+            ->selectRaw("
+                DATE(l.created_at) AS d,
+                COALESCE(NULLIF(TRIM(p.attribute_1), ''), 'Uncategorized') AS category,
+                l.action AS action,
+                COALESCE(l.from_section, l.to_section) AS sec_key,
+                COUNT(*) AS packets,
+                COALESCE(SUM(CASE WHEN l.unit = 'kg' THEN l.quantity ELSE 0 END), 0) AS kg
+            ")
+            // GROUP BY the SELECT ALIASES — repeating a COALESCE expression here
+            // trips MariaDB ONLY_FULL_GROUP_BY (error 1055).
+            // ⚠ The section alias is deliberately NOT called `section`: this table
+            // HAS a real `section` column, so GROUP BY would bind to the column
+            // instead of this expression and throw 1055 anyway.
+            ->groupBy('d', 'category', 'action', 'sec_key')
+            ->get();
+
+        $byDayCategory = [];
+        foreach ($catRows as $r) {
+            $sec = $r->sec_key ?: 'chiller';
+            $slot = &$byDayCategory[$r->d][$sec][$r->category];
+            if (!is_array($slot)) {
+                $slot = ['in_kg' => 0.0, 'in_count' => 0, 'out_kg' => 0.0, 'out_count' => 0];
+            }
+            $slot[$r->action . '_kg']    += (float) $r->kg;
+            $slot[$r->action . '_count'] += (int) $r->packets;
+            unset($slot);
+        }
+        foreach ($days as &$d) {
+            $d['categories'] = $byDayCategory[$d['date']] ?? [];
+        }
+        unset($d);
+
         // Live truth from the item table (what the Current tab shows).
         $live = OvernightItemModel::where('status', 'stored')
             ->selectRaw("

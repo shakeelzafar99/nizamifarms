@@ -90,6 +90,19 @@ class PaymentProofStatusService
         return \App\Models\FIN\LedgerModel::query()
             ->where('mode', 'online')
             ->where('approval_status', \App\Models\FIN\LedgerModel::STATUS_APPROVED)
+            // ⚠⚠ INVOICE-QUEUE TYPES ONLY. "Settled" means this order's own
+            // invoice was approved — not that ANY approved online row happens
+            // to carry its id. Customer-credit rows do: banking an overpayment
+            // writes an approved, mode=online grant tagged with the order it
+            // came from, and without this filter that row made the order look
+            // settled and SILENTLY HID its payment-proof badge — an invoice
+            // still waiting for L1 showing "No proof yet" while two recorded
+            // payments sat against it. Every sibling query in the approvals
+            // stack already filters this way; this one was the outlier.
+            ->whereIn('transaction_type', [
+                \App\Models\FIN\LedgerModel::TYPE_INVOICE,
+                \App\Models\FIN\LedgerModel::TYPE_ORDER_PAYMENT,
+            ])
             ->whereIn('order_id', $orderIds)
             ->pluck('order_id')
             ->map(static fn ($id) => (int) $id)
@@ -380,6 +393,12 @@ class PaymentProofStatusService
             $status = self::NONE;
         }
 
+        // A hand-entered claim carries no screenshot and nobody sent it — the
+        // badge must say so, and name who vouched for it. It rides at the same
+        // tier as any other customer-side claim; only the bank can promote it
+        // to verified.
+        $manual = $signals->first(fn ($s) => str_starts_with((string) $s->extractor_version, 'manual_'));
+
         return [
             'status'       => $status,
             'label'        => self::label($status),
@@ -391,8 +410,23 @@ class PaymentProofStatusService
             // badge icons split them.)
             'has_email'    => $hasEmailSrc,
             'has_sms'      => $hasSms,
+            'is_manual'    => (bool) $manual,
+            'manual_by'    => $manual ? self::userName($manual->created_by ?? null) : null,
             'signal_count' => $signals->count(),
         ];
+    }
+
+    /** Resolve a user id to a display name once per request. */
+    private static function userName($userId): ?string
+    {
+        if (!$userId) {
+            return null;
+        }
+        static $cache = [];
+        if (!array_key_exists($userId, $cache)) {
+            $cache[$userId] = \DB::table('t_sys_user')->where('id', $userId)->value('fullname');
+        }
+        return $cache[$userId] ?: null;
     }
 
     public static function label(string $status): string

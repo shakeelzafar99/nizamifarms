@@ -1013,10 +1013,24 @@ $hideUnitPrice = request('hide_unit_price') == '1';
                     $subtotal = $order->lineItems->sum(function($item) { return $item->is_free ? 0 : ($item->line_total ?: ($item->quantity * $item->unit_price)); });
                 @endphp
                 
-                @if($totalDiscounts > 0)
+                {{-- ⭐ The customer's own account balance is NOT a discount and is
+                     never printed as one. Split out so the invoice reads honestly;
+                     the two lines still sum to the same reduction, so the total is
+                     unchanged. --}}
+                @php
+                    $__balanceUsed = $order->accountBalanceApplied();
+                    $__realDiscount = round($totalDiscounts - $__balanceUsed, 2);
+                @endphp
+                @if($__realDiscount > 0)
                     <tr>
                     <td class="label">Discount</td>
-                    <td class="amount">- Rs {{ number_format($totalDiscounts, 0) }}</td>
+                    <td class="amount">- Rs {{ number_format($__realDiscount, 0) }}</td>
+                    </tr>
+                @endif
+                @if($__balanceUsed > 0)
+                    <tr>
+                    <td class="label">Account balance used</td>
+                    <td class="amount">- Rs {{ number_format($__balanceUsed, 0) }}</td>
                     </tr>
                 @endif
                 

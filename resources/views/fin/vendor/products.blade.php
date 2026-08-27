@@ -48,6 +48,17 @@
                        class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500">
             </div>
             <div>
+                {{-- Feeds the Category Report (Products → Sales vs Purchase). --}}
+                <label class="block text-sm font-medium text-gray-700 mb-1">Category</label>
+                <select id="category_level_1"
+                        class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500">
+                    <option value="">— untagged —</option>
+                    @foreach(($categories ?? []) as $cat)
+                        <option value="{{ $cat }}">{{ $cat }}</option>
+                    @endforeach
+                </select>
+            </div>
+            <div>
                 <label class="inline-flex items-center cursor-pointer mb-2">
                     <input type="checkbox" id="is_default" class="w-4 h-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500">
                     <span class="ml-2 text-sm font-medium text-gray-700">⭐ Set as Default</span>
@@ -72,6 +83,7 @@
                 <thead class="bg-gray-50">
                     <tr>
                         <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Product Name</th>
+                        <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Category</th>
                         <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Unit</th>
                         <th class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Rate per Unit</th>
                         <th class="px-6 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider">Default</th>
@@ -86,6 +98,13 @@
                                 {{ $product->product_name }}
                                 @if($product->is_default)
                                     <span class="ml-2 text-yellow-500" title="Default Product">⭐</span>
+                                @endif
+                            </td>
+                            <td class="px-6 py-4 text-sm">
+                                @if(trim((string) $product->category_level_1) !== '')
+                                    <span style="display:inline-block;padding:2px 8px;border-radius:999px;background:#F3F4F6;color:#374151;font-size:11px;font-weight:600;">{{ $product->category_level_1 }}</span>
+                                @else
+                                    <span style="display:inline-block;padding:2px 8px;border-radius:999px;background:#FEF3C7;color:#92400E;font-size:11px;font-weight:600;">untagged</span>
                                 @endif
                             </td>
                             <td class="px-6 py-4 text-sm text-gray-600">{{ $product->unit }}</td>
@@ -105,7 +124,7 @@
                             </td>
                             <td class="px-6 py-4 text-center">
                                 <div class="flex justify-center gap-2">
-                                    <button onclick='editProduct({{ $product->id }}, {{ json_encode($product->product_name) }}, "{{ $product->unit }}", {{ $product->rate_per_unit }}, {{ $product->is_default ? 'true' : 'false' }})'
+                                    <button onclick='editProduct({{ $product->id }}, {{ json_encode($product->product_name) }}, "{{ $product->unit }}", {{ $product->rate_per_unit }}, {{ $product->is_default ? 'true' : 'false' }}, {{ json_encode((string) $product->category_level_1) }})'
                                             class="px-3 py-1 text-xs bg-blue-100 text-blue-700 rounded-md hover:bg-blue-200">
                                         ✏️ Edit
                                     </button>
@@ -122,7 +141,7 @@
                         </tr>
                     @empty
                         <tr>
-                            <td colspan="6" class="px-6 py-8 text-center text-sm text-gray-500">
+                            <td colspan="7" class="px-6 py-8 text-center text-sm text-gray-500">
                                 No products added yet. Add your first product above.
                             </td>
                         </tr>
@@ -168,6 +187,17 @@
                                class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500">
                     </div>
                     <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-1">Category</label>
+                        <select id="edit_category_level_1"
+                                class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500">
+                            <option value="">— untagged —</option>
+                            @foreach(($categories ?? []) as $cat)
+                                <option value="{{ $cat }}">{{ $cat }}</option>
+                            @endforeach
+                        </select>
+                        <p class="text-xs text-gray-500 mt-1">Groups this vendor's purchases in the Sales vs Purchase report.</p>
+                    </div>
+                    <div>
                         <label class="inline-flex items-center cursor-pointer">
                             <input type="checkbox" id="edit_is_default" class="w-4 h-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500">
                             <span class="ml-2 text-sm font-medium text-gray-700">⭐ Set as Default</span>
@@ -198,6 +228,7 @@ document.getElementById('addProductForm').addEventListener('submit', function(e)
     
     const formData = {
         product_name: document.getElementById('product_name').value,
+        category_level_1: document.getElementById('category_level_1').value,
         unit: document.getElementById('unit').value,
         rate_per_unit: document.getElementById('rate_per_unit').value,
         is_default: document.getElementById('is_default').checked ? 1 : 0
@@ -228,12 +259,13 @@ document.getElementById('addProductForm').addEventListener('submit', function(e)
 });
 
 // Edit Product
-function editProduct(id, name, unit, rate, isDefault) {
+function editProduct(id, name, unit, rate, isDefault, category) {
     document.getElementById('edit_product_id').value = id;
     document.getElementById('edit_product_name').value = name;
     document.getElementById('edit_unit').value = unit;
     document.getElementById('edit_rate_per_unit').value = rate;
     document.getElementById('edit_is_default').checked = isDefault;
+    document.getElementById('edit_category_level_1').value = category || '';
     
     const modal = document.getElementById('editModal');
     modal.classList.remove('hidden');
@@ -252,6 +284,7 @@ document.getElementById('editProductForm').addEventListener('submit', function(e
     const productId = document.getElementById('edit_product_id').value;
     const formData = {
         product_name: document.getElementById('edit_product_name').value,
+        category_level_1: document.getElementById('edit_category_level_1').value,
         unit: document.getElementById('edit_unit').value,
         rate_per_unit: document.getElementById('edit_rate_per_unit').value,
         is_default: document.getElementById('edit_is_default').checked ? 1 : 0

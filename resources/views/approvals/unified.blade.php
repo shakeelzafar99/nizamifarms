@@ -980,6 +980,7 @@
                                data-type="${item.type}" 
                                data-level="${item.level}"
                                data-amount="${item.amount}"
+                               data-order-id="${item.order_id || ''}"
                                data-group-id="${groupId}"
                                onchange="updateBulkSelection()"
                                style="width: 16px; height: 16px; cursor: pointer;">
@@ -1381,7 +1382,10 @@
         let successCount = 0;
         let errorCount = 0;
         const errors = [];
-        
+        // Invoices settled in this batch, so an overpayment on any of them can
+        // be raised once at the end (see nfuOfferOverpaysAfterBulk).
+        const settledOrderIds = [];
+
         for (const cb of checkboxes) {
             const itemId = cb.dataset.id;
             const itemType = cb.dataset.type;
@@ -1437,6 +1441,9 @@
                 
                 if (response.ok && (data.success !== false)) {
                     successCount++;
+                    if (cb.dataset.orderId) {
+                        settledOrderIds.push(parseInt(cb.dataset.orderId, 10));
+                    }
                     // Disable the checkbox and mark as approved
                     cb.disabled = true;
                     cb.closest('tr').style.opacity = '0.5';
@@ -1466,7 +1473,11 @@
             }
         }
         alert(message);
-        
+
+        // Ask about anything that was paid MORE than its invoice needed.
+        // Advisory only — the approvals above already stand.
+        try { await nfuOfferOverpaysAfterBulk(settledOrderIds); } catch (e) { /* ignore */ }
+
         // Refresh the data
         if (window.approvalFilters.level || window.approvalFilters.area || window.approvalFilters.search) {
             loadTableData();
@@ -1474,7 +1485,63 @@
             loadAllPendingItems();
         }
     }
-    
+
+    /**
+     * "That customer paid more than the invoice — bank it or leave it?"
+     *
+     * Same two endpoints the Online Approvals screen and the mobile app use,
+     * so what counts as an overpayment is decided in ONE place on the server
+     * and no surface can quietly disagree with another.
+     *
+     * Capped at three questions: a manager clearing thirty invoices will not
+     * sit through thirty dialogs, and an unanswered one costs nothing — the
+     * extra stays on the order and can still be banked from its proof panel.
+     * The cap is announced, never silent.
+     */
+    async function nfuOfferOverpaysAfterBulk(orderIds) {
+        const ids = (orderIds || []).filter(Boolean);
+        if (!ids.length) return;
+
+        const csrf = document.querySelector('meta[name="csrf-token"]')?.content || '';
+        const jsonHeaders = {
+            'Accept': 'application/json', 'Content-Type': 'application/json',
+            'X-Requested-With': 'XMLHttpRequest', 'X-CSRF-TOKEN': csrf,
+        };
+
+        let list = [];
+        try {
+            const res = await fetch('/admin/payments/overpay-batch', {
+                method: 'POST', headers: jsonHeaders,
+                body: JSON.stringify({ order_ids: ids })
+            });
+            const data = await res.json();
+            list = (data && data.overpays) || [];
+        } catch (e) { return; }
+        if (!list.length) return;
+
+        const fmt = n => Number(n || 0).toLocaleString('en-PK', { maximumFractionDigits: 2 });
+        const MAX_ASK = 3;
+        for (const ov of list.slice(0, MAX_ASK)) {
+            const yes = confirm(
+                `${ov.order_number || ('Order #' + ov.order_id)} was paid Rs ${fmt(ov.amount)} MORE than it needed.\n\n` +
+                `OK = add it to the customer's account balance\n` +
+                `Cancel = leave it as it is`
+            );
+            if (!yes) continue;
+            try {
+                const r = await fetch(`/admin/payments/order/${ov.order_id}/overpay-to-balance`, {
+                    method: 'POST', headers: jsonHeaders
+                });
+                const j = await r.json();
+                alert(j.message || (j.success ? 'Added.' : 'Could not add it.'));
+            } catch (e) { /* keep going through the rest */ }
+        }
+        if (list.length > MAX_ASK) {
+            alert(`${list.length - MAX_ASK} more invoice(s) in this batch were also overpaid.\n\n` +
+                  `Open each invoice's payment proof to add those to the customer's balance.`);
+        }
+    }
+
     // Add CSS animation for pulse effect
     const styleSheet = document.createElement('style');
     styleSheet.textContent = `

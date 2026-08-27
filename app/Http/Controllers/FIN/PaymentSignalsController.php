@@ -115,6 +115,15 @@ class PaymentSignalsController extends Controller
             return [
                 'id'             => $s->id,
                 'source'         => $s->source,
+                // Aug-2026 — a hand-entered claim must be readable AS one, and
+                // must name the person who vouched for it. The order screen's
+                // payment strip and the manual badge both key off these.
+                'extractor_version' => $s->extractor_version,
+                'is_manual'      => str_starts_with((string) $s->extractor_version, 'manual_'),
+                'recorded_by_name' => $s->created_by
+                    ? (\DB::table('t_sys_user')->where('id', $s->created_by)->value('fullname') ?: null)
+                    : null,
+                'when_short'     => optional($s->extracted_txn_datetime ?: $s->created_at)->format('j M, g:i A'),
                 'status'         => $s->status,
                 'match_reason'   => $s->match_reason,
                 'match_confidence' => $s->match_confidence,
@@ -173,7 +182,47 @@ class PaymentSignalsController extends Controller
             // here" is part of that record. Read-only; empty for the ordinary
             // case where nothing ever moved.
             'moves'        => $this->signalMoveHistory($signals),
+            // ⭐ Aug-2026 — the panel already SHOWED "Rs 10,000 (differs from
+            // balance Rs 9,120)" but gave no way to act on it, so a manager who
+            // deferred the question at entry time had nowhere to answer it
+            // later. These two let the panel offer the extra and the record
+            // button without a second round trip.
+            'overpay'      => $this->overpayForOrder($orderId),
+            'can_record'   => $this->canRecordManualPayment(),
         ]);
+    }
+
+    /**
+     * POST /admin/payments/overpay-batch — overpay for MANY orders at once.
+     *
+     * A bulk approval settles a whole customer's invoices in one go; asking the
+     * server once per invoice would be dozens of round trips for the rare case
+     * where one of them was overpaid. Returns ONLY the eligible ones.
+     */
+    public function overpayBatch(Request $request)
+    {
+        $validated = $request->validate([
+            'order_ids'   => 'required|array|max:200',
+            'order_ids.*' => 'integer',
+        ]);
+
+        $out = [];
+        foreach (array_unique($validated['order_ids']) as $orderId) {
+            try {
+                $info = $this->overpayForOrder((int) $orderId);
+            } catch (\Throwable $e) {
+                continue; // one bad order must not sink the whole batch
+            }
+            // Included when the extra has ANY home left — balance or tip.
+            if ((!empty($info['eligible']) || !empty($info['tip_eligible'])) && $info['amount'] > 0) {
+                $info['order_id'] = (int) $orderId;
+                $info['order_number'] = \DB::table('t_crm_prod_order')
+                    ->where('id', $orderId)->value('order_number');
+                $out[] = $info;
+            }
+        }
+
+        return response()->json(['success' => true, 'overpays' => $out]);
     }
 
     /**
@@ -696,6 +745,521 @@ class PaymentSignalsController extends Controller
             'target_order_id'     => (int) $target->id,
             'target_order_number' => $target->order_number,
         ];
+    }
+
+    // =================================================================
+    //  MANUAL PAYMENT ENTRY  (Aug-2026)
+    // =================================================================
+    //
+    // Recording a payment by hand ASSERTS that money arrived when no proof did.
+    // That is a stronger claim than approving a proof someone else produced, so
+    // it is deliberately gated tighter than the rest of this controller: the
+    // owner's ruling is Shabib and Taimur only.
+    //
+    // The row itself is EVIDENCE, never money: it goes into t_fin_payment_signal
+    // exactly like a WhatsApp screenshot would, and the invoice remains the only
+    // thing that moves the ledger. That is what makes this safe to attach to an
+    // undelivered order too (the prepayment case) — see hasPreReceivedPayments(),
+    // which reads t_crm_order_payments only and therefore cannot be tripped by
+    // anything written here.
+
+    /**
+     * Public wrapper so a screen can ask BEFORE drawing the button — better to
+     * not show an action than to show it and 403 on click. The endpoint still
+     * enforces the rule itself; this only decides what is rendered.
+     */
+    public function userMayRecordManualPayment($user = null): bool
+    {
+        return $this->canRecordManualPayment($user);
+    }
+
+    /** Who is allowed to type a payment in by hand. */
+    private function canRecordManualPayment($user = null): bool
+    {
+        $user = $user ?: auth()->user();
+        if (!$user) {
+            return false;
+        }
+
+        // Config list first — it is the one that can name exactly two people
+        // without a deploy (Shabib shares a role with the admin login, so no
+        // role can express the pair on its own).
+        $allowed = array_filter(array_map(
+            fn ($e) => strtolower(trim($e)),
+            explode(',', (string) config('payment_signals.manual_entry_emails', ''))
+        ));
+        if ($allowed && in_array(strtolower((string) $user->email), $allowed, true)) {
+            return true;
+        }
+
+        // Role fallback, matching how the rest of the app identifies Taimur.
+        return $user->roles()
+            ->whereRaw('LOWER(urole_name) IN (?, ?)', ['taimur', 'shabib'])
+            ->exists();
+    }
+
+    /** 403 unless the caller may record a manual payment. */
+    private function denyUnlessManualEntry()
+    {
+        return $this->canRecordManualPayment()
+            ? null
+            : response()->json([
+                'success' => false,
+                'message' => 'Only Shabib and Taimur can record a payment by hand.',
+            ], 403);
+    }
+
+    /**
+     * POST /admin/payments/order/{orderId}/manual-proof
+     *
+     * Record "this customer paid, we just have no screenshot". Writes ONE
+     * customer-side signal, pinned to this order and confirmed by a human.
+     *
+     * ⚠ source stays 'whatsapp' on purpose. It means "the customer's side of
+     * the story" and is what lets the existing cross-pairing machinery validate
+     * this claim automatically when the bank SMS/email arrives — at which point
+     * the badge turns green by itself. A new enum value would silently opt the
+     * row out of all of that.
+     */
+    public function recordManualProof(Request $request, int $orderId)
+    {
+        if ($deny = $this->denyUnlessManualEntry()) {
+            return $deny;
+        }
+
+        $validated = $request->validate([
+            'amount'               => 'required|numeric|min:1',
+            'receiving_account_id' => 'nullable|integer',
+            'reference'            => 'nullable|string|max:100',
+            'paid_at'              => 'nullable|date',
+            'note'                 => 'nullable|string|max:255',
+        ]);
+
+        $order = \DB::table('t_crm_prod_order')->where('id', $orderId)
+            ->first(['id', 'order_number', 'customer_id', 'total_price', 'total_paid', 'order_status', 'payment_method']);
+        if (!$order) {
+            return response()->json(['success' => false, 'message' => 'Order not found.'], 404);
+        }
+        if ($order->order_status === 'cancelled') {
+            return response()->json([
+                'success' => false,
+                'message' => 'This order is cancelled — record the money against the order it actually paid for, '
+                    . 'or add it to the customer\'s balance from their page.',
+            ], 422);
+        }
+
+        // ⚠⚠ For an ONLINE order the receiving bank is NOT optional, because the
+        // approval itself refuses without one ("Select which bank received this
+        // online payment"). Recording the bank here is what populates the proof's
+        // suggested bank, which is what lets the invoice be approved — and be
+        // included in a BULK approve instead of silently skipped as "no bank".
+        // Leaving it blank produced a claim that quietly blocked its own approval.
+        $onlineMethods = ['online', 'Online', 'bank_transfer', 'card', 'online_payment'];
+        if (in_array($order->payment_method, $onlineMethods, true) && empty($validated['receiving_account_id'])) {
+            return response()->json([
+                'success' => false,
+                'message' => 'This is an online order — choose which bank the money arrived in. '
+                    . 'Without it the invoice cannot be approved later.',
+                'needs_bank' => true,
+            ], 422);
+        }
+
+        $userId = (int) auth()->id();
+        $amount = round((float) $validated['amount'], 2);
+        $paidAt = !empty($validated['paid_at']) ? \Carbon\Carbon::parse($validated['paid_at']) : now();
+
+        // Resolve the customer through any merge, so the claim lands on the
+        // record that actually answers for this person.
+        $customerId = (new \App\Services\CustomerCreditService())->resolveCustomerId($order->customer_id);
+
+        // Same 8-second guard the payment forms use: a double-click must not
+        // become two claims for the same money.
+        $dup = PaymentSignal::where('matched_order_id', $orderId)
+            ->where('extracted_amount', $amount)
+            ->where('created_at', '>=', now()->subSeconds(8))
+            ->exists();
+        if ($dup) {
+            return response()->json(['success' => false, 'message' => 'That payment was just recorded — check the proof panel.'], 422);
+        }
+
+        // The receiving bank matters beyond display: it feeds the same-bank gate
+        // the pairing uses, so a claim tagged with the right bank pairs cleanly.
+        $bankShort = null;
+        $bankLast4 = null;
+        if (!empty($validated['receiving_account_id'])) {
+            $bank = \DB::table('t_fin_online_receiving_accounts')
+                ->where('id', $validated['receiving_account_id'])
+                ->first(['short_code', 'account_last4']);
+            $bankShort = $bank->short_code ?? null;
+            $bankLast4 = $bank->account_last4 ?? null;
+        }
+
+        $signal = PaymentSignal::create([
+            'source'                     => PaymentSignal::SOURCE_WHATSAPP,
+            'extracted_amount'           => $amount,
+            'extracted_ref'              => $validated['reference'] ?? null,
+            'extracted_txn_datetime'     => $paidAt,
+            'extracted_to_account_short' => $bankShort,
+            'extracted_to_account_last4' => $bankLast4,
+            'extraction_raw_text'        => $validated['note'] ?? null,
+            'extractor_version'          => 'manual_web@v1',
+            'created_by'                 => $userId,
+            'matched_customer_id'        => $customerId,
+            'matched_order_id'           => $orderId,
+            // A human pinned this to this order, so it is final: 'manual_confirmed'
+            // is a TERMINAL reason that every re-matcher and the resweeper skip.
+            'status'                     => PaymentSignal::STATUS_MATCHED,
+            'match_reason'               => 'manual_confirmed',
+            'match_confidence'           => 1.00,
+        ]);
+
+        \Log::info('Manual payment proof recorded', [
+            'signal_id' => $signal->id,
+            'order_id'  => $orderId,
+            'amount'    => $amount,
+            'by'        => $userId,
+        ]);
+
+        // Tell the caller straight away whether this claim overshoots what the
+        // order still owes, so the UI can ask about the extra in the same breath.
+        $overpay = $this->overpayForOrder($orderId);
+
+        return response()->json([
+            'success'   => true,
+            'message'   => 'Recorded Rs ' . number_format($amount, 2) . ' as received.',
+            'signal_id' => $signal->id,
+            'overpay'   => $overpay,
+        ]);
+    }
+
+    /**
+     * How much MORE than the order still owed has been claimed, counted once.
+     *
+     * ⚠⚠ THE COUNT-ONCE RULE. The proof panel computes its difference PER
+     * SIGNAL, so once a manual claim is validated by its bank SMS there are two
+     * rows each reporting the same "+Rs X over". Summing them would double the
+     * customer's credit out of thin air. Paired rows are therefore collapsed to
+     * one proof (the bank side wins — it is the truth anchor), and only then is
+     * the excess measured.
+     *
+     * @return array{amount:float,signal_id:?int,customer_id:?int,eligible:bool,reason:?string}
+     */
+    private function overpayForOrder(int $orderId): array
+    {
+        $none = ['amount' => 0.0, 'signal_id' => null, 'customer_id' => null,
+                 'eligible' => false, 'reason' => null,
+                 'tip_eligible' => false, 'tip_reason' => null,
+                 'claimed' => 0.0, 'owed' => 0.0, 'banked' => 0.0, 'signal_count' => 0];
+
+        $order = \DB::table('t_crm_prod_order')->where('id', $orderId)
+            ->first(['id', 'customer_id', 'total_price', 'total_paid', 'order_status', 'ledger_transaction_id']);
+        if (!$order) {
+            return $none;
+        }
+
+        $signals = $this->orderSignals($orderId);
+        if ($signals->isEmpty()) {
+            return $none;
+        }
+
+        // ⚠⚠ COMBINED transfers are EXCLUDED. A bulk payment's amount covers
+        // SEVERAL invoices, so comparing it against THIS order's balance alone
+        // fabricates a huge "extra" that is really the other invoices' money
+        // (proven in testing: a transfer covering two orders exactly reported
+        // the whole second invoice as overpay). Their surplus is judged by the
+        // combined machinery against the GROUP total, never here.
+        $bulkLinked = \DB::table('t_fin_payment_signal_order')
+            ->whereIn('signal_id', $signals->pluck('id')->all())
+            ->pluck('signal_id')->flip();
+        // GUESSED matches are excluded too: their IDENTITY is uncertain, and
+        // banking a guessed sender's money to this customer's balance is how
+        // someone else's payment becomes the wrong person's credit.
+        $signals = $signals->reject(function ($s) use ($bulkLinked) {
+            return $bulkLinked->has($s->id)
+                || (method_exists($s, 'isGuess') && $s->isGuess());
+        })->values();
+        if ($signals->isEmpty()) {
+            return $none;
+        }
+
+        // Collapse cross-source pairs: keep the bank-side row when a pair is
+        // present, else the row itself. Keyed by the pair so each real payment
+        // is represented exactly once.
+        $byId = $signals->keyBy('id');
+        $kept = [];
+        foreach ($signals as $s) {
+            $mateId = $s->paired_signal_id ? (int) $s->paired_signal_id : null;
+            $key    = $mateId ? min((int) $s->id, $mateId) . '-' . max((int) $s->id, $mateId) : 'solo-' . $s->id;
+
+            if (!isset($kept[$key])) {
+                $kept[$key] = $s;
+                continue;
+            }
+            // Prefer the bank-side reading of the same payment.
+            $existing = $kept[$key];
+            $sIsBank  = in_array($s->source, PaymentSignal::BANK_SIDE_SOURCES ?? ['email', 'bank_sms'], true);
+            $eIsBank  = in_array($existing->source, PaymentSignal::BANK_SIDE_SOURCES ?? ['email', 'bank_sms'], true);
+            if ($sIsBank && !$eIsBank) {
+                $kept[$key] = $s;
+            }
+        }
+
+        $claimed = 0.0;
+        $latest  = null;
+        foreach ($kept as $s) {
+            $claimed += (float) $s->extracted_amount;
+            if (!$latest || $s->id > $latest->id) {
+                $latest = $s;
+            }
+        }
+
+        $owed = round((float) $order->total_price - (float) ($order->total_paid ?? 0), 2);
+
+        // ⚠⚠ Extra already CONVERTED for this order must come off, or the same
+        // rupees are offered again every time new evidence lands. Bank Rs 880
+        // of an extra, let another proof arrive, and without this the untouched
+        // 880 is counted a second time.
+        //
+        // The tip route needs no equivalent: a tip raises total_price, so it
+        // raises `owed` and shrinks the extra by exactly itself. One formula —
+        //     extra = claimed − owed − banked
+        // — and both conversions subtract themselves from it.
+        $banked = 0.0;
+        if (\Schema::hasTable('t_crm_customer_credit')) {
+            $banked = round((float) \DB::table('t_crm_customer_credit')
+                ->where('order_id', $orderId)
+                ->where('entry_type', \App\Models\CRM\CustomerCreditModel::TYPE_GRANT)
+                ->where('source', \App\Models\CRM\CustomerCreditModel::SOURCE_OVERPAYMENT)
+                ->where('status', '!=', \App\Models\CRM\CustomerCreditModel::STATUS_VOIDED)
+                ->sum('amount'), 2);
+        }
+
+        $extra = round($claimed - $owed - $banked, 2);
+
+        if ($extra < \App\Services\CustomerCreditService::MIN_GRANT) {
+            return $banked > 0
+                ? array_merge($none, ['reason' => 'already_added', 'claimed' => $claimed,
+                                      'owed' => $owed, 'banked' => $banked, 'signal_count' => count($kept)])
+                : $none;
+        }
+
+        $credit     = new \App\Services\CustomerCreditService();
+        $customerId = $credit->resolveCustomerId($order->customer_id);
+
+        // ⚠ "Already banked" is decided by the ARITHMETIC above (extra =
+        // claimed − owed − banked), not by asking whether any signal on this
+        // order once produced a grant. The older signal-keyed test refused the
+        // whole order the moment ONE proof had been banked — so a genuinely new
+        // payment arriving afterwards could never be banked at all. Reaching
+        // here means real, unconverted extra remains.
+        //
+        // Double-banking the SAME proof is still blocked, one layer down:
+        // CustomerCreditService::requestGrant refuses a signal (or its pair)
+        // that already carries a grant.
+        $eligible = $customerId && $credit->isEligibleId($customerId);
+        $reason   = !$customerId ? 'no_customer'
+                  : (!$credit->isEligibleId($customerId) ? 'not_eligible' : null);
+
+        // 🤍 TIP eligibility — the OTHER thing an extra can become. A tip
+        // raises the invoice total, so it is only possible while the invoice
+        // can still change: before the ledger entry passes L1 (the same pre-L1
+        // rule the balancing discount uses for the short direction). The
+        // balance option needs none of this — it never touches the invoice.
+        $tipReason = null;
+        if ($order->order_status === 'cancelled') {
+            $tipReason = 'cancelled';
+        } elseif ($order->ledger_transaction_id) {
+            $st = \DB::table('t_fin_ledger')->where('id', $order->ledger_transaction_id)->value('approval_status');
+            if (!in_array($st, [\App\Models\FIN\LedgerModel::STATUS_PENDING, \App\Models\FIN\LedgerModel::STATUS_PENDING_L1], true)) {
+                $tipReason = 'invoice_approved';
+            }
+        }
+
+        return [
+            'amount'       => $extra,
+            'signal_id'    => $latest?->id,
+            'customer_id'  => $customerId,
+            'eligible'     => (bool) $eligible,
+            'reason'       => $reason,
+            'tip_eligible' => $tipReason === null,
+            'tip_reason'   => $tipReason,
+            // The working, so a surprising number can be READ rather than
+            // guessed at. `signal_count` > 1 means several payments are being
+            // counted together — the usual cause of an extra nobody expects.
+            'claimed'      => $claimed,
+            'owed'         => $owed,
+            'banked'       => $banked,
+            'signal_count' => count($kept),
+        ];
+    }
+
+    /** GET /admin/payments/order/{orderId}/overpay — what extra is on this order. */
+    public function overpayInfo(Request $request, int $orderId)
+    {
+        // Whether a manual entry on THIS order must name the receiving bank.
+        // An online invoice cannot be approved without one, so the form asks for
+        // it up front rather than letting the claim block its own approval.
+        $method = \DB::table('t_crm_prod_order')->where('id', $orderId)->value('payment_method');
+        $bankRequired = in_array($method, ['online', 'Online', 'bank_transfer', 'card', 'online_payment'], true);
+
+        // Payments ALREADY recorded by hand on this order. Recording a second
+        // one adds to the first (right for a genuine two-part payment, wrong
+        // for a re-typed correction), so the dialog must say so BEFORE the
+        // amount is typed rather than leaving a surprising total to be
+        // discovered in the overpay prompt afterwards.
+        $existing = $this->orderSignals($orderId)
+            ->filter(fn ($s) => $s->match_reason === 'manual_confirmed')
+            ->map(fn ($s) => [
+                'id'     => (int) $s->id,
+                'amount' => (float) $s->extracted_amount,
+                'when'   => (string) $s->created_at,
+                'by'     => $s->created_by
+                    ? (\DB::table('t_sys_user')->where('id', $s->created_by)->value('fullname') ?: 'someone')
+                    : 'someone',
+            ])->values()->all();
+
+        return response()->json([
+            'success'         => true,
+            'overpay'         => $this->overpayForOrder($orderId),
+            'can_record'      => $this->canRecordManualPayment(),
+            'bank_required'   => $bankRequired,
+            'payment_method'  => $method,
+            'existing_manual' => $existing,
+        ]);
+    }
+
+    /**
+     * POST /admin/payments/order/{orderId}/overpay-to-balance
+     *
+     * Move the confirmed extra into the customer's account balance. Creates a
+     * PENDING grant — it becomes spendable only when an L2 approver signs it
+     * off, exactly like every other way money enters the bucket.
+     */
+    public function overpayToBalance(Request $request, int $orderId)
+    {
+        if ($deny = $this->ensureApprover($request)) {
+            return $deny;
+        }
+
+        $info = $this->overpayForOrder($orderId);
+        if (!$info['eligible'] || $info['amount'] <= 0) {
+            $msg = match ($info['reason']) {
+                'already_added' => 'That extra has already been added to the balance.',
+                'not_eligible'  => 'Shop customers do not use account balance.',
+                'no_customer'   => 'This order has no customer record.',
+                default         => 'There is no extra amount to add.',
+            };
+            return response()->json(['success' => false, 'message' => $msg], 422);
+        }
+
+        try {
+            $order = \DB::table('t_crm_prod_order')->where('id', $orderId)->first(['order_number']);
+            $credit = (new \App\Services\CustomerCreditService())->requestGrant(
+                (int) $info['customer_id'],
+                (float) $info['amount'],
+                (int) auth()->id(),
+                [
+                    'order_id'  => $orderId,
+                    'signal_id' => $info['signal_id'],
+                    'source'    => \App\Models\CRM\CustomerCreditModel::SOURCE_OVERPAYMENT,
+                    'reason'    => 'Paid more than order ' . ($order->order_number ?? $orderId),
+                ]
+            );
+
+            // Auto-approved for Shabib/Taimur (already ACTIVE); pending for others.
+            $message = $credit->status === \App\Models\CRM\CustomerCreditModel::STATUS_ACTIVE
+                ? 'Rs ' . number_format((float) $info['amount'], 2) . ' added to the customer\'s balance.'
+                : 'Rs ' . number_format((float) $info['amount'], 2)
+                    . ' sent for approval — it becomes usable balance once approved.';
+
+            return response()->json([
+                'success'   => true,
+                'message'   => $message,
+                'credit_id' => $credit->id,
+            ]);
+        } catch (\Throwable $e) {
+            return response()->json(['success' => false, 'message' => $e->getMessage()], 422);
+        }
+    }
+
+    /**
+     * POST /admin/payments/order/{orderId}/overpay-to-tip  (also mobile)
+     *
+     * The customer's extra becomes a TIP on this invoice: `tip_amount` and
+     * `total_price` both rise by the extra, so the payment now matches the
+     * invoice exactly and the overpay disappears (it is computed against the
+     * order total, which just grew).
+     *
+     * ⚠ Mirror of applyBalanceDiscount, opposite direction, SAME rule: only
+     * while the invoice ledger entry is still pre-L1 (or absent). Once posted
+     * to balances the invoice amount is money the ledger already counted —
+     * raising it here would drift the books. Past that point the balance
+     * option is the right home for the extra, and it stays available.
+     */
+    public function overpayToTip(Request $request, int $orderId, \App\Services\Payments\Signals\PaymentSignalMatcher $matcher)
+    {
+        if ($deny = $this->ensureApprover($request)) {
+            return $deny;
+        }
+
+        $info = $this->overpayForOrder($orderId);
+        if (($info['amount'] ?? 0) <= 0) {
+            return response()->json(['success' => false, 'message' => 'There is no extra amount on this order.'], 422);
+        }
+        if (!$info['tip_eligible']) {
+            $msg = $info['tip_reason'] === 'invoice_approved'
+                ? 'The invoice is already approved, so its total can no longer change — add the extra to the customer\'s balance instead.'
+                : 'This order is cancelled — a cancelled invoice cannot take a tip.';
+            return response()->json(['success' => false, 'message' => $msg], 422);
+        }
+
+        $extra  = round((float) $info['amount'], 2);
+        $userId = (int) $request->user()->id;
+
+        try {
+            \DB::transaction(function () use ($orderId, $extra, $userId) {
+                $order = \App\Models\CRM\OrderModel::lockForUpdate()->find($orderId);
+                if (!$order) {
+                    throw new \RuntimeException('Order not found.');
+                }
+                // Re-check under the lock — an approval could have landed since.
+                if ($order->ledger_transaction_id) {
+                    $st = \DB::table('t_fin_ledger')->where('id', $order->ledger_transaction_id)->value('approval_status');
+                    if (!in_array($st, [\App\Models\FIN\LedgerModel::STATUS_PENDING, \App\Models\FIN\LedgerModel::STATUS_PENDING_L1], true)) {
+                        throw new \RuntimeException('The invoice was approved just now — add the extra to the customer\'s balance instead.');
+                    }
+                }
+
+                $order->tip_amount  = round((float) ($order->tip_amount ?? 0) + $extra, 2);
+                $order->total_price = round((float) $order->total_price + $extra, 2);
+                $order->save();
+                $order->recalculatePaymentStatus();
+
+                // Keep the unposted invoice ledger row at the order's total, so
+                // the eventual L1 posting carries the tip too.
+                if ($order->ledger_transaction_id) {
+                    \DB::table('t_fin_ledger')->where('id', $order->ledger_transaction_id)
+                        ->increment('amount', $extra, ['updated_at' => now()]);
+                }
+
+                \Log::info('Overpayment recorded as tip', [
+                    'order_id' => $orderId, 'amount' => $extra, 'by' => $userId,
+                ]);
+            });
+        } catch (\Throwable $e) {
+            return response()->json(['success' => false, 'message' => $e->getMessage()], 422);
+        }
+
+        // The proof badge should turn green on its own now that amounts agree.
+        $this->rematchOrderSignals($this->orderSignals($orderId), $matcher);
+
+        $newTotal = \DB::table('t_crm_prod_order')->where('id', $orderId)->value('total_price');
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Rs ' . number_format($extra, 2) . ' recorded as a tip — the invoice total is now Rs '
+                . number_format((float) $newTotal, 2) . '.',
+        ]);
     }
 
     /** 403 JsonResponse unless the caller has L1 or L2 approval rights, else null. */

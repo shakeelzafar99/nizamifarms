@@ -20,7 +20,11 @@ class VendorProductController extends Controller
                                       ->orderBy('product_name')
                                       ->get();
 
-        return view('fin.vendor.products', compact('vendor', 'products'));
+        // Level-1 categories, read from the SALES catalogue so a purchase
+        // can never be filed under a category that sales doesn't use.
+        $categories = app(\App\Services\CategorySalesPurchaseService::class)->categoryVocabulary();
+
+        return view('fin.vendor.products', compact('vendor', 'products', 'categories'));
     }
 
     /**
@@ -48,7 +52,8 @@ class VendorProductController extends Controller
             'product_name' => 'required|string|max:255',
             'unit' => 'required|string|max:50',
             'rate_per_unit' => 'required|numeric|min:0.01',
-            'is_default' => 'nullable|boolean'
+            'is_default' => 'nullable|boolean',
+            'category_level_1' => 'nullable|string|max:50'
         ]);
 
         try {
@@ -62,6 +67,7 @@ class VendorProductController extends Controller
             $product = VendorProductModel::create([
                 'vendor_id' => $vendorId,
                 'product_name' => $request->product_name,
+                'category_level_1' => $this->cleanCategory($request->category_level_1),
                 'unit' => $request->unit,
                 'rate_per_unit' => $request->rate_per_unit,
                 'is_active' => 1,
@@ -93,7 +99,8 @@ class VendorProductController extends Controller
             'product_name' => 'required|string|max:255',
             'unit' => 'required|string|max:50',
             'rate_per_unit' => 'required|numeric|min:0.01',
-            'is_default' => 'nullable|boolean'
+            'is_default' => 'nullable|boolean',
+            'category_level_1' => 'nullable|string|max:50'
         ]);
 
         try {
@@ -110,6 +117,7 @@ class VendorProductController extends Controller
 
             $product->update([
                 'product_name' => $request->product_name,
+                'category_level_1' => $this->cleanCategory($request->category_level_1),
                 'unit' => $request->unit,
                 'rate_per_unit' => $request->rate_per_unit,
                 'is_default' => $request->is_default ? 1 : 0
@@ -191,6 +199,24 @@ class VendorProductController extends Controller
                 'message' => 'Error setting default product: ' . $e->getMessage()
             ], 500);
         }
+    }
+
+    /**
+     * Normalise a submitted Level-1 category: blank becomes NULL, and a
+     * value outside the sales vocabulary is rejected to NULL rather than
+     * stored, so the purchase side can never drift from the sales side by
+     * a typo. (Free text here is what would break the whole comparison —
+     * purchases are typed as "Veal" but sold as "Beef".)
+     */
+    private function cleanCategory($value): ?string
+    {
+        $value = trim((string) $value);
+        if ($value === '') {
+            return null;
+        }
+        $vocab = app(\App\Services\CategorySalesPurchaseService::class)->categoryVocabulary();
+
+        return in_array($value, $vocab, true) ? $value : null;
     }
 
     /**

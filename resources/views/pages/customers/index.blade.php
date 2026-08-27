@@ -337,6 +337,10 @@ window.viewCustomer = function(id) {
             // The customer object goes along so the printed statement can carry
             // the name / phone / address header.
             loadCustomerOrdersInline(customer.id, customer);
+            // 💰 Account balance ("bucket") — what we are holding for this
+            // customer, where it came from, and the manual "received extra"
+            // entry. Regular customers only; the panel hides itself for shops.
+            try { nfRenderCustomerCredit(customer.id, content); } catch (e) { console.warn('credit panel failed', e); }
             // Which bank accounts the NF Assistant has learned belong to this
             // customer (it auto-learns one whenever a bank SMS and their payment
             // screenshot share a reference). Reviewable + removable + manually
@@ -1043,12 +1047,22 @@ function getCustomerCellContent(customer, columnId) {
             // Money to chase — Outstanding (shops) / Pending approval (regulars).
             // Matches the approvals page exactly (computed server-side).
             const rAmt = Number(customer.receivable_amount || 0);
+            // 💰 Money we HOLD for them (account balance). Shown as its own green
+            // chip, never summed with the receivable — two different directions.
+            const cBal = Number(customer.credit_balance || 0);
+            const chips = [];
             if (rAmt > 0.01) {
                 const rLabel = customer.receivable_label || 'Outstanding';
                 const rCount = Number(customer.receivable_count || 0);
                 const prefix = rLabel === 'Outstanding' ? 'Owes ' : 'Pending ';
                 const tip = rLabel + (rCount ? ' · ' + rCount + ' invoice' + (rCount > 1 ? 's' : '') : '');
-                return '<span title="' + tip + '" style="display:inline-block; padding:3px 9px; border-radius:8px; font-size:12px; font-weight:700; color:#b91c1c; background:#fef2f2; border:1px solid #fecaca; white-space:nowrap;">' + prefix + 'PKR ' + Math.round(rAmt).toLocaleString() + '</span>';
+                chips.push('<span title="' + tip + '" style="display:inline-block; padding:3px 9px; border-radius:8px; font-size:12px; font-weight:700; color:#b91c1c; background:#fef2f2; border:1px solid #fecaca; white-space:nowrap;">' + prefix + 'PKR ' + Math.round(rAmt).toLocaleString() + '</span>');
+            }
+            if (cBal > 0.01) {
+                chips.push('<span title="Account balance held for this customer — usable on their next order" style="display:inline-block; padding:3px 9px; border-radius:8px; font-size:12px; font-weight:700; color:#065f46; background:#ecfdf5; border:1px solid #6ee7b7; white-space:nowrap;">💰 PKR ' + Math.round(cBal).toLocaleString() + '</span>');
+            }
+            if (chips.length) {
+                return '<span style="display:inline-flex; gap:4px; flex-wrap:wrap;">' + chips.join('') + '</span>';
             }
             return '<span style="font-size:12px; color:#9ca3af;">—</span>';
         }
@@ -1549,6 +1563,256 @@ window.viewCustomerOrders = function(customerId, customerName) {
             content.innerHTML = '<div style="text-align: center; padding: 40px; color: #ef4444;">Error loading customer orders</div>';
         });
 };
+
+// =====================================================================
+// 💰 Customer account balance ("bucket")
+//
+// Money a customer has paid us beyond their invoices, held for their next
+// order. Everything here is server-decided — this only paints the answer and
+// posts the manager's intent. Shop customers are excluded by the server, and
+// the panel simply does not appear for them.
+// =====================================================================
+
+function nfCredCsrf() {
+    return document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || '';
+}
+// Shabib/Taimur's own grants are approved on the spot (server rule in
+// CustomerCreditService::userCanAutoApproveGrant) — the form's wording and
+// button label follow, so the screen never promises a queue that won't happen.
+const NF_CREDIT_AUTO_APPROVES = {{ app(\App\Services\CustomerCreditService::class)->userCanAutoApproveGrant(auth()->user()) ? 'true' : 'false' }};
+function nfCredEsc(s) {
+    return String(s ?? '').replace(/[&<>"']/g, c =>
+        ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+async function nfRenderCustomerCredit(customerId, content) {
+    let d;
+    try {
+        const res = await fetch(`/customer-credit/${customerId}/summary?limit=15`, {
+            headers: { 'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+            credentials: 'same-origin'
+        });
+        const json = await res.json();
+        if (!json || !json.success) return;
+        d = json.data;
+    } catch (e) { return; }
+
+    // Shop customers (and unknown customers) get no panel at all.
+    if (!d.eligible) return;
+
+    const box = document.createElement('div');
+    box.id = 'nfCustomerCreditPanel';
+    box.style.cssText = 'margin:14px 0 18px;padding:14px 16px;border:1px solid #e5e7eb;border-radius:10px;background:#fafbfa;';
+    box.innerHTML = nfCreditPanelMarkup(customerId, d);
+
+    const ordersWrap = content.querySelector('#customerOrdersInlineWrap');
+    if (ordersWrap && ordersWrap.parentNode) {
+        ordersWrap.parentNode.insertBefore(box, ordersWrap);
+    } else {
+        content.appendChild(box);
+    }
+}
+
+function nfCreditPanelMarkup(customerId, d) {
+    const bal = parseFloat(d.balance || 0);
+    const hasBal = bal >= 0.01;
+
+    const history = (d.history || []).map(h => {
+        const sign = h.is_credit ? '+' : '−';
+        const colour = h.is_credit ? '#059669' : '#b45309';
+        const struck = h.counts ? '' : 'text-decoration:line-through;opacity:.55;';
+        const where = h.order_number ? ` · order ${nfCredEsc(h.order_number)}` : '';
+        const why = h.reason ? ` · ${nfCredEsc(h.reason)}` : '';
+        const state = h.status === 'pending' ? ' <em style="color:#b45309;">(awaiting approval)</em>'
+                    : h.status === 'reserved' ? ' <em style="color:#2563eb;">(held for an order)</em>'
+                    : h.status === 'voided'   ? ' <em style="color:#6b7280;">(cancelled)</em>' : '';
+
+        // A pending entry is only real money once someone with Level 2 rights
+        // approves it, so the buttons appear for them and nobody else.
+        const actions = (h.status === 'pending' && d.can_approve)
+            ? `<div style="margin-top:3px;display:flex;gap:6px;">
+                 <button type="button" onclick="nfApproveCredit(${customerId}, ${h.id})"
+                   style="padding:3px 9px;background:#059669;color:#fff;border:0;border-radius:4px;cursor:pointer;font-size:11px;font-weight:600;">Approve</button>
+                 <button type="button" onclick="nfRejectCredit(${customerId}, ${h.id})"
+                   style="padding:3px 9px;background:#fff;color:#b91c1c;border:1px solid #fca5a5;border-radius:4px;cursor:pointer;font-size:11px;font-weight:600;">Reject</button>
+               </div>`
+            : '';
+
+        return `<tr>
+            <td style="padding:5px 8px 5px 0;white-space:nowrap;color:#6b7280;font-size:12px;vertical-align:top;">${nfCredEsc(h.date || '')}</td>
+            <td style="padding:5px 8px 5px 0;font-size:12px;"><span style="${struck}">${nfCredEsc(h.type_label)}${where}${why}</span>${state}${actions}</td>
+            <td style="padding:5px 0;text-align:right;white-space:nowrap;font-weight:600;font-size:12px;color:${colour};${struck}vertical-align:top;">
+                ${sign} Rs. ${nfCredEsc(h.amount_abs)}
+            </td>
+        </tr>`;
+    }).join('');
+
+    const pending = d.pending_count > 0
+        ? `<div style="margin-top:6px;font-size:12px;color:#b45309;">
+             ${d.pending_count} entr${d.pending_count === 1 ? 'y' : 'ies'} worth
+             Rs. ${parseFloat(d.pending_total).toFixed(2)} waiting for approval —
+             <strong>not</strong> included in the balance above.
+           </div>`
+        : '';
+
+    return `
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:16px;flex-wrap:wrap;">
+            <div>
+                <div style="font-weight:700;color:#111827;font-size:14px;">💰 Account balance</div>
+                <div style="font-size:26px;font-weight:800;color:${hasBal ? '#059669' : '#9ca3af'};line-height:1.3;">
+                    Rs. ${nfCredEsc(d.balance_display)}
+                </div>
+                <div style="font-size:12px;color:#6b7280;">
+                    ${hasBal ? 'Available to use on their next order.' : 'Nothing held for this customer.'}
+                </div>
+                ${pending}
+            </div>
+            <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+                <button type="button" onclick="nfOpenGrantForm(${customerId})"
+                        style="padding:8px 14px;background:#059669;color:#fff;border:0;border-radius:6px;cursor:pointer;font-size:13px;font-weight:600;">
+                    + Received extra
+                </button>
+                ${hasBal ? `<button type="button" onclick="nfZeroOutCredit(${customerId})"
+                        style="padding:8px 14px;background:#fff;color:#b91c1c;border:1px solid #fca5a5;border-radius:6px;cursor:pointer;font-size:13px;font-weight:600;">
+                    Clear to zero
+                </button>` : ''}
+            </div>
+        </div>
+
+        <div id="nfGrantForm" style="display:none;margin-top:12px;padding:12px;background:#ecfdf5;border:1px solid #a7f3d0;border-radius:8px;">
+            <div style="font-size:12px;color:#065f46;margin-bottom:8px;">
+                Record money received from this customer beyond their invoices.
+                ${NF_CREDIT_AUTO_APPROVES
+                    ? 'It becomes usable balance immediately.'
+                    : 'It goes for approval first, then becomes usable balance.'}
+            </div>
+            <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+                <input type="number" step="0.01" min="1" id="nfGrantAmount" placeholder="Amount"
+                       style="width:130px;padding:8px 10px;border:1px solid #6ee7b7;border-radius:6px;font-size:14px;font-weight:600;">
+                <select id="nfGrantMode" style="padding:8px 10px;border:1px solid #6ee7b7;border-radius:6px;font-size:13px;">
+                    <option value="online">Online / bank</option>
+                    <option value="cash">Cash</option>
+                </select>
+                <input type="text" id="nfGrantReason" placeholder="Note (e.g. paid extra on NF-19304)"
+                       style="flex:1;min-width:200px;padding:8px 10px;border:1px solid #6ee7b7;border-radius:6px;font-size:13px;">
+                <button type="button" onclick="nfSubmitGrant(${customerId})"
+                        style="padding:8px 14px;background:#059669;color:#fff;border:0;border-radius:6px;cursor:pointer;font-size:13px;font-weight:600;">
+                    ${NF_CREDIT_AUTO_APPROVES ? 'Add to balance' : 'Send for approval'}
+                </button>
+                <button type="button" onclick="document.getElementById('nfGrantForm').style.display='none'"
+                        style="padding:8px 12px;background:#fff;color:#374151;border:1px solid #d1d5db;border-radius:6px;cursor:pointer;font-size:13px;">
+                    Cancel
+                </button>
+            </div>
+        </div>
+
+        ${history ? `
+        <details style="margin-top:12px;" ${hasBal ? 'open' : ''}>
+            <summary style="cursor:pointer;font-size:12px;font-weight:600;color:#374151;">History</summary>
+            <table style="width:100%;border-collapse:collapse;margin-top:6px;">${history}</table>
+        </details>` : ''}
+    `;
+}
+
+function nfOpenGrantForm(customerId) {
+    const f = document.getElementById('nfGrantForm');
+    if (f) { f.style.display = f.style.display === 'none' ? 'block' : 'none'; }
+}
+
+async function nfSubmitGrant(customerId) {
+    const amount = parseFloat(document.getElementById('nfGrantAmount')?.value || 0);
+    const mode   = document.getElementById('nfGrantMode')?.value || 'online';
+    const reason = document.getElementById('nfGrantReason')?.value || '';
+
+    if (!(amount > 0)) { alert('Enter the amount received.'); return; }
+
+    try {
+        const res = await fetch(`/customer-credit/${customerId}/grant`, {
+            method: 'POST',
+            headers: {
+                'Accept': 'application/json', 'Content-Type': 'application/json',
+                'X-Requested-With': 'XMLHttpRequest', 'X-CSRF-TOKEN': nfCredCsrf()
+            },
+            credentials: 'same-origin',
+            body: JSON.stringify({ amount, mode, reason })
+        });
+        const json = await res.json();
+        alert(json.message || (json.success ? 'Recorded.' : 'Could not record it.'));
+        if (json.success) { nfRefreshCreditPanel(customerId); }
+    } catch (e) {
+        alert('Could not record it: ' + e.message);
+    }
+}
+
+async function nfZeroOutCredit(customerId) {
+    const reason = prompt(
+        'Clear this customer\'s balance to zero.\n\n' +
+        'No money leaves the business — the balance is written off and this note is kept ' +
+        'in the history.\n\nWhy are you clearing it?'
+    );
+    if (reason === null) return;
+    if (!reason || reason.trim().length < 3) { alert('Please give a short reason.'); return; }
+
+    try {
+        const res = await fetch(`/customer-credit/${customerId}/zero-out`, {
+            method: 'POST',
+            headers: {
+                'Accept': 'application/json', 'Content-Type': 'application/json',
+                'X-Requested-With': 'XMLHttpRequest', 'X-CSRF-TOKEN': nfCredCsrf()
+            },
+            credentials: 'same-origin',
+            body: JSON.stringify({ reason: reason.trim() })
+        });
+        const json = await res.json();
+        alert(json.message || (json.success ? 'Cleared.' : 'Could not clear it.'));
+        if (json.success) { nfRefreshCreditPanel(customerId); }
+    } catch (e) {
+        alert('Could not clear it: ' + e.message);
+    }
+}
+
+async function nfCreditAction(customerId, creditId, action, body) {
+    try {
+        const res = await fetch(`/customer-credit/${creditId}/${action}`, {
+            method: 'POST',
+            headers: {
+                'Accept': 'application/json', 'Content-Type': 'application/json',
+                'X-Requested-With': 'XMLHttpRequest', 'X-CSRF-TOKEN': nfCredCsrf()
+            },
+            credentials: 'same-origin',
+            body: JSON.stringify(body || {})
+        });
+        const json = await res.json();
+        alert(json.message || (json.success ? 'Done.' : 'Could not do that.'));
+        if (json.success) { nfRefreshCreditPanel(customerId); }
+    } catch (e) {
+        alert('Failed: ' + e.message);
+    }
+}
+
+function nfApproveCredit(customerId, creditId) {
+    if (!confirm('Approve this amount and add it to the customer\'s balance?')) return;
+    nfCreditAction(customerId, creditId, 'approve', { mode: 'online' });
+}
+
+function nfRejectCredit(customerId, creditId) {
+    const reason = prompt('Reject this entry? No balance will be added.\n\nReason (optional):');
+    if (reason === null) return;
+    nfCreditAction(customerId, creditId, 'reject', { reason });
+}
+
+async function nfRefreshCreditPanel(customerId) {
+    const panel = document.getElementById('nfCustomerCreditPanel');
+    if (!panel) return;
+    try {
+        const res = await fetch(`/customer-credit/${customerId}/summary?limit=15`, {
+            headers: { 'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+            credentials: 'same-origin'
+        });
+        const json = await res.json();
+        if (json && json.success) { panel.innerHTML = nfCreditPanelMarkup(customerId, json.data); }
+    } catch (e) { /* leave the old panel rather than blanking it */ }
+}
 
 // ===== Unified customer modal — inline orders section (tiles + filter chips + invoice table) =====
 // Rendered inside the Customer Details modal by loadCustomerOrdersInline().

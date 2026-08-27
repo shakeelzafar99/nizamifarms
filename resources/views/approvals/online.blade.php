@@ -449,6 +449,20 @@
         </div>
     </div>
 
+    {{-- 💰 Balance requests — money waiting to be added to a customer's account
+         balance. It used to live only inside each customer's own popup, which is
+         nowhere near where approvers actually work. Hidden entirely when the
+         queue is empty, so it costs nothing on a normal day. --}}
+    <div id="nfBalanceRequests" style="display:none; margin-bottom:16px; border:1px solid #A7F3D0; background:#ECFDF5; border-radius:12px; overflow:hidden;">
+        <div style="padding:10px 14px; display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap;">
+            <div style="font-weight:700; color:#065F46; font-size:14px;">
+                💰 Balance requests <span id="nfBrCount" style="font-weight:600;"></span>
+            </div>
+            <div style="font-size:11.5px; color:#047857;" id="nfBrHint"></div>
+        </div>
+        <div id="nfBrBody" style="background:#fff; border-top:1px solid #A7F3D0;"></div>
+    </div>
+
     <!-- Tab Cards -->
     <div class="flex gap-3 mb-4 flex-wrap">
         {{-- All Pending (L1 + L2 combined) --}}
@@ -839,6 +853,9 @@ let searchTimeout;
 const receivingAccounts = @json($receivingAccounts ?? []);
 // Only the Taimur role can revert an accidental approval back to pending.
 const canRevertApprovals = @json($isTaimur ?? false);
+// Aug-2026 — recording a payment by hand is Shabib/Taimur only. Resolved
+// server-side; the endpoint enforces it again, this just decides what is drawn.
+const NF_CAN_RECORD_PAYMENT = @json($canRecordPayment ?? false);
 
 // Initialize
 document.addEventListener('DOMContentLoaded', function() {
@@ -848,6 +865,10 @@ document.addEventListener('DOMContentLoaded', function() {
     @else
     selectTab('approved');
     @endif
+
+    // 💰 Pending balance requests. Its own fetch so a slow/failed call can never
+    // hold up or blank the approvals list itself.
+    try { nfLoadBalanceRequests(); } catch (e) { /* non-essential panel */ }
 });
 
 // Tab selection
@@ -1919,6 +1940,18 @@ function renderBankBadge(item) {
 
 function renderProofBadges(item) {
     const p = item && item.payment_proof;
+    // ✍️ No proof at all — but the customer may well have paid. This is the
+    // case the owner hit: a delivered invoice sitting in approvals with no
+    // screenshot and no way to say "he already paid". Offer it to the two
+    // people allowed to record that, and to nobody else.
+    // ⚠ Not on SHOP rows: shops record real money through their own payment
+    // flow on this same tab — a claim chip there would just be a second,
+    // weaker way to say the same thing.
+    if ((!p || p.status === 'none') && item.order_id && NF_CAN_RECORD_PAYMENT && item.type !== 'shop_order') {
+        return `<span onclick="nfRecordPayment(${item.order_id}, '${escapeHtml(item.order_number || '')}')"
+            title="No proof arrived — record that this customer has paid"
+            style="cursor:pointer; display:inline-block; padding:2px 8px; border-radius:10px; font-size:11px; font-weight:600; background:#F3F4F6; color:#4B5563; border:1px dashed #D1D5DB; margin-left:6px; white-space:nowrap;">✍️ record payment</span>`;
+    }
     if (!p || p.status === 'none' || !item.order_id) return '';
     const waIcon = p.has_whatsapp ? '📷' : '';
     // Bank-side source at a glance: 📱 = credit SMS captured by NF Messages
@@ -1929,10 +1962,18 @@ function renderProofBadges(item) {
     const combinedSuffix = (p.is_combined && p.combined_count) ? ` · combined of ${p.combined_count}` : '';
     const combinedTitle = (p.is_combined && p.combined_count)
         ? ` — one transfer covering ${p.combined_count} invoices` : '';
+    // ✍️ A hand-entered claim: no screenshot, nobody sent it — say so on the
+    // badge and name who vouched for it. It stays at the same tier as any other
+    // customer-side claim; only the bank can promote it to verified.
+    const manualIcon = p.is_manual ? '✍️' : '';
+    const manualSuffix = (p.is_manual && p.manual_by) ? ` · by ${escapeHtml(p.manual_by)}` : '';
+    const manualTitle = p.is_manual
+        ? ' — recorded by hand' + (p.manual_by ? ' by ' + p.manual_by : '') + ', not sent by the customer'
+        : '';
     let badges = `<span class="proof-badge" onclick="openProofPanel(${item.order_id})"
-        title="${escapeHtml(p.label)}${combinedTitle} — click to view the proof"
+        title="${escapeHtml(p.label)}${combinedTitle}${escapeHtml(manualTitle)} — click to view the proof"
         style="cursor:pointer; display:inline-block; padding:2px 8px; border-radius:10px; font-size:11px; font-weight:600; background:${p.color}1A; color:${p.color}; border:1px solid ${p.color}55; margin-left:6px; white-space:nowrap;">
-        ${combinedPrefix}${waIcon}${smsIcon}${mailIcon} ${escapeHtml(p.label)}${combinedSuffix}</span>`;
+        ${combinedPrefix}${manualIcon}${waIcon}${smsIcon}${mailIcon} ${escapeHtml(p.label)}${manualSuffix}${combinedSuffix}</span>`;
     // 💸 "Discount needed" marker — a matched proof still short by a small amount.
     if (p.needs_discount) {
         const shortTxt = p.short_amount ? ` · Rs ${numberFormat(p.short_amount)}` : '';
@@ -1941,6 +1982,389 @@ function renderProofBadges(item) {
             style="cursor:pointer; display:inline-block; padding:2px 8px; border-radius:10px; font-size:11px; font-weight:600; background:#FEF3C7; color:#92400E; border:1px solid #FCD34D; margin-left:6px; white-space:nowrap;">💸 discount needed${shortTxt}</span>`;
     }
     return badges;
+}
+
+// =====================================================================
+// ✍️ Record a payment BY HAND  (Shabib / Taimur only)
+//
+// Writes a payment SIGNAL — the same kind of evidence a customer's screenshot
+// produces — never an order payment. That is what keeps it safe on an
+// undelivered order too. When the bank SMS for the same money arrives, the
+// existing pairing turns this claim green on its own.
+// =====================================================================
+
+function nfCsrf() {
+    return document.querySelector('meta[name="csrf-token"]').content;
+}
+
+async function nfRecordPayment(orderId, orderNumber) {
+    if (!NF_CAN_RECORD_PAYMENT) { return; }
+
+    // ⚠ An ONLINE invoice cannot be approved without a receiving bank, so ask
+    // for it up front on those orders — a claim recorded without one quietly
+    // blocks its own approval (and is skipped by bulk approve as "no bank").
+    // Cash orders have no bank at all, so the field stays optional there.
+    let bankRequired = false;
+    let existingManual = [];
+    try {
+        const ctxRes = await fetch(`/admin/payments/order/${orderId}/overpay`, {
+            headers: { 'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
+        });
+        const ctx = await ctxRes.json();
+        bankRequired = !!(ctx && ctx.bank_required);
+        existingManual = (ctx && ctx.existing_manual) || [];
+    } catch (e) { /* fall back to optional; the server still refuses if needed */ }
+
+    // Recording a second payment ADDS to the first. Say so up front — silently
+    // summing is how "I entered 11,000" turns into "you are 11,880 over".
+    const dupWarn = existingManual.length ? `
+        <div style="background:#FFFBEB; border:1px solid #FCD34D; border-radius:8px; padding:9px 11px; margin-bottom:12px; font-size:12px; color:#92400E;">
+          ⚠ This order already has ${existingManual.length} recorded payment${existingManual.length > 1 ? 's' : ''}:
+          ${existingManual.map(e => `<b>Rs ${numberFormat(e.amount)}</b> by ${escapeHtml(e.by)}`).join(', ')}.<br>
+          Anything you add here is <b>counted on top</b>. If you are correcting that entry,
+          cancel and remove it from the payment-proof panel first.
+        </div>` : '';
+
+    const banks = @json($receivingAccounts ?? []);
+    const bankOpts = [`<option value="">${bankRequired ? '— choose the bank (required) —' : '— which bank? (optional) —'}</option>`]
+        .concat(banks.map(b => `<option value="${b.id}">${escapeHtml(b.name || b.short_code)}</option>`))
+        .join('');
+
+    let overlay = document.getElementById('nfRecordPayOverlay');
+    if (overlay) overlay.remove();
+    overlay = document.createElement('div');
+    overlay.id = 'nfRecordPayOverlay';
+    overlay.style.cssText = 'position:fixed; inset:0; background:rgba(0,0,0,0.5); z-index:10001; display:flex; align-items:center; justify-content:center; padding:20px;';
+    overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
+    overlay.innerHTML = `
+      <div style="background:#fff; border-radius:12px; padding:22px; max-width:440px; width:100%;">
+        <div style="font-size:15px; font-weight:700; margin-bottom:4px;">✍️ Record a payment</div>
+        <div style="font-size:12px; color:#6B7280; margin-bottom:14px;">
+          Order ${escapeHtml(orderNumber || '#' + orderId)} — use this when the customer has paid
+          but no screenshot or bank alert arrived. It is recorded as your word, with your name on it.
+        </div>
+        ${dupWarn}
+        <label style="display:block; font-size:11px; font-weight:600; color:#6B7280; margin-bottom:3px;">AMOUNT RECEIVED</label>
+        <input id="nfRpAmount" type="number" step="0.01" min="1" placeholder="0.00"
+               style="width:100%; padding:9px 11px; border:1px solid #D1D5DB; border-radius:8px; font-size:15px; font-weight:600; margin-bottom:10px;">
+        <label style="display:block; font-size:11px; font-weight:600; color:${bankRequired ? '#B45309' : '#6B7280'}; margin-bottom:3px;">RECEIVED IN ${bankRequired ? '<span title="An online invoice cannot be approved without naming the bank">*required</span>' : ''}</label>
+        <select id="nfRpBank" style="width:100%; padding:9px 11px; border:1px solid #D1D5DB; border-radius:8px; font-size:13px; margin-bottom:10px;">${bankOpts}</select>
+        <label style="display:block; font-size:11px; font-weight:600; color:#6B7280; margin-bottom:3px;">REFERENCE / TRANSACTION ID (optional)</label>
+        <input id="nfRpRef" type="text" maxlength="100" placeholder="helps the bank alert match this automatically"
+               style="width:100%; padding:9px 11px; border:1px solid #D1D5DB; border-radius:8px; font-size:13px; margin-bottom:10px;">
+        <label style="display:block; font-size:11px; font-weight:600; color:#6B7280; margin-bottom:3px;">NOTE (optional)</label>
+        <input id="nfRpNote" type="text" maxlength="255" placeholder="e.g. paid cash to the rider yesterday"
+               style="width:100%; padding:9px 11px; border:1px solid #D1D5DB; border-radius:8px; font-size:13px; margin-bottom:16px;">
+        <div style="display:flex; gap:8px; justify-content:flex-end;">
+          <button onclick="document.getElementById('nfRecordPayOverlay').remove()"
+                  style="padding:9px 16px; background:#fff; color:#374151; border:1px solid #D1D5DB; border-radius:8px; cursor:pointer; font-size:13px;">Cancel</button>
+          <button id="nfRpSave" onclick="nfSubmitManualPayment(${orderId}, ${bankRequired})"
+                  style="padding:9px 18px; background:#059669; color:#fff; border:0; border-radius:8px; cursor:pointer; font-size:13px; font-weight:600;">Record payment</button>
+        </div>
+      </div>`;
+    document.body.appendChild(overlay);
+    setTimeout(() => document.getElementById('nfRpAmount')?.focus(), 60);
+}
+
+async function nfSubmitManualPayment(orderId, bankRequired) {
+    const amount = parseFloat(document.getElementById('nfRpAmount')?.value || 0);
+    if (!(amount > 0)) { alert('Enter the amount received.'); return; }
+    const bankId = document.getElementById('nfRpBank')?.value || '';
+    if (bankRequired && !bankId) {
+        alert('This is an online order — choose which bank the money arrived in.\n\nWithout it the invoice cannot be approved later.');
+        document.getElementById('nfRpBank')?.focus();
+        return;
+    }
+
+    const btn = document.getElementById('nfRpSave');
+    if (btn) { btn.textContent = 'Recording…'; btn.disabled = true; }
+
+    try {
+        const res = await fetch(`/admin/payments/order/${orderId}/manual-proof`, {
+            method: 'POST',
+            headers: {
+                'Accept': 'application/json', 'Content-Type': 'application/json',
+                'X-Requested-With': 'XMLHttpRequest', 'X-CSRF-TOKEN': nfCsrf(),
+            },
+            body: JSON.stringify({
+                amount: amount,
+                receiving_account_id: bankId || null,
+                reference: document.getElementById('nfRpRef')?.value || null,
+                note: document.getElementById('nfRpNote')?.value || null,
+            })
+        });
+        const data = await res.json();
+        if (!data.success) {
+            alert(data.message || 'Could not record the payment.');
+            if (btn) { btn.textContent = 'Record payment'; btn.disabled = false; }
+            return;
+        }
+        document.getElementById('nfRecordPayOverlay')?.remove();
+
+        // Paid more than the invoice? Ask what to do with the extra, right now,
+        // while the person still has the context in their head.
+        await nfOfferOverpay(orderId, data.overpay, data.message);
+        loadData();
+    } catch (e) {
+        alert('Could not record the payment: ' + e.message);
+        if (btn) { btn.textContent = 'Record payment'; btn.disabled = false; }
+    }
+}
+
+/**
+ * "Rs X extra — balance, tip, or leave it?"
+ *
+ * Three things can happen to an extra, mirroring the short direction's
+ * balancing discount:
+ *   · account balance — the customer's money, spendable on a future order
+ *   · tip — raises THIS invoice's total so the payment matches it exactly
+ *     (only while the invoice is still pre-L1 — the server decides, we only
+ *     show the button when it says so)
+ *   · leave it — nothing changes; the extra stays visible in the proof panel
+ * Never assumed either way.
+ */
+function nfOverpayChoice(text, tipEligible, balanceEligible) {
+    return new Promise(resolve => {
+        let ov = document.getElementById('nfOverpayChoiceOverlay');
+        if (ov) ov.remove();
+        ov = document.createElement('div');
+        ov.id = 'nfOverpayChoiceOverlay';
+        ov.style.cssText = 'position:fixed; inset:0; background:rgba(0,0,0,0.5); z-index:10002; display:flex; align-items:center; justify-content:center; padding:20px;';
+        const done = v => { ov.remove(); resolve(v); };
+        ov.onclick = e => { if (e.target === ov) done(null); };
+        ov.innerHTML = `
+          <div style="background:#fff; border-radius:12px; padding:22px; max-width:420px; width:100%;">
+            <div style="font-size:15px; font-weight:700; margin-bottom:8px;">💰 Paid more than the invoice</div>
+            <div style="font-size:13px; color:#374151; margin-bottom:16px; white-space:pre-line;">${text}</div>
+            <div style="display:flex; flex-direction:column; gap:8px;">
+              ${balanceEligible ? `<button id="nfOvChBal" style="padding:10px 14px; background:#059669; color:#fff; border:0; border-radius:8px; cursor:pointer; font-size:13px; font-weight:600; text-align:left;">💰 Add to the customer's account balance</button>` : ''}
+              ${tipEligible ? `<button id="nfOvChTip" style="padding:10px 14px; background:#7C3AED; color:#fff; border:0; border-radius:8px; cursor:pointer; font-size:13px; font-weight:600; text-align:left;">🤍 Add as a TIP on this invoice</button>` : ''}
+              <button id="nfOvChNo" style="padding:10px 14px; background:#fff; color:#374151; border:1px solid #D1D5DB; border-radius:8px; cursor:pointer; font-size:13px; text-align:left;">Leave it as it is</button>
+            </div>
+          </div>`;
+        document.body.appendChild(ov);
+        document.getElementById('nfOvChBal')?.addEventListener('click', () => done('balance'));
+        document.getElementById('nfOvChTip')?.addEventListener('click', () => done('tip'));
+        document.getElementById('nfOvChNo')?.addEventListener('click', () => done(null));
+    });
+}
+
+async function nfSendOverpayTo(orderId, choice) {
+    const path = choice === 'tip' ? 'overpay-to-tip' : 'overpay-to-balance';
+    try {
+        const res = await fetch(`/admin/payments/order/${orderId}/${path}`, {
+            method: 'POST',
+            headers: {
+                'Accept': 'application/json', 'Content-Type': 'application/json',
+                'X-Requested-With': 'XMLHttpRequest', 'X-CSRF-TOKEN': nfCsrf(),
+            }
+        });
+        const data = await res.json();
+        alert(data.message || (data.success ? 'Done.' : 'Could not do that.'));
+        return !!data.success;
+    } catch (e) {
+        alert('Could not do that: ' + e.message);
+        return false;
+    }
+}
+
+async function nfOfferOverpay(orderId, overpay, doneMsg) {
+    const extra = parseFloat(overpay && overpay.amount || 0);
+    const canBal = !!(overpay && overpay.eligible);
+    const canTip = !!(overpay && overpay.tip_eligible);
+    if (!(extra > 0) || (!canBal && !canTip)) {
+        if (doneMsg) { showToast(doneMsg); }
+        return;
+    }
+    // Show the working whenever the number could surprise — several payments
+    // counted together, or an amount already banked. A manager who can SEE
+    // "2 payments totalling Rs 21,000 vs an invoice of Rs 9,120" spots a stale
+    // duplicate instantly; a bare "Rs 11,880 extra" just looks broken.
+    let working = '';
+    if ((overpay.signal_count || 0) > 1 || parseFloat(overpay.banked || 0) > 0) {
+        working = '\n\n' +
+            `${overpay.signal_count} payment${overpay.signal_count > 1 ? 's' : ''} recorded on this order: Rs ${numberFormat(overpay.claimed)}\n` +
+            `Invoice still owed: Rs ${numberFormat(overpay.owed)}`;
+        if (parseFloat(overpay.banked || 0) > 0) {
+            working += `\nAlready added to balance: Rs ${numberFormat(overpay.banked)}`;
+        }
+        if ((overpay.signal_count || 0) > 1) {
+            working += `\n\nIf one of those is a duplicate, cancel and remove it from the payment-proof panel.`;
+        }
+    }
+
+    const choice = await nfOverpayChoice(
+        `${doneMsg ? doneMsg + '\n\n' : ''}` +
+        `That is Rs ${numberFormat(extra)} MORE than this order still owed.` + working,
+        canTip, canBal
+    );
+    if (!choice) { return; }
+    await nfSendOverpayTo(orderId, choice);
+}
+
+// =====================================================================
+// 💰 Balance requests — pending customer-credit grants, where approvers work
+// =====================================================================
+
+async function nfLoadBalanceRequests() {
+    const box = document.getElementById('nfBalanceRequests');
+    if (!box) return;
+    try {
+        const res = await fetch('/customer-credit/pending', {
+            headers: { 'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
+        });
+        const json = await res.json();
+        if (!json || !json.success || !json.data || !json.data.length) {
+            box.style.display = 'none';
+            return;
+        }
+        const rows = json.data;
+        const total = rows.reduce((s, r) => s + parseFloat(r.amount || 0), 0);
+        document.getElementById('nfBrCount').textContent =
+            `(${rows.length}) · Rs ${numberFormat(total)}`;
+        document.getElementById('nfBrHint').textContent = json.can_approve
+            ? 'Approve to turn these into usable balance'
+            : 'Level 2 approval is needed to add these';
+
+        document.getElementById('nfBrBody').innerHTML = rows.map(r => {
+            const where = r.order_number ? ` · order ${escapeHtml(r.order_number)}` : '';
+            const why = r.reason ? ` · ${escapeHtml(r.reason)}` : '';
+            const actions = json.can_approve
+                ? `<span style="display:flex; gap:6px;">
+                     <button onclick="nfBrAct(${r.id}, 'approve')" style="padding:4px 11px; background:#059669; color:#fff; border:0; border-radius:6px; cursor:pointer; font-size:12px; font-weight:600;">Approve</button>
+                     <button onclick="nfBrAct(${r.id}, 'reject')" style="padding:4px 11px; background:#fff; color:#B91C1C; border:1px solid #FCA5A5; border-radius:6px; cursor:pointer; font-size:12px; font-weight:600;">Reject</button>
+                   </span>`
+                : '<span style="font-size:11.5px; color:#9CA3AF;">awaiting L2</span>';
+            return `<div style="display:flex; justify-content:space-between; align-items:center; gap:12px;
+                                padding:9px 14px; border-bottom:1px solid #F3F4F6; flex-wrap:wrap;">
+                <span style="font-size:13px;">
+                    <b>${escapeHtml(r.customer_name)}</b>
+                    <span style="color:#6B7280; font-size:11.5px;">${where}${why} · ${escapeHtml(r.date || '')}</span>
+                </span>
+                <span style="display:flex; align-items:center; gap:12px;">
+                    <b style="color:#065F46; font-size:13.5px; white-space:nowrap;">Rs ${numberFormat(r.amount)}</b>
+                    ${actions}
+                </span>
+            </div>`;
+        }).join('');
+        box.style.display = 'block';
+    } catch (e) {
+        box.style.display = 'none';
+    }
+}
+
+async function nfBrAct(creditId, action) {
+    let body = {};
+    if (action === 'approve') {
+        if (!confirm('Approve this amount and add it to the customer\'s balance?')) return;
+        body = { mode: 'online' };
+    } else {
+        const reason = prompt('Reject this request? No balance will be added.\n\nReason (optional):');
+        if (reason === null) return;
+        body = { reason: reason };
+    }
+    try {
+        const res = await fetch(`/customer-credit/${creditId}/${action}`, {
+            method: 'POST',
+            headers: {
+                'Accept': 'application/json', 'Content-Type': 'application/json',
+                'X-Requested-With': 'XMLHttpRequest', 'X-CSRF-TOKEN': nfCsrf(),
+            },
+            body: JSON.stringify(body)
+        });
+        const json = await res.json();
+        showToast(json.message || (json.success ? 'Done.' : 'Could not do that.'), json.success ? 'success' : 'error');
+        nfLoadBalanceRequests();
+    } catch (e) {
+        showToast('Failed: ' + e.message, 'error');
+    }
+}
+
+/** Turn the extra into a tip straight from the proof panel, then refresh. */
+async function nfPanelTipOverpay(orderId) {
+    if (!confirm('Count this extra as a TIP on this invoice?\n\nThe invoice total goes up by the extra, so the payment then matches it exactly.')) return;
+    const ok = await nfSendOverpayTo(orderId, 'tip');
+    if (ok) {
+        document.getElementById('proofPanelOverlay')?.remove();
+        openProofPanel(orderId);
+        loadData(); // the row's amount changed
+    }
+}
+
+/** Bank the extra straight from the proof panel, then refresh the panel. */
+async function nfPanelBankOverpay(orderId) {
+    // Instant for Shabib/Taimur (auto-approved), queued for anyone else — the
+    // toast below carries the server's answer, so the confirm stays neutral.
+    if (!confirm('Add this extra to the customer\'s account balance?')) return;
+    try {
+        const res = await fetch(`/admin/payments/order/${orderId}/overpay-to-balance`, {
+            method: 'POST',
+            headers: {
+                'Accept': 'application/json', 'Content-Type': 'application/json',
+                'X-Requested-With': 'XMLHttpRequest', 'X-CSRF-TOKEN': nfCsrf(),
+            }
+        });
+        const data = await res.json();
+        showToast(data.message || (data.success ? 'Added.' : 'Could not add it.'), data.success ? 'success' : 'error');
+        if (data.success) {
+            document.getElementById('proofPanelOverlay')?.remove();
+            openProofPanel(orderId);   // reopen so the panel reflects the new state
+            nfLoadBalanceRequests();   // and the request appears in the queue above
+        }
+    } catch (e) {
+        showToast('Could not add it: ' + e.message, 'error');
+    }
+}
+
+/**
+ * After a BULK approval, ask about any invoice that was overpaid.
+ * One round trip for the whole batch; only eligible ones come back. Capped so a
+ * huge batch cannot turn into a wall of dialogs — the rest stay reachable from
+ * each invoice's proof panel and from the customer page.
+ */
+async function nfOfferOverpaysAfterBulk(orderIds) {
+    const ids = (orderIds || []).filter(Boolean);
+    if (!ids.length) return;
+    let list = [];
+    try {
+        const res = await fetch('/admin/payments/overpay-batch', {
+            method: 'POST',
+            headers: {
+                'Accept': 'application/json', 'Content-Type': 'application/json',
+                'X-Requested-With': 'XMLHttpRequest', 'X-CSRF-TOKEN': nfCsrf(),
+            },
+            body: JSON.stringify({ order_ids: ids })
+        });
+        const data = await res.json();
+        list = (data && data.overpays) || [];
+    } catch (e) { return; }
+    if (!list.length) return;
+
+    const MAX_ASK = 3;
+    for (const ov of list.slice(0, MAX_ASK)) {
+        const yes = confirm(
+            `${ov.order_number || ('Order #' + ov.order_id)} was paid Rs ${numberFormat(ov.amount)} MORE than it needed.\n\n` +
+            `OK = add it to the customer's account balance (goes for approval first)\n` +
+            `Cancel = leave it as it is`
+        );
+        if (!yes) continue;
+        try {
+            const r = await fetch(`/admin/payments/order/${ov.order_id}/overpay-to-balance`, {
+                method: 'POST',
+                headers: {
+                    'Accept': 'application/json', 'Content-Type': 'application/json',
+                    'X-Requested-With': 'XMLHttpRequest', 'X-CSRF-TOKEN': nfCsrf(),
+                }
+            });
+            const j = await r.json();
+            showToast(j.message || (j.success ? 'Added.' : 'Could not add it.'), j.success ? 'success' : 'error');
+        } catch (e) { /* keep going through the rest */ }
+    }
+    if (list.length > MAX_ASK) {
+        alert(`${list.length - MAX_ASK} more invoice(s) in this batch were also overpaid.\n\n` +
+              `Open each invoice's proof badge to add those to the customer's balance.`);
+    }
+    nfLoadBalanceRequests();
 }
 
 // Fetch + show the screenshot / parsed email behind a proof badge.
@@ -2068,6 +2492,48 @@ function buildProofPanelHtml(data) {
         <button onclick="document.getElementById('proofPanelOverlay').remove()" style="border:none; background:#F3F4F6; border-radius:8px; padding:4px 10px; cursor:pointer; font-size:18px;">×</button>
     </div>`;
     html += `<div style="display:inline-block; padding:3px 10px; border-radius:10px; font-size:12px; font-weight:600; background:${proof.color}1A; color:${proof.color}; border:1px solid ${proof.color}55; margin-bottom:14px;">${escapeHtml(proof.label || '')}</div>`;
+
+    // ✍️ Another payment can always be recorded from here — a second instalment,
+    // or the extra the customer sent after the first proof.
+    if (NF_CAN_RECORD_PAYMENT && data.order_id) {
+        html += `<button onclick="document.getElementById('proofPanelOverlay').remove(); nfRecordPayment(${data.order_id}, '${escapeHtml(data.order_number || '')}')"
+            style="float:right; padding:5px 12px; background:#fff; color:#065F46; border:1px solid #6EE7B7; border-radius:8px; cursor:pointer; font-size:12px; font-weight:600;">✍️ Record a payment</button>`;
+    }
+
+    // 💰 The panel already says "Rs 10,000 (differs from balance Rs 9,120)". It
+    // must also let you DO something about it — otherwise someone who deferred
+    // the question when recording the payment has nowhere to answer it later.
+    const ovp = data.overpay || {};
+    if (parseFloat(ovp.amount || 0) > 0) {
+        if (ovp.eligible || ovp.tip_eligible) {
+            // Both homes for the extra, side by side. The tip button only
+            // shows while the invoice is still pre-L1 (server-decided).
+            const balBtn = ovp.eligible
+                ? `<button onclick="nfPanelBankOverpay(${data.order_id})"
+                    style="padding:5px 12px; background:#059669; color:#fff; border:0; border-radius:6px; cursor:pointer; font-size:12px; font-weight:600; white-space:nowrap;">➕ Add to balance</button>`
+                : '';
+            const tipBtn = ovp.tip_eligible
+                ? `<button onclick="nfPanelTipOverpay(${data.order_id})"
+                    style="padding:5px 12px; background:#7C3AED; color:#fff; border:0; border-radius:6px; cursor:pointer; font-size:12px; font-weight:600; white-space:nowrap;">🤍 Add as tip</button>`
+                : '';
+            html += `<div style="clear:both; background:#ECFDF5; border:1px solid #A7F3D0; border-radius:8px; padding:10px 12px; margin-bottom:14px; display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap;">
+                <span style="font-size:12.5px; color:#065F46;">
+                    This customer paid <b>Rs ${numberFormat(ovp.amount)}</b> more than this invoice needed.
+                </span>
+                <span style="display:flex; gap:8px;">${balBtn}${tipBtn}</span>
+            </div>`;
+        } else {
+            // Say WHY it cannot be banked rather than leaving a dead number.
+            const why = ovp.reason === 'already_added' ? 'already added to their balance'
+                      : ovp.reason === 'not_eligible'  ? 'shop customers do not use account balance'
+                      : ovp.reason === 'no_customer'   ? 'this order has no customer record'
+                      : null;
+            if (why) {
+                html += `<div style="clear:both; font-size:11.5px; color:#6B7280; margin-bottom:12px;">
+                    Rs ${numberFormat(ovp.amount)} extra — ${escapeHtml(why)}.</div>`;
+            }
+        }
+    }
 
     // 🔀 Did this proof change hands? Shown only when it did — the ordinary
     // case has no history and says nothing. On an approved invoice this is
@@ -2549,6 +3015,22 @@ async function doApprove(ledgerId, approvalType) {
             // Reset txn-reference input too so the next approval starts clean.
             const _txnRefInput = document.getElementById('transactionReferenceInput');
             if (_txnRefInput) _txnRefInput.value = '';
+
+            // 💰 The invoice is settled — if the customer actually paid MORE than
+            // it, ask now what to do with the extra. Advisory only: the approval
+            // has already happened and nothing here can undo it.
+            if (data.order_id) {
+                try {
+                    const ovRes = await fetch(`/admin/payments/order/${data.order_id}/overpay`, {
+                        headers: { 'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
+                    });
+                    const ovJson = await ovRes.json();
+                    if (ovJson && ovJson.success) {
+                        await nfOfferOverpay(data.order_id, ovJson.overpay, null);
+                    }
+                } catch (e) { /* never let this get in the way of an approval */ }
+            }
+
             loadData(); // Refresh data
             refreshStats(); // Refresh counts
         } else {
@@ -3037,6 +3519,9 @@ function showPayerCheckDialog(rows) {
 
 // Execute bulk approval with progress tracking
 async function doBulkApprove(items, approvalType) {
+    // Orders settled in this batch — collected so overpayments can be raised
+    // once at the end (see nfOfferOverpaysAfterBulk).
+    const approvedOrderIds = [];
     console.log('=== doBulkApprove started ===');
     console.log('Items count:', items.length);
     console.log('Approval type:', approvalType);
@@ -3140,6 +3625,9 @@ async function doBulkApprove(items, approvalType) {
             
             if (data.success) {
                 successCount++;
+                // Remember which ORDERS settled, so an overpayment on any of them
+                // can be raised once at the end instead of per-request.
+                if (data.order_id || item.order_id) { approvedOrderIds.push(data.order_id || item.order_id); }
             } else {
                 errorCount++;
                 errors.push(`${item.number}: ${data.message || 'Unknown error'}`);
@@ -3170,6 +3658,10 @@ async function doBulkApprove(items, approvalType) {
     }
 
     showToast(resultMessage, successCount > 0 ? 'success' : 'error');
+
+    // 💰 Any invoice in this batch that was paid MORE than it needed. Asked
+    // AFTER the approvals are committed, so it can never delay or block them.
+    try { await nfOfferOverpaysAfterBulk(approvedOrderIds); } catch (e) { /* advisory only */ }
     
     // Show detailed errors if any
     if (errors.length > 0) {

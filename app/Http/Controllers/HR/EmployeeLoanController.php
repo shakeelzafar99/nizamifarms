@@ -12,6 +12,15 @@ use Illuminate\Support\Facades\Log;
 class EmployeeLoanController extends Controller
 {
     /**
+     * ⚠ STAGED ROLLOUT (Aug-27-2026). A loan paid out of a BANK account must name
+     * WHICH bank or the per-bank balances never see it (BankAttributionService).
+     * The store-mode loan form does not send one until the next APK, so this warns
+     * rather than refuses. Flip to true once that APK is out.
+     * Same pattern as RequestApprovalController::ENFORCE_APPROVE_BANK.
+     */
+    private const ENFORCE_LOAN_BANK = false;
+
+    /**
      * Display list of all loans
      */
     public function index(Request $request)
@@ -136,6 +145,8 @@ class EmployeeLoanController extends Controller
             'notes' => 'nullable|string|max:1000',
             'disburse_via_ledger' => 'nullable|boolean',
             'disbursement_account_id' => 'nullable|integer|exists:t_fin_accounts,id', // ⭐ Source account
+            // 🏦 WHICH bank a loan disbursed from an online account left from.
+            'receiving_account_id' => 'nullable|integer|exists:t_fin_online_receiving_accounts,id',
             'is_outside_cash' => 'nullable|boolean' // ⭐ If true, skip ledger
         ]);
 
@@ -148,7 +159,8 @@ class EmployeeLoanController extends Controller
             // ⭐ Determine disbursement source
             $isOutsideCash = $request->input('is_outside_cash', false);
             $disbursementAccountId = null;
-            
+            $disbursementBankId = null;   // 🏦 which bank, when the source is one
+
             if (!$isOutsideCash) {
                 // Get disbursement account - use provided or default to NF_CASH
                 $disbursementAccountId = $validated['disbursement_account_id'] ?? null;
@@ -156,6 +168,33 @@ class EmployeeLoanController extends Controller
                     $nfCash = DB::table('t_fin_accounts')->where('account_code', 'NF_CASH')->first();
                     $disbursementAccountId = $nfCash?->id;
                 }
+
+                // 🏦 Aug-27-2026: a loan handed out of an ONLINE account posted a bank
+                // outflow that named no bank, so BankBalanceService never counted it and
+                // the per-bank split drifted by the principal. The picker behind this
+                // (getDisbursementAccounts) offers bank accounts by design, so the bank
+                // has to travel with the amount.
+                //
+                // ⚠ STAGED like RiderController::ENFORCE_ADVANCE_BANK — the APK in the
+                // field sends no bank yet, and refusing here would stop loans being
+                // issued the day the web files go up.
+                $bankSvc = app(\App\Services\FIN\BankAttributionService::class);
+                $disbursementBankId = $validated['receiving_account_id'] ?? null;
+                $problem = $bankSvc->problemWith($disbursementAccountId, $disbursementBankId);
+                if ($problem) {
+                    if (self::ENFORCE_LOAN_BANK) {
+                        DB::rollBack();
+                        return response()->json(['success' => false, 'message' => $problem], 422);
+                    }
+                    Log::warning('Loan disbursed without naming a bank', [
+                        'disbursement_account_id' => $disbursementAccountId,
+                        'bank_id' => $disbursementBankId,
+                        'problem' => $problem,
+                        'created_by' => auth()->id(),
+                    ]);
+                    $disbursementBankId = null;      // never store a half-valid pairing
+                }
+                $disbursementBankId = $bankSvc->bankIdToStore($disbursementAccountId, $disbursementBankId);
             }
 
             // Create loan
@@ -178,7 +217,7 @@ class EmployeeLoanController extends Controller
             // ⭐ If NOT outside cash, create ledger entry
             $shouldPostToLedger = !$isOutsideCash && $request->input('disburse_via_ledger', !$isOutsideCash);
             if ($shouldPostToLedger && $disbursementAccountId) {
-                $ledgerEntry = $this->createLoanDisbursementLedger($loan, $disbursementAccountId);
+                $ledgerEntry = $this->createLoanDisbursementLedger($loan, $disbursementAccountId, $disbursementBankId);
                 if ($ledgerEntry) {
                     $loan->ledger_transaction_id = $ledgerEntry->id;
                     $loan->save();
@@ -413,7 +452,12 @@ class EmployeeLoanController extends Controller
      * @param EmployeeLoanModel $loan
      * @param int|null $sourceAccountId - The account to disburse from (defaults to NF_CASH)
      */
-    protected function createLoanDisbursementLedger(EmployeeLoanModel $loan, ?int $sourceAccountId = null)
+    /**
+     * @param ?int $bankId 🏦 Which of OUR banks an ONLINE disbursement left from.
+     *                     Null for cash. Without it the row is invisible to the
+     *                     per-bank balances — see BankAttributionService.
+     */
+    protected function createLoanDisbursementLedger(EmployeeLoanModel $loan, ?int $sourceAccountId = null, ?int $bankId = null)
     {
         try {
             // Get employee cash account
@@ -453,7 +497,16 @@ class EmployeeLoanController extends Controller
                 'from_account_id' => $sourceAccount->id,
                 'to_account_id' => $employeeCashAccount->id,
                 'amount' => $loan->principal_amount,
-                'mode' => 'cash',
+                // ⭐ 'cash' was hardcoded even when the money left a bank account, so
+                // the row described itself wrongly to every mode-filtered report. Keyed
+                // off the ACCOUNT, not off $bankId, so it stays truthful even on the
+                // staged path where the bank tag has not arrived yet. The bank math does
+                // NOT read mode (it reads the accounts + the tag) — this is a
+                // truthfulness fix, not the drift fix.
+                'mode' => ($sourceAccount->account_category ?? null) === 'bank' ? 'online' : 'cash',
+                // 🏦 Which of OUR banks it left from. Null for cash — a cash row must
+                // never carry a bank tag or it credits a bank nothing moved through.
+                'receiving_account_id' => $bankId,
                 'approval_status' => 'approved',
                 'approval_date' => now(),
                 'approved_by' => auth()->id(),

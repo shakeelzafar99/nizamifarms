@@ -102,7 +102,12 @@ class FleetFuelController extends Controller
                 'approval' => $this->approvalContext(),
                 // Drives whether the service controls render at all.
                 'can_manage_service' => $this->canManageService(),
-                'default_interval_km' => (int) $this->cfgValue('BIKE_SERVICE_INTERVAL_KM', 3000),
+                // ⚠⚠ THIS WAS `3000` while every calculation defaulted to 1,200 — and this
+                //   is the value the browser renders as "Company default (N km)" and the
+                //   mobile placeholder, so the screen would have offered one number while
+                //   the maths used another the moment the config row went missing.
+                //   ONE reader of that key now: ServiceIntervalResolver::companyDefault().
+                'default_interval_km' => (new \App\Services\Riders\ServiceIntervalResolver())->companyDefault(),
             ]);
         } catch (\Throwable $e) {
             \Log::error('FleetFuel rider failed', [
@@ -270,6 +275,12 @@ class FleetFuelController extends Controller
             'meter_at_fill' => 'nullable|integer|min:0|max:9999999',
             'expense_date'  => 'nullable|date',
             'description'   => 'nullable|string|max:1000',
+            // ⭐⭐ D4 (owner ruling Aug-27): re-point a PENDING claim at the right
+            //   machine. A claim stamped to the wrong vehicle used to need hand-written
+            //   SQL to fix — that is what the Aug-22 van repair cost. An APPROVED claim
+            //   is still untouchable here (money is already in the ledger), which the
+            //   status guard below enforces for every field alike.
+            'vehicle_id'    => 'nullable|integer',
         ]);
 
         try {
@@ -323,6 +334,11 @@ class FleetFuelController extends Controller
                     'service_type'  => $serviceType,
                     'attendance_id' => $req->attendance_id,
                     'ignore_request_id' => $req->id,
+                    // ⭐ Judge the claim against the machine the editor is re-pointing it
+                    //   at, not the one it currently carries — otherwise the rules could
+                    //   approve one machine while the write below records another.
+                    'vehicle_id'    => $data['vehicle_id'] ?? ($req->vehicle_id ?? null),
+                    'meter_distance' => $req->meter_distance,
                 ],
                 (int) auth()->id()
             );
@@ -345,6 +361,18 @@ class FleetFuelController extends Controller
             $req->amount = $amount;
             $req->meter_at_fill = $meter;
             if ($date) { $req->expense_date = $date; }
+
+            // ⭐ D4 — the machine, when the editor named one and the column exists.
+            //   Written with a guarded UPDATE rather than through the model, because
+            //   `vehicle_id` is deliberately absent from $fillable (mass assignment
+            //   would silently drop it, and hard-fail before batch 13).
+            if (array_key_exists('vehicle_id', $data) && $data['vehicle_id']
+                && \Illuminate\Support\Facades\Schema::hasColumn('t_req_master', 'vehicle_id')) {
+                $before['vehicle_id'] = $req->vehicle_id ?? null;
+                \Illuminate\Support\Facades\DB::table('t_req_master')
+                    ->where('id', $req->id)
+                    ->update(['vehicle_id' => (int) $data['vehicle_id']]);
+            }
             if (array_key_exists('description', $data) && $data['description'] !== null) {
                 $req->description = $data['description'];
             }
@@ -363,6 +391,11 @@ class FleetFuelController extends Controller
                     'amount' => (float) $req->amount,
                     'meter_at_fill' => $req->meter_at_fill,
                     'expense_date' => $req->expense_date ? \Carbon\Carbon::parse($req->expense_date)->format('Y-m-d') : null,
+                    // Re-pointing a claim at another machine moves money between two
+                    // vehicles' running costs — it belongs in the audit line, not just
+                    // in the before-image.
+                    'vehicle_id' => array_key_exists('vehicle_id', $before)
+                        ? ($data['vehicle_id'] ?? null) : null,
                 ],
             ]);
 
@@ -739,8 +772,7 @@ class FleetFuelController extends Controller
             return response()->json(['success' => false, 'message' => 'Not authorised'], 403);
         }
         try {
-            $default = (int) (\DB::table('t_fin_config')
-                ->where('config_key', 'BIKE_SERVICE_INTERVAL_KM')->value('config_value') ?: 0);
+            $default = (new \App\Services\Riders\ServiceIntervalResolver())->companyDefault();
 
             $vehicles = [];
             $veh = new \App\Services\Riders\VehicleService();
@@ -1006,11 +1038,27 @@ class FleetFuelController extends Controller
             }
         }
 
+        // ⭐ Aug-27-2026: the banks an ONLINE approval can be attributed to. An
+        // approver switching a claim to a bank account has to say WHICH bank, or
+        // BankBalanceService never counts the movement and the per-bank split
+        // drifts. The month popup in Daily Closing approves from this payload and
+        // had no bank list to offer at all. Additive key; only built when the
+        // approver actually holds a bank source, since banks() computes balances.
+        $banks = [];
+        if (array_filter($accounts, fn ($a) => !empty($a['is_online']))) {
+            try {
+                $banks = app(\App\Services\FIN\PaymentSourceService::class)->banks();
+            } catch (\Throwable $e) {
+                \Log::warning('FleetFuel approval banks failed', ['error' => $e->getMessage()]);
+            }
+        }
+
         return [
             'can_approve' => !empty($levels),
             'levels'      => $levels,
             'read_only'   => (bool) $readOnly,
             'accounts'    => $accounts,
+            'banks'       => $banks,
         ];
     }
 

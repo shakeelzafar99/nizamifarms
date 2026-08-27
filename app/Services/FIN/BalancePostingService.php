@@ -69,6 +69,36 @@ class BalancePostingService
         $this->move($row, +1);
         $row->balance_updated = 1;
         $row->saveQuietly();
+        $this->warnIfBankUntagged($row);
+    }
+
+    /**
+     * ⭐ The net that catches any door we missed.
+     *
+     * A row that moves money on a bank-category account without naming WHICH bank
+     * is invisible to the per-bank balances (see BankAttributionService), and
+     * nothing downstream ever goes back and guesses. Every writer is supposed to
+     * ask for the bank now — but this engine is the ONE place every balance-moving
+     * row passes through, so a door that was missed, or one added later by someone
+     * who did not know the rule, shows up here by transaction_type instead of
+     * silently bleeding the split.
+     *
+     * ⚠ LOG ONLY, and swallowing everything. This runs inside live money
+     * transactions; a detector that can throw would turn a reporting gap into a
+     * failed payment. Search the log for "bank movement posted without naming a
+     * bank" to list what is still open.
+     */
+    private function warnIfBankUntagged(LedgerModel $row): void
+    {
+        try {
+            $problem = app(BankAttributionService::class)->untaggedMovement($row);
+            if ($problem) {
+                \Log::warning('Ledger: bank movement posted without naming a bank '
+                    . '(per-bank balances will not see it)', $problem);
+            }
+        } catch (\Throwable $e) {
+            // A diagnostic must never be able to break a posting.
+        }
     }
 
     /**

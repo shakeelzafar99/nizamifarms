@@ -319,6 +319,10 @@ Route::middleware(['auth'])->group(function () {
     // Which machine a claim would land on. ⚠ ABOVE '/vehicles/{id}' — otherwise
     // 'for-user' is read as a vehicle id (same trap as day-override).
     Route::get('/orders/riders-map/fleet/vehicles/for-user', [\App\Http\Controllers\CRM\VehicleController::class, 'forUser'])->name('orders.riders-map.fleet.vehicles.for-user');
+    // ⭐ What a rider actually rode on a date, per machine, with the kilometres and
+    //   whether they have already been claimed — the New-petrol modal's vehicle picker.
+    //   ⚠ ABOVE '/vehicles/{id}', same trap as for-user/day-override.
+    Route::get('/orders/riders-map/fleet/vehicles/petrol-context', [\App\Http\Controllers\CRM\VehicleController::class, 'petrolContext'])->name('orders.riders-map.fleet.vehicles.petrol-context');
     Route::post('/orders/riders-map/fleet/vehicles', [\App\Http\Controllers\CRM\VehicleController::class, 'save'])->name('orders.riders-map.fleet.vehicles.create');
     Route::delete('/orders/riders-map/fleet/vehicles/photo/{photoId}', [\App\Http\Controllers\CRM\VehicleController::class, 'deletePhoto'])->name('orders.riders-map.fleet.vehicles.photo-delete');
     Route::get('/orders/riders-map/fleet/vehicles/{id}', [\App\Http\Controllers\CRM\VehicleController::class, 'show'])->name('orders.riders-map.fleet.vehicles.show');
@@ -415,6 +419,32 @@ Route::middleware(['auth'])->group(function () {
     // touching any payment row. Used by the "✏️ Edit stamp" popover on
     // invoice.blade.
     Route::post('/orders/{id}/paid-stamp', [OrderController::class, 'updatePaidStamp'])->name('orders.paid-stamp.update');
+
+    // ---------------------------------------------------------------
+    // Customer credit ("account balance") — Aug-2026.
+    // Regular customers only; shops keep their own incremental payment flow.
+    // Literal segments after {orderId} so none of these can be swallowed by an
+    // /orders/{id} catch-all.
+    // ---------------------------------------------------------------
+    Route::get('/orders/{orderId}/credit-offer', [\App\Http\Controllers\CRM\CustomerCreditController::class, 'offerForOrder'])
+        ->whereNumber('orderId')->name('orders.credit.offer');
+    Route::post('/orders/{orderId}/credit/apply', [\App\Http\Controllers\CRM\CustomerCreditController::class, 'apply'])
+        ->whereNumber('orderId')->name('orders.credit.apply');
+    Route::post('/orders/{orderId}/credit/remove', [\App\Http\Controllers\CRM\CustomerCreditController::class, 'remove'])
+        ->whereNumber('orderId')->name('orders.credit.remove');
+
+    Route::get('/customer-credit/pending', [\App\Http\Controllers\CRM\CustomerCreditController::class, 'pending'])
+        ->name('customer-credit.pending');
+    Route::get('/customer-credit/{customerId}/summary', [\App\Http\Controllers\CRM\CustomerCreditController::class, 'summary'])
+        ->whereNumber('customerId')->name('customer-credit.summary');
+    Route::post('/customer-credit/{customerId}/grant', [\App\Http\Controllers\CRM\CustomerCreditController::class, 'grant'])
+        ->whereNumber('customerId')->name('customer-credit.grant');
+    Route::post('/customer-credit/{customerId}/zero-out', [\App\Http\Controllers\CRM\CustomerCreditController::class, 'zeroOut'])
+        ->whereNumber('customerId')->name('customer-credit.zero-out');
+    Route::post('/customer-credit/{creditId}/approve', [\App\Http\Controllers\CRM\CustomerCreditController::class, 'approve'])
+        ->whereNumber('creditId')->name('customer-credit.approve');
+    Route::post('/customer-credit/{creditId}/reject', [\App\Http\Controllers\CRM\CustomerCreditController::class, 'reject'])
+        ->whereNumber('creditId')->name('customer-credit.reject');
     // Operations import/broadcast endpoints — staff only (rider accounts blocked server-side).
     Route::post('/operations/rider-import', [\App\Http\Controllers\CRM\OperationsController::class, 'importRiderAssignments'])->name('operations.rider-import')->middleware('block.rider');
     Route::post('/operations/attendance-import', [\App\Http\Controllers\CRM\OperationsController::class, 'importAttendance'])->name('operations.attendance-import')->middleware('block.rider');
@@ -927,6 +957,15 @@ Route::middleware(['auth'])->group(function () {
     Route::post('/products/attributes/rename-category', [\App\Http\Controllers\CRM\ProductController::class, 'renameCategory'])->name('products.attributes.rename_category');
     Route::post('/products/attributes/get-products-by-rule', [\App\Http\Controllers\CRM\ProductController::class, 'getProductsByRule'])->name('products.attributes.get_products_by_rule');
     Route::post('/products/check-sku', [\App\Http\Controllers\CRM\ProductController::class, 'checkSku'])->name('products.check_sku');
+    // Category Level-1 sales vs purchases (Aug-2026).
+    // ⚠ Must stay ABOVE the /products/{id} catch-all below, or the word
+    //   "category-report" is swallowed as an order id and 404s.
+    Route::get('/products/category-report', [\App\Http\Controllers\CRM\CategoryReportController::class, 'index'])->name('products.category_report');
+    Route::get('/products/category-report/drill', [\App\Http\Controllers\CRM\CategoryReportController::class, 'drill'])->name('products.category_report.drill');
+    Route::get('/products/category-report/freezer-drill', [\App\Http\Controllers\CRM\CategoryReportController::class, 'freezerDrill'])->name('products.category_report.freezer_drill');
+    Route::get('/products/category-report/sales-drill', [\App\Http\Controllers\CRM\CategoryReportController::class, 'salesDrill'])->name('products.category_report.sales_drill');
+    Route::post('/products/category-report/tag', [\App\Http\Controllers\CRM\CategoryReportController::class, 'saveTag'])->name('products.category_report.tag');
+    Route::post('/products/category-report/visibility', [\App\Http\Controllers\CRM\CategoryReportController::class, 'saveVisibility'])->name('products.category_report.visibility');
     Route::get('/products/create', [\App\Http\Controllers\CRM\ProductController::class, 'create'])->name('products.create');
     Route::post('/products', [\App\Http\Controllers\CRM\ProductController::class, 'store'])->name('products.store');
     Route::get('/products/{id}', [\App\Http\Controllers\CRM\ProductController::class, 'show'])->name('products.show');
@@ -1046,6 +1085,23 @@ Route::middleware(['auth'])->group(function () {
     Route::get('/admin/payments/order/{orderId}/signals', [\App\Http\Controllers\FIN\PaymentSignalsController::class, 'forOrder'])
         ->whereNumber('orderId')
         ->name('payments.order-signals');
+
+    // Aug-2026 — Record a payment BY HAND (Shabib/Taimur only), and move any
+    // extra into the customer's account balance. Evidence-side only: these
+    // write payment SIGNALS, never order payments, so an undelivered order's
+    // invoicing is untouched (the prepayment case).
+    Route::post('/admin/payments/order/{orderId}/manual-proof', [\App\Http\Controllers\FIN\PaymentSignalsController::class, 'recordManualProof'])
+        ->whereNumber('orderId')->name('payments.manual-proof');
+    Route::get('/admin/payments/order/{orderId}/overpay', [\App\Http\Controllers\FIN\PaymentSignalsController::class, 'overpayInfo'])
+        ->whereNumber('orderId')->name('payments.overpay');
+    Route::post('/admin/payments/order/{orderId}/overpay-to-balance', [\App\Http\Controllers\FIN\PaymentSignalsController::class, 'overpayToBalance'])
+        ->whereNumber('orderId')->name('payments.overpay-to-balance');
+    Route::post('/admin/payments/order/{orderId}/overpay-to-tip', [\App\Http\Controllers\FIN\PaymentSignalsController::class, 'overpayToTip'])
+        ->whereNumber('orderId')->name('payments.overpay-to-tip');
+    // Literal path — declared before nothing that could swallow it; used after a
+    // BULK approval to ask about overpaid invoices in one round trip.
+    Route::post('/admin/payments/overpay-batch', [\App\Http\Controllers\FIN\PaymentSignalsController::class, 'overpayBatch'])
+        ->name('payments.overpay-batch');
 
     // Jun-2026 — Dismiss an auto-detected combined (bulk) payment for an order.
     Route::post('/admin/payments/order/{orderId}/uncombine', [\App\Http\Controllers\FIN\PaymentSignalsController::class, 'uncombine'])

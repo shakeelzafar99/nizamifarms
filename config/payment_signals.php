@@ -252,4 +252,26 @@ return [
     // Our own receiving-bank name variants → matched against the email/screenshot
     // "to" side to confirm the money actually came to Nizami Farms.
     'our_account_name_hints' => ['nizami', 'nizami farms'],
+
+    /*
+    |--------------------------------------------------------------------------
+    | Who may record a payment BY HAND
+    |--------------------------------------------------------------------------
+    | Owner ruling (Aug-2026): Shabib and Taimur only. A manual entry asserts
+    | that money arrived when no proof did, so it is deliberately narrower than
+    | the L1/L2 approval rights the rest of the payment screens use.
+    |
+    | Why an email list and not a role: Taimur has his own role, but Shabib
+    | shares the "Management" role with the generic admin login, so no role can
+    | express exactly these two people. The role check still runs alongside this
+    | (see PaymentSignalsController::canRecordManualPayment), so putting someone
+    | in a Taimur/Shabib role also works.
+    |
+    | Comma-separated. Case-insensitive. Change it here (or in .env) and run
+    | `php artisan config:clear` — no code deploy needed.
+    */
+    'manual_entry_emails' => env(
+        'PAYMENT_SIGNALS_MANUAL_ENTRY_EMAILS',
+        'taimur@nizamifarms.com,shabib@nizamifarms.com'
+    ),
 ];

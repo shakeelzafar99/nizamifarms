@@ -1405,6 +1405,9 @@ class WhatsAppController extends Controller
                 'customer_id' => 'nullable|integer',
                 'conversation_id' => 'nullable|integer',
                 'force' => 'nullable|boolean',
+                // Aug-2026: stamp send history without triggering the
+                // invoice-image attach that order_id implies.
+                'related_order_number' => 'nullable|string|max:50',
             ]);
 
             // Jul-2026: dial-resolve (known-number override; no-op for PK).
@@ -1493,7 +1496,11 @@ class WhatsAppController extends Controller
                 $user->id,
                 $templateName,
                 $bodyParams,
-                $force && $this->whatsapp->canOverrideMarketingDedup($user)
+                $force && $this->whatsapp->canOverrideMarketingDedup($user),
+                $this->whatsapp->resolveRelatedOrderNumber(
+                    $request->input('related_order_number'),
+                    $request->input('order_id')
+                )
             );
 
             return response()->json([

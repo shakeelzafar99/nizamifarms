@@ -11,6 +11,10 @@ class VendorProductModel extends Model
     protected $fillable = [
         'vendor_id',
         'product_name',
+        // Level-1 category (Chicken / Mutton / Beef ...) used by the
+        // Category Report to compare purchases against sales. Values come
+        // from t_crm_prod_product.attribute_1 so both sides line up.
+        'category_level_1',
         'unit',
         'rate_per_unit',
         'is_active',

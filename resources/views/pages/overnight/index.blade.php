@@ -406,6 +406,14 @@ function ovFmtQty(q) {
     return (Math.round(n * 1000) / 1000).toString();
 }
 
+/* Category names come from product data, so they are escaped before they are
+   ever put into markup. */
+function ovEsc(s) {
+    return String(s === null || s === undefined ? '' : s).replace(/[&<>"']/g, function (c) {
+        return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+    });
+}
+
 @if($activeTab === 'current')
 /* ───────────── Current tab: selection + bulk actions ───────────── */
 
@@ -668,13 +676,40 @@ function loadSummary() {
                             + '<span class="text-gray-400"> · ' + v.section + ' ' + v.item_count + ' @ ' + v.at_formatted + '</span>';
                     }).join('<br>');
                 }
+                // What kind of meat moved that day. The day totals above say HOW
+                // MUCH; this says OF WHAT — the question anyone comparing storage
+                // against sales actually asks. Rendered as its own row so the
+                // numbers above keep their exact layout.
+                var catRow = '';
+                if (d.categories && Object.keys(d.categories).length) {
+                    var bits = [];
+                    ['chiller', 'freezer'].forEach(function (sec) {
+                        var cats = d.categories[sec];
+                        if (!cats) { return; }
+                        Object.keys(cats).sort().forEach(function (cat) {
+                            var v = cats[cat], parts = [];
+                            if (v.in_kg > 0.004)  { parts.push('<span style="color:#15803D;">+' + ovFmtQty(v.in_kg) + '</span>'); }
+                            if (v.out_kg > 0.004) { parts.push('<span style="color:#B91C1C;">-' + ovFmtQty(v.out_kg) + '</span>'); }
+                            if (!parts.length) { return; }
+                            bits.push('<span style="display:inline-block; margin:0 10px 3px 0; white-space:nowrap;">'
+                                + '<span style="color:#6B7280;">' + (sec === 'freezer' ? '❄️' : '🧊') + ' ' + ovEsc(cat) + '</span> '
+                                + parts.join(' ') + ' <span style="color:#9CA3AF;">kg</span></span>');
+                        });
+                    });
+                    if (bits.length) {
+                        catRow = '<tr class="' + (d.has_activity ? '' : 'opacity-60') + '" style="background:#FAFAFA;">'
+                            + '<td></td><td colspan="4" class="px-4 pb-2 text-[11px]" style="border-top:0;">' + bits.join('') + '</td></tr>';
+                    }
+                }
+
                 return '<tr class="' + (d.has_activity ? '' : 'opacity-60') + ' hover:bg-gray-50">'
                     + '<td class="px-4 py-2.5 text-sm ' + (d.label === 'Today' ? 'font-bold text-sky-700' : 'font-medium text-gray-900') + ' whitespace-nowrap">' + d.label + '</td>'
                     + '<td class="px-4 py-2.5 text-right whitespace-nowrap"><span class="text-sm font-bold text-gray-900">' + d.chiller.closing_count + '</span> <span class="text-xs text-gray-500">items · ' + ovFmtQty(d.chiller.closing_kg) + ' kg</span></td>'
                     + '<td class="px-4 py-2.5 text-right whitespace-nowrap"><span class="text-sm font-bold text-gray-900">' + d.freezer.closing_count + '</span> <span class="text-xs text-gray-500">items · ' + ovFmtQty(d.freezer.closing_kg) + ' kg</span></td>'
                     + '<td class="px-4 py-2.5 text-[11px]">' + verifCell + '</td>'
                     + '<td class="px-4 py-2.5 text-xs">' + (act.length ? act.join(' &nbsp; ') : '<span class="text-gray-300">—</span>') + '</td>'
-                    + '</tr>';
+                    + '</tr>'
+                    + catRow;
             }).join('');
         })
         .catch(function () {

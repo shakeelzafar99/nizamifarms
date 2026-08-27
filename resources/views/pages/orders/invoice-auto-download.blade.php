@@ -461,10 +461,23 @@
                     <td class="label">Subtotal:</td>
                     <td class="amount">Rs.{{ number_format($order->lineItems->sum(function($item) { return $item->is_free ? 0 : ($item->line_total ?: ($item->quantity * $item->unit_price)); }), 0) }}</td>
                 </tr>
-                @if($order->discount_total && $order->discount_total > 0)
+                {{-- ⭐ Account balance is the customer's OWN money, never a discount.
+                     This template reads discount_total directly, so the balance is
+                     subtracted out here; the two lines still sum to the same figure. --}}
+                @php
+                    $__balanceUsed = $order->accountBalanceApplied();
+                    $__realDiscount = round((float) ($order->discount_total ?? 0) - $__balanceUsed, 2);
+                @endphp
+                @if($__realDiscount > 0)
                 <tr>
                     <td class="label">Discount:</td>
-                    <td class="amount">-Rs.{{ number_format($order->discount_total, 0) }}</td>
+                    <td class="amount">-Rs.{{ number_format($__realDiscount, 0) }}</td>
+                </tr>
+                @endif
+                @if($__balanceUsed > 0)
+                <tr>
+                    <td class="label">Account balance used:</td>
+                    <td class="amount">-Rs.{{ number_format($__balanceUsed, 0) }}</td>
                 </tr>
                 @endif
                 @php

@@ -148,6 +148,18 @@ class FuelClaimRules
             if ($bad !== null) return $this->fail($bad);
         }
 
+        // ── 3b. METERED (per-km) petrol — the kilometres must be HIS OWN ───────
+        // The mirror image of rule 3, and the one guard the metered path never had.
+        if ($category === 'Petrol' && $isMetered) {
+            return $this->checkMeteredPetrol(
+                $forUserId, $claimDate,
+                $input['meter_distance'] ?? null,
+                (int) $input['attendance_id'],
+                $this->intOrNull($input['vehicle_id'] ?? null),
+                $this->intOrNull($input['ignore_request_id'] ?? null)
+            );
+        }
+
         // ── 3. Flat-cash petrol guards ─────────────────────────────────────────
         // `ignore_request_id` = the row being EDITED. Without it a manager saving
         // a correction to an existing claim would be told he had just filed a
@@ -162,6 +174,183 @@ class FuelClaimRules
         }
 
         return $this->pass();
+    }
+
+    /** Distances are metered integers rounded to 0.1 — anything inside this is the same number. */
+    const KM_MATCH_TOLERANCE = 1.0;
+
+    /**
+     * ⭐⭐ THE PER-KM CLAIM MUST NAME KILOMETRES THE RIDER ACTUALLY OWNS (Aug-27 2026).
+     *
+     * ⚠⚠ THE HOLE THIS CLOSES — it is live money, and nothing guarded it. Every
+     *    company-bike rule in `check()` short-circuits on `$isMetered`, and the endpoint's
+     *    own guards only covered the window, the duplicate and the split day. So on a day
+     *    a rider's attendance meters held the VAN's odometer, the server happily computed
+     *    the van's distance, the app rendered "167 km × Rs 9.5 = Rs 1,586.5", and one tap
+     *    would have paid a per-km allowance for kilometres the firm had ALREADY fuelled
+     *    with Rs 2–3,000 cash fills. Two payments, same kilometres.
+     *
+     * ⭐ The scheme itself is the reason: per-km exists to reimburse a man for fuel HE
+     *   buys. On a company machine the company buys it, so there is nothing to reimburse.
+     *
+     * ⭐ AND THE SAME CHECK RESTORES WHAT WAS BROKEN. Because it judges per MACHINE rather
+     *   than per DAY, a mixed day stops being refused outright: the van's kilometres are
+     *   declined and his own bike's are paid — which is the whole point of the change.
+     *
+     * ⚠ FAIL-OPEN. When the legs builder has no opinion (no registry, no readings, an
+     *   error) this passes exactly as before. It only ever refuses on positive evidence.
+     *
+     * @return array{ok:bool, message:?string, notice:?string, vehicle_id:?int, km:?float}
+     */
+    public function checkMeteredPetrol(int $forUserId, ?string $expenseDate, $km,
+                                       ?int $attendanceId, ?int $vehicleId = null,
+                                       ?int $ignoreRequestId = null): array
+    {
+        $date = $this->dateOf($expenseDate);
+        $km   = ($km === null || $km === '') ? null : (float) $km;
+
+        // ⚠ THE DUPLICATE CHECK IS NOT PART OF THE NEW RULE and must survive every one of
+        //   the fall-throughs below — it is the long-standing "one petrol claim per day"
+        //   guard, simply made machine-aware. Losing it behind the new logic would open a
+        //   far worse hole than the one being closed.
+        $dupe = fn (?int $vid, ?string $label) => $this->meteredDuplicate(
+            $forUserId, $attendanceId, $vid, $ignoreRequestId, $label, $date
+        );
+
+        // Rollback lever, same shape as its siblings: an absent row means ON.
+        if (strtoupper((string) $this->cfg('METERED_COMPANY_GUARD', 'Y')) !== 'Y') {
+            if ($msg = $dupe($vehicleId, null)) return $this->failWith($msg);
+            return $this->passWith($vehicleId, $km);
+        }
+
+        try {
+            $legs = (new RiderDayLegs())->forDay($forUserId, $date);
+        } catch (\Throwable $e) {
+            $legs = [];
+        }
+        if (!$legs) {                                          // no opinion → as before
+            if ($msg = $dupe($vehicleId, null)) return $this->failWith($msg);
+            return $this->passWith($vehicleId, $km);
+        }
+
+        // ── which machine is this claim for? ───────────────────────────────────
+        $leg = null;
+        if ($vehicleId) {
+            $leg = RiderDayLegs::forVehicle($legs, $vehicleId);
+            if (!$leg) {
+                return $this->failWith('There are no meter readings for that vehicle on '
+                    . $date . ', so there is nothing to claim against it.');
+            }
+        } else {
+            $claimable = RiderDayLegs::claimable($legs);
+            if (count($claimable) === 1) {
+                $leg = $claimable[0];
+            } elseif (count($claimable) > 1) {
+                // More than one own machine that day — the amount decides, or the
+                // caller must say which. Never guess when money is involved.
+                $matches = $km === null ? [] : array_values(array_filter(
+                    $claimable,
+                    fn ($l) => abs((float) $l['km'] - $km) <= self::KM_MATCH_TOLERANCE
+                ));
+                if (count($matches) !== 1) {
+                    return $this->failWith('You rode more than one of your own vehicles that '
+                        . 'day. Please choose which one this petrol claim is for.');
+                }
+                $leg = $matches[0];
+            } else {
+                // Nothing claimable. If the day's kilometres are the company's, say so —
+                // that is the double-payment case and the rider deserves the reason.
+                if (RiderDayLegs::hasCompany($legs)) {
+                    return $this->failWith($this->companyKmMessage($legs));
+                }
+                return $this->failWith('No distance is recorded on your own vehicle for '
+                    . $date . ', so there is nothing to claim. If you did ride it, add that '
+                    . 'day\'s meter readings first.');
+            }
+        }
+
+        if (!empty($leg['is_company'])) {
+            return $this->failWith($this->companyKmMessage($legs, $leg));
+        }
+        if (($leg['km'] ?? 0) <= 0) {
+            return $this->failWith('No distance is recorded on ' . $leg['label'] . ' for '
+                . $date . ', so there is nothing to claim for it.');
+        }
+
+        // ── the amount must be the kilometres actually recorded ────────────────
+        // A phone holding yesterday's screen can still post the old figure; the server,
+        // not the screen, is the guarantee (the same reasoning as the split-day guard
+        // this replaces).
+        if ($km !== null && abs((float) $leg['km'] - $km) > self::KM_MATCH_TOLERANCE) {
+            return $this->failWith('That day now reads ' . rtrim(rtrim(number_format((float) $leg['km'], 1, '.', ''), '0'), '.')
+                . ' km on ' . $leg['label'] . ', not ' . rtrim(rtrim(number_format($km, 1, '.', ''), '0'), '.')
+                . ' km. Please refresh the screen and send it again.');
+        }
+
+        if ($msg = $dupe((int) $leg['vehicle_id'], $leg['label'])) return $this->failWith($msg);
+
+        return $this->passWith((int) $leg['vehicle_id'], (float) $leg['km']);
+    }
+
+    /**
+     * One metered petrol claim per rider per attendance day PER MACHINE.
+     *
+     * ⚠ An UNSTAMPED existing claim blocks every machine, deliberately: it is a claim for
+     *   that day whose machine nobody recorded, so a second one beside it could be paying
+     *   the same kilometres twice. Conservative by design, and it costs nothing going
+     *   forward — every claim written from here on carries its machine.
+     *
+     * @param  ?int $vehicleId  null = "any machine", the pre-registry behaviour
+     * @return ?string  the refusal message, or null when there is no duplicate
+     */
+    private function meteredDuplicate(int $forUserId, ?int $attendanceId, ?int $vehicleId,
+                                      ?int $ignoreRequestId, ?string $label, string $date): ?string
+    {
+        if (!$attendanceId) return null;
+        try {
+            $hit = DB::table('t_req_master')
+                ->where('requester_user_id', $forUserId)
+                ->where('expense_category', 'Petrol')
+                ->where('attendance_id', $attendanceId)
+                ->whereNotIn('status', ['cancelled', 'rejected'])
+                ->when($ignoreRequestId, fn ($q) => $q->where('id', '!=', $ignoreRequestId))
+                ->when($vehicleId && \Illuminate\Support\Facades\Schema::hasColumn('t_req_master', 'vehicle_id'),
+                    fn ($q) => $q->where(function ($w) use ($vehicleId) {
+                        $w->whereNull('vehicle_id')->orWhere('vehicle_id', (int) $vehicleId);
+                    }))
+                ->exists();
+            if (!$hit) return null;
+            return $label
+                ? ('A petrol request has already been submitted for ' . $label . ' on ' . $date . '.')
+                : 'A petrol request has already been submitted for this day.';
+        } catch (\Throwable $e) {
+            return null;                       // never block a claim on a read failure
+        }
+    }
+
+    /** Name the machine and the reason, so nobody has to guess why a claim was refused. */
+    private function companyKmMessage(array $legs, ?array $leg = null): string
+    {
+        $company = $leg ?: null;
+        if (!$company) {
+            foreach ($legs as $l) { if (!empty($l['is_company'])) { $company = $l; break; } }
+        }
+        $name = $company['label'] ?? 'that vehicle';
+        return 'Those kilometres are on ' . $name . ', and the company buys its fuel — so '
+            . 'there is no per-kilometre claim for them. Only your own vehicle\'s kilometres '
+            . 'can be claimed here.';
+    }
+
+    private function passWith(?int $vehicleId, ?float $km): array
+    {
+        return ['ok' => true, 'message' => null, 'notice' => null,
+                'vehicle_id' => $vehicleId, 'km' => $km];
+    }
+
+    private function failWith(string $message): array
+    {
+        return ['ok' => false, 'message' => $message, 'notice' => null,
+                'vehicle_id' => null, 'km' => null];
     }
 
     /**
@@ -216,7 +405,12 @@ class FuelClaimRules
                 ->whereNotIn('status', ['cancelled', 'rejected'])
                 // The row being edited is not a duplicate of itself.
                 ->when($ignoreRequestId, fn ($q) => $q->where('id', '!=', $ignoreRequestId))
-                ->get(['id', 'amount', 'attendance_id', 'created_at']);
+                // ⚠ `vehicle_id` is selected DEFENSIVELY — the notice below names the
+                //   machine, and reading an unselected column is an undefined-property
+                //   warning, not a null. Absent before batch 13, hence the guard.
+                ->get(array_merge(['id', 'amount', 'attendance_id', 'created_at'],
+                    \Illuminate\Support\Facades\Schema::hasColumn('t_req_master', 'vehicle_id')
+                        ? ['vehicle_id'] : []));
         } catch (\Throwable $e) {
             return $this->pass();          // never block a claim on a read failure
         }
@@ -232,7 +426,26 @@ class FuelClaimRules
 
         $meteredToday = $sameDay->first(fn ($x) => $x->attendance_id !== null);
         if ($meteredToday) {
-            return $this->pass('Cash claim on a day already paid by meter reading (request #' . $meteredToday->id . ').');
+            // ⚠⚠ THIS NOTICE MUST NOT IMPLY A DUPLICATE ON A MIXED DAY (Aug-27 2026).
+            //
+            // It used to read "a day already paid by meter reading", which was true when a
+            // rider had one machine. Now that his own bike's kilometres are paid per-km
+            // WHILE the company van's fuel is bought with cash, the two claims coincide by
+            // design and are different money. An approver reading "already paid" would
+            // reject a legitimate van fill. So name the machine the meter claim was for
+            // and let him check, rather than asserting a duplicate that is not one.
+            $label = null;
+            try {
+                if (!empty($meteredToday->vehicle_id ?? null)) {
+                    $label = (new VehicleResolver())->labelFor((int) $meteredToday->vehicle_id);
+                }
+            } catch (\Throwable $e) { $label = null; }
+
+            return $this->pass($label
+                ? ('There is also a per-kilometre claim for ' . $label . ' that day (request #'
+                   . $meteredToday->id . ') — check this cash claim is for a different vehicle.')
+                : ('Cash claim on a day that also has a per-kilometre claim (request #'
+                   . $meteredToday->id . ').'));
         }
         if ($sameDay->count() > 0) {
             return $this->pass('This is petrol cash claim #' . ($sameDay->count() + 1) . ' for ' . $claimDate . '.');

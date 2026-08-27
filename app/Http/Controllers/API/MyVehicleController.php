@@ -4,12 +4,14 @@ namespace App\Http\Controllers\API;
 
 use App\Http\Controllers\Controller;
 use App\Services\Riders\FleetFuelService;
+use App\Services\Riders\RiderDayLegs;
 use App\Services\Riders\VehicleResolver;
 use App\Services\Riders\VehicleService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Schema;
 use Carbon\Carbon;
 
 /**
@@ -125,6 +127,123 @@ class MyVehicleController extends Controller
         } catch (\Throwable $e) {
             Log::error('MyVehicle failed', ['user' => $request->user()->id ?? null, 'error' => $e->getMessage()]);
             return response()->json(['success' => false, 'message' => 'Could not load your vehicle'], 500);
+        }
+    }
+
+    /**
+     * ⭐⭐ "ADD MY OWN BIKE'S METER" — the rider's own door into the machine meter log
+     *    (owner ruling q2, Aug-27 2026).
+     *
+     * WHY A RIDER NEEDS ONE AT ALL. He has exactly ONE meter pair per day, on his
+     * attendance row, and on a day he is holding the company van those two slots are the
+     * VAN's. His own bike's kilometres — the ones he is actually owed money for — then
+     * have nowhere to go, and until now the only way to record them was to ask a manager
+     * to type them on the Vehicles page. That is a daily dependency on somebody else for
+     * a man's own wages.
+     *
+     * ⭐⭐ ONE WRITER, ON THE OWNER'S EXPLICIT INSTRUCTION: this goes through
+     *    `VehicleService::saveMeterLog`, the SAME method the Vehicles page now calls. The
+     *    two surfaces cannot drift, because there is only one of them.
+     *
+     * ⚠ THE GATES ARE NARROW AND EACH ONE IS LOAD-BEARING:
+     *    • HIS OWN machine only (`ownMachineIdsFor`) — never a company vehicle, whose
+     *      fuel the firm buys and whose odometer is not his to write;
+     *    • today or inside the petrol window, never the future — a forward-dated reading
+     *      plants a point in the chain no real reading can ever match;
+     *    • plausible for that machine (Rule P), so a typo cannot become its whole spine;
+     *    • he may only touch a row HE entered. A manager's row is read-only to him —
+     *      otherwise the man being checked could quietly rewrite the check.
+     */
+    public function saveMeter(Request $request, VehicleService $veh)
+    {
+        $user = $request->user();
+        if (!$user) {
+            return response()->json(['success' => false, 'message' => 'Not authorised'], 401);
+        }
+
+        $data = $request->validate([
+            'vehicle_id'  => 'required|integer',
+            'date'        => 'required|date|before_or_equal:today',
+            'meter_start' => 'nullable|integer|min:0|max:9999999',
+            'meter_end'   => 'nullable|integer|min:0|max:9999999',
+            'note'        => 'nullable|string|max:255',
+        ]);
+
+        $uid  = (int) $user->id;
+        $vid  = (int) $data['vehicle_id'];
+        $date = Carbon::parse($data['date'])->format('Y-m-d');
+
+        try {
+            if (!$veh->available() || !Schema::hasTable(VehicleService::T_METER_LOG)) {
+                return response()->json(['success' => false,
+                    'message' => 'Meter logging is not available yet.'], 422);
+            }
+
+            // 1. his own machine, and nothing else
+            $own = (new RiderDayLegs())->ownMachineIdsFor($uid);
+            if (!in_array($vid, array_map('intval', $own), true)) {
+                return response()->json(['success' => false,
+                    'message' => 'You can only record the meter for your own vehicle.'], 403);
+            }
+
+            // 2. inside the window a claim could still be made for
+            $window = (int) (DB::table('t_fin_config')
+                ->where('config_key', 'PETROL_WINDOW_DAYS')->value('config_value') ?: 5);
+            if ($window < 1) { $window = 5; }
+            if ($date < Carbon::today()->subDays($window)->format('Y-m-d')) {
+                return response()->json(['success' => false,
+                    'message' => "Meter readings can only be added for the last {$window} days. "
+                        . 'Ask your manager to record an older day.'], 422);
+            }
+
+            $start = $request->filled('meter_start') ? (int) $data['meter_start'] : null;
+            $end   = $request->filled('meter_end')   ? (int) $data['meter_end']   : null;
+            if ($start === null && $end === null) {
+                return response()->json(['success' => false,
+                    'message' => 'Enter at least one reading.'], 422);
+            }
+            if ($start !== null && $end !== null && $end < $start) {
+                return response()->json(['success' => false,
+                    'message' => 'The closing reading cannot be lower than the starting one.'], 422);
+            }
+
+            // 3. it has to be believable for THAT machine
+            foreach (array_filter([$start, $end], fn ($v) => $v !== null) as $val) {
+                if (!$veh->readingPlausibleFor($vid, (int) $val)) {
+                    return response()->json(['success' => false,
+                        'message' => 'That reading does not look like this vehicle\'s odometer. '
+                            . 'Please check the number.'], 422);
+                }
+            }
+
+            // 4. never overwrite somebody else's entry
+            $existing = DB::table(VehicleService::T_METER_LOG)
+                ->where('vehicle_id', $vid)->where('log_date', $date)->first();
+            if ($existing && (int) ($existing->entered_by ?? 0) !== $uid) {
+                return response()->json(['success' => false,
+                    'message' => 'Your manager already recorded this vehicle for that day. '
+                        . 'Ask him to change it if it is wrong.'], 422);
+            }
+
+            $saved = $veh->saveMeterLog($vid, $date, $start, $end, $uid, $data['note'] ?? null, $uid);
+            if (!$saved['ok']) {
+                return response()->json(['success' => false, 'message' => $saved['message']], 422);
+            }
+
+            Log::info('Rider recorded his own vehicle meter', [
+                'user_id' => $uid, 'vehicle_id' => $vid, 'date' => $date,
+                'start' => $start, 'end' => $end, 'action' => $saved['action'],
+            ]);
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Meter saved.',
+                'action'  => $saved['action'],
+                'date'    => $date,
+            ]);
+        } catch (\Throwable $e) {
+            Log::error('MyVehicle saveMeter failed', ['user' => $uid, 'error' => $e->getMessage()]);
+            return response()->json(['success' => false, 'message' => 'Could not save that reading'], 500);
         }
     }
 

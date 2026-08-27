@@ -1046,7 +1046,7 @@ class FleetFuelService
         //   the vehicle card, and two literals (this was 3000) would make the chip
         //   and the card disagree by 1,800 km on the day the config row ever goes
         //   missing. The config row exists on prod, so today this changes nothing.
-        $default  = (int) $this->cfg('BIKE_SERVICE_INTERVAL_KM', 1200);
+        $default  = (new ServiceIntervalResolver())->companyDefault();
 
         // ⭐ Aug-2026: the schedule follows THE WORK LAST DONE. If the bike had the
         // 2,500 km oil+tuning, it is due in 2,500 — not in whatever the bike's
@@ -1134,7 +1134,12 @@ class FleetFuelService
                 // fall through to the profile math — a chip must never break the sheet
             }
 
-            $interval = (int) (($lastTypeInterval[$uid] ?? 0) ?: ($p->service_interval_km ?: $default));
+            // ⭐ The shared chain (Aug-27 2026) — the rider-keyed fallback for someone the
+            //   registry cannot place. Same order as every other surface: the job's own
+            //   schedule, then the bike's, then his, then the company default.
+            $interval = (new ServiceIntervalResolver())->intervalFor(
+                null, (int) ($lastTypeInterval[$uid] ?? 0), $uid
+            );
             $last     = $p->last_service_meter !== null ? (int) $p->last_service_meter : null;
 
             // ⚠ Both legacy branches carry `due_type_name`/`vehicle_id` as null so the
@@ -1156,7 +1161,7 @@ class FleetFuelService
             $since = $now - $last;
             $dueIn = $interval - $since;
             $out[$uid] = [
-                'state'         => $dueIn < 0 ? 'overdue' : ($dueIn <= 150 ? 'due_soon' : 'ok'),
+                'state'         => ServiceIntervalResolver::stateFor($dueIn),
                 'interval_km'   => $interval,
                 'current_meter' => $now,
                 'last_service_meter' => $last,
@@ -1506,27 +1511,37 @@ class FleetFuelService
 
             $now = $this->currentMeters([$userId])[$userId] ?? null;
 
+            // ⭐ The shared resolver (Aug-27 2026). This rider-keyed fallback read the raw
+            //   type interval only, so it could not see ANY override and disagreed with
+            //   the machine-keyed panel for the same rider on the same day.
+            $resolver = new ServiceIntervalResolver();
+
             $out = [];
             foreach ($types as $t) {
                 $l    = $last->get($t->id);
                 $lastM = $l ? (int) $l->m : null;
+                $explained = $resolver->explain(null, (int) $t->interval_km, $userId);
+                $interval  = (int) $explained['km'];
                 // due_in is only meaningful when we know BOTH where the bike is now
                 // and when this job was last done. Anything else stays null rather
                 // than inventing a countdown from a made-up reference point.
                 $dueIn = ($lastM !== null && $now !== null)
-                    ? (int) $t->interval_km - ($now - $lastM) : null;
+                    ? $interval - ($now - $lastM) : null;
 
                 $out[] = [
                     'id'          => (int) $t->id,
                     'name'        => $t->type_name,
                     'bucket'      => $t->bucket,
-                    'interval_km' => (int) $t->interval_km,
+                    'interval_km' => $interval,
+                    'type_interval_km'      => (int) $t->interval_km,
+                    'interval_overridden'   => !$explained['from_type'],
+                    'interval_source'       => $explained['source'],
+                    'interval_source_label' => ServiceIntervalResolver::sourceLabel($explained),
                     'last_meter'  => $lastM,
                     'last_at'     => $l->d ?? null,
-                    'due_at_km'   => $lastM !== null ? $lastM + (int) $t->interval_km : null,
+                    'due_at_km'   => $lastM !== null ? $lastM + $interval : null,
                     'due_in_km'   => $dueIn,
-                    'state'       => $dueIn === null ? 'unknown'
-                                    : ($dueIn < 0 ? 'overdue' : ($dueIn <= 150 ? 'due_soon' : 'ok')),
+                    'state'       => ServiceIntervalResolver::stateFor($dueIn),
                 ];
             }
             return $out;
@@ -1882,17 +1897,21 @@ class FleetFuelService
         // ⚠ 1200, matching serviceState() and VehicleService. This was 3000 — the
         //   same two-literals-for-one-rule trap already fixed in serviceState, left
         //   behind here. The config row exists on prod, so today this changes nothing.
-        $default = (int) $this->cfg('BIKE_SERVICE_INTERVAL_KM', 1200);
+        $default = (new ServiceIntervalResolver())->companyDefault();
 
-        // The schedule this particular job is judged against: its own type first,
-        // then the rider's override, then the company default — the precedence
-        // `stampServiceDueKm` used when it froze `service_due_km`.
-        $intervalFor = function ($r) use ($types, $p, $default): int {
+        // The schedule this particular job is judged against.
+        // ⭐ Aug-27 2026: the SHARED resolver, so the "serviced N km early" flag is
+        //   measured against the very interval the screens show and `stampServiceDueKm`
+        //   freezes. This block used to hand-roll `type → rider → config` and, like its
+        //   twin in the clock, never saw the machine's own schedule at all.
+        $resolver = new ServiceIntervalResolver();
+        $intervalFor = function ($r) use ($types, $resolver, $userId): int {
             $t = $types->find($r->maintenance_type_id ?? null);
-            if ($t && (int) $t->interval_km > 0) return (int) $t->interval_km;
-            $ovr = (int) ($p->service_interval_km ?? 0);
-            if ($ovr > 0) return $ovr;
-            return $default;
+            return $resolver->intervalFor(
+                isset($r->vehicle_id) && $r->vehicle_id ? (int) $r->vehicle_id : null,
+                $t ? (int) $t->interval_km : null,
+                $userId
+            );
         };
 
         // ⭐ The machine, where the registry can place the claim. Gated on the same

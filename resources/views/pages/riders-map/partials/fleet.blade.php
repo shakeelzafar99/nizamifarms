@@ -667,6 +667,21 @@
         <div id="flNewWhichBike" style="display:none;font-size:11.5px;color:#0f766e;margin-top:4px;"></div>
       </div>
 
+      {{-- ⭐⭐ WHICH VEHICLE — the picker (Aug-27 2026).
+           A rider can put kilometres on TWO machines in one day: he arrives on his own
+           bike and takes the van out mid-shift. The form named one machine and offered
+           no choice, so his own bike's kilometres — the ones he is actually owed for —
+           could not be filed from here at all. Each chip is a machine he really rode
+           that date, with its distance and whether it has already been claimed, served
+           from the SAME engine the rider's phone reads. --}}
+      <div id="flNewVehWrap" style="display:none;">
+        <label style="display:block;font-size:11.5px;font-weight:700;color:#374151;margin-bottom:4px;">
+          Which vehicle <span style="font-weight:500;color:#6b7280;">— what he rode that day</span>
+        </label>
+        <div id="flNewVehChips" style="display:flex;flex-wrap:wrap;gap:6px;"></div>
+        <div id="flNewVehNote" style="font-size:11.5px;margin-top:6px;line-height:1.5;"></div>
+      </div>
+
       {{-- ⭐ WHAT IS ALREADY ON RECORD FOR THIS BIKE (owner ask, Aug-16).
            "So they know what they are entering and what is already there, when, and
            by whom." Maintenance only — a petrol claim has its own since-last-fill
@@ -1254,8 +1269,14 @@ function flRenderDetail(r) {
                 : (s.due_in_km < 0
                     ? '<b style="color:' + tone + '">' + flNum(Math.abs(s.due_in_km)) + ' km overdue</b>'
                     : '<b style="color:' + tone + '">' + flNum(s.due_in_km) + ' km left</b>');
+            // ⭐ Say WHERE the interval came from when it is NOT the job's own schedule.
+            //   The server has always sent this and nothing rendered it — which is how a
+            //   number could differ from the one in the prompt with nothing explaining it.
+            const src = (s.interval_overridden && s.interval_source_label)
+                ? ' <span style="color:#b45309;" title="This number is not the job\'s own schedule">('
+                  + flEsc(s.interval_source_label) + ')</span>' : '';
             return '<div class="fl-svc"><span>' + flEsc(s.name) +
-                   ' <span style="color:#9ca3af;">· every ' + flNum(s.interval_km) + ' km</span></span>' +
+                   ' <span style="color:#9ca3af;">· every ' + flNum(s.interval_km) + ' km</span>' + src + '</span>' +
                    '<span>' + right +
                    (s.last_meter !== null ? ' <span style="color:#9ca3af;">· last ' + flNum(s.last_meter) + ' km</span>' : '') +
                    '</span></div>';
@@ -1746,13 +1767,31 @@ function flMarkServiced(uid, suggested) {
     // overdue oil change look done.
     // "As conditions" types (Chain Set, Misc) are absent on purpose: nothing to
     // count down to, so file those as a maintenance request with the bill.
-    const schedTypes = ((flData && flData.maint_types) || []).filter(t => t.interval_km > 0);
+    // ⭐⭐ THE EFFECTIVE SCHEDULE, NOT THE RAW TYPE LIST (Aug-27 2026).
+    //
+    // ⚠⚠ This read `flData.maint_types` — the raw type rows, with NO vehicle in scope —
+    //    so it could only ever print a type's standard interval. Standing beside a panel
+    //    that printed the bike's effective one, it produced the contradiction a manager
+    //    reported: "Oil + Tuning every 1,200 km" in the schedule and "(every 2,000 km)"
+    //    in this very prompt, on the same screen. The loaded rider already carries the
+    //    resolved rows; use them, and fall back to the raw list only when he is not the
+    //    rider on screen (nothing else to go on, and a wrong-but-labelled number beats
+    //    no prompt at all).
+    const fromRider = (flRider && flRider.user_id === uid && Array.isArray(flRider.service_schedule))
+        ? flRider.service_schedule : null;
+    const schedTypes = (fromRider || (flData && flData.maint_types) || [])
+        .filter(t => t.interval_km > 0);
     let typeId = null;
 
     if (schedTypes.length > 1) {
+        // ⭐ "own schedule only" described what the flag does NOT do, and read as "this
+        //   job is not really scheduled". Say what it DOES: only the clock-resetting job
+        //   refreshes the bike's overall service.
         const lines = schedTypes.map((t, i) =>
-            (i + 1) + '. ' + t.name + ' (every ' + flNum(t.interval_km) + ' km)' +
-            (t.resets_service_clock ? '' : ' — own schedule only')).join('\n');
+            (i + 1) + '. ' + t.name + ' (every ' + flNum(t.interval_km) + ' km' +
+            (t.interval_overridden && t.interval_source_label
+                ? ' — ' + t.interval_source_label : '') + ')' +
+            ((t.resets_clock || t.resets_service_clock) ? ' — also resets the bike\'s overall service' : '')).join('\n');
         const pick = window.prompt('Which service was done?\n\n' + lines, '1');
         if (pick === null) return;
         const idx = parseInt(pick, 10) - 1;
@@ -1763,9 +1802,14 @@ function flMarkServiced(uid, suggested) {
     }
 
     const chosen = schedTypes.find(t => t.id === typeId);
+    // ⚠ `due_label` exists only on the raw type rows and is the TYPE's standard schedule.
+    //   When the effective rows are in hand, state the interval this bike actually runs.
+    const chosenDue = chosen
+        ? (chosen.due_label || ('every ' + flNum(chosen.interval_km) + ' km'))
+        : null;
     const v = window.prompt(
         'Odometer reading at this service (km):' +
-        (chosen ? '\n\n' + chosen.name + ' — next due ' + chosen.due_label + '.' : '') +
+        (chosen ? '\n\n' + chosen.name + ' — next due ' + chosenDue + '.' : '') +
         '\n\nThis records that the service was done and resets the due date.',
         suggested || '');
     if (v === null) return;
@@ -1829,6 +1873,13 @@ function flOpenNew(cat) {
     document.getElementById('flNewEditNote').style.display = 'none';
     document.getElementById('flNewRider').disabled = false;
     document.getElementById('flNewSubmit').textContent = 'Create request';
+    // ⚠ The vehicle picker is per rider+date, so it must not survive a reopen — a
+    //   stale selection would file the previous rider's machine.
+    flNewCtx = null; flNewVehId = null; flNewMetered = false;
+    document.getElementById('flNewVehWrap').style.display = 'none';
+    document.getElementById('flNewAmount').readOnly = false;
+    document.getElementById('flNewAmount').style.background = '#fff';
+    document.getElementById('flNewMeterWrap').style.display = '';
 
     flNewCat = cat;
     const isPetrol = cat === 'Petrol';
@@ -1960,6 +2011,12 @@ function flOpenEdit(claimId) {
     if (!claim) { alert('Could not find that claim — refresh and try again.'); return; }
 
     flEditId = claimId;
+    // ⚠ Reset the picker before anything reads it — the modal is shared, and a
+    //   selection left over from a previous claim would re-stamp this one.
+    flNewCtx = null; flNewVehId = null; flNewMetered = false;
+    document.getElementById('flNewAmount').readOnly = false;
+    document.getElementById('flNewAmount').style.background = '#fff';
+    document.getElementById('flNewMeterWrap').style.display = '';
     flNewCat = claim.kind === 'fuel' ? 'Petrol' : 'Maintenance';
     const isPetrol = flNewCat === 'Petrol';
 
@@ -1995,7 +2052,8 @@ function flOpenEdit(claimId) {
     document.getElementById('flNewBankWrap').style.display = 'none';
 
     const note = document.getElementById('flNewEditNote');
-    note.textContent = 'Correcting claim #' + claimId + ' before approval. The rider keeps the claim; only these details change.';
+    note.textContent = 'Correcting claim #' + claimId + ' before approval. The rider keeps the claim; '
+        + 'only these details change. Pick a vehicle below only if this claim is on the wrong one.';
     note.style.display = 'block';
 
     document.getElementById('flNewSubmit').textContent = 'Save changes';
@@ -2018,6 +2076,9 @@ function flSubmitEdit() {
 
     const body = {amount: amount, expense_date: date, description: note};
     if (meter !== '') body.meter_at_fill = parseInt(meter, 10);
+    // ⭐ D4 — only when the editor actually picked a machine. Sending nothing leaves the
+    //   existing stamp alone, which is what an ordinary amount/date correction wants.
+    if (flNewVehId) body.vehicle_id = flNewVehId;
     if (flNewCat === 'Maintenance' && svc.indexOf('type:') === 0) {
         body.maintenance_type_id = parseInt(svc.slice(5), 10);
     }
@@ -2077,11 +2138,161 @@ function flNewRiderChanged() {
  * a label is never worth breaking a form over.
  */
 let flNewBikeSeq = 0;
+
+/* ⭐⭐ THE DAY'S MACHINES — state for the picker.
+   flNewCtx     = the petrol-context response (machines, km, existing claims)
+   flNewVehId   = the machine the manager picked, null = let the server decide
+   flNewMetered = this will be filed as a PER-KM claim (own bike, real distance,
+                  a rate to price it) rather than a flat cash one. */
+let flNewCtx = null, flNewVehId = null, flNewMetered = false, flNewCtxSeq = 0;
+
+/**
+ * ⭐⭐ WHAT HE ACTUALLY RODE THAT DAY (Aug-27 2026).
+ *
+ * Petrol only, and only ever ADDITIVE to the line above: on an ordinary single-machine
+ * day the picker shows one chip and nothing about the form changes. It earns its place
+ * on a mixed day, where it is the difference between "there is no claim for this man"
+ * and paying him what he is owed.
+ *
+ * ⚠ The kilometres and the already-claimed status come from the server, never from
+ *   arithmetic here — the modal must not be able to offer a figure the claim guard
+ *   would then refuse.
+ */
+function flNewLoadVehicles() {
+    const wrap = document.getElementById('flNewVehWrap');
+    if (!wrap) return;
+    const uid  = document.getElementById('flNewRider').value;
+    const date = document.getElementById('flNewDate').value;
+
+    flNewCtx = null; flNewVehId = null; flNewMetered = false;
+    if (!uid || flNewCat !== 'Petrol') { wrap.style.display = 'none'; flNewApplyVehicle(); return; }
+
+    const seq = ++flNewCtxSeq;
+    fetch(FLV_BASE + '/petrol-context?user_id=' + encodeURIComponent(uid)
+          + (date ? '&date=' + encodeURIComponent(date) : ''),
+          { headers: { 'Accept': 'application/json' } })
+        .then(r => r.json())
+        .then(res => {
+            if (seq !== flNewCtxSeq) return;          // last answer wins
+            flNewCtx = res || null;
+            const list = (res && res.vehicles) ? res.vehicles : [];
+            if (!list.length) { wrap.style.display = 'none'; flNewApplyVehicle(); return; }
+
+            wrap.style.display = 'block';
+            document.getElementById('flNewVehChips').innerHTML = list.map((v, i) => {
+                const km = (v.km === null || v.km === undefined) ? null : v.km;
+                const claimed = v.claim ? true : false;
+                return '<button type="button" data-vid="' + v.vehicle_id + '" onclick="flNewPickVehicle('
+                    + v.vehicle_id + ')" class="flNewVehChip" style="'
+                    + 'border:1px solid #d1d5db;background:#fff;border-radius:999px;padding:6px 11px;'
+                    + 'font-size:12px;cursor:pointer;display:flex;align-items:center;gap:6px;'
+                    + (claimed ? 'opacity:.65;' : '') + '">'
+                    + (v.is_company ? '🚚' : '🏍️') + ' <b>' + flEsc(v.label) + '</b>'
+                    + (km !== null ? ' <span style="color:#6b7280;">' + flNum(km) + ' km</span>' : '')
+                    + (claimed ? ' <span style="color:#b45309;">' + (v.claim.status === 'approved' ? '✅' : '⏳') + '</span>' : '')
+                    + '</button>';
+            }).join('');
+
+            // ⚠ EDITING an existing claim: the chips are here to RE-POINT it at the
+            //   right machine (D4), never to preselect one — a claim already has an
+            //   amount and a kind, and quietly re-picking would rewrite both.
+            if (flEditId) { flNewPickVehicle(null); return; }
+
+            // Preselect the one a manager almost always wants: his own machine with
+            // unclaimed kilometres. Otherwise leave it to him — never guess on money.
+            const best = list.find(v => v.can_meter_claim) || (list.length === 1 ? list[0] : null);
+            flNewPickVehicle(best ? best.vehicle_id : null);
+        })
+        .catch(() => { if (seq === flNewCtxSeq) { wrap.style.display = 'none'; flNewApplyVehicle(); } });
+}
+
+function flNewPickVehicle(vid) {
+    flNewVehId = vid ? parseInt(vid, 10) : null;
+    document.querySelectorAll('#flNewVehChips .flNewVehChip').forEach(b => {
+        const on = flNewVehId && parseInt(b.dataset.vid, 10) === flNewVehId;
+        b.style.borderColor = on ? '#f59e0b' : '#d1d5db';
+        b.style.background  = on ? '#fffbeb' : '#fff';
+        b.style.boxShadow   = on ? '0 0 0 2px rgba(245,158,11,.25)' : 'none';
+    });
+    flNewApplyVehicle();
+}
+
+/**
+ * Put the form into the mode the chosen machine implies.
+ *
+ * ⭐ OWN BIKE with real kilometres → the PER-KM claim: the amount is km × his rate, and
+ *   it is filed as the same self-auditing row his own phone would file (attendance row,
+ *   distance and rate all recorded). A hand-typed amount here would be a different kind
+ *   of money for the same kilometres.
+ * ⭐ COMPANY vehicle → the flat cash claim, exactly as before, meter and all.
+ */
+function flNewApplyVehicle() {
+    const note   = document.getElementById('flNewVehNote');
+    const amount = document.getElementById('flNewAmount');
+    const veh    = (flNewCtx && flNewCtx.vehicles || []).find(v => v.vehicle_id === flNewVehId) || null;
+
+    // ⚠ An EDIT never becomes a per-km claim. The row already exists with its own kind,
+    //   amount and evidence; switching it here would rewrite settled facts rather than
+    //   correct them. Editing changes WHICH MACHINE, and nothing else.
+    flNewMetered = !!(veh && veh.can_meter_claim && flNewCat === 'Petrol' && !flEditId);
+
+    if (amount) {
+        amount.readOnly = flNewMetered;
+        amount.style.background = flNewMetered ? '#f9fafb' : '#fff';
+        if (flNewMetered && veh.suggested_amount) amount.value = veh.suggested_amount;
+    }
+    // The meter box belongs to the flat/company flow — a per-km claim measures the day,
+    // not the moment of filling.
+    const mw = document.getElementById('flNewMeterWrap');
+    if (mw) mw.style.display = flNewMetered ? 'none' : '';
+
+    if (note) {
+        if (!veh) { note.textContent = ''; note.style.color = '#6b7280'; }
+        else if (veh.claim) {
+            note.style.color = '#b45309';
+            note.innerHTML = '⚠ Already claimed for this vehicle on this date — '
+                + flEsc(veh.claim.number || ('#' + veh.claim.id)) + ' · Rs ' + flNum(veh.claim.amount)
+                + ' · ' + flEsc(veh.claim.status) + '.';
+        } else if (flNewMetered) {
+            note.style.color = '#0f766e';
+            note.innerHTML = '👤 His own vehicle — paid per kilometre. '
+                + (veh.meter_start !== null && veh.meter_end !== null
+                    ? ('Meter ' + flNum(veh.meter_start) + ' → ' + flNum(veh.meter_end) + ' = ') : '')
+                + '<b>' + flNum(veh.km) + ' km</b> × Rs ' + (flNewCtx.petrol_rate || 0)
+                + ' = <b>Rs ' + flNum(veh.suggested_amount) + '</b>'
+                + (veh.entered_by_name ? ' <span style="color:#6b7280;">(readings entered by '
+                    + flEsc(veh.entered_by_name) + ')</span>' : '');
+        } else if (veh.is_company) {
+            note.style.color = '#6b7280';
+            note.innerHTML = '🏢 Company vehicle — the firm buys the fuel, so this is a cash claim '
+                + 'and the meter reading is required.';
+        } else {
+            note.style.color = '#6b7280';
+            note.innerHTML = (flNewCtx && !flNewCtx.petrol_rate)
+                ? 'No per-kilometre rate is set for him, so this will be a cash claim.'
+                : 'No claimable distance recorded on this vehicle for that date — this will be a cash claim.';
+        }
+
+        // ⚠ Claims that day which belong to no chip above (a cash claim on a machine
+        //   with no readings, or one nobody stamped) are SHOWN, never quietly dropped —
+        //   "has this day already been claimed?" is the question this panel exists to
+        //   answer, and a silent omission answers it wrongly.
+        const others = (flNewCtx && flNewCtx.other_claims) ? flNewCtx.other_claims : [];
+        if (others.length) {
+            note.innerHTML += '<div style="margin-top:5px;color:#b45309;">↪ Also that day: '
+                + others.map(o => flEsc(o.number || ('#' + o.id)) + ' Rs ' + flNum(o.amount)
+                    + ' (' + flEsc(o.status) + ')').join(' · ') + '</div>';
+        }
+    }
+    flNewSvcChanged();          // the meter-required label follows the CHOSEN machine
+}
+
 function flNewWhichBike() {
     const el  = document.getElementById('flNewWhichBike');
     if (!el) return;
     const uid  = document.getElementById('flNewRider').value;
     const date = document.getElementById('flNewDate').value;
+    flNewLoadVehicles();        // ⭐ the day's machines, in parallel with the label
     if (!uid) { el.style.display = 'none'; el.textContent = ''; flRenderLastMaint(null); return; }
 
     const seq = ++flNewBikeSeq;        // last answer wins, never a stale one
@@ -2383,7 +2594,13 @@ function flSvcBucket() {
 function flNewSvcChanged() {
     const sel = document.getElementById('flNewRider');
     const opt = sel.options[sel.selectedIndex];
-    const isCompany = opt && opt.dataset && opt.dataset.company === '1';
+    // ⭐ THE CHOSEN MACHINE DECIDES, not the rider's month-level label. `data-company`
+    //   is `r.bike`, i.e. "who pays for his fuel in general" — on a mixed day that is
+    //   the wrong question, and it was demanding a meter for an own-bike claim (or
+    //   waiving it for a van one) purely because of what he usually rides.
+    const picked = (flNewCtx && flNewCtx.vehicles || []).find(v => v.vehicle_id === flNewVehId) || null;
+    const isCompany = picked ? !!picked.is_company
+                             : (opt && opt.dataset && opt.dataset.company === '1');
     const bucket = flSvcBucket();
     // Required on a company bike for petrol, and for a SCHEDULED service (a
     // service with no odometer can never reset the bike's service clock).
@@ -2436,7 +2653,22 @@ function flSubmitNew() {
         expense_category: flNewCat,
         expense_date: date,
     };
-    if (meter !== '') body.meter_at_fill = parseInt(meter, 10);
+    if (meter !== '' && !flNewMetered) body.meter_at_fill = parseInt(meter, 10);
+
+    // ⭐⭐ WHICH MACHINE — and, for an own bike with real kilometres, the PER-KM claim.
+    //
+    // Filing the metered trio (attendance row + distance + rate) makes this the SAME
+    // self-auditing row the rider's own app files, instead of an untethered cash claim
+    // for the same kilometres. That is what lets the one-per-day rule see it, what makes
+    // it show as claimed on his phone, and what keeps the money on the right machine.
+    if (flNewVehId) body.vehicle_id = flNewVehId;
+    if (flNewMetered && flNewCtx && flNewCtx.attendance_id) {
+        const pickedVeh = (flNewCtx.vehicles || []).find(v => v.vehicle_id === flNewVehId);
+        body.attendance_id  = flNewCtx.attendance_id;
+        body.meter_distance = pickedVeh ? pickedVeh.km : null;
+        body.petrol_rate    = flNewCtx.petrol_rate;
+    }
+
     // A typed option sends the type id and lets the SERVER derive service_type
     // from its bucket; the legacy fallback list still sends the raw value.
     if (flNewCat === 'Maintenance' && svc) {
@@ -3422,6 +3654,11 @@ function flvScheduleHtml(res) {
             +   '<div style="min-width:0;">'
             +     '<b>' + flEsc(t.name) + '</b>'
             +     ' <span style="color:#9ca3af;">every ' + flNum(t.interval_km) + ' km</span>'
+            /* ⭐ …and where that number came from, when it is not the job's own
+               schedule. Emitted by the server since Aug-2026 and never rendered. */
+            +     ((t.interval_overridden && t.interval_source_label)
+                    ? ' <span style="color:#b45309;font-size:11px;" title="Not this job\'s own schedule">('
+                      + flEsc(t.interval_source_label) + ')</span>' : '')
             +     (t.last_meter !== null
                     ? '<div style="font-size:11px;color:#6b7280;">last at ' + flNum(t.last_meter) + ' km'
                       + (t.last_at ? ' · ' + flvDate(t.last_at) : '')
@@ -3532,10 +3769,28 @@ function flvMeterForm(res) {
     //   (holder rode, then a manager stint) impossible to record, and left an
     //   already-existing log row invisible ("shadowed"). Both records now show,
     //   each routed to its own home on Save.
+    // ⭐⭐ WHO WAS DRIVING — prefilled (Aug-27 2026).
+    //
+    // The box used to open on "— no driver —" and every log row on prod carries NULL,
+    // which is the same fact stated twice: nobody fills in a field that starts empty.
+    // Yet the answer was already knowable — the server now sends `suggested_driver`,
+    // resolved for THAT DATE (so a historical day names that day's holder, and a day the
+    // machine changed hands names the last man to take it).
+    //
+    // ⚠ ORDER OF AUTHORITY: an existing row's own driver always wins — it is a recorded
+    //   fact, and a suggestion must never quietly overwrite one. The suggestion only
+    //   fills the gap, and the manager can always change it.
+    const sug = res.suggested_driver || null;
+    const preselect = (l && l.driver_user_id) ? l.driver_user_id : (sug ? sug.user_id : null);
     const drivers = (res.drivers || []).map(d =>
         '<option value="' + d.user_id + '"'
-        + ((l && l.driver_user_id === d.user_id) ? ' selected' : '')
+        + ((preselect && preselect === d.user_id) ? ' selected' : '')
         + '>' + flEsc(d.name) + '</option>').join('');
+    // Say WHY that name is there, so a prefill never reads as a claim of fact.
+    const sugLine = (sug && !(l && l.driver_user_id))
+        ? '<div class="fl-muted" style="font-size:11.5px;margin-top:3px;">👤 Assigned that day: <b>'
+          + flEsc(sug.name || '') + '</b> — change it if someone else drove.</div>'
+        : '';
 
     const logHead = a
         ? (l ? 'entry on the same date' : 'add a second stint')
@@ -3561,6 +3816,7 @@ function flvMeterForm(res) {
     + '<select id="flvMeterDriver" style="width:100%;border:1px solid #d1d5db;border-radius:8px;padding:7px 9px;font-size:13px;">'
     +   '<option value="">— no driver (machine only) —</option>' + drivers
     + '</select>'
+    + sugLine
     + '<div class="fl-muted" style="font-size:11.5px;margin-top:3px;">'
     + 'The named driver gets these kilometres in his own month too. '
     + '⚠ This does NOT hand him the machine — no handover, no meter demands change.</div></div>'

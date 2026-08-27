@@ -174,7 +174,7 @@ class VehicleService
                       ->orderByRaw('COALESCE(v.reg_no, v.nickname)')
                       ->get();
 
-            $defaultInterval = (int) $this->cfg('BIKE_SERVICE_INTERVAL_KM', 1200);
+            $defaultInterval = (new ServiceIntervalResolver())->companyDefault();
             $photoCounts     = $this->photoCounts();
             $thumbs          = $this->latestPhotoPaths();
             // ⭐ Who last held each idle machine — so the fleet screen can say
@@ -219,7 +219,7 @@ class VehicleService
             if (!$r) return null;
 
             $meter = $this->currentMeter($id, $r->keeper_user_id ? (int) $r->keeper_user_id : null);
-            $shaped = $this->shape($r, $meter, (int) $this->cfg('BIKE_SERVICE_INTERVAL_KM', 1200),
+            $shaped = $this->shape($r, $meter, (new ServiceIntervalResolver())->companyDefault(),
                                    count($this->photosFor($id)));
 
             $shaped['history'] = $this->historyFor($id);
@@ -504,36 +504,39 @@ class VehicleService
             $last = $this->coveredServiceEvidence($vehicleId, $types);
 
             /**
-             * ⭐⭐ THE PER-BIKE OVERRIDE, APPLIED TO THE ROUTINE SERVICE ONLY.
+             * ⭐⭐ ONE RESOLVER FOR "HOW OFTEN IS THIS JOB DUE?" (Aug-27 2026).
              *
-             * "⚙️ This bike's schedule — service this bike every N km" predates the
-             * type list, when there was one clock. With per-type countdowns it has to
-             * mean SOMETHING specific, and the only reading that matches those words
-             * is the bike's ROUTINE service — the shortest clock-resetting job (Oil
-             * Change). Applying it to every type would say a 10,000 km brake-shoe job
-             * is now due every 1,000, which nobody means by that sentence.
+             * ⚠⚠ WHAT USED TO BE HERE, AND WHY IT HAD TO GO. The per-bike scalar
+             *    (`t_ops_vehicle.service_interval_km`) was applied to "whichever type is
+             *    the SHORTEST `resets_service_clock = 1`" — a target it INFERRED rather
+             *    than being told. That made it migrate: on 22-Aug a manager set Oil
+             *    Change to 1,000 and unticked its clock flag, which silently promoted Oil
+             *    + Tuning to the target, so AY-4771's 1,200 landed on a job whose own
+             *    schedule says 2,000. He had not touched Oil + Tuning. The panel then
+             *    read 1,200 while the Record-service prompt on the same page read 2,000,
+             *    and the frozen `service_due_km` used a third chain again.
              *
-             * ⚠ Without this the setting was inert: the type's own interval won, so a
-             *   manager could set "every 1,000 km", see the confirmation, and watch
-             *   the bike keep falling due at 1,200. A control that reports success and
-             *   changes nothing is worse than no control.
+             * ⭐ The comment this replaces argued the override "makes the control work".
+             *   It worked in the sense of changing a number — but never the number the
+             *   manager was looking at, and never predictably. A control whose effect
+             *   moves between jobs when an unrelated checkbox changes is not a working
+             *   control.
              *
-             * Every override on the fleet is currently 1,200 — identical to both the
-             * company default and Oil Change — so this changes no live number today;
-             * it makes the control work the day it is actually used.
+             * ⭐ Now: the JOB's own schedule wins, and the bike/rider/company figures are
+             *   the fallback for jobs that carry none (Misc / Overhauling). Genuine
+             *   per-bike-per-job schedules need a row per pair — Phase 2 — and slot in
+             *   ahead of everything else inside the resolver, not here.
+             *
+             * ⚠ Blast radius, measured: exactly ONE row on the whole fleet moves —
+             *   AY-4771's Oil + Tuning, 1,200 → 2,000, i.e. back to what the manager
+             *   configured. Every other vehicle's override is NULL.
              */
-            $overrideKm = 0;
-            $overrideTypeId = null;
+            $resolver = new ServiceIntervalResolver();
+            $keeperId = null;
             try {
-                $ovr = DB::table(self::T_VEHICLE)->where('id', $vehicleId)->value('service_interval_km');
-                $overrideKm = (int) ($ovr ?: 0);
-                if ($overrideKm > 0) {
-                    $routine = $types->filter(fn ($t) => !empty($t->resets_service_clock))
-                        ->sortBy(fn ($t) => (int) $t->interval_km)->first();
-                    $overrideTypeId = $routine ? (int) $routine->id : null;
-                }
+                $keeperId = (new VehicleResolver())->riderForVehicleDay($vehicleId, date('Y-m-d'));
             } catch (\Throwable $e) {
-                $overrideKm = 0; $overrideTypeId = null;
+                $keeperId = null;
             }
 
             $out = [];
@@ -541,12 +544,11 @@ class VehicleService
                 $l     = $last[(int) $t->id] ?? null;
                 $lastM = $l['m'] ?? null;
 
-                $interval = (int) $t->interval_km;
-                $overridden = ($overrideTypeId !== null && (int) $t->id === $overrideTypeId
-                               && $overrideKm !== $interval);
-                if ($overrideTypeId !== null && (int) $t->id === $overrideTypeId) {
-                    $interval = $overrideKm;
-                }
+                $explained = $resolver->explain($vehicleId, (int) $t->interval_km, $keeperId);
+                $interval  = (int) $explained['km'];
+                // Kept for compatibility: true whenever the number did NOT come from the
+                // job's own schedule, which is the only case a screen must explain.
+                $overridden = !$explained['from_type'];
 
                 // A countdown needs BOTH ends; anything less stays null rather
                 // than inventing one from a made-up reference (same rule as the
@@ -562,10 +564,14 @@ class VehicleService
                     // read by overallServiceStateFor when it picks the headline.
                     'resets_clock' => !empty($t->resets_service_clock),
                     'interval_km' => $interval,
-                    // True when this bike's own schedule replaced the type's standard
-                    // one — so a screen can say WHY the number differs from the list.
+                    // True when the number did NOT come from this job's own schedule —
+                    // so a screen can say WHERE it came from instead of just printing it.
                     'interval_overridden' => $overridden,
                     'type_interval_km'    => (int) $t->interval_km,
+                    // 'type' | 'vehicle' | 'rider' | 'company' | 'fallback', plus the
+                    // short human label the screens print. Additive keys.
+                    'interval_source'     => $explained['source'],
+                    'interval_source_label' => ServiceIntervalResolver::sourceLabel($explained),
                     'last_meter'  => $lastM,
                     'last_at'     => $l['d'] ?? null,
                     'last_by'     => $l['by'] ?? null,
@@ -577,8 +583,8 @@ class VehicleService
                     'covered_by'  => $l['covered_by'] ?? null,
                     'due_at_km'   => $lastM !== null ? $lastM + $interval : null,
                     'due_in_km'   => $dueIn,
-                    'state'       => $dueIn === null ? 'unknown'
-                                    : ($dueIn < 0 ? 'overdue' : ($dueIn <= 150 ? 'due_soon' : 'ok')),
+                    // ⭐ ONE state rule — alerts fire off this, so no local ternary.
+                    'state'       => ServiceIntervalResolver::stateFor($dueIn),
                 ];
             }
             try {
@@ -865,6 +871,11 @@ class VehicleService
         self::$elsewhereMemo = [];
         self::$dayMapMemo = [];
         self::$typesMemo = null;
+        // ⚠ The machine-keyed reading spine feeds Rule P (`readingPlausibleFor`) and was
+        //   missing from this list. It matters now that a reading can be SAVED and then
+        //   re-read inside one request (the meter-log writer): judging a fresh reading
+        //   against a spine captured before it was written is the stale-evidence bug.
+        self::$machineReadMemo = [];
     }
 
     /**
@@ -1063,7 +1074,7 @@ class VehicleService
         ?int $keeperUserId = null,
         ?int $defaultInterval = null
     ): array {
-        $default = $defaultInterval ?? (int) $this->cfg('BIKE_SERVICE_INTERVAL_KM', 1200);
+        $default = $defaultInterval ?? (new ServiceIntervalResolver())->companyDefault();
 
         // Cached across requests on the same terms as the schedule (same version key,
         // meter in the key) — this is what keeps MyVehicle brief mode a cheap read.
@@ -1191,18 +1202,12 @@ class VehicleService
             Log::warning('overallServiceStateFor failed', ['vehicle' => $vehicleId, 'error' => $e->getMessage()]);
         }
 
-        // Interval: the winning job's schedule, then the MACHINE's own override,
-        // then the keeper's legacy one, then the company default.
-        $interval = $best['interval'] ?? 0;
-        if ($interval <= 0 && $vehicleRow) $interval = (int) ($vehicleRow->service_interval_km ?: 0);
-        if ($interval <= 0 && $keeperUserId) {
-            try {
-                $interval = (int) (DB::table('t_ops_rider_profile')->where('user_id', $keeperUserId)
-                    ->value('service_interval_km') ?: 0);
-            } catch (\Throwable $e) {
-                $interval = 0;
-            }
-        }
+        // Interval: the winning job's schedule, then the MACHINE's own, then the
+        // keeper's legacy one, then the company default.
+        // ⭐ Aug-27 2026: this chain was already the RIGHT one — it is now the SHARED one,
+        //   so it cannot drift from the schedule list, the alerts or the frozen record.
+        $interval = (new ServiceIntervalResolver())
+            ->intervalFor($vehicleId, (int) ($best['interval'] ?? 0), $keeperUserId);
         if ($interval <= 0) $interval = $default;
 
         $last  = $best['m'] ?? null;
@@ -1217,8 +1222,7 @@ class VehicleService
             'since_km'           => $since,
             'due_in_km'          => $dueIn,
             'due_at_km'          => $last !== null ? $last + $interval : null,
-            'state'              => $dueIn === null ? 'unknown'
-                                    : ($dueIn < 0 ? 'overdue' : ($dueIn <= 150 ? 'due_soon' : 'ok')),
+            'state'              => ServiceIntervalResolver::stateFor($dueIn),
             // Same keys as the scheduled branch — a caller must never have to check
             // which path produced its payload. Null here means "no named job".
             'due_type_id'        => null,
@@ -1299,8 +1303,13 @@ class VehicleService
             };
             // Untyped/seeded rows are plain oil services from the one-clock era; they
             // can only vouch for jobs on (or inside) that old default schedule.
+            // ⚠ `$typedCovers` above deliberately keeps comparing the TYPES' own standard
+            //   schedules: "could job A have included job B" is a question about the two
+            //   jobs, not about this bike, and making it bike-dependent would let an
+            //   override rewrite historical evidence. Only the company-default literal
+            //   moves to the shared resolver, so there is one source for that number.
             $legacyCovers = $claimTypeInterval === null
-                || $claimTypeInterval <= (int) $this->cfg('BIKE_SERVICE_INTERVAL_KM', 1200);
+                || $claimTypeInterval <= (new ServiceIntervalResolver())->companyDefault();
 
             $best = null;
             // ⚠ Same machine-relative, DATE-ANCHORED floor as the per-type evidence —
@@ -2967,6 +2976,99 @@ class VehicleService
         } catch (\Throwable $e) {
             return true;
         }
+    }
+
+    /**
+     * ⭐⭐ THE ONE WRITER for a machine's own meter-log row (Aug-27 2026).
+     *
+     * WHY IT MOVED HERE. This was inline in `VehicleController::meterSave`, reachable from
+     * exactly one screen. The rider's app now needs the same power — on a day the van owns
+     * his attendance meters, his own bike's kilometres have nowhere else to live, and a man
+     * should not have to ask a manager to type them in for him. A second screen must never
+     * mean a second implementation: this codebase has paid for that lesson repeatedly (three
+     * copies of "is this a transfer day", four of the sane-row predicate), and the owner
+     * asked for exactly this — the app and the Vehicles page writing through one door.
+     *
+     * ⚠ EMPTYING BOTH READINGS DELETES THE ROW, deliberately: "nothing to keep" is a
+     *   removal, and an empty shell would sit in the machine's chain saying nothing.
+     *
+     * ⚠ Callers own the PERMISSION question. This writer answers "how", never "who" — the
+     *   web gate (`manage_bike_service`) and the rider gate (his own machine, his own day)
+     *   are different questions with different answers, and folding them in here would
+     *   force one to impersonate the other.
+     *
+     * @return array{ok:bool, message:string, action:?string, id:?int}
+     */
+    public function saveMeterLog(int $vehicleId, string $date, ?int $start, ?int $end,
+                                 ?int $driverUserId, ?string $note, int $enteredBy): array
+    {
+        $date = substr($date, 0, 10);
+        try {
+            if (!Schema::hasTable(self::T_METER_LOG)) {
+                return ['ok' => false, 'action' => null, 'id' => null,
+                        'message' => 'Meter logging is not set up on this server yet (SQL pending).'];
+            }
+
+            $existing = DB::table(self::T_METER_LOG)
+                ->where('vehicle_id', $vehicleId)->where('log_date', $date)->first();
+
+            if ($start === null && $end === null) {
+                if ($existing) {
+                    DB::table(self::T_METER_LOG)->where('id', $existing->id)->delete();
+                }
+                $this->flushAfterMeterLog($date);
+                return ['ok' => true, 'action' => 'deleted', 'id' => null,
+                        'message' => $existing ? 'Reading removed.' : 'Nothing to save.'];
+            }
+
+            $row = [
+                'vehicle_id'     => $vehicleId,
+                'log_date'       => $date,
+                'meter_start'    => $start,
+                'meter_end'      => $end,
+                'driver_user_id' => $driverUserId,
+                'note'           => $note,
+                'entered_by'     => $enteredBy,
+                'updated_at'     => now(),
+            ];
+
+            if ($existing) {
+                DB::table(self::T_METER_LOG)->where('id', $existing->id)->update($row);
+                $id = (int) $existing->id;
+            } else {
+                $row['created_at'] = now();
+                $id = (int) DB::table(self::T_METER_LOG)->insertGetId($row);
+            }
+
+            Log::info('Vehicle meter log saved', [
+                'vehicle_id' => $vehicleId, 'date' => $date,
+                'driver' => $driverUserId, 'by' => $enteredBy, 'id' => $id,
+            ]);
+            $this->flushAfterMeterLog($date);
+
+            return ['ok' => true, 'action' => $existing ? 'updated' : 'created',
+                    'id' => $id, 'message' => 'Reading saved.'];
+        } catch (\Throwable $e) {
+            Log::error('saveMeterLog failed', [
+                'vehicle_id' => $vehicleId, 'date' => $date, 'error' => $e->getMessage(),
+            ]);
+            return ['ok' => false, 'action' => null, 'id' => null,
+                    'message' => 'Could not save that reading.'];
+        }
+    }
+
+    /** The month's figures are DERIVED — drop every memo that just went stale. */
+    private function flushAfterMeterLog(string $date): void
+    {
+        try {
+            // ⚠ `flush()` is an INSTANCE method on MachineAttribution (a static call here
+            //   throws, and the catch below would swallow it — leaving the month's figures
+            //   stale for the cache's lifetime with nothing to show why).
+            (new MachineAttribution())->flush(substr($date, 0, 7));
+            VehicleResolver::flush();
+            RiderDayLegs::flush();
+            self::flushServiceMemo();      // incl. the Rule P reading spine
+        } catch (\Throwable $e) { /* a stale cache must never fail a saved reading */ }
     }
 
     /** Has SQL-METER-READING-STAMP-AUG22-2026 been run? Memoised — asked inside query builders. */

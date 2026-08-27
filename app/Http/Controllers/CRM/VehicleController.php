@@ -249,6 +249,146 @@ class VehicleController extends Controller
         }
     }
 
+    /**
+     * ⭐⭐ WHAT THIS RIDER ACTUALLY RODE ON THIS DATE — for the New-petrol modal
+     *    (Aug-27 2026).
+     *
+     * THE PROBLEM IT SOLVES. The modal named ONE machine ("recorded against CAD-2958"),
+     * resolved from the rider's day, and offered no choice. So on a day a rider arrived
+     * on his own bike and took the van out, a manager could only file against the van —
+     * the own-bike kilometres the man is actually owed were unreachable from the screen.
+     * Worse, he could not see whether that day had already been claimed, so a second
+     * claim for the same kilometres looked exactly like a first one.
+     *
+     * ⭐ Served from the SAME `RiderDayLegs` the rider's phone and the claim guards read,
+     *   so the modal cannot offer a machine the server would refuse, and the kilometres
+     *   the manager sees are the kilometres that will be paid.
+     */
+    public function petrolContext(Request $request, \App\Services\Riders\VehicleResolver $res)
+    {
+        $me   = $request->user() ?: auth()->user();
+        $uid  = (int) $request->query('user_id');
+        $date = $request->query('date') ?: \Carbon\Carbon::today()->format('Y-m-d');
+        try {
+            $date = \Carbon\Carbon::parse($date)->format('Y-m-d');
+        } catch (\Throwable $e) {
+            $date = \Carbon\Carbon::today()->format('Y-m-d');
+        }
+
+        $isSelf  = $me && (int) $me->id === $uid;
+        $mayLook = $isSelf || $this->canView() || $this->mobileAllowed($request);
+        if (!$uid || !$mayLook) {
+            return response()->json(['success' => true, 'date' => $date, 'vehicles' => []]);
+        }
+
+        try {
+            $legs = (new \App\Services\Riders\RiderDayLegs())->forDay($uid, $date);
+
+            // The day's attendance row — a metered claim must name it, exactly as the
+            // rider's own app does, or it is not the self-auditing kind.
+            $attendanceId = DB::table('t_ops_attendance')
+                ->where('user_id', $uid)->where('attendance_date', $date)->value('id');
+
+            // Everything already claimed for that rider+date, so each machine can say
+            // for itself whether this would be a second bite.
+            $claims = DB::table('t_req_master')
+                ->where('requester_user_id', $uid)
+                ->where('expense_category', 'Petrol')
+                ->whereRaw('COALESCE(expense_date, DATE(created_at)) = ?', [$date])
+                ->whereNotIn('status', ['cancelled', 'rejected'])
+                ->get(array_merge(
+                    ['id', 'amount', 'status', 'attendance_id', 'meter_distance', 'request_number'],
+                    Schema::hasColumn('t_req_master', 'vehicle_id') ? ['vehicle_id'] : []
+                ));
+
+            $petrolRate = $this->petrolRateFor($uid);
+
+            $out = [];
+            foreach ($legs as $l) {
+                $claim = null;
+                foreach ($claims as $c) {
+                    if (!empty($c->vehicle_id) && (int) $c->vehicle_id === (int) $l['vehicle_id']) {
+                        $claim = $c; break;
+                    }
+                    // A metered claim nobody stamped belongs to the day's own kilometres.
+                    if (empty($c->vehicle_id) && $c->attendance_id && empty($l['is_company'])) {
+                        $claim = $c;
+                    }
+                }
+                $out[] = [
+                    'vehicle_id'   => $l['vehicle_id'],
+                    'label'        => $l['label'],
+                    'is_company'   => (bool) $l['is_company'],
+                    'km'           => $l['km'],
+                    'meter_start'  => $l['meter_start'],
+                    'meter_end'    => $l['meter_end'],
+                    'source'       => $l['source'],
+                    'entered_by_name' => $l['entered_by_name'],
+                    // A per-km claim is only possible on his OWN machine, with real
+                    // distance, a rate to price it and an attendance row to anchor it.
+                    'can_meter_claim' => (empty($l['is_company']) && ($l['km'] ?? 0) > 0
+                                          && $petrolRate > 0 && $attendanceId && !$claim),
+                    'suggested_amount' => (empty($l['is_company']) && ($l['km'] ?? 0) > 0 && $petrolRate > 0)
+                        ? round(((float) $l['km']) * $petrolRate, 2) : null,
+                    'claim' => $claim ? [
+                        'id' => (int) $claim->id, 'status' => $claim->status,
+                        'amount' => (float) $claim->amount, 'number' => $claim->request_number,
+                        'metered' => !empty($claim->attendance_id),
+                    ] : null,
+                ];
+            }
+
+            // Claims that named no machine we can show — surfaced rather than hidden, so
+            // "already claimed" is never quietly missing from the manager's view.
+            $otherClaims = [];
+            foreach ($claims as $c) {
+                $shown = false;
+                foreach ($out as $row) {
+                    if ($row['claim'] && $row['claim']['id'] === (int) $c->id) { $shown = true; break; }
+                }
+                if (!$shown) {
+                    $otherClaims[] = [
+                        'id' => (int) $c->id, 'status' => $c->status,
+                        'amount' => (float) $c->amount, 'number' => $c->request_number,
+                        'metered' => !empty($c->attendance_id),
+                    ];
+                }
+            }
+
+            return response()->json([
+                'success'       => true,
+                'date'          => $date,
+                'attendance_id' => $attendanceId ? (int) $attendanceId : null,
+                'petrol_rate'   => $petrolRate,
+                'vehicles'      => $out,
+                'other_claims'  => $otherClaims,
+            ]);
+        } catch (\Throwable $e) {
+            Log::warning('petrolContext failed', ['user' => $uid, 'date' => $date, 'error' => $e->getMessage()]);
+            // Never break the modal over this — it degrades to the old single-machine hint.
+            return response()->json(['success' => true, 'date' => $date, 'vehicles' => []]);
+        }
+    }
+
+    /**
+     * The rider's per-kilometre rate, from his active rate group.
+     * ⚠ Same membership test as the rider's own endpoint (a CSV of user ids) — keep the
+     *   two in step or the manager would price a claim differently from the app.
+     */
+    private function petrolRateFor(int $userId): ?float
+    {
+        try {
+            $group = DB::table('t_fin_petrol_rate_group')->where('is_active', 1)->get()
+                ->first(function ($g) use ($userId) {
+                    if (empty($g->user_ids)) return false;
+                    return in_array((string) $userId, array_map('trim', explode(',', $g->user_ids)), true);
+                });
+            return $group ? (float) $group->rate : null;
+        } catch (\Throwable $e) {
+            return null;
+        }
+    }
+
     // =================================================================
     // MOBILE (Aug-2026) — the manager's Bikes screen, read only
     // =================================================================
@@ -1259,6 +1399,31 @@ class VehicleController extends Controller
                 }
             }
 
+            // ⭐⭐ WHO WAS DRIVING THIS MACHINE THAT DAY (Aug-27 2026).
+            //
+            // The driver box defaulted to "— no driver (machine only) —" and every log row
+            // on prod carries NULL, which is the same thing said twice: nobody fills in a
+            // box that starts empty. Yet the answer was already knowable — and already
+            // WRITTEN, in `VehicleResolver::riderForVehicleDay`, which had sat unused since
+            // it was built. It mirrors `vehicleForDay` exactly (an explicit day override
+            // first, then the assignment covering the date, open row winning), so a
+            // HISTORICAL day names that day's holder rather than today's, and a day the
+            // machine changed hands names the last man to take it.
+            //
+            // ⚠ A SUGGESTION, NEVER A DECISION. The manager can always change it — Taimur
+            //   drove the van himself on 17 Aug and he holds nothing. It is only offered
+            //   when the row does not already name someone.
+            $suggested = null;
+            try {
+                $sid = $res->riderForVehicleDay((int) $id, $date);
+                if ($sid) {
+                    $suggested = [
+                        'user_id' => (int) $sid,
+                        'name'    => DB::table('t_sys_user')->where('id', $sid)->value('fullname'),
+                    ];
+                }
+            } catch (\Throwable $sErr) { $suggested = null; }
+
             return response()->json([
                 'success'    => true,
                 'date'       => $date,
@@ -1269,6 +1434,7 @@ class VehicleController extends Controller
                 //   the van himself on 17 Aug and he is no rider. The roster() list is
                 //   the Delivery-Rider cohort and would hide exactly those people.
                 'drivers'    => $this->allActiveUsers(),
+                'suggested_driver' => $suggested,
                 'window'     => $svc->meterWindowFor((int) $id, $date),
             ]);
         } catch (\Throwable $e) {
@@ -1310,11 +1476,25 @@ class VehicleController extends Controller
                 if (empty($data['attendance_id'])) {
                     return response()->json(['success' => false, 'message' => 'Which day are we correcting?'], 422);
                 }
+                // ⭐⭐ NAME THE MACHINE ON THE READING (Aug-27 2026).
+                //
+                // This editor is titled "Meter reading — CAD-2958": the manager is looking
+                // at ONE machine and typing ITS odometer, so which machine the reading
+                // belongs to is not a guess here, it is the whole context of the screen.
+                // `MeterCorrectionService` has carried a `$vehicleId` parameter since the
+                // Van repair and NO caller ever passed it, so every manager-typed reading
+                // went in unstamped — which then leaves the rider's day half-labelled, and
+                // his own-bike petrol claim guessing its machine from the date.
+                //
+                // ⚠ The service still refuses to invent a stamp on its own (it must never
+                //   use "what is he holding right now" for last Tuesday). Being TOLD is the
+                //   one case it accepts, and this is the screen that can tell it.
                 $r = app(\App\Services\Riders\MeterCorrectionService::class)->correct(
                     (int) $data['attendance_id'],
                     $request->has('meter_start'), $data['meter_start'] ?? null,
                     $request->has('meter_end'),   $data['meter_end'] ?? null,
-                    (int) auth()->id()
+                    (int) auth()->id(),
+                    (int) $id
                 );
                 if (!$r['ok']) {
                     return response()->json(['success' => false, 'message' => $r['message']], 422);
@@ -1327,39 +1507,28 @@ class VehicleController extends Controller
                 $start = $request->has('meter_start') ? $data['meter_start'] : null;
                 $end   = $request->has('meter_end')   ? $data['meter_end']   : null;
 
-                // Nothing to keep → remove the row rather than leave an empty shell.
-                if ($start === null && $end === null) {
-                    DB::table('t_ops_vehicle_meter_log')
-                        ->where('vehicle_id', (int) $id)->where('log_date', $date)->delete();
-                } else {
-                    $row = [
-                        'vehicle_id'     => (int) $id,
-                        'log_date'       => $date,
-                        'meter_start'    => $start,
-                        'meter_end'      => $end,
-                        'driver_user_id' => $data['driver_user_id'] ?? null,
-                        'note'           => $data['note'] ?? null,
-                        'entered_by'     => (int) auth()->id(),
-                        'updated_at'     => now(),
-                    ];
-                    $existing = DB::table('t_ops_vehicle_meter_log')
-                        ->where('vehicle_id', (int) $id)->where('log_date', $date)->first();
-                    if ($existing) {
-                        DB::table('t_ops_vehicle_meter_log')->where('id', $existing->id)->update($row);
-                    } else {
-                        $row['created_at'] = now();
-                        DB::table('t_ops_vehicle_meter_log')->insert($row);
-                    }
+                // ⭐ ONE WRITER, shared with the rider's own "add my bike's meter" door —
+                //   see VehicleService::saveMeterLog. The delete-when-empty rule and the
+                //   cache flush live there now, so both surfaces behave identically.
+                $saved = $svc->saveMeterLog(
+                    (int) $id, $date,
+                    $start === null ? null : (int) $start,
+                    $end === null ? null : (int) $end,
+                    isset($data['driver_user_id']) ? (int) $data['driver_user_id'] : null,
+                    $data['note'] ?? null,
+                    (int) auth()->id()
+                );
+                if (!$saved['ok']) {
+                    return response()->json(['success' => false, 'message' => $saved['message']], 422);
                 }
-                Log::info('Vehicle meter log saved', [
-                    'vehicle_id' => (int) $id, 'date' => $date,
-                    'driver' => $data['driver_user_id'] ?? null, 'by' => auth()->id(),
-                ]);
             }
 
             // The month's figures are derived — drop the cache so the page redraws truth.
             (new \App\Services\Riders\MachineAttribution())->flush(substr($date, 0, 7));
             \App\Services\Riders\VehicleResolver::flush();
+            // ⭐ The rider's day legs are derived from these same readings — a correction
+            //   here changes what his phone may claim, so its memo must go too.
+            \App\Services\Riders\RiderDayLegs::flush();
 
             return response()->json(['success' => true, 'message' => 'Meter saved.']);
         } catch (\Throwable $e) {

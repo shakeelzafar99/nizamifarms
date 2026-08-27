@@ -237,23 +237,38 @@ class BikeServiceClock
             }
             if ($last === null || $meter <= $last) return;
 
-            // Interval priority: the TYPE's own schedule (Oil Change = 1,200 km)
-            // beats the per-bike override, which beats the company default. The
-            // type knows best — "how far since the last one" is only meaningful
-            // against the schedule for THAT service.
-            $interval = 0;
+            // ⭐⭐ THE SHARED RESOLVER (Aug-27 2026) — this figure is FROZEN onto the
+            //    request forever, so it above all must be the number the manager was
+            //    looking at when he approved.
+            //
+            // ⚠⚠ WHAT WAS WRONG. The chain here was `type → RIDER profile → config` and
+            //    it never read `t_ops_vehicle.service_interval_km` at all. So a bike with
+            //    a machine-level schedule froze `service_due_km` against a different
+            //    interval from the one on every screen and in every alert — a permanent
+            //    record disagreeing with the page that produced it, with no way to tell
+            //    afterwards which was meant.
+            //
+            // ⚠ Existing rows are NOT rewritten: they are frozen evidence of what was
+            //   true at approval. Only claims approved from here on use the shared chain.
+            $vehicleId = null;
+            try {
+                $vehicleId = $req->vehicle_id
+                    ?? (new \App\Services\Riders\VehicleResolver())->vehicleForDay(
+                        (int) $req->requester_user_id,
+                        $req->expense_date ? substr((string) $req->expense_date, 0, 10) : date('Y-m-d')
+                    );
+            } catch (\Throwable $e) {
+                $vehicleId = null;
+            }
+
             $type = app(\App\Services\Riders\MaintenanceTypeService::class)
                 ->find($req->maintenance_type_id ?? null);
-            if ($type && (int) $type->interval_km > 0) {
-                $interval = (int) $type->interval_km;
-            }
-            if ($interval <= 0) {
-                $interval = (int) ($profile->service_interval_km ?: 0);
-            }
-            if ($interval <= 0) {
-                $interval = (int) (DB::table('t_fin_config')
-                    ->where('config_key', 'BIKE_SERVICE_INTERVAL_KM')->value('config_value') ?: 0);
-            }
+
+            $interval = (new \App\Services\Riders\ServiceIntervalResolver())->intervalFor(
+                $vehicleId ? (int) $vehicleId : null,
+                $type ? (int) $type->interval_km : null,
+                (int) $req->requester_user_id
+            );
             if ($interval <= 0) return;
 
             DB::table('t_req_master')->where('id', $req->id)

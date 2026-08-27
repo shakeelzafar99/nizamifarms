@@ -1412,6 +1412,14 @@ class AttendanceController extends Controller
                 'attendance_id' => 'required|integer',
                 'meter_start' => 'nullable|integer|min:0',
                 'meter_end' => 'nullable|integer|min:0',
+                // ⭐⭐ WHICH MACHINE THESE READINGS ARE OF (Aug-27 2026). Optional, and
+                //   omitting it keeps exactly the old behaviour (any existing stamp is
+                //   preserved, nothing is invented). It exists because on a mixed day the
+                //   manager is the only one who KNOWS: a rider who arrives on his own bike
+                //   and takes the van out has one meter pair for two machines, and until
+                //   somebody says which is which his own-bike petrol claim has no evidence
+                //   to stand on. This is the control nobody had during the Van incident.
+                'vehicle_id' => 'nullable|integer',
             ]);
 
             // ⭐ Aug-2026: the rule moved to MeterCorrectionService so the Vehicles page
@@ -1422,8 +1430,12 @@ class AttendanceController extends Controller
                 (int) $validated['attendance_id'],
                 $request->has('meter_start'), $validated['meter_start'] ?? null,
                 $request->has('meter_end'),   $validated['meter_end'] ?? null,
-                auth()->id()
+                auth()->id(),
+                $request->filled('vehicle_id') ? (int) $validated['vehicle_id'] : null
             );
+
+            // The rider's claimable kilometres are derived from these readings.
+            \App\Services\Riders\RiderDayLegs::flush();
 
             if (!$res['ok']) {
                 return response()->json(

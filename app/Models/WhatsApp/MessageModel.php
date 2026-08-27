@@ -36,6 +36,15 @@ class MessageModel extends Model
         // auto_reply_rule_id = NULL, the cooldown query returns nothing,
         // and the rule fires on every inbound forever.
         'auto_reply_rule_id',
+        // Aug-2026: the order this message is ABOUT (order_number, not id).
+        // Same fillable trap as auto_reply_rule_id above — saveOutboundMessage()
+        // persists via MessageModel::create(), so without this line Eloquent
+        // silently drops the column and every template send logs a NULL. That is
+        // exactly why it was empty on all 852 delivery_confirmation_online rows
+        // while invoice sends (which assign the attribute directly, bypassing
+        // mass assignment) had it populated. The Daily Closing follow-up panel
+        // counts reminders off this column.
+        'related_order_number',
     ];
 
     protected $casts = [

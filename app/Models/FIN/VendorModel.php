@@ -47,6 +47,10 @@ class VendorModel extends BaseModel
         'account_id',
         'default_purchase_method',
         'default_payment_source_id',
+        // Fallback Level-1 category for this vendor's LUMP-SUM purchases
+        // (no line items to carry a category of their own). Deliberately
+        // left null for vendors that supply more than one category.
+        'default_category_level_1',
         'is_active',
         'business_unit_id', // ⭐ FK to t_fin_business_units
         'notes',
