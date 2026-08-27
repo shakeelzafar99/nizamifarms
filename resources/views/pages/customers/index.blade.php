@@ -1629,18 +1629,33 @@ function nfCreditPanelMarkup(customerId, d) {
 
         // A pending entry is only real money once someone with Level 2 rights
         // approves it, so the buttons appear for them and nobody else.
-        const actions = (h.status === 'pending' && d.can_approve)
-            ? `<div style="margin-top:3px;display:flex;gap:6px;">
+        //
+        // An entry that is ALREADY counting gets "Remove" instead — one wrong
+        // entry can be undone on its own, without wiping the customer's real
+        // money the way Clear-to-zero does. Only grants: taking credit back off
+        // an ORDER has to move that order's totals, which is a different job.
+        let actions = '';
+        if (h.status === 'pending' && d.can_approve) {
+            actions = `<div style="margin-top:3px;display:flex;gap:6px;">
                  <button type="button" onclick="nfApproveCredit(${customerId}, ${h.id})"
                    style="padding:3px 9px;background:#059669;color:#fff;border:0;border-radius:4px;cursor:pointer;font-size:11px;font-weight:600;">Approve</button>
                  <button type="button" onclick="nfRejectCredit(${customerId}, ${h.id})"
                    style="padding:3px 9px;background:#fff;color:#b91c1c;border:1px solid #fca5a5;border-radius:4px;cursor:pointer;font-size:11px;font-weight:600;">Reject</button>
-               </div>`
+               </div>`;
+        } else if (d.can_approve && h.counts && h.entry_type === 'grant') {
+            actions = `<div style="margin-top:3px;">
+                 <button type="button" onclick="nfVoidCredit(${customerId}, ${h.id}, '${nfCredEsc(h.amount_abs)}')"
+                   style="padding:3px 9px;background:#fff;color:#b91c1c;border:1px solid #fca5a5;border-radius:4px;cursor:pointer;font-size:11px;font-weight:600;"
+                   title="Undo just this entry — the rest of the balance is untouched">Remove this entry</button>
+               </div>`;
+        }
+        const voidedNote = (h.status === 'voided' && h.voided_reason)
+            ? `<div style="margin-top:2px;font-size:11px;color:#6b7280;">Removed${h.voided_by_name ? ' by ' + nfCredEsc(h.voided_by_name) : ''} — ${nfCredEsc(h.voided_reason)}</div>`
             : '';
 
         return `<tr>
             <td style="padding:5px 8px 5px 0;white-space:nowrap;color:#6b7280;font-size:12px;vertical-align:top;">${nfCredEsc(h.date || '')}</td>
-            <td style="padding:5px 8px 5px 0;font-size:12px;"><span style="${struck}">${nfCredEsc(h.type_label)}${where}${why}</span>${state}${actions}</td>
+            <td style="padding:5px 8px 5px 0;font-size:12px;"><span style="${struck}">${nfCredEsc(h.type_label)}${where}${why}</span>${state}${voidedNote}${actions}</td>
             <td style="padding:5px 0;text-align:right;white-space:nowrap;font-weight:600;font-size:12px;color:${colour};${struck}vertical-align:top;">
                 ${sign} Rs. ${nfCredEsc(h.amount_abs)}
             </td>
@@ -1799,6 +1814,24 @@ function nfRejectCredit(customerId, creditId) {
     const reason = prompt('Reject this entry? No balance will be added.\n\nReason (optional):');
     if (reason === null) return;
     nfCreditAction(customerId, creditId, 'reject', { reason });
+}
+
+/**
+ * Undo ONE wrong entry. Unlike "Clear to zero" this leaves the rest of the
+ * customer's balance alone, and it is refused outright if the money has
+ * already been used on an order (the server checks — take it off that order
+ * first, or the balance would go negative).
+ */
+function nfVoidCredit(customerId, creditId, amountText) {
+    const reason = prompt(
+        `Remove this Rs. ${amountText} entry from the customer's balance?\n\n` +
+        `Use this when the entry itself was wrong — a typo, or a payment that turned out ` +
+        `to be someone else's. The rest of the balance is not affected.\n\n` +
+        `Why are you removing it?`
+    );
+    if (reason === null) return;
+    if (!reason || reason.trim().length < 3) { alert('Please give a short reason.'); return; }
+    nfCreditAction(customerId, creditId, 'void', { reason: reason.trim() });
 }
 
 async function nfRefreshCreditPanel(customerId) {

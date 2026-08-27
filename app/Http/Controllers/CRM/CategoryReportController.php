@@ -25,6 +25,9 @@ class CategoryReportController extends Controller
      */
     private const PREF_HIDDEN = 'category_report_hidden';
 
+    /** The single-bucket granularity backing the Summary view. */
+    private const G_SUMMARY = 'total';
+
     private CategorySalesPurchaseService $svc;
 
     public function __construct(CategorySalesPurchaseService $svc)
@@ -39,15 +42,33 @@ class CategoryReportController extends Controller
         $granularity    = $this->svc->normalizeGranularity($request->get('granularity', 'day'));
         $excludeQurbani = $request->get('qurbani', 'exclude') !== 'include';
 
+        // Two orthogonal controls:
+        //   view        - Summary (one row per category) or Detail (period breakdown)
+        //   granularity - how Detail is bucketed; meaningless in Summary
+        //
+        // 'total' used to be a Group-by option and WAS the summary view, so an
+        // old link carrying granularity=total still lands on Summary.
+        $view = $request->get('view');
+        if ($view === null) {
+            $view = $granularity === self::G_SUMMARY ? 'summary' : 'detail';
+        }
+        $view = $view === 'summary' ? 'summary' : 'detail';
+
+        // Kept separately so switching Summary -> Detail restores the bucket
+        // size the user last looked at instead of snapping back to Daily.
+        $detailGranularity = $granularity === self::G_SUMMARY ? 'day' : $granularity;
+        $effective = $view === 'summary' ? self::G_SUMMARY : $detailGranularity;
+
         $hidden = $this->hiddenCategories();
-        $report = $this->svc->report($start, $end, $granularity, $excludeQurbani, $hidden);
+        $report = $this->svc->report($start, $end, $effective, $excludeQurbani, $hidden);
 
         return view('pages.products.category-report', [
             'report'         => $report,
             'start'          => $start,
             'end'            => $end,
             'preset'         => $preset,
-            'granularity'    => $granularity,
+            'view'           => $view,
+            'granularity'    => $detailGranularity,
             'excludeQurbani' => $excludeQurbani,
             'vocabulary'     => $this->svc->categoryVocabulary(),
             'allCategories'  => $this->svc->togglableCategories(),

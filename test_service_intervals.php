@@ -207,8 +207,29 @@ define('RAJAB', 95); define('OWN_BIKE', 9); define('VAN', 4); define('ASIM', 70)
 
 DB::beginTransaction();
 try {
-    // The live situation this round exists for: Rajab's own bike has NO open
-    // assignment (the van's custody released it), and now a service falls due on it.
+    // The situation this round exists for: Rajab's own bike has NO open assignment
+    // (the van's custody released it), and now a service falls due on it.
+    //
+    // ⚠ STAGED, not assumed. It used to read live custody, which made the suite a
+    //   hostage to whoever happens to hold the van on the day — after the Aug-27
+    //   re-sync Rajab had handed the van back and taken his own bike again, so both
+    //   preconditions went red and, worse, the checks below started passing for the
+    //   WRONG reason: the bike had a keeper by assignment, so "keeper is the OWNER
+    //   despite no open assignment" was no longer exercising the no-assignment path
+    //   at all. Building the fixture here restores the real scenario every run.
+    DB::table('t_ops_vehicle_assignment')
+        ->where('vehicle_id', OWN_BIKE)->whereNull('released_on')
+        ->update(['released_on' => '2026-08-27', 'updated_at' => now()]);
+    if (!DB::table('t_ops_vehicle_assignment')
+            ->where('vehicle_id', VAN)->where('user_id', RAJAB)
+            ->whereNull('released_on')->exists()) {
+        DB::table('t_ops_vehicle_assignment')->insert([
+            'vehicle_id' => VAN, 'user_id' => RAJAB, 'assigned_on' => '2026-08-27',
+            'created_at' => now(), 'updated_at' => now(),
+        ]);
+    }
+    flushAll(); \App\Services\Riders\RiderDayLegs::flush();
+
     ok('precondition: the van is his open assignment',
        (new \App\Services\Riders\VehicleResolver())->currentVehicleFor(RAJAB), VAN);
     ok('precondition: his own bike has NO open assignment',

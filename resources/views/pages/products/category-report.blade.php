@@ -171,7 +171,10 @@
     $totals   = $report['totals'];
     $grand    = $totals['__grand'];
     $cov      = $report['coverage'];
-    $isTotal  = $report['granularity'] === 'total';
+    /* Summary = one row per category. Detail = the period breakdown.
+       Falls back to the old granularity test so this still renders if the
+       view is ever built without $view. */
+    $isSummary = (($view ?? ($report['granularity'] === 'total' ? 'summary' : 'detail')) === 'summary');
 
     $grandMargin = $grand['sold_rs'] - $grand['bought_rs'];
 
@@ -230,6 +233,7 @@
         <div class="cr-card-body">
             <form method="GET" action="{{ route('products.category_report') }}" id="crForm">
                 <input type="hidden" name="granularity" id="crGranularity" value="{{ $granularity }}">
+                <input type="hidden" name="view" id="crView" value="{{ $isSummary ? 'summary' : 'detail' }}">
                 <div class="cr-filters">
                     <div class="cr-field">
                         <label>Range</label>
@@ -256,10 +260,28 @@
                         <input type="date" name="end" value="{{ $end->toDateString() }}">
                     </div>
 
+                    {{-- View and Group by are orthogonal: WHAT you look at, then
+                         how finely it is sliced. "Total only" used to sit in
+                         Group by, which made two controls mean the same thing. --}}
                     <div class="cr-field">
+                        <label>View</label>
+                        <div class="cr-seg">
+                            <button type="button"
+                                    class="{{ $isSummary ? '' : 'on' }}"
+                                    onclick="crSetView('detail')">
+                                {{ $granularity === 'week' ? 'Week by week'
+                                   : ($granularity === 'month' ? 'Month by month' : 'Day by day') }}
+                            </button>
+                            <button type="button"
+                                    class="{{ $isSummary ? 'on' : '' }}"
+                                    onclick="crSetView('summary')">Summary</button>
+                        </div>
+                    </div>
+
+                    <div class="cr-field {{ $isSummary ? 'cr-hide' : '' }}" id="crGroupByField">
                         <label>Group by</label>
                         <div class="cr-seg">
-                            @foreach(['day'=>'Daily','week'=>'Weekly','month'=>'Monthly','total'=>'Total only'] as $g => $lbl)
+                            @foreach(['day'=>'Daily','week'=>'Weekly','month'=>'Monthly'] as $g => $lbl)
                                 <button type="button"
                                         class="{{ $granularity === $g ? 'on' : '' }}"
                                         onclick="crSetGranularity('{{ $g }}')">{{ $lbl }}</button>
@@ -359,6 +381,7 @@
     </div>
 
     {{-- ------------------------------------------------ category totals --}}
+    @if($isSummary)
     <div class="cr-card">
         <div class="cr-card-head">
             <h2>By category <span class="cr-sub">— whole range</span></h2>
@@ -466,8 +489,10 @@
         </div>
     </div>
 
+    @endif
+
     {{-- --------------------------------------------- period breakdown --}}
-    @unless($isTotal)
+    @if(!$isSummary)
         <div class="cr-card">
             <div class="cr-card-head">
                 <h2>
@@ -679,7 +704,7 @@
                 @endif
             </div>
         </div>
-    @endunless
+    @endif
 
 </div>
 
@@ -909,7 +934,15 @@
         if (!custom) { document.getElementById('crForm').submit(); }
     };
 
+    // Switching view keeps the chosen bucket size, so Summary -> Detail
+    // returns you to Weekly/Monthly rather than snapping back to Daily.
+    window.crSetView = function (v) {
+        document.getElementById('crView').value = v;
+        document.getElementById('crForm').submit();
+    };
+
     window.crSetGranularity = function (g) {
+        document.getElementById('crView').value = 'detail';
         document.getElementById('crGranularity').value = g;
         document.getElementById('crForm').submit();
     };

@@ -371,6 +371,8 @@ Route::middleware('auth:sanctum')->group(function () {
             ->whereNumber('orderId');
         Route::post('/order/{orderId}/overpay-to-tip', [\App\Http\Controllers\FIN\PaymentSignalsController::class, 'overpayToTip'])
             ->whereNumber('orderId');
+        Route::post('/signal/{signalId}/delete-manual', [\App\Http\Controllers\FIN\PaymentSignalsController::class, 'deleteManualProof'])
+            ->whereNumber('signalId');
         Route::post('/overpay-batch', [\App\Http\Controllers\FIN\PaymentSignalsController::class, 'overpayBatch']);
     });
     

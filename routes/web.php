@@ -445,6 +445,9 @@ Route::middleware(['auth'])->group(function () {
         ->whereNumber('creditId')->name('customer-credit.approve');
     Route::post('/customer-credit/{creditId}/reject', [\App\Http\Controllers\CRM\CustomerCreditController::class, 'reject'])
         ->whereNumber('creditId')->name('customer-credit.reject');
+    // Undo ONE wrong entry, rather than zeroing the whole balance.
+    Route::post('/customer-credit/{creditId}/void', [\App\Http\Controllers\CRM\CustomerCreditController::class, 'void'])
+        ->whereNumber('creditId')->name('customer-credit.void');
     // Operations import/broadcast endpoints — staff only (rider accounts blocked server-side).
     Route::post('/operations/rider-import', [\App\Http\Controllers\CRM\OperationsController::class, 'importRiderAssignments'])->name('operations.rider-import')->middleware('block.rider');
     Route::post('/operations/attendance-import', [\App\Http\Controllers\CRM\OperationsController::class, 'importAttendance'])->name('operations.attendance-import')->middleware('block.rider');
@@ -1098,6 +1101,9 @@ Route::middleware(['auth'])->group(function () {
         ->whereNumber('orderId')->name('payments.overpay-to-balance');
     Route::post('/admin/payments/order/{orderId}/overpay-to-tip', [\App\Http\Controllers\FIN\PaymentSignalsController::class, 'overpayToTip'])
         ->whereNumber('orderId')->name('payments.overpay-to-tip');
+    // Delete a hand-typed payment that was entered wrongly (Shabib/Taimur).
+    Route::post('/admin/payments/signal/{signalId}/delete-manual', [\App\Http\Controllers\FIN\PaymentSignalsController::class, 'deleteManualProof'])
+        ->whereNumber('signalId')->name('payments.delete-manual');
     // Literal path — declared before nothing that could swallow it; used after a
     // BULK approval to ask about overpaid invoices in one round trip.
     Route::post('/admin/payments/overpay-batch', [\App\Http\Controllers\FIN\PaymentSignalsController::class, 'overpayBatch'])

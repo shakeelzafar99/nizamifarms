@@ -172,6 +172,55 @@ class CustomerCreditService
     }
 
     /**
+     * Balances for MANY customers in one query — for list pages that would
+     * otherwise run balanceFor() per row.
+     *
+     * ⭐ This exists so no screen has to hand-roll the sum. The customers list
+     * used to carry its own copy of it, which quietly disagreed with every
+     * other screen for MERGED customers: the copy grouped by the raw
+     * customer_id while every read here follows the merge chain, so a merged
+     * duplicate's money vanished from the list but showed in the panel. One
+     * formula, one status list, one merge rule — used everywhere.
+     *
+     * @param  array<int>  $customerIds
+     * @return array<int, float>  keyed by the id you ASKED for
+     */
+    public function balancesForMany(array $customerIds): array
+    {
+        $ids = array_values(array_unique(array_filter(array_map('intval', $customerIds))));
+        if (empty($ids) || !$this->tableReady()) {
+            return [];
+        }
+
+        // Follow the merge chain first: several asked-for ids can resolve to
+        // the same surviving customer, and that customer holds the money.
+        $resolved = [];
+        foreach ($ids as $id) {
+            $r = $this->resolveCustomerId($id);
+            if ($r) {
+                $resolved[$id] = $r;
+            }
+        }
+        if (empty($resolved)) {
+            return [];
+        }
+
+        $sums = DB::table('t_crm_customer_credit')
+            ->whereIn('customer_id', array_values(array_unique($resolved)))
+            ->whereIn('status', CustomerCreditModel::SPENDABLE_STATUSES)
+            ->groupBy('customer_id')
+            ->pluck(DB::raw('COALESCE(SUM(amount), 0)'), 'customer_id')
+            ->all();
+
+        $out = [];
+        foreach ($resolved as $askedFor => $realId) {
+            $out[$askedFor] = round((float) ($sums[$realId] ?? 0), 2);
+        }
+
+        return $out;
+    }
+
+    /**
      * Everything a screen needs to show the bucket: the number, whether there
      * is anything to offer, and the recent history behind it.
      */
@@ -505,6 +554,103 @@ class CustomerCreditService
             $credit->voided_at     = now();
             $credit->voided_reason = $reason ?: 'Rejected at approval';
             $credit->save();
+
+            return $credit;
+        });
+    }
+
+    /**
+     * Undo ONE grant that should never have been made — a typo, a payment that
+     * turned out to be someone else's, an amount entered twice.
+     *
+     * Before this existed the only correction was zeroOut(), which wipes the
+     * WHOLE balance: fixing an Rs 11,000 typo meant destroying the customer's
+     * real money too and re-adding it by hand. This removes exactly one entry
+     * and leaves everything else alone.
+     *
+     * ⚠ Two hard rules:
+     *  · Only a GRANT. Taking credit back OFF an order is releaseFromOrder() —
+     *    that has to move the order's totals too, which this must never touch.
+     *  · Never below zero. If the customer has already spent the money, the
+     *    grant cannot simply vanish or the balance would go negative and the
+     *    spend would be funded by nothing. The caller is told to deal with the
+     *    order first.
+     *
+     * An active grant posted money to the ledger, so voiding it posts the
+     * MIRROR row (from/to swapped) rather than deleting anything: the original
+     * posting stays in the history and the two net to nil.
+     */
+    public function voidEntry(int $creditId, int $userId, string $reason): CustomerCreditModel
+    {
+        if (trim($reason) === '') {
+            throw new \RuntimeException('Say why this entry is being removed — it is the only record of the correction.');
+        }
+
+        return DB::transaction(function () use ($creditId, $userId, $reason) {
+            $credit = CustomerCreditModel::where('id', $creditId)->lockForUpdate()->first();
+
+            if (!$credit) {
+                throw new \RuntimeException('Credit entry not found.');
+            }
+            if ($credit->entry_type !== CustomerCreditModel::TYPE_GRANT) {
+                throw new \RuntimeException(
+                    $credit->entry_type === CustomerCreditModel::TYPE_CONSUME
+                        ? 'This is money spent on an order — remove it from that order instead.'
+                        : 'Only a grant can be removed.'
+                );
+            }
+            if ($credit->status === CustomerCreditModel::STATUS_VOIDED) {
+                return $credit; // idempotent — a double click must not post twice
+            }
+
+            $counted = in_array($credit->status, CustomerCreditModel::SPENDABLE_STATUSES, true);
+
+            // Would removing it leave the customer owing us their own balance?
+            if ($counted) {
+                $balancePaisa = $this->balancePaisaFor((int) $credit->customer_id, true);
+                $amountPaisa  = (int) round((float) $credit->amount * 100);
+                if ($balancePaisa - $amountPaisa < 0) {
+                    $short = round(($amountPaisa - $balancePaisa) / 100, 2);
+                    throw new \RuntimeException(
+                        'This money has already been used on an order. Take it off that order first — '
+                        . 'removing it now would leave the balance short by Rs ' . number_format($short, 2) . '.'
+                    );
+                }
+            }
+
+            // Mirror the original posting instead of deleting it.
+            if ($credit->ledger_transaction_id) {
+                $orig = LedgerModel::find($credit->ledger_transaction_id);
+                if ($orig) {
+                    $from = AccountModel::find($orig->to_account_id);   // swapped
+                    $to   = AccountModel::find($orig->from_account_id); // on purpose
+                    $this->postLedgerRow(
+                        type: self::LEDGER_TYPE_GRANT,
+                        description: 'Reversal — ' . $orig->description . ' (' . $reason . ')',
+                        fromAccount: $from,
+                        toAccount: $to,
+                        amount: round((float) $credit->amount, 2),
+                        userId: $userId,
+                        mode: $orig->mode,
+                        receivingAccountId: $credit->receiving_account_id,
+                        orderId: $credit->order_id,
+                    );
+                }
+            }
+
+            $credit->status        = CustomerCreditModel::STATUS_VOIDED;
+            $credit->voided_by     = $userId;
+            $credit->voided_at     = now();
+            $credit->voided_reason = $reason;
+            $credit->save();
+
+            Log::info('Customer credit entry voided', [
+                'credit_id' => $credit->id,
+                'amount'    => $credit->amount,
+                'was'       => $counted ? 'counting' : 'not counting',
+                'by'        => $userId,
+                'reason'    => $reason,
+            ]);
 
             return $credit;
         });

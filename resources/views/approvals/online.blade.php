@@ -2280,6 +2280,36 @@ async function nfBrAct(creditId, action) {
     }
 }
 
+/**
+ * Delete a hand-typed payment that was entered wrongly. To CORRECT an amount:
+ * delete, then record it again — there is no edit, because an edited claim
+ * would have to be re-matched and re-verified from scratch anyway.
+ */
+async function nfDeleteManualPayment(signalId, orderId, amount) {
+    if (!confirm(
+        `Delete this recorded payment of Rs ${numberFormat(amount)}?\n\n` +
+        `Use this when the amount was typed wrongly. Nothing else changes — ` +
+        `to fix it, delete this and record the payment again with the right amount.`
+    )) return;
+    try {
+        const res = await fetch(`/admin/payments/signal/${signalId}/delete-manual`, {
+            method: 'POST',
+            headers: {
+                'Accept': 'application/json', 'Content-Type': 'application/json',
+                'X-Requested-With': 'XMLHttpRequest', 'X-CSRF-TOKEN': nfCsrf(),
+            }
+        });
+        const data = await res.json();
+        if (!data.success) { alert(data.message || 'Could not delete that payment.'); return; }
+        showToast(data.message, 'success');
+        document.getElementById('proofPanelOverlay')?.remove();
+        openProofPanel(orderId);   // reopen so the panel reflects it
+        loadData();                // the row's badge changes too
+    } catch (e) {
+        alert('Could not delete that payment: ' + e.message);
+    }
+}
+
 /** Turn the extra into a tip straight from the proof panel, then refresh. */
 async function nfPanelTipOverpay(orderId) {
     if (!confirm('Count this extra as a TIP on this invoice?\n\nThe invoice total goes up by the extra, so the payment then matches it exactly.')) return;
@@ -2684,7 +2714,19 @@ function buildProofPanelHtml(data) {
         // wrong customer must always be able to take it off. The strength of
         // the evidence changes the WARNING, not the availability.
         if (s.id) {
-            html += `<div style="margin-top:10px; padding-top:9px; border-top:1px dashed #E5E7EB; text-align:right;">
+            // A HAND-TYPED claim that was simply mistyped is a different
+            // problem from a real payment on the wrong order: detaching it
+            // would park a payment that never happened in the money inbox
+            // forever. Only that case gets Delete, and only once no bank alert
+            // has confirmed it (the server enforces both).
+            const canDelete = NF_CAN_RECORD_PAYMENT && s.is_manual && !s.paired;
+            const delBtn = canDelete
+                ? `<button onclick="nfDeleteManualPayment(${s.id}, ${data.order_id}, ${s.amount || 0})"
+                        style="background:#fff; color:#B91C1C; border:1px solid #FECACA; border-radius:8px; padding:5px 11px; font-size:12px; font-weight:600; cursor:pointer;"
+                        title="Delete this hand-typed payment — use this if the amount was wrong">🗑 Delete this entry</button>`
+                : '';
+            html += `<div style="margin-top:10px; padding-top:9px; border-top:1px dashed #E5E7EB; text-align:right; display:flex; gap:8px; justify-content:flex-end; flex-wrap:wrap;">
+                ${delBtn}
                 <button onclick="unmarkProofSignal(${s.id}, ${data.order_id}, ${s.paired ? 'true' : 'false'})"
                         style="background:#fff; color:#B91C1C; border:1px solid #FECACA; border-radius:8px; padding:5px 11px; font-size:12px; font-weight:600; cursor:pointer;"
                         title="Detach this payment from this order">Wrong customer — remove</button>

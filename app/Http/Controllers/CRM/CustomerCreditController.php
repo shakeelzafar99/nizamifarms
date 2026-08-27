@@ -249,6 +249,37 @@ class CustomerCreditController extends Controller
     }
 
     /**
+     * POST /customer-credit/{creditId}/void
+     * Undo ONE wrong entry (typo, someone else's payment, entered twice)
+     * instead of wiping the whole balance with zero-out.
+     */
+    public function void(Request $request, int $creditId)
+    {
+        if ($deny = $this->denyUnlessLevel2()) {
+            return $deny;
+        }
+
+        $validated = $request->validate([
+            'reason' => 'required|string|min:3|max:255',
+        ]);
+
+        try {
+            $credit = $this->credit->voidEntry($creditId, (int) auth()->id(), $validated['reason']);
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Rs ' . number_format(abs((float) $credit->amount), 2)
+                    . ' removed from the customer\'s balance.',
+                'data'    => ['credit_id' => $credit->id, 'status' => $credit->status],
+            ]);
+        } catch (\Throwable $e) {
+            Log::warning('Customer credit void failed', ['credit_id' => $creditId, 'error' => $e->getMessage()]);
+
+            return response()->json(['success' => false, 'message' => $e->getMessage()], 422);
+        }
+    }
+
+    /**
      * POST /customer-credit/{customerId}/zero-out  — LEVEL 2 only.
      * Writes the balance off to zero. A reason is required because this row is
      * the only record of why a customer's money stopped being theirs.

@@ -174,7 +174,6 @@
          for a 3-day window. Built by OnlineFollowUpService. -->
     @if(isset($onlineFollowUp) && $onlineFollowUp)
     @php
-        $fuChase = $onlineFollowUp['chase'];
         $fuNeedsAction = $onlineFollowUp['chase_count'] > 0;
         // The panel's own colour reports its state: red while anything needs a
         // message, green once the chase list is clear.
@@ -217,83 +216,51 @@
 
                 <!-- ── TIER 1 · CHASE ───────────────────────────────────── -->
                 @if($onlineFollowUp['chase_count'] > 0)
+
+                {{-- Open group: new customers (any day) + everything delivered
+                     today. Day 1 is when the confirmation-and-bank-details
+                     message is worth sending, and a new customer is worth
+                     chasing on all three days. --}}
+                @if($onlineFollowUp['chase_primary_count'] > 0)
                 <div class="px-4 py-2 border-b" style="border-color: {{ $fuBorder }};">
                     <div class="flex items-center justify-between mb-2">
-                        <span class="text-xs font-bold text-red-700">🔴 No payment proof yet — chase these</span>
-                        <span class="text-xs font-semibold text-gray-600">Rs. {{ number_format($onlineFollowUp['chase_amount']) }}</span>
+                        <span class="text-xs font-bold text-red-700">🔴 Chase now — new customers &amp; delivered today</span>
+                        <span class="text-xs font-semibold text-gray-600">{{ $onlineFollowUp['chase_primary_count'] }} · Rs. {{ number_format($onlineFollowUp['chase_primary_amount']) }}</span>
                     </div>
-
-                    @foreach($fuChase as $row)
-                    @php
-                        $proof = $row['payment_proof'] ?? null;
-                        $proofLabel = ($proof && ($proof['status'] ?? 'none') !== 'none') ? $proof['label'] : '';
-                        // Everything the send flow needs, handed over as one JSON
-                        // blob on a data attribute. Blade escapes it, so an
-                        // apostrophe in a customer name can no longer break the
-                        // JS the way the old 8-positional-argument onclick did.
-                        $payload = [
-                            'id'            => $row['id'],
-                            'order_number'  => $row['order_number'],
-                            'customer_name' => $row['customer_name'],
-                            'customer_phone'=> $row['customer_phone'],
-                            'rider_name'    => $row['rider_name'],
-                            'delivery_date' => $row['delivery_date'],
-                            'delivery_time' => $row['delivery_time'],
-                            'amount'        => $row['amount'],
-                            'template'      => $row['template'],
-                            'day_number'    => $row['day_number'],
-                            'proof_label'   => $proofLabel,
-                        ];
-                        $dayColors = [1 => ['#f1f5f9', '#475569'], 2 => ['#fef3c7', '#92400e'], 3 => ['#fee2e2', '#991b1b']];
-                        [$dayBg, $dayFg] = $dayColors[$row['day_number']] ?? $dayColors[3];
-                        $rowBg = $row['is_new_customer'] ? '#fffbeb' : ($row['reminded_today'] ? '#f8fafc' : '#fef2f2');
-                    @endphp
-                    <div id="fu-row-{{ $row['id'] }}" class="flex items-center justify-between py-2 px-3 mb-1.5 rounded-lg"
-                         style="background-color: {{ $rowBg }};{{ $row['is_new_customer'] ? ' border-left: 4px solid #f59e0b;' : '' }}">
-                        <div class="flex items-center gap-2 flex-1 min-w-0 flex-wrap">
-                            @if($row['is_new_customer'])
-                            <span class="text-xs font-bold px-2 py-0.5 rounded-full whitespace-nowrap" style="background-color:#f59e0b; color:#fff;"
-                                  title="Only {{ $row['lifetime_orders'] }} delivered order(s) — needs immediate follow-up">
-                                ⚠ NEW · {{ $row['customer_ordinal'] }}
-                            </span>
-                            @endif
-                            <span class="text-xs font-bold whitespace-nowrap px-1.5 py-0.5 rounded" style="background-color: {{ $dayBg }}; color: {{ $dayFg }};"
-                                  title="Delivered {{ $row['delivery_date'] }} at {{ $row['delivery_time'] }}">Day {{ $row['day_number'] }}</span>
-                            <span class="text-xs font-mono font-bold text-gray-700">{{ $row['order_number'] }}</span>
-                            <span class="text-xs text-gray-700 truncate">{{ $row['customer_name'] }}</span>
-                            @if($row['is_shop'])
-                            <span class="text-xs font-bold px-1.5 py-0.5 rounded whitespace-nowrap" style="background-color:#e0e7ff; color:#3730a3;"
-                                  title="Shop (B2B) account — normally settled from the Shop tab of Online Approvals against a running balance, not chased per order">shop</span>
-                            @endif
-                            <span class="text-xs text-gray-400">{{ $row['rider_name'] }}</span>
-                            <span class="text-xs font-semibold text-gray-800">Rs. {{ number_format($row['amount']) }}</span>
-                            @if($row['reminded_label'])
-                            <span class="text-xs text-gray-500 italic">{{ $row['reminded_label'] }}</span>
-                            @endif
-                            @if($row['is_last_day'])
-                            <span class="text-xs font-semibold" style="color:#b91c1c;" title="Last day in this list — after today it moves to Online Approvals">last day</span>
-                            @endif
-                        </div>
-                        <div class="flex items-center gap-2 ml-3">
-                            <span class="fu-status text-xs text-gray-500"></span>
-                            <button type="button"
-                                data-row="{{ json_encode($payload) }}"
-                                onclick="sendFollowUp(this)"
-                                @if($row['reminded_today']) disabled title="Already reminded today — try again tomorrow" @endif
-                                style="background-color: {{ $row['reminded_today'] ? '#cbd5e1' : ($proofLabel ? '#f59e0b' : '#25D366') }}; min-width: 132px;"
-                                class="text-sm hover:opacity-90 text-white px-3 py-1.5 rounded-lg font-bold transition-all cursor-pointer whitespace-nowrap flex items-center justify-center gap-1.5 shadow-sm">
-                                {{ $row['reminded_today'] ? '✓ Reminded today' : '📱 ' . $row['button_label'] }}
-                            </button>
-                        </div>
-                    </div>
+                    @foreach($onlineFollowUp['chase_primary'] as $row)
+                        @include('fin.employee.partials.followup-row', ['row' => $row])
                     @endforeach
                 </div>
+                @endif
+
+                {{-- Collapsed group: established customers from day 2-3. They are
+                     already unapproved L1/L2 items in Online Approvals, which has
+                     its own invoice-bearing reminder — so this panel shouldn't
+                     shout about them a second and third time. One click away,
+                     never gone. --}}
+                @if($onlineFollowUp['chase_secondary_count'] > 0)
+                <div class="border-b" style="border-color: {{ $fuBorder }};">
+                    <div class="px-4 py-2 flex items-center justify-between cursor-pointer hover:bg-white"
+                         onclick="document.getElementById('followup-older').classList.toggle('hidden')">
+                        <div class="flex items-center gap-2 flex-wrap">
+                            <span class="text-xs font-bold text-gray-600">🕓 {{ $onlineFollowUp['chase_secondary_count'] }} older · Rs. {{ number_format($onlineFollowUp['chase_secondary_amount']) }}</span>
+                            <span class="text-xs text-gray-500">existing customers from day 2–3 — also chaseable from Online Approvals</span>
+                        </div>
+                        <span class="text-xs text-gray-400">▸</span>
+                    </div>
+                    <div id="followup-older" class="hidden px-4 pb-2">
+                        @foreach($onlineFollowUp['chase_secondary'] as $row)
+                            @include('fin.employee.partials.followup-row', ['row' => $row])
+                        @endforeach
+                    </div>
+                </div>
+                @endif
+
                 @else
                 <div class="px-4 py-3 text-xs font-semibold text-green-700">
                     ✅ Nothing to chase — every online delivery from the last {{ $onlineFollowUp['window_days'] }} days has proof or is settled.
                 </div>
                 @endif
-
                 <!-- ── TIER 2 · PROOF IN (collapsed) ─────────────────────── -->
                 @if($onlineFollowUp['proof_in_count'] > 0)
                 <div class="border-b" style="border-color: {{ $fuBorder }};">

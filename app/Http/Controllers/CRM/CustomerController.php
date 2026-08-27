@@ -637,20 +637,14 @@ class CustomerController extends Controller
             $result[$r->customer_id]['reg_count'] = (int) $r->cnt;
         }
 
-        // 💰 Customer credit ("bucket") — one grouped SUM for the whole page,
-        // same batching pattern as the two queries above. Balance = SUM of the
-        // counting rows (active + reserved); dormant (all zero) until the
-        // customer-credit SQL has been run.
-        if ((new \App\Services\CustomerCreditService())->tableReady()) {
-            $credit = DB::select("
-                SELECT customer_id, COALESCE(SUM(amount), 0) AS bal
-                FROM t_crm_customer_credit
-                WHERE customer_id IN ($ph)
-                  AND status IN ('active', 'reserved')
-                GROUP BY customer_id
-            ", $customerIds);
-            foreach ($credit as $r) {
-                $result[$r->customer_id]['credit_balance'] = (float) $r->bal;
+        // 💰 Customer credit ("bucket") — batched through the SERVICE, which
+        // owns the one definition of a balance (counting statuses + the merge
+        // chain). This used to be a hand-written SUM here; it disagreed with
+        // every other screen for merged customers because it grouped by the raw
+        // customer_id. Never re-implement the sum — call the service.
+        foreach ((new \App\Services\CustomerCreditService())->balancesForMany($customerIds) as $cid => $bal) {
+            if (isset($result[$cid])) {
+                $result[$cid]['credit_balance'] = $bal;
             }
         }
 

@@ -168,7 +168,13 @@ $r = fn ($date, $km, $aid, $vid = null, $ignore = null) =>
 
 $res = $r('2027-04-02', 167.0, $aVan);
 ok('van-only day: per-km claim REFUSED', $res['ok'], false);
-ok('  …and the reason names the machine', str_contains($res['message'] ?? '', 'Van'), true);
+// ⚠ Ask the resolver what the machine is CALLED rather than hard-coding a name.
+//   The shared rule is "plate, else nickname" (VehicleResolver::labelFor and
+//   RiderDayLegs::labelOf), so the moment prod fills in the van's registration the
+//   label flips from 'Van' to 'CAD-2958' and a literal assertion goes red for
+//   fixture drift rather than for a real fault.
+ok('  …and the reason names the machine',
+    str_contains($res['message'] ?? '', app(VehicleResolver::class)->labelFor(VAN) ?? '###'), true);
 
 $res = $r('2027-04-01', 100.0, $aOwn);
 ok('own-only day: allowed', $res['ok'], true);

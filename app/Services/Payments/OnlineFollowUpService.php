@@ -136,16 +136,38 @@ class OnlineFollowUpService
 
         $newCustomerRows = array_values(array_filter($chase, fn ($r) => $r['is_new_customer']));
 
+        // The chase tier splits again for display. Showing all three days of
+        // established customers open was too much noise to read on a daily basis:
+        //   PRIMARY   — new customers (any day) + everyone delivered TODAY. Open.
+        //               Day 1 is the moment the confirmation-and-bank-details
+        //               message is worth sending, and a new customer is worth
+        //               chasing on every one of the three days.
+        //   SECONDARY — established customers from day 2-3. Collapsed. They are
+        //               already sitting in Online Approvals as unapproved L1/L2
+        //               items with their own reminder button, so this panel does
+        //               not need to shout about them a second and third time —
+        //               but they stay one click away rather than disappearing.
+        $isPrimary = fn ($r) => $r['is_new_customer'] || $r['day_number'] === 1;
+
+        $chasePrimary   = array_values(array_filter($chase, $isPrimary));
+        $chaseSecondary = array_values(array_filter($chase, fn ($r) => !$isPrimary($r)));
+
         return [
             'window_days'    => self::WINDOW_DAYS,
             'window_from'    => $windowStart->toDateString(),
             'generated_at'   => Carbon::now()->format('H:i'),
 
             'chase'          => $chase,
+            'chase_primary'   => $chasePrimary,
+            'chase_secondary' => $chaseSecondary,
             'proof_in'       => $proofIn,
 
             'chase_count'         => count($chase),
             'chase_amount'        => (int) round(array_sum(array_column($chase, 'amount'))),
+            'chase_primary_count'    => count($chasePrimary),
+            'chase_primary_amount'   => (int) round(array_sum(array_column($chasePrimary, 'amount'))),
+            'chase_secondary_count'  => count($chaseSecondary),
+            'chase_secondary_amount' => (int) round(array_sum(array_column($chaseSecondary, 'amount'))),
             'new_customer_count'  => count($newCustomerRows),
             'new_customer_amount' => (int) round(array_sum(array_column($newCustomerRows, 'amount'))),
             'proof_in_count'      => count($proofIn),
@@ -173,6 +195,20 @@ class OnlineFollowUpService
         $query = OrderModel::query()
             ->whereIn('order_status', ['delivered', 'completed'])
             ->whereIn('payment_method', self::ONLINE_PAYMENT_METHODS)
+            // Shop (B2B) customers are collected completely differently: they run
+            // a rolling balance settled FIFO from the Shop tab of Online
+            // Approvals, not per-order. Chasing them one delivery at a time
+            // contradicts how the business actually bills them, so they are out
+            // of this panel entirely — same rule, and the same predicate, that
+            // keeps them out of the regular Online Approvals queues
+            // (ApprovalController::excludeShopCustomers).
+            //
+            // Orders with no customer record at all are KEPT: whereDoesntHave is
+            // true when there is no related row, which is the behaviour we want
+            // (an unlinked walk-up order still owes us money).
+            ->whereDoesntHave('customer', function ($c) {
+                $c->where('customer_type', \App\Models\CRM\CustomerModel::TYPE_SHOP);
+            })
             ->whereExists(function ($q) use ($windowStart) {
                 $q->select(\DB::raw(1))
                     ->from('t_crm_order_status_history as h')
@@ -334,15 +370,6 @@ class OnlineFollowUpService
             'delivery_time'  => $deliveredAt->format('h:i A'),
             'day_number'     => $dayNumber,
             'is_last_day'    => $dayNumber >= self::WINDOW_DAYS,
-
-            // Shop (B2B) customers are collected differently from walk-up
-            // customers — they run a balance and are settled FIFO from the Shop
-            // tab of Online Approvals, which deliberately excludes them from the
-            // regular queues. They are LISTED here (they are genuinely delivered,
-            // unpaid and unproven) but marked, so chasing one per-order is a
-            // conscious choice rather than an accident.
-            'customer_type'   => $order->customer->customer_type ?? null,
-            'is_shop'         => ($order->customer->customer_type ?? null) === 'shop',
 
             'lifetime_orders' => $lifetimeOrders,
             'is_new_customer' => $lifetimeOrders < self::NEW_CUSTOMER_ORDER_THRESHOLD,

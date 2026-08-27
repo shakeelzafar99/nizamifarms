@@ -938,9 +938,12 @@ class PaymentSignalsController extends Controller
      * ⚠⚠ THE COUNT-ONCE RULE. The proof panel computes its difference PER
      * SIGNAL, so once a manual claim is validated by its bank SMS there are two
      * rows each reporting the same "+Rs X over". Summing them would double the
-     * customer's credit out of thin air. Paired rows are therefore collapsed to
-     * one proof (the bank side wins — it is the truth anchor), and only then is
-     * the excess measured.
+     * customer's credit out of thin air. Duplicate evidence is therefore
+     * collapsed to one proof per PAYMENT — first by the pair link, then by the
+     * transaction reference + amount (a screenshot, a bank email and a bank SMS
+     * describing one transfer are three rows, but pairing only ever links two
+     * of them) — and only then is the excess measured. The bank side wins as
+     * the surviving row: it is the truth anchor.
      *
      * @return array{amount:float,signal_id:?int,customer_id:?int,eligible:bool,reason:?string}
      */
@@ -982,25 +985,69 @@ class PaymentSignalsController extends Controller
             return $none;
         }
 
-        // Collapse cross-source pairs: keep the bank-side row when a pair is
-        // present, else the row itself. Keyed by the pair so each real payment
-        // is represented exactly once.
-        $byId = $signals->keyBy('id');
-        $kept = [];
+        // ⚠⚠ COUNT-ONCE, stage 1 — the pair link. Group the rows the matcher
+        // has already tied together, keeping EVERY member of a pair: stage 2
+        // needs the transaction reference, which often lives on the WhatsApp
+        // side of a pair while the bank side (the row this collapse prefers)
+        // carries none — read it off the surviving row alone and most
+        // duplicates slip through.
+        $isBank = fn ($sig) => in_array($sig->source, PaymentSignal::BANK_SIDE_SOURCES, true);
+
+        $pairGroups = [];
         foreach ($signals as $s) {
             $mateId = $s->paired_signal_id ? (int) $s->paired_signal_id : null;
             $key    = $mateId ? min((int) $s->id, $mateId) . '-' . max((int) $s->id, $mateId) : 'solo-' . $s->id;
+            $pairGroups[$key][] = $s;
+        }
+
+        // One representative per pair (the bank side wins — it is the truth
+        // anchor), carrying the group's best transaction reference.
+        $reps = [];
+        foreach ($pairGroups as $members) {
+            $rep = $members[0];
+            $ref = '';
+            foreach ($members as $mem) {
+                if ($isBank($mem) && !$isBank($rep)) {
+                    $rep = $mem;
+                }
+                if ($ref === '') {
+                    $ref = trim((string) $mem->extracted_ref);
+                }
+            }
+            $reps[] = ['sig' => $rep, 'ref' => $ref];
+        }
+
+        // ⚠⚠ COUNT-ONCE, stage 2 — the transaction reference. Pairing links
+        // exactly TWO rows, so a THIRD channel reporting the same transfer (a
+        // bank SMS landing after a screenshot+email pair) — or a same-channel
+        // duplicate — survives stage 1 as its own "payment" and its whole
+        // amount becomes phantom extra. Found live on the Aug-27 replica: one
+        // Rs 11,830 transfer recorded thrice offered Rs 11,829.60 of credit
+        // out of thin air, and nine such orders held Rs 221k between them.
+        //
+        // A bank reference names ONE transfer, so rows agreeing on BOTH
+        // reference and amount are the same money. The amount is part of the
+        // key on purpose: it stops a shared or truncated reference from
+        // merging two genuinely different payments (also seen live — one ref
+        // carrying a Rs 150 row and a Rs 215 row stays two payments). No
+        // reference, or a degenerately short one, means no merging — exactly
+        // the old behaviour, so a combined transfer's per-order treatment
+        // (excluded above, judged against the GROUP total elsewhere) and
+        // every single-proof order are untouched.
+        $kept = [];
+        foreach ($reps as $r) {
+            $ref = mb_strlen($r['ref']) >= 4 ? mb_strtoupper($r['ref']) : '';
+            $key = $ref !== ''
+                ? 'ref:' . $ref . '@' . number_format((float) $r['sig']->extracted_amount, 2, '.', '')
+                : 'grp:' . $r['sig']->id;
 
             if (!isset($kept[$key])) {
-                $kept[$key] = $s;
+                $kept[$key] = $r['sig'];
                 continue;
             }
-            // Prefer the bank-side reading of the same payment.
-            $existing = $kept[$key];
-            $sIsBank  = in_array($s->source, PaymentSignal::BANK_SIDE_SOURCES ?? ['email', 'bank_sms'], true);
-            $eIsBank  = in_array($existing->source, PaymentSignal::BANK_SIDE_SOURCES ?? ['email', 'bank_sms'], true);
-            if ($sIsBank && !$eIsBank) {
-                $kept[$key] = $s;
+            // Prefer the bank-side reading of the same payment, as stage 1 does.
+            if ($isBank($r['sig']) && !$isBank($kept[$key])) {
+                $kept[$key] = $r['sig'];
             }
         }
 
@@ -1180,6 +1227,94 @@ class PaymentSignalsController extends Controller
         } catch (\Throwable $e) {
             return response()->json(['success' => false, 'message' => $e->getMessage()], 422);
         }
+    }
+
+    /**
+     * POST /admin/payments/signal/{signalId}/delete-manual  (also mobile)
+     *
+     * Delete a HAND-TYPED payment claim that was entered wrongly.
+     *
+     * "Wrong customer — remove" (unmark) is the wrong tool for a typo: it
+     * detaches the claim and pushes it back into the money inbox as an
+     * unresolved credit, so a payment that never existed would sit there
+     * forever waiting to be matched to somebody. A manual claim is one
+     * manager's word, not evidence from a bank — if the word was wrong, the
+     * row should go.
+     *
+     * ⚠⚠ ONLY hand-typed claims. A customer's screenshot or a bank alert is
+     * evidence that arrived from outside and must never be deletable here —
+     * those get unmark()ed, which keeps the row and re-queues the money.
+     */
+    public function deleteManualProof(Request $request, int $signalId)
+    {
+        // Same people who may type a payment in may correct one.
+        if ($deny = $this->denyUnlessManualEntry()) {
+            return $deny;
+        }
+
+        $signal = PaymentSignal::find($signalId);
+        if (!$signal) {
+            return response()->json(['success' => false, 'message' => 'That payment record no longer exists.'], 404);
+        }
+
+        $isManual = $signal->match_reason === 'manual_confirmed'
+            && str_starts_with((string) $signal->extractor_version, 'manual_web@');
+        if (!$isManual) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Only a payment typed in by hand can be deleted. This one came from a screenshot or a bank alert — use "Wrong customer — remove" instead.',
+            ], 422);
+        }
+
+        // A bank alert matched to this claim means real money did arrive. The
+        // claim is no longer just somebody's word, so deleting it would erase
+        // the link to a genuine transfer.
+        if ($signal->paired_signal_id) {
+            return response()->json([
+                'success' => false,
+                'message' => 'A bank alert has already confirmed this payment, so it is no longer just a manual note. Use "Wrong customer — remove" instead.',
+            ], 422);
+        }
+
+        // Deleting evidence that money was banked against would orphan the
+        // grant — the balance would keep money whose reason no longer exists.
+        if (\Schema::hasTable('t_crm_customer_credit')) {
+            $grant = \DB::table('t_crm_customer_credit')
+                ->where('signal_id', $signal->id)
+                ->where('status', '!=', \App\Models\CRM\CustomerCreditModel::STATUS_VOIDED)
+                ->first(['id', 'amount']);
+            if ($grant) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Rs ' . number_format((float) $grant->amount, 2)
+                        . ' from this payment is already in the customer\'s balance. Remove that from the customer\'s balance first, then delete this.',
+                ], 422);
+            }
+        }
+
+        $orderId = $signal->matched_order_id;
+        try {
+            \DB::transaction(function () use ($signal) {
+                // Whatever this claim taught about the payer rested on it being
+                // right — same unlearn the detach path does.
+                app(\App\Services\Payments\Signals\CustomerBankAliasService::class)->unlearnFromSignal($signal);
+                \DB::table('t_fin_payment_signal_order')->where('signal_id', $signal->id)->delete();
+                $signal->delete();
+            });
+        } catch (\Throwable $e) {
+            \Log::error('Manual payment delete failed', ['signal_id' => $signalId, 'error' => $e->getMessage()]);
+            return response()->json(['success' => false, 'message' => 'Could not delete that payment.'], 500);
+        }
+
+        \Log::info('Manual payment claim deleted', [
+            'signal_id' => $signalId, 'order_id' => $orderId,
+            'amount' => $signal->extracted_amount, 'by' => $request->user()->id,
+        ]);
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Rs ' . number_format((float) $signal->extracted_amount, 2) . ' payment deleted.',
+        ]);
     }
 
     /**
