@@ -1381,6 +1381,17 @@ Route::middleware(['auth'])->group(function () {
             Route::post('/{id}/company-transfer', [\App\Http\Controllers\FIN\EmployeeCashController::class, 'recordCompanyTransfer'])->name('company-transfer');
             
             Route::post('/mark-online-message-sent/{orderId}', [\App\Http\Controllers\FIN\EmployeeCashController::class, 'markOnlineMessageSentWeb'])->name('mark-online-message-sent');
+
+            // Aug-2026 — Daily Closing is a load-time snapshot with no polling of
+            // any kind, so a proof that lands after the page opens is invisible.
+            // These two keep it honest without reloading a 62-query page:
+            //   precheck  — re-reads ONE order's proof/settled state at the moment
+            //               of sending, so a stale page can't nag a customer who
+            //               has already paid.
+            //   heartbeat — a handful of COUNTs, safe to poll, that tells the page
+            //               whether anything changed since it loaded.
+            Route::get('/followup-precheck/{orderId}', [\App\Http\Controllers\FIN\EmployeeCashController::class, 'followUpPrecheck'])->name('followup-precheck');
+            Route::get('/followup-heartbeat', [\App\Http\Controllers\FIN\EmployeeCashController::class, 'followUpHeartbeat'])->name('followup-heartbeat');
         });
 
         // Ledger Hub (parallel-run modern UI — additive; reads existing data, writes via existing

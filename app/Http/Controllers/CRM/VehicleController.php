@@ -303,6 +303,19 @@ class VehicleController extends Controller
 
             $petrolRate = $this->petrolRateFor($uid);
 
+            // ⭐⭐ THE DATE MUST BE FILEABLE, OR DO NOT OFFER IT (Aug-28 2026).
+            //
+            // ⚠⚠ The picker offered a priced, ready-to-send claim for ANY date the day
+            //    had kilometres on, while the submit endpoint enforced the backdating
+            //    window — so a manager filled the form, pressed Create and got a red
+            //    422. The screen must never offer what the server is about to refuse;
+            //    that is the same rule the rider's `can_claim` already follows.
+            // ⚠ The window depends on WHO is asking: this endpoint also answers a rider
+            //   about his own day ($isSelf above), and offering him the manager's 30 days
+            //   would be the same "button the server refuses" bug in the other direction.
+            $windowDays = (new \App\Services\Riders\FuelClaimRules())->petrolWindowDays(!$isSelf);
+            $inWindow = $date >= \Carbon\Carbon::today()->subDays($windowDays)->format('Y-m-d');
+
             $out = [];
             foreach ($legs as $l) {
                 $claim = null;
@@ -327,7 +340,8 @@ class VehicleController extends Controller
                     // A per-km claim is only possible on his OWN machine, with real
                     // distance, a rate to price it and an attendance row to anchor it.
                     'can_meter_claim' => (empty($l['is_company']) && ($l['km'] ?? 0) > 0
-                                          && $petrolRate > 0 && $attendanceId && !$claim),
+                                          && $petrolRate > 0 && $attendanceId && !$claim
+                                          && $inWindow),
                     'suggested_amount' => (empty($l['is_company']) && ($l['km'] ?? 0) > 0 && $petrolRate > 0)
                         ? round(((float) $l['km']) * $petrolRate, 2) : null,
                     'claim' => $claim ? [
@@ -362,6 +376,10 @@ class VehicleController extends Controller
                 'petrol_rate'   => $petrolRate,
                 'vehicles'      => $out,
                 'other_claims'  => $otherClaims,
+                // So the modal can say WHY a per-km claim is not on offer for an old
+                // date, instead of silently showing a cash-only chip.
+                'window_days'   => $windowDays,
+                'in_window'     => $inWindow,
             ]);
         } catch (\Throwable $e) {
             Log::warning('petrolContext failed', ['user' => $uid, 'date' => $date, 'error' => $e->getMessage()]);

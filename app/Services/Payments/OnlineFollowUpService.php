@@ -505,6 +505,66 @@ class OnlineFollowUpService
     }
 
     /**
+     * A handful of counters describing everything the Daily Closing page would
+     * show differently if it were reloaded right now. Deliberately AGGREGATE
+     * ONLY — no rows, no relations, no proof payloads — because this is polled
+     * on a timer and build() costs ~15 queries / ~270ms, which is not.
+     *
+     * The page renders its own baseline into the DOM at load; the poller diffs
+     * against it and offers a refresh. It reports NEW ACTIVITY SINCE LOAD, not
+     * "your filtered view changed" — deliveries and proofs are what actually go
+     * stale on this screen, and they don't depend on the filter bar.
+     *
+     * Returns ints only, so it is safe to embed and cheap to compare.
+     */
+    public function heartbeat(): array
+    {
+        $windowStart = Carbon::today()->subDays(self::WINDOW_DAYS - 1)->startOfDay();
+
+        // Deliveries counted straight off the status-history table rather than
+        // off orders. Two reasons: it is ONE indexed table with no join, no
+        // whereExists and no shop check (5ms vs 71ms for the order-side version,
+        // measured — this is polled, so that matters); and it counts CASH
+        // deliveries too, which is the other half of what goes stale on this page
+        // (a cash delivery posts an invoice row to the rider's employee-cash
+        // account and the outstanding list won't show it until reload).
+        //
+        // It is a CHANGE DETECTOR, not a display figure — the page never renders
+        // this number, it only compares it with the one it was born with.
+        $deliveries = \DB::table('t_crm_order_status_history')
+            ->where('status_code', 'delivered')
+            ->where('changed_at', '>=', $windowStart)
+            ->count();
+
+        // Payment proofs matched to anything recent, and online money approved in
+        // the last few days. Both counted straight off their own tables — no
+        // per-order fan-out.
+        $proofs = 0;
+        if (config('payment_signals.enabled')) {
+            try {
+                $proofs = \DB::table('t_fin_payment_signal')
+                    ->whereIn('status', ['matched', 'amount_mismatch'])
+                    ->where('updated_at', '>=', $windowStart)
+                    ->count();
+            } catch (\Throwable $e) {
+                $proofs = 0;
+            }
+        }
+
+        $settled = \App\Models\FIN\LedgerModel::query()
+            ->where('mode', 'online')
+            ->where('approval_status', \App\Models\FIN\LedgerModel::STATUS_APPROVED)
+            ->where('approval_date', '>=', $windowStart)
+            ->count();
+
+        return [
+            'deliveries' => (int) $deliveries,
+            'proofs'     => (int) $proofs,
+            'settled'    => (int) $settled,
+        ];
+    }
+
+    /**
      * The `online_message_tracking` shape the INSTALLED mobile app expects:
      * rider-grouped sent/pending lists, keyed by its own field names.
      *

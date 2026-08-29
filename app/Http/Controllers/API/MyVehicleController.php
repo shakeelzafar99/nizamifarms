@@ -187,9 +187,9 @@ class MyVehicleController extends Controller
             }
 
             // 2. inside the window a claim could still be made for
-            $window = (int) (DB::table('t_fin_config')
-                ->where('config_key', 'PETROL_WINDOW_DAYS')->value('config_value') ?: 5);
-            if ($window < 1) { $window = 5; }
+            // ⭐ ONE definition — the RIDER's window: this is his own door, and there is
+            //   no point letting him record a reading he could not then claim against.
+            $window = (new \App\Services\Riders\FuelClaimRules())->petrolWindowDays(false);
             if ($date < Carbon::today()->subDays($window)->format('Y-m-d')) {
                 return response()->json(['success' => false,
                     'message' => "Meter readings can only be added for the last {$window} days. "

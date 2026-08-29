@@ -196,6 +196,11 @@
               <input type="number" min="1" step="1" id="rulePetrolWindow" style="width:100%;border:2px solid #d1d5db;border-radius:8px;padding:9px 10px;font-size:14px;">
               <div style="font-size:11px;color:#9ca3af;margin-top:4px;">How many days back a rider may raise a meter petrol request from their attendance.</div>
             </div>
+            <div style="flex:1;min-width:150px;">
+              <label style="display:block;font-size:12px;font-weight:600;color:#374151;margin-bottom:4px;">Manager on-behalf window (days)</label>
+              <input type="number" min="1" step="1" id="rulePetrolWindowMgr" style="width:100%;border:2px solid #d1d5db;border-radius:8px;padding:9px 10px;font-size:14px;">
+              <div style="font-size:11px;color:#9ca3af;margin-top:4px;">How many days back a MANAGER may raise one for a rider. Repairs are found late, so this is deliberately longer; it can never be less than the rider window above.</div>
+            </div>
           </div>
         </div>
       </div>
@@ -1350,8 +1355,10 @@ async function loadExistingAttendance() {
     
     if (json.success && json.data && json.data.length > 0) {
       const record = json.data[0];
-      document.getElementById('loginTime').value = record.login_time || '';
-      document.getElementById('logoutTime').value = record.logout_time || '';
+      // Trim DB seconds ("12:07:45" -> "12:07") — the minute-granular time input
+      // otherwise shows a stuck seconds segment and the save is rejected as not H:i.
+      document.getElementById('loginTime').value = String(record.login_time || '').slice(0, 5);
+      document.getElementById('logoutTime').value = String(record.logout_time || '').slice(0, 5);
     } else {
       // No existing record, clear fields
       document.getElementById('loginTime').value = '';
@@ -4012,15 +4019,21 @@ async function loadMonthSummary() {
 }
 
 // Quick edit modal
+// DB times carry seconds ("12:07:45") but <input type="time"> is minute-granular —
+// feeding it seconds shows a stuck seconds segment and the backend expects H:i.
+// So: populate as HH:MM, remember the originals, and only send changed fields.
+let quickEditOriginal = { login: '', logout: '' };
 function openQuickEdit(userId, userName, loginTime, logoutTime, attendanceDate) {
   if (blockSelfAttendanceEdit(userId)) return; // R8 self-edit block
   currentEditUserId = userId;
   currentEditDate = attendanceDate || document.getElementById('tableDate').value;
-  
+
   document.getElementById('quickEditUser').textContent = userName;
   document.getElementById('quickEditDate').textContent = currentEditDate;
-  document.getElementById('quickLoginTime').value = loginTime;
-  document.getElementById('quickLogoutTime').value = logoutTime;
+  quickEditOriginal.login = String(loginTime || '').slice(0, 5);
+  quickEditOriginal.logout = String(logoutTime || '').slice(0, 5);
+  document.getElementById('quickLoginTime').value = quickEditOriginal.login;
+  document.getElementById('quickLogoutTime').value = quickEditOriginal.logout;
   
   const modal = document.getElementById('quickEditModal');
   modal.classList.remove('hidden');
@@ -4072,12 +4085,18 @@ async function saveQuickEdit() {
     return;
   }
 
+  // Only send what the user changed — the backend updates provided fields only,
+  // so an untouched login keeps its stored seconds instead of being rewritten.
   const payload = {
     user_id: currentEditUserId,
-    attendance_date: currentEditDate,
-    login_time: loginTime || null,
-    logout_time: logoutTime || null
+    attendance_date: currentEditDate
   };
+  if (loginTime !== quickEditOriginal.login) payload.login_time = loginTime || null;
+  if (logoutTime !== quickEditOriginal.logout) payload.logout_time = logoutTime || null;
+  if (!('login_time' in payload) && !('logout_time' in payload)) {
+    closeQuickEdit();
+    return;
+  }
 
   try {
     const res = await fetch('/attendance', {
@@ -5108,6 +5127,7 @@ async function openAttendanceRules() {
       document.getElementById('ruleGpsWarn').value = data.meter_gps_warn_km != null ? data.meter_gps_warn_km : 10;
       document.getElementById('ruleOvernight').value = data.overnight_grace_km != null ? data.overnight_grace_km : 30;
       document.getElementById('rulePetrolWindow').value = data.petrol_window_days != null ? data.petrol_window_days : 5;
+      document.getElementById('rulePetrolWindowMgr').value = data.petrol_window_days_manager != null ? data.petrol_window_days_manager : 30;
       document.getElementById('ruleLeaveTotal').value = data.leave_quota_total != null ? data.leave_quota_total : 10;
       document.getElementById('ruleSamedayCap').value = data.leave_sameday_cap != null ? data.leave_sameday_cap : 4;
       document.getElementById('ruleSamedayCutoff').value = data.leave_sameday_cutoff || '10:00';
@@ -5178,6 +5198,7 @@ async function saveAttendanceRules() {
         meter_gps_warn_km: document.getElementById('ruleGpsWarn').value,
         overnight_grace_km: document.getElementById('ruleOvernight').value,
         petrol_window_days: document.getElementById('rulePetrolWindow').value,
+        petrol_window_days_manager: document.getElementById('rulePetrolWindowMgr').value,
         leave_quota_total: document.getElementById('ruleLeaveTotal').value,
         leave_sameday_cap: document.getElementById('ruleSamedayCap').value,
         leave_sameday_cutoff: document.getElementById('ruleSamedayCutoff').value,

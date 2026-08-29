@@ -1,0 +1,542 @@
+{
+    "id": 7527819182369,
+    "admin_graphql_api_id": "gid:\/\/shopify\/Order\/7527819182369",
+    "app_id": 283966930945,
+    "browser_ip": null,
+    "buyer_accepts_marketing": false,
+    "cancel_reason": null,
+    "cancelled_at": null,
+    "cart_token": null,
+    "checkout_id": null,
+    "checkout_token": null,
+    "client_details": null,
+    "closed_at": null,
+    "company": null,
+    "confirmation_number": "7XPW9Z3WJ",
+    "confirmed": true,
+    "contact_email": null,
+    "created_at": "2026-08-28T21:36:40+05:00",
+    "currency": "PKR",
+    "current_shipping_price_set": {
+        "shop_money": {
+            "amount": "300.00",
+            "currency_code": "PKR"
+        },
+        "presentment_money": {
+            "amount": "300.00",
+            "currency_code": "PKR"
+        }
+    },
+    "current_subtotal_price": "5618.00",
+    "current_subtotal_price_set": {
+        "shop_money": {
+            "amount": "5618.00",
+            "currency_code": "PKR"
+        },
+        "presentment_money": {
+            "amount": "5618.00",
+            "currency_code": "PKR"
+        }
+    },
+    "current_total_additional_fees_set": null,
+    "current_total_discounts": "0.00",
+    "current_total_discounts_set": {
+        "shop_money": {
+            "amount": "0.00",
+            "currency_code": "PKR"
+        },
+        "presentment_money": {
+            "amount": "0.00",
+            "currency_code": "PKR"
+        }
+    },
+    "current_total_duties_set": null,
+    "current_total_price": "5918.00",
+    "current_total_price_set": {
+        "shop_money": {
+            "amount": "5918.00",
+            "currency_code": "PKR"
+        },
+        "presentment_money": {
+            "amount": "5918.00",
+            "currency_code": "PKR"
+        }
+    },
+    "current_total_tax": "0.00",
+    "current_total_tax_set": {
+        "shop_money": {
+            "amount": "0.00",
+            "currency_code": "PKR"
+        },
+        "presentment_money": {
+            "amount": "0.00",
+            "currency_code": "PKR"
+        }
+    },
+    "customer_locale": null,
+    "device_id": null,
+    "discount_codes": [],
+    "duties_included": false,
+    "email": "",
+    "estimated_taxes": false,
+    "financial_status": "pending",
+    "fulfillment_status": null,
+    "landing_site": null,
+    "landing_site_ref": null,
+    "location_id": null,
+    "merchant_business_entity_id": "MTY5MjQzNTM1NjQ5",
+    "merchant_of_record_app_id": null,
+    "name": "#22437",
+    "note": null,
+    "note_attributes": [
+        {
+            "name": "source",
+            "value": "ios_app"
+        },
+        {
+            "name": "paymentMethodName",
+            "value": "Regular meat: Cash on Delivery (COD)"
+        },
+        {
+            "name": "Invoice note",
+            "value": "This is an estimated invoice. As all items are freshly cut and weighed to your order, the final amount may vary by 3-5%. A confirmed invoice will be sent via WhatsApp before delivery. Payment is collected based on the final invoice."
+        }
+    ],
+    "number": 21437,
+    "order_number": 22437,
+    "order_status_url": "https:\/\/nizamifarms.com\/69243535649\/orders\/60f20b897ac6fd18064bba66e8fcc10a\/authenticate?key=5e876b8d3953da844f97ec45da9a455a",
+    "original_total_additional_fees_set": null,
+    "original_total_duties_set": null,
+    "payment_gateway_names": [
+        "Regular meat: Cash on Delivery (COD)"
+    ],
+    "phone": "+923335201233",
+    "po_number": null,
+    "presentment_currency": "PKR",
+    "processed_at": "2026-08-28T21:36:40+05:00",
+    "reference": null,
+    "referring_site": null,
+    "source_identifier": null,
+    "source_name": "ios_app",
+    "source_url": null,
+    "subtotal_price": "5618.00",
+    "subtotal_price_set": {
+        "shop_money": {
+            "amount": "5618.00",
+            "currency_code": "PKR"
+        },
+        "presentment_money": {
+            "amount": "5618.00",
+            "currency_code": "PKR"
+        }
+    },
+    "tags": "ios-app, tip",
+    "tax_exempt": false,
+    "tax_lines": [],
+    "taxes_included": false,
+    "test": false,
+    "token": "60f20b897ac6fd18064bba66e8fcc10a",
+    "total_cash_rounding_payment_adjustment_set": {
+        "shop_money": {
+            "amount": "0.00",
+            "currency_code": "PKR"
+        },
+        "presentment_money": {
+            "amount": "0.00",
+            "currency_code": "PKR"
+        }
+    },
+    "total_cash_rounding_refund_adjustment_set": {
+        "shop_money": {
+            "amount": "0.00",
+            "currency_code": "PKR"
+        },
+        "presentment_money": {
+            "amount": "0.00",
+            "currency_code": "PKR"
+        }
+    },
+    "total_discounts": "0.00",
+    "total_discounts_set": {
+        "shop_money": {
+            "amount": "0.00",
+            "currency_code": "PKR"
+        },
+        "presentment_money": {
+            "amount": "0.00",
+            "currency_code": "PKR"
+        }
+    },
+    "total_line_items_price": "5618.00",
+    "total_line_items_price_set": {
+        "shop_money": {
+            "amount": "5618.00",
+            "currency_code": "PKR"
+        },
+        "presentment_money": {
+            "amount": "5618.00",
+            "currency_code": "PKR"
+        }
+    },
+    "total_outstanding": "5918.00",
+    "total_price": "5918.00",
+    "total_price_set": {
+        "shop_money": {
+            "amount": "5918.00",
+            "currency_code": "PKR"
+        },
+        "presentment_money": {
+            "amount": "5918.00",
+            "currency_code": "PKR"
+        }
+    },
+    "total_shipping_price_set": {
+        "shop_money": {
+            "amount": "300.00",
+            "currency_code": "PKR"
+        },
+        "presentment_money": {
+            "amount": "300.00",
+            "currency_code": "PKR"
+        }
+    },
+    "total_tax": "0.00",
+    "total_tax_set": {
+        "shop_money": {
+            "amount": "0.00",
+            "currency_code": "PKR"
+        },
+        "presentment_money": {
+            "amount": "0.00",
+            "currency_code": "PKR"
+        }
+    },
+    "total_tip_received": "0.00",
+    "total_weight": 2500,
+    "updated_at": "2026-08-28T21:36:41+05:00",
+    "user_id": null,
+    "billing_address": {
+        "first_name": "Shahzad",
+        "address1": "House 11, Street 5",
+        "phone": "+923335201233",
+        "city": "Islamabad",
+        "zip": "44000",
+        "province": null,
+        "country": "Pakistan",
+        "last_name": "Mohammad",
+        "address2": "G-6\/3",
+        "company": null,
+        "latitude": 33.561998500000001,
+        "longitude": 73.150657899999999,
+        "name": "Shahzad Mohammad",
+        "country_code": "PK",
+        "province_code": null
+    },
+    "customer": {
+        "id": 7577246433569,
+        "created_at": "2023-12-19T19:05:24+05:00",
+        "updated_at": "2026-08-28T21:36:41+05:00",
+        "first_name": "Mohammad",
+        "last_name": "Shahzad",
+        "state": "disabled",
+        "note": null,
+        "verified_email": true,
+        "multipass_identifier": null,
+        "tax_exempt": false,
+        "email": null,
+        "phone": "+923335201233",
+        "currency": "PKR",
+        "tax_exemptions": [],
+        "admin_graphql_api_id": "gid:\/\/shopify\/Customer\/7577246433569",
+        "default_address": {
+            "id": 12033516306721,
+            "customer_id": 7577246433569,
+            "first_name": "Shahzad",
+            "last_name": "Mohammad",
+            "company": null,
+            "address1": "House 11, Street 5",
+            "address2": "G-6\/3",
+            "city": "Islamabad",
+            "province": null,
+            "country": "Pakistan",
+            "zip": "44000",
+            "phone": "+923335201233",
+            "name": "Shahzad Mohammad",
+            "province_code": null,
+            "country_code": "PK",
+            "country_name": "Pakistan",
+            "default": true
+        }
+    },
+    "discount_applications": [],
+    "fulfillments": [],
+    "line_items": [
+        {
+            "id": 17710914404641,
+            "admin_graphql_api_id": "gid:\/\/shopify\/LineItem\/17710914404641",
+            "attributed_staffs": [],
+            "current_quantity": 1,
+            "fulfillable_quantity": 1,
+            "fulfillment_service": "manual",
+            "fulfillment_status": null,
+            "gift_card": false,
+            "grams": 0,
+            "name": "Beef Trotters (Paya) - Trotters (Paya) - Buffalo per Paya",
+            "price": "2250.00",
+            "price_set": {
+                "shop_money": {
+                    "amount": "2250.00",
+                    "currency_code": "PKR"
+                },
+                "presentment_money": {
+                    "amount": "2250.00",
+                    "currency_code": "PKR"
+                }
+            },
+            "product_exists": true,
+            "product_id": 8150426288417,
+            "properties": [],
+            "quantity": 1,
+            "requires_shipping": false,
+            "sales_line_item_group_id": null,
+            "sku": "PB6-TB",
+            "taxable": true,
+            "title": "Beef Trotters (Paya)",
+            "total_discount": "0.00",
+            "total_discount_set": {
+                "shop_money": {
+                    "amount": "0.00",
+                    "currency_code": "PKR"
+                },
+                "presentment_money": {
+                    "amount": "0.00",
+                    "currency_code": "PKR"
+                }
+            },
+            "variant_id": 52864040010017,
+            "variant_inventory_management": null,
+            "variant_title": "Trotters (Paya) - Buffalo per Paya",
+            "vendor": "Nizami Farms",
+            "tax_lines": [],
+            "duties": [],
+            "discount_allocations": []
+        },
+        {
+            "id": 17710914437409,
+            "admin_graphql_api_id": "gid:\/\/shopify\/LineItem\/17710914437409",
+            "attributed_staffs": [],
+            "current_quantity": 1,
+            "fulfillable_quantity": 1,
+            "fulfillment_service": "manual",
+            "fulfillment_status": null,
+            "gift_card": false,
+            "grams": 2500,
+            "name": "Veal Bones (Nalli + Haddi \/ Soup Bones \/ Rump Bones) - Veal Bone (Nalli + Haddi) per kg",
+            "price": "450.00",
+            "price_set": {
+                "shop_money": {
+                    "amount": "450.00",
+                    "currency_code": "PKR"
+                },
+                "presentment_money": {
+                    "amount": "450.00",
+                    "currency_code": "PKR"
+                }
+            },
+            "product_exists": true,
+            "product_id": 10167371890977,
+            "properties": [],
+            "quantity": 1,
+            "requires_shipping": false,
+            "sales_line_item_group_id": null,
+            "sku": "B10-NL",
+            "taxable": true,
+            "title": "Veal Bones (Nalli + Haddi \/ Soup Bones \/ Rump Bones)",
+            "total_discount": "0.00",
+            "total_discount_set": {
+                "shop_money": {
+                    "amount": "0.00",
+                    "currency_code": "PKR"
+                },
+                "presentment_money": {
+                    "amount": "0.00",
+                    "currency_code": "PKR"
+                }
+            },
+            "variant_id": 51950351876385,
+            "variant_inventory_management": null,
+            "variant_title": "Veal Bone (Nalli + Haddi) per kg",
+            "vendor": "Nizami Farms",
+            "tax_lines": [],
+            "duties": [],
+            "discount_allocations": []
+        },
+        {
+            "id": 17710914470177,
+            "admin_graphql_api_id": "gid:\/\/shopify\/LineItem\/17710914470177",
+            "attributed_staffs": [],
+            "current_quantity": 1,
+            "fulfillable_quantity": 1,
+            "fulfillment_service": "manual",
+            "fulfillment_status": null,
+            "gift_card": false,
+            "grams": 0,
+            "name": "Veal Shank Boneless (Nihari) - Premium Lean (Net weight) \/ Regular Cut - Small Boti \/ Economy 1000 grams",
+            "price": "2650.00",
+            "price_set": {
+                "shop_money": {
+                    "amount": "2650.00",
+                    "currency_code": "PKR"
+                },
+                "presentment_money": {
+                    "amount": "2650.00",
+                    "currency_code": "PKR"
+                }
+            },
+            "product_exists": true,
+            "product_id": 8150007939361,
+            "properties": [],
+            "quantity": 1,
+            "requires_shipping": false,
+            "sales_line_item_group_id": null,
+            "sku": "B5-PVSB",
+            "taxable": true,
+            "title": "Veal Shank Boneless (Nihari)",
+            "total_discount": "0.00",
+            "total_discount_set": {
+                "shop_money": {
+                    "amount": "0.00",
+                    "currency_code": "PKR"
+                },
+                "presentment_money": {
+                    "amount": "0.00",
+                    "currency_code": "PKR"
+                }
+            },
+            "variant_id": 49719414292769,
+            "variant_inventory_management": null,
+            "variant_title": "Premium Lean (Net weight) \/ Regular Cut - Small Boti \/ Economy 1000 grams",
+            "vendor": "Nizami Farms",
+            "tax_lines": [],
+            "duties": [],
+            "discount_allocations": []
+        },
+        {
+            "id": 17710914502945,
+            "admin_graphql_api_id": "gid:\/\/shopify\/LineItem\/17710914502945",
+            "attributed_staffs": [],
+            "current_quantity": 1,
+            "fulfillable_quantity": 1,
+            "fulfillment_service": "manual",
+            "fulfillment_status": null,
+            "gift_card": false,
+            "grams": 0,
+            "name": "Tip",
+            "price": "268.00",
+            "price_set": {
+                "shop_money": {
+                    "amount": "268.00",
+                    "currency_code": "PKR"
+                },
+                "presentment_money": {
+                    "amount": "268.00",
+                    "currency_code": "PKR"
+                }
+            },
+            "product_exists": false,
+            "product_id": null,
+            "properties": [],
+            "quantity": 1,
+            "requires_shipping": false,
+            "sales_line_item_group_id": null,
+            "sku": null,
+            "taxable": true,
+            "title": "Tip",
+            "total_discount": "0.00",
+            "total_discount_set": {
+                "shop_money": {
+                    "amount": "0.00",
+                    "currency_code": "PKR"
+                },
+                "presentment_money": {
+                    "amount": "0.00",
+                    "currency_code": "PKR"
+                }
+            },
+            "variant_id": null,
+            "variant_inventory_management": null,
+            "variant_title": null,
+            "vendor": null,
+            "tax_lines": [],
+            "duties": [],
+            "discount_allocations": []
+        }
+    ],
+    "payment_terms": null,
+    "refunds": [],
+    "shipping_address": {
+        "first_name": "Shahzad",
+        "address1": "House 11, Street 5",
+        "phone": "+923335201233",
+        "city": "Islamabad",
+        "zip": "44000",
+        "province": null,
+        "country": "Pakistan",
+        "last_name": "Mohammad",
+        "address2": "G-6\/3",
+        "company": null,
+        "latitude": 33.561998500000001,
+        "longitude": 73.150657899999999,
+        "name": "Shahzad Mohammad",
+        "country_code": "PK",
+        "province_code": null
+    },
+    "shipping_lines": [
+        {
+            "id": 5712929718561,
+            "carrier_identifier": null,
+            "code": "Zone 1",
+            "current_discounted_price_set": {
+                "shop_money": {
+                    "amount": "300.00",
+                    "currency_code": "PKR"
+                },
+                "presentment_money": {
+                    "amount": "300.00",
+                    "currency_code": "PKR"
+                }
+            },
+            "discounted_price": "300.00",
+            "discounted_price_set": {
+                "shop_money": {
+                    "amount": "300.00",
+                    "currency_code": "PKR"
+                },
+                "presentment_money": {
+                    "amount": "300.00",
+                    "currency_code": "PKR"
+                }
+            },
+            "is_removed": false,
+            "phone": null,
+            "price": "300.00",
+            "price_set": {
+                "shop_money": {
+                    "amount": "300.00",
+                    "currency_code": "PKR"
+                },
+                "presentment_money": {
+                    "amount": "300.00",
+                    "currency_code": "PKR"
+                }
+            },
+            "requested_fulfillment_service_id": null,
+            "source": null,
+            "title": "Zone 1",
+            "tax_lines": [],
+            "discount_allocations": []
+        }
+    ],
+    "returns": [],
+    "line_item_groups": []
+}

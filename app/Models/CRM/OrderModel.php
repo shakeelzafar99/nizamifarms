@@ -1039,6 +1039,33 @@ class OrderModel extends BaseModel
             $tipAmount = $shopifyOrder['total_tip_received'];
         }
 
+        // Customer-app orders are created via the Shopify API, which cannot use the
+        // native checkout tip — the app sends the tip as a custom line item named
+        // "Tip" (no SKU) and the order-level tip fields stay 0 (e.g. order 22437,
+        // Aug-2026). Fall back to summing tip-named line items so app tips are
+        // captured too. Only when the order-level fields carried nothing: a native
+        // checkout tip never also appears as a line item, so this cannot double-count.
+        $lineItemTipTotal = 0;
+        foreach (($shopifyOrder['line_items'] ?? []) as $tipCandidate) {
+            $candidateName = strtolower(trim($tipCandidate['name'] ?? ''));
+            if (in_array($candidateName, ['tip', 'tips', 'gratuity'])) {
+                $lineItemTipTotal += ((float)($tipCandidate['price'] ?? 0)) * (int)($tipCandidate['quantity'] ?? 1);
+            }
+        }
+        $tipFromLineItems = ((float)$tipAmount <= 0) && $lineItemTipTotal > 0;
+        if ($tipFromLineItems) {
+            $tipAmount = $lineItemTipTotal;
+        }
+
+        // Shopify includes custom tip line items in subtotal_price (unlike native
+        // checkout tips). Since we move the tip to the order-level field and drop
+        // the line item, take it out of the subtotal so
+        // subtotal + shipping + tax + tip - discount still equals total_price.
+        $subtotalPrice = $shopifyOrder['subtotal_price'] ?? 0;
+        if ($tipFromLineItems) {
+            $subtotalPrice = max(0, (float)$subtotalPrice - $lineItemTipTotal);
+        }
+
         $orderData = [
             'external_source' => 'shopify',
             // Order origin channel — Shopify's source_name, set by the customer
@@ -1057,7 +1084,7 @@ class OrderModel extends BaseModel
             'contact_email' => $shopifyOrder['email'] ?? null,
             
             // Money fields
-            'subtotal_price' => $shopifyOrder['subtotal_price'] ?? 0,
+            'subtotal_price' => $subtotalPrice,
             'discount_total' => $shopifyOrder['total_discounts'] ?? 0,
             'shipping_total' => $shopifyOrder['total_shipping_price_set']['shop_money']['amount'] ?? 0,
             'total_tax' => $shopifyOrder['total_tax'] ?? 0,

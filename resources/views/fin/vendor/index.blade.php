@@ -1072,7 +1072,11 @@ function exportToExcel() {
                         <select id="report_vendor_id"
                                 class="w-full px-2 py-1.5 text-sm border border-gray-300 rounded focus:outline-none focus:ring-1 focus:ring-purple-500 focus:border-purple-500 text-gray-900 bg-white">
                             <option value="">All Vendors</option>
-                            @foreach($vendors as $vendor)
+                            {{-- ⚠ NOT $vendors — that is the PAGINATED table, so this
+                                 picker used to offer only the 20 rows on screen and
+                                 changed with the search box. A picker must list what
+                                 exists, not what the table happens to be showing. --}}
+                            @foreach(($pickerVendors ?? $vendors) as $vendor)
                                 <option value="{{ $vendor->id }}">{{ $vendor->vendor_name }}</option>
                             @endforeach
                         </select>

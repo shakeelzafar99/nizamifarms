@@ -532,6 +532,49 @@ try {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+head('§10 the backdating window — rider vs manager');
+
+$fr = new FuelClaimRules();
+$riderWin = $fr->petrolWindowDays(false);
+$mgrWin   = $fr->petrolWindowDays(true);
+ok('the rider window is the configured one', $riderWin, 5);
+ok('the manager on-behalf window is longer', $mgrWin > $riderWin, true);
+ok('  …and defaults to 30 days', $mgrWin, 30);
+
+DB::beginTransaction();
+try {
+    // A manager can never end up with LESS room than the rider, whatever is stored.
+    DB::table('t_fin_config')->insert(['config_key' => 'PETROL_WINDOW_DAYS_MANAGER', 'config_value' => '2']);
+    ok('a manager window below the rider window is floored to it',
+       (new FuelClaimRules())->petrolWindowDays(true), $riderWin);
+    DB::table('t_fin_config')->where('config_key', 'PETROL_WINDOW_DAYS_MANAGER')->update(['config_value' => '15']);
+    ok('a configured 15 is honoured', (new FuelClaimRules())->petrolWindowDays(true), 15);
+    DB::table('t_fin_config')->where('config_key', 'PETROL_WINDOW_DAYS_MANAGER')->delete();
+
+    // ⭐⭐ THE REPORTED CASE: a manager filing a 6-day-old day. Under the rider window
+    //    this was the red "…only be raised for the last 5 days" 422 in his screenshot.
+    $sixBack = date('Y-m-d', strtotime('-6 days'));
+    ok('6 days back is OUTSIDE the rider window',
+       $sixBack >= date('Y-m-d', strtotime("-{$riderWin} days")), false);
+    ok('  …but INSIDE the manager window',
+       $sixBack >= date('Y-m-d', strtotime("-{$mgrWin} days")), true);
+
+    // And the picker no longer offers what the endpoint would refuse.
+    $ctrl = new \App\Http\Controllers\CRM\VehicleController();
+    $far  = date('Y-m-d', strtotime('-400 days'));
+    $req  = Request::create('/x', 'GET', ['user_id' => RAJAB, 'date' => $far]);
+    $req->setUserResolver(fn () => \App\Models\SysAdmin\UserModel::find(79));
+    $body = json_decode($ctrl->petrolContext($req, new VehicleResolver())->getContent(), true);
+    ok('the modal reports the window it is judged by', $body['window_days'] ?? null, $mgrWin);
+    ok('  …and marks a far-past date out of window', $body['in_window'] ?? null, false);
+    $offered = array_filter($body['vehicles'] ?? [], fn ($v) => $v['can_meter_claim']);
+    ok('  …so no per-km claim is offered for it', count($offered), 0);
+} finally {
+    DB::rollBack();
+    flushAll();
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 head('§6 the meter editor suggests that day\'s driver');
 
 $res = new VehicleResolver();

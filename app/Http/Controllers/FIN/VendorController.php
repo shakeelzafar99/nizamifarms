@@ -22,15 +22,40 @@ class VendorController extends Controller
         $query = VendorModel::with(['account', 'defaultPaymentSource', 'businessUnit']);
 
         // Search
-        if ($request->has('search') && $request->search) {
-            $search = $request->search;
-            $query->where('vendor_name', 'LIKE', "%{$search}%")
-                  ->orWhere('vendor_contact', 'LIKE', "%{$search}%")
-                  ->orWhere('vendor_email', 'LIKE', "%{$search}%");
+        // ⚠⚠ THIS WAS BROKEN TWO WAYS AND 500'd ON EVERY USE (fixed Aug-28 2026):
+        //   1. `vendor_contact` and `vendor_email` are NOT columns of t_fin_vendors —
+        //      the real ones are contact_person / contact_phone / contact_email. Typing
+        //      anything into the web page's search box produced
+        //      "Unknown column 'vendor_contact'" — a 500, not a result.
+        //   2. The orWhere chain was UNGROUPED, so once it ran, SQL precedence let it
+        //      escape the is_active and business_unit filters below and match vendors
+        //      the page had explicitly excluded. HubController::vendors already wraps
+        //      its own search in a closure for exactly this reason; this copy never was.
+        if ($request->filled('search')) {
+            $search = trim((string) $request->search);
+            $query->where(function ($w) use ($search) {
+                $w->where('vendor_name', 'LIKE', "%{$search}%")
+                  ->orWhere('vendor_code', 'LIKE', "%{$search}%")
+                  ->orWhere('contact_person', 'LIKE', "%{$search}%")
+                  ->orWhere('contact_phone', 'LIKE', "%{$search}%")
+                  ->orWhere('contact_email', 'LIKE', "%{$search}%");
+            });
         }
 
-        // Default to active vendors only
-        $query->where('is_active', 1);
+        // ⭐ Status. The app has always SENT `status` (active|inactive|all) and this
+        //   method ignored it and hardcoded is_active = 1 — so its "Inactive" pill
+        //   silently returned active vendors and an inactive vendor was unreachable
+        //   from the phone entirely. Absent/unknown = active, which is exactly what
+        //   the web page relies on (its form sends no status at all).
+        $status = strtolower((string) $request->input('status', 'active'));
+        if (!in_array($status, ['active', 'inactive', 'all'], true)) {
+            $status = 'active';
+        }
+        if ($status === 'active') {
+            $query->where('is_active', 1);
+        } elseif ($status === 'inactive') {
+            $query->where('is_active', 0);
+        }
 
         // ⭐ Filter by business unit — defaults to BU 1 (Nizami Farms) unless explicitly set
         // Use "all" to see all business units, or a specific BU ID
@@ -46,11 +71,13 @@ class VendorController extends Controller
             $query->where('business_unit_id', $buFilter);
         }
 
-        $vendors = $query->orderBy('vendor_name', 'asc')->paginate(20);
+        $query->orderBy('vendor_name', 'asc');
 
-        // Calculate total balance for all active vendors (respect BU filter)
-        $totalBalanceQuery = VendorModel::with('account')
-            ->where('is_active', 1);
+        // Calculate total balance across the SAME set the list is showing, so the
+        // headline can never describe a different population from the rows beneath it.
+        $totalBalanceQuery = VendorModel::with('account');
+        if ($status === 'active')        { $totalBalanceQuery->where('is_active', 1); }
+        elseif ($status === 'inactive')  { $totalBalanceQuery->where('is_active', 0); }
         if ($buFilter && $buFilter !== 'all') {
             $totalBalanceQuery->where('business_unit_id', $buFilter);
         }
@@ -59,20 +86,54 @@ class VendorController extends Controller
                 return $vendor->account ? $vendor->account->current_balance : 0;
             });
 
-        // Return JSON for API requests
+        // ⭐⭐ THE API GETS THE WHOLE LIST (fixed Aug-28 2026).
+        //
+        // ⚠⚠ THE BUG: this method paginated at 20 for BOTH surfaces, and the phone
+        //    reads only `vendors` — it never looks at `pagination.last_page` and its
+        //    list has no infinite scroll, so page 2 was never requested by anything.
+        //    Sorted by name, that silently cut every vendor past the 20th: with "All"
+        //    business units selected the app showed 20 of 37 and everything from M
+        //    onward simply did not exist as far as the phone was concerned. Searching
+        //    could not rescue it either — the app filters the rows it already has, so
+        //    a missing vendor read as "No vendors found".
+        //
+        // ⭐ The web page keeps its paginator (its Blade calls ->hasPages()/->links()),
+        //   so nothing about that screen changes. `per_page` is honoured if a client
+        //   ever wants pages back; absent, an API caller gets everything.
         if ($request->expectsJson() || $request->is('api/*')) {
+            $perPage = (int) $request->input('per_page', 0);
+            if ($perPage > 0) {
+                $paged = $query->paginate($perPage);
+                return response()->json([
+                    'success' => true,
+                    'vendors' => $paged->items(),
+                    'total_balance' => $totalBalance,
+                    'pagination' => [
+                        'current_page' => $paged->currentPage(),
+                        'last_page'    => $paged->lastPage(),
+                        'per_page'     => $paged->perPage(),
+                        'total'        => $paged->total(),
+                    ],
+                ]);
+            }
+
+            $all = $query->get();
             return response()->json([
                 'success' => true,
-                'vendors' => $vendors->items(),
+                'vendors' => $all,
                 'total_balance' => $totalBalance,
+                // Kept for shape compatibility — one page containing everything, so a
+                // client that DOES read it can never conclude there is more to fetch.
                 'pagination' => [
-                    'current_page' => $vendors->currentPage(),
-                    'last_page' => $vendors->lastPage(),
-                    'per_page' => $vendors->perPage(),
-                    'total' => $vendors->total()
-                ]
+                    'current_page' => 1,
+                    'last_page'    => 1,
+                    'per_page'     => $all->count(),
+                    'total'        => $all->count(),
+                ],
             ]);
         }
+
+        $vendors = $query->paginate(20);
 
         // ⭐ Get business units for dropdown - filtered by user's access
         $businessUnits = AccountModel::getUserAccessibleBusinessUnits();
@@ -82,8 +143,19 @@ class VendorController extends Controller
         
         // ⭐ Get user's default business unit ID
         $userDefaultBuId = AccountModel::getUserDefaultBusinessUnitId();
-        
-        return view('fin.vendor.index', compact('vendors', 'totalBalance', 'businessUnits', 'accessibleCompanyAccounts', 'userDefaultBuId'));
+
+        // ⭐⭐ THE REPORT MODAL'S VENDOR PICKER NEEDS THE WHOLE LIST (Aug-28 2026).
+        //    It used to iterate `$vendors`, i.e. the PAGINATED rows — so a vendor on
+        //    page 2 could not be chosen for a report at all, and the choices silently
+        //    changed with the page and the search box. A picker is not a page of
+        //    results; it is the set of things that exist.
+        // ⚠ Deliberately unfiltered by the page's search/BU controls for the same
+        //   reason — narrowing the table must not narrow what you may report on.
+        $pickerVendors = VendorModel::where('is_active', 1)
+            ->orderBy('vendor_name', 'asc')
+            ->get(['id', 'vendor_name']);
+
+        return view('fin.vendor.index', compact('vendors', 'totalBalance', 'businessUnits', 'accessibleCompanyAccounts', 'userDefaultBuId', 'pickerVendors'));
     }
 
     /**

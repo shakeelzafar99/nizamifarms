@@ -268,9 +268,12 @@ class RequestController extends Controller
             //   otherwise stop a manager recording yesterday's kilometres for a rider,
             //   which is the entire purpose of the on-behalf path.
             if ($isMeteredPetrol) {
-                $petrolWindow = (int) (DB::table('t_fin_config')
-                    ->where('config_key', 'PETROL_WINDOW_DAYS')->value('config_value') ?: 5);
-                if ($petrolWindow < 1) { $petrolWindow = 5; }
+                // ⭐ A manager filing FOR someone gets the on-behalf window, not the
+                //   rider's — the repairs this path exists for are found late. One
+                //   definition, in FuelClaimRules::petrolWindowDays().
+                $onBehalf = $request->filled('requester_user_id')
+                    && (int) $validated['requester_user_id'] !== (int) $loggedInUser->id;
+                $petrolWindow = (new \App\Services\Riders\FuelClaimRules())->petrolWindowDays($onBehalf);
                 if ($expenseDate->lt($today->copy()->subDays($petrolWindow))) {
                     return response()->json([
                         'success' => false,

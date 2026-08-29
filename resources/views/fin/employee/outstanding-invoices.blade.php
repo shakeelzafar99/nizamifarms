@@ -169,6 +169,30 @@
 
     <!-- No separate pending settlements section - they'll be shown inline with invoices -->
 
+    {{-- Staleness bar (Aug-2026). This page is a load-time snapshot — no polling
+         of any kind — so a delivery or a payment proof that lands after it opens
+         is invisible until a manual reload. Rather than auto-reloading a
+         62-query page (and destroying scroll position, expanded groups and any
+         half-finished approval), the page carries the counters it was born with,
+         polls 3 cheap COUNTs, and offers a refresh when they move. Hidden until
+         something actually changes. --}}
+    @if(isset($onlineFollowUpHeartbeat) && $onlineFollowUpHeartbeat)
+    <div id="fu-stale-bar" class="mb-3 hidden" data-baseline="{{ json_encode($onlineFollowUpHeartbeat) }}">
+        <div style="background: linear-gradient(to right, #eff6ff, #dbeafe); border: 2px solid #93c5fd;" class="rounded-lg px-4 py-2.5 flex items-center justify-between gap-3">
+            <div class="flex items-center gap-2 min-w-0">
+                <span class="text-base">🔄</span>
+                <span id="fu-stale-text" class="text-xs font-semibold text-blue-900 truncate"></span>
+                <span class="text-xs text-blue-700 opacity-75">— this page hasn't updated since you opened it</span>
+            </div>
+            <button type="button" onclick="window.location.reload()"
+                style="background-color:#2563eb;"
+                class="text-xs text-white px-3 py-1.5 rounded-lg font-bold hover:opacity-90 whitespace-nowrap shadow-sm">
+                Refresh page
+            </button>
+        </div>
+    </div>
+    @endif
+
     <!-- 💰 Payment Follow-ups (Aug-2026) — replaces the old today-only "Online
          WhatsApp Messages" panel. Three tiers: chase / proof-in / settled, held
          for a 3-day window. Built by OnlineFollowUpService. -->
@@ -1464,25 +1488,55 @@ function sendFollowUp(btn) {
         return;
     }
 
-    // Proof landed between page load and this click? Warn before nagging someone
-    // who has already paid. (Rows WITH proof normally sit in Tier 2 and have no
-    // button at all; this catches the stale-page case.)
-    if (row.proof_label) {
-        var ok = confirm(
-            '⚠️ Payment proof already received for ' + row.order_number + '\n\n'
-            + 'Status: ' + row.proof_label + '\n\n'
-            + row.customer_name + ' has already sent proof of payment. Sending a payment '
-            + 'reminder now may confuse the customer.\n\nAre you sure you still want to send?'
-        );
-        if (!ok) return;
-    }
-
+    // NOTE: there is deliberately no page-load proof check here any more. It used
+    // to warn from row.proof_label, but that data is only as fresh as the page —
+    // it missed exactly the case that matters (proof arriving after load) while
+    // adding a second dialog for the case the server already catches. The
+    // precheck below asks the server instead, and is strictly better informed.
     btn.disabled = true;
+    fuStatus(btn, 'checking…', '#6b7280');
+
+    // Ask the server what this order looks like RIGHT NOW before sending. The
+    // page's own proof data is only as fresh as the page, and a proof that
+    // landed five minutes ago would otherwise go unnoticed — we'd nag a customer
+    // who has already paid, which is the exact mistake this panel exists to
+    // prevent. Fails open: a precheck problem must never block a real reminder.
+    fuPrecheck(row)
+        .then(function (pre) {
+            if (pre && pre.stale) {
+                var proceed = confirm(
+                    '⚠️ This changed after the page was loaded\n\n'
+                    + row.order_number + ' — ' + row.customer_name + '\n\n'
+                    + pre.message + '\n\n'
+                    + 'Send the reminder anyway?'
+                );
+                if (!proceed) {
+                    btn.disabled = false;
+                    fuStatus(btn, 'not sent — refresh the page', '#b91c1c');
+                    return;
+                }
+            }
+            return fuDispatch(row, btn);
+        })
+        .catch(function () {
+            return fuDispatch(row, btn);
+        });
+}
+
+function fuPrecheck(row) {
+    return fetch('{{ route("fin.employee.followup-precheck", ["orderId" => "__ID__"]) }}'.replace('__ID__', row.id), {
+        headers: { 'Accept': 'application/json' }
+    })
+    .then(function (resp) { return resp.json(); })
+    .catch(function () { return null; });
+}
+
+function fuDispatch(row, btn) {
     fuStatus(btn, 'sending…', '#6b7280');
 
     var template = row.template || FU_TEMPLATE_DAY_ONE;
 
-    fuPostTemplate(row, template)
+    return fuPostTemplate(row, template)
         .then(function (res) {
             if (res.ok) {
                 return fuMarkReminded(row, btn);
@@ -1524,6 +1578,69 @@ function petrolSourceChanged(requestId) {
     wrap.style.display = isOnline ? 'flex' : 'none';
     if (!isOnline && bank) bank.value = '';
 }
+
+// ── Staleness poller (Aug-2026) ────────────────────────────────────────────
+// The page never reloads itself. It polls 3 cheap COUNTs (~12ms server-side,
+// vs ~1,130ms of SQL to rebuild the page) and, when they move, offers a manual
+// refresh. Deliberately NOT an auto-reload: this screen carries expanded groups,
+// scroll position and half-finished approvals that a timed reload would destroy.
+(function () {
+    var bar = document.getElementById('fu-stale-bar');
+    if (!bar) return;
+
+    var baseline;
+    try {
+        baseline = JSON.parse(bar.dataset.baseline);
+    } catch (e) {
+        return; // No baseline, nothing to compare against.
+    }
+
+    var POLL_MS = 60000;
+    var LABELS = {
+        deliveries: ['new delivery', 'new deliveries'],
+        proofs:     ['payment proof arrived', 'payment proofs arrived'],
+        settled:    ['payment approved', 'payments approved']
+    };
+
+    function describe(counts) {
+        var parts = [];
+        Object.keys(LABELS).forEach(function (key) {
+            var delta = (counts[key] || 0) - (baseline[key] || 0);
+            // Only ever report growth. A counter going DOWN (an order edited, a
+            // signal unmatched, an approval reversed) is not something to nag
+            // about, and phrasing it as "-1 deliveries" would just confuse.
+            if (delta > 0) {
+                parts.push(delta + ' ' + LABELS[key][delta === 1 ? 0 : 1]);
+            }
+        });
+        return parts;
+    }
+
+    function poll() {
+        fetch('{{ route("fin.employee.followup-heartbeat") }}', { headers: { 'Accept': 'application/json' } })
+            .then(function (resp) { return resp.json(); })
+            .then(function (data) {
+                if (!data || !data.success || !data.counts) return;
+                var parts = describe(data.counts);
+                if (parts.length === 0) {
+                    bar.classList.add('hidden');
+                    return;
+                }
+                document.getElementById('fu-stale-text').textContent = parts.join(' · ');
+                bar.classList.remove('hidden');
+            })
+            .catch(function () { /* offline or a blip — try again next tick */ });
+    }
+
+    setInterval(poll, POLL_MS);
+
+    // Re-check the moment the operator comes back to the tab, so someone
+    // returning after ten minutes elsewhere sees the truth immediately instead
+    // of waiting out the interval.
+    document.addEventListener('visibilitychange', function () {
+        if (!document.hidden) poll();
+    });
+})();
 
 function approvePetrolRequest(requestId, level) {
     // Read the selected payment source for this request

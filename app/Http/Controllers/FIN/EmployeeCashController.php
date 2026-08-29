@@ -2639,8 +2639,15 @@ class EmployeeCashController extends Controller
             // Wrapped so a surprise here can never take down daily closing.
             // ============================================================
             $onlineFollowUp = null;
+            $onlineFollowUpHeartbeat = null;
             try {
-                $onlineFollowUp = app(\App\Services\Payments\OnlineFollowUpService::class)->build($riderFilter);
+                $followUpService = app(\App\Services\Payments\OnlineFollowUpService::class);
+                $onlineFollowUp = $followUpService->build($riderFilter);
+                // Baseline for the staleness bar: the page records what the world
+                // looked like when it rendered, then polls the same counters and
+                // offers a refresh if they move. Costs ~12ms here, versus ~1,130ms
+                // of SQL to reload the page on a timer.
+                $onlineFollowUpHeartbeat = $followUpService->heartbeat();
             } catch (\Exception $followUpEx) {
                 \Log::warning('Payment follow-ups panel failed (non-critical)', [
                     'error' => $followUpEx->getMessage(),
@@ -2684,6 +2691,7 @@ class EmployeeCashController extends Controller
                 'invoicesByDate' => $invoicesByDate,
                 'onlineData' => $onlineData,
                 'onlineFollowUp' => $onlineFollowUp,
+                'onlineFollowUpHeartbeat' => $onlineFollowUpHeartbeat,
                 'pendingPetrolRequests' => $pendingPetrolRequests,
                 'pendingMaintenanceRequests' => $pendingMaintenanceRequests,
                 'petrolPaymentAccounts' => $petrolPaymentAccounts,
@@ -2785,6 +2793,102 @@ class EmployeeCashController extends Controller
         } catch (\Exception $e) {
             \Log::error('fetchPendingPetrolRequests error: ' . $e->getMessage());
             return null;
+        }
+    }
+
+    /**
+     * Re-read ONE order's payment state at the moment the operator presses Send.
+     *
+     * WHY THIS EXISTS: Daily Closing is a load-time snapshot with no polling, so
+     * the "payment proof already received" warning baked into the page is only as
+     * fresh as the page. A proof that lands after the page opens is invisible,
+     * and the operator chases a customer who has already paid — precisely the
+     * mistake this panel exists to prevent. The server always knows the truth, so
+     * we ask it in the one moment it matters.
+     *
+     * Read-only and deliberately narrow (one order). Never blocks a send on its
+     * own — it returns what changed and lets the operator decide.
+     */
+    public function followUpPrecheck(Request $request, $orderId)
+    {
+        try {
+            $order = \App\Models\CRM\OrderModel::find($orderId);
+
+            if (!$order) {
+                // Don't punish the send for a lookup miss — let it proceed.
+                return response()->json(['success' => true, 'stale' => false, 'unknown' => true]);
+            }
+
+            $id = (int) $order->id;
+
+            $settled = in_array(
+                $id,
+                \App\Services\Payments\Signals\PaymentProofStatusService::settledOrderIds([$id]),
+                true
+            );
+
+            $proof = null;
+            if (config('payment_signals.enabled')) {
+                $proof = app(\App\Services\Payments\Signals\PaymentProofStatusService::class)
+                    ->forOrders([$id], suppressSettled: false)[$id] ?? null;
+            }
+
+            $hasProof = $proof && ($proof['status'] ?? 'none') !== 'none';
+
+            $remindedAt = $order->online_message_sent_at
+                ? \Carbon\Carbon::parse($order->online_message_sent_at)
+                : null;
+            $remindedToday = $remindedAt ? $remindedAt->isToday() : false;
+
+            // Build the sentence here rather than in JS so the reason a send is
+            // being questioned always matches what the server actually saw.
+            $reasons = [];
+            if ($settled) {
+                $reasons[] = 'the payment has already been APPROVED in the ledger';
+            } elseif ($hasProof) {
+                $reasons[] = 'payment proof has arrived (' . $proof['label'] . ')';
+            }
+            if ($remindedToday) {
+                $reasons[] = 'a reminder was already sent today at ' . $remindedAt->format('h:i A');
+            }
+
+            return response()->json([
+                'success'         => true,
+                'stale'           => !empty($reasons),
+                'settled'         => $settled,
+                'has_proof'       => $hasProof,
+                'proof_label'     => $hasProof ? $proof['label'] : null,
+                'reminded_today'  => $remindedToday,
+                'message'         => empty($reasons) ? null : ucfirst(implode(', and ', $reasons)) . '.',
+            ]);
+
+        } catch (\Exception $e) {
+            \Log::warning('followUpPrecheck failed (non-critical)', [
+                'order_id' => $orderId,
+                'error'    => $e->getMessage(),
+            ]);
+            // A precheck failure must never stop a legitimate reminder.
+            return response()->json(['success' => true, 'stale' => false, 'error' => true]);
+        }
+    }
+
+    /**
+     * Cheap "has anything changed since you loaded this page" counters.
+     *
+     * 3 aggregate queries, ~12ms — against ~1,130ms of SQL for the page itself,
+     * which is why the page offers a refresh instead of taking one. See
+     * OnlineFollowUpService::heartbeat().
+     */
+    public function followUpHeartbeat(Request $request)
+    {
+        try {
+            return response()->json([
+                'success' => true,
+                'counts'  => app(\App\Services\Payments\OnlineFollowUpService::class)->heartbeat(),
+            ]);
+        } catch (\Exception $e) {
+            \Log::warning('followUpHeartbeat failed (non-critical)', ['error' => $e->getMessage()]);
+            return response()->json(['success' => false], 200);
         }
     }
 

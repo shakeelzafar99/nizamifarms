@@ -11920,8 +11920,8 @@ class RiderController extends Controller
             //    the whole truth the day a rider started arriving on his own bike and taking
             //    the van out mid-shift. `RiderDayLegs` reassembles the day from the reading
             //    stamps and the vehicle meter log; everything below simply renders it.
-            $petrolWindowDays = (int) $this->attnConfig('PETROL_WINDOW_DAYS', 5);
-            if ($petrolWindowDays < 1) { $petrolWindowDays = 5; }
+            // ⭐ ONE definition — the rider's own window, shared with the claim guard.
+            $petrolWindowDays = (new \App\Services\Riders\FuelClaimRules())->petrolWindowDays(false);
             $windowStart = date('Y-m-d', strtotime('-' . $petrolWindowDays . ' days'));
 
             try {
@@ -12341,8 +12341,9 @@ class RiderController extends Controller
             // Duplicate check for petrol requests: one per attendance day
             if ($isMeteredPetrol) {
                 if ($request->filled('expense_date')) {
-                    $petrolWindow = (int) $this->attnConfig('PETROL_WINDOW_DAYS', 5);
-                    if ($petrolWindow < 1) { $petrolWindow = 5; }
+                    // ⭐ ONE definition (FuelClaimRules) — this endpoint is always the
+                    //   rider filing for himself, so it is always the rider window.
+                    $petrolWindow = (new \App\Services\Riders\FuelClaimRules())->petrolWindowDays(false);
                     $petrolDate = \Carbon\Carbon::parse($validated['expense_date'])->startOfDay();
                     $windowStart = \Carbon\Carbon::today()->subDays($petrolWindow);
                     if ($petrolDate->lt($windowStart)) {
@@ -25831,6 +25832,30 @@ class RiderController extends Controller
             $user->id,
             $validated['scanned_barcode'] ?? null
         );
+
+        // Aug-2026: log every APPLIED quantity change. A weighing that lands wrong
+        // used to leave no trace of its own — the 0.505-read-as-9.205 incident had
+        // to be reconstructed from inventory restore/deduct pairs. The raw barcode
+        // plus previous->new is what makes the next one a lookup, not a forensic job.
+        if (!empty($result['success'])) {
+            $rawBarcode = $validated['scanned_barcode'] ?? null;
+            $scannedKg = ($rawBarcode && preg_match('/^2\d{12}$/', $rawBarcode))
+                ? ((int) substr($rawBarcode, 7, 5)) / 1000
+                : null;
+            \Log::info('Line item quantity set', [
+                'order_id' => (int) $order->id,
+                'order_number' => $order->order_number,
+                'line_item_id' => (int) $lineItem->id,
+                'sku' => $lineItem->sku,
+                'source' => $validated['source'] ?? 'barcode',
+                'scanned_barcode' => $rawBarcode,
+                'scanned_kg' => $scannedKg,
+                'previous_quantity' => $result['previous_quantity'] ?? null,
+                'new_quantity' => $result['new_quantity'] ?? null,
+                'by_user_id' => (int) $user->id,
+                'by' => $user->fullname ?? null,
+            ]);
+        }
 
         return response()->json($result, $result['success'] ? 200 : 422);
     }

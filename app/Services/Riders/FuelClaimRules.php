@@ -179,6 +179,47 @@ class FuelClaimRules
     /** Distances are metered integers rounded to 0.1 — anything inside this is the same number. */
     const KM_MATCH_TOLERANCE = 1.0;
 
+    /** How far back a RIDER may raise his own metered petrol claim. */
+    const PETROL_WINDOW_DEFAULT = 5;
+
+    /** …and a MANAGER filing on someone's behalf. See petrolWindowDays(). */
+    const PETROL_WINDOW_MANAGER_DEFAULT = 30;
+
+    /**
+     * ⭐⭐ HOW FAR BACK A METERED PETROL CLAIM MAY BE DATED — one definition
+     *    (Aug-28 2026).
+     *
+     * ⚠⚠ WHY THE MANAGER GETS HIS OWN NUMBER. The 5-day window is a RIDER policy: he
+     *    files his own kilometres daily, and a short window keeps his claims current.
+     *    The on-behalf path exists to fix what a rider could NOT do — a missed day, a
+     *    reading a manager had to enter for him — and that work is discovered late by
+     *    definition. Holding it to the rider's window blocks exactly the repairs the
+     *    path is for (the live case: filing 22-Aug on the 28th, six days out).
+     *
+     * ⚠⚠ AND IT MUST NOT BE UNBOUNDED. On this path a claim AUTO-APPROVES when the
+     *    actor holds L1/L2, so "no window" would mean money out for any date in
+     *    history with one click. A generous bound solves the real problem and keeps a
+     *    ceiling.
+     *
+     * ⚠ THE ROLE BACKDATE CAP IS NOT THE ANSWER HERE, though it looks like it should
+     *   be: Shabib's roles cap him at **0 days**, so falling back to it would be
+     *   STRICTER than today, not looser — it would block him from filing yesterday.
+     *   That is precisely why metered petrol is exempt from that cap and carries its
+     *   own window instead.
+     *
+     * ⭐ A manager can never have LESS room than a rider, whatever the config says.
+     */
+    public function petrolWindowDays(bool $onBehalf = false): int
+    {
+        $rider = (int) $this->cfg('PETROL_WINDOW_DAYS', self::PETROL_WINDOW_DEFAULT);
+        if ($rider < 1) $rider = self::PETROL_WINDOW_DEFAULT;
+        if (!$onBehalf) return $rider;
+
+        $mgr = (int) $this->cfg('PETROL_WINDOW_DAYS_MANAGER', 0);
+        if ($mgr < 1) $mgr = self::PETROL_WINDOW_MANAGER_DEFAULT;
+        return max($rider, $mgr);
+    }
+
     /**
      * ⭐⭐ THE PER-KM CLAIM MUST NAME KILOMETRES THE RIDER ACTUALLY OWNS (Aug-27 2026).
      *

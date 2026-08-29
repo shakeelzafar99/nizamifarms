@@ -983,6 +983,10 @@ class AttendanceController extends Controller
             if ($request->filled('meter_gps_warn_km'))  { $put('ATTENDANCE_METER_GPS_WARN_KM', (string) (float) $request->meter_gps_warn_km); }
             if ($request->filled('overnight_grace_km')) { $put('ATTENDANCE_OVERNIGHT_GRACE_KM', (string) (float) $request->overnight_grace_km); }
             if ($request->filled('petrol_window_days')) { $put('PETROL_WINDOW_DAYS', (string) max(1, (int) $request->petrol_window_days)); }
+            // ⭐ The manager on-behalf window, tuned from the same panel as the rider's.
+            //   FuelClaimRules floors it at the rider window, so a manager can never end
+            //   up with less room than the man he is filing for.
+            if ($request->filled('petrol_window_days_manager')) { $put('PETROL_WINDOW_DAYS_MANAGER', (string) max(1, (int) $request->petrol_window_days_manager)); }
             // Company-bike "going home" journey (U4)
             if ($request->filled('home_eta_buffer_min'))  { $put('HOME_ETA_BUFFER_MIN', (string) max(0, (int) $request->home_eta_buffer_min)); }
             if ($request->filled('home_late_unlock_mins')) { $put('HOME_LATE_UNLOCK_MINS', (string) max(1, (int) $request->home_late_unlock_mins)); }
@@ -1017,6 +1021,9 @@ class AttendanceController extends Controller
             'meter_gps_warn_km' => (float) $this->attendanceConfig('ATTENDANCE_METER_GPS_WARN_KM', 10),
             'overnight_grace_km' => (float) $this->attendanceConfig('ATTENDANCE_OVERNIGHT_GRACE_KM', 30),
             'petrol_window_days' => (int) $this->attendanceConfig('PETROL_WINDOW_DAYS', 5),
+            // Resolved through the rules class, so the panel shows the number actually
+            // enforced (including its "never below the rider window" floor).
+            'petrol_window_days_manager' => (new \App\Services\Riders\FuelClaimRules())->petrolWindowDays(true),
             'home_eta_buffer_min' => (int) $this->attendanceConfig('HOME_ETA_BUFFER_MIN', 15),
             'home_late_unlock_mins' => (int) $this->attendanceConfig('HOME_LATE_UNLOCK_MINS', 10),
             'home_radius_m' => (int) $this->attendanceConfig('HOME_RADIUS_M', 300),
@@ -2018,8 +2025,10 @@ class AttendanceController extends Controller
             $validated = $request->validate([
                 'user_id' => 'required|integer|exists:t_sys_user,id',
                 'attendance_date' => 'required|date',
-                'login_time' => 'nullable|date_format:H:i',
-                'logout_time' => 'nullable|date_format:H:i'
+                // Accept H:i:s too — DB rows store seconds (mobile check-in), and the
+                // edit modal echoes the loaded value back, so "12:07:45" must not 422.
+                'login_time' => 'nullable|date_format:H:i,H:i:s',
+                'logout_time' => 'nullable|date_format:H:i,H:i:s'
             ]);
 
             $loggedInUserId = auth()->id() ?? 1; // Track who made the change

@@ -2266,6 +2266,13 @@ function flNewApplyVehicle() {
             note.style.color = '#6b7280';
             note.innerHTML = '🏢 Company vehicle — the firm buys the fuel, so this is a cash claim '
                 + 'and the meter reading is required.';
+        } else if (flNewCtx && flNewCtx.in_window === false && !veh.is_company && (veh.km || 0) > 0) {
+            // ⭐ Say why a real, unclaimed distance is not on offer — the alternative
+            //   is a manager filling the form and meeting a 422 he cannot act on.
+            note.style.color = '#b45309';
+            note.innerHTML = '⚠ ' + flNum(veh.km) + ' km recorded, but per-kilometre claims can only be '
+                + 'raised for the last ' + flNum(flNewCtx.window_days) + ' days. File it as a cash claim, '
+                + 'or ask for the window to be widened in Attendance settings.';
         } else {
             note.style.color = '#6b7280';
             note.innerHTML = (flNewCtx && !flNewCtx.petrol_rate)
