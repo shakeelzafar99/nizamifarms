@@ -1123,10 +1123,20 @@ function flCloseDetail() {
 
 function flRenderDetail(r) {
     const days = (r.days || []).map(d => {
-        const claims = (d.claims || []).map(c => flClaimRow(c)).join('');
+        // More than one machine this month = the plate is information, not noise.
+        const showMachine = ((r.machines || []).length > 1);
+        const claims = (d.claims || []).map(c => flClaimRow(c, showMachine)).join('');
+        const today = d.machines_today || [];
         let km = '';
         if (d.work_km !== null && d.work_km !== undefined) {
-            km = '<b>' + flNum(d.meter_start) + ' → ' + flNum(d.meter_end) + '</b> · <b>' + d.work_km + ' km</b>';
+            // ⚠⚠ On a TWO-MACHINE day these scalars are the LAST machine's, so printing
+            //   them beside a plate that may be the other one is how DCR-799's 27,751
+            //   came to sit under a CEN-455 chip. With more than one machine the
+            //   readings move into the per-machine lines below and only the total
+            //   distance — which is genuinely his for the day — stays up here.
+            km = (today.length > 1)
+                ? '<b>' + d.work_km + ' km</b>'
+                : '<b>' + flNum(d.meter_start) + ' → ' + flNum(d.meter_end) + '</b> · <b>' + d.work_km + ' km</b>';
             if (d.offduty_km !== null && d.offduty_km > 0) {
                 km += d.offduty_since
                     ? ' · <span title="Measured from the last usable reading, not yesterday">+' +
@@ -1141,7 +1151,8 @@ function flRenderDetail(r) {
             // ⚠ LABELS ARE ENGLISH (owner ruling): "meter start" / "meter end". Only
             //   the explanations are Roman Urdu, and the same two words are used on
             //   the machine's day cards so both views speak one language.
-            km = '<span title="His half of a handover day — the other rider recorded the other end. Not a missed reading.">'
+            km = (today.length > 1) ? '<span class="fl-muted">two vehicles — see below</span>'
+               : '<span title="His half of a handover day — the other rider recorded the other end. Not a missed reading.">'
                 + (d.meter_start !== null && d.meter_start !== undefined
                     ? 'meter start <b>' + flNum(d.meter_start) + '</b>'
                     : (d.meter_end !== null && d.meter_end !== undefined
@@ -1185,10 +1196,60 @@ function flRenderDetail(r) {
             marks.push('<span class="fl-pill fl-warn" title="The morning reading was entered by a manager, not by the rider">✎ manager</span>');
         }
 
+        // ⭐⭐ EVERY BIKE HE HELD THAT DAY, in the order he rode them.
+        //
+        // ⚠⚠ The chip beside the date comes from `flvDayChip`, which resolves ONE
+        //    vehicle per day (open assignment wins). On a day he swapped machines that
+        //    named only the last one — so a day where he rode DCR-799 all morning read
+        //    simply "CEN-455", and the reading printed next to it belonged to the bike
+        //    that was no longer on screen. The engine knew both all along.
+        //
+        // The last one is the machine he ended the day on; the earlier ones are marked
+        // "handed back", the same words the riders table already uses for a bike a man
+        // no longer holds. Single-machine days are untouched — they keep the original
+        // chip, including its manager-correction link.
+        let dayChips = flvDayChip(r.user_id, d.date);
+        let perMachine = '';
+        if (today.length > 1) {
+            dayChips = ' ' + today.map(function (m, i) {
+                const last = (i === today.length - 1);
+                const tip = last
+                    ? 'The machine he ended the day on'
+                    : 'He was on this earlier in the day and handed it back before the day ended';
+                return '<span class="fl-vdaychip" style="' + (last ? '' : 'opacity:.7;') + '" title="' + tip + '">'
+                     + (m.is_company ? '🏍 ' : '👤 ') + flEsc(m.label)
+                     + (last ? '' : ' <span style="opacity:.8;">· handed back</span>') + '</span>';
+            }).join(' <span class="fl-muted">→</span> ');
+
+            // …and each machine's OWN readings, so no number is ever shown under
+            // another bike's name. A machine listed only because a claim names it
+            // says so rather than showing a blank pair.
+            perMachine = '<div class="fl-handover" style="background:#f8f9fb;border-left-color:#94a3b8;">'
+                + today.map(function (m) {
+                    let rd;
+                    if (m.meter_start !== null && m.meter_end !== null) {
+                        rd = flNum(m.meter_start) + ' → ' + flNum(m.meter_end)
+                           + (m.work_km !== null ? ' · <b>' + flNum(m.work_km) + ' km</b>' : '');
+                    } else if (m.meter_start !== null) {
+                        rd = 'meter start <b>' + flNum(m.meter_start) + '</b>';
+                    } else if (m.meter_end !== null) {
+                        rd = 'meter end <b>' + flNum(m.meter_end) + '</b>';
+                    } else if (m.from_claim) {
+                        rd = '<span class="fl-muted">no reading of his — listed because a claim names it</span>';
+                    } else {
+                        rd = '<span class="fl-muted">no reading</span>';
+                    }
+                    const at = m.start_at || m.end_at;
+                    return '<div>' + (m.is_company ? '🏍 ' : '👤 ') + '<b>' + flEsc(m.label) + '</b> · ' + rd
+                         + (at ? ' <span class="fl-muted">· ' + flEsc(at) + '</span>' : '') + '</div>';
+                }).join('')
+                + '</div>';
+        }
+
         return '<div class="fl-day"><div class="fl-dayhead">' +
-            '<span class="fl-daydate">' + flDate(d.date) + flvDayChip(r.user_id, d.date) +
+            '<span class="fl-daydate">' + flDate(d.date) + dayChips +
               (marks.length ? ' ' + marks.join(' ') : '') + '</span>' +
-            '<span class="fl-daykm">' + km + '</span></div>' + extra + claims + '</div>';
+            '<span class="fl-daykm">' + km + '</span></div>' + perMachine + extra + claims + '</div>';
     }).join('');
 
     // ⭐ HIS MACHINES THIS MONTH — the strip that answers "what was he driving?"
@@ -1406,7 +1467,13 @@ function flToggleOffNights() {
     if (el) el.style.display = el.style.display === 'none' ? 'block' : 'none';
 }
 
-function flClaimRow(c) {
+/**
+ * @param {boolean} showMachine  name the bike this claim was filed against.
+ *   Passed only when the rider had MORE THAN ONE machine that month — on a
+ *   one-bike rider it would repeat the same plate down every row, which is the
+ *   noise the day chip already avoids.
+ */
+function flClaimRow(c, showMachine) {
     const flagText = {
         double_tap: 'same amount filed minutes apart — likely a double tap',
         flat_on_metered_day: 'cash claim on a day the meter already paid for',
@@ -1426,6 +1493,21 @@ function flClaimRow(c) {
         mid += ' <span class="fl-muted">' + c.meter_distance + ' km × ' + c.petrol_rate + '</span>';
     } else {
         mid += ' <span class="fl-muted">cash claim</span>';
+    }
+    // ⭐⭐ WHICH BIKE THIS MONEY WAS FOR. On a day he rode two machines the claims
+    //   were rendered identically — two fuel rows, two different tanks, nothing to
+    //   tell them apart. The vehicle lens never had this problem because it is
+    //   machine-scoped by construction; this is the rider lens catching up.
+    // ⚠ Only ever the claim's OWN stamp. An unstamped claim says so instead of
+    //   borrowing the day's machine — on the very day this matters the day has two,
+    //   so a guess would print a confident wrong answer. Same words the vehicle
+    //   card uses, so one vocabulary across both lenses.
+    if (showMachine) {
+        if (c.vehicle_label) {
+            mid += ' <span class="fl-pill" style="background:#eef2ff;color:#3730a3;" title="This claim was filed against ' + flEsc(c.vehicle_label) + '">🏍 ' + flEsc(c.vehicle_label) + '</span>';
+        } else {
+            mid += ' <span class="fl-pill fl-warn" title="This claim does not name a machine, and he had more than one — so which bike it was for cannot be told from the record.">❓ machine not recorded</span>';
+        }
     }
     if (c.meter_at_fill) mid += ' <span class="fl-muted">· meter ' + flNum(c.meter_at_fill) + '</span>';
     // The approver's number: how far the BIKE went on the PREVIOUS tank — whoever

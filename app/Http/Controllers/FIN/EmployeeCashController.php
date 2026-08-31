@@ -2672,7 +2672,12 @@ class EmployeeCashController extends Controller
             // ⚠ Shape change: arrays, not AccountModel rows — the Blade reads $acc['id'].
             $petrolPaymentAccounts = [];
             $petrolPayBanks = [];
-            if ($pendingPetrolRequests || $pendingMaintenanceRequests) {
+            // An online invoice approved here must name the bank it landed in,
+            // exactly as Online Approvals demands — so the chips have to be
+            // available whenever the proof tier has something approvable, not
+            // only when a petrol/maintenance request happens to be pending.
+            $hasApprovableProof = !empty($onlineFollowUp['proof_review_count']);
+            if ($pendingPetrolRequests || $pendingMaintenanceRequests || $hasApprovableProof) {
                 $paySvc = app(\App\Services\FIN\PaymentSourceService::class);
                 $petrolPaymentAccounts = $paySvc->sourcesFor(
                     auth()->user(), 1, \App\Services\FIN\PaymentSourceService::PURPOSE_EXPENSE
@@ -2680,11 +2685,26 @@ class EmployeeCashController extends Controller
                 // ⭐ A bank source has to name WHICH bank or the per-bank balances never
                 // see the money (BankAttributionService). This list is what the 🏦 select
                 // next to each approve button is built from.
-                $needsBanks = (bool) array_filter($petrolPaymentAccounts, fn ($s) => !empty($s['is_online']));
+                $needsBanks = $hasApprovableProof
+                    || (bool) array_filter($petrolPaymentAccounts, fn ($s) => !empty($s['is_online']));
                 if ($needsBanks) {
                     $petrolPayBanks = $paySvc->banks();
                 }
             }
+
+            // ⭐ Capability flags, decided server-side. They only control what the
+            // page OFFERS: /finance/ledger/{id}/approve-l1-only re-checks approval
+            // rights on every call (guardApprovalRights) and /messages has its own
+            // permission gate, so a stale page can never grant anything.
+            $canApproveL1 = \App\Models\SysAdmin\RoleApprovalLevelModel::userHasApprovalLevel(auth()->id(), 1)
+                || \App\Models\SysAdmin\RoleApprovalLevelModel::userHasApprovalLevel(auth()->id(), 2);
+
+            // Hidden rather than broken: /messages answers 403 for a user without
+            // WhatsApp access, and a 403 inside the chat drawer's iframe reads as
+            // "the app is broken", not "you may not see this".
+            $canWaChat = auth()->user()
+                && (auth()->user()->hasMobilePermission('view_whatsapp_messages')
+                    || auth()->user()->hasMobilePermission('view_whatsapp_messages_limited'));
 
             return view('fin.employee.outstanding-invoices', [
                 'invoicesByRider' => $invoicesByRider,
@@ -2696,6 +2716,8 @@ class EmployeeCashController extends Controller
                 'pendingMaintenanceRequests' => $pendingMaintenanceRequests,
                 'petrolPaymentAccounts' => $petrolPaymentAccounts,
                 'petrolPayBanks' => $petrolPayBanks, // 🏦 which bank an ONLINE approval left from
+                'canApproveL1' => $canApproveL1,     // may this user approve a proof at L1?
+                'canWaChat' => $canWaChat,           // may this user open the chat drawer?
                 'stats' => $stats,
                 'pendingSettlements' => $pendingSettlements,
                 'allRiders' => $allRiders,

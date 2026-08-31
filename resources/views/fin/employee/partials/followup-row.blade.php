@@ -48,6 +48,17 @@
                         </div>
                         <div class="flex items-center gap-2 ml-3">
                             <span class="fu-status text-xs text-gray-500"></span>
+                            {{-- Read the thread before chasing. A customer who
+                                 replied "paid, screenshot attached" ten minutes
+                                 ago looked identical here to one who never
+                                 answered — the reminder went out either way.
+                                 Opens the real Messages chat in a drawer on this
+                                 page (partials/wa-chat-drawer). --}}
+                            @if(($canWaChat ?? false) && !empty($row['customer_phone']))
+                            <button type="button" class="dc-chat-btn"
+                                    onclick="event.stopPropagation(); openWaChatDrawer(@js($row['customer_phone']), @js($row['customer_name']))"
+                                    title="Read {{ $row['customer_name'] }}'s WhatsApp chat before sending">💬</button>
+                            @endif
                             <button type="button"
                                 data-row="{{ json_encode($payload) }}"
                                 onclick="sendFollowUp(this)"

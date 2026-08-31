@@ -390,39 +390,8 @@
         color: #059669;
         min-width: 120px;
     }
-
-    /* ── In-app WhatsApp chat drawer (opens the customer's chat in a right-side
-          panel on THIS page, instead of navigating away to /messages) ── */
-    .wa-chat-overlay {
-        position: fixed; inset: 0; z-index: 1200;
-        background: rgba(15, 23, 42, .45);
-        display: none; justify-content: flex-end;
-        opacity: 0; transition: opacity .2s ease;
-    }
-    .wa-chat-overlay.open { display: flex; opacity: 1; }
-    .wa-chat-drawer {
-        width: min(560px, 94vw); height: 100%;
-        background: #fff; display: flex; flex-direction: column;
-        box-shadow: -8px 0 28px rgba(0, 0, 0, .22);
-        transform: translateX(100%); transition: transform .25s ease;
-    }
-    .wa-chat-overlay.open .wa-chat-drawer { transform: translateX(0); }
-    .wa-chat-drawer-hdr {
-        display: flex; align-items: center; justify-content: space-between;
-        gap: 10px; padding: 10px 14px; background: #075E54; color: #fff; flex-shrink: 0;
-    }
-    .wa-chat-drawer-title {
-        font-weight: 700; font-size: 15px; overflow: hidden;
-        text-overflow: ellipsis; white-space: nowrap;
-    }
-    .wa-chat-drawer-actions { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
-    .wa-chat-drawer-btn {
-        background: rgba(255, 255, 255, .15); color: #fff; border: none; border-radius: 6px;
-        width: 30px; height: 30px; display: inline-flex; align-items: center; justify-content: center;
-        cursor: pointer; font-size: 15px; text-decoration: none; line-height: 1;
-    }
-    .wa-chat-drawer-btn:hover { background: rgba(255, 255, 255, .3); }
-    .wa-chat-frame { flex: 1; width: 100%; border: none; }
+    /* The chat-drawer styles moved to partials/wa-chat-drawer, which carries
+       its own CSS and is shared with Daily Closing. */
 </style>
 @endpush
 
@@ -606,25 +575,12 @@
         </div>
     </div>
 </div>
+{{-- The customer's WhatsApp conversation, in a drawer on this page. Shared
+     with Daily Closing so both pages open the chat the same way. --}}
+@include('partials.wa-chat-drawer')
 
-{{-- In-app WhatsApp chat drawer. Opened by the group-header 💬 button; embeds
-     the Messages chat for that customer (/messages?embed=1&focus_phone=…) so
-     staff can read/reply without leaving the approvals page. --}}
-<div id="waChatOverlay" class="wa-chat-overlay" aria-hidden="true"
-     onclick="if (event.target === this) closeWaChatDrawer()">
-    <aside class="wa-chat-drawer" role="dialog" aria-label="WhatsApp chat">
-        <div class="wa-chat-drawer-hdr">
-            <span class="wa-chat-drawer-title" id="waChatDrawerTitle">💬 WhatsApp</span>
-            <div class="wa-chat-drawer-actions">
-                <a id="waChatDrawerFull" class="wa-chat-drawer-btn" href="#" target="_blank"
-                   title="Open the full Messages page in a new tab">↗</a>
-                <button type="button" class="wa-chat-drawer-btn" onclick="closeWaChatDrawer()"
-                        title="Close">✕</button>
-            </div>
-        </div>
-        <iframe id="waChatFrame" class="wa-chat-frame" title="WhatsApp chat" src="about:blank"></iframe>
-    </aside>
-</div>
+{{-- One payment-proof card renderer for every screen. --}}
+@include('partials.proof-signal-card')
 
 @endsection
 
@@ -2625,88 +2581,12 @@ function buildProofPanelHtml(data) {
     }
 
     data.signals.forEach(s => {
-        const isWa = s.source === 'whatsapp';
-        const asst = s.assistant; // recorded via NF Assistant, not sent by the customer
-        const am = s.agreement || {};
-        const amountColor = am.amount_match === true ? '#16A34A' : (am.amount_match === false ? '#DC2626' : '#9CA3AF');
-        // Amount note: show the signed gap even when it matches within tolerance,
-        // so the approver sees how much short/over the transfer is.
-        let amountNote = '';
-        if (am.amount_match === true) {
-            const d = am.difference;
-            amountNote = (d && Math.abs(d) >= 1)
-                ? (d < 0 ? ` ✓ matches (Rs ${numberFormat(Math.abs(d))} short)` : ` ✓ matches (Rs ${numberFormat(d)} over)`)
-                : ' ✓ matches';
-        } else if (am.amount_match === false) {
-            amountNote = ' (differs from balance Rs. ' + numberFormat(am.expected) + ')';
-        }
-        const isSms = s.source === 'bank_sms';
-        const proofTitle = asst ? '✨ Recorded in NF Assistant'
-            : (isWa ? '📷 Customer WhatsApp screenshot'
-                : (isSms ? '📱 Bank confirmation SMS' : '✉️ Bank confirmation email'));
-        html += `<div style="border:1px solid #E5E7EB; border-radius:10px; padding:14px; margin-bottom:12px;">
-            <div style="font-weight:600; margin-bottom:8px;">${proofTitle}
-                <span style="font-weight:400; color:#9CA3AF; font-size:12px; margin-left:6px;">${escapeHtml(s.received_at || '')}</span></div>`;
-
-        // Provenance: this proof was entered by a manager via the assistant, not
-        // received from the customer — flag it so it's weighed accordingly.
-        if (asst) {
-            html += `<div style="background:#F5F3FF; border:1px solid #DDD6FE; color:#5B21B6; border-radius:8px; padding:8px 10px; font-size:12px; margin-bottom:10px;">
-                Recorded from ${escapeHtml(asst.method)} by <b>${escapeHtml(asst.by || 'a manager')}</b> — not sent by the customer. Confirm against the bank before approving.</div>`;
-        }
-
-        // A credit alert SMS the NF Messages app captured from the bank's own
-        // sender number — this IS the bank's word that the money landed.
-        if (isSms && s.bank_sms && s.bank_sms.auto) {
-            html += `<div style="background:#ECFDF5; border:1px solid #A7F3D0; color:#065F46; border-radius:8px; padding:8px 10px; font-size:12px; margin-bottom:10px;">
-                Captured automatically from the bank's credit alert SMS — no manual entry.</div>`;
-        }
-
-        // ⭐ HOW DID THIS PAYMENT GET HERE? Every match the system INFERRED says
-        // so plainly, in its own words, and offers the way out. Real money,
-        // probably this order — but the payer is unconfirmed until someone says
-        // so or a screenshot pairs. A pair-verified proof shows none of this.
-        const GUESS_REASONS = ['amount_unique_sms', 'name_amount_sms', 'name_ai_sms'];
-        if (GUESS_REASONS.includes(s.match_reason) && !s.paired) {
-            const payer = s.sender_name ? escapeHtml(s.sender_name) : 'an unnamed account';
-            const explain = {
-                amount_unique_sms:
-                    `⚠ Matched by AMOUNT only — this was the single open invoice with this balance. The payer (${payer}) is unconfirmed.`,
-                name_amount_sms:
-                    `⚠ Matched by PAYER NAME — the bank's sender (${payer}) resolves to this customer, and this was their order that fits. The amount alone didn't decide it.`,
-                name_ai_sms:
-                    `⚠ Payer name read by AI — "${payer}" was matched to this customer from a shortlist of open orders. A best reading, not a confirmation.`,
-            }[s.match_reason];
-
-            html += `<div style="background:#FFFBEB; border:1px solid #FCD34D; color:#92400E; border-radius:8px; padding:8px 10px; font-size:12px; margin-bottom:10px;">
-                <div>${explain} Confirm it in the NF Assistant money inbox, or wait for the customer's screenshot — approving is your call.</div>
-            </div>`;
-        }
-
-        // A human said outright who paid. Not a guess, so no way out is offered
-        // — undoing it means re-pointing the credit in the money inbox.
-        if (s.match_reason === 'manual_confirmed') {
-            html += `<div style="background:#ECFDF5; border:1px solid #A7F3D0; color:#065F46; border-radius:8px; padding:8px 10px; font-size:12px; margin-bottom:10px;">
-                ✓ Payer confirmed by a manager — this bank name is now remembered for this customer.</div>`;
-        }
-
-        if (isWa && s.image_url) {
-            html += `<a href="${s.image_url}" target="_blank"><img src="${s.image_url}" style="max-width:100%; border-radius:8px; border:1px solid #E5E7EB; margin-bottom:10px;"/></a>`;
-        }
-
-        html += `<table style="width:100%; font-size:13px; border-collapse:collapse;">
-            <tr><td style="color:#6B7280; padding:2px 0; width:140px;">Amount read</td><td style="font-weight:600; color:${amountColor};">Rs. ${s.amount != null ? numberFormat(s.amount) : '—'}${amountNote}</td></tr>
-            <tr><td style="color:#6B7280; padding:2px 0;">Reference</td><td>${escapeHtml(s.reference || '—')}</td></tr>
-            <tr><td style="color:#6B7280; padding:2px 0;">Sender name</td><td>${escapeHtml(s.sender_name || '—')}</td></tr>
-            <tr><td style="color:#6B7280; padding:2px 0;">Sender bank</td><td>${escapeHtml(s.sender_bank || '—')}${s.sender_account ? ' · ' + escapeHtml(s.sender_account) : ''}</td></tr>
-            ${s.to_account ? `<tr><td style="color:#6B7280; padding:2px 0;">To (our bank)</td><td>${escapeHtml(s.to_account)}</td></tr>` : ''}
-            <tr><td style="color:#6B7280; padding:2px 0;">Txn time</td><td>${escapeHtml(s.txn_datetime || '—')}</td></tr>
-            ${s.paired ? `<tr><td style="color:#6B7280; padding:2px 0;">Corroboration</td><td style="color:#16A34A;">✓ matched by the other source too</td></tr>` : ''}
-        </table>`;
-
-        if (!isWa && s.email_body) {
-            html += `<details style="margin-top:8px;"><summary style="cursor:pointer; color:#2563EB; font-size:12px;">${isSms ? 'Show the SMS' : 'Show raw email'}</summary><pre style="white-space:pre-wrap; font-size:11px; color:#374151; background:#F9FAFB; padding:8px; border-radius:6px; margin-top:6px;">${escapeHtml(s.email_body)}</pre></details>`;
-        }
+        // The card itself is rendered by the SHARED partial
+        // (partials/proof-signal-card) so Daily Closing and this page can never
+        // show the same proof differently — they used to, and every bank SMS was
+        // captioned "Bank email" over there. Verified byte-identical to the copy
+        // that used to live here.
+        let actionsHtml = '';
 
         // ⭐ THE ESCAPE HATCH — on EVERY attached proof, including a Verified
         // pair. Pairing proves the transfer is real; it never proves whose
@@ -2725,14 +2605,14 @@ function buildProofPanelHtml(data) {
                         style="background:#fff; color:#B91C1C; border:1px solid #FECACA; border-radius:8px; padding:5px 11px; font-size:12px; font-weight:600; cursor:pointer;"
                         title="Delete this hand-typed payment — use this if the amount was wrong">🗑 Delete this entry</button>`
                 : '';
-            html += `<div style="margin-top:10px; padding-top:9px; border-top:1px dashed #E5E7EB; text-align:right; display:flex; gap:8px; justify-content:flex-end; flex-wrap:wrap;">
+            actionsHtml += `<div style="margin-top:10px; padding-top:9px; border-top:1px dashed #E5E7EB; text-align:right; display:flex; gap:8px; justify-content:flex-end; flex-wrap:wrap;">
                 ${delBtn}
                 <button onclick="unmarkProofSignal(${s.id}, ${data.order_id}, ${s.paired ? 'true' : 'false'})"
                         style="background:#fff; color:#B91C1C; border:1px solid #FECACA; border-radius:8px; padding:5px 11px; font-size:12px; font-weight:600; cursor:pointer;"
                         title="Detach this payment from this order">Wrong customer — remove</button>
             </div>`;
         }
-        html += `</div>`;
+        html += nfProofSignalCard(s, { orderId: data.order_id, actions: actionsHtml });
     });
 
     html += `<p style="font-size:11px; color:#9CA3AF; margin:6px 0 0;">This is read-only evidence to help you decide. Approving still happens through the normal Approve button.</p>`;
@@ -4429,39 +4309,8 @@ async function refreshReceivingAccountsData() {
     }
 }
 
-// ── In-app WhatsApp chat drawer ──────────────────────────────────────────────
-// Opens the customer's WhatsApp conversation in a right-side drawer on THIS
-// page (embedding the Messages chat via an iframe) instead of navigating away.
-function openWaChatDrawer(phone, name) {
-    if (!phone) return;
-    const overlay = document.getElementById('waChatOverlay');
-    const frame   = document.getElementById('waChatFrame');
-    const title   = document.getElementById('waChatDrawerTitle');
-    const full    = document.getElementById('waChatDrawerFull');
-    if (!overlay || !frame) return;
-    // embed=1 → chrome-less Messages layout; focus_phone auto-opens the chat.
-    frame.src = '/messages?embed=1&focus_phone=' + encodeURIComponent(phone);
-    if (full)  full.href = '/messages?focus_phone=' + encodeURIComponent(phone);
-    if (title) title.textContent = '💬 ' + (name || 'WhatsApp');
-    overlay.classList.add('open');
-    overlay.setAttribute('aria-hidden', 'false');
-    document.body.style.overflow = 'hidden';
-}
-function closeWaChatDrawer() {
-    const overlay = document.getElementById('waChatOverlay');
-    const frame   = document.getElementById('waChatFrame');
-    if (!overlay) return;
-    overlay.classList.remove('open');
-    overlay.setAttribute('aria-hidden', 'true');
-    document.body.style.overflow = '';
-    // Unload the iframe so its polling/network stops while the drawer is closed.
-    if (frame) frame.src = 'about:blank';
-}
-document.addEventListener('keydown', function (e) {
-    if (e.key === 'Escape') {
-        const o = document.getElementById('waChatOverlay');
-        if (o && o.classList.contains('open')) closeWaChatDrawer();
-    }
-});
+// The WhatsApp chat drawer (openWaChatDrawer / closeWaChatDrawer + its Esc
+// handler) now lives in partials/wa-chat-drawer, included above and shared
+// with Daily Closing.
 </script>
 @endpush

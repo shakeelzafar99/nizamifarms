@@ -18,6 +18,52 @@
     .bg-red-500    { background-color: #ef4444; }
     .bg-yellow-600 { background-color: #ca8a04; }
     .bg-orange-900 { background-color: #7c2d12; }
+
+    @verbatim
+    /* ── Daily Closing split view (Aug-2026) ───────────────────────────────
+       The day's work now sits in two panes — Requests (petrol + maintenance)
+       on the left, Payment Follow-ups on the right — each with its own
+       scrollbar, so neither queue can push the rider closings section off the
+       bottom of the screen. Styled HERE rather than with utility classes for
+       the same reason as the colour backfill above: the Vite build is off and
+       the grid/overflow utilities this needs are purged from styles.css. */
+    .dc-split { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; align-items: start; margin-bottom: 16px; }
+    /* One column on anything narrower than a desktop — the office tablet and
+       small laptops get the old stacked reading order, not two cramped panes. */
+    @media (max-width: 1100px) { .dc-split { grid-template-columns: 1fr; } }
+    .dc-pane { background: #fff; border: 1px solid #e5e7eb; border-radius: 10px; overflow: hidden; display: flex; flex-direction: column; min-width: 0; }
+    .dc-pane-hd { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; padding: 7px 12px; background: #f8fafc; border-bottom: 1px solid #e5e7eb; }
+    .dc-pane-ttl { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; font-size: 12.5px; font-weight: 700; color: #334155; }
+    .dc-pane-badge { font-size: 11px; font-weight: 700; border-radius: 999px; padding: 2px 9px; background: #eef2f7; color: #475569; white-space: nowrap; }
+    .dc-max-btn { background: #e2e8f0; color: #334155; border: 0; font-size: 11px; font-weight: 700; border-radius: 6px; padding: 4px 10px; cursor: pointer; white-space: nowrap; }
+    .dc-max-btn:hover { background: #cbd5e1; }
+    .dc-pane-body { overflow-y: auto; overflow-x: hidden; max-height: 56vh; }
+    .dc-panel { margin: 8px; }
+    .dc-pane-empty { padding: 14px 16px; color: #94a3b8; font-size: 12.5px; font-style: italic; }
+
+    /* Maximize puts a class on the pane ITSELF — the node is never re-parented,
+       so every button, <select> and inline handler inside keeps working exactly
+       as it does unmaximized. z-index deliberately sits BELOW the fuel month
+       view (4000) and the payment-proof viewer (99999) so both still open on
+       top of a maximized pane. */
+    .dc-pane.dc-maxed { position: fixed; top: 12px; left: 12px; right: 12px; bottom: 12px; z-index: 3000; box-shadow: 0 24px 70px rgba(0,0,0,.35); }
+    .dc-pane.dc-maxed .dc-pane-body { max-height: none; flex: 1 1 auto; }
+    .dc-scrim { display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(15,23,42,.45); z-index: 2990; }
+    .dc-scrim.dc-on { display: block; }
+    body.dc-locked { overflow: hidden; }
+
+    /* Glance strip — the two rows of stat cards as one scannable line. */
+    .dc-glance { display: flex; flex-wrap: wrap; gap: 7px; margin-bottom: 14px; }
+    .dc-chip { display: inline-flex; align-items: center; gap: 7px; background: #fff; border: 1px solid #e5e7eb; border-radius: 999px; padding: 6px 13px; font-size: 12px; font-weight: 600; color: #374151; cursor: pointer; font-variant-numeric: tabular-nums; }
+    .dc-chip:hover { border-color: #8b5cf6; color: #6d28d9; }
+    .dc-chip .dc-n { font-size: 13px; font-weight: 800; }
+    .dc-chip .dc-rs { color: #6b7280; font-weight: 600; }
+    .dc-chip.dc-active { border-color: #7c3aed; background: #f5f3ff; color: #5b21b6; }
+
+    /* 💬 opens the customer's real WhatsApp thread in the shared drawer. */
+    .dc-chat-btn { background: #fff; border: 1.5px solid #25D366; color: #128C4A; font-weight: 800; font-size: 12px; border-radius: 7px; width: 28px; height: 24px; cursor: pointer; line-height: 1; padding: 0; }
+    .dc-chat-btn:hover { background: #ECFDF5; }
+    @endverbatim
 </style>
 @endpush
 
@@ -82,74 +128,81 @@
     </div>
     @endif
 
-    <!-- Compact Statistics Cards -->
-    <div class="grid grid-cols-3 gap-2 mb-4">
-        <!-- Row 1: Invoice Cards -->
-        <div class="grid grid-cols-4 gap-2 col-span-3">
-            <!-- Open Invoices Card -->
-            <button type="button" onclick="filterByStatus('open')" 
-                    class="stat-card text-left p-3 rounded-md shadow border-2 transition-all {{ $filters['status'] == 'open' ? 'border-red-500 bg-red-50' : 'border-gray-200 bg-white hover:border-red-300' }}">
-                <div class="text-xs font-bold text-red-700 mb-1">🔴 OPEN</div>
-                <div class="text-xl font-bold text-red-900">{{ $stats['open_count'] }}</div>
-                <div class="text-xs font-semibold text-red-600">Rs. {{ number_format($stats['open_total'], 2) }}</div>
-            </button>
+    @php
+        // Request-queue totals. Computed here because BOTH the glance chip above
+        // and the left pane's header below report them — one source, so they can
+        // never disagree.
+        $dcPetrolCount = $pendingPetrolRequests['total_count'] ?? 0;
+        $dcMaintCount  = $pendingMaintenanceRequests['total_count'] ?? 0;
+        $dcReqAmount   = ($pendingPetrolRequests['total_amount'] ?? 0) + ($pendingMaintenanceRequests['total_amount'] ?? 0);
+    @endphp
 
-            <!-- Partial Invoices Card -->
-            <button type="button" onclick="filterByStatus('partial')" 
-                    class="stat-card text-left p-3 rounded-md shadow border-2 transition-all {{ $filters['status'] == 'partial' ? 'border-yellow-500 bg-yellow-50' : 'border-gray-200 bg-white hover:border-yellow-300' }}">
-                <div class="text-xs font-bold text-yellow-700 mb-1">🟡 PARTIAL</div>
-                <div class="text-xl font-bold text-yellow-900">{{ $stats['partial_count'] }}</div>
-                <div class="text-xs font-semibold text-yellow-600">Rs. {{ number_format($stats['partial_total'], 2) }}</div>
-            </button>
+    {{-- Glance strip (Aug-2026) — the same figures the two rows of stat cards
+         carried, compressed into one scannable line so the rider closings
+         section starts near the top of the screen instead of below two full
+         panels. Every chip performs the SAME action as the card it replaces:
+         filterByStatus() for the invoice states, a scroll for the queues.
+         The two cards that were BOTH labelled "⏳ PENDING" — settlement
+         deposits and expense requests — now say which is which. --}}
+    <div class="dc-glance">
+        <button type="button" onclick="filterByStatus('open')" title="Invoices with nothing settled yet"
+                class="dc-chip {{ $filters['status'] == 'open' ? 'dc-active' : '' }}">
+            🔴 Open <span class="dc-n" style="color:#b91c1c;">{{ $stats['open_count'] }}</span>
+            <span class="dc-rs">Rs. {{ number_format($stats['open_total'], 0) }}</span>
+        </button>
 
-            <!-- Pending Settlements Card -->
-            <button type="button" onclick="togglePendingSettlements()" 
-                    class="stat-card text-left p-3 rounded-md shadow border-2 transition-all border-gray-200 bg-white hover:border-blue-300">
-                <div class="flex items-center justify-between mb-1">
-                    <div class="text-xs font-bold text-blue-700">⏳ PENDING</div>
-                    @if($stats['pending_settlement_count'] > 0)
-                    <span class="animate-pulse text-xs bg-blue-600 text-white px-1.5 py-0.5 rounded-full">{{ $stats['pending_settlement_count'] }}</span>
-                    @endif
-                </div>
-                <div class="text-xl font-bold text-blue-900">{{ $stats['pending_settlement_count'] }}</div>
-                <div class="text-xs font-semibold text-blue-600">Rs. {{ number_format($stats['pending_settlement_total'], 2) }}</div>
-            </button>
+        <button type="button" onclick="filterByStatus('partial')" title="Invoices partly settled"
+                class="dc-chip {{ $filters['status'] == 'partial' ? 'dc-active' : '' }}">
+            🟡 Partial <span class="dc-n" style="color:#b45309;">{{ $stats['partial_count'] }}</span>
+            <span class="dc-rs">Rs. {{ number_format($stats['partial_total'], 0) }}</span>
+        </button>
 
-            <!-- Total Outstanding Card -->
-            <button type="button" onclick="filterByStatus('all')" 
-                    class="stat-card text-left p-3 rounded-md shadow border-2 transition-all {{ $filters['status'] == 'all' ? 'border-purple-500 bg-purple-50' : 'border-gray-200 bg-white hover:border-purple-300' }}">
-                <div class="text-xs font-bold text-purple-700 mb-1">📊 TOTAL</div>
-                <div class="text-xl font-bold text-purple-900">{{ $stats['open_count'] + $stats['partial_count'] }}</div>
-                <div class="text-xs font-semibold text-purple-600">Rs. {{ number_format($stats['total_outstanding'], 2) }}</div>
-            </button>
-        </div>
-        
-        <!-- Row 2: NEW Expense Management Cards -->
-        <div class="grid grid-cols-2 gap-2 col-span-3">
-            <!-- Pending Approvals Card (Awaiting Approval) -->
-            <div class="stat-card text-left p-3 rounded-md shadow border-2 border-gray-200 bg-yellow-50 transition-all">
-                <div class="flex items-center justify-between mb-1">
-                    <div class="text-xs font-bold text-yellow-700">⏳ PENDING</div>
-                    @if($stats['pending_approvals_count'] > 0)
-                    <span class="text-xs bg-yellow-600 text-white px-1.5 py-0.5 rounded-full">{{ $stats['pending_approvals_count'] }}</span>
-                    @endif
-                </div>
-                <div class="text-sm text-gray-600 mb-1">Awaiting approval</div>
-                <div class="text-xl font-bold text-yellow-900">Rs. {{ number_format($stats['pending_approvals_amount'], 2) }}</div>
-            </div>
+        <button type="button" onclick="filterByStatus('all')" title="All outstanding invoices"
+                class="dc-chip {{ $filters['status'] == 'all' ? 'dc-active' : '' }}">
+            📊 Total <span class="dc-n" style="color:#6d28d9;">{{ $stats['open_count'] + $stats['partial_count'] }}</span>
+            <span class="dc-rs">Rs. {{ number_format($stats['total_outstanding'], 0) }}</span>
+        </button>
 
-            <!-- Short Cash Card (Unsettled) -->
-            <div class="stat-card text-left p-3 rounded-md shadow border-2 border-gray-200 bg-green-50 transition-all">
-                <div class="flex items-center justify-between mb-1">
-                    <div class="text-xs font-bold text-green-700">💸 SHORT CASH</div>
-                    @if($stats['short_cash_count'] > 0)
-                    <span class="text-xs bg-green-600 text-white px-1.5 py-0.5 rounded-full">{{ $stats['short_cash_count'] }}</span>
-                    @endif
-                </div>
-                <div class="text-sm text-gray-600 mb-1">Unsettled</div>
-                <div class="text-xl font-bold text-green-900">Rs. {{ number_format($stats['short_cash_amount'], 2) }}</div>
-            </div>
-        </div>
+        {{-- Was "⏳ PENDING" card #1: rider settlement deposits waiting for
+             approval. They render inline inside each rider card below, which is
+             where this now scrolls to. --}}
+        <button type="button" onclick="dcJump('dc-closings')" title="Rider settlement deposits waiting for your approval — shown inside the rider cards below"
+                class="dc-chip">
+            💰 Deposits to approve <span class="dc-n" style="color:#1d4ed8;">{{ $stats['pending_settlement_count'] }}</span>
+            <span class="dc-rs">Rs. {{ number_format($stats['pending_settlement_total'], 0) }}</span>
+        </button>
+
+        {{-- Was "⏳ PENDING" card #2: expense requests waiting for approval —
+             the queue that lives in the left pane.
+
+             ⚠ Aug-2026: this used to read $stats['pending_approvals_*'], which
+             counts ONLY requests paid from NF Cash or a rider's own balance. A
+             petrol claim filed against Online Bank or the Expense Fund is not in
+             that number, so the chip could say "0" while the pane right below it
+             listed three requests worth Rs 14,045. It now counts exactly what
+             the pane shows. (The old page had the same blind spot — its card
+             just said "⏳ PENDING", so nobody could tell the two disagreed.) --}}
+        <button type="button" onclick="dcJump('dc-pane-requests')" title="Petrol &amp; maintenance requests waiting for your approval"
+                class="dc-chip">
+            🧾 Expenses to approve <span class="dc-n" style="color:#b45309;">{{ $dcPetrolCount + $dcMaintCount }}</span>
+            <span class="dc-rs">Rs. {{ number_format($dcReqAmount, 0) }}</span>
+        </button>
+
+        <button type="button" onclick="dcJump('dc-closings')" title="Cash the riders are still holding"
+                class="dc-chip">
+            💸 Short cash <span class="dc-n" style="color:#15803d;">{{ $stats['short_cash_count'] }}</span>
+            <span class="dc-rs">Rs. {{ number_format($stats['short_cash_amount'], 0) }}</span>
+        </button>
+
+        @if(!empty($onlineFollowUp) && ($onlineFollowUp['chase_count'] ?? 0) > 0)
+        <button type="button" onclick="dcJump('dc-pane-messages')" title="Online deliveries with no payment proof yet"
+                class="dc-chip">
+            💬 To chase <span class="dc-n" style="color:#be123c;">{{ $onlineFollowUp['chase_count'] }}</span>
+            @if(($onlineFollowUp['new_customer_count'] ?? 0) > 0)
+            <span class="dc-rs" style="color:#b45309;">{{ $onlineFollowUp['new_customer_count'] }} new</span>
+            @endif
+        </button>
+        @endif
     </div>
 
     <!-- ⭐ View Settled Invoices Button - AT THE TOP -->
@@ -193,155 +246,37 @@
     </div>
     @endif
 
-    <!-- 💰 Payment Follow-ups (Aug-2026) — replaces the old today-only "Online
-         WhatsApp Messages" panel. Three tiers: chase / proof-in / settled, held
-         for a 3-day window. Built by OnlineFollowUpService. -->
-    @if(isset($onlineFollowUp) && $onlineFollowUp)
-    @php
-        $fuNeedsAction = $onlineFollowUp['chase_count'] > 0;
-        // The panel's own colour reports its state: red while anything needs a
-        // message, green once the chase list is clear.
-        $fuHeadGradient = $fuNeedsAction
-            ? 'linear-gradient(to right, #e11d48, #be123c)'
-            : 'linear-gradient(to right, #059669, #047857)';
-        $fuBodyBg = $fuNeedsAction
-            ? 'linear-gradient(to right, #fff1f2, #ffe4e6)'
-            : 'linear-gradient(to right, #f0fdf4, #dcfce7)';
-        $fuBorder = $fuNeedsAction ? '#fda4af' : '#86efac';
-    @endphp
-    <div class="mb-4">
-        <div style="background: {{ $fuBodyBg }}; border: 2px solid {{ $fuBorder }};" class="rounded-lg shadow-sm overflow-hidden">
-            <!-- Header -->
-            <div style="background: {{ $fuHeadGradient }};" class="px-4 py-3 flex items-center justify-between cursor-pointer" onclick="document.getElementById('followup-body').classList.toggle('hidden')">
-                <div class="flex items-center gap-3">
-                    <span class="text-lg">💰</span>
-                    <h3 class="text-sm font-bold text-white">Payment Follow-ups</h3>
-                    <span class="text-xs text-white opacity-75">online deliveries · last {{ $onlineFollowUp['window_days'] }} days</span>
+    {{-- ══ The day's two queues, side by side (Aug-2026) ═══════════════════
+         Requests (petrol + maintenance) on the LEFT, Payment Follow-ups on the
+         RIGHT, each pane scrolling on its own and maximizable. This is a
+         LAYOUT change only: the three panels below are the same markup they
+         have always been — same ids, same onclick handlers, same approve /
+         reject / send flows — they have simply moved inside a pane. Before
+         this, a busy day pushed the rider closings (the section this page is
+         named after) two or three screens down. --}}
+    <div class="dc-split">
+
+        {{-- ══════════ LEFT PANE · REQUESTS ══════════ --}}
+        <section class="dc-pane" id="dc-pane-requests" aria-label="Pending expense requests">
+            <div class="dc-pane-hd">
+                <div class="dc-pane-ttl">
+                    <span>🧾 Requests</span>
+                    @if($dcPetrolCount > 0)
+                    <span class="dc-pane-badge" style="background:#ffedd5; color:#c2410c;">⛽ {{ $dcPetrolCount }}</span>
+                    @endif
+                    @if($dcMaintCount > 0)
+                    <span class="dc-pane-badge" style="background:#ccfbf1; color:#0f766e;">🔧 {{ $dcMaintCount }}</span>
+                    @endif
+                    @if($dcReqAmount > 0)
+                    <span class="dc-pane-badge">Rs. {{ number_format($dcReqAmount) }}</span>
+                    @endif
                 </div>
-                <div class="flex items-center gap-2">
-                    @if($onlineFollowUp['chase_count'] > 0)
-                    <span class="animate-pulse text-xs bg-white text-red-700 px-2 py-0.5 rounded-full font-bold">{{ $onlineFollowUp['chase_count'] }} to chase</span>
-                    @endif
-                    @if($onlineFollowUp['new_customer_count'] > 0)
-                    <span class="text-xs bg-amber-300 text-amber-900 px-2 py-0.5 rounded-full font-bold" style="background-color:#fcd34d; color:#78350f;">⚠ {{ $onlineFollowUp['new_customer_count'] }} new</span>
-                    @endif
-                    @if($onlineFollowUp['proof_in_count'] > 0)
-                    <span class="text-xs px-2 py-0.5 rounded-full font-bold" style="background-color:#fef3c7; color:#92400e;">{{ $onlineFollowUp['proof_in_count'] }} proof in</span>
-                    @endif
-                    @if($onlineFollowUp['settled_count'] > 0)
-                    <span class="text-xs px-2 py-0.5 rounded-full font-bold" style="background-color:#dcfce7; color:#166534;">✅ {{ $onlineFollowUp['settled_count'] }} settled</span>
-                    @endif
-                    <svg class="w-4 h-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path></svg>
-                </div>
+                <button type="button" class="dc-max-btn" onclick="dcToggleMax('dc-pane-requests', this)">⛶ Maximize</button>
             </div>
-
-            <!-- Body (open whenever something needs chasing) -->
-            <div id="followup-body" class="{{ $fuNeedsAction ? '' : 'hidden' }}">
-
-                <!-- ── TIER 1 · CHASE ───────────────────────────────────── -->
-                @if($onlineFollowUp['chase_count'] > 0)
-
-                {{-- Open group: new customers (any day) + everything delivered
-                     today. Day 1 is when the confirmation-and-bank-details
-                     message is worth sending, and a new customer is worth
-                     chasing on all three days. --}}
-                @if($onlineFollowUp['chase_primary_count'] > 0)
-                <div class="px-4 py-2 border-b" style="border-color: {{ $fuBorder }};">
-                    <div class="flex items-center justify-between mb-2">
-                        <span class="text-xs font-bold text-red-700">🔴 Chase now — new customers &amp; delivered today</span>
-                        <span class="text-xs font-semibold text-gray-600">{{ $onlineFollowUp['chase_primary_count'] }} · Rs. {{ number_format($onlineFollowUp['chase_primary_amount']) }}</span>
-                    </div>
-                    @foreach($onlineFollowUp['chase_primary'] as $row)
-                        @include('fin.employee.partials.followup-row', ['row' => $row])
-                    @endforeach
-                </div>
-                @endif
-
-                {{-- Collapsed group: established customers from day 2-3. They are
-                     already unapproved L1/L2 items in Online Approvals, which has
-                     its own invoice-bearing reminder — so this panel shouldn't
-                     shout about them a second and third time. One click away,
-                     never gone. --}}
-                @if($onlineFollowUp['chase_secondary_count'] > 0)
-                <div class="border-b" style="border-color: {{ $fuBorder }};">
-                    <div class="px-4 py-2 flex items-center justify-between cursor-pointer hover:bg-white"
-                         onclick="document.getElementById('followup-older').classList.toggle('hidden')">
-                        <div class="flex items-center gap-2 flex-wrap">
-                            <span class="text-xs font-bold text-gray-600">🕓 {{ $onlineFollowUp['chase_secondary_count'] }} older · Rs. {{ number_format($onlineFollowUp['chase_secondary_amount']) }}</span>
-                            <span class="text-xs text-gray-500">existing customers from day 2–3 — also chaseable from Online Approvals</span>
-                        </div>
-                        <span class="text-xs text-gray-400">▸</span>
-                    </div>
-                    <div id="followup-older" class="hidden px-4 pb-2">
-                        @foreach($onlineFollowUp['chase_secondary'] as $row)
-                            @include('fin.employee.partials.followup-row', ['row' => $row])
-                        @endforeach
-                    </div>
-                </div>
-                @endif
-
-                @else
-                <div class="px-4 py-3 text-xs font-semibold text-green-700">
-                    ✅ Nothing to chase — every online delivery from the last {{ $onlineFollowUp['window_days'] }} days has proof or is settled.
-                </div>
-                @endif
-                <!-- ── TIER 2 · PROOF IN (collapsed) ─────────────────────── -->
-                @if($onlineFollowUp['proof_in_count'] > 0)
-                <div class="border-b" style="border-color: {{ $fuBorder }};">
-                    <div class="px-4 py-2 flex items-center justify-between cursor-pointer hover:bg-white"
-                         onclick="document.getElementById('followup-proof').classList.toggle('hidden')">
-                        <div class="flex items-center gap-2 flex-wrap">
-                            <span class="text-xs font-bold" style="color:#92400e;">🟡 {{ $onlineFollowUp['proof_in_count'] }} orders · Rs. {{ number_format($onlineFollowUp['proof_in_amount']) }}</span>
-                            <span class="text-xs text-gray-500">proof received — waiting on Online Approvals, no action here</span>
-                            @foreach($onlineFollowUp['proof_in_breakdown'] as $b)
-                            <span class="text-xs font-semibold px-2 py-0.5 rounded-full text-white" style="background-color: {{ $b['color'] }};">{{ $b['count'] }} {{ $b['label'] }}</span>
-                            @endforeach
-                        </div>
-                        <span class="text-xs text-gray-400">▸</span>
-                    </div>
-                    <div id="followup-proof" class="hidden px-4 pb-2">
-                        @foreach($onlineFollowUp['proof_in'] as $row)
-                        @php $proof = $row['payment_proof'] ?? null; @endphp
-                        <div class="flex items-center justify-between py-1.5 px-3 mb-1 rounded" style="background-color: #fffdf5;">
-                            <div class="flex items-center gap-2 flex-1 min-w-0 flex-wrap">
-                                <span class="text-xs text-gray-400">Day {{ $row['day_number'] }}</span>
-                                <span class="text-xs font-mono font-bold text-gray-700">{{ $row['order_number'] }}</span>
-                                <span class="text-xs text-gray-600 truncate">{{ $row['customer_name'] }}</span>
-                                @if($row['is_new_customer'])
-                                <span class="text-xs font-bold px-1.5 py-0.5 rounded" style="background-color:#fef3c7; color:#92400e;">new</span>
-                                @endif
-                            </div>
-                            <div class="flex items-center gap-2">
-                                <span class="text-xs font-semibold text-gray-800">Rs. {{ number_format($row['amount']) }}</span>
-                                @if($proof && ($proof['status'] ?? 'none') !== 'none')
-                                <span class="text-xs font-bold px-2 py-0.5 rounded-full text-white whitespace-nowrap"
-                                      style="background-color: {{ $proof['color'] }}; cursor: pointer;"
-                                      onclick="event.stopPropagation(); openProofModal({{ $row['id'] }}, '{{ addslashes($row['order_number']) }}')"
-                                      title="{{ $proof['label'] }} — click to view the screenshot / bank email">
-                                    {{ $proof['has_whatsapp'] ? '📷' : '' }}{{ !empty($proof['has_sms']) ? '📱' : '' }}{{ $proof['has_email'] ? '✉️' : '' }} {{ $proof['label'] }} 🔍
-                                </span>
-                                @endif
-                            </div>
-                        </div>
-                        @endforeach
-                    </div>
-                </div>
-                @endif
-
-                <!-- ── TIER 3 · SETTLED (count only) ─────────────────────── -->
-                @if($onlineFollowUp['settled_count'] > 0)
-                <div class="px-4 py-2 text-xs font-semibold" style="color:#166534;">
-                    ✅ {{ $onlineFollowUp['settled_count'] }} settled · Rs. {{ number_format($onlineFollowUp['settled_amount']) }} — approved in the ledger, nothing to do.
-                </div>
-                @endif
-            </div>
-        </div>
-    </div>
-    @endif
-
+            <div class="dc-pane-body">
     <!-- ⛽ Petrol Requests (Meter-based + Manual) -->
     @if(isset($pendingPetrolRequests) && $pendingPetrolRequests)
-    <div class="mb-4">
+    <div class="dc-panel">
         <div style="background: linear-gradient(to right, #fff7ed, #ffedd5); border: 2px solid #fdba74;" class="rounded-lg shadow-sm overflow-hidden">
             <!-- Header -->
             <div style="background: linear-gradient(to right, #ea580c, #c2410c);" class="px-4 py-3 flex items-center justify-between cursor-pointer" onclick="document.getElementById('petrol-requests-body').classList.toggle('hidden')">
@@ -468,10 +403,9 @@
         </div>
     </div>
     @endif
-
     <!-- 🔧 Maintenance Requests -->
     @if(isset($pendingMaintenanceRequests) && $pendingMaintenanceRequests)
-    <div class="mb-4">
+    <div class="dc-panel">
         <div style="background: linear-gradient(to right, #f0fdfa, #ccfbf1); border: 2px solid #5eead4;" class="rounded-lg shadow-sm overflow-hidden">
             <!-- Header (collapsed by default — keeps the closing screen tidy) -->
             <div style="background: linear-gradient(to right, #0d9488, #0f766e);" class="px-4 py-3 flex items-center justify-between cursor-pointer" onclick="document.getElementById('maint-requests-body').classList.toggle('hidden')">
@@ -485,7 +419,10 @@
                     <svg class="w-4 h-4 text-white transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path></svg>
                 </div>
             </div>
-            <div id="maint-requests-body" class="hidden">
+            {{-- Aug-2026: was class="hidden". A queue holding money that needs
+                 approval must not load collapsed — the pane scrolls on its own
+                 now, so an open group costs nothing. --}}
+            <div id="maint-requests-body">
                 <!-- Summary Row -->
                 <div class="px-4 py-2 flex gap-4 border-b" style="border-color: #5eead4;">
                     <div class="flex items-center gap-2">
@@ -574,7 +511,255 @@
         </div>
     </div>
     @endif
+                @if(empty($pendingPetrolRequests) && empty($pendingMaintenanceRequests))
+                <div class="dc-pane-empty">✅ No petrol or maintenance requests waiting for approval.</div>
+                @endif
+            </div>
+        </section>
 
+        {{-- ══════════ RIGHT PANE · MESSAGES ══════════ --}}
+        <section class="dc-pane" id="dc-pane-messages" aria-label="Payment follow-up messages">
+            <div class="dc-pane-hd">
+                <div class="dc-pane-ttl">
+                    <span>💬 Messages</span>
+                    @if(!empty($onlineFollowUp) && ($onlineFollowUp['chase_count'] ?? 0) > 0)
+                    <span class="dc-pane-badge" style="background:#ffe4e6; color:#be123c;">{{ $onlineFollowUp['chase_count'] }} to chase</span>
+                    @endif
+                    @if(!empty($onlineFollowUp) && ($onlineFollowUp['proof_in_count'] ?? 0) > 0)
+                    {{-- Counts the REVIEW group (?? for a stale server): the L1-done
+                         rows have their own line, and this number is what the
+                         in-place decrement moves — the total would bounce back
+                         up on reload after an approval. --}}
+                    <span class="dc-pane-badge" data-fu-proof style="background:#fef3c7; color:#92400e;">{{ $onlineFollowUp['proof_review_count'] ?? $onlineFollowUp['proof_in_count'] }} proof in</span>
+                    @endif
+                </div>
+                <button type="button" class="dc-max-btn" onclick="dcToggleMax('dc-pane-messages', this)">⛶ Maximize</button>
+            </div>
+            <div class="dc-pane-body">
+    <!-- 💰 Payment Follow-ups (Aug-2026) — replaces the old today-only "Online
+         WhatsApp Messages" panel. Three tiers: chase / proof-in / settled, held
+         for a 3-day window. Built by OnlineFollowUpService. -->
+    @if(isset($onlineFollowUp) && $onlineFollowUp)
+    @php
+        $fuNeedsAction = $onlineFollowUp['chase_count'] > 0;
+        // The panel's own colour reports its state: red while anything needs a
+        // message, green once the chase list is clear.
+        $fuHeadGradient = $fuNeedsAction
+            ? 'linear-gradient(to right, #e11d48, #be123c)'
+            : 'linear-gradient(to right, #059669, #047857)';
+        $fuBodyBg = $fuNeedsAction
+            ? 'linear-gradient(to right, #fff1f2, #ffe4e6)'
+            : 'linear-gradient(to right, #f0fdf4, #dcfce7)';
+        $fuBorder = $fuNeedsAction ? '#fda4af' : '#86efac';
+    @endphp
+    <div class="dc-panel">
+        <div style="background: {{ $fuBodyBg }}; border: 2px solid {{ $fuBorder }};" class="rounded-lg shadow-sm overflow-hidden">
+            <!-- Header -->
+            <div style="background: {{ $fuHeadGradient }};" class="px-4 py-3 flex flex-wrap items-center justify-between gap-2 cursor-pointer" onclick="document.getElementById('followup-body').classList.toggle('hidden')">
+                <div class="flex flex-wrap items-center gap-3">
+                    <span class="text-lg">💰</span>
+                    <h3 class="text-sm font-bold text-white">Payment Follow-ups</h3>
+                    <span class="text-xs text-white opacity-75">online deliveries · last {{ $onlineFollowUp['window_days'] }} days</span>
+                </div>
+                <div class="flex flex-wrap items-center gap-2">
+                    @if($onlineFollowUp['chase_count'] > 0)
+                    <span class="animate-pulse text-xs bg-white text-red-700 px-2 py-0.5 rounded-full font-bold">{{ $onlineFollowUp['chase_count'] }} to chase</span>
+                    @endif
+                    @if($onlineFollowUp['new_customer_count'] > 0)
+                    <span class="text-xs bg-amber-300 text-amber-900 px-2 py-0.5 rounded-full font-bold" style="background-color:#fcd34d; color:#78350f;">⚠ {{ $onlineFollowUp['new_customer_count'] }} new</span>
+                    @endif
+                    {{-- Same number as the pane badge and the review group — see the
+                         data-fu-proof note there. --}}
+                    @if(($onlineFollowUp['proof_review_count'] ?? $onlineFollowUp['proof_in_count']) > 0)
+                    <span data-fu-proof class="text-xs px-2 py-0.5 rounded-full font-bold" style="background-color:#fef3c7; color:#92400e;">{{ $onlineFollowUp['proof_review_count'] ?? $onlineFollowUp['proof_in_count'] }} proof in</span>
+                    @endif
+                    @if($onlineFollowUp['settled_count'] > 0)
+                    <span class="text-xs px-2 py-0.5 rounded-full font-bold" style="background-color:#dcfce7; color:#166534;">✅ {{ $onlineFollowUp['settled_count'] }} settled</span>
+                    @endif
+                    <svg class="w-4 h-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path></svg>
+                </div>
+            </div>
+
+            <!-- Body (open whenever something needs chasing) -->
+            <div id="followup-body" class="{{ $fuNeedsAction ? '' : 'hidden' }}">
+
+                <!-- ── TIER 1 · CHASE ───────────────────────────────────── -->
+                @if($onlineFollowUp['chase_count'] > 0)
+
+                {{-- Open group: new customers (any day) + everything delivered
+                     today. Day 1 is when the confirmation-and-bank-details
+                     message is worth sending, and a new customer is worth
+                     chasing on all three days. --}}
+                @if($onlineFollowUp['chase_primary_count'] > 0)
+                <div class="px-4 py-2 border-b" style="border-color: {{ $fuBorder }};">
+                    <div class="flex items-center justify-between mb-2">
+                        <span class="text-xs font-bold text-red-700">🔴 Chase now — new customers &amp; delivered today</span>
+                        <span class="text-xs font-semibold text-gray-600">{{ $onlineFollowUp['chase_primary_count'] }} · Rs. {{ number_format($onlineFollowUp['chase_primary_amount']) }}</span>
+                    </div>
+                    @foreach($onlineFollowUp['chase_primary'] as $row)
+                        @include('fin.employee.partials.followup-row', ['row' => $row])
+                    @endforeach
+                </div>
+                @endif
+
+                {{-- Collapsed group: established customers from day 2-3. They are
+                     already unapproved L1/L2 items in Online Approvals, which has
+                     its own invoice-bearing reminder — so this panel shouldn't
+                     shout about them a second and third time. One click away,
+                     never gone. --}}
+                @if($onlineFollowUp['chase_secondary_count'] > 0)
+                <div class="border-b" style="border-color: {{ $fuBorder }};">
+                    <div class="px-4 py-2 flex items-center justify-between cursor-pointer hover:bg-white"
+                         onclick="document.getElementById('followup-older').classList.toggle('hidden')">
+                        <div class="flex items-center gap-2 flex-wrap">
+                            <span class="text-xs font-bold text-gray-600">🕓 {{ $onlineFollowUp['chase_secondary_count'] }} older · Rs. {{ number_format($onlineFollowUp['chase_secondary_amount']) }}</span>
+                            <span class="text-xs text-gray-500">existing customers from day 2–3 — also chaseable from Online Approvals</span>
+                        </div>
+                        <span class="text-xs text-gray-400">▸</span>
+                    </div>
+                    <div id="followup-older" class="hidden px-4 pb-2">
+                        @foreach($onlineFollowUp['chase_secondary'] as $row)
+                            @include('fin.employee.partials.followup-row', ['row' => $row])
+                        @endforeach
+                    </div>
+                </div>
+                @endif
+
+                @else
+                <div class="px-4 py-3 text-xs font-semibold text-green-700">
+                    ✅ Nothing to chase — every online delivery from the last {{ $onlineFollowUp['window_days'] }} days has proof or is settled.
+                </div>
+                @endif
+                {{-- ── TIER 2 · PROOF IN ──────────────────────────────────
+                     Aug-2026: this tier used to be one collapsed list captioned
+                     "waiting on Online Approvals, no action here". It now splits
+                     by what is LEFT TO DO, because the closing manager approves
+                     these himself from this screen:
+
+                       review   proof landed, invoice still unapproved — OPEN by
+                                default, and the only group with a button.
+                       L1 done  already approved at L1, so the money is ALREADY in
+                                the balances (BalancePostingService runs at L1 —
+                                L2 only verifies). Collapsed, nothing to press,
+                                kept visible until Taimur clears it at L2.
+
+                     Without the split an order looked exactly the same before and
+                     after it was approved. --}}
+                @if(($onlineFollowUp['proof_review_count'] ?? 0) > 0)
+                <div class="border-b" style="border-color: {{ $fuBorder }};">
+                    <div class="px-4 py-2 flex items-center justify-between cursor-pointer hover:bg-white"
+                         onclick="document.getElementById('followup-proof').classList.toggle('hidden')">
+                        <div class="flex items-center gap-2 flex-wrap">
+                            <span class="text-xs font-bold" style="color:#92400e;">🟡 {{ $onlineFollowUp['proof_review_count'] }} proof in · Rs. {{ number_format($onlineFollowUp['proof_review_amount']) }}</span>
+                            <span class="text-xs text-gray-500">{{ $canApproveL1 ? 'open each proof, then approve' : 'proof received — waiting on Online Approvals' }}</span>
+                            @foreach($onlineFollowUp['proof_in_breakdown'] as $b)
+                            <span class="text-xs font-semibold px-2 py-0.5 rounded-full text-white" style="background-color: {{ $b['color'] }};">{{ $b['count'] }} {{ $b['label'] }}</span>
+                            @endforeach
+                        </div>
+                        <span class="text-xs text-gray-400">▾</span>
+                    </div>
+                    <div id="followup-proof" class="px-4 pb-2">
+                        @foreach($onlineFollowUp['proof_review'] as $row)
+                        @php $proof = $row['payment_proof'] ?? null; @endphp
+                        <div class="flex items-center justify-between py-1.5 px-3 mb-1 rounded" style="background-color: #fffdf5;">
+                            <div class="flex items-center gap-2 flex-1 min-w-0 flex-wrap">
+                                <span class="text-xs text-gray-400">Day {{ $row['day_number'] }}</span>
+                                <span class="text-xs font-mono font-bold text-gray-700">{{ $row['order_number'] }}</span>
+                                <span class="text-xs text-gray-600 truncate">{{ $row['customer_name'] }}</span>
+                                @if($row['is_new_customer'])
+                                <span class="text-xs font-bold px-1.5 py-0.5 rounded" style="background-color:#fef3c7; color:#92400e;">new</span>
+                                @endif
+                            </div>
+                            <div class="flex items-center gap-2">
+                                <span class="text-xs font-semibold text-gray-800">Rs. {{ number_format($row['amount']) }}</span>
+                                @if($canWaChat && !empty($row['customer_phone']))
+                                <button type="button" class="dc-chat-btn"
+                                        onclick="event.stopPropagation(); openWaChatDrawer(@js($row['customer_phone']), @js($row['customer_name']))"
+                                        title="Read this customer's WhatsApp chat">💬</button>
+                                @endif
+                                @if($proof && ($proof['status'] ?? 'none') !== 'none')
+                                <span class="text-xs font-bold px-2 py-0.5 rounded-full text-white whitespace-nowrap"
+                                      style="background-color: {{ $proof['color'] }}; cursor: pointer;"
+                                      onclick="event.stopPropagation(); dcOpenProof(this)"
+                                      data-proof="{{ json_encode(['orderId' => $row['id'], 'orderNumber' => $row['order_number'], 'ledgerId' => $row['ledger_id'] ?? null, 'amount' => $row['amount'], 'customerName' => $row['customer_name'], 'canApprove' => (bool) ($row['can_approve'] ?? false)]) }}"
+                                      title="{{ $proof['label'] }} — open the proof{{ ($canApproveL1 && !empty($row['can_approve'])) ? ' and approve it' : '' }}">
+                                    {{ $proof['has_whatsapp'] ? '📷' : '' }}{{ !empty($proof['has_sms']) ? '📱' : '' }}{{ $proof['has_email'] ? '✉️' : '' }} {{ $proof['label'] }}
+                                    {{ ($canApproveL1 && !empty($row['can_approve'])) ? '🔍 review' : '🔍' }}
+                                </span>
+                                @endif
+                            </div>
+                        </div>
+                        @endforeach
+                    </div>
+                </div>
+                @endif
+
+                {{-- L1 DONE — approved here (or in Approvals) but not yet verified
+                     at L2. The money is already counted; this group exists so the
+                     manager can see what he has done today, and so an approved
+                     order stops looking identical to one nobody has touched. --}}
+                @if(($onlineFollowUp['proof_l1_done_count'] ?? 0) > 0)
+                <div class="border-b" style="border-color: {{ $fuBorder }};">
+                    <div class="px-4 py-2 flex items-center justify-between cursor-pointer hover:bg-white"
+                         onclick="document.getElementById('followup-l1done').classList.toggle('hidden')">
+                        <div class="flex items-center gap-2 flex-wrap">
+                            <span class="text-xs font-bold" style="color:#1d4ed8;">☑ {{ $onlineFollowUp['proof_l1_done_count'] }} approved · Rs. {{ number_format($onlineFollowUp['proof_l1_done_amount']) }}</span>
+                            <span class="text-xs text-gray-500">already in the balances — waiting on Level 2 verification</span>
+                        </div>
+                        <span class="text-xs text-gray-400">▸</span>
+                    </div>
+                    <div id="followup-l1done" class="hidden px-4 pb-2">
+                        @foreach($onlineFollowUp['proof_l1_done'] as $row)
+                        @php $proof = $row['payment_proof'] ?? null; @endphp
+                        <div class="flex items-center justify-between py-1.5 px-3 mb-1 rounded" style="background-color: #f0f7ff;">
+                            <div class="flex items-center gap-2 flex-1 min-w-0 flex-wrap">
+                                <span class="text-xs text-gray-400">Day {{ $row['day_number'] }}</span>
+                                <span class="text-xs font-mono font-bold text-gray-700">{{ $row['order_number'] }}</span>
+                                <span class="text-xs text-gray-600 truncate">{{ $row['customer_name'] }}</span>
+                                <span class="text-xs font-bold px-1.5 py-0.5 rounded" style="background-color:#dbeafe; color:#1e40af;">L1 done</span>
+                            </div>
+                            <div class="flex items-center gap-2">
+                                <span class="text-xs font-semibold text-gray-800">Rs. {{ number_format($row['amount']) }}</span>
+                                @if($canWaChat && !empty($row['customer_phone']))
+                                <button type="button" class="dc-chat-btn"
+                                        onclick="event.stopPropagation(); openWaChatDrawer(@js($row['customer_phone']), @js($row['customer_name']))"
+                                        title="Read this customer's WhatsApp chat">💬</button>
+                                @endif
+                                @if($proof && ($proof['status'] ?? 'none') !== 'none')
+                                <span class="text-xs font-bold px-2 py-0.5 rounded-full text-white whitespace-nowrap"
+                                      style="background-color: {{ $proof['color'] }}; cursor: pointer;"
+                                      onclick="event.stopPropagation(); dcOpenProof(this)"
+                                      data-proof="{{ json_encode(['orderId' => $row['id'], 'orderNumber' => $row['order_number'], 'ledgerId' => null, 'amount' => $row['amount'], 'customerName' => $row['customer_name'], 'canApprove' => false]) }}"
+                                      title="{{ $proof['label'] }} — view the proof">
+                                    {{ $proof['has_whatsapp'] ? '📷' : '' }}{{ !empty($proof['has_sms']) ? '📱' : '' }}{{ $proof['has_email'] ? '✉️' : '' }} {{ $proof['label'] }} 🔍
+                                </span>
+                                @endif
+                            </div>
+                        </div>
+                        @endforeach
+                    </div>
+                </div>
+                @endif
+
+                <!-- ── TIER 3 · SETTLED (count only) ─────────────────────── -->
+                @if($onlineFollowUp['settled_count'] > 0)
+                <div class="px-4 py-2 text-xs font-semibold" style="color:#166534;">
+                    ✅ {{ $onlineFollowUp['settled_count'] }} settled · Rs. {{ number_format($onlineFollowUp['settled_amount']) }} — approved in the ledger, nothing to do.
+                </div>
+                @endif
+            </div>
+        </div>
+    </div>
+    @endif
+                @if(empty($onlineFollowUp))
+                <div class="dc-pane-empty">No online deliveries in the follow-up window.</div>
+                @endif
+            </div>
+        </section>
+    </div>
+
+    {{-- Scroll target for the glance chips. --}}
+    <div id="dc-closings"></div>
     <!-- Invoices Section -->
     @if($invoicesByRider->isEmpty())
     <!-- No Invoices State -->
@@ -1162,9 +1347,27 @@
 
 </div>
 
+{{-- Backdrop for a maximized pane. Outside the page wrapper so it is
+     never clipped by an ancestor. --}}
+<div id="dc-scrim" class="dc-scrim" onclick="dcRestoreMax()"></div>
+
+@if($canWaChat)
+{{-- The customer's WhatsApp conversation, in a drawer on this page — the same
+     one Online Approvals uses, so the chat opens identically on both. Rendered
+     only for users who may read messages; /messages would answer 403 inside the
+     frame otherwise. --}}
+@include('partials.wa-chat-drawer')
+@endif
+
+{{-- ONE payment-proof card renderer, shared with Online Approvals. Before this,
+     Daily Closing had its own older copy that knew only "screenshot or email" —
+     so every bank-SMS proof (the majority of confirmations) was captioned
+     "Bank email" and its text was offered as "Show raw email text". --}}
+@include('partials.proof-signal-card')
+
 <!-- Payment Proof viewer (screenshot + parsed bank email) -->
 <div id="proofModal" style="display:none; position:fixed; inset:0; z-index:99999; background:rgba(17,24,39,0.6); align-items:center; justify-content:center; padding:16px;" onclick="if(event.target===this)closeProofModal()">
-    <div style="background:#fff; border-radius:14px; max-width:560px; width:100%; max-height:90vh; overflow:auto; box-shadow:0 20px 60px rgba(0,0,0,0.3);">
+    <div style="background:#fff; border-radius:14px; max-width:680px; width:100%; max-height:90vh; overflow:auto; box-shadow:0 20px 60px rgba(0,0,0,0.3);" onclick="event.stopPropagation()">
         <div style="display:flex; align-items:center; justify-content:space-between; padding:14px 18px; border-bottom:1px solid #eef2f7;">
             <div style="font-weight:700; color:#111827;">Payment proof <span id="proofModalOrder" style="color:#6b7280; font-weight:600;"></span></div>
             <button type="button" onclick="closeProofModal()" style="border:0; background:#f3f4f6; width:30px; height:30px; border-radius:8px; cursor:pointer; font-size:16px; color:#374151;">&times;</button>
@@ -1172,14 +1375,50 @@
         <div id="proofModalBody" style="padding:16px 18px;">
             <div style="text-align:center; color:#6b7280; padding:24px;">Loading…</div>
         </div>
+        {{-- ⭐ APPROVE LIVES HERE, UNDER THE EVIDENCE — never on the row itself.
+             The manager asked to see each proof before accepting it, so the only
+             route to the button is through opening the proof. There is
+             deliberately no bulk approve on this page (Online Approvals keeps
+             that for its own reviewed queue). Hidden unless this user holds L1
+             AND the row carries an approvable invoice. --}}
+        <div id="proofApproveBar" style="display:none; border-top:1px solid #eef2f7; background:#f8fafc; padding:13px 18px; border-radius:0 0 14px 14px;">
+            <div id="proofApproveBanks" style="display:none; align-items:center; gap:7px; flex-wrap:wrap; margin-bottom:11px;"></div>
+            <div style="display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap;">
+                <span id="proofApproveNote" style="font-size:12px; color:#6b7280;"></span>
+                <button type="button" id="proofApproveBtn" onclick="dcApproveFromProof()"
+                        style="background:#16a34a; color:#fff; border:0; border-radius:9px; padding:9px 20px; font-size:13.5px; font-weight:700; cursor:pointer; white-space:nowrap;">
+                    ✅ Approve payment (L1)
+                </button>
+            </div>
+        </div>
     </div>
 </div>
 
 <!-- JavaScript for Interactive Filters -->
 <script>
-function openProofModal(orderId, orderNumber) {
+// ⭐ The proof viewer. Opened from a row's badge via dcOpenProof(), which also
+// carries what this order can be approved as.
+//
+// Aug-2026: the per-signal card is now rendered by the SHARED partial
+// (partials/proof-signal-card, the renderer Online Approvals uses). The copy
+// that used to live here knew only "whatsapp or else", so every bank-SMS
+// confirmation — the majority — was captioned "Bank email", and its text was
+// offered as "Show raw email text". Same proof, two screens, two stories.
+var dcProofCtx = null;   // { orderId, orderNumber, ledgerId, amount, canApprove }
+var dcProofBank = null;  // chosen receiving bank for the approval
+
+function dcOpenProof(el) {
+    var ctx = {};
+    try { ctx = JSON.parse(el.getAttribute('data-proof') || '{}'); } catch (e) { ctx = {}; }
+    openProofModal(ctx.orderId, ctx.orderNumber, ctx);
+}
+
+function openProofModal(orderId, orderNumber, ctx) {
     var modal = document.getElementById('proofModal');
     var body = document.getElementById('proofModalBody');
+    dcProofCtx = ctx || null;
+    dcProofBank = null;
+    dcHideApproveBar();
     document.getElementById('proofModalOrder').textContent = orderNumber ? ('— ' + orderNumber) : '';
     body.innerHTML = '<div style="text-align:center; color:#6b7280; padding:24px;">Loading…</div>';
     modal.style.display = 'flex';
@@ -1192,7 +1431,10 @@ function openProofModal(orderId, orderNumber) {
                 return;
             }
             body.innerHTML = renderCombinedHint(d.combined)
-                + d.signals.map(renderProofSignal).join('<hr style="border:0; border-top:1px solid #eef2f7; margin:14px 0;">');
+                + d.signals.map(function (sig) {
+                    return nfProofSignalCard(sig, { orderId: orderId });
+                }).join('');
+            dcShowApproveBar(d);
         })
         .catch(function () {
             body.innerHTML = '<div style="text-align:center; color:#dc2626; padding:24px;">Could not load proof details.</div>';
@@ -1215,56 +1457,233 @@ function renderCombinedHint(c) {
         + rows + '</div>';
 }
 
-function renderProofSignal(s) {
-    var esc = function (v) { return v == null ? '' : String(v).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); };
-    var rows = '';
-    var addRow = function (label, val) {
-        if (val === null || val === undefined || val === '') return;
-        rows += '<div style="display:flex; gap:8px; padding:3px 0; font-size:13px;"><span style="color:#6b7280; min-width:120px;">' + label + '</span><span style="color:#111827; font-weight:600;">' + esc(val) + '</span></div>';
-    };
-
-    var head;
-    if (s.source === 'whatsapp') {
-        head = '<div style="font-weight:700; color:#92400e; margin-bottom:8px;">📷 Customer screenshot</div>';
-    } else {
-        head = '<div style="font-weight:700; color:#1d4ed8; margin-bottom:8px;">✉️ Bank email</div>';
-    }
-
-    var img = '';
-    if (s.source === 'whatsapp' && s.image_url) {
-        img = '<a href="' + esc(s.image_url) + '" target="_blank" rel="noopener">'
-            + '<img src="' + esc(s.image_url) + '" alt="payment screenshot" style="max-width:100%; border-radius:10px; border:1px solid #e5e7eb; margin-bottom:10px;"></a>';
-    }
-
-    addRow('Amount', s.amount != null ? ('Rs. ' + s.amount) : null);
-    addRow('Reference', s.reference);
-    addRow('Sender name', s.sender_name);
-    addRow('Sender account', s.sender_account);
-    addRow('Sender bank', s.sender_bank);
-    addRow('Txn time', s.txn_datetime);
-    addRow('Received', s.received_at);
-    if (s.source === 'email') {
-        addRow('From', s.email_from);
-        addRow('Subject', s.email_subject);
-    }
-    var statusLabel = (s.status === 'matched') ? 'Matched to this order'
-        : (s.status === 'amount_mismatch') ? 'Received — amount differs' : s.status;
-    addRow('Status', statusLabel);
-    if (s.agreement && s.agreement.amount_match === false && s.agreement.expected != null) {
-        rows += '<div style="margin-top:6px; font-size:12px; color:#b45309; background:#fffbeb; border:1px solid #fde68a; border-radius:8px; padding:6px 8px;">⚠️ Paid Rs. ' + esc(s.amount) + ' but order balance is Rs. ' + esc(s.agreement.expected) + '.</div>';
-    }
-
-    var emailBody = '';
-    if (s.source === 'email' && s.email_body) {
-        emailBody = '<details style="margin-top:8px;"><summary style="cursor:pointer; color:#6b7280; font-size:12px;">Show raw email text</summary>'
-            + '<pre style="white-space:pre-wrap; font-size:11px; color:#374151; background:#f9fafb; border:1px solid #eef2f7; border-radius:8px; padding:8px; margin-top:6px;">' + esc(s.email_body) + '</pre></details>';
-    }
-
-    return head + img + rows + emailBody;
-}
+// (renderProofSignal lived here — replaced by the shared nfProofSignalCard.)
 
 function closeProofModal() {
     document.getElementById('proofModal').style.display = 'none';
+    dcProofCtx = null;
+    dcHideApproveBar();
+}
+
+// ── Approve a payment at Level 1, from inside its proof ─────────────────────
+//
+// WHY L1 FROM HERE: L1 is the moment the money lands in the balances
+// (BalancePostingService runs at L1; L2 only verifies), so the closing manager
+// approving what he has just read is the same act he would perform in Online
+// Approvals — one screen instead of two. The server re-checks his approval
+// rights on every call, so this page can only ever OFFER the button.
+//
+// ⭐ NO BULK. Every approval passes through one open proof by construction.
+const DC_PAY_BANKS = @json($petrolPayBanks ?? []);
+const DC_CAN_APPROVE_L1 = @json($canApproveL1 ?? false);
+
+function dcHideApproveBar() {
+    var bar = document.getElementById('proofApproveBar');
+    if (bar) bar.style.display = 'none';
+}
+
+function dcShowApproveBar(d) {
+    var bar = document.getElementById('proofApproveBar');
+    if (!bar || !DC_CAN_APPROVE_L1 || !dcProofCtx || !dcProofCtx.canApprove || !dcProofCtx.ledgerId) return;
+
+    // Which of OUR banks received it. An online invoice MUST name one or the
+    // per-bank balances never see the money — the server refuses without it, so
+    // the picker exists wherever the refusal can happen (same invariant as the
+    // petrol/maintenance rows).
+    // ⚠ Only trust a suggestion the operator can actually SEE and change. A
+    // detected bank that is not in the selectable list (deactivated since the
+    // proof was read) would otherwise be posted with no chip lit and no prompt
+    // — the one state where the page decides which bank got the money and the
+    // operator never knows. Unknown suggestion => no preselection, and the
+    // "pick the bank" prompt appears.
+    var suggested = d && d.proof ? parseInt(d.proof.suggested_receiving_account_id, 10) : NaN;
+    var offered = DC_PAY_BANKS.some(function (b) { return parseInt(b.id, 10) === suggested; });
+    dcProofBank = offered ? suggested : null;
+    dcRenderApproveBanks();
+
+    var note = document.getElementById('proofApproveNote');
+    if (note) {
+        note.innerHTML = 'Approving posts <b>Rs. ' + Number(dcProofCtx.amount || 0).toLocaleString()
+            + '</b> to the balances now. Level 2 verification still follows.';
+    }
+    var btn = document.getElementById('proofApproveBtn');
+    if (btn) { btn.disabled = false; btn.textContent = '✅ Approve payment (L1)'; btn.style.background = '#16a34a'; }
+    bar.style.display = 'block';
+}
+
+function dcRenderApproveBanks() {
+    var wrap = document.getElementById('proofApproveBanks');
+    if (!wrap) return;
+    if (!DC_PAY_BANKS.length) { wrap.style.display = 'none'; return; }   // old server / none configured
+    var chips = DC_PAY_BANKS.map(function (b) {
+        var on = dcProofBank === parseInt(b.id, 10);
+        // Only a well-formed hex colour reaches the style attribute.
+        var hex = /^#[0-9a-fA-F]{3,8}$/.test(String(b.color_hex || '')) ? b.color_hex : '#7c3aed';
+        return '<button type="button" onclick="dcPickApproveBank(' + parseInt(b.id, 10) + ')" '
+            + 'style="border:1px solid ' + (on ? hex : '#d1d5db') + '; '
+            + 'background:' + (on ? hex : '#fff') + '; color:' + (on ? '#fff' : '#374151') + '; '
+            + 'border-radius:999px; padding:4px 12px; font-size:11.5px; font-weight:700; cursor:pointer;">'
+            + (on ? '✓ ' : '') + nfEsc(b.short_code || b.name) + '</button>';
+    }).join('');
+    wrap.innerHTML = '<span style="font-size:11.5px; color:#6b7280;">🏦 Received in:</span>' + chips
+        + (dcProofBank ? '' : '<span style="font-size:11.5px; color:#b45309;">pick the bank this landed in</span>');
+    wrap.style.display = 'flex';
+}
+
+function dcPickApproveBank(id) {
+    dcProofBank = parseInt(id, 10);
+    dcRenderApproveBanks();
+}
+
+function nfEsc(v) {
+    return v == null ? '' : String(v).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+async function dcApproveFromProof() {
+    if (!dcProofCtx || !dcProofCtx.ledgerId) return;
+    var btn = document.getElementById('proofApproveBtn');
+
+    if (DC_PAY_BANKS.length && !dcProofBank) {
+        alert('Choose which bank this payment landed in before approving.');
+        return;
+    }
+
+    // The same advisory payer check Online Approvals runs: when the match was a
+    // guess (amount-only, or a name the system read), say so before the money
+    // moves. Never blocks on its own failure.
+    if (!(await dcPayerCheck(dcProofCtx.orderId))) return;
+
+    if (!confirm('Approve Rs. ' + Number(dcProofCtx.amount || 0).toLocaleString()
+        + ' for ' + (dcProofCtx.orderNumber || 'this order') + ' at Level 1?\n\n'
+        + 'This posts the payment to the balances now.')) return;
+
+    btn.disabled = true;
+    btn.textContent = 'Approving…';
+    btn.style.background = '#9ca3af';
+
+    var payload = { approval_notes: 'Approved from Daily Closing (payment follow-ups)' };
+    if (dcProofBank) payload.receiving_account_id = dcProofBank;
+
+    try {
+        const resp = await fetch('/finance/ledger/' + dcProofCtx.ledgerId + '/approve-l1-only', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-CSRF-TOKEN': fuCsrf(),
+                'Accept': 'application/json'
+            },
+            body: JSON.stringify(payload)
+        });
+        const data = await resp.json().catch(function () { return {}; });
+
+        if (resp.ok && data && data.success) {
+            dcMarkRowApproved(dcProofCtx);
+            closeProofModal();
+        } else {
+            alert((data && data.message) || 'Could not approve this payment.');
+            btn.disabled = false;
+            btn.textContent = '✅ Approve payment (L1)';
+            btn.style.background = '#16a34a';
+        }
+    } catch (e) {
+        alert('Could not reach the server. The payment was NOT approved.');
+        btn.disabled = false;
+        btn.textContent = '✅ Approve payment (L1)';
+        btn.style.background = '#16a34a';
+    }
+}
+
+// Advisory only — a check that cannot answer must never stop a legitimate
+// approval (identical stance to Online Approvals' runPayerCheck).
+async function dcPayerCheck(orderId) {
+    try {
+        const res = await fetch('/admin/payments/approval-check', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-CSRF-TOKEN': fuCsrf(),
+                'Accept': 'application/json'
+            },
+            body: JSON.stringify({ order_ids: [orderId] })
+        });
+        if (!res.ok) return true;
+        const data = await res.json();
+        const flagged = (data && data.items) || [];
+        if (!flagged.length) return true;
+        const f = flagged[0];
+        return confirm('⚠ How this payment was matched is a guess.\n\n'
+            + (f.message || (f.order_number + ' — the payer could not be confirmed.'))
+            + '\n\nApprove anyway?');
+    } catch (e) {
+        return true;
+    }
+}
+
+// Move the row out of "proof in" and into "L1 done" in place. A full reload
+// would cost ~1.1s of SQL and throw away scroll position, the open groups and
+// any half-finished work elsewhere on the page.
+function dcMarkRowApproved(ctx) {
+    // Find the row by READING each badge's payload rather than matching on it
+    // with an attribute selector: the payload is JSON, so a selector for it
+    // needs nested quotes and is a CSS SyntaxError — which threw here and left
+    // the modal open on a successful approval.
+    var group = document.getElementById('followup-proof');
+    if (!group) return;
+    var badge = null;
+    group.querySelectorAll('[data-proof]').forEach(function (el) {
+        if (badge) return;
+        try {
+            if (JSON.parse(el.getAttribute('data-proof')).orderId === ctx.orderId) badge = el;
+        } catch (e) { /* a malformed payload just isn't the row we want */ }
+    });
+    if (!badge) return;
+
+    var row = badge.closest('div.flex.items-center.justify-between');
+    var actions = badge.parentElement;
+    if (row) row.style.backgroundColor = '#f0f7ff';
+
+    // The row can no longer be approved a second time.
+    badge.setAttribute('data-proof', JSON.stringify(Object.assign({}, ctx, { canApprove: false, ledgerId: null })));
+    badge.innerHTML = badge.innerHTML.replace(/🔍 review/, '🔍');
+
+    if (actions && !actions.querySelector('.dc-l1-done')) {
+        var done = document.createElement('span');
+        done.className = 'dc-l1-done text-xs font-bold px-1.5 py-0.5 rounded';
+        done.style.cssText = 'background-color:#dbeafe; color:#1e40af;';
+        done.textContent = '✓ approved (L1)';
+        actions.insertBefore(done, actions.firstChild);
+    }
+
+    dcBumpProofCounts(ctx.amount);
+}
+
+// Keep the group headers honest after a row moves — count AND amount together,
+// because "0 proof in · Rs. 5,400" is a contradiction on a money screen.
+//
+// Deliberately escape-free regexes ([0-9] rather than the shorter form): this
+// text passes through a generator, and a lost backslash silently turns a digit
+// class into a literal letter.
+function dcBumpProofCounts(amount) {
+    var head = document.querySelector('[onclick*="followup-proof"] .text-xs.font-bold');
+    if (head) {
+        var left = null;
+        var txt = head.textContent
+            .replace(/([0-9]+) proof in/, function (m, n) {
+                left = Math.max(0, parseInt(n, 10) - 1);
+                return left + ' proof in';
+            })
+            .replace(/Rs[.] ([0-9,]+)/, function (m, n) {
+                var v = Math.max(0, parseInt(n.replace(/,/g, ''), 10) - Math.round(amount || 0));
+                return 'Rs. ' + v.toLocaleString();
+            });
+        // Nothing left to review reads better than a zero beside a total.
+        head.textContent = (left === 0) ? '✓ all proofs reviewed' : txt;
+    }
+    document.querySelectorAll('[data-fu-proof]').forEach(function (chip) {
+        chip.textContent = chip.textContent.replace(/^([0-9]+)/, function (m, n) {
+            return String(Math.max(0, parseInt(n, 10) - 1));
+        });
+    });
 }
 
 function filterByStatus(status) {
@@ -1746,6 +2165,62 @@ function rejectPetrolRequest(requestId, level) {
         btn.disabled = false;
         btn.textContent = '❌ Reject';
     });
+}
+
+// ── Split-pane maximize (Aug-2026) ─────────────────────────────────────────
+// Toggles a class on the pane ITSELF. The pane is never re-parented and its
+// contents are never re-rendered, so every button, <select> and inline handler
+// inside it — approve/reject, the bank picker, Send, Month view — keeps working
+// exactly as it does unmaximized. Esc or a click on the scrim restores.
+function dcToggleMax(paneId, btn) {
+    var pane  = document.getElementById(paneId);
+    var scrim = document.getElementById('dc-scrim');
+    if (!pane) return;
+    var turnOn = !pane.classList.contains('dc-maxed');
+
+    // Only one pane maximized at a time — restore any other first.
+    document.querySelectorAll('.dc-pane.dc-maxed').forEach(function (p) {
+        p.classList.remove('dc-maxed');
+        var b = p.querySelector('.dc-max-btn');
+        if (b) b.textContent = '⛶ Maximize';
+    });
+
+    if (turnOn) {
+        pane.classList.add('dc-maxed');
+        if (btn) btn.textContent = '✕ Restore';
+    }
+    if (scrim) scrim.classList.toggle('dc-on', turnOn);
+    document.body.classList.toggle('dc-locked', turnOn);
+}
+
+function dcRestoreMax() {
+    var maxed = document.querySelector('.dc-pane.dc-maxed');
+    if (maxed) dcToggleMax(maxed.id);
+}
+
+// Esc restores a maximized pane — but only when nothing is open on top of it,
+// so it never steals the key from the payment-proof viewer or the fuel month
+// view (both of which deliberately render ABOVE a maximized pane).
+document.addEventListener('keydown', function (e) {
+    if (e.key !== 'Escape') return;
+    var proof = document.getElementById('proofModal');
+    var fm    = document.getElementById('fmModal');
+    if (proof && proof.style.display === 'flex') return;
+    if (fm && fm.style.display === 'flex') return;
+    // The chat drawer owns Esc while it is open. Two checks, because the two
+    // listeners can run in either order: the flag catches "the drawer already
+    // closed on this same keypress", the open-test catches the reverse order.
+    if (e.nfHandledByChatDrawer) return;
+    if (typeof waChatDrawerIsOpen === 'function' && waChatDrawerIsOpen()) return;
+    dcRestoreMax();
+});
+
+// Glance chip → the section it summarises. Restores a maximized pane first,
+// otherwise the scroll happens behind the overlay and looks like nothing did.
+function dcJump(id) {
+    dcRestoreMax();
+    var el = document.getElementById(id);
+    if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 </script>
 

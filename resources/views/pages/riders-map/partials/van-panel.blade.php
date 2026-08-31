@@ -193,6 +193,12 @@
 .vp-ostate.wait{background:#fef3c7;color:#92400e;}
 .vp-ostate.ok{background:#dcfce7;color:#166534;}
 .vp-ostate.stale{background:#fee2e2;color:#991b1b;}
+/* The store's release row — an ACTION inside the driver's own group, so it sits
+   with the stops it acts on rather than in a toolbar away from them. */
+.vp-oact{justify-content:flex-start;padding:7px 10px;background:#f8fafc;}
+.vp-sendbtn{border:1px solid #0d9488;background:#0d9488;color:#fff;border-radius:7px;
+            padding:5px 11px;font-size:12px;font-weight:700;cursor:pointer;white-space:nowrap;}
+.vp-sendbtn:hover{background:#0f766e;border-color:#0f766e;}
 .vp-otime{color:#9ca3af;font-size:11px;font-variant-numeric:tabular-nums;white-space:nowrap;}
 /* GPS freshness chip — the same three states, colours and words as the mobile
    boards, so "grey dot" means one thing across the whole system. */
@@ -508,15 +514,40 @@ function vpGroups(v) {
         //    still show what's happening, since it's being driven"). The list
         //    shrinks by itself as stops are delivered — a delivered order leaves
         //    the manifest — so it can never grow into clutter.
+        let mineRows = mine.map(o => vpORow(
+            o.order_number, o.customer || '',
+            o.status === 'on_van' ? 'on the van' : (o.dispatched ? 'delivering' : 'out for delivery'),
+            o.status === 'on_van' ? 'wait' : 'ok',
+            o.dispatched_at ? vpWhen(o.dispatched_at) : '',
+            o.priority   // planned drop position — see vpORow
+        )).join('');
+
+        /* ⭐⭐ THE STORE'S RELEASE DOOR (Aug-30, from the 29-Aug prod run).
+           A driver's own box, once scanned aboard, can ONLY be sent out by the
+           driver himself — and when he did not (his Dispatch button silently
+           skipped his van stops on a mixed list), the store's only way to make
+           the order deliverable was to launder it through 'on hold' and back
+           out again. That happened twice that day, to five orders, and it
+           strips the delivery time on the way past.
+
+           This is the same door his own picker uses: one flip, timed by the
+           real engine, recorded against the manager who pressed it.
+
+           ⚠ Drawn ONLY when the server says this viewer may use it — the panel
+             renders for a wider permission than the release needs, and a button
+             whose only outcome is a 403 is worse than no button. */
+        const parked = mine.filter(o => o.status === 'on_van');
+        if (parked.length && vpData && vpData.can_dispatch_own) {
+            mineRows += '<div class="vp-orow vp-oact">'
+                     +   '<button type="button" class="vp-sendbtn" onclick="vpSendOwnStops(' + vid + ')">'
+                     +     '🚀 Send out ' + parked.length + ' parked stop'
+                     +     (parked.length === 1 ? '' : 's') + ' with times'
+                     +   '</button>'
+                     + '</div>';
+        }
+
         out += vpGrp(vid, 'mine', '🏠 ' + vpEsc(v.driver_name || 'Driver') + "'s own", mine.length,
-            '', true,
-            mine.map(o => vpORow(
-                o.order_number, o.customer || '',
-                o.status === 'on_van' ? 'on the van' : (o.dispatched ? 'delivering' : 'out for delivery'),
-                o.status === 'on_van' ? 'wait' : 'ok',
-                o.dispatched_at ? vpWhen(o.dispatched_at) : '',
-                o.priority   // planned drop position — see vpORow
-            )).join(''));
+            '', true, mineRows);
     }
 
     (v.carrying || []).forEach(g => {
@@ -913,6 +944,45 @@ function vpSendVan(stopId, stopName) {
     const pick = prompt('Which van?\n' + names, '1');
     const idx = parseInt(pick, 10) - 1;
     if (vans[idx]) go(vans[idx]);
+}
+
+/* ── 🚀 send the DRIVER'S OWN parked stops out, and time them ──────────────
+      The same endpoint and the same engine his own picker uses — passing
+      `driver_id` is the only difference, and the server checks the store
+      permission itself. Replaces the on_hold → out_for_delivery laundering.
+
+   ⚠ Sends them in the order the manifest returned, which is already the
+     planned drop sequence — the engine reads that order as the route. */
+function vpSendOwnStops(vanUserId) {
+    const v = ((vpData && vpData.vans) || [])
+        .find(x => Number(x.driver_user_id) === Number(vanUserId));
+    if (!v) return;
+
+    const parked = (v.mine || []).filter(o => o.status === 'on_van');
+    if (!parked.length) { alert('Nothing is parked on this van right now.'); return; }
+
+    const who = v.driver_name || 'the driver';
+    const msg = 'Send ' + parked.length + ' of ' + who + "'s parked stop"
+              + (parked.length === 1 ? '' : 's') + ' out for delivery and work out delivery times?'
+              + '\n\n' + parked.map(o => o.order_number).join(', ')
+              + '\n\nThis is the same action he would take on his phone.';
+    if (!confirm(msg)) return;
+
+    fetch('/orders/van/dispatch-selected', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json', 'Accept': 'application/json',
+                  'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]')?.content || ''},
+        body: JSON.stringify({driver_id: vanUserId, order_ids: parked.map(o => o.id)}),
+    }).then(r => r.json()).then(res => {
+        if (!res.success) { alert(res.message || 'Could not send those stops out.'); return; }
+        // `dispatched: 0` = the driver beat us to it (the server says so) —
+        // claiming "2 stops sent out" about stops he sent would teach the store
+        // the button lies. Repeat the server's own words instead.
+        alert(res.dispatched === 0 && res.message
+            ? res.message
+            : (res.dispatched || parked.length) + ' stop(s) sent out for delivery and timed.');
+        vpLoad();
+    }).catch(() => alert('Could not send those stops out.'));
 }
 
 function vpPickForNew() {

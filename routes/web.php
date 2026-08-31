@@ -291,6 +291,12 @@ Route::middleware(['auth'])->group(function () {
     // uses — one implementation, so the two surfaces cannot drift).
     Route::get('/orders/van/panel', [\App\Http\Controllers\API\VanController::class, 'storePanel'])->name('orders.van.panel');
     Route::get('/orders/van/stops', [\App\Http\Controllers\API\VanController::class, 'stops'])->name('orders.van.stops');
+    // ⭐ Send the van driver's OWN parked stops out and time them, from the web
+    //    (Aug-30). Same controller action his picker calls — it takes `driver_id`
+    //    and checks the store permission itself. This replaces the `on_hold`→
+    //    `out_for_delivery` laundering the store had to use twice on 29 Aug,
+    //    which stripped the ETA and left no van history behind.
+    Route::post('/orders/van/dispatch-selected', [\App\Http\Controllers\API\VanController::class, 'dispatchSelected'])->name('orders.van.dispatch-selected');
     Route::post('/orders/van/stops', [\App\Http\Controllers\API\VanController::class, 'saveStop'])->name('orders.van.stops.create');
     Route::post('/orders/van/stops/promote/{handoverId}', [\App\Http\Controllers\API\VanController::class, 'promoteStop'])->name('orders.van.stops.promote');
     // ⭐ Send a van to a meet-up point from the WEB — the same controller action
@@ -966,6 +972,8 @@ Route::middleware(['auth'])->group(function () {
     Route::get('/products/category-report', [\App\Http\Controllers\CRM\CategoryReportController::class, 'index'])->name('products.category_report');
     Route::get('/products/category-report/drill', [\App\Http\Controllers\CRM\CategoryReportController::class, 'drill'])->name('products.category_report.drill');
     Route::get('/products/category-report/freezer-drill', [\App\Http\Controllers\CRM\CategoryReportController::class, 'freezerDrill'])->name('products.category_report.freezer_drill');
+    // Held stock (chiller OR freezer) behind one cell — ?section= picks which.
+    Route::get('/products/category-report/stock-drill', [\App\Http\Controllers\CRM\CategoryReportController::class, 'stockDrill'])->name('products.category_report.stock_drill');
     Route::get('/products/category-report/sales-drill', [\App\Http\Controllers\CRM\CategoryReportController::class, 'salesDrill'])->name('products.category_report.sales_drill');
     Route::post('/products/category-report/tag', [\App\Http\Controllers\CRM\CategoryReportController::class, 'saveTag'])->name('products.category_report.tag');
     Route::post('/products/category-report/visibility', [\App\Http\Controllers\CRM\CategoryReportController::class, 'saveVisibility'])->name('products.category_report.visibility');

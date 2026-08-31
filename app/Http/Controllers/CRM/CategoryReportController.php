@@ -210,6 +210,40 @@ class CategoryReportController extends Controller
      * moved it. Same bucket maths as the purchase drill, so the detail always
      * belongs to the number that was clicked.
      */
+    /**
+     * The packets behind one HELD-stock cell, chiller or freezer. Held stock
+     * only — anything taken out has left this report, so it never appears
+     * here. One endpoint for both sections, mirroring the service.
+     */
+    public function stockDrill(Request $request)
+    {
+        $validated = $request->validate([
+            'category' => 'required|string|max:50',
+            'period'   => 'required|string|max:20',
+            'section'  => 'nullable|in:chiller,freezer',
+        ]);
+
+        try {
+            [$rangeStart, $rangeEnd] = $this->resolveRange($request);
+            $granularity = $this->svc->normalizeGranularity($request->get('granularity', 'day'));
+            [$from, $to] = $this->svc->bucketBounds($validated['period'], $granularity, $rangeStart, $rangeEnd);
+
+            return response()->json([
+                'success' => true,
+                'section' => $validated['section'] ?? 'chiller',
+                'drill'   => $this->svc->heldDrill(
+                    $validated['section'] ?? 'chiller',
+                    $from,
+                    $to->endOfDay(),
+                    $validated['category']
+                ),
+            ]);
+        } catch (\Throwable $e) {
+            Log::error('Category report stock drill failed: ' . $e->getMessage());
+            return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
+        }
+    }
+
     public function freezerDrill(Request $request)
     {
         $validated = $request->validate([

@@ -434,6 +434,66 @@ class FleetFuelService
                             'detail' => 'no_attendance', 'incl_ride_home' => false, 'claims' => [],
                         ];
                     }
+                    // ⭐⭐ EVERY MACHINE HE RODE THAT DAY, not just the last one.
+                    //
+                    // ⚠⚠ THE ENGINE ALREADY SPLITS A RIDER-DAY PER MACHINE — `$rows` is a
+                    //    LIST, one entry per bike, each carrying its own readings and
+                    //    times. This loop then assigned the scalars with `=`, so the last
+                    //    row silently won and the first bike vanished. That is what put
+                    //    DCR-799's 27,751 reading under a CEN-455 chip on a day Danish
+                    //    rode both: the label and the number came from different machines,
+                    //    and nothing on screen said so.
+                    //
+                    // ⚠⚠ EVIDENCE ONLY. The engine also emits a day row for a machine it
+                    //    attributed a claim to by ASSIGNMENT WINDOW — an unstamped claim
+                    //    can conjure a bike the man never touched (live example: Waseem
+                    //    showing CEN-455 on 1-3 Aug with no reading on it at all).
+                    //    Announcing that as "a bike he had today" would be inventing
+                    //    custody. A STAMPED claim does put its machine back, in the claims
+                    //    loop, because then something recorded says so.
+                    //
+                    // ⭐ The scalars still hold the LAST machine, so every existing reader
+                    //   (and every installed APK) behaves exactly as before; the full list
+                    //   is additive beside them.
+                    $mtHasEvidence = ($row['meter_start'] ?? null) !== null
+                        || ($row['meter_end'] ?? null) !== null
+                        || ($row['work_km'] ?? null) !== null;
+                    $mtKey = (int) $row['vehicle_id'];
+                    $mtRow = [
+                        'vehicle_id'   => $row['vehicle_id'],
+                        'label'        => $row['vehicle_label'],
+                        'is_company'   => !empty($row['is_company']),
+                        'meter_start'  => $row['meter_start'] ?? null,
+                        'meter_end'    => $row['meter_end'] ?? null,
+                        'work_km'      => $row['work_km'] ?? null,
+                        'start_at'     => $row['start_at'] ?? null,
+                        'end_at'       => $row['end_at'] ?? null,
+                        'start_source' => $row['start_source'] ?? null,
+                        'partial'      => !empty($row['partial']),
+                    ];
+                    // ⚠ A machine can appear TWICE in one day (his attendance pair plus a
+                    //   manager-entered stint on the same bike). Merged, or the heading
+                    //   would print the same plate twice as if he had swapped onto it.
+                    if (isset($days[$date]['machines_today'][$mtKey])) {
+                        $prev = $days[$date]['machines_today'][$mtKey];
+                        if ($mtRow['meter_start'] === null
+                            || ($prev['meter_start'] !== null && $prev['meter_start'] < $mtRow['meter_start'])) {
+                            $mtRow['meter_start']  = $prev['meter_start'];
+                            $mtRow['start_at']     = $prev['start_at'];
+                            $mtRow['start_source'] = $prev['start_source'];
+                        }
+                        if ($mtRow['meter_end'] === null
+                            || ($prev['meter_end'] !== null && $prev['meter_end'] > $mtRow['meter_end'])) {
+                            $mtRow['meter_end'] = $prev['meter_end'];
+                            $mtRow['end_at']    = $prev['end_at'];
+                        }
+                        $mtRow['work_km'] = ($prev['work_km'] === null && $mtRow['work_km'] === null)
+                            ? null : (float) ($prev['work_km'] ?? 0) + (float) ($mtRow['work_km'] ?? 0);
+                        $mtRow['partial'] = $prev['partial'] && $mtRow['partial'];
+                    }
+                    if ($mtHasEvidence || isset($days[$date]['machines_today'][$mtKey])) {
+                        $days[$date]['machines_today'][$mtKey] = $mtRow;
+                    }
                     $days[$date]['vehicle_id']    = $row['vehicle_id'];
                     $days[$date]['vehicle_label'] = $row['vehicle_label'];
                     // 'manager' / 'home' / 'checkin' — shown when the reading was not
@@ -481,6 +541,20 @@ class FleetFuelService
                 }
             }
 
+            // Keyed by vehicle while merging; handed out as a plain ordered LIST so the
+            // screens can just iterate it. Ordered by when the machine was first read
+            // that day, which is the order he actually rode them.
+            foreach ($days as $dt => $row) {
+                if (empty($row['machines_today'])) continue;
+                $list = array_values($row['machines_today']);
+                usort($list, function ($a, $b) {
+                    $at = $a['start_at'] ?? $a['end_at'] ?? '';
+                    $bt = $b['start_at'] ?? $b['end_at'] ?? '';
+                    if ($at !== $bt) return strcmp((string) $at, (string) $bt);
+                    return (int) $a['vehicle_id'] <=> (int) $b['vehicle_id'];
+                });
+                $days[$dt]['machines_today'] = $list;
+            }
             ksort($days);
             return ['days' => $days, 'machines' => $this->shapeMachines($rider['machines'])];
         } catch (\Throwable $e) {
@@ -500,6 +574,20 @@ class FleetFuelService
     }
 
     /** Per-machine rows for the rider's "his machines this month" strip. */
+    /**
+     * Is this machine already in the day's list?
+     *
+     * ⚠ `machines_today` leaves overlayRiderDays RE-INDEXED as a plain list, so an
+     *   `isset($list[$vehicleId])` test would silently check position 4, not vehicle 4.
+     */
+    private function dayListsMachine(array $list, int $vehicleId): bool
+    {
+        foreach ($list as $m) {
+            if ((int) ($m['vehicle_id'] ?? 0) === $vehicleId) return true;
+        }
+        return false;
+    }
+
     private function shapeMachines(array $machines): array
     {
         $out = [];
@@ -902,6 +990,16 @@ class FleetFuelService
     /** One month of fuel/maintenance requests, newest last. */
     private function claimRows(string $from, string $to)
     {
+        // ⭐ WHICH MACHINE the claim was filed against. Without it the rider lens
+        //   renders every claim anonymously, so on a day he rode two bikes his two
+        //   fuel claims looked identical and neither said which tank it filled.
+        // ⚠⚠ SCHEMA-GUARDED. `vehicle_id` was hand-applied in a SQL batch; naming it
+        //   unconditionally in a raw select would take the whole Bikes screen down
+        //   with "Unknown column" on any server that has not run it. Every other
+        //   reader of this column guards it the same way.
+        $vehicleCol = Schema::hasColumn('t_req_master', 'vehicle_id')
+            ? 'vehicle_id,' : 'NULL AS vehicle_id,';
+
         return DB::table('t_req_master')
             ->selectRaw("id, requester_user_id, amount, expense_category, status,
                          meter_distance, petrol_rate, meter_at_fill, litres, service_type,
@@ -914,6 +1012,7 @@ class FleetFuelService
                          -- the approver happened to touch the dropdown.
                          payment_source_account_id, receiving_account_id,
                          maintenance_type_id,
+                         {$vehicleCol}
                          COALESCE(expense_date, DATE(created_at)) AS d")
             ->whereIn('expense_category', [self::CAT_FUEL, self::CAT_MAINT])
             ->whereRaw("COALESCE(expense_date, DATE(created_at)) BETWEEN ? AND ?", [$from, $to])
@@ -1302,6 +1401,22 @@ class FleetFuelService
         // --- attach claims (a claim can land on a day with no attendance row) ---
         // Resolved once for the whole month rather than per claim row.
         $maintTypes = app(\App\Services\Riders\MaintenanceTypeService::class);
+        // Plate/name for a stamped claim. Prefers the machines already resolved for
+        // his month (no extra query), falling back to the resolver's cached lookup for
+        // a machine he did not otherwise ride this month.
+        $machineLabels = [];
+        foreach ($riderMachines as $m) { $machineLabels[(int) $m['vehicle_id']] = $m['label']; }
+        $resolverForLabels = new \App\Services\Riders\VehicleResolver();
+        $vehLabel = function (int $vid) use (&$machineLabels, $resolverForLabels) {
+            if (!array_key_exists($vid, $machineLabels)) {
+                $machineLabels[$vid] = $resolverForLabels->labelFor($vid);
+            }
+            return $machineLabels[$vid];
+        };
+        $vehIsCompany = function (int $vid) use ($resolverForLabels) {
+            $v = $resolverForLabels->vehicle($vid);
+            return $v ? ((int) $v->is_company === 1) : false;
+        };
         foreach ($byDay as $date => $list) {
             if (!isset($days[$date])) {
                 // A claim dated on a day with no attendance row at all (e.g. filed
@@ -1338,6 +1453,18 @@ class FleetFuelService
                     // to the bucket name on rows filed before types existed.
                     'maintenance_type_id' => $r->maintenance_type_id !== null ? (int) $r->maintenance_type_id : null,
                     'maintenance_type'    => $maintTypes->labelFor($r->maintenance_type_id ?? null, $r->service_type),
+                    // ⭐⭐ WHICH BIKE THIS MONEY WAS FOR. On a day he rode two machines
+                    //   his claims rendered identically — two fuel rows, two different
+                    //   tanks, one anonymous list. The vehicle lens never had this
+                    //   problem because it is machine-scoped by construction.
+                    // ⚠ ONLY from the claim's OWN stamp. The day's machine is deliberately
+                    //   NOT a fallback: on the very day this matters the day has TWO, so
+                    //   inferring would print a confident wrong answer. Unstamped stays
+                    //   null and the screen says "machine not recorded" — the same words
+                    //   the vehicle card already uses.
+                    'vehicle_id'      => $r->vehicle_id !== null ? (int) $r->vehicle_id : null,
+                    'vehicle_label'   => $r->vehicle_id !== null ? $vehLabel((int) $r->vehicle_id) : null,
+                    'vehicle_stamped' => $r->vehicle_id !== null,
                     // Regular services only: how far the bike ran since the last
                     // one, and by how much this beat the schedule.
                     'km_since_service' => $serviceGap[$r->id]['since'] ?? null,
@@ -1377,6 +1504,27 @@ class FleetFuelService
                     'filed_source_id' => $r->payment_source_account_id !== null ? (int) $r->payment_source_account_id : null,
                     'filed_bank_id'   => $r->receiving_account_id !== null ? (int) $r->receiving_account_id : null,
                 ];
+
+                // ⭐ A STAMPED claim names its machine outright, so that machine belongs
+                //   in the day's list even when he recorded no reading on it — otherwise
+                //   the heading omits a bike the claims directly beneath it are labelled
+                //   with (Rajab, 22-Aug: two van claims under an own-bike-only heading).
+                //   Unstamped claims add nothing: see the evidence rule in overlayRiderDays.
+                if ($r->vehicle_id !== null) {
+                    $cvid = (int) $r->vehicle_id;
+                    if (!$this->dayListsMachine($days[$date]['machines_today'] ?? [], $cvid)) {
+                        $days[$date]['machines_today'][] = [
+                            'vehicle_id'  => $cvid,
+                            'label'       => $vehLabel($cvid),
+                            'is_company'  => $vehIsCompany($cvid),
+                            'meter_start' => null, 'meter_end' => null, 'work_km' => null,
+                            'start_at'    => null, 'end_at' => null, 'start_source' => null,
+                            'partial'     => false,
+                            // Nothing was read on it — it is here because money names it.
+                            'from_claim'  => true,
+                        ];
+                    }
+                }
             }
         }
 

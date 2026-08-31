@@ -208,8 +208,31 @@ class VanController extends Controller
     }
 
     /**
-     * Dispatch a chosen set of his OWN on-van stops (also reachable on its own,
+     * Dispatch a chosen set of on-van stops (also reachable on its own,
      * e.g. "Dispatch remaining" after the handover).
+     *
+     * ⭐⭐ THE STORE MAY RELEASE THEM TOO (Aug-30, from the 29-Aug prod run).
+     *
+     * Until now `driverId` was hard-wired to the caller, so ONLY the driver
+     * could send his own parked stops out — and a van driver's own boxes are
+     * locked by the custody guard until somebody does. When he did not (his
+     * Dispatch button silently skipped them on a mixed list — see the mobile
+     * fix), the store's only way out was to launder the order through
+     * `on_hold` and back to `out_for_delivery`: twice on 29 Aug, five orders.
+     * That detour strips the ETA, writes no van history, and is exactly the
+     * two-hop this file's own guard was written to catch.
+     *
+     * So a manager with `view_open_orders` may pass `driver_id` and use the
+     * SAME door the driver uses — one status flip, timed by the real engine,
+     * attributed to the manager in the history.
+     *
+     * ⚠ The permission checked here is deliberately `hasMobilePermission`, NOT
+     *   the looser web-or-mobile pair the panel renders on. `calculateDeliveryEtas`
+     *   gates on exactly that via `canManageRiderRoute`, and this endpoint flips
+     *   the status BEFORE it calls the engine — so a gate the engine would then
+     *   refuse would leave the orders out for delivery with no time on them,
+     *   which is the very state this whole change exists to prevent. One
+     *   permission, checked once, at the outer door.
      */
     public function dispatchSelected(Request $request, VanService $van)
     {
@@ -219,9 +242,27 @@ class VanController extends Controller
         $data = $request->validate([
             'order_ids'   => 'required|array|min:1',
             'order_ids.*' => 'integer',
+            // Absent on every existing client — the driver's own app never sends
+            // it, so the old behaviour is byte-identical without it.
+            'driver_id'   => 'nullable|integer',
         ]);
 
-        $res = $this->dispatchSelectedInternal($request, (int) $user->id, $data['order_ids'], $van);
+        $driverId = (int) $user->id;
+        $actorId  = null;   // null = the driver acting on his own stops
+
+        $requested = (int) ($data['driver_id'] ?? 0);
+        if ($requested > 0 && $requested !== (int) $user->id) {
+            if (!$user->hasMobilePermission('view_open_orders')) {
+                return response()->json([
+                    'success' => false,
+                    'message' => "You cannot send out another driver's stops.",
+                ], 403);
+            }
+            $driverId = $requested;
+            $actorId  = (int) $user->id;
+        }
+
+        $res = $this->dispatchSelectedInternal($request, $driverId, $data['order_ids'], $van, $actorId);
         if (!($res['ok'] ?? false)) {
             return response()->json(['success' => false, 'message' => $res['message']], 422);
         }
@@ -236,7 +277,8 @@ class VanController extends Controller
      *   +5 fresh-wave grace, the promise/accountability log, the Google cache —
      *   lives in calculateDeliveryEtas, and a fork would rot away from it.
      */
-    private function dispatchSelectedInternal(Request $request, int $driverId, array $orderIds, VanService $van): array
+    private function dispatchSelectedInternal(Request $request, int $driverId, array $orderIds,
+                                              VanService $van, ?int $actorId = null): array
     {
         $orderIds = array_values(array_unique(array_map('intval', $orderIds)));
         if (empty($orderIds)) return ['ok' => false, 'message' => 'Choose at least one delivery.'];
@@ -259,11 +301,42 @@ class VanController extends Controller
                 $eligible[] = $o;
             }
 
+            if ($orders->isEmpty()) {
+                return ['ok' => false, 'message' => 'Those orders could not be found.'];
+            }
+
+            // ⭐ BOTH SIDES PRESSED THE RIGHT BUTTON (Aug-30). With the store's
+            //    release door open, the driver's picker and the store can now act
+            //    on the SAME stops seconds apart: whoever is second finds them
+            //    already out for delivery. Every one skipped above AND already
+            //    timed = there is nothing left to do — and handing the engine an
+            //    empty undispatched set would come back as a failure, telling the
+            //    slower presser "Not dispatched" about stops that are dispatched.
+            //    Losing this race IS success; say so.
+            if (empty($eligible)
+                && $orders->every(fn ($o) => $o->eta_calculated_at !== null)) {
+                return [
+                    'ok'         => true,
+                    'dispatched' => 0,
+                    'message'    => 'Already sent out and timed — nothing left to dispatch.',
+                ];
+            }
+
             // Flip only the picked ones. The rest stay on_van = no promise, no
             // "left without dispatching" flag, customer still sees processing.
-            DB::transaction(function () use ($eligible, $driverId) {
+            //
+            // ⭐ WHO PRESSED IT IS RECORDED HONESTLY. A store release is stamped
+            //    with the MANAGER, not the driver — the history must not claim
+            //    the driver sent out boxes he never touched (the `on_hold`
+            //    workaround this replaces at least had the manager's id on it).
+            $note = $actorId !== null
+                ? "Store sent out the van driver's own stop"
+                : 'Van driver dispatching his own stop';
+            $changedBy = $actorId ?? $driverId;
+
+            DB::transaction(function () use ($eligible, $changedBy, $note) {
                 foreach ($eligible as $o) {
-                    $o->changeStatus(VanService::STATUS_OFD, 'Van driver dispatching his own stop', $driverId);
+                    $o->changeStatus(VanService::STATUS_OFD, $note, $changedBy);
                 }
             });
 
@@ -283,9 +356,28 @@ class VanController extends Controller
 
             $resp = app(RiderController::class)->calculateDeliveryEtas($sub, $driverId);
             $body = json_decode($resp->getContent(), true);
+            $ok   = ($body['success'] ?? false) === true;
+
+            // ⚠ THE FLIP ALREADY HAPPENED. If the engine refuses now (no GPS fix
+            //   is the realistic one), those stops are out for delivery with no
+            //   time on them — deliverable, but unpromised. Deliberately NOT
+            //   rolled back: the boxes really are on their way, and putting them
+            //   back on the van would be a worse lie than an untimed stop. Both
+            //   callers surface the refusal (the app alerts on `dispatch_failed`,
+            //   the store panel shows the message), and it is logged here so a
+            //   half-done release is findable instead of inferred — the whole
+            //   reason the 29-Aug run took a log reconstruction.
+            if (!$ok) {
+                Log::warning('Van dispatch: stops flipped but the engine did not time them', [
+                    'driver'  => $driverId,
+                    'by'      => $actorId ?? $driverId,
+                    'orders'  => array_map(fn ($o) => $o->id, $eligible),
+                    'message' => $body['message'] ?? null,
+                ]);
+            }
 
             return [
-                'ok'         => ($body['success'] ?? false) === true,
+                'ok'         => $ok,
                 'message'    => $body['message'] ?? null,
                 'dispatched' => count($eligible),
                 'engine'     => $body,
@@ -1085,7 +1177,18 @@ class VanController extends Controller
                 }
             }
 
-            return response()->json(['success' => true, 'available' => true, 'vans' => $vans]);
+            return response()->json([
+                'success'   => true,
+                'available' => true,
+                'vans'      => $vans,
+                // ⭐ May THIS viewer use the store's release door? Sent so the
+                //    button is only ever drawn for somebody it will work for —
+                //    the panel renders on `hasPermission OR hasMobilePermission`,
+                //    but the release (and the ETA engine behind it) needs the
+                //    mobile one. Drawing it for everybody would put a button on
+                //    the screen whose only outcome for some managers is a 403.
+                'can_dispatch_own' => $user->hasMobilePermission('view_open_orders'),
+            ]);
         } catch (\Throwable $e) {
             Log::error('Van storePanel failed', ['error' => $e->getMessage()]);
             return response()->json(['success' => false, 'message' => 'Could not load the van panel'], 500);

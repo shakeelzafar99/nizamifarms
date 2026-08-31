@@ -389,6 +389,36 @@ class VehicleService
                     $rDate = substr((string) ($r->expense_date ?: $r->created_at), 0, 10);
                     // That day was given to another machine — its money went with it.
                     if (isset($movedAway[$w['user_id'] . '|' . $rDate])) continue;
+
+                    // ⭐⭐ RULE P ON THE WINDOW PASS — a claim whose odometer cannot belong
+                    //    to this machine is NOT this machine's (Aug-28 2026).
+                    //
+                    // ⚠⚠ THE PROD CASE. CEN-455 was registered on 22-Aug and its first (only)
+                    //    keeper is Waseem. `attributionWindows` extends a first keeper's window
+                    //    back to PRE_REGISTRY_FROM so pre-registry history is not lost — which
+                    //    swept EVERY unstamped claim Waseem had ever filed onto CEN-455,
+                    //    including his DCR-799 fills at 24,588-24,822. CEN-455 runs at ~17,2xx.
+                    //    The damage was not cosmetic: those readings became the machine's fuel
+                    //    chain, so its last "sane" anchor sat at 24,822 and EVERY later fill
+                    //    (29-Aug 17,209, 30-Aug 17,286) was judged against it and flagged
+                    //    "meter vs last fill doesn't add up" — permanently, because the anchor
+                    //    only advances on a plausible delta. It also made the machine's month
+                    //    span 17,1xx to 24,9xx and report "a meter reading looks wrong".
+                    //
+                    // ⚠ ONLY THIS PASS. A STAMPED claim names its machine outright and a
+                    //   day-override is a manager's explicit instruction — both are recorded
+                    //   facts and are never second-guessed here. This pass is the only one
+                    //   that GUESSES, so it is the only one that has to be plausible.
+                    //
+                    // ⚠ FAILS OPEN twice over: a claim with no odometer cannot be judged and
+                    //   is kept, and `readingPlausibleFor` itself accepts everything for a
+                    //   machine with no spine of its own — so a brand-new bike still inherits
+                    //   its keeper's history exactly as before.
+                    if ($r->meter_at_fill !== null && (int) $r->meter_at_fill > 0
+                        && !$this->readingPlausibleFor($vehicleId, (int) $r->meter_at_fill)) {
+                        continue;
+                    }
+
                     $seen[$r->id] = true;
                     // Filed before the registry knew who had this machine: shown, but
                     // labelled as an assumption rather than a recorded fact.

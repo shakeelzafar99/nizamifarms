@@ -1218,6 +1218,41 @@ class VanService
      */
     public static function manualChangeBlock($order, string $targetStatus): ?string
     {
+        $refusal = self::manualChangeReason($order, $targetStatus);
+
+        // ⭐ A REFUSAL LEAVES A TRACE (Aug-30). Every door above returns 422 with
+        //    this text and logs NOTHING, so the only record of a blocked change
+        //    was the sentence on somebody's screen. Reconstructing the 29-Aug van
+        //    run therefore took inference from a workaround pattern — five orders
+        //    laundered through `on_hold` — rather than a search. One line here
+        //    makes the next one findable.
+        //
+        // ⚠ Wrapped, and swallowing its own errors: this guard's contract is that
+        //   it can never turn a status change into a 500, and a logging call must
+        //   not be the thing that breaks it.
+        if ($refusal !== null) {
+            try {
+                Log::info('Van guard refused a manual status change', [
+                    'order'   => $order->id ?? null,
+                    'number'  => $order->order_number ?? null,
+                    'from'    => $order->order_status ?? null,
+                    'to'      => $targetStatus,
+                    'by'      => auth()->check() ? auth()->id() : null,
+                    'loaded'  => !empty($order->van_loaded_at),
+                    'van'     => $order->van_user_id ?? null,
+                    'reason'  => $refusal,
+                ]);
+            } catch (\Throwable $e) {
+                // never let the log break the guard
+            }
+        }
+
+        return $refusal;
+    }
+
+    /** The rule itself. See `manualChangeBlock` for what wraps it and why. */
+    private static function manualChangeReason($order, string $targetStatus): ?string
+    {
         try {
             // Putting something ON the van is always allowed — it is also the
             // REPAIR for a box that left the van without being collected.

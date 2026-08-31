@@ -165,9 +165,27 @@ class CategorySalesPurchaseService
             // holds today, named by `current_period`); `flow` is real per-period
             // in/out history since `history_start`. `quiet_days` are days the
             // tracker recorded nothing, so an empty cell can be read correctly.
+            // 🧊 CHILLER — HELD stock only, dated by the day it went in. A
+            // packet that has been taken out has left this report entirely
+            // (it becomes a sale). Valued at SELLING price: cost_price is
+            // empty for every stocked item, so cost is not available.
+            'chiller' => [
+                'held'  => $this->heldByPeriod('chiller', $start, $end, $granularity),
+                'total' => $this->heldTotal('chiller'),
+            ],
+
             'freezer' => [
+                // ⭐ Aug-27: the freezer now reads exactly like the chiller —
+                // HELD stock dated by the day it went in, valued the same way.
+                // `stock`/`flow` below are kept because the movement drill and
+                // the quiet-day chip still use them.
+                'held'           => $this->heldByPeriod('freezer', $start, $end, $granularity),
+                'total'          => $this->heldTotal('freezer'),
+                // `stock` (live level) and `flow` (in/out) are no longer shown:
+                // the column is held-stock-only, and a take-out becomes a sale.
+                // freezerFlowByPeriod() is deliberately NOT called any more —
+                // it was a query per page load for something nothing renders.
                 'stock'          => $freezerStock,
-                'flow'           => $this->freezerFlowByPeriod($start, $end, $granularity),
                 'current_period' => $currentPeriod,
                 'history_start'  => $this->freezerHistoryStart(),
                 'quiet_days'     => $this->freezerQuietDays($start, $end),
@@ -771,6 +789,208 @@ class CategorySalesPurchaseService
         }
         $out['__grand'] = $grand;
         return $out;
+    }
+
+    // =================================================================
+    //  HELD STOCK  (chiller AND freezer — one code path, both sections)
+    // =================================================================
+    //
+    // Owner rule (Aug-27-2026): show what is STILL SITTING in storage, dated
+    // by the day it went in. The moment a packet is taken out it drops off
+    // this report entirely — it is on its way to becoming a sale, and the
+    // sale columns already account for it. So this is deliberately a HELD
+    // level, never a flow: status = 'stored' only.
+    //
+    // ⭐ Owner asked (Aug-27) for the FREEZER to work exactly like the chiller.
+    //   They therefore share ONE implementation parameterised by section —
+    //   duplicating it is what would let the two drift apart later.
+    //   A useful side-effect: because stock is dated by when it went IN, old
+    //   stock now shows on its OWN date, so its age is visible instead of
+    //   being flattened onto today.
+    //
+    // ⚠ VALUED AT SELLING PRICE, not cost. `cost_price` is empty for every
+    //   stocked item, so cost is simply not available. The figure answers
+    //   "what is this worth if we sell it", NOT "how much money is tied up",
+    //   and must never be added to the purchase column.
+    //
+    // Like the freezer figures these ride ALONGSIDE the money grid and never
+    // touch blankCell()'s fields, so the column sums and the margin identity
+    // stay exactly as they were.
+
+    /**
+     * One price per product, so a product with several variants cannot fan a
+     * row out and double its value. MIN is the conservative pick; today every
+     * stocked product has exactly one priced variant, so it is not load-bearing.
+     */
+    private function stockPriceJoin()
+    {
+        return DB::table('t_crm_prod_product_variant')
+            ->select('product_id', DB::raw('MIN(price) AS price'))
+            ->where('price', '>', 0)
+            ->groupBy('product_id');
+    }
+
+    /** Only ever the two real sections — never interpolate a caller's string. */
+    private function normalizeSection(string $section): string
+    {
+        return $section === 'freezer' ? 'freezer' : 'chiller';
+    }
+
+    /**
+     * Chiller stock still held, bucketed by the period it ENTERED storage and
+     * by category, so a row lines up with the money on its left.
+     *
+     * @return array<string, array{kg: float, pcs: float, packets: int,
+     *                             value: float, unpriced: int}> keyed "period|category"
+     */
+    public function heldByPeriod(string $section, Carbon $start, Carbon $end, string $granularity): array
+    {
+        if (!$this->overnightReady()) {
+            return [];
+        }
+
+        $section    = $this->normalizeSection($section);
+        $periodExpr = $this->periodExpr($this->normalizeGranularity($granularity), 'oi.entered_at');
+        $cat = "COALESCE(NULLIF(TRIM(p.attribute_1), ''), '" . self::UNCATEGORIZED . "')";
+
+        $rows = DB::table('t_crm_overnight_item as oi')
+            ->leftJoin('t_crm_prod_product as p', 'p.id', '=', 'oi.product_id')
+            ->leftJoinSub($this->stockPriceJoin(), 'pr', function ($j) {
+                $j->on('pr.product_id', '=', 'oi.product_id');
+            })
+            ->where('oi.section', $section)
+            ->where('oi.status', 'stored')
+            ->whereBetween('oi.entered_at', [$start->toDateTimeString(), $end->toDateTimeString()])
+            ->selectRaw("
+                {$periodExpr} AS period,
+                {$cat} AS category,
+                COALESCE(SUM(CASE WHEN oi.unit = 'kg' THEN oi.quantity ELSE 0 END), 0) AS kg,
+                COALESCE(SUM(CASE WHEN oi.unit <> 'kg' THEN oi.quantity ELSE 0 END), 0) AS pcs,
+                COUNT(*) AS packets,
+                COALESCE(SUM(oi.quantity * COALESCE(pr.price, 0)), 0) AS value,
+                COALESCE(SUM(CASE WHEN pr.price IS NULL THEN 1 ELSE 0 END), 0) AS unpriced
+            ")
+            // GROUP BY the SELECT ALIASES — repeating the COALESCE trips
+            // MariaDB ONLY_FULL_GROUP_BY (error 1055).
+            ->groupBy('period', 'category')
+            ->get();
+
+        $out = [];
+        foreach ($rows as $r) {
+            $out[$r->period . '|' . $r->category] = [
+                'kg'       => (float) $r->kg,
+                'pcs'      => (float) $r->pcs,
+                'packets'  => (int) $r->packets,
+                'value'    => (float) $r->value,
+                'unpriced' => (int) $r->unpriced,
+            ];
+        }
+        return $out;
+    }
+
+    /**
+     * EVERYTHING still held in the chiller, whatever day it went in.
+     *
+     * Used to disclose stock whose entry date falls outside the report range:
+     * without it, narrowing the dates would quietly shrink the inventory and
+     * read as stock that had left.
+     *
+     * @return array{kg: float, pcs: float, packets: int, value: float, unpriced: int, oldest: ?string}
+     */
+    public function heldTotal(string $section): array
+    {
+        $empty = ['kg' => 0.0, 'pcs' => 0.0, 'packets' => 0, 'value' => 0.0, 'unpriced' => 0, 'oldest' => null];
+        if (!$this->overnightReady()) {
+            return $empty;
+        }
+
+        $r = DB::table('t_crm_overnight_item as oi')
+            ->leftJoinSub($this->stockPriceJoin(), 'pr', function ($j) {
+                $j->on('pr.product_id', '=', 'oi.product_id');
+            })
+            ->where('oi.section', $this->normalizeSection($section))
+            ->where('oi.status', 'stored')
+            ->selectRaw("
+                COALESCE(SUM(CASE WHEN oi.unit = 'kg' THEN oi.quantity ELSE 0 END), 0) AS kg,
+                COALESCE(SUM(CASE WHEN oi.unit <> 'kg' THEN oi.quantity ELSE 0 END), 0) AS pcs,
+                COUNT(*) AS packets,
+                COALESCE(SUM(oi.quantity * COALESCE(pr.price, 0)), 0) AS value,
+                COALESCE(SUM(CASE WHEN pr.price IS NULL THEN 1 ELSE 0 END), 0) AS unpriced,
+                MIN(DATE(oi.entered_at)) AS oldest
+            ")
+            ->first();
+
+        return [
+            'kg'       => (float) ($r->kg ?? 0),
+            'pcs'      => (float) ($r->pcs ?? 0),
+            'packets'  => (int) ($r->packets ?? 0),
+            'value'    => (float) ($r->value ?? 0),
+            'unpriced' => (int) ($r->unpriced ?? 0),
+            'oldest'   => $r->oldest ?? null,
+        ];
+    }
+
+    /**
+     * The packets behind one chiller cell, so a figure can be taken apart.
+     *
+     * @return array{from:string,to:string,category:string,kg:float,value:float,items:array}
+     */
+    public function heldDrill(string $section, Carbon $from, Carbon $to, string $category): array
+    {
+        if (!$this->overnightReady()) {
+            return ['from' => $from->format('j M Y'), 'to' => $to->format('j M Y'),
+                    'category' => $category, 'kg' => 0.0, 'value' => 0.0, 'items' => []];
+        }
+
+        $cat = "COALESCE(NULLIF(TRIM(p.attribute_1), ''), '" . self::UNCATEGORIZED . "')";
+
+        $rows = DB::table('t_crm_overnight_item as oi')
+            ->leftJoin('t_crm_prod_product as p', 'p.id', '=', 'oi.product_id')
+            ->leftJoinSub($this->stockPriceJoin(), 'pr', function ($j) {
+                $j->on('pr.product_id', '=', 'oi.product_id');
+            })
+            ->leftJoin('t_sys_user as u', 'u.id', '=', 'oi.entered_by')
+            ->where('oi.section', $this->normalizeSection($section))
+            ->where('oi.status', 'stored')
+            ->whereBetween('oi.entered_at', [$from->toDateTimeString(), $to->toDateTimeString()])
+            ->whereRaw("{$cat} = ?", [$category])
+            ->orderBy('oi.entered_at')
+            ->limit(400)
+            ->get([
+                'oi.id', 'oi.product_name', 'oi.quantity', 'oi.unit', 'oi.entered_at',
+                'oi.source', 'pr.price', 'u.fullname as by_name',
+            ]);
+
+        $items = [];
+        $kg = 0.0;
+        $value = 0.0;
+        foreach ($rows as $r) {
+            $lineValue = (float) $r->quantity * (float) ($r->price ?? 0);
+            if (strtolower(trim((string) $r->unit)) === 'kg') {
+                $kg += (float) $r->quantity;
+            }
+            $value += $lineValue;
+            $items[] = [
+                'id'      => (int) $r->id,
+                'product' => $r->product_name,
+                'qty'     => (float) $r->quantity,
+                'unit'    => $r->unit,
+                'price'   => $r->price !== null ? (float) $r->price : null,
+                'value'   => $lineValue,
+                'entered' => $r->entered_at,
+                'by'      => $r->by_name,
+                'source'  => $r->source,
+            ];
+        }
+
+        return [
+            'from'     => $from->format('j M Y'),
+            'to'       => $to->format('j M Y'),
+            'category' => $category,
+            'kg'       => $kg,
+            'value'    => $value,
+            'items'    => $items,
+        ];
     }
 
     // =================================================================

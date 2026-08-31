@@ -106,6 +106,9 @@ class OnlineFollowUpService
         $deliveryMap    = $this->deliveryTimestamps($orderIds);
         $customerCounts = $this->lifetimeOrderCounts($orders);
         $reminderMap    = $this->reminderHistory($orders);
+        // The order's own unapproved invoice row, so a proof can be approved
+        // from this screen instead of hopping to Online Approvals.
+        $ledgerMap      = $this->pendingLedgerMap($orderIds);
 
         $chase   = [];
         $proofIn = [];
@@ -124,6 +127,15 @@ class OnlineFollowUpService
             $proof = $proofMap[$id] ?? null;
             $row   = $this->buildRow($order, $deliveryMap, $customerCounts, $reminderMap, $proof);
 
+            // What an approver can do with this order right now. Null when the
+            // invoice row is missing (nothing to approve) — the UI then shows
+            // no button rather than a dead one.
+            $led = $ledgerMap[$id] ?? null;
+            $row['ledger_id']    = $led['id']     ?? null;
+            $row['ledger_stage'] = $led['stage']  ?? null;
+            $row['awaiting_l2']  = ($led['stage'] ?? null) === 'pending_l2';
+            $row['can_approve']  = $led !== null && !$row['awaiting_l2'];
+
             if (($proof['status'] ?? PaymentProofStatusService::NONE) === PaymentProofStatusService::NONE) {
                 $chase[] = $row;
             } else {
@@ -133,6 +145,17 @@ class OnlineFollowUpService
 
         $chase   = $this->sortChase($chase);
         $proofIn = $this->sortProofIn($proofIn);
+
+        // Tier 2 splits by what is left to DO, not by what arrived:
+        //   review  — proof landed, invoice still unapproved. The only group
+        //             with an Approve button.
+        //   l1_done — already approved at L1, so the money is ALREADY in the
+        //             balances (BalancePostingService runs at L1; L2 only
+        //             verifies). Kept visible for the record until L2 clears it,
+        //             but with nothing to press.
+        // Without this an order looked identical before and after approving it.
+        $proofReview = array_values(array_filter($proofIn, fn ($r) => !$r['awaiting_l2']));
+        $proofL1Done = array_values(array_filter($proofIn, fn ($r) => $r['awaiting_l2']));
 
         $newCustomerRows = array_values(array_filter($chase, fn ($r) => $r['is_new_customer']));
 
@@ -161,6 +184,10 @@ class OnlineFollowUpService
             'chase_primary'   => $chasePrimary,
             'chase_secondary' => $chaseSecondary,
             'proof_in'       => $proofIn,
+            // The same rows, grouped by what is left to do. 'proof_in' is kept
+            // whole because the legacy mobile shape below is built from it.
+            'proof_review'   => $proofReview,
+            'proof_l1_done'  => $proofL1Done,
 
             'chase_count'         => count($chase),
             'chase_amount'        => (int) round(array_sum(array_column($chase, 'amount'))),
@@ -172,13 +199,19 @@ class OnlineFollowUpService
             'new_customer_amount' => (int) round(array_sum(array_column($newCustomerRows, 'amount'))),
             'proof_in_count'      => count($proofIn),
             'proof_in_amount'     => (int) round(array_sum(array_column($proofIn, 'amount'))),
+            'proof_review_count'  => count($proofReview),
+            'proof_review_amount' => (int) round(array_sum(array_column($proofReview, 'amount'))),
+            'proof_l1_done_count' => count($proofL1Done),
+            'proof_l1_done_amount'=> (int) round(array_sum(array_column($proofL1Done, 'amount'))),
             'settled_count'       => $settledCount,
             'settled_amount'      => (int) round($settledAmount),
             'total_count'         => $orders->count(),
 
             // Tier 2 broken out by what kind of proof landed, so "bank signal but
             // no screenshot" is visible as its own thing rather than lumped in.
-            'proof_in_breakdown'  => $this->proofBreakdown($proofIn),
+            // Describes the REVIEW group its chips sit on — an L1-done row's
+            // kind would otherwise appear on a group it is not in.
+            'proof_in_breakdown'  => $this->proofBreakdown($proofReview),
         ];
     }
 
@@ -232,6 +265,48 @@ class OnlineFollowUpService
     }
 
     /** Payment-proof status per order. Never fatal — no signals = no badges. */
+    /**
+     * Each order's own unapproved online invoice row: [order_id => [id, stage]].
+     *
+     * ⚠ INVOICE-QUEUE TYPES ONLY, exactly as PaymentProofStatusService::settledOrderIds
+     * filters. A banked overpayment also writes a mode=online ledger row tagged
+     * with the order; approving THAT from here would be a different transaction
+     * entirely. Same trap that once hid the proof badge — see memory:
+     * credit-ledger-rows-contaminate-order-queries.
+     *
+     * Orders already fully approved never reach this method: they were removed
+     * as "settled" before the loop. One query for the whole board.
+     */
+    private function pendingLedgerMap(array $orderIds): array
+    {
+        if (empty($orderIds)) {
+            return [];
+        }
+
+        try {
+            return \App\Models\FIN\LedgerModel::query()
+                ->whereIn('order_id', $orderIds)
+                ->where('mode', 'online')
+                ->whereIn('transaction_type', [
+                    \App\Models\FIN\LedgerModel::TYPE_INVOICE,
+                    \App\Models\FIN\LedgerModel::TYPE_ORDER_PAYMENT,
+                ])
+                ->whereIn('approval_status', ['pending', 'pending_l1', 'pending_l2'])
+                // Oldest first, so ->keyBy keeps the LAST (newest) per order if
+                // an order somehow carries two open rows.
+                ->orderBy('id')
+                ->get(['id', 'order_id', 'approval_status'])
+                ->keyBy('order_id')
+                ->map(fn ($r) => ['id' => (int) $r->id, 'stage' => $r->approval_status])
+                ->all();
+        } catch (\Throwable $e) {
+            // A lookup failure must not blank the board — it only costs the
+            // Approve button.
+            \Log::warning('OnlineFollowUp: pending ledger lookup failed (non-critical)', ['error' => $e->getMessage()]);
+            return [];
+        }
+    }
+
     private function proofMap(array $orderIds): array
     {
         if (!config('payment_signals.enabled')) {

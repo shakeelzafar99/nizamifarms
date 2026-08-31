@@ -102,6 +102,13 @@
     th.cr-frz { background:#E0F2FE; color:#075985; }
     .cr-group td.cr-frz { background:#E0F2FE; }
     .cr-total-row td.cr-frz { background:#E0F2FE; }
+
+    /* Chiller sits beside the freezer: same family, a shade cooler/greener so
+       the two storage columns are never confused at a glance. */
+    .cr-chl { background:#F0FDFA; color:#0F766E; }
+    th.cr-chl { background:#CCFBF1; color:#115E59; }
+    .cr-group td.cr-chl { background:#CCFBF1; }
+    .cr-total-row td.cr-chl { background:#CCFBF1; }
     /* Into the freezer vs out of it — green in, red out, so a day reads at a
        glance ("we put a lot in, took a little out"). */
     .cr-in  { color:#047857; font-weight:600; }
@@ -184,14 +191,51 @@
          · every other period        -> what was TAKEN OUT then (a flow)
        A level can only ever be true for now: no historical freezer balance
        exists, so it is never painted on a past row. */
-    $frz          = $report['freezer'] ?? ['stock' => [], 'flow' => [], 'current_period' => null, 'history_start' => null, 'quiet_days' => []];
-    $frzStock     = $frz['stock'] ?? [];
-    $frzFlow      = $frz['flow'] ?? [];
-    $frzNowKey    = $frz['current_period'] ?? null;
+    /* Aug-27: the freezer is now read exactly like the chiller — HELD stock,
+       dated by the day it went in. `stock` (a live level painted only on
+       today's row) and `flow` (in/out movement) are no longer displayed:
+       take-outs leave this report because they become sales. Only the
+       history-start and quiet-day hints survive, and they explain empty
+       cells rather than carrying numbers. */
+    $frz          = $report['freezer'] ?? ['history_start' => null, 'quiet_days' => []];
     $frzStart     = $frz['history_start'] ?? null;
     $frzQuiet     = array_flip($frz['quiet_days'] ?? []);
-    $frzStockKg   = array_sum(array_column($frzStock, 'kg'));
-    $frzStockPkts = array_sum(array_column($frzStock, 'packets'));
+
+    /* 🧊 CHILLER — HELD stock only, dated by the day it went IN. Once a packet
+       is taken out it vanishes from here on purpose: it is on its way to being
+       a sale, and the Sold columns already carry it. Valued at SELLING price
+       (cost_price is empty for every stocked item), so it is "worth this if we
+       sell it", never "money tied up" — and it is NEVER added to Bought. */
+    /* Both storage sections are read the SAME way (owner, Aug-27), so they are
+       also rolled up the same way — one closure, no chance of the two drifting. */
+    $rollHeld = function (array $held) {
+        $byCat = [];
+        $range = ['kg' => 0.0, 'packets' => 0, 'value' => 0.0];
+        foreach ($held as $k => $v) {
+            $cat = explode('|', $k, 2)[1] ?? '';
+            if (!isset($byCat[$cat])) {
+                $byCat[$cat] = ['kg' => 0.0, 'packets' => 0, 'value' => 0.0];
+            }
+            foreach (['kg', 'packets', 'value'] as $f) {
+                $byCat[$cat][$f] += $v[$f];
+                $range[$f]       += $v[$f];
+            }
+        }
+        return [$byCat, $range];
+    };
+
+    $chl      = $report['chiller'] ?? ['held' => [], 'total' => []];
+    $chlHeld  = $chl['held'] ?? [];
+    $chlTotal = $chl['total'] ?? ['kg' => 0, 'packets' => 0, 'value' => 0, 'unpriced' => 0, 'oldest' => null];
+    [$chlByCat, $chlRange] = $rollHeld($chlHeld);
+    /* Held stock whose entry date falls outside the range. */
+    $chlOutside = max(0, (float) ($chlTotal['value'] ?? 0) - $chlRange['value']);
+
+    /* ❄️ Freezer, now identical in shape to the chiller. */
+    $frzHeld  = $frz['held'] ?? [];
+    $frzTotal = $frz['total'] ?? ['kg' => 0, 'packets' => 0, 'value' => 0, 'unpriced' => 0, 'oldest' => null];
+    [$frzByCat, $frzRange] = $rollHeld($frzHeld);
+    $frzOutside = max(0, (float) ($frzTotal['value'] ?? 0) - $frzRange['value']);
 
     /* kg, trimmed. Freezer weights are all kg — packets are a count, never
        added to the weight (they are two different measurements). */
@@ -352,6 +396,29 @@
         </div>
     @endif
 
+    {{-- Chiller stock whose entry date is outside the chosen dates would
+         otherwise just vanish when the range narrows, reading as stock that had
+         left. Say so instead. --}}
+    @foreach([
+        ['icon' => '🧊', 'name' => 'chiller', 'outside' => $chlOutside, 'total' => $chlTotal,
+         'bg' => '#F0FDFA', 'br' => '#99F6E4', 'fg' => '#115E59'],
+        ['icon' => '❄️', 'name' => 'freezer', 'outside' => $frzOutside, 'total' => $frzTotal,
+         'bg' => '#F0F9FF', 'br' => '#BAE6FD', 'fg' => '#075985'],
+    ] as $note)
+        @if($note['outside'] > 0)
+            <div class="cr-note" style="background:{{ $note['bg'] }}; border:1px solid {{ $note['br'] }}; color:{{ $note['fg'] }};">
+                <span>{{ $note['icon'] }}</span>
+                <div>
+                    <b>{{ $rs($note['outside']) }} of {{ $note['name'] }} stock went in before this date range</b>
+                    and is still sitting there, so it is not in the column below.
+                    Everything currently held is <b>{{ $kgFmt($note['total']['kg']) ?: '0 kg' }}</b>
+                    ({{ $note['total']['packets'] }} packets, {{ $rs($note['total']['value']) }})
+                    @if(!empty($note['total']['oldest'])) — oldest went in {{ \Carbon\Carbon::parse($note['total']['oldest'])->format('j M Y') }}@endif.
+                </div>
+            </div>
+        @endif
+    @endforeach
+
     {{-- ----------------------------------------------------- stat tiles --}}
     <div class="cr-stats">
         <div class="cr-stat sold">
@@ -396,7 +463,8 @@
                         {{-- Sits next to "Sold qty" on purpose: sold-vs-still-in-the-freezer
                              is the comparison this column exists for, and two numbers you
                              compare should not be four columns apart. --}}
-                        <th class="cr-frz" title="Still sitting in the freezer right now (overnight storage, freezer section only — the chiller is not counted). A live figure: it does not change with the date range.">❄️ In freezer</th>
+                        <th class="cr-frz" title="Still sitting in the FREEZER, counted on the day it went in. A packet that has been taken out is gone from here on purpose — it becomes a sale. Valued at SELLING price (cost is not recorded). Click for the packets.">❄️ In freezer</th>
+                        <th class="cr-chl" title="Still sitting in the CHILLER, counted on the day it went in. A packet that has been taken out is gone from here on purpose — it becomes a sale. Valued at SELLING price (cost is not recorded), so this is what it is worth if sold, not money tied up. Click for the packets.">🧊 In chiller</th>
                         <th>Bought</th>
                         <th>Bought qty</th>
                         <th>Difference</th>
@@ -425,12 +493,22 @@
                                 @endif
                             </td>
                             <td class="num cr-dim">{{ $qty($t['sold_kg'], $t['sold_pcs']) ?: '—' }}</td>
-                            @php $fs = $frzStock[$cat] ?? null; @endphp
-                            <td class="num cr-frz"
-                                @if($fs) title="{{ $fs['packets'] }} packet{{ $fs['packets'] == 1 ? '' : 's' }} in the freezer now" @endif>
+                            @php $fs = $frzByCat[$cat] ?? null; @endphp
+                            <td class="num cr-frz {{ $fs ? 'cr-drillable' : '' }}"
+                                @if($fs) title="{{ $fs['packets'] }} packet{{ $fs['packets'] == 1 ? '' : 's' }} still in the freezer — {{ $rs($fs['value']) }} at selling price"
+                                         onclick="crHeldDrill('freezer', '__range', {{ json_encode($cat) }})" @endif>
                                 {{ $fs && $kgFmt($fs['kg']) ? $kgFmt($fs['kg']) : '—' }}
-                                @if($fs && $fs['packets'])
-                                    <span class="cr-qty">{{ $fs['packets'] }} pkt</span>
+                                @if($fs)
+                                    <span class="cr-qty">{{ $rs($fs['value']) }} · {{ $fs['packets'] }} pkt</span>
+                                @endif
+                            </td>
+                            @php $ch = $chlByCat[$cat] ?? null; @endphp
+                            <td class="num cr-chl {{ $ch ? 'cr-drillable' : '' }}"
+                                @if($ch) title="{{ $ch['packets'] }} packet{{ $ch['packets'] == 1 ? '' : 's' }} still in the chiller — {{ $rs($ch['value']) }} at selling price"
+                                         onclick="crHeldDrill('chiller', '__range', {{ json_encode($cat) }})" @endif>
+                                {{ $ch && $kgFmt($ch['kg']) ? $kgFmt($ch['kg']) : '—' }}
+                                @if($ch)
+                                    <span class="cr-qty">{{ $rs($ch['value']) }} · {{ $ch['packets'] }} pkt</span>
                                 @endif
                             </td>
                             <td class="num">
@@ -454,7 +532,7 @@
                             <td class="num cr-dim">{{ $t['orders'] ?: '—' }}</td>
                         </tr>
                     @empty
-                        <tr><td colspan="8" class="cr-empty">No sales or purchases in this range.</td></tr>
+                        <tr><td colspan="9" class="cr-empty">No sales or purchases in this range.</td></tr>
                     @endforelse
                 </tbody>
                 @if(count($cats))
@@ -464,10 +542,17 @@
                             <td class="num">{{ $rs($grand['sold_rs']) }}</td>
                             <td class="num cr-dim">{{ $qty($grand['sold_kg'], $grand['sold_pcs']) ?: '—' }}</td>
                             <td class="num cr-frz"
-                                title="Total in the freezer now — a live figure, not affected by the date range">
-                                {{ $kgFmt($frzStockKg) ?: '—' }}
-                                @if($frzStockPkts)
-                                    <span class="cr-qty">{{ $frzStockPkts }} pkt</span>
+                                title="Still in the freezer, from stock that went in during this range — {{ $rs($frzRange['value']) }} at selling price. Not a cost and never added to Bought.">
+                                {{ $kgFmt($frzRange['kg']) ?: '—' }}
+                                @if($frzRange['packets'])
+                                    <span class="cr-qty">{{ $rs($frzRange['value']) }} · {{ $frzRange['packets'] }} pkt</span>
+                                @endif
+                            </td>
+                            <td class="num cr-chl"
+                                title="Still in the chiller, from stock that went in during this range — {{ $rs($chlRange['value']) }} at selling price. Not a cost and never added to Bought.">
+                                {{ $kgFmt($chlRange['kg']) ?: '—' }}
+                                @if($chlRange['packets'])
+                                    <span class="cr-qty">{{ $rs($chlRange['value']) }} · {{ $chlRange['packets'] }} pkt</span>
                                 @endif
                             </td>
                             <td class="num">{{ $rs($grand['bought_rs']) }}</td>
@@ -515,7 +600,8 @@
                             <th class="l">Category</th>
                             <th>Sold</th>
                             <th>Sold qty</th>
-                            <th class="cr-frz" title="What went IN to the freezer (+) and what came OUT (−) in this period. A packet moved to the chiller counts as out; one moved in from the chiller counts as in. The current period also shows what is still sitting there. Click a figure for the packets.">❄️ Freezer in / out</th>
+                            <th class="cr-frz" title="Of the stock that went into the FREEZER on this date, what is STILL sitting there. Anything taken out has left this report on purpose — it becomes a sale. Valued at SELLING price (cost is not recorded). The +/− underneath is that period's movement. Click for the packets.">❄️ In freezer</th>
+                            <th class="cr-chl" title="Of the stock that went into the CHILLER on this date, what is STILL sitting there. Anything taken out has left this report on purpose — it becomes a sale. Valued at SELLING price (cost is not recorded). Click for the packets.">🧊 In chiller</th>
                             <th>Bought</th>
                             <th>Bought qty</th>
                             <th>Difference</th>
@@ -532,49 +618,44 @@
                             @php
                                 $rows = array_values(array_filter($cells, fn ($c) => $c['period'] === $p['key']));
 
-                                /* ❄️ Is THIS the period that holds today? Only that row
-                                   may show live stock; every other row is history. */
-                                $isNow = $frzNowKey !== null && $p['key'] === $frzNowKey;
-
-                                /* Freezer movement in this period — BOTH directions,
-                                   always computed (including for the current period: a
-                                   week or month bucket that holds today also holds real
-                                   history, and replacing it with the stock figure would
-                                   quietly lose it). */
-                                $pFlow = [];
-                                foreach ($frzFlow as $fk => $fv) {
+                                /* Held stock entered in THIS period, per section. Both
+                                   are read identically now (owner, Aug-27): only what is
+                                   still there, dated by the day it went in. Take-outs are
+                                   deliberately not shown — a packet that left has become
+                                   a sale and the Sold columns already carry it. */
+                                $pFrz = [];
+                                foreach ($frzHeld as $fk => $fv) {
                                     [$fper, $fcat] = array_pad(explode('|', $fk, 2), 2, '');
-                                    if ($fper === $p['key']) { $pFlow[$fcat] = $fv; }
+                                    if ($fper === $p['key']) { $pFrz[$fcat] = $fv; }
                                 }
-                                /* What is STILL in the freezer — only ever on the row
-                                   that holds today. */
-                                $pStock = $isNow ? $frzStock : [];
+                                $pChl = [];
+                                foreach ($chlHeld as $fk => $fv) {
+                                    [$fper, $fcat] = array_pad(explode('|', $fk, 2), 2, '');
+                                    if ($fper === $p['key']) { $pChl[$fcat] = $fv; }
+                                }
 
-                                /* A category can have freezer stock or take-outs but no
-                                   sale or purchase in this period — without this union
-                                   its number would be invisible, which is exactly how
-                                   stock goes missing from a report. */
+                                /* A category can be holding stock with no sale or purchase
+                                   in this period — without this union its number would be
+                                   invisible, which is exactly how stock goes missing from
+                                   a report. Covers BOTH sections. */
                                 $haveCats = array_column($rows, 'category');
-                                foreach (array_unique(array_merge(array_keys($pStock), array_keys($pFlow))) as $fcat) {
+                                foreach (array_unique(array_merge(array_keys($pFrz), array_keys($pChl))) as $fcat) {
                                     if (in_array($fcat, $haveCats, true)) { continue; }
-                                    $sKg = (float) ($pStock[$fcat]['kg'] ?? 0);
-                                    $oKg = (float) ($pFlow[$fcat]['in_kg'] ?? 0) + (float) ($pFlow[$fcat]['out_kg'] ?? 0);
-                                    if (round($sKg, 2) == 0 && round($oKg, 2) == 0) { continue; }
+                                    $sKg = (float) ($pFrz[$fcat]['kg'] ?? 0) + (float) ($pChl[$fcat]['kg'] ?? 0);
+                                    $sPk = (int) ($pFrz[$fcat]['packets'] ?? 0) + (int) ($pChl[$fcat]['packets'] ?? 0);
+                                    if (round($sKg, 2) == 0 && $sPk === 0) { continue; }
                                     $rows[] = [
                                         'period' => $p['key'], 'category' => $fcat,
                                         'sold_rs' => 0.0, 'sold_kg' => 0.0, 'sold_pcs' => 0.0, 'orders' => 0,
                                         'bought_rs' => 0.0, 'bought_kg' => 0.0, 'bought_pcs' => 0.0,
                                         'bought_rs_noqty' => 0.0, 'margin_rs' => 0.0,
-                                        'freezer_only' => true,
+                                        'storage_only' => true,
                                     ];
                                 }
 
                                 usort($rows, fn ($a, $b) => ($b['sold_rs'] + $b['bought_rs']) <=> ($a['sold_rs'] + $a['bought_rs']));
-                                $pSold    = array_sum(array_column($rows, 'sold_rs'));
-                                $pBought  = array_sum(array_column($rows, 'bought_rs'));
-                                $pStockKg = array_sum(array_column($pStock, 'kg'));
-                                $pInKg    = array_sum(array_column($pFlow, 'in_kg'));
-                                $pOutKg   = array_sum(array_column($pFlow, 'out_kg'));
+                                $pSold   = array_sum(array_column($rows, 'sold_rs'));
+                                $pBought = array_sum(array_column($rows, 'bought_rs'));
 
                                 /* Day granularity only: the tracker recorded nothing at
                                    all that day. "Nothing moved" and "nobody scanned" are
@@ -594,17 +675,35 @@
                                 {{-- ❄️ Both directions: what went IN that period and what
                                      came OUT. Seeing the in-flow is what tells you extra
                                      was bought/stored that day. --}}
+                                @php
+                                    $pFrzKg  = array_sum(array_column($pFrz, 'kg'));
+                                    $pFrzVal = array_sum(array_column($pFrz, 'value'));
+                                    $pFrzPkt = array_sum(array_column($pFrz, 'packets'));
+                                @endphp
                                 <td class="num cr-frz">
-                                    @if($isNow)
-                                        {{ $kgFmt($pStockKg) ?: '—' }} <span class="cr-qty">in freezer</span>
+                                    @if($pFrzPkt)
+                                        {{ $kgFmt($pFrzKg) ?: '—' }}
+                                        <span class="cr-qty">{{ $rs($pFrzVal) }} · {{ $pFrzPkt }} pkt</span>
+                                    @else
+                                        —
                                     @endif
-                                    @if(round($pInKg, 2) != 0 || round($pOutKg, 2) != 0)
-                                        <span class="cr-qty">
-                                            @if(round($pInKg, 2) != 0)<span class="cr-in">+{{ $kgFmt($pInKg) }}</span>@endif
-                                            @if(round($pInKg, 2) != 0 && round($pOutKg, 2) != 0) · @endif
-                                            @if(round($pOutKg, 2) != 0)<span class="cr-out">−{{ $kgFmt($pOutKg) }}</span>@endif
-                                        </span>
-                                    @elseif(!$isNow)
+                                </td>
+                                {{-- 🧊 Everything from this date still sitting in the chiller. --}}
+                                @php
+                                    $pChKg  = 0.0; $pChVal = 0.0; $pChPkt = 0;
+                                    foreach ($chlHeld as $ck => $cv) {
+                                        if (str_starts_with($ck, $p['key'] . '|')) {
+                                            $pChKg  += $cv['kg'];
+                                            $pChVal += $cv['value'];
+                                            $pChPkt += $cv['packets'];
+                                        }
+                                    }
+                                @endphp
+                                <td class="num cr-chl">
+                                    @if($pChPkt)
+                                        {{ $kgFmt($pChKg) ?: '—' }}
+                                        <span class="cr-qty">{{ $rs($pChVal) }} · {{ $pChPkt }} pkt</span>
+                                    @else
                                         —
                                     @endif
                                 </td>
@@ -627,39 +726,30 @@
                                         @endif
                                     </td>
                                     <td class="num cr-dim">{{ $qty($c['sold_kg'], $c['sold_pcs']) ?: '—' }}</td>
-                                    {{-- ❄️ Current period = what is STILL in the freezer.
-                                         Past periods = what was TAKEN OUT then. --}}
-                                    @php
-                                        $cs    = $pStock[$c['category']] ?? null;   // still in freezer (current period only)
-                                        $cf    = $pFlow[$c['category']]  ?? null;   // movement this period
-                                        $cfIn  = (float) ($cf['in_kg'] ?? 0);
-                                        $cfOut = (float) ($cf['out_kg'] ?? 0);
-                                        $hasFlow = round($cfIn, 2) != 0 || round($cfOut, 2) != 0;
-                                        // Spell the movement out, so the number can always
-                                        // be explained without opening the drill.
-                                        $bits = [];
-                                        if (($cf['stored_kg']    ?? 0) > 0) { $bits[] = number_format($cf['stored_kg'], 2) . ' kg put in'; }
-                                        if (($cf['moved_in_kg']  ?? 0) > 0) { $bits[] = number_format($cf['moved_in_kg'], 2) . ' kg moved in from the chiller'; }
-                                        if (($cf['taken_kg']     ?? 0) > 0) { $bits[] = number_format($cf['taken_kg'], 2) . ' kg taken out'; }
-                                        if (($cf['moved_out_kg'] ?? 0) > 0) { $bits[] = number_format($cf['moved_out_kg'], 2) . ' kg moved out to the chiller'; }
-                                        $cfTitle = $bits ? implode(' · ', $bits) . ' — click for the packets'
-                                                 : ($cs ? $cs['packets'] . ' packet' . ($cs['packets'] == 1 ? '' : 's') . ' still in the freezer' : '');
-                                    @endphp
-                                    <td class="num cr-frz {{ $hasFlow ? 'cr-drillable' : '' }}"
-                                        @if($cfTitle) title="{{ $cfTitle }}" @endif
-                                        @if($hasFlow) onclick="crFreezerDrill({{ json_encode($c['period']) }}, {{ json_encode($c['category']) }})" @endif>
-                                        @if($isNow)
-                                            {{ $cs && $kgFmt($cs['kg']) ? $kgFmt($cs['kg']) : '—' }}
-                                            @if($cs && $cs['packets'])<span class="cr-qty">{{ $cs['packets'] }} pkt in freezer</span>@endif
-                                        @endif
-                                        @if($hasFlow)
-                                            <span class="cr-qty">
-                                                @if(round($cfIn, 2) != 0)<span class="cr-in">+{{ $kgFmt($cfIn) }}</span>@endif
-                                                @if(round($cfIn, 2) != 0 && round($cfOut, 2) != 0) · @endif
-                                                @if(round($cfOut, 2) != 0)<span class="cr-out">−{{ $kgFmt($cfOut) }}</span>@endif
-                                            </span>
-                                        @elseif(!$isNow)
+                                    {{-- ❄️ Identical to the chiller: of what went into the
+                                         freezer on THIS date, what is still there. Take-outs
+                                         are deliberately not shown — that stock became a
+                                         sale and the Sold columns already carry it. --}}
+                                    @php $fh = $frzHeld[$c['period'] . '|' . $c['category']] ?? null; @endphp
+                                    <td class="num cr-frz {{ $fh ? 'cr-drillable' : '' }}"
+                                        @if($fh) title="{{ $fh['packets'] }} packet{{ $fh['packets'] == 1 ? '' : 's' }} from this date still in the freezer — {{ $rs($fh['value']) }} at selling price"
+                                                 onclick="crHeldDrill('freezer', {{ json_encode($c['period']) }}, {{ json_encode($c['category']) }})" @endif>
+                                        @if($fh)
+                                            {{ $kgFmt($fh['kg']) ?: '—' }}
+                                            <span class="cr-qty">{{ $rs($fh['value']) }} · {{ $fh['packets'] }} pkt</span>
+                                        @else
                                             —
+                                        @endif
+                                    </td>
+                                    {{-- 🧊 Of what went into the chiller on this date, what is
+                                         STILL there. Taken-out stock is deliberately absent. --}}
+                                    @php $ch = $chlHeld[$c['period'] . '|' . $c['category']] ?? null; @endphp
+                                    <td class="num cr-chl {{ $ch ? 'cr-drillable' : '' }}"
+                                        @if($ch) title="{{ $ch['packets'] }} packet{{ $ch['packets'] == 1 ? '' : 's' }} from this date still in the chiller — {{ $rs($ch['value']) }} at selling price"
+                                                 onclick="crHeldDrill('chiller', {{ json_encode($c['period']) }}, {{ json_encode($c['category']) }})" @endif>
+                                        {{ $ch && $kgFmt($ch['kg']) ? $kgFmt($ch['kg']) : '—' }}
+                                        @if($ch)
+                                            <span class="cr-qty">{{ $rs($ch['value']) }} · {{ $ch['packets'] }} pkt</span>
                                         @endif
                                     </td>
                                     <td class="num">
@@ -671,11 +761,11 @@
                                         @endif
                                     </td>
                                     <td class="num cr-dim">{{ $qty($c['bought_kg'], $c['bought_pcs']) ?: '—' }}</td>
-                                    {{-- A freezer-only row has no money at all, so a
+                                    {{-- A storage-only row (held stock, no trade) has no money at
                                          "Rs 0" difference would read like a real
                                          break-even rather than "nothing traded". --}}
-                                    <td class="num {{ !empty($c['freezer_only']) || $oneSided ? 'cr-dim' : ($c['margin_rs'] >= 0 ? 'cr-pos' : 'cr-neg') }}">
-                                        @if(!empty($c['freezer_only']))
+                                    <td class="num {{ !empty($c['storage_only']) || $oneSided ? 'cr-dim' : ($c['margin_rs'] >= 0 ? 'cr-pos' : 'cr-neg') }}">
+                                        @if(!empty($c['storage_only']))
                                             —
                                         @else
                                             {{ $rs($c['margin_rs']) }}{{ $oneSided ? ' *' : '' }}
@@ -687,7 +777,7 @@
                         </tbody>
                     @empty
                         <tbody>
-                            <tr><td colspan="7" class="cr-empty">Nothing to show for this range.</td></tr>
+                            <tr><td colspan="8" class="cr-empty">Nothing to show for this range.</td></tr>
                         </tbody>
                     @endforelse
                 </table>
@@ -1071,7 +1161,7 @@
     var CR_VOCAB    = @json($vocabulary);
     var CR_URL_TAG  = @json(route('products.category_report.tag'));
     var CR_URL_DRL  = @json(route('products.category_report.drill'));
-    var CR_URL_FRZ  = @json(route('products.category_report.freezer_drill'));
+    var CR_URL_HELD = @json(route('products.category_report.stock_drill'));
     var CR_URL_SALE = @json(route('products.category_report.sales_drill'));
     var CR_URL_VIS  = @json(route('products.category_report.visibility'));
     var CR_CSRF     = @json(csrf_token());
@@ -1128,36 +1218,44 @@
     }
 
     /* ❄️ Every packet in or out of the freezer behind one cell. */
-    window.crFreezerDrill = function (period, category) {
-        crDrillOpen(category + ' — freezer movement', CR_URL_FRZ,
-            { period: period, category: category }, function (dr) {
+    // HELD packets only, chiller or freezer — anything taken out is
+    // deliberately absent (it has become a sale), so this list is always
+    // "what is still there". One function for both sections, like the service.
+    window.crHeldDrill = function (section, period, category) {
+        var where = section === 'freezer' ? 'the freezer' : 'the chiller';
+        crDrillOpen(category + ' — still in ' + where, CR_URL_HELD,
+            { period: period, category: category, section: section }, function (dr) {
                 document.getElementById('crDrillSub').textContent =
                     dr.from + (dr.from === dr.to ? '' : ' → ' + dr.to) +
-                    ' · in ' + crNum(dr.in_kg) + ' kg · out ' + crNum(dr.out_kg) + ' kg';
+                    ' · ' + crNum(dr.kg) + ' kg · ' + fmtRs(dr.value) + ' at selling price';
 
-                if (!dr.events.length) {
+                if (!dr.items.length) {
                     document.getElementById('crDrillBody').innerHTML =
-                        '<div style="padding:24px; text-align:center; color:#9CA3AF; font-size:13px;">No freezer movement in this bucket.</div>';
+                        '<div style="padding:24px; text-align:center; color:#9CA3AF; font-size:13px;">Nothing from this date is still in ' + where + '.</div>';
                     return;
                 }
                 var html = '';
-                dr.events.forEach(function (e) {
-                    var into = e.direction === 'in';
+                dr.items.forEach(function (it) {
                     html += '<div class="cr-drill-row">' +
                             '<span>' +
-                              '<span style="font-weight:600;">' + esc(e.product_name || '—') + '</span>' +
-                              '<span class="s"> · ' + esc(e.label) + '</span>' +
+                              '<span style="font-weight:600;">' + esc(it.product) + '</span>' +
+                              '<span class="s"> · ' + crNum(it.qty, 3) + ' ' + esc(it.unit) +
+                              (it.price ? ' @ ' + fmtRs(it.price) : ' · no price on file') + '</span>' +
                             '</span>' +
                             '<span style="white-space:nowrap;">' +
-                              '<span class="' + (into ? 'cr-in' : 'cr-out') + '">' +
-                                (into ? '+' : '−') + crNum(e.quantity, 3) + ' ' + esc(e.unit) +
-                              '</span>' +
-                              '<span class="s"> · ' + esc(e.by_name) + ' · ' + esc(e.at) + '</span>' +
+                              '<span style="font-weight:600;">' + fmtRs(it.value) + '</span>' +
+                              '<span class="s"> · ' + esc(it.by || '—') + ' · ' + esc(it.entered) + '</span>' +
                             '</span></div>';
                 });
                 document.getElementById('crDrillBody').innerHTML = html;
             });
     };
+
+    // NOTE: the freezer MOVEMENT drill (in/out events) was retired here on
+    // Aug-27 when the column switched to held-stock-only. Its server side is
+    // still in place — CategoryReportController::freezerDrill and
+    // CategorySalesPurchaseService::freezerFlowByPeriod/freezerDrill — so the
+    // movement view can be brought back without rebuilding it.
 
     /* 💰 What was actually sold in one cell — Level 2, then the products. */
     window.crSalesDrill = function (period, category) {
