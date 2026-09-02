@@ -142,6 +142,8 @@ foreach (((new MachineAttribution())->forRider(95, $MONTH)['machines'] ?? []) as
 $beforeTotal = $before['totals']['total'];
 echo "   van before: total={$beforeTotal} km\n";
 
+// What he held BEFORE the reading is saved — the thing that must not move.
+$holderBefore = (new VehicleResolver())->currentVehicleFor(95);
 $save = $ctl->meterSave(Request::create('/x', 'POST', [
     'date' => $DATE, 'target' => 'log',
     'meter_start' => 73200, 'meter_end' => 73245,
@@ -155,10 +157,15 @@ ok('one row, on the machine', $row !== null, true, true);
 ok('with the driver named', (int) $row->driver_user_id, 95);
 ok('and who entered it', (int) $row->entered_by, 79);
 
-// ⭐⭐ NO HANDOVER: the machine's holder must be untouched.
+// ⭐⭐ NO HANDOVER: the machine's holder must be UNCHANGED by the save.
+// ⚠ This used to assert `currentVehicleFor(95) !== VAN` — a hard-coded fact about
+//   prod at the time. It broke the day the owner genuinely handed rider 95 the van
+//   from the app, which is a correct handover, not a bug in the meter log. What
+//   this test actually cares about is that saving a READING moves nothing: so
+//   capture the holder BEFORE and require it to be identical AFTER.
 $holderAfter = (new VehicleResolver())->currentVehicleFor(95);
-ok('the driver did NOT become the van\'s holder',
-   $holderAfter !== VAN, true, true);
+ok('the driver\'s machine is UNCHANGED by the save (no handover)',
+   $holderAfter, $holderBefore);
 $openVan = DB::table(VehicleService::T_ASSIGN)->where('vehicle_id', VAN)
     ->whereNull('released_on')->count();
 ok('no assignment row was created', $openVan, DB::table(VehicleService::T_ASSIGN)

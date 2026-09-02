@@ -265,7 +265,15 @@ class WhatsAppAutomationService
                     null,
                     $template,
                     $body,
-                    false
+                    false,
+                    // Aug-2026: stamp WHICH order this send is about. Without it
+                    // automation sends logged related_order_number = NULL, so the
+                    // Daily Closing follow-up panel (which counts reminders off
+                    // this column) reported "never reminded" for orders an
+                    // automation had already messaged. Same column and same
+                    // parameter the manual send endpoints use — one shared
+                    // history, not a second mechanism.
+                    $this->relatedOrderNumber($context)
                 );
             }
         } catch (\Throwable $e) {
@@ -277,5 +285,44 @@ class WhatsAppAutomationService
             'status' => AutomationLogModel::STATUS_SENT,
             'wa_message_id' => $result['messages'][0]['id'] ?? null,
         ]);
+
+        // Optional post-send hook. NOT part of the AutomationHandler interface —
+        // handlers that don't define afterSent() are unaffected — so a rule can
+        // record its own side effect (e.g. stamping the order as "reminded")
+        // without every other handler having to implement a no-op. Runs AFTER
+        // the log row so a throw here can never make a sent message look unsent,
+        // and is swallowed for the same reason.
+        if (method_exists($handler, 'afterSent')) {
+            try {
+                $handler->afterSent($context, $rule, [
+                    'template'      => $template,
+                    'result'        => $result,
+                    'wa_message_id' => $result['messages'][0]['id'] ?? null,
+                    'conversation_id' => $conversationId,
+                    // Set when the send was REDIRECTED to the operator's test
+                    // phone — a handler must not record customer-facing state
+                    // (like "we reminded them") for a message the customer
+                    // never received.
+                    'test_phone'    => $testPhone,
+                ]);
+            } catch (\Throwable $e) {
+                Log::warning('WA automation: afterSent hook failed (non-fatal)', [
+                    'rule' => $desc['key'], 'error' => $e->getMessage(),
+                ]);
+            }
+        }
+    }
+
+    /**
+     * The order_number this send is about, for t_wa_messages.related_order_number.
+     *
+     * MUST be the order_number, never the id: the Shopify staging and prod
+     * tables share ids, and the column is consumed by order_number.
+     */
+    protected function relatedOrderNumber(array $context): ?string
+    {
+        $num = $context['order']->order_number ?? null;
+        $num = trim((string) $num);
+        return $num !== '' ? $num : null;
     }
 }

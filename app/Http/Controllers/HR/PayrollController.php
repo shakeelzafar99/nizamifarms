@@ -434,13 +434,25 @@ class PayrollController extends Controller
             'funding' => 'required|in:cash,online',
             'bank_id' => 'nullable|integer',
             'note'    => 'nullable|string|max:255',
+            // The payroll month this advance is recovered from (the month the grid is showing),
+            // and — when that month is in the past — the day the money really moved. The
+            // service does the real validation (next-month ceiling, date inside the month,
+            // month not already paid); this only rejects malformed input.
+            //
+            // ⚠ ARRAY syntax is required, not the usual 'nullable|regex:...' string: Laravel
+            // splits a rule STRING on '|', and this pattern contains one inside (0[1-9]|1[0-2]).
+            // As a string the rule is cut to 'regex:/^\d{4}-(0[1-9]' → preg_match() throws
+            // "No ending delimiter" → a 500 HTML page → "not valid JSON" in the browser.
+            'payroll_month' => ['nullable', 'regex:/^\d{4}-(0[1-9]|1[0-2])$/'],
+            'money_date'    => ['nullable', 'date'],
         ]);
         if ($v->fails()) {
             return response()->json(['success' => false, 'message' => $v->errors()->first()], 422);
         }
         $res = (new PayrollService())->giveAdvance(
             (int) $request->user_id, (float) $request->amount, $request->funding,
-            $request->bank_id ? (int) $request->bank_id : null, $request->note, (int) auth()->id()
+            $request->bank_id ? (int) $request->bank_id : null, $request->note, (int) auth()->id(),
+            $request->payroll_month, $request->money_date
         );
         return response()->json($res, !empty($res['success']) ? 200 : 422);
     }

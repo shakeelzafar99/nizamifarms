@@ -101,6 +101,38 @@ class AutomationRegistry
                 ],
             ],
             [
+                // Deliberately listed AFTER order_delivered_storage_tips: rules
+                // for one event fire in this array's order, so the customer gets
+                // the seasonal storage message first and the payment
+                // confirmation second.
+                'key'   => 'order_delivered_payment_confirmation',
+                'tab'   => 'order_actions',
+                'label' => 'Delivered → payment confirmation',
+                'description' =>
+                    "After an order is marked DELIVERED, automatically WhatsApp the customer their "
+                    . "delivery confirmation — the message that is sent BY HAND from Daily Closing today. "
+                    . "Fires on EVERY delivery path: the rider app, mobile store mode, the web edit form, "
+                    . "the Status Hub and bulk CSV imports. The variant is chosen from the order's payment "
+                    . "method READ FRESH at the moment of sending, so a method changed after delivery can't "
+                    . "send the wrong one: ONLINE gets the confirmation plus a \"Get bank details\" button "
+                    . "(tapping it replies with the account details — they are no longer printed in the "
+                    . "message itself), CASH simply confirms the delivery with no bank details. "
+                    . "Variables: {{1}} customer name, {{2}} order number, {{3}} delivery date + time, "
+                    . "{{4}} rider name. Sends once per order. SKIPS an online order that already has a "
+                    . "payment proof or an approved payment (nobody who has paid is asked to pay again), "
+                    . "SHOP/wholesale customers, KS- warehouse transfers, Rs 0 orders, orders with no phone "
+                    . "or no rider name, and orders placed more than 14 days before delivery (so a bulk "
+                    . "back-fill can't message old deliveries). Online sends are stamped as \"reminded\" in "
+                    . "Daily Closing, which keeps that day's chase quiet and lets day 2 and day 3 escalate "
+                    . "to the payment reminder as usual. Off by default.",
+                'trigger_summary' => "When an order is marked delivered",
+                'event'    => 'order.delivered',
+                'editable' => ['enabled', 'templates_delivery_online_cash'],
+                'template' => ['body_vars' => 4, 'header' => 'none', 'default' => null],
+                'available' => true,
+                'handler'  => \App\Services\WhatsApp\Automation\Handlers\DeliveredPaymentConfirmationHandler::class,
+            ],
+            [
                 'key'   => 'order_accepted_location',
                 'tab'   => 'order_actions',
                 'label' => 'Order accepted → send location request',

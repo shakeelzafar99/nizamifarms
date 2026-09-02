@@ -67,15 +67,32 @@ class OnlineFollowUpService
     /**
      * Templates that count as "we chased this order". Used to read the reminder
      * history back out of the WhatsApp send log.
+     *
+     * The RETIRED `delivery_confirmation_online` stays listed on purpose: it is
+     * how every reminder sent before Aug-2026 is recorded, and dropping it would
+     * silently reset those orders' reminder counts to zero.
      */
     public const REMINDER_TEMPLATES = [
         'delivery_confirmation_online',
+        'delivery_confirmation_online_v2',
+        'delivery_confirmation_cash',
         'payment_reminder_single',
         'payment_reminder_multiples',
     ];
 
-    /** Day 1 of the ladder: delivery confirmation + bank details, no media header. */
-    public const TEMPLATE_DAY_ONE = 'delivery_confirmation_online';
+    /**
+     * Day 1 of the ladder: the delivery confirmation.
+     *
+     * Aug-2026 — now `_v2`, which carries a "Get bank details" quick-reply
+     * button INSTEAD of printing the account numbers in the body (tapping it
+     * replies with them; see WhatsAppService::maybeAnswerBankDetailsRequest).
+     * Same 4 variables as the template it replaces, so every caller is unchanged.
+     *
+     * The `order_delivered_payment_confirmation` automation normally sends this
+     * at the moment of delivery; the button here remains the manual path for
+     * when the automation is off, skipped, or its send failed.
+     */
+    public const TEMPLATE_DAY_ONE = 'delivery_confirmation_online_v2';
 
     /** Day 2+: the outstanding-invoice reminder, invoice image auto-attached. */
     public const TEMPLATE_FOLLOW_UP = 'payment_reminder_single';
@@ -170,19 +187,42 @@ class OnlineFollowUpService
         //               items with their own reminder button, so this panel does
         //               not need to shout about them a second and third time —
         //               but they stay one click away rather than disappearing.
+        //   MESSAGED   — already messaged TODAY (by the automation or by hand).
+        //               Collapsed and buttonless: the send button is disabled for
+        //               the rest of the day anyway, so leaving these in the open
+        //               group would fill it with rows that need no action. Once
+        //               the delivered->payment-confirmation automation is on this
+        //               is most of day 1, which is exactly the clutter to avoid.
+        //               They return to the OPEN group tomorrow as day 2, where
+        //               the button offers the invoice-bearing payment reminder.
+        $isMessagedToday = fn ($r) => !empty($r['reminded_today']);
+        $chaseMessaged = array_values(array_filter($chase, $isMessagedToday));
+        $chaseOpen     = array_values(array_filter($chase, fn ($r) => !$isMessagedToday($r)));
+
         $isPrimary = fn ($r) => $r['is_new_customer'] || $r['day_number'] === 1;
 
-        $chasePrimary   = array_values(array_filter($chase, $isPrimary));
-        $chaseSecondary = array_values(array_filter($chase, fn ($r) => !$isPrimary($r)));
+        $chasePrimary   = array_values(array_filter($chaseOpen, $isPrimary));
+        $chaseSecondary = array_values(array_filter($chaseOpen, fn ($r) => !$isPrimary($r)));
 
         return [
             'window_days'    => self::WINDOW_DAYS,
             'window_from'    => $windowStart->toDateString(),
             'generated_at'   => Carbon::now()->format('H:i'),
 
+            // The template names, published so a CLIENT never has to hardcode
+            // one. The mobile Daily Closing screen hardcoded the day-1 name and
+            // kept sending the retired body (with our retired bank accounts)
+            // long after it was replaced; every row already carries its own
+            // `template`, and this covers the 422 fallback path too.
+            'templates'      => [
+                'day_one'   => self::TEMPLATE_DAY_ONE,
+                'follow_up' => self::TEMPLATE_FOLLOW_UP,
+            ],
+
             'chase'          => $chase,
             'chase_primary'   => $chasePrimary,
             'chase_secondary' => $chaseSecondary,
+            'chase_messaged'  => $chaseMessaged,
             'proof_in'       => $proofIn,
             // The same rows, grouped by what is left to do. 'proof_in' is kept
             // whole because the legacy mobile shape below is built from it.
@@ -195,6 +235,9 @@ class OnlineFollowUpService
             'chase_primary_amount'   => (int) round(array_sum(array_column($chasePrimary, 'amount'))),
             'chase_secondary_count'  => count($chaseSecondary),
             'chase_secondary_amount' => (int) round(array_sum(array_column($chaseSecondary, 'amount'))),
+            'chase_messaged_count'   => count($chaseMessaged),
+            'chase_messaged_amount'  => (int) round(array_sum(array_column($chaseMessaged, 'amount'))),
+            'chase_auto_count'       => count(array_filter($chaseMessaged, fn ($r) => !empty($r['auto_messaged']))),
             'new_customer_count'  => count($newCustomerRows),
             'new_customer_amount' => (int) round(array_sum(array_column($newCustomerRows, 'amount'))),
             'proof_in_count'      => count($proofIn),
@@ -454,6 +497,11 @@ class OnlineFollowUpService
             'last_reminded_at' => $lastRemindedAt?->format('h:i A'),
             'last_reminded_on' => $lastRemindedAt?->format('M d'),
             'reminded_today'   => $lastRemindedAt ? $lastRemindedAt->isToday() : false,
+            // TRUE when the delivered-payment-confirmation AUTOMATION sent it,
+            // not a person. Every one of the 1,809 historic manual sends stamped
+            // a user id, and only the automation's afterSent hook writes NULL,
+            // so sent_at-with-no-sent_by is an unambiguous system marker.
+            'auto_messaged'    => $lastRemindedAt !== null && $order->online_message_sent_by === null,
             'reminded_label'   => $this->remindedLabel($lastRemindedAt, $reminderCount),
 
             // Day 1 confirms delivery; day 2+ chases an outstanding invoice.

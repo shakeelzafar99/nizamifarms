@@ -414,6 +414,60 @@ class FirebaseService
     /**
      * Generic: send notifications to all users with a given permission
      */
+    /**
+     * 🔁 A RIDER IS ASKING FOR A VEHICLE (Sep-2026).
+     *
+     * Rajab asks for the van at 8 a.m. and then waits: until someone approves, the
+     * registry still says he is on his own bike, so his meters, his fuel rules and
+     * the van's kilometres all follow the wrong machine. A banner only works if
+     * somebody happens to be looking at the right screen — this is what makes the
+     * ask reach Shabib and Taimur wherever they are.
+     *
+     * ⚠⚠ TARGETED BY THE **WEB** `assign_vehicles` PERMISSION, NOT A MOBILE ONE.
+     *    `sendToPermissionGroup` joins the mobile permission tables, but the right
+     *    to approve a handover is `hasPermission('assign_vehicles')` — the web key
+     *    that `canApprove()` and `canManage()` actually ask. Pushing to a different
+     *    audience than the one that can act is how people get buzzed about work
+     *    they cannot do (and how the people who CAN act get missed). Resolving the
+     *    real holders keeps the notification and the button in exact step.
+     *
+     * ⚠ Never buzzes the rider about his own request, and never the approver about
+     *   a request he raised himself.
+     */
+    public function notifyVehicleHandoverRequest(int $requestId, string $riderName,
+                                                 string $direction, string $vehicleName,
+                                                 ?int $excludeUserId = null): void
+    {
+        try {
+            $ids = [];
+            foreach (\App\Models\User::where('is_active', '1')->get() as $u) {
+                if ($excludeUserId !== null && (int) $u->id === $excludeUserId) continue;
+                if (method_exists($u, 'isReadOnly') && $u->isReadOnly()) continue;
+                if ($u->hasPermission('assign_vehicles')) $ids[] = (int) $u->id;
+            }
+            if (empty($ids)) return;
+
+            $body = $direction === 'return'
+                ? "{$riderName} wants to hand back {$vehicleName} — tap to approve."
+                : "{$riderName} is asking for {$vehicleName} — tap to approve.";
+
+            foreach ($ids as $uid) {
+                $this->notifyUser($uid, [
+                    'title' => 'Vehicle change requested',
+                    'body'  => $body,
+                ], [
+                    'type'       => 'vehicle_handover_request',
+                    'request_id' => (string) $requestId,
+                    'direction'  => $direction,
+                ], 'shift_notifications');
+            }
+        } catch (\Throwable $e) {
+            // A request that was recorded must never fail because a push did.
+            Log::warning('Firebase: vehicle handover push failed', [
+                'request_id' => $requestId, 'error' => $e->getMessage(),
+            ]);
+        }
+    }
     protected function sendToPermissionGroup(string $permissionCode, array $notification, array $data, string $channelId = 'whatsapp_messages', ?int $excludeUserId = null): void
     {
         $this->sendToPermissionGroups([$permissionCode], $notification, $data, $channelId, $excludeUserId);

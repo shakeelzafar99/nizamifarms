@@ -1281,55 +1281,22 @@ class ExecutiveClosingService
         $nfName = 'Nizami Farms'; $khName = 'Khaas · Frozen';
         $out = [];
 
-        // Payroll screen payments (net paid), split by the stamped BU.
-        try {
-            $hasBu = \Illuminate\Support\Facades\Schema::hasColumn('t_hr_payroll_payment', 'business_unit_id');
-            $q = DB::table('t_hr_payroll_payment as p')
-                ->leftJoin('t_sys_user as u', 'u.id', '=', 'p.user_id')
-                ->where('p.status', 'paid')
-                ->whereBetween('p.paid_at', [$start, $end]);
-            if ($hasBu) {
-                if ($unit === self::UNIT_KH) {
-                    $q->where('p.business_unit_id', $khaasId);
-                } elseif ($unit === self::UNIT_NF) {
-                    $q->where(fn ($x) => $x->where('p.business_unit_id', '!=', $khaasId)->orWhereNull('p.business_unit_id'));
-                }
-                foreach ($q->groupBy('p.user_id', 'u.fullname', 'p.business_unit_id')
-                    ->selectRaw('p.user_id, u.fullname, p.business_unit_id as bu, SUM(p.net_salary + p.advance_total) as amt')->get() as $r) {
-                    $out[] = [
-                        'employee' => $r->fullname ?: ('User ' . $r->user_id),
-                        'unit'     => ((int) $r->bu === $khaasId) ? $khName : $nfName,
-                        'amount'   => round((float) $r->amt),
-                    ];
-                }
-            } elseif ($unit !== self::UNIT_KH) { // pre-migration: everything is NF
-                foreach ($q->groupBy('p.user_id', 'u.fullname')
-                    ->selectRaw('p.user_id, u.fullname, SUM(p.net_salary + p.advance_total) as amt')->get() as $r) {
-                    $out[] = ['employee' => $r->fullname ?: ('User ' . $r->user_id), 'unit' => $nfName, 'amount' => round((float) $r->amt)];
-                }
-            }
-        } catch (\Throwable $e) { /* skip */ }
-
-        // Legacy salary slips → always NF.
-        if ($unit !== self::UNIT_KH) {
-            try {
-                $byUser = [];
-                foreach (\App\Models\HR\SalarySlipModel::with('employee')
-                    ->whereIn('slip_status', ['approved', 'paid'])
-                    ->whereNotNull('ledger_transaction_id')
-                    ->whereBetween('created_at', [$start, $end])->get() as $s) {
-                    $name = $s->employee ? $s->employee->fullname : ('User ' . $s->user_id);
-                    $byUser[$name] = ($byUser[$name] ?? 0) + (float) $s->net_salary;
-                }
-                foreach ($byUser as $name => $amt) {
-                    $out[] = ['employee' => $name, 'unit' => $nfName, 'amount' => round($amt)];
-                }
-            } catch (\Throwable $e) { /* skip */ }
+        // Same engine as the headline Salaries figure, so the drill always sums to it.
+        // Rows are per employee and include advances already paid out but not yet recovered,
+        // labelled as such so an unpaid month explains itself instead of showing a bare number.
+        foreach ((new \App\Services\HR\SalaryCostService())->detailForWindow($start, $end, $khaasId) as $r) {
+            if ($unit === self::UNIT_KH && !$r['is_khaas']) { continue; }
+            if ($unit === self::UNIT_NF && $r['is_khaas']) { continue; }
+            $out[] = [
+                'employee' => $r['employee'] . ($r['note'] ? ' · ' . $r['note'] : ''),
+                'unit'     => $r['is_khaas'] ? $khName : $nfName,
+                'amount'   => round((float) $r['amount']),
+            ];
         }
-
         usort($out, fn ($a, $b) => $b['amount'] <=> $a['amount']);
         return $out;
     }
+
 
     /** Customers → Level 1: customers who ordered in the unit + month. */
     public function customersList(string $unit, int $year, int $month): array
@@ -2225,38 +2192,14 @@ class ExecutiveClosingService
      */
     private function salariesByUnit(Carbon $start, Carbon $end, int $khaasId): array
     {
-        $all = 0.0; $kh = 0.0;
-
-        // Payroll screen payments — the GROSS salary cost, windowed by paid_at. Gross =
-        // net_salary + advance_total: the advance was paid early and DEDUCTED from net, so
-        // counting only net understates the salary by the advance. Adding advance_total back
-        // gives the true cost, and never double-counts here (HQ does not count the
-        // salary_advance ledger separately).
-        try {
-            $hasBu = \Illuminate\Support\Facades\Schema::hasColumn('t_hr_payroll_payment', 'business_unit_id');
-            $base = DB::table('t_hr_payroll_payment')
-                ->where('status', 'paid')
-                ->whereBetween('paid_at', [$start, $end]);
-            if ($hasBu) {
-                foreach ((clone $base)->groupBy('business_unit_id')
-                    ->selectRaw('business_unit_id as bu, SUM(net_salary + advance_total) as amt')->get() as $row) {
-                    $all += (float) $row->amt;
-                    if ((int) $row->bu === $khaasId) $kh += (float) $row->amt;
-                }
-            } else {
-                $all += (float) (clone $base)->selectRaw('COALESCE(SUM(net_salary + advance_total),0) as t')->value('t'); // pre-migration: all NF
-            }
-        } catch (\Throwable $e) { /* skip */ }
-
-        // Legacy salary slips (abandoned flow) — always NF.
-        try {
-            $all += (float) \App\Models\HR\SalarySlipModel::whereIn('slip_status', ['approved', 'paid'])
-                ->whereNotNull('ledger_transaction_id')
-                ->whereBetween('created_at', [$start, $end])
-                ->sum('net_salary');
-        } catch (\Throwable $e) { /* skip */ }
-
-        return [$all, $kh];
+        // ONE engine (Sep-2026). HQ, the Reports page and the Expenses page all read salary
+        // cost through SalaryCostService, so the three can never disagree about a month's
+        // wage bill. It is ACCRUAL: keyed to the month WORKED (`pay_month`), not the day Pay
+        // was pressed — paying August in September books August. It also counts advances that
+        // have been paid out but not yet recovered, so cash that has left the building is
+        // never missing from the P&L. See that class for why neither can double-count.
+        $c = (new \App\Services\HR\SalaryCostService())->costForWindow($start, $end, $khaasId);
+        return [$c['all'], $c['kh']];
     }
 
     /**

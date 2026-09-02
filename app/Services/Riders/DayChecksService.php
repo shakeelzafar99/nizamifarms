@@ -320,13 +320,48 @@ class DayChecksService
         // so the tick must stop judging. Only an explicit 0 exempts (null/absent = judge as before).
         // ⭐ PHASE D: the registry excuses too — a rider with no machine THAT DAY was not asked,
         //   so this verdict must not hold the missing reading against him (same rule, date-scoped).
+        // ⚠⚠ THIS NEEDS `user_id` IN $ctx AND WENT YEARS WITHOUT IT (fixed Sep-2026).
+        //   `(int) null` is user 0, which owns no rider profile, so `meterExcusedOn`
+        //   returned false for everybody and this whole excusal was inert. Both callers
+        //   now pass it; if a third one ever forgets, the `$uid > 0` test below keeps the
+        //   old judge-as-before behaviour rather than silently excusing the world.
+        $uid = (int) ($g('user_id') ?? 0);
         $registryExcused = false;
-        try {
-            $registryExcused = (new \App\Services\Riders\VehicleResolver())
-                ->meterExcusedOn((int) $g('user_id'), $date);
-        } catch (\Throwable $e) { /* judge as before */ }
+        $transferDay = false;
+        if ($uid > 0) {
+            try {
+                $res = new \App\Services\Riders\VehicleResolver();
+                $registryExcused = $res->meterExcusedOn($uid, $date);
+
+                // ⭐ AND THE HANDOVER DAY ITSELF (Sep-2026). The month "Meter" column has
+                //   always skipped it for BOTH riders — `meterMissDays` walks the same
+                //   assignment boundaries and `continue`s — because on the day a machine
+                //   changes hands the outgoing man cannot read an odometer that left at
+                //   2 pm and the incoming one never opened the day on it. The DAILY tick
+                //   had no such rule, so one page said "no meter" in the row while the
+                //   month column beside it excused the very same day.
+                // ⚠ Derived here rather than in the two callers on purpose: the web page
+                //   computes `transfer_day` for its own grace allowance and can pass it,
+                //   the mobile payload does not compute it at all, and a verdict that
+                //   depended on which surface asked is exactly what this shared service
+                //   exists to prevent. An explicit value always wins.
+                // ⚠⚠ The derivation is GATED on rulesEnabled() (Sep-01 review finding):
+                //   the web caller's explicit value is computed under the same gate, so
+                //   with VEHICLE_RULES off it sends a hard false — an ungated derivation
+                //   here would then excuse a day on mobile that the web still judges,
+                //   the exact split-verdict this service exists to prevent.
+                $transferDay = array_key_exists('transfer_day', $ctx)
+                    ? (bool) $g('transfer_day')
+                    : (function () use ($res, $uid, $date) {
+                        if (!$res->rulesEnabled()) return false;
+                        $vid = $res->vehicleForDay($uid, $date);
+                        return $vid ? $res->isTransferDay((int) $vid, $date) : false;
+                    })();
+            } catch (\Throwable $e) { /* judge as before */ }
+        }
         $carriesMeter = ((int) ($g('meter_required') ?? 1) !== 0)
             && !$registryExcused
+            && !$transferDay
             && ($isRider || $bike || $has($meterStart) || $has($meterEnd) || $has($meterHome));
         $missReason = self::meterMissReason(
             $carriesMeter, $g('login_time'), $g('logout_time'),
@@ -336,8 +371,13 @@ class DayChecksService
             $meterIssues[] = self::METER_MISS_LABELS[$missReason];
             $chips[] = ['label' => 'no meter', 'tone' => 'amber'];
         }
+        // ⚠ Suppressed on a HANDOVER day (Sep-01 review finding): meter_distance is a
+        //   partial-day figure there (his readings bracket only his half of the day)
+        //   while the GPS distance covers the whole shift, so the comparison is
+        //   between two different quantities and the "off by N km" it produced was
+        //   arithmetic, not dishonesty. Every other day the check is unchanged.
         $cmp = $g('road_distance_km') ?? $g('gps_distance');
-        if ($meterDistance !== null && $cmp !== null && $cmp > 0) {
+        if (!$transferDay && $meterDistance !== null && $cmp !== null && $cmp > 0) {
             if (abs($meterDistance - $cmp) > $meterGpsWarnKm) { $meterIssues[] = 'Meter vs GPS off by ' . round(abs($meterDistance - $cmp)) . ' km'; }
         }
         $meterOk = empty($meterIssues);

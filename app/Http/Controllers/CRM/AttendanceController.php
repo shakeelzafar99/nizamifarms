@@ -741,7 +741,17 @@ class AttendanceController extends Controller
             // ── DAY CHECKS — the ⛽/📡 verdicts + issue chips + clean flag. Built by the SHARED
             //    DayChecksService so the web page, the mobile store screen, and the modals all
             //    read the SAME result (the one-brain rule). Only for rows that worked today.
+            // ⚠⚠ `user_id` AND `transfer_day` ARE LOAD-BEARING, NOT DECORATION (Sep-2026).
+            //   The service asks the registry to excuse a rider who held no machine that
+            //   day (`meterExcusedOn`) — but it reads the id out of THIS array, and the
+            //   array never carried one. `(int) null` = user 0, which has no rider
+            //   profile, so the excusal returned false for every rider on every day since
+            //   it shipped: dead code, and the month column and the daily tick have been
+            //   disagreeing ever since. `transfer_day` is the same story for the handover
+            //   day itself — the month column skips it for BOTH riders, this did not.
             $row->day_checks = $row->login_time ? $dcSvc->build([
+                'user_id' => (int) $row->user_id,
+                'transfer_day' => !empty($row->transfer_day),
                 'login_time' => $row->login_time, 'logout_time' => $row->logout_time,
                 'role_name' => $row->role_name ?? null, 'company_bike' => ((int) $row->company_bike === 1),
                 'meter_required' => $row->meter_required,
@@ -1588,6 +1598,211 @@ class AttendanceController extends Controller
     }
 
     /**
+     * ⭐⭐ UNDO CHECKOUT — put a rider who has already checked out back ON DUTY.
+     *
+     * WHY (owner, 1 Sep 2026): an extra order comes in after a rider has closed his day. Until
+     * now the only thing resembling this was blanking the logout box in the ✏️ Quick Edit modal
+     * — which silently did nothing (see store(), where `filled()` skips a null) while telling
+     * the manager "✅ Attendance updated successfully". So the day stayed closed and nobody knew.
+     *
+     * ⚠⚠ THIS IS NOT "SET logout_time = NULL". A checkout writes a whole BUNDLE, and every part
+     *    of it becomes a lie the moment the day reopens:
+     *      · logout_time + the four checkout_* GPS columns   (where/when he finished)
+     *      · overtime_minutes                                (frozen by the shift snapshot)
+     *      · the six road-distance columns                   (his day's kilometres)
+     *      · home_eta_min / home_distance_km / home_expected_by   (the ride-home timer)
+     *      · meter_end (+ picture_end, + the meter_home mirror)   (the closing odometer)
+     *    Leaving any of them behind produces a rider who is on duty but already has a closing
+     *    reading, a finished ride home, and overtime for work he has not done yet.
+     *
+     * ⭐ THE LOCATION RE-ARMS ITSELF. GPS tracking is driven entirely by the server's answer to
+     *   /rider/attendance/today (`is_checked_in && !is_checked_out`), which the phone re-asks on
+     *   foreground, on reconnect, on screen focus and on pull-to-refresh. Clearing logout_time is
+     *   therefore all that is needed — no APK change. The push below just makes it immediate.
+     *
+     * ⚠ overtime_minutes MUST be nulled explicitly: ShiftResolutionService::stampAttendanceSnapshot
+     *   only recomputes overtime `elseif (!empty($row->logout_time))`, so with the logout cleared
+     *   it would quietly leave the OLD value standing.
+     *
+     * Owner rulings applied: the meter is cleared (through MeterCorrectionService, the one
+     * writer); the photo column is unlinked but the FILE is kept as evidence; only today or
+     * yesterday may be reopened; a rider who genuinely recorded his home meter is refused; the
+     * checkout unlock is cleared; you may not reopen your own day.
+     */
+    public function undoCheckout(Request $request)
+    {
+        try {
+            $validated = $request->validate([
+                'attendance_id' => 'required|integer',
+                'reason' => 'required|string|max:200',
+            ]);
+
+            $att = DB::table('t_ops_attendance')->where('id', $validated['attendance_id'])->first();
+            if (!$att) {
+                return response()->json(['success' => false, 'message' => 'Attendance record not found.'], 404);
+            }
+
+            // Mirrors the R8 self-edit rule on store(): your own attendance comes from the app.
+            if (auth()->id() && (int) $att->user_id === (int) auth()->id()) {
+                return response()->json([
+                    'success' => false,
+                    'message' => "You can't reopen your own day — ask another manager.",
+                ], 403);
+            }
+
+            if (empty($att->logout_time)) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'He is not checked out — there is nothing to undo.',
+                ], 422);
+            }
+
+            // Today or yesterday only. Reopening an older day would silently rewrite that
+            // month's overtime and the salary numbers already built on it.
+            $date = substr((string) $att->attendance_date, 0, 10);
+            $allowed = [now()->format('Y-m-d'), now()->subDay()->format('Y-m-d')];
+            if (!in_array($date, $allowed, true)) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Only today or yesterday can be reopened. For an older day, edit the times instead.',
+                ], 422);
+            }
+
+            // ⚠ He is already HOME with his bike meter recorded by the geofence — the ride home
+            //   is over and the machine is at his house. That is a new day, not a reopened one.
+            if (!empty($att->meter_home) && (string) ($att->home_arrival_source ?? '') === 'geofence') {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'He is already home and his bike meter is recorded. Check him in again for a new run instead of reopening this day.',
+                ], 422);
+            }
+
+            // Everything the checkout bundle wrote, and what it held before we clear it.
+            $clear = [
+                // where and when he finished
+                'logout_time' => null,
+                'checkout_latitude' => null,
+                'checkout_longitude' => null,
+                'checkout_accuracy' => null,
+                'checkout_location_captured_at' => null,
+                // his day's kilometres
+                'road_distance_km' => null,
+                'road_distance_source' => null,
+                'road_distance_calculated_at' => null,
+                'gps_straight_distance_km' => null,
+                'gps_readings_used' => null,
+                // overtime frozen at checkout (see the warning above)
+                'overtime_minutes' => null,
+                // the ride-home journey and everything it stamped
+                'home_eta_min' => null,
+                'home_distance_km' => null,
+                'home_expected_by' => null,
+                'home_arrived_at' => null,
+                'home_arrival_source' => null,
+                'home_meter_recorded_at' => null,
+                'meter_home' => null,
+                'meter_home_vehicle_id' => null,
+                'picture_home' => null,
+                'home_late_reason' => null,
+                'home_bypass_breach' => null,
+                'home_meter_unlock_until' => null,
+                'home_meter_unlock_by' => null,
+                // a fresh checkout is a fresh decision — a stale unlock would also re-base the
+                // new day's overtime onto the last delivered order (the Aug-8 rule)
+                'checkout_unlock_until' => null,
+                'checkout_unlock_by' => null,
+                'checkout_unlock_reason' => null,
+            ];
+
+            // ⚠ Only write columns that actually exist on this database. Several of these arrive
+            //   with SQL batches the owner applies by hand, and prod can legitimately be behind.
+            $columns = \Illuminate\Support\Facades\Schema::getColumnListing('t_ops_attendance');
+            $clear = array_intersect_key($clear, array_flip($columns));
+
+            $before = [];
+            foreach (array_keys($clear) as $col) {
+                if (($att->$col ?? null) !== null) {
+                    $before[$col] = $att->$col;
+                }
+            }
+            // The meter is cleared through its own writer below; record it here for the audit.
+            foreach (['meter_end', 'picture_end', 'meter_end_vehicle_id'] as $col) {
+                if (in_array($col, $columns, true) && ($att->$col ?? null) !== null) {
+                    $before[$col] = $att->$col;
+                }
+            }
+
+            DB::transaction(function () use ($att, $clear, $columns) {
+                $clear['updated_by'] = auth()->id();
+                $clear['updated_at'] = now();
+                DB::table('t_ops_attendance')->where('id', $att->id)->update($clear);
+
+                // ⭐ The closing odometer goes through MeterCorrectionService — the ONE writer for
+                //   a manager correcting an attendance meter — rather than a second inline UPDATE.
+                //   Passing null with hasEnd=true is its documented "clear it" contract.
+                //   ⚠ It only syncs meter_home when the new value is NON-null, which is why the
+                //     home mirror is cleared in $clear above rather than left to it.
+                app(\App\Services\Riders\MeterCorrectionService::class)
+                    ->correct((int) $att->id, false, null, true, null, auth()->id());
+
+                // The photo COLUMN is unlinked; the FILE is deliberately left on disk as the
+                // only evidence of the first close (owner ruling).
+                if (in_array('picture_end', $columns, true)) {
+                    DB::table('t_ops_attendance')->where('id', $att->id)->update(['picture_end' => null]);
+                }
+            });
+
+            // The day's claimable kilometres are derived from these readings.
+            \App\Services\Riders\RiderDayLegs::flush();
+
+            $riderName = DB::table('t_sys_user')->where('id', $att->user_id)->value('fullname');
+
+            // There is no attendance audit table; t_sys_audit_log carries the whole snapshot so a
+            // mistaken undo is fully reconstructable (and the meter is recoverable from it).
+            try {
+                \App\Services\AuditLogger::log(
+                    'checkout_undone',
+                    'attendance',
+                    (int) $att->id,
+                    trim(($riderName ?? 'rider') . ' ' . $date),
+                    $before,
+                    null,
+                    trim($validated['reason'])
+                );
+            } catch (\Throwable $e) { /* auditing must never break the action */ }
+
+            Log::info('Checkout undone — rider put back on duty', [
+                'attendance_id' => $att->id, 'user_id' => $att->user_id, 'date' => $date,
+                'by' => auth()->id(), 'reason' => trim($validated['reason']),
+                'cleared' => array_keys($before),
+            ]);
+
+            // Best-effort nudge. The phone re-arms GPS on its own at the next foreground /
+            // reconnect; this just makes him look now instead of in twenty minutes.
+            try {
+                (new \App\Services\FirebaseService())->notifyUser(
+                    (int) $att->user_id,
+                    ['title' => 'You are back on duty',
+                     'body' => 'Your manager reopened your day — open the app so your location starts again.'],
+                    ['type' => 'checkout_undone'],
+                    'shift_notifications'
+                );
+            } catch (\Throwable $e) { /* push is best-effort */ }
+
+            return response()->json([
+                'success' => true,
+                'message' => trim(($riderName ?? 'He') . ' is back on duty. His closing meter and checkout details were cleared — he will be asked for them again.'),
+                'cleared' => array_keys($before),
+            ]);
+        } catch (\Illuminate\Validation\ValidationException $ve) {
+            return response()->json(['success' => false, 'message' => $ve->validator->errors()->first()], 422);
+        } catch (\Throwable $e) {
+            Log::error('undoCheckout failed', ['error' => $e->getMessage()]);
+            return response()->json(['success' => false, 'message' => 'Could not reopen the day.'], 500);
+        }
+    }
+
+    /**
      * U5 — check-IN unlock (the Phase-2 morning-lock valve). When CHECKIN_ETA_LOCK is on, a
      * company-bike rider past his ride-to-work deadline — or with no home start at all — is
      * blocked from checking in; this opens a timed window so his IN button works. Accepts
@@ -2051,6 +2266,25 @@ class AttendanceController extends Controller
                 ->where('user_id', $validated['user_id'])
                 ->where('attendance_date', $validated['attendance_date'])
                 ->first();
+
+            // ⚠⚠ THE MODAL USED TO LIE HERE. Blanking the logout box sends `logout_time: null`,
+            //    validation passes, `filled()` below is FALSE for null, so the update ran with
+            //    only the audit fields — and the page still said "✅ Attendance updated
+            //    successfully!" while the rider stayed checked out. Clearing a checkout is a real
+            //    operation with a real bundle behind it (meter, GPS, overtime, ride-home timer),
+            //    so it belongs to ONE audited door: refuse it here and point at that door.
+            if ($existing
+                && !empty($existing->logout_time)
+                && $request->has('logout_time')
+                && !$request->filled('logout_time')) {
+                return response()->json([
+                    'success' => false,
+                    'undo_checkout_required' => true,
+                    'message' => 'To put him back on duty use 🔓 Rider bypasses → Undo checkout. '
+                        . 'That also clears his closing meter, checkout location and overtime — '
+                        . 'blanking the time here would leave all of those behind.',
+                ], 422);
+            }
 
             if ($existing) {
                 // Update existing - only update fields that were provided

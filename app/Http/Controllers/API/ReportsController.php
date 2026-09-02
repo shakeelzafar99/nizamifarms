@@ -88,119 +88,53 @@ class ReportsController extends Controller
     }
 
     /**
-     * Salaries PAID in a window, split into [nf, khaas]. Same cash-basis sources as the
-     * Expenses page and the HQ Salaries line: Payroll-screen payments (t_hr_payroll_payment,
-     * BU-tagged, by paid_at) + legacy salary slips (NF-only, by created_at). Salaries are a
-     * `salary_payment` ledger type, so they are NOT in the expense/vendor totals — this counts
-     * them once, on their own line. Fully guarded: a missing table / BU column degrades to
-     * NF-only (or 0) rather than erroring on a prod that hasn't run the payroll schema yet.
+     * Salary cost for a window, split into [nf, khaas]. Delegates to SalaryCostService — the
+     * SAME engine behind the HQ Salaries line — so this page and the Executive P&L can never
+     * print different wage bills. Salaries are a `salary_payment` ledger type, so they are
+     * NOT in the expense/vendor totals; this counts them once, on their own line.
      *
      * @return array{0:float,1:float} [nf, khaas]
      */
     private function salariesForWindow(int $nfBuId, int $khaasBuId, string $start, string $end): array
     {
-        $nf = 0.0; $kh = 0.0;
-        $s = $start . ' 00:00:00'; $e = $end . ' 23:59:59';
-
-        // Payroll-screen payments (the flow that replaced Staff-Salaries expenses).
-        try {
-            if (\Illuminate\Support\Facades\Schema::hasTable('t_hr_payroll_payment')) {
-                $hasBu = \Illuminate\Support\Facades\Schema::hasColumn('t_hr_payroll_payment', 'business_unit_id');
-                // GROSS salary cost = net_salary + advance_total. The advance was paid early and
-                // deducted from net at payroll, so net alone understates the salary by the advance.
-                if ($hasBu) {
-                    $r = DB::selectOne(
-                        "SELECT
-                            COALESCE(SUM(CASE WHEN business_unit_id IS NULL OR business_unit_id = ? THEN net_salary + advance_total ELSE 0 END),0) nf_total,
-                            COALESCE(SUM(CASE WHEN business_unit_id = ? THEN net_salary + advance_total ELSE 0 END),0) kh_total
-                         FROM t_hr_payroll_payment
-                         WHERE status = 'paid' AND paid_at >= ? AND paid_at <= ?",
-                        [$nfBuId, $khaasBuId, $s, $e]
-                    );
-                    $nf += (float) ($r->nf_total ?? 0);
-                    $kh += (float) ($r->kh_total ?? 0);
-                } else {
-                    $r = DB::selectOne(
-                        "SELECT COALESCE(SUM(net_salary + advance_total),0) t FROM t_hr_payroll_payment WHERE status = 'paid' AND paid_at >= ? AND paid_at <= ?",
-                        [$s, $e]
-                    );
-                    $nf += (float) ($r->t ?? 0); // pre-migration: everything is NF
-                }
-            }
-        } catch (\Throwable $ex) { /* skip */ }
-
-        // Legacy salary slips (abandoned flow) → always NF.
-        try {
-            $nf += (float) \App\Models\HR\SalarySlipModel::whereIn('slip_status', ['approved', 'paid'])
-                ->whereNotNull('ledger_transaction_id')
-                ->whereBetween('created_at', [$s, $e])
-                ->sum('net_salary');
-        } catch (\Throwable $ex) { /* skip */ }
-
-        return [round($nf, 2), round($kh, 2)];
+        // ONE engine (Sep-2026) — the same SalaryCostService HQ reads, so this page and the
+        // Executive P&L can never print different wage bills for the same month. ACCRUAL:
+        // keyed to the month WORKED (`pay_month`), not the day Pay was pressed, and it
+        // includes advances paid out but not yet recovered.
+        $c = (new \App\Services\HR\SalaryCostService())->costForWindow($start, $end, $khaasBuId);
+        return [$c['nf'], $c['kh']];
     }
 
     /**
-     * Per-employee salary detail for the month-details drill, grouped by pay date so it
-     * plugs straight into the same renderSection() the expense/vendor sections use. Mirrors
-     * the summary's cash-basis sources; Khaas rows hidden for users without access. Guarded.
+     * Per-employee salary detail for the month-details drill, grouped by date so it plugs
+     * straight into the same renderSection() the expense/vendor sections use. Reads the same
+     * SalaryCostService the summary does, so the two always agree; Khaas rows hidden for
+     * users without access.
      */
     private function salariesDetail(int $nfBuId, int $khaasBuId, string $start, string $end, bool $canViewKhaas): array
     {
-        $s = $start . ' 00:00:00'; $e = $end . ' 23:59:59';
         $byDate = []; $nfTotal = 0.0; $khTotal = 0.0; $count = 0;
 
-        $push = function (string $date, array $item, bool $isKhaas) use (&$byDate, &$nfTotal, &$khTotal, &$count) {
+        // Same engine as the summary above (and as HQ), so this drill always sums to the
+        // Salaries figure it opens from. Rows are grouped by the date the money moved; an
+        // advance not yet recovered carries its own label rather than looking like a payment.
+        foreach ((new \App\Services\HR\SalaryCostService())->detailForWindow($start, $end, $khaasBuId) as $r) {
+            if ($r["is_khaas"] && !$canViewKhaas) { continue; }
+            $date = $r["date"] ?: $start;
             if (!isset($byDate[$date])) {
-                $byDate[$date] = ['date' => $date, 'total' => 0.0, 'items' => []];
+                $byDate[$date] = ["date" => $date, "total" => 0.0, "items" => []];
             }
-            $byDate[$date]['items'][] = $item;
-            $byDate[$date]['total'] += $item['amount'];
-            if ($isKhaas) { $khTotal += $item['amount']; } else { $nfTotal += $item['amount']; }
+            $byDate[$date]["items"][] = [
+                "employee" => $r["employee"],
+                "amount"   => $r["amount"],
+                "bu_code"  => $r["is_khaas"] ? "KHAAS" : "NF",
+                "source"   => $r["kind"] === "advance_open" ? "Advance — salary not paid yet"
+                    : ($r["kind"] === "slip" ? "Slip" : "Payroll"),
+            ];
+            $byDate[$date]["total"] += $r["amount"];
+            if ($r["is_khaas"]) { $khTotal += $r["amount"]; } else { $nfTotal += $r["amount"]; }
             $count++;
-        };
-
-        // Payroll-screen payments per employee.
-        try {
-            if (\Illuminate\Support\Facades\Schema::hasTable('t_hr_payroll_payment')) {
-                $hasBu = \Illuminate\Support\Facades\Schema::hasColumn('t_hr_payroll_payment', 'business_unit_id');
-                // amount = GROSS (net + advance settled) so the per-employee figure is the
-                // true salary cost and reconciles with the summary/HQ.
-                $cols = ['p.user_id', 'u.fullname', 'p.net_salary', 'p.advance_total', 'p.paid_at'];
-                if ($hasBu) { $cols[] = 'p.business_unit_id'; }
-                $q = DB::table('t_hr_payroll_payment as p')
-                    ->leftJoin('t_sys_user as u', 'u.id', '=', 'p.user_id')
-                    ->where('p.status', 'paid')->whereBetween('p.paid_at', [$s, $e])
-                    ->orderByDesc('p.paid_at');
-                foreach ($q->get($cols) as $r) {
-                    $isKh = $hasBu && ((int) ($r->business_unit_id ?? 0) === $khaasBuId);
-                    if ($isKh && !$canViewKhaas) { continue; }
-                    $adv = (float) ($r->advance_total ?? 0);
-                    $push(substr((string) $r->paid_at, 0, 10), [
-                        'employee' => $r->fullname ?: ('User ' . $r->user_id),
-                        'amount'   => round((float) $r->net_salary + $adv, 2),
-                        'bu_code'  => $isKh ? 'KHAAS' : 'NF',
-                        'source'   => $adv > 0 ? 'Payroll (incl. Rs ' . number_format($adv) . ' advance)' : 'Payroll',
-                    ], $isKh);
-                }
-            }
-        } catch (\Throwable $ex) { /* skip */ }
-
-        // Legacy salary slips → NF.
-        try {
-            foreach (\App\Models\HR\SalarySlipModel::with('employee')
-                ->whereIn('slip_status', ['approved', 'paid'])
-                ->whereNotNull('ledger_transaction_id')
-                ->whereBetween('created_at', [$s, $e])->get() as $slip) {
-                $push(substr((string) $slip->created_at, 0, 10), [
-                    'employee' => $slip->employee ? $slip->employee->fullname : ('User ' . $slip->user_id),
-                    'amount'   => round((float) $slip->net_salary, 2),
-                    'bu_code'  => 'NF',
-                    'source'   => 'Slip',
-                ], false);
-            }
-        } catch (\Throwable $ex) { /* skip */ }
-
+        }
         krsort($byDate);
         return [
             'total'       => round($nfTotal + $khTotal, 2),

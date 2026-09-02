@@ -71,6 +71,11 @@ class VehicleController extends Controller
                 'can_log_meters' => $this->canLogMeters(),
                 'transfer_grace_km' => $svc->transferGraceKm(),
                 'rules_enabled'     => $svc->rulesEnabled(),
+                // 🔁 Which machines have a rider waiting on them right now, so the
+                //    card itself says so. Without this the grid looked completely
+                //    normal while a request sat unanswered — the manager had to
+                //    already know to look at the banner.
+                'pending_requests'  => $this->pendingByVehicle(),
             ]);
         } catch (\Throwable $e) {
             Log::error('VehicleController index failed', ['error' => $e->getMessage()]);
@@ -438,9 +443,19 @@ class VehicleController extends Controller
                 'success'   => true,
                 'available' => true,
                 'vehicles'  => $svc->all(false),
-                // Assigning/releasing/editing still belong to the web — the phone
-                // has no endpoint for them, so it must not offer them.
-                'can_manage' => false,
+                // ⭐ SEP-2026: the phone CAN now hand a machine over (apiAssign /
+                //   apiRelease), so this stops being hard-coded false and becomes the
+                //   real answer — `assign_vehicles`, the same key the web asks.
+                // ⚠ PAYLOAD-DRIVEN ON PURPOSE, not a mobile permission: mobile
+                //   permissions are snapshotted at login and never refreshed, so a
+                //   newly-granted manager would see nothing until he reinstalled.
+                //   This flag is computed per request, so the buttons appear the
+                //   moment the right is given. Old APKs ignore it and stay read-only.
+                'can_manage' => $this->canManage(),
+                'rules_enabled' => $svc->rulesEnabled(),
+                // Same pending map the web grid gets — the phone's machine list
+                // must not look calm while a rider is waiting on one of them.
+                'pending_requests' => $this->pendingByVehicle(),
                 // ⭐ …but condition photos CAN now be added from the phone
                 //   (apiAddPhotos). Separate flag on purpose: it is the only
                 //   write the app has, and conflating it with can_manage would
@@ -489,6 +504,9 @@ class VehicleController extends Controller
                     isset($v['current_meter']) && $v['current_meter'] !== null ? (int) $v['current_meter'] : null),
                 // May this manager record a condition photo from the phone?
                 'can_add_photos' => $this->canAddPhotos(),
+                // ⭐ …and may he hand the machine over from it? (Sep-2026, see
+                //   apiAssign.) Same per-request computation as apiIndex.
+                'can_manage'   => $this->canManage(),
                 'months'       => $this->recentMonths(),
             ]);
         } catch (\Throwable $e) {
@@ -616,10 +634,126 @@ class VehicleController extends Controller
         }
     }
 
+    // =================================================================
+    // MOBILE — ASSIGN / RELEASE (Sep-2026). Phase 1 of the handover project.
+    // =================================================================
+
+    /**
+     * ⭐⭐ HANDOVERS FROM THE PHONE — a SECOND DOOR, never a second rulebook.
+     *
+     * Assigning was web-only by deliberate design ("assigning, editing and photos
+     * stay on the web" — routes/api.php), and photos were the first carve-out. The
+     * owner has now asked for the handover itself, because it happens in the yard:
+     * Shabib or Taimur is standing next to the van at 8 a.m., not at a desk.
+     *
+     * ⚠⚠ EVERY ONE OF THESE IS A ONE-LINE DELEGATE TO THE WEB METHOD, ON PURPOSE.
+     *    A handover moves money (whose fuel the company buys), demands (who is asked
+     *    for meters), cargo and the ride-home timer. A parallel mobile implementation
+     *    of that is exactly how two surfaces drift into disagreeing about who has the
+     *    bike. So the phone reaches the SAME method, the SAME validation, the SAME
+     *    displaced-rider settle and the SAME logging.
+     *
+     * ⚠ TWO GATES, mirroring apiAddPhotos:
+     *   • mobileAllowed() — may he open Bikes on the phone (`view_bike_costs`);
+     *   • canManage()     — may he move machines (`assign_vehicles`), checked inside
+     *                       the delegate. That is a WEB key read through
+     *                       `hasPermission()`, which works identically under Sanctum,
+     *                       so one grant governs both surfaces and nobody can be
+     *                       allowed on the web but refused on the phone. It also
+     *                       refuses read-only accounts.
+     *   Deliberately NO new permission key: `assign_vehicles` already means exactly
+     *   "may move machines between riders", and a mobile-only twin would drift.
+     *
+     * ⚠ NOTHING NEW IS GRANTED. Today the set is Shabib + Taimur; ticking
+     *   `assign_vehicles` on another role extends both surfaces at once.
+     */
+    public function apiPreviewAssign(Request $request, VehicleService $svc, $id)
+    {
+        if (!$this->mobileAllowed($request)) {
+            return response()->json(['success' => false, 'message' => 'Not authorised'], 403);
+        }
+        return $this->previewAssign($request, $svc, $id);
+    }
+
+    public function apiAssign(Request $request, VehicleService $svc, $id)
+    {
+        if (!$this->mobileAllowed($request)) {
+            return response()->json(['success' => false, 'message' => 'Not authorised'], 403);
+        }
+        return $this->assign($request, $svc, $id);
+    }
+
+    public function apiPreviewRelease(Request $request, VehicleService $svc, $id)
+    {
+        if (!$this->mobileAllowed($request)) {
+            return response()->json(['success' => false, 'message' => 'Not authorised'], 403);
+        }
+        return $this->releasePreview($request, $svc, $id);
+    }
+
+    public function apiRelease(Request $request, VehicleService $svc, $id)
+    {
+        if (!$this->mobileAllowed($request)) {
+            return response()->json(['success' => false, 'message' => 'Not authorised'], 403);
+        }
+        return $this->release($request, $svc, $id);
+    }
+
+    /**
+     * The rider list the assign sheet picks from — the SAME roster the web screen
+     * builds, so the two offer identical choices.
+     *
+     * ⚠ Its own endpoint rather than riding `apiIndex`: the fleet list is polled by
+     *   every phone that can open Bikes, and only the handful who can actually
+     *   assign ever need the roster.
+     */
+    public function apiRoster(Request $request, VehicleService $svc)
+    {
+        if (!$this->mobileAllowed($request)) {
+            return response()->json(['success' => false, 'message' => 'Not authorised'], 403);
+        }
+        if (!$this->canManage()) {
+            return response()->json(['success' => false, 'message' => 'Not authorised to assign vehicles'], 403);
+        }
+        return response()->json([
+            'success' => true,
+            'riders'  => $this->roster(),
+            'spare'   => $svc->spareVehicles(),
+        ]);
+    }
+
     /**
      * The Bikes screen's OWN mobile key — the same gate FleetFuelController uses.
      * Authoritative on purpose: an additive gate would make unticking it useless.
      */
+    /**
+     * 🔁 [vehicle_id => {id, rider_name, direction, requested_at}] for every OPEN
+     * handover request — what the fleet grid stamps on the affected cards.
+     *
+     * ⚠ Reads the SAME `live()` the banners read, so a card can never claim a
+     *   request the banner has already dropped (expired, decided elsewhere, rider
+     *   deactivated). Empty for anyone who cannot approve, for the same reason.
+     */
+    private function pendingByVehicle(): array
+    {
+        try {
+            if (!$this->canManage()) return [];
+            $out = [];
+            foreach ((new \App\Services\Riders\VehicleHandoverRequestService())->live() as $q) {
+                $out[(string) $q['vehicle_id']] = [
+                    'id'           => $q['id'],
+                    'rider_name'   => $q['rider_name'],
+                    'direction'    => $q['direction'],
+                    'requested_at' => $q['requested_at'],
+                ];
+            }
+            return $out;
+        } catch (\Throwable $e) {
+            // A decoration must never take the fleet screen down.
+            return [];
+        }
+    }
+
     private function mobileAllowed(Request $request): bool
     {
         $u = $request->user();
@@ -729,6 +863,11 @@ class VehicleController extends Controller
             // ⭐ PHASE D — what happens to the rider losing this machine.
             'displaced_action'     => 'nullable|in:none,own,vehicle',
             'displaced_vehicle_id' => 'nullable|integer',
+            // ⭐ Sep-2026 — the odometer of the machine the DISPLACED rider lands on.
+            //   Same optional, soft-validated contract as `handover_meter` below; it
+            //   simply reaches the second assign() instead of the first. Without it
+            //   that machine's day stays "shared" and is charged to neither man.
+            'displaced_meter'      => 'nullable|integer|min:0|max:9999999',
             // ⭐ Aug-2026 — the odometer as the bike changed hands. OPTIONAL, and
             //   deliberately validated no further than "a number": a handover is a
             //   thing that already happened, and refusing to record it over a
@@ -737,9 +876,13 @@ class VehicleController extends Controller
             'handover_meter'       => 'nullable|integer|min:0|max:9999999',
         ]);
 
+        // ⚠ `$displacedSettleFollows = true`: we settle the displaced rider right
+        //   below, so his ride-home timer is judged AFTER placement (a timer erased
+        //   in the gap could never re-arm — Sep-01 review finding).
         $res = $svc->assign((int) $id, (int) $data['user_id'], $data['date'] ?? null,
                             (int) auth()->id(), $data['note'] ?? null,
-                            isset($data['handover_meter']) ? (int) $data['handover_meter'] : null);
+                            isset($data['handover_meter']) ? (int) $data['handover_meter'] : null,
+                            true);
         if (!$res['ok']) {
             return response()->json(['success' => false, 'message' => $res['message']], 422);
         }
@@ -750,8 +893,15 @@ class VehicleController extends Controller
         $displacedNote = $this->settleDisplacedRider(
             $svc, $res['displaced_user_id'] ?? null,
             $data['displaced_action'] ?? null, $data['displaced_vehicle_id'] ?? null,
-            $data['date'] ?? null
+            $data['date'] ?? null, (int) $id,
+            isset($data['displaced_meter']) ? (int) $data['displaced_meter'] : null
         );
+
+        // Now his placement is final: on company iron his live timer stands, on his
+        // own bike / nothing the timer for the machine that left him is cleared.
+        if (!empty($res['displaced_user_id'])) {
+            $svc->disarmIdleHomeJourney((int) $res['displaced_user_id']);
+        }
 
         return response()->json([
             'success'      => true,
@@ -786,7 +936,9 @@ class VehicleController extends Controller
      *   note rather than as a failed handover.
      */
     private function settleDisplacedRider(VehicleService $svc, ?int $userId,
-                                          ?string $action, $vehicleId, ?string $date): string
+                                          ?string $action, $vehicleId, ?string $date,
+                                          ?int $handedOverVehicleId = null,
+                                          ?int $handoverMeter = null): string
     {
         if (!$userId) {
             return '';
@@ -818,9 +970,30 @@ class VehicleController extends Controller
             } elseif ($action === 'vehicle') {
                 $target = (int) $vehicleId;
                 if ($target <= 0) return 'No replacement bike was chosen, so he now has none.';
+
+                // ⭐⭐ VALIDATE THE REPLACEMENT SERVER-SIDE (Sep-2026). Until now any
+                //    integer was accepted and passed straight to assign(). Two ways
+                //    that bites, both silent:
+                //      1. the machine JUST handed over → the settle re-assigns it
+                //         BACK to him and quietly undoes the handover that succeeded
+                //         a line earlier;
+                //      2. a machine a THIRD rider is holding → that man is displaced
+                //         with no prompt of his own, which is the one outcome this
+                //         whole flow exists to prevent.
+                // ⚠ The pickers already filter both cases in JS. This is the server
+                //   saying the same thing, because a stale tab, a replayed POST or a
+                //   mobile client is not the fleet screen's JavaScript.
+                if ($handedOverVehicleId && $target === (int) $handedOverVehicleId) {
+                    return 'He could not be moved onto that machine — it is the one that was just handed over.';
+                }
+                $holder = $svc->keeperOf($target);
+                if ($holder && (int) $holder->user_id !== $userId) {
+                    return 'He could not be moved onto that machine — somebody else is holding it. Free it first.';
+                }
             }
 
-            $r = $svc->assign((int) $target, $userId, $date, (int) auth()->id(), 'Moved after handover');
+            $r = $svc->assign((int) $target, $userId, $date, (int) auth()->id(), 'Moved after handover',
+                              $handoverMeter);
             return ($r['ok'] ?? false)
                 ? 'He was moved onto ' . ($svc->find((int) $target)['name'] ?? 'another bike') . '.'
                 : 'He could not be moved onto the other bike (' . ($r['message'] ?? 'unknown error') . ').';
@@ -843,13 +1016,15 @@ class VehicleController extends Controller
             'photos.*' => 'image|max:' . self::MAX_PHOTO_KB,
             'displaced_action'     => 'nullable|in:none,own,vehicle',
             'displaced_vehicle_id' => 'nullable|integer',
+            'displaced_meter'      => 'nullable|integer|min:0|max:9999999',
         ]);
 
         // The photos are of the state it came BACK in, so they belong to the
         // assignment being closed — grab it before it is released.
         $closing = $svc->keeperOf((int) $id);
 
-        $res = $svc->release((int) $id, $request->input('date'), (int) auth()->id());
+        // Same settle-follows contract as assign() above.
+        $res = $svc->release((int) $id, $request->input('date'), (int) auth()->id(), true);
         if (!$res['ok']) {
             return response()->json(['success' => false, 'message' => $res['message']], 422);
         }
@@ -861,8 +1036,12 @@ class VehicleController extends Controller
         $displacedNote = $this->settleDisplacedRider(
             $svc, $res['displaced_user_id'] ?? null,
             $data['displaced_action'] ?? null, $data['displaced_vehicle_id'] ?? null,
-            $request->input('date')
+            $request->input('date'), (int) $id,
+            isset($data['displaced_meter']) ? (int) $data['displaced_meter'] : null
         );
+        if (!empty($res['displaced_user_id'])) {
+            $svc->disarmIdleHomeJourney((int) $res['displaced_user_id']);
+        }
 
         return response()->json([
             'success' => true,
@@ -1260,6 +1439,19 @@ class VehicleController extends Controller
                 }
             } catch (\Throwable $e) { /* optional colour */ }
 
+            // ⭐ Sep-2026 — the machine's NAME alongside its id. The web screen already
+            //   has the whole fleet loaded and resolves this itself; the mobile assign
+            //   sheet does not, and "now on DCR-799" is the line that stops a manager
+            //   handing a bike to someone who is already on one. Additive: every
+            //   existing reader ignores it.
+            $vNames = [];
+            try {
+                $vres = new \App\Services\Riders\VehicleResolver();
+                foreach (array_unique($held) as $vid) {
+                    $vNames[(int) $vid] = $vres->labelFor((int) $vid);
+                }
+            } catch (\Throwable $e) { /* a missing label is cosmetic */ }
+
             return DB::table('t_ops_rider_profile as p')
                 ->join('t_sys_user as u', 'u.id', '=', 'p.user_id')
                 ->where('p.active', 1)
@@ -1271,6 +1463,8 @@ class VehicleController extends Controller
                     'company_bike' => (int) $r->company_bike === 1,
                     'has_vehicle'  => isset($held[(int) $r->user_id]),
                     'vehicle_id'   => $held[(int) $r->user_id] ?? null,
+                    'vehicle_name' => isset($held[(int) $r->user_id])
+                        ? ($vNames[$held[(int) $r->user_id]] ?? null) : null,
                     'since'        => $since[(int) $r->user_id] ?? null,
                     'free_since'   => isset($held[(int) $r->user_id]) ? null : ($lastHeld[(int) $r->user_id] ?? null),
                     'has_home_pin' => $r->home_latitude !== null,

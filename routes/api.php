@@ -401,18 +401,45 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/store/fleet/rider', [\App\Http\Controllers\CRM\FleetFuelController::class, 'apiRider']);
     // Service schedule from the app — per-bike and company-wide. Both need the
     // MOBILE `manage_bike_service` grant on top of Bikes read access.
-    // 🏍️ The machines themselves (Aug-2026) — READ ONLY on mobile. Same
-    // `view_bike_costs` mobile grant as the Bikes screen; assigning, editing and
-    // photos stay on the web. `/days` is the month's kilometres, day by day.
+    // 🏍️ The machines themselves (Aug-2026). Reading needs the `view_bike_costs`
+    // mobile grant, exactly like the Bikes screen. EDITING a machine (name, reg,
+    // retire) and the day-override still stay on the web; the writes the phone has
+    // are condition photos (Aug-2026) and — since Sep-2026 — the HANDOVER itself.
+    // `/days` is the month's kilometres, day by day.
     // Which machine a claim will land on — used by every fuel/maintenance form.
     // ⚠ ABOVE '/vehicles/{id}': 'vehicle-for-user' is its own path, not an id.
     Route::get('/store/fleet/vehicle-for-user', [\App\Http\Controllers\CRM\VehicleController::class, 'forUser']);
     Route::get('/store/fleet/vehicles', [\App\Http\Controllers\CRM\VehicleController::class, 'apiIndex']);
+    // ⚠ ABOVE '/vehicles/{id}' — 'roster' is a path, not an id.
+    Route::get('/store/fleet/roster', [\App\Http\Controllers\CRM\VehicleController::class, 'apiRoster']);
+    // ⭐ 🔁 RIDER HANDOVER REQUESTS (Sep-2026) — "give me the van" / "take it back".
+    //   A request MOVES NOTHING; approving runs the same VehicleService::assign()
+    //   the fleet screen runs. The rider routes are SELF-SCOPED and need no
+    //   permission key (like /my-vehicle); the approver routes are gated on
+    //   `assign_vehicles` inside the controller.
+    // ⚠ ABOVE any '{id}' pattern in this prefix — 'options'/'mine'/'pending' are paths.
+    Route::get('/vehicle-request/options', [\App\Http\Controllers\CRM\VehicleHandoverController::class, 'options']);
+    Route::get('/vehicle-request/mine', [\App\Http\Controllers\CRM\VehicleHandoverController::class, 'mine']);
+    Route::post('/vehicle-request', [\App\Http\Controllers\CRM\VehicleHandoverController::class, 'raise']);
+    Route::post('/vehicle-request/{id}/cancel', [\App\Http\Controllers\CRM\VehicleHandoverController::class, 'cancel']);
+    // Approver side — store mode banner + decisions.
+    Route::get('/store/vehicle-requests', [\App\Http\Controllers\CRM\VehicleHandoverController::class, 'pending']);
+    Route::post('/store/vehicle-requests/{id}/approve', [\App\Http\Controllers\CRM\VehicleHandoverController::class, 'approve']);
+    Route::post('/store/vehicle-requests/{id}/reject', [\App\Http\Controllers\CRM\VehicleHandoverController::class, 'reject']);
     Route::get('/store/fleet/vehicles/{id}', [\App\Http\Controllers\CRM\VehicleController::class, 'apiShow']);
     Route::get('/store/fleet/vehicles/{id}/days', [\App\Http\Controllers\CRM\VehicleController::class, 'apiDays']);
     // Condition photos from the phone — the handover happens in the yard, not at a
     // desk. Gated on view_bike_costs (open the screen) AND assign_vehicles (write).
     Route::post('/store/fleet/vehicles/{id}/photos', [\App\Http\Controllers\CRM\VehicleController::class, 'apiAddPhotos']);
+    // ⭐ HANDOVER FROM THE PHONE (Sep-2026). Every one of these is a thin delegate to
+    //   the web method — same validation, same displaced-rider settle, same logging.
+    //   Gates: view_bike_costs (open Bikes) AND assign_vehicles (move machines).
+    //   The preview endpoints are what let the sheet state the consequences BEFORE
+    //   the manager commits, exactly as the web modal does.
+    Route::get('/store/fleet/vehicles/{id}/preview-assign', [\App\Http\Controllers\CRM\VehicleController::class, 'apiPreviewAssign']);
+    Route::post('/store/fleet/vehicles/{id}/assign', [\App\Http\Controllers\CRM\VehicleController::class, 'apiAssign']);
+    Route::get('/store/fleet/vehicles/{id}/preview-release', [\App\Http\Controllers\CRM\VehicleController::class, 'apiPreviewRelease']);
+    Route::post('/store/fleet/vehicles/{id}/release', [\App\Http\Controllers\CRM\VehicleController::class, 'apiRelease']);
     // 🛢 Service-due banners. ⚠ NOT under the fleet permission — a RIDER has no
     // fleet access yet must be told his own machine is due; the audience rule
     // lives in BikeServiceAlerts::forUser().
@@ -672,6 +699,7 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::post('/store-attendance/update-meter-values', [\App\Http\Controllers\API\RiderController::class, 'updateMeterValues']);
         // Rider bypasses (mobile manager; view_store_attendance-gated wrappers of the web endpoints)
         Route::post('/store-attendance/checkout-unlock', [\App\Http\Controllers\API\RiderController::class, 'storeAttendanceCheckoutUnlock']);
+        Route::post('/store-attendance/undo-checkout', [\App\Http\Controllers\API\RiderController::class, 'storeAttendanceUndoCheckout']); // back on duty after an extra order
         Route::post('/store-attendance/home-unlock', [\App\Http\Controllers\API\RiderController::class, 'storeAttendanceHomeUnlock']);
         Route::post('/store-attendance/home-enter-meter', [\App\Http\Controllers\API\RiderController::class, 'storeAttendanceHomeEnterMeter']);
         Route::post('/store-attendance/checkin-unlock', [\App\Http\Controllers\API\RiderController::class, 'storeAttendanceCheckinUnlock']); // U5 morning-lock valve

@@ -45,6 +45,18 @@ class VehicleResolver
     private static array $vehicleCache = [];
     /** [vehicleId => [date => true]] — the days that machine changed hands. */
     private static array $transferCache = [];
+    /**
+     * ⚠⚠ THESE THREE WERE `static $memo` INSIDE THEIR METHODS (moved out Sep-2026).
+     *    A function static cannot be reset from anywhere else in the class, so
+     *    `flush()` silently did not clear them — and `flush()` is what every
+     *    assign/release calls to make the next read see the new world. On the class
+     *    they are clearable, and `flush()` finally means what its name says.
+     *    Found by a test whose fixtures were invisible to `machineHoldersOn` because
+     *    an earlier assertion had already memoized that date as empty.
+     */
+    private static array $holdersCache = [];      // [date => [userId => vehicleId]]
+    private static array $trackedCache = [];      // [userId => bool]
+    private static array $profileCache = [];      // [userId => bool]
 
     public function available(): bool
     {
@@ -169,11 +181,10 @@ class VehicleResolver
      */
     public function trackedByRegistry(int $userId): bool
     {
-        static $memo = [];
-        if (isset($memo[$userId])) return $memo[$userId];
+        if (isset(self::$trackedCache[$userId])) return self::$trackedCache[$userId];
         try {
             if (!$this->available()) return false;   // not memoized — tables may appear
-            return $memo[$userId] = DB::table(VehicleService::T_ASSIGN)->where('user_id', $userId)->exists();
+            return self::$trackedCache[$userId] = DB::table(VehicleService::T_ASSIGN)->where('user_id', $userId)->exists();
         } catch (\Throwable $e) {
             return false;
         }
@@ -183,10 +194,9 @@ class VehicleResolver
      *  Memoized — the month sheets ask per row. */
     public function hasRiderProfile(int $userId): bool
     {
-        static $memo = [];
-        if (isset($memo[$userId])) return $memo[$userId];
+        if (isset(self::$profileCache[$userId])) return self::$profileCache[$userId];
         try {
-            return $memo[$userId] = DB::table('t_ops_rider_profile')->where('user_id', $userId)->exists();
+            return self::$profileCache[$userId] = DB::table('t_ops_rider_profile')->where('user_id', $userId)->exists();
         } catch (\Throwable $e) {
             return false;
         }
@@ -402,12 +412,11 @@ class VehicleResolver
     public function machineHoldersOn(string $date): array
     {
         $date = substr($date, 0, 10);
-        static $memo = [];
-        if (isset($memo[$date])) return $memo[$date];
+        if (isset(self::$holdersCache[$date])) return self::$holdersCache[$date];
 
         $held = [];
         try {
-            if (!$this->available()) return $memo[$date] = [];
+            if (!$this->available()) return self::$holdersCache[$date] = [];
 
             foreach (DB::table(VehicleService::T_ASSIGN)
                         ->where('assigned_on', '<=', $date)
@@ -428,7 +437,7 @@ class VehicleResolver
             Log::warning('machineHoldersOn failed', ['date' => $date, 'error' => $e->getMessage()]);
             $held = [];
         }
-        return $memo[$date] = $held;
+        return self::$holdersCache[$date] = $held;
     }
 
     /**
@@ -780,5 +789,11 @@ class VehicleResolver
         self::$dayCache = [];
         self::$vehicleCache = [];
         self::$transferCache = [];
+        // ⚠ These three used to be function statics and were therefore NOT cleared
+        //   here — see the property declarations. An assign/release calls flush() so
+        //   the next read sees the new world; leaving any memo behind makes that a lie.
+        self::$holdersCache = [];
+        self::$trackedCache = [];
+        self::$profileCache = [];
     }
 }

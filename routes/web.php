@@ -246,6 +246,12 @@ Route::middleware(['auth'])->group(function () {
     Route::get('/orders/new-since', [OrderController::class, 'newOrdersSince'])->name('orders.new-since'); // "N new orders" pill probe (must be before {id})
     // Aug-2026 — riders waiting on a locked verified pin (30s banner poll; must be before {id}).
     Route::get('/orders/pin-unlock-requests', [OrderController::class, 'pinUnlockRequests'])->name('orders.pin-unlock-requests');
+    // 🔁 Sep-2026 — riders waiting for a vehicle handover to be approved. Same 30s
+    // banner poll and the same "must be before {id}" rule as the line above.
+    // Approving here runs the SAME VehicleService::assign() the fleet screen runs.
+    Route::get('/orders/vehicle-requests', [\App\Http\Controllers\CRM\VehicleHandoverController::class, 'pending'])->name('orders.vehicle-requests');
+    Route::post('/orders/vehicle-requests/{id}/approve', [\App\Http\Controllers\CRM\VehicleHandoverController::class, 'approve'])->name('orders.vehicle-requests.approve');
+    Route::post('/orders/vehicle-requests/{id}/reject', [\App\Http\Controllers\CRM\VehicleHandoverController::class, 'reject'])->name('orders.vehicle-requests.reject');
 
     // ⭐ RIDERS MAP: Standalone page
     Route::get('/riders-map', [OrderController::class, 'ridersMap'])->name('riders-map');
@@ -487,6 +493,9 @@ Route::middleware(['auth'])->group(function () {
     Route::post('/attendance/home-journey/unlock', [\App\Http\Controllers\CRM\AttendanceController::class, 'homeJourneyUnlock'])->middleware('block.rider')->name('attendance.home-unlock');
     Route::post('/attendance/home-journey/enter-meter', [\App\Http\Controllers\CRM\AttendanceController::class, 'homeMeterManagerEntry'])->middleware('block.rider')->name('attendance.home-enter-meter');
     Route::post('/attendance/checkout-unlock', [\App\Http\Controllers\CRM\AttendanceController::class, 'checkoutUnlock'])->middleware('block.rider')->name('attendance.checkout-unlock');
+    // Undo a checkout — put a rider who already finished back ON DUTY (extra order came in).
+    // Clears the whole checkout bundle, not just logout_time; audited in t_sys_audit_log.
+    Route::post('/attendance/undo-checkout', [\App\Http\Controllers\CRM\AttendanceController::class, 'undoCheckout'])->middleware('block.rider')->name('attendance.undo-checkout');
     Route::post('/attendance/checkin-unlock', [\App\Http\Controllers\CRM\AttendanceController::class, 'checkinUnlock'])->middleware('block.rider')->name('attendance.checkin-unlock'); // U5 morning-lock valve
     Route::get('/attendance/home-alerts', [\App\Http\Controllers\CRM\AttendanceController::class, 'homeAlerts'])->middleware('block.rider')->name('attendance.home-alerts');
     Route::post('/attendance/home-alerts/dismiss', [\App\Http\Controllers\CRM\AttendanceController::class, 'dismissHomeAlert'])->middleware('block.rider')->name('attendance.home-alert-dismiss');

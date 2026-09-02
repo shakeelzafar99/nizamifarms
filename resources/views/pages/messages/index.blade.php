@@ -2698,6 +2698,29 @@ select.wa-mgr-input { background: #fff; cursor: pointer; }
                 </div>
                 <div style="font-size:11px;color:#9ca3af;margin-top:6px;">The Send Invoice button auto-picks online vs cash by payment method, and the with-ETA version once the delivery time is known (you can still change it before sending).</div>
             </div>`;
+        } else if ((r.editable||[]).includes('templates_delivery_online_cash')){
+            // Delivered → payment confirmation: TWO templates, picked by the
+            // order's payment method read fresh at send time. Both must be set;
+            // an unset one makes that half of the rule skip (logged in the
+            // activity log) rather than fall back to the other variant, which
+            // would send bank details to a cash customer.
+            const cfg = r.config || {};
+            const dk = waEsc(r.key);
+            const dsel = (id, label, val, hint) => `<div style="flex:1;min-width:210px;">
+                <label style="font-size:11px;font-weight:600;color:#6b7280;">${label}
+                    <span onclick="waPreviewSelectById('${id}')" title="View message" style="cursor:pointer;font-weight:400;color:#2563eb;margin-left:4px;">👁</span></label>
+                <select id="${id}" style="width:100%;padding:7px 9px;border:1px solid #e5e7eb;border-radius:6px;font-size:13px;margin-top:3px;">${autoTemplateOptions(val)}</select>
+                <div style="font-size:11px;color:#9ca3af;margin-top:3px;">${hint}</div>
+            </div>`;
+            body = `<div style="margin-top:10px;border-top:1px dashed #e5e7eb;padding-top:10px;">
+                <div style="display:flex;gap:10px;flex-wrap:wrap;">
+                    ${dsel('waDelivOnline-'+dk, 'Online / bank transfer', cfg.online_template,
+                           'Sent only when nothing has been paid yet. Should carry the &quot;Get bank details&quot; button.')}
+                    ${dsel('waDelivCash-'+dk, 'Cash', cfg.cash_template,
+                           'Plain confirmation — no bank details, no button.')}
+                </div>
+                <div style="font-size:11px;color:#9ca3af;margin-top:6px;">Both use 4 variables: {1} customer name, {2} order number, {3} delivery date &amp; time, {4} rider name.</div>
+            </div>`;
         } else if ((r.editable||[]).includes('template')){
             const tk = waEsc(r.key);
             let tplBody = `<div style="margin-top:10px;border-top:1px dashed #e5e7eb;padding-top:10px;">
@@ -2801,6 +2824,10 @@ select.wa-mgr-input { background: #fff; cursor: pointer; }
             online_noeta_template: (document.getElementById('waInvOnlineNoeta-'+key) || {}).value || '',
             cash_eta_template:     (document.getElementById('waInvCashEta-'+key) || {}).value || '',
             cash_noeta_template:   (document.getElementById('waInvCashNoeta-'+key) || {}).value || '',
+        };
+        else if ((r.editable||[]).includes('templates_delivery_online_cash')) payload.config = {
+            online_template: (document.getElementById('waDelivOnline-'+key) || {}).value || '',
+            cash_template:   (document.getElementById('waDelivCash-'+key) || {}).value || '',
         };
         else if ((r.editable||[]).includes('template')) {
             payload.template_name = (document.getElementById('waTpl-'+key) || {}).value || null;

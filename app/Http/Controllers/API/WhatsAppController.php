@@ -85,6 +85,10 @@ class WhatsAppController extends Controller
                   AND m2.created_at > m.created_at
             )');
 
+        // Inbound taps the system already answered (e.g. "Get bank details")
+        // stay in the chat history but never raise a badge. See UnreadQuery.
+        \App\Services\WhatsApp\UnreadQuery::exclude($q);
+
         if (Schema::hasColumn('t_wa_conversations', 'global_read_at')) {
             $q->leftJoin('t_wa_conversations as c', 'c.id', '=', 'm.conversation_id')
               ->where(function ($w) {
@@ -426,6 +430,9 @@ class WhatsAppController extends Controller
                           AND m2.direction = \'outbound\' AND m2.sent_by IS NOT NULL
                           AND m2.created_at > m.created_at
                     )');
+
+                // System-answered taps don't count as unread. See UnreadQuery.
+                \App\Services\WhatsApp\UnreadQuery::exclude($unreadQ);
 
                 // Super-reader global read marker — only apply if the column
                 // exists (idempotent across pre/post migration installs).
@@ -1410,6 +1417,30 @@ class WhatsAppController extends Controller
                 'related_order_number' => 'nullable|string|max:50',
             ]);
 
+            // ── Aug-2026 RETIRED-TEMPLATE ALIAS ────────────────────────────
+            // The INSTALLED APK hardcodes the day-1 template name
+            // ('delivery_confirmation_online') in DailyClosingScreen. That
+            // template was retired: its replacement carries a "Get bank
+            // details" quick-reply button instead of printing our account
+            // numbers, and the printed numbers in the old body are the RETIRED
+            // HBL pair. Without this alias every Send-WhatsApp press from a
+            // phone that has not been rebuilt would keep sending customers the
+            // wrong accounts — and if the old template is ever removed at Meta
+            // the send would fail and silently fall back to opening native
+            // WhatsApp with that same stale text, while still marking the order
+            // as messaged.
+            //
+            // The two templates take the SAME four body variables in the same
+            // order (name, order number, delivery date+time, rider), so the
+            // swap is exact. Remove this once the rebuilt app reads the
+            // server-provided `template` field per row instead of hardcoding.
+            $aliasedTemplates = [
+                'delivery_confirmation_online' => \App\Services\Payments\OnlineFollowUpService::TEMPLATE_DAY_ONE,
+            ];
+            if (isset($aliasedTemplates[$request->input('template_name')])) {
+                $request->merge(['template_name' => $aliasedTemplates[$request->input('template_name')]]);
+            }
+
             // Jul-2026: dial-resolve (known-number override; no-op for PK).
             // phone_exact=true = the manual-override seam for the NF Messages
             // app: dial exactly the digits given, skip all normalization.
@@ -2269,6 +2300,9 @@ class WhatsAppController extends Controller
                       AND m2.created_at > m.created_at
                 )');
 
+            // System-answered taps don't count as unread. See UnreadQuery.
+            \App\Services\WhatsApp\UnreadQuery::exclude($countQ);
+
             // Honour the super-reader's global_read_at marker when counting
             // the badge — otherwise the red dot would stay on even after
             // Taimur clears the thread for everyone.
@@ -2984,6 +3018,15 @@ class WhatsAppController extends Controller
             'customer_greeting' => "Assalam-o-Alaikum {{1}},\n\nThis is Nizami Farms. How can we help you today?\n\nBest regards,\nNizami Farms Team",
             'delivery_confirmation_online' => "Dear {{1}},\n\nWe are happy to confirm that your order #{{2}} has been successfully delivered on {{3}} by our rider {{4}}.\n\nYour payment method is Online Bank Transfer. Please share a screenshot of the transfer here once the transaction has been made.\n\nAccount Title: \"Nizami Farms\"\n- Bank: Habib Bank Limited (HBL)\n   Account no: 23297901934403\n   IBAN: PK35HABB0023297901934403\n\n- Bank: Meezan Bank Limited\n   Account no: 03050106554237\n   IBAN: PK75MEZN0003050106554237\n\nThank you for choosing Nizami Farms!",
             'delivery_confirmation' => "Dear {{1}},\n\nYour order {{2}} is now out for delivery! Our rider will contact you upon arrival at your location.\n\nPayment options:\n- Cash on delivery\n- Online transfer\n\nAccount Title: \"Nizami Farms\"\n• Bank: Habib Bank Limited (HBL)\n   Account no: 23297901934403\n   IBAN: PK35HABB0023297901934403\n\n• Bank: Meezan Bank Limited\n   Account no: 03050106554237\n   IBAN: PK75MEZN0003050106554237\n\n(Please share the transfer slip with us to ensure a smooth delivery process)\n\nThank you for choosing Nizami Farms!",
+
+            // Aug-2026 delivery-confirmation pair. The ONLINE one no longer
+            // prints the accounts: it carries a "Get bank details" quick-reply
+            // button, and tapping it is answered automatically by
+            // WhatsAppService::maybeAnswerBankDetailsRequest. Both are sent by
+            // the order_delivered_payment_confirmation automation, and the
+            // online one is also the manual day-1 Daily Closing template.
+            'delivery_confirmation_online_v2' => "Dear {{1}},\n\nWe are happy to confirm that your order {{2}} has been successfully delivered on {{3}} by our rider {{4}}.\n\nYour payment method is Online Bank Transfer. Tap the button below to get our bank details, and please share a screenshot of the transfer here once the transaction has been made.\n\nPlease IGNORE this message if you have already transferred and shared the payment slip.\n\nThank you for choosing Nizami Farms!",
+            'delivery_confirmation_cash' => "Dear {{1}},\n\nWe are happy to confirm that your order {{2}} has been successfully delivered on {{3}} by our rider {{4}}.\n\nYour payment method for this order is Cash — no bank transfer is needed.\n\nThank you for choosing Nizami Farms!",
         ];
 
         $body = $templateBodies[$templateName] ?? "[Template: {$templateName}]";

@@ -600,8 +600,17 @@ class PayrollService
         $bonusLeaves = $this->ot->bonusLeaves($otMinutes);
 
         // ── Open salary advances (unsettled) — auto-deducted at pay, settled on pay.
-        $advances = $this->openAdvances($userId);
+        // Scoped to THIS month: an advance given for August is recovered from August, never
+        // from whichever month happens to be paid first.
+        $advances = $this->openAdvances($userId, $month);
         $advanceTotal = round(array_sum(array_column($advances, 'amount')), 2);
+
+        // Unsettled advances belonging to OTHER months. Deliberately NOT in $advanceTotal,
+        // deductions or net — they are shown as a chip so month-scoping can never make money
+        // that has left the building invisible on the grid.
+        $otherOpenAdvanceTotal = round(
+            array_sum(array_column($this->openAdvances($userId), 'amount')) - $advanceTotal, 2
+        );
 
         // ── Advance REQUESTS still awaiting a decision. NOT money: no ledger row exists, so these
         // are deliberately kept OUT of $advanceTotal, deductions and net pay. They are surfaced
@@ -649,6 +658,8 @@ class PayrollService
             'bonus_leaves'      => $bonusLeaves,            // leaves granted (ledger) on approve
             'advances'          => $advances,
             'advance_total'     => $advanceTotal,
+            // Open advances tagged to other months — display only, never part of net pay.
+            'other_open_advance_total' => max(0, $otherOpenAdvanceTotal),
             'pending_requests'      => $pendingRequests,      // asked for, NOT given (no money)
             'pending_request_total' => $pendingRequestTotal,  // never part of deductions/net
             'bonuses'           => $bonuses,
@@ -734,13 +745,19 @@ class PayrollService
     }
 
     /** Give a mid-month advance (creates + posts a salary_advance). Returns [success, message]. */
-    public function giveAdvance(int $userId, float $amount, string $funding, ?int $bankId, ?string $note, int $actorId): array
+    public function giveAdvance(int $userId, float $amount, string $funding, ?int $bankId, ?string $note, int $actorId, ?string $payrollMonth = null, ?string $moneyDate = null): array
     {
         if ($amount < 1) {
             return ['success' => false, 'message' => 'Enter an amount.'];
         }
         if ($funding === 'online' && !$bankId) {
             return ['success' => false, 'message' => 'Choose the bank you are paying from.'];
+        }
+        // Which month recovers this, and when the money actually moved. Validated together
+        // because they are only allowed to differ in one direction (see resolveAdvanceDates).
+        $when = $this->resolveAdvanceDates($userId, $payrollMonth, $moneyDate);
+        if (!empty($when['error'])) {
+            return ['success' => false, 'message' => $when['error']];
         }
         // Advances don't exist for a running-balance employee: money handed over is a
         // payment against the balance, which is the same cash with an honest name.
@@ -767,14 +784,17 @@ class PayrollService
                 }
             } catch (\Throwable $e) { /* no tag → NF */ }
 
-            $req = \App\Models\Request\RequestModel::create([
+            $attrs = [
                 'request_number'   => \App\Models\Request\RequestModel::generateRequestNumber(),
                 'category_id'      => $category->id,
                 'requester_user_id' => $userId,
                 'title'            => 'Salary advance',
                 'amount'           => round($amount, 2),
                 'description'      => $note ?: 'Advance given from Payroll',
-                'expense_date'     => now()->toDateString(),
+                // expense_date = the day the money actually moved (the ledger entry is dated
+                // from it, so the books match the bank statement). The month it is RECOVERED
+                // from is payroll_month, which is allowed to differ — see resolveAdvanceDates.
+                'expense_date'     => $when['money_date'],
                 'business_unit_id' => $empBuId,
                 'payment_source_account_id' => $fundingAcct->id,
                 'receiving_account_id' => $funding === 'online' ? $bankId : null,
@@ -786,18 +806,180 @@ class PayrollService
                 'completed_at'     => now(),
                 'created_by'       => $actorId,
                 'updated_by'       => $actorId,
-            ]);
+            ];
+            // Guarded so the code runs unchanged before payroll_advance_month_sep2026.sql:
+            // with no column, the month falls back to expense_date exactly as it used to.
+            if (\App\Services\HR\SalaryCostService::hasMonthColumn()) {
+                $attrs['payroll_month'] = $when['payroll_month'];
+            }
+            $req = \App\Models\Request\RequestModel::create($attrs);
 
             $post = (new \App\Services\FIN\LedgerPostingService())->postSalaryAdvanceFromRequest($req);
             if (empty($post['success'])) {
                 throw new \RuntimeException($post['message'] ?? 'Ledger posting failed');
             }
-            \Log::info('Payroll advance given', ['user_id' => $userId, 'amount' => $amount, 'request_id' => $req->id, 'by' => $actorId]);
-            return ['success' => true, 'message' => 'Advance of Rs ' . number_format($amount) . ' given.'];
+            \Log::info('Payroll advance given', [
+                'user_id' => $userId, 'amount' => $amount, 'request_id' => $req->id, 'by' => $actorId,
+                'payroll_month' => $when['payroll_month'], 'money_date' => $when['money_date'],
+            ]);
+            return ['success' => true, 'message' => 'Advance of Rs ' . number_format($amount)
+                . ' given for ' . date('F Y', strtotime($when['payroll_month'] . '-01')) . '.'];
         } catch (\Throwable $e) {
             \Log::error('giveAdvance failed', ['error' => $e->getMessage()]);
             return ['success' => false, 'message' => 'Could not give advance: ' . $e->getMessage()];
         }
+    }
+
+    /**
+     * Work out the two dates an advance carries, and refuse the combinations that would
+     * create money nobody can ever recover. Owner rulings, Sep-2026:
+     *
+     *   payroll_month — the month whose pay recovers this, and whose salary cost it is.
+     *                   Allowed: any PAST month, the CURRENT month, or the NEXT month
+     *                   (given forward because this month is already paid). Never further
+     *                   out — an advance two months ahead is a loan, not early salary.
+     *
+     *   money_date    — the day the cash actually left. For a past month the manager is
+     *                   asked for it (the transfer really happened back then, the entry is
+     *                   just late), and it must fall inside that month. For the current or
+     *                   next month the money is moving now, so it is today: the ledger and
+     *                   the bank statement agree, and only payroll_month looks forward.
+     *
+     * Refused: a month whose salary is ALREADY PAID for this employee — the advance could
+     * never be deducted from it, so it would sit open forever. The message names the next
+     * month that is still open, which is what the owner wants offered instead.
+     *
+     * @return array{payroll_month?:string,money_date?:string,error?:string}
+     */
+    private function resolveAdvanceDates(int $userId, ?string $payrollMonth, ?string $moneyDate): array
+    {
+        $today = now()->startOfDay();
+        $curMonth = $today->format('Y-m');
+
+        // No month sent (mobile, or any older client) = the current month, exactly as before.
+        $month = trim((string) ($payrollMonth ?: $curMonth));
+        if (!preg_match('/^\d{4}-(0[1-9]|1[0-2])$/', $month)) {
+            return ['error' => 'That month is not valid.'];
+        }
+
+        $maxMonth = $today->copy()->startOfMonth()->addMonth()->format('Y-m'); // next month only
+        if ($month > $maxMonth) {
+            return ['error' => 'An advance can only be given for a month up to '
+                . date('F Y', strtotime($maxMonth . '-01')) . '. Pick a nearer month.'];
+        }
+
+        // Already paid for that month → it can never be recovered from it.
+        if ($this->monthIsPaidFor($userId, $month)) {
+            $next = $this->nextUnpaidMonthFor($userId, $month, $maxMonth);
+            return ['error' => date('F Y', strtotime($month . '-01')) . ' salary is already paid'
+                . ' for this employee, so an advance cannot be recovered from it.'
+                . ($next ? ' Give it for ' . date('F Y', strtotime($next . '-01')) . ' instead.' : '')];
+        }
+
+        // Money date: asked for only when the month is in the past.
+        if ($month < $curMonth) {
+            if (!$moneyDate) {
+                // Nothing supplied (an older client) → the last day of that month, which is
+                // the safest in-month date and the modal's own default.
+                $moneyDate = date('Y-m-t', strtotime($month . '-01'));
+            }
+            $d = null;
+            try { $d = \Illuminate\Support\Carbon::parse($moneyDate)->startOfDay(); } catch (\Throwable $e) { $d = null; }
+            if (!$d) {
+                return ['error' => 'That date is not valid.'];
+            }
+            if ($d->format('Y-m') !== $month) {
+                return ['error' => 'The payment date must be inside '
+                    . date('F Y', strtotime($month . '-01')) . '.'];
+            }
+            if ($d->gt($today)) {
+                return ['error' => 'The payment date cannot be in the future.'];
+            }
+            return ['payroll_month' => $month, 'money_date' => $d->toDateString()];
+        }
+
+        // Current or next month — the money is moving today, whatever month recovers it.
+        return ['payroll_month' => $month, 'money_date' => $today->toDateString()];
+    }
+
+    /** Has this employee's salary for $month already been paid? (Either payroll table path.) */
+    private function monthIsPaidFor(int $userId, string $month): bool
+    {
+        try {
+            return DB::table('t_hr_payroll_payment')
+                ->where('user_id', $userId)
+                ->where('pay_month', $month)
+                ->where('status', 'paid')
+                ->exists();
+        } catch (\Throwable $e) {
+            return false; // never block a payment on a lookup failure
+        }
+    }
+
+    /** The first month from $from..$max whose salary is not paid yet (null if none). */
+    private function nextUnpaidMonthFor(int $userId, string $from, string $max): ?string
+    {
+        $m = $from;
+        for ($i = 0; $i < 24 && $m <= $max; $i++) {
+            if (!$this->monthIsPaidFor($userId, $m)) {
+                return $m;
+            }
+            $m = date('Y-m', strtotime($m . '-01 +1 month'));
+        }
+        return null;
+    }
+
+    /**
+     * Employees who may be given a salary advance — the SAME population the Payroll screen
+     * shows, monthly AND custom-schedule, resolved through the one visibility rule so the
+     * assistant can never offer someone the grid would not.
+     *
+     * Per employee it also answers the two things a caller must know BEFORE drafting:
+     * whether that month's salary is already paid (an advance could never be recovered from
+     * it), and whether they are on a running balance (advances don't exist for them — the
+     * khata takes payments instead, which is what giveAdvance would refuse).
+     *
+     * @param  string|null $query   optional name filter (case-insensitive substring)
+     * @param  string|null $month   'YYYY-MM' the caller intends; defaults to the current month
+     * @return array<int,array{user_id:int,name:string,schedule:string,configured:bool,
+     *                         month_paid:bool,balance_tracked:bool,open_advance_total:float}>
+     */
+    public function advanceEligibleEmployees(?string $query = null, ?string $month = null): array
+    {
+        $month = $month ?: now()->format('Y-m');
+        $payVis = $this->payrollVisibilityMap();
+        $customIds = $this->customScheduleUserIds();
+
+        $q = DB::table('t_sys_user')->where('is_active', 1);
+        if ($query !== null && trim($query) !== '') {
+            $q->where('fullname', 'like', '%' . trim($query) . '%');
+        }
+
+        $out = [];
+        foreach ($q->orderBy('fullname')->get(['id', 'fullname']) as $u) {
+            $uid = (int) $u->id;
+            $vis = $payVis[$uid] ?? ['on' => true, 'explicit' => false];
+            if (!$vis['on']) {
+                continue;   // hidden from Payroll → not offerable
+            }
+            $isCustom = isset($customIds[$uid]);
+            $profile = DB::table('t_hr_employee_profile')->where('user_id', $uid)->first(['base_salary']);
+            $configured = $profile && (float) $profile->base_salary > 0;
+            // Mirror the grid's own rule: an unconfigured, unflagged employee is not on it.
+            if (!$isCustom && !$vis['explicit'] && !$configured) {
+                continue;
+            }
+            $out[] = [
+                'user_id'            => $uid,
+                'name'               => (string) $u->fullname,
+                'schedule'           => $isCustom ? 'custom' : 'monthly',
+                'configured'         => (bool) $configured,
+                'month_paid'         => $this->monthIsPaidFor($uid, $month),
+                'balance_tracked'    => $this->isBalanceTracked($uid),
+                'open_advance_total' => round(array_sum(array_column($this->openAdvances($uid), 'amount')), 2),
+            ];
+        }
+        return $out;
     }
 
     /** Pay a batch of rows; aggregates the per-row results. */
@@ -1232,7 +1414,7 @@ class PayrollService
      * move before deciding. Legacy advances predating per-bank tracking have no tag — they stay
      * null and the UI says so rather than naming a bank it doesn't know.
      */
-    private function openAdvances(int $userId): array
+    private function openAdvances(int $userId, ?string $month = null): array
     {
         try {
             $rows = RequestModel::where('requester_user_id', $userId)
@@ -1241,6 +1423,14 @@ class PayrollService
                 ->where(function ($q) {
                     $q->whereNull('settlement_status')->orWhere('settlement_status', '!=', 'settled');
                 })
+                // Month-scoped (Sep-2026): an advance belongs to ONE payroll month and can only
+                // be recovered from that month's pay. Before this, every open advance came off
+                // whichever month was paid FIRST — so paying September before August silently
+                // moved August's advance onto September. Uses the same month expression as the
+                // reporting engine, so what a month is charged is exactly what it recovers.
+                ->when($month !== null, fn ($q) => $q->whereRaw(
+                    \App\Services\HR\SalaryCostService::monthExpr('t_req_master') . ' = ?', [$month]
+                ))
                 ->orderBy('created_at', 'asc')
                 ->get(['id', 'amount', 'request_number', 'created_at', 'description',
                        'payment_source_account_id', 'receiving_account_id', 'created_by',
@@ -1461,6 +1651,26 @@ class PayrollService
                 $req->status = RequestModel::STATUS_APPROVED;
                 $req->settlement_status = 'pending';   // recovered from the next salary
                 $req->completed_at = now();
+                // ⭐ Re-stamp the dates to the APPROVAL, not the ask. The mobile app stamps
+                // expense_date when the employee raises the request, so a 22-day-old August
+                // request approved in September would otherwise tag August — a month that may
+                // already be paid, leaving an advance nothing can ever recover. Money moves
+                // today, so today is both the money date and the month that recovers it.
+                // The original ask date is preserved in created_at.
+                $req->expense_date = now()->toDateString();
+                if (\App\Services\HR\SalaryCostService::hasMonthColumn()) {
+                    $approveMonth = now()->format('Y-m');
+                    // If this month is already paid for them, roll to the next open month so
+                    // approving can never create an unrecoverable advance.
+                    if ($this->monthIsPaidFor((int) $req->requester_user_id, $approveMonth)) {
+                        $approveMonth = $this->nextUnpaidMonthFor(
+                            (int) $req->requester_user_id,
+                            $approveMonth,
+                            now()->startOfMonth()->addMonth()->format('Y-m')
+                        ) ?: $approveMonth;
+                    }
+                    $req->payroll_month = $approveMonth;
+                }
                 // postSalaryAdvanceFromRequest copies updated_by into ledger.approved_by.
                 $req->updated_by = $actorId;
                 $req->save();
@@ -1844,6 +2054,11 @@ class PayrollService
         // smaller than an open advance — settling everything like the monthly path
         // would write off the uncovered excess invisibly. Anything that doesn't fit
         // stays OPEN (still visible, recovered by a later/bigger period or manually).
+        //
+        // Deliberately NOT month-scoped (unlike the monthly grid): a custom period is a date
+        // RANGE, not a month, and it already recovers "what fits, oldest first". Filtering to
+        // one month here would strand an advance between two periods with nothing able to
+        // recover it. Custom staff keep the oldest-first rule.
         $allAdvances = $this->openAdvances($userId);
         $advances = [];            // the ones deducted from THIS pay (settled on pay)
         $advanceTotal = 0.0;

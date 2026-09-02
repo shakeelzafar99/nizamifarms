@@ -77,13 +77,21 @@ class PayrollController extends Controller
             'funding' => 'required|in:cash,online',
             'bank_id' => 'nullable|integer',
             'note'    => 'nullable|string|max:255',
+            // Same optional pair the web modal sends. The installed APK sends neither, so it
+            // keeps behaving exactly as before (current month, money moved today) — no APK
+            // is needed for any of this; the fields are here for when one is next built.
+            // ⚠ ARRAY syntax — a rule STRING splits on '|', which this regex contains. See the
+            // web PayrollController for the 500-HTML-page failure that causes.
+            'payroll_month' => ['nullable', 'regex:/^\d{4}-(0[1-9]|1[0-2])$/'],
+            'money_date'    => ['nullable', 'date'],
         ]);
         if ($v->fails()) {
             return response()->json(['success' => false, 'message' => $v->errors()->first()], 422);
         }
         $res = (new PayrollService())->giveAdvance(
             (int) $request->user_id, (float) $request->amount, $request->funding,
-            $request->bank_id ? (int) $request->bank_id : null, $request->note, (int) $request->user()->id
+            $request->bank_id ? (int) $request->bank_id : null, $request->note, (int) $request->user()->id,
+            $request->payroll_month, $request->money_date
         );
         return response()->json($res, !empty($res['success']) ? 200 : 422);
     }

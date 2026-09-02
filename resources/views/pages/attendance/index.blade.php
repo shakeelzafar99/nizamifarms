@@ -695,6 +695,18 @@
       </div>
     </div>
 
+    {{-- UNDO CHECKOUT — the mirror of the section above: shown only once he HAS checked out.
+         An extra order came in and he is going back out. --}}
+    <div id="homeValveUndoSec" style="display:none;border:1px solid #FECACA;background:#FEF2F2;border-radius:8px;padding:12px;margin-bottom:12px;">
+      <div style="font-size:13px;font-weight:700;color:#991B1B;margin-bottom:2px;">Undo checkout — put him back on duty</div>
+      <div style="font-size:11px;color:#B91C1C;margin-bottom:8px;">For an extra order after he already finished. This clears his <b>closing meter</b>, checkout location, road distance and overtime — he will be asked for the meter again at his real checkout. His location tracking restarts on its own when he next opens the app. Today or yesterday only.</div>
+      <div id="homeValveUndoWhat" style="font-size:11px;color:#7F1D1D;background:#FEE2E2;border:1px solid #FCA5A5;border-radius:6px;padding:6px 10px;margin-bottom:8px;"></div>
+      <textarea id="homeValveUndoReason" rows="2" placeholder="Reason (required) — e.g. extra order for G-11, going back out" style="width:100%;border:2px solid #d1d5db;border-radius:8px;padding:8px 10px;font-size:13px;resize:vertical;"></textarea>
+      <div style="display:flex;justify-content:flex-end;margin-top:8px;">
+        <button type="button" id="homeValveUndoBtn" onclick="homeValveUndoCheckout()" style="padding:8px 14px;border-radius:8px;border:none;background:#B91C1C;color:#fff;font-weight:700;cursor:pointer;">↩ Undo checkout</button>
+      </div>
+    </div>
+
     {{-- Completed --}}
     <div id="homeValveDone" style="display:none;font-size:13px;color:#166534;background:#DCFCE7;border:1px solid #BBF7D0;border-radius:8px;padding:10px 12px;"></div>
 
@@ -2871,15 +2883,29 @@ function rowGrace(r) {
   if (r && r.overnight_grace_km != null && r.overnight_grace_km !== '') return Number(r.overnight_grace_km);
   return Number(cfg.overnight_grace_km != null ? cfg.overnight_grace_km : 30);
 }
+// ⭐ ONE BRAIN for "missed his meter" (Sep-2026). The server's day_checks verdict
+//   knows everything this old client-side pair-test did not: the owner's
+//   meter_required exemption, the registry excusal (no machine that day), the
+//   HANDOVER day (excused for BOTH riders, like the month column), and meter_home
+//   as a valid close. Before this, the summary chip and the row chip accused a man
+//   whose ⛽ tick — two inches away, from day_checks — was green. The local rule
+//   survives ONLY as a fallback for a row without day_checks.
+function rowMissedMeter(r) {
+  const dc = r && r.day_checks;
+  if (dc && Array.isArray(dc.chips)) {
+    return dc.chips.some(c => c && c.label === 'no meter');
+  }
+  const isRider = r.role_name && String(r.role_name).toLowerCase().includes('rider');
+  const hasPair = r.meter_start != null && r.meter_end != null;
+  return !!(isRider && r.logout_time && !hasPair);
+}
 function renderMeterAttention(data) {
   const el = document.getElementById('meterAttention');
   if (!el) return;
   let missing = 0, overnight = 0;
   (data || []).forEach(r => {
     if (!r.login_time) return;
-    const isRider = r.role_name && String(r.role_name).toLowerCase().includes('rider');
-    const hasPair = r.meter_start != null && r.meter_end != null;
-    if (isRider && r.logout_time && !hasPair) missing++;
+    if (rowMissedMeter(r)) missing++;
     if (Number(r.company_bike) === 1 && r.prev_meter_end != null && r.meter_start != null
         && (Number(r.meter_start) - Number(r.prev_meter_end)) > rowGrace(r)) overnight++;
   });
@@ -3210,11 +3236,13 @@ function getMeterFlags(record) {
   const cfg = window.attConfig || {meter_gps_warn_km: 10, overnight_grace_km: 30};
   const chips = [];
   const isRider = record.role_name && String(record.role_name).toLowerCase().includes('rider');
-  const hasMeterPair = record.meter_start != null && record.meter_end != null;
 
   const chip = (bg, fg, bd, txt, title) => `<span style="display:inline-flex;align-items:center;gap:3px;padding:1px 6px;border-radius:5px;font-size:11px;font-weight:600;background:${bg};color:${fg};border:1px solid ${bd};" title="${title}">${txt}</span>`;
 
-  if (isRider && record.logout_time && !hasMeterPair) {
+  // Same one-brain rule as the summary strip — see rowMissedMeter(). The old
+  // inline pair-test accused riders day_checks excuses (handover day, no machine,
+  // owner-exempted, meter_home close) and the two verdicts sat on the same row.
+  if (rowMissedMeter(record)) {
     chips.push(chip('#FEF3C7', '#92400E', '#FDE68A', '⛽ no meter', 'Checked out without a meter reading'));
   }
 
@@ -3792,6 +3820,30 @@ function openHomeValve(userId, name) {
     coSec.style.display = 'none';
   }
 
+  // UNDO CHECKOUT — the mirror: only once he HAS checked out, and only for today or yesterday
+  // (the server enforces the same window; hiding it just avoids offering a button that refuses).
+  // Also hidden once he is genuinely home with his bike meter recorded by the geofence — the
+  // ride home is over, so that is a new day rather than a reopened one.
+  const undoSec = document.getElementById('homeValveUndoSec');
+  if (undoSec) {
+    const todayStr = new Date().toLocaleDateString('en-CA');           // local Y-m-d, not UTC
+    const yStr = new Date(Date.now() - 86400000).toLocaleDateString('en-CA');
+    const inWindow = !dateVal || dateVal === todayStr || dateVal === yStr;
+    const homeDone = !!(hj && hj.has_meter && hj.arrival_source === 'geofence');
+    if (rec.logout_time && rec.attendance_id && inWindow && !homeDone) {
+      undoSec.style.display = 'block';
+      document.getElementById('homeValveUndoReason').value = '';
+      // Name what will actually be thrown away, so it is never a surprise.
+      const losing = [];
+      if (rec.meter_end != null && rec.meter_end !== '') losing.push('closing meter ' + rec.meter_end);
+      if (rec.logout_time) losing.push('checkout ' + String(rec.logout_time).slice(0, 5));
+      losing.push('checkout location', 'road distance', 'overtime');
+      document.getElementById('homeValveUndoWhat').textContent = 'Will be cleared: ' + losing.join(' · ');
+    } else {
+      undoSec.style.display = 'none';
+    }
+  }
+
   // Home-meter sections — only for a company-bike journey.
   const done = document.getElementById('homeValveDone');
   const unlockSec = document.getElementById('homeValveUnlockSec');
@@ -3837,6 +3889,34 @@ async function homeValveCheckoutUnlock() {
   } catch (e) { alert('Could not unlock.'); }
   finally { btn.disabled = false; btn.textContent = '🔓 Unlock checkout'; }
 }
+// Put a rider who already checked out back ON DUTY. Destructive (his closing meter goes), so
+// it confirms once — every other bypass here is additive and does not need to.
+async function homeValveUndoCheckout() {
+  const attId = window.__homeValveAttId;
+  const reason = document.getElementById('homeValveUndoReason').value.trim();
+  if (!attId) return;
+  if (!reason) { alert('Please enter a reason for putting him back on duty.'); return; }
+  if (!confirm('Put him back on duty?\n\nHis closing meter, checkout location, road distance and overtime for this day will be cleared. He will be asked for the meter again when he really checks out.')) return;
+  const btn = document.getElementById('homeValveUndoBtn');
+  btn.disabled = true; btn.textContent = 'Reopening…';
+  try {
+    const res = await fetch('/attendance/undo-checkout', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').content },
+      body: JSON.stringify({ attendance_id: attId, reason: reason })
+    });
+    const j = await res.json();
+    if (j.success) {
+      alert(j.message || 'He is back on duty.');
+      closeHomeValve();
+      if (typeof loadAttendanceForDate === 'function') loadAttendanceForDate();
+    } else {
+      alert(j.message || 'Could not reopen the day.');
+    }
+  } catch (e) { alert('Could not reopen the day.'); }
+  finally { btn.disabled = false; btn.textContent = '↩ Undo checkout'; }
+}
+
 function closeHomeValve() {
   document.getElementById('homeValveModal').style.display = 'none';
   window.__homeValveAttId = null;

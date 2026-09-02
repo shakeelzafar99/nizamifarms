@@ -535,10 +535,35 @@ class WorkJourneyService
             return $out;
         }
         try {
-            $bikeUsers = DB::table('t_ops_rider_profile')
+            // ⚠⚠ `company_bike` KNOWS ONLY TODAY — never filter a DATE RANGE by it
+            //    (fixed Sep-2026). `VehicleService::syncCompanyBikeFlag` re-pins that
+            //    column to what the rider holds RIGHT NOW on every assign and release,
+            //    so judging a past month through it rewrote history on every handover:
+            //    a rider who gave his bike back last week lost his whole prior month of
+            //    flags, and one who received a bike this morning was suddenly judged as
+            //    if he had held it all month. This method's own daily twin, `workIssues`,
+            //    already asks `companyRiderIdsFor($date)` — the date-scoped question.
+            //
+            // So the flag is used ONLY to WIDEN the candidate set (it can add a rider the
+            // registry has no row for), and the real per-day test happens below.
+            $flagged = DB::table('t_ops_rider_profile')
                 ->whereIn('user_id', $userIds)
                 ->where('company_bike', 1)->whereNotNull('home_latitude')
-                ->pluck('user_id')->all();
+                ->pluck('user_id')->map(fn ($v) => (int) $v)->all();
+
+            // Everyone who held a COMPANY machine at any point inside the range, with the
+            // exact days they held it. ONE query for the whole month — this method runs
+            // over a roster × a month and must never go per row.
+            $companyDays = $this->companyHoldingDays($userIds, $from, $to);
+
+            $withPin = DB::table('t_ops_rider_profile')
+                ->whereIn('user_id', $userIds)->whereNotNull('home_latitude')
+                ->pluck('user_id')->map(fn ($v) => (int) $v)->all();
+
+            $bikeUsers = array_values(array_intersect(
+                array_unique(array_merge($flagged, array_map('intval', array_keys($companyDays)))),
+                $withPin           // no home pin = no ride-home journey to judge, unchanged
+            ));
             if (empty($bikeUsers)) {
                 return $out;
             }
@@ -568,6 +593,31 @@ class WorkJourneyService
                     $seed = $this->lastClosingMeter($uid, $date);
                     $prevByUser[$uid] = $seed ? $seed['value'] : null;
                 }
+                // ⭐ THE DATE-SCOPED TEST the stale flag used to stand in for: did he hold
+                //   a COMPANY machine on THIS day?
+                // ⚠ THE REGISTRY IS AUTHORITATIVE FOR ANYONE IT KNOWS (tightened same
+                //   day): when it has company days for this rider, ONLY those days are
+                //   judged — the NOW flag gets no vote, or a rider who received a bike
+                //   this morning would still be judged over the whole preceding month
+                //   (the second half of the very bug this replaced). The flag only
+                //   decides for a rider the registry has nothing on (Farooq-shaped:
+                //   flagged, never tracked) — where it can only preserve, never widen,
+                //   the old behaviour. Registry off → $companyDays empty → old
+                //   behaviour for everyone.
+                if (isset($companyDays[$uid]) && !isset($companyDays[$uid][$date])) {
+                    // ⚠⚠ A SKIPPED DAY BREAKS THE CHAIN TOO (Sep-01 review finding).
+                    //   Continuing without touching the baseline left the PREVIOUS
+                    //   machine's odometer as "last night's close": a day-override onto
+                    //   his own bike (not an assignment boundary, so not in $swapDays)
+                    //   meant the day AFTER it was measured against a reading from
+                    //   before the override — and the van's km that day, ridden by
+                    //   whoever used it, landed on this rider as a false meter_gap.
+                    //   Null = no baseline = nothing to accuse until he records one,
+                    //   the same rule the swap-day branch below applies.
+                    $prevByUser[$uid] = null;
+                    continue;
+                }
+
                 $issues = [];
                 $state = $this->deriveState($r);
                 if ($state === 'arrived_late') { $issues[] = 'late_vs_eta'; }
@@ -588,6 +638,20 @@ class WorkJourneyService
                     $prevByUser[$uid] = (int) $r->meter_home;
                 } elseif ($r->meter_end !== null && $r->meter_end !== '') {
                     $prevByUser[$uid] = (int) $r->meter_end;
+                } elseif (!empty($swapDays[$uid . '|' . $date])) {
+                    // ⭐⭐ A HANDOVER WITH NO CLOSING READING BREAKS THE CHAIN — DROP IT
+                    //    (Sep-2026). The `$swapDays` guard above only spares the handover
+                    //    day itself. If the machine left before he could close it, the
+                    //    baseline still sitting here belongs to the OLD odometer, and the
+                    //    NEXT day's morning reading — taken on a different bike — was
+                    //    measured against it and reported as a multi-thousand-kilometre
+                    //    gap. That is the same false accusation `continuity()` refuses to
+                    //    make, which SUPPRESSES across a transfer rather than trying to
+                    //    forgive it with a grace allowance (the allowance is the wrong
+                    //    shape: Waseem's first reading back on DCR-799 sat 202 km above
+                    //    the machine's last, so a 20 km grace still accused him of 182).
+                    //    null = no baseline = nothing to accuse until he records one.
+                    $prevByUser[$uid] = null;
                 }
             }
         } catch (\Throwable $e) {
@@ -609,6 +673,75 @@ class WorkJourneyService
      *   used to carry its own SQL copy of the same idea, with a comment promising
      *   it matched — three copies of one rule is how they drift apart.
      */
+    /**
+     * ⭐ WHICH DAYS DID EACH RIDER HOLD A **COMPANY** MACHINE? — [userId => [date => true]]
+     *
+     * The date-scoped answer to the question `t_ops_rider_profile.company_bike` can only
+     * answer for today. One query for the whole roster and the whole range: assignment
+     * rows that overlap [from, to] on a company vehicle, expanded to the days they cover
+     * and clipped to the range. A month view must never ask this per row.
+     *
+     * ⚠ Day-overrides (`t_ops_attendance.vehicle_id`) are folded in on top, mirroring
+     *   `machineHoldersOn`: a manager who says "he was on the van that day" outranks the
+     *   assignment window, and reports must honour that the same way the sheets do.
+     *
+     * ⚠ Returns EMPTY when the registry is off or unavailable — callers must read that as
+     *   "no opinion" and fall back to their old behaviour, never as "nobody held one".
+     */
+    public function companyHoldingDays(array $userIds, string $from, string $to): array
+    {
+        $out = [];
+        $userIds = array_values(array_filter(array_map('intval', $userIds)));
+        if (empty($userIds)) return $out;
+        try {
+            $res = new VehicleResolver();
+            if (!$res->available() || !$res->rulesEnabled()) return $out;
+
+            $companyIds = DB::table(VehicleService::T_VEHICLE)->where('is_company', 1)
+                ->pluck('id')->map(fn ($v) => (int) $v)->all();
+            if (empty($companyIds)) return $out;
+
+            $rows = DB::table(VehicleService::T_ASSIGN)
+                ->whereIn('user_id', $userIds)
+                ->whereIn('vehicle_id', $companyIds)
+                ->where('assigned_on', '<=', $to)
+                ->where(function ($q) use ($from) {
+                    $q->whereNull('released_on')->orWhere('released_on', '>=', $from);
+                })
+                ->get(['user_id', 'assigned_on', 'released_on']);
+
+            foreach ($rows as $a) {
+                $start = max($from, substr((string) $a->assigned_on, 0, 10));
+                $end   = $a->released_on ? min($to, substr((string) $a->released_on, 0, 10)) : $to;
+                if ($start > $end) continue;
+                $c = \Carbon\Carbon::parse($start);
+                $stop = \Carbon\Carbon::parse($end);
+                while ($c->lte($stop)) {
+                    $out[(int) $a->user_id][$c->format('Y-m-d')] = true;
+                    $c->addDay();
+                }
+            }
+
+            // Day-overrides outrank the windows, exactly as machineHoldersOn treats them.
+            foreach (DB::table('t_ops_attendance')
+                        ->whereIn('user_id', $userIds)
+                        ->whereBetween('attendance_date', [$from, $to])
+                        ->whereNotNull('vehicle_id')
+                        ->get(['user_id', 'attendance_date', 'vehicle_id']) as $o) {
+                $d = substr((string) $o->attendance_date, 0, 10);
+                if (in_array((int) $o->vehicle_id, $companyIds, true)) {
+                    $out[(int) $o->user_id][$d] = true;
+                } else {
+                    unset($out[(int) $o->user_id][$d]);   // overridden onto his OWN bike
+                }
+            }
+        } catch (\Throwable $e) {
+            Log::warning('companyHoldingDays failed (non-fatal)', ['error' => $e->getMessage()]);
+            return [];
+        }
+        return $out;
+    }
+
     public function assignmentBoundaryDays(array $userIds, ?string $from = null, ?string $to = null): array
     {
         $out = [];

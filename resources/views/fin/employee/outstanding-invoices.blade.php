@@ -625,6 +625,33 @@
                 </div>
                 @endif
 
+                {{-- Collapsed group: already messaged TODAY, by the delivered →
+                     payment-confirmation automation or by hand. Their Send button
+                     is disabled for the rest of the day anyway, so leaving them in
+                     the open group above would fill it with rows that need no
+                     action. They come back OPEN tomorrow as day 2, where the
+                     button offers the invoice-bearing payment reminder. --}}
+                @if(($onlineFollowUp['chase_messaged_count'] ?? 0) > 0)
+                <div class="border-b" style="border-color: {{ $fuBorder }};">
+                    <div class="px-4 py-2 flex items-center justify-between cursor-pointer hover:bg-white"
+                         onclick="document.getElementById('followup-messaged').classList.toggle('hidden')">
+                        <div class="flex items-center gap-2 flex-wrap">
+                            <span class="text-xs font-bold text-gray-600">✓ {{ $onlineFollowUp['chase_messaged_count'] }} messaged today · Rs. {{ number_format($onlineFollowUp['chase_messaged_amount']) }}</span>
+                            @if(($onlineFollowUp['chase_auto_count'] ?? 0) > 0)
+                                <span class="text-xs px-2 py-0.5 rounded-full" style="background:#dcfce7;color:#166534;">🤖 {{ $onlineFollowUp['chase_auto_count'] }} sent automatically</span>
+                            @endif
+                            <span class="text-xs text-gray-500">nothing to do today — they return tomorrow if still unpaid</span>
+                        </div>
+                        <span class="text-xs text-gray-400">▸</span>
+                    </div>
+                    <div id="followup-messaged" class="hidden px-4 pb-2">
+                        @foreach($onlineFollowUp['chase_messaged'] as $row)
+                            @include('fin.employee.partials.followup-row', ['row' => $row])
+                        @endforeach
+                    </div>
+                </div>
+                @endif
+
                 @else
                 <div class="px-4 py-3 text-xs font-semibold text-green-700">
                     ✅ Nothing to chase — every online delivery from the last {{ $onlineFollowUp['window_days'] }} days has proof or is settled.
@@ -1743,11 +1770,18 @@ function formatPhoneForWhatsApp(phone) {
 // ── Payment Follow-ups send flow (Aug-2026) ────────────────────────────────
 // Replaces sendOnlineWhatsApp(). Three behavioural changes over the old one:
 //
-//  1. TEMPLATE LADDER. Day 1 sends delivery_confirmation_online ("delivered,
-//     here are the bank details"). Day 2-3 sends payment_reminder_single, which
-//     carries the invoice image — re-sending "your order was delivered today!"
-//     three days running reads badly and burns trust. Both templates are already
-//     approved by Meta; nothing new was submitted.
+//  1. TEMPLATE LADDER. Day 1 sends the delivery confirmation. Day 2-3 sends
+//     payment_reminder_single, which carries the invoice image — re-sending
+//     "your order was delivered today!" three days running reads badly and
+//     burns trust.
+//     Aug-2026: day 1 is now delivery_confirmation_online_v2, which offers a
+//     "Get bank details" button instead of printing the accounts (tapping it
+//     replies with them automatically). Same 4 variables, so nothing else here
+//     changed. The order_delivered_payment_confirmation automation normally
+//     sends this at delivery — this button is the manual path for when that is
+//     off, skipped, or failed, and an automated send stamps the same
+//     online_message_sent_at, so a row it already handled shows "reminded
+//     today" here instead of inviting a duplicate.
 //
 //  2. HONEST STAMPING. The old flow marked the order "sent" even when the API
 //     call failed and it merely opened a wa.me tab — a green tick could mean
@@ -1761,21 +1795,27 @@ function formatPhoneForWhatsApp(phone) {
 //     resolveDialPhone() handles this correctly and is a no-op for PK numbers,
 //     so the API send passes the number through untouched. The local formatter
 //     is still used for the wa.me fallback only, which has no server in the path.
-const FU_TEMPLATE_DAY_ONE = 'delivery_confirmation_online';
+const FU_TEMPLATE_DAY_ONE = 'delivery_confirmation_online_v2';
 const FU_TEMPLATE_FOLLOW_UP = 'payment_reminder_single';
+
+// wa.me manual fallback text, used only when the API send fails and the operator
+// sends by hand. Accounts come from the server (BankDetailsProvider) so this can
+// never drift from what the "Get bank details" button replies with — they used
+// to be separate hardcoded lists and had already diverged (this one still named
+// HBL, which is no longer in use).
+//
+// The json directive below is deliberate: it emits a real JSON string literal
+// with escaped newlines. Interpolating this multi-line text with an echo braces
+// expression instead would put raw newlines and escaped quote entities inside a
+// JS string literal and kill every handler on the page.
+window.FU_BANK_ACCOUNTS = @json(\App\Services\WhatsApp\BankDetailsProvider::accountsBlock());
 
 function fuBankDetailsMessage(row) {
     var deliveryInfo = row.delivery_date + (row.delivery_time ? ' at ' + row.delivery_time : '');
     return 'Dear ' + row.customer_name + ',\n\n'
         + 'We are happy to confirm that your order #' + row.order_number + ' has been successfully delivered on ' + deliveryInfo + ' by our rider ' + row.rider_name + '.\n\n'
         + 'Your payment method is Online Bank Transfer. Please share a screenshot of the transfer here once the transaction has been made.\n\n'
-        + 'Account Title: "Nizami Farms"\n'
-        + '- Bank: Habib Bank Limited (HBL)\n'
-        + '   Account no: 23297901934403\n'
-        + '   IBAN: PK35HABB0023297901934403\n\n'
-        + '- Bank: Meezan Bank Limited\n'
-        + '   Account no: 03050106554237\n'
-        + '   IBAN: PK75MEZN0003050106554237\n\n'
+        + (window.FU_BANK_ACCOUNTS || '') + '\n\n'
         + 'Thank you for choosing Nizami Farms!';
 }
 

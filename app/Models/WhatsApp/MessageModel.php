@@ -45,6 +45,11 @@ class MessageModel extends Model
         // mass assignment) had it populated. The Daily Closing follow-up panel
         // counts reminders off this column.
         'related_order_number',
+        // Aug-2026: 1 = an inbound the SYSTEM already answered (e.g. the
+        // "Get bank details" quick-reply tap). It stays in the chat history but
+        // is excluded from every unread badge — see App\Services\WhatsApp\UnreadQuery
+        // for why the conversation counter and `sent_by` can't do this job.
+        'unread_exempt',
     ];
 
     protected $casts = [

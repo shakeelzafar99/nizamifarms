@@ -88,6 +88,13 @@
          so the costs screen opens exactly as it always did. --}}
     <div id="flVehWrap" style="display:none;">
         <div id="flVehIntro" class="fl-vintro"></div>
+
+        {{-- 🔁 Riders waiting for a machine. THE SAME partial the Orders board
+             includes — a vehicle request has to be answerable on the vehicle
+             screen, which is where a manager goes when a rider asks for a bike.
+             (First live test: the request was raised on the phone, the owner came
+             here to approve it, and there was nothing to approve.) --}}
+        @include("partials.vehicle-request-banner")
         <div id="flVehGrid" class="fl-vgrid"><div class="fl-empty">Loading…</div></div>
         <div id="flVehDetail" class="fl-vdetail" style="display:none;"></div>
     </div>
@@ -266,6 +273,11 @@
 .fl-vkeeper b{color:#111827;}
 /* "Nobody has this one" is informational, not a fault — amber, not red. */
 .fl-vkeeper.none{color:#9ca3af;font-weight:600;}
+/* 🔁 Someone is waiting on this machine. Indigo like the banner it points at —
+   deliberately NOT red or amber: nothing is wrong, a decision is simply due. */
+.fl-vpending{margin-top:7px;font-size:12px;color:#3730a3;background:#eef2ff;
+  border:1px solid #c7d2fe;border-left:3px solid #6366f1;border-radius:7px;padding:5px 8px;}
+.fl-vpending-cta{font-weight:700;text-decoration:underline;}
 /* An own bike whose owner is out on a company machine: exactly where it should be. */
 .fl-vkeeper.parked{color:#6b7280;}
 /* Standing "needs a home pin" nag — amber, informative, self-clearing. */
@@ -3130,6 +3142,19 @@ function flvCard(v, keeperOf) {
         if (on) parkedBecause = (v.last_keeper_name || 'its owner').split(' ')[0] + ' is on ' + on.name;
     }
 
+    /* 🔁 A RIDER IS WAITING ON THIS MACHINE (Sep-2026). The grid used to look
+       entirely normal while a request sat unanswered — nothing on the card, so
+       unless the manager already knew to read the banner above, the ask was
+       invisible. Comes from the SAME live() the banner reads, so a card can never
+       advertise a request the banner has already dropped. */
+    const pend = (flvData && flvData.pending_requests)
+        ? flvData.pending_requests[String(v.id)] : null;
+    const pendChip = pend
+        ? '<div class="fl-vpending">⏳ <b>' + flEsc(pend.rider_name) + '</b> '
+          + (pend.direction === 'return' ? 'wants to hand this back' : 'is asking for this')
+          + ' — <span class="fl-vpending-cta">approve it above</span></div>'
+        : '';
+
     const keeper = v.keeper_name
         ? '<div class="fl-vkeeper">👤 <b>' + flEsc(v.keeper_name) + '</b>'
             + (v.assigned_on ? ' <span style="color:#9ca3af;">since ' + flvDate(v.assigned_on) + '</span>' : '')
@@ -3163,6 +3188,7 @@ function flvCard(v, keeperOf) {
       +     '</div>'
       +   '</div>'
       +   keeper
+      +   pendChip
       /* ⭐ STANDING ALERT (owner ruling Aug-4): a company machine whose overnight
          and morning meter checks have nowhere to measure from. It stays on the
          card until the pin is saved, then disappears by itself — nothing to

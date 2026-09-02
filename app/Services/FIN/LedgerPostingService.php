@@ -522,7 +522,13 @@ class LedgerPostingService
 
             // Create ledger entry
             $ledger = LedgerModel::create([
-                'transaction_date' => $request->completed_at ?? now(),
+                // The day the money actually left, which is what `expense_date` now carries
+                // (Sep-2026) — so a late-entered advance for last month is dated when the
+                // transfer really happened and the ledger reconciles against the bank
+                // statement. `posted_date` keeps the day it was TYPED as an audit breadcrumb.
+                // Falls back to the old behaviour when no expense_date is set.
+                'transaction_date' => $request->expense_date ?? $request->completed_at ?? now(),
+                'posted_date' => now(),
                 'transaction_type' => 'salary_advance',
                 'description' => $description,
                 'from_account_id' => $fundingAccount->id,

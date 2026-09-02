@@ -215,6 +215,40 @@ class AssistantToolRegistry
                 ],
             ],
             [
+                'name' => 'find_employee',
+                'description' => 'Look up an EMPLOYEE who can be given a salary advance. Returns only people who are on the Payroll screen (monthly AND custom-schedule), with their schedule, whether that month is already paid, whether they are on a running balance (khata), and any advances already open. ALWAYS call this before draft_salary_advance — never guess a user_id. Omit "query" to list everyone.',
+                'parameters' => [
+                    'type' => 'OBJECT',
+                    'properties' => [
+                        'query' => ['type' => 'STRING', 'description' => 'Part of the employee name. Omit to list all.'],
+                        'payroll_month' => ['type' => 'STRING', 'description' => 'YYYY-MM you intend to give the advance for. Omit for the current month. Only changes the "already paid" answer.'],
+                    ],
+                    'required' => [],
+                ],
+            ],
+            [
+                'name' => 'draft_salary_advance',
+                'description' => 'Prepare a SALARY ADVANCE to an employee for the user to confirm. This does NOT pay anything — it shows a confirmation card. Call find_employee first for a real user_id. '
+                    . 'THE MONTH MATTERS: an advance is recovered from ONE month\'s pay and charged to that month. It defaults to the CURRENT month and the card always shows it — say which month you used in your reply so he can catch it. '
+                    . 'If he then says a different month ("no, that was for August"), call this again with payroll_month AND replaces_draft_id so the old card is cancelled and he does not confirm the wrong one. '
+                    . 'If he shares a transfer screenshot or a bank debit and says it was an advance, use read_transfer_screenshot for the amount/bank, then draft it here — the image is attached to the card automatically. '
+                    . 'Only the current month or earlier is normal; one month ahead is allowed when this month is already paid.',
+                'parameters' => [
+                    'type' => 'OBJECT',
+                    'properties' => [
+                        'user_id' => ['type' => 'INTEGER', 'description' => 'Employee id from find_employee. Never guess it.'],
+                        'amount' => ['type' => 'NUMBER', 'description' => 'Amount in PKR'],
+                        'funding' => ['type' => 'STRING', 'description' => "'cash' (NF Cash) or 'online' (bank transfer). Defaults to cash."],
+                        'bank_id' => ['type' => 'INTEGER', 'description' => 'Which of our banks it went from, when funding is online and he said so (or it came off a screenshot). If unknown, OMIT it — the card shows bank buttons for one-tap selection. Do not ask in text.'],
+                        'payroll_month' => ['type' => 'STRING', 'description' => 'YYYY-MM the advance is deducted from. OMIT for the current month, which is the normal case.'],
+                        'money_date' => ['type' => 'STRING', 'description' => 'YYYY-MM-DD the money actually left, ONLY when payroll_month is a past month (entered late). Must be a day inside that month. Omit otherwise — it is today.'],
+                        'note' => ['type' => 'STRING', 'description' => 'Optional note'],
+                        'replaces_draft_id' => ['type' => 'INTEGER', 'description' => 'When CORRECTING a card he already has (a different month, amount or bank), pass that draft_id from get_pending_draft — the old card is cancelled so the wrong one cannot be confirmed by scrolling up.'],
+                    ],
+                    'required' => ['user_id', 'amount'],
+                ],
+            ],
+            [
                 'name' => 'find_customer',
                 'description' => 'Look up a CUSTOMER by name. Returns matches with customer_type (regular|shop), each regular customer\'s open online orders, and each SHOP\'s open invoices + outstanding total. Call this before draft_payment_proof OR draft_shop_payment — never guess a customer_id, and pick the draft tool by customer_type.',
                 'parameters' => [
@@ -345,6 +379,7 @@ class AssistantToolRegistry
                 'find_vendor'          => $this->findVendor($args, $user),
                 'read_transfer_screenshot' => $this->readTransferScreenshot($args, $user),
                 'read_purchase_log'    => $this->readPurchaseLog($args, $user),
+                'find_employee'        => $this->findEmployee($args, $user),
                 'find_customer'        => $this->findCustomer($args, $user),
                 'list_expenses'        => $this->listExpenses($args, $user),
                 'find_order'           => $this->findOrder($args, $user),
@@ -357,6 +392,7 @@ class AssistantToolRegistry
                 'draft_shop_payment'    => $this->drafts->draftShopPayment($args, $user),
                 'draft_account_transfer' => $this->drafts->draftAccountTransfer($args, $user),
                 'draft_payment_proof'   => $this->drafts->draftPaymentProof($args, $user),
+                'draft_salary_advance'  => $this->drafts->draftSalaryAdvance($args, $user),
                 default                => ['error' => "Unknown tool: {$name}"],
             };
         } catch (\Throwable $e) {
@@ -366,6 +402,46 @@ class AssistantToolRegistry
     }
 
     // ── READ TOOLS ───────────────────────────────────────────────────────────
+
+    /**
+     * Employees who can be given a salary advance — resolved through PayrollService so this
+     * is exactly the population the Payroll screen shows (monthly AND custom-schedule), and
+     * the assistant can never offer someone the grid would not.
+     *
+     * Each row carries the two facts that decide whether an advance is even possible, so the
+     * model can say so in words instead of drafting a card that would be refused: whether the
+     * month is already paid, and whether they are on a running balance (khata employees take
+     * a PAYMENT against their balance, never an advance).
+     */
+    private function findEmployee(array $args, $user): array
+    {
+        $query = trim((string) ($args['query'] ?? ''));
+        $month = trim((string) ($args['payroll_month'] ?? '')) ?: null;
+        if ($month !== null && !preg_match('/^\d{4}-(0[1-9]|1[0-2])$/', $month)) {
+            return ['error' => 'payroll_month must be YYYY-MM.'];
+        }
+
+        $rows = (new \App\Services\HR\PayrollService())
+            ->advanceEligibleEmployees($query !== '' ? $query : null, $month);
+
+        if (!$rows) {
+            return $query !== ''
+                ? ['matches' => [], 'note' => 'Nobody on the Payroll screen matches "' . $query . '".']
+                : ['matches' => [], 'note' => 'No employees are on the Payroll screen.'];
+        }
+
+        return [
+            'month' => $month ?: now()->format('Y-m'),
+            'matches' => array_map(fn($e) => [
+                'user_id'            => $e['user_id'],
+                'name'               => $e['name'],
+                'schedule'           => $e['schedule'],
+                'month_already_paid' => $e['month_paid'],
+                'running_balance'    => $e['balance_tracked'],
+                'open_advances'      => $e['open_advance_total'],
+            ], $rows),
+        ];
+    }
 
     /**
      * Everything the model needs to turn "record 5000 fuel" into real ids.

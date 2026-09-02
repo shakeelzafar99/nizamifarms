@@ -55,6 +55,10 @@ class VehicleService
     private static array $fullClaimsMemo = [];
     private static array $scheduleMemo = [];
     private static array $meterMemo = [];
+    /** [table.column => bool] — see hasCol(). Process-scoped on purpose. */
+    private static array $schemaMemo = [];
+    /** [vehicleId|date => window] — see meterWindowFor(). Evidence-derived, so it IS flushed. */
+    private static array $windowMemo = [];
     private static array $elsewhereMemo = [];
     private static array $dayMapMemo = [];
     /** [vehicleId => bool] — is a three-figure reading the truth for this machine? */
@@ -121,9 +125,9 @@ class VehicleService
         static $ok = null;
         if ($ok !== null) return $ok;
         try {
-            $ok = Schema::hasTable(self::T_VEHICLE)
-               && Schema::hasTable(self::T_ASSIGN)
-               && Schema::hasTable(self::T_PHOTO);
+            $ok = self::hasTbl(self::T_VEHICLE)
+               && self::hasTbl(self::T_ASSIGN)
+               && self::hasTbl(self::T_PHOTO);
         } catch (\Throwable $e) {
             $ok = false;
         }
@@ -308,8 +312,8 @@ class VehicleService
         if (!$this->available()) return [];
 
         try {
-            $hasVehicleCol = Schema::hasColumn('t_req_master', 'vehicle_id');
-            $hasTypeCol    = Schema::hasColumn('t_req_master', 'maintenance_type_id');
+            $hasVehicleCol = self::hasCol('t_req_master', 'vehicle_id');
+            $hasTypeCol    = self::hasCol('t_req_master', 'maintenance_type_id');
 
             $cols = ['r.id', 'r.expense_category', 'r.amount', 'r.meter_at_fill', 'r.service_type',
                      'r.status', 'r.expense_date', 'r.created_at', 'r.description',
@@ -674,7 +678,7 @@ class VehicleService
                 }
             }
 
-            if (Schema::hasTable('t_fleet_service_log')) {
+            if (self::hasTbl('t_fleet_service_log')) {
                 $resolver = new VehicleResolver();
                 foreach (DB::table('t_fleet_service_log as l')
                             ->leftJoin('t_sys_user as u', 'u.id', '=', 'l.user_id')
@@ -707,7 +711,7 @@ class VehicleService
     {
         if (self::$typesMemo !== null) return self::$typesMemo;
         try {
-            if (!Schema::hasTable('t_fleet_maintenance_types')) return self::$typesMemo = collect();
+            if (!self::hasTbl('t_fleet_maintenance_types')) return self::$typesMemo = collect();
             return self::$typesMemo = DB::table('t_fleet_maintenance_types')
                 ->where('is_active', 1)->where('interval_km', '>', 0)
                 ->orderBy('sort_order')->orderBy('type_name')
@@ -824,7 +828,7 @@ class VehicleService
 
         $out = [];
         try {
-            if (Schema::hasColumn('t_req_master', 'vehicle_id')) {
+            if (self::hasCol('t_req_master', 'vehicle_id')) {
                 foreach (DB::table('t_req_master')
                             ->where('vehicle_id', $vehicleId)
                             ->whereNotNull('meter_at_fill')
@@ -835,7 +839,7 @@ class VehicleService
                     $out[] = ['m' => (int) $r->m, 'd' => $r->d ? substr((string) $r->d, 0, 10) : null];
                 }
             }
-            if (Schema::hasTable(self::T_METER_LOG)) {
+            if (self::hasTbl(self::T_METER_LOG)) {
                 foreach (DB::table(self::T_METER_LOG)->where('vehicle_id', $vehicleId)
                             ->get(['meter_start', 'meter_end', 'log_date']) as $r) {
                     $d = $r->log_date ? substr((string) $r->log_date, 0, 10) : null;
@@ -890,6 +894,45 @@ class VehicleService
     }
 
     /** Drop the service memos — tests, queue workers, anything long-lived. */
+    /**
+     * ⭐⭐ `self::hasCol()` IS A DATABASE QUERY, AND IT IS NOT CHEAP (Sep-2026).
+     *
+     * Every call hits `information_schema` — ~40 ms each on this box. That is fine
+     * once; it is not fine inside a loop. `meterWindowFor()` asks twice per
+     * assignment window, so one rider's month on the app cost **202 metadata
+     * queries ≈ 8 seconds** of a 16-second response, for an answer that cannot
+     * change while the request is running.
+     *
+     * Measured on the replica, rider 95 / August: 2,561 queries → 610, 16.1 s → 2.6 s.
+     *
+     * ⚠ Deliberately NOT flushed by `flushServiceMemo()`. That method exists for
+     *   EVIDENCE going stale mid-request (a reading saved and re-read). The SHAPE of
+     *   the schema cannot change inside one request — and if a migration ran in the
+     *   middle of one, a stale memo would be the least of it. Process-scoped by
+     *   design, exactly like the framework's own schema caching.
+     */
+    public static function hasCol(string $table, string $column): bool
+    {
+        $k = $table . '.' . $column;
+        if (isset(self::$schemaMemo[$k])) return self::$schemaMemo[$k];
+        try {
+            return self::$schemaMemo[$k] = Schema::hasColumn($table, $column);
+        } catch (\Throwable $e) {
+            return self::$schemaMemo[$k] = false;   // absent = "no such column", never a 500
+        }
+    }
+
+    /** Same reasoning as hasCol(), for table existence. */
+    public static function hasTbl(string $table): bool
+    {
+        if (isset(self::$schemaMemo['@' . $table])) return self::$schemaMemo['@' . $table];
+        try {
+            return self::$schemaMemo['@' . $table] = Schema::hasTable($table);
+        } catch (\Throwable $e) {
+            return self::$schemaMemo['@' . $table] = false;
+        }
+    }
+
     public static function flushServiceMemo(): void
     {
         self::$evidenceMemo = [];
@@ -898,6 +941,7 @@ class VehicleService
         self::$fullClaimsMemo = [];
         self::$scheduleMemo = [];
         self::$meterMemo = [];
+        self::$windowMemo = [];
         self::$elsewhereMemo = [];
         self::$dayMapMemo = [];
         self::$typesMemo = null;
@@ -1015,7 +1059,7 @@ class VehicleService
             $byId = [];
             foreach ($types as $t) $byId[(int) $t->id] = $t;
             try {
-                if (Schema::hasTable('t_fleet_maintenance_types')) {
+                if (self::hasTbl('t_fleet_maintenance_types')) {
                     foreach (DB::table('t_fleet_maintenance_types')
                                 ->where('interval_km', '>', 0)
                                 ->get(['id', 'type_name', 'interval_km', 'resets_service_clock']) as $any) {
@@ -1170,7 +1214,7 @@ class VehicleService
             // 1. Typed clock-resetting work on this machine.
             $types = [];
             try {
-                if (Schema::hasTable('t_fleet_maintenance_types')) {
+                if (self::hasTbl('t_fleet_maintenance_types')) {
                     $types = DB::table('t_fleet_maintenance_types')
                         ->get(['id', 'type_name', 'interval_km', 'resets_service_clock'])
                         ->keyBy('id')->all();
@@ -1317,7 +1361,7 @@ class VehicleService
         try {
             $types = [];
             try {
-                if (Schema::hasTable('t_fleet_maintenance_types')) {
+                if (self::hasTbl('t_fleet_maintenance_types')) {
                     $types = DB::table('t_fleet_maintenance_types')
                         ->get(['id', 'interval_km', 'resets_service_clock'])->keyBy('id')->all();
                 }
@@ -1367,7 +1411,7 @@ class VehicleService
                 }
             }
 
-            if (Schema::hasTable('t_fleet_service_log')) {
+            if (self::hasTbl('t_fleet_service_log')) {
                 $resolver = new VehicleResolver();
                 foreach (DB::table('t_fleet_service_log')
                             ->whereNotNull('maintenance_type_id')->whereNotNull('meter')
@@ -1790,7 +1834,8 @@ class VehicleService
      */
     public function assign(int $vehicleId, int $userId, ?string $onDate = null,
                            ?int $actorId = null, ?string $note = null,
-                           ?int $handoverMeter = null): array
+                           ?int $handoverMeter = null,
+                           bool $displacedSettleFollows = false): array
     {
         if (!$this->available()) return $this->fail('Vehicles are not set up yet (SQL batch 13).');
 
@@ -1821,9 +1866,26 @@ class VehicleService
             }
 
             $newId = null;
+            // ⭐⭐ THE LOCKED READ INSIDE THE TRANSACTION IS THE ONLY AUTHORITY ON WHO
+            //    LOST THE MACHINE (Sep-2026). `$current` above was read OUTSIDE the
+            //    lock, purely to answer "is this already the keeper?" — by the time
+            //    the transaction runs it can be stale, which is the entire reason the
+            //    lock exists. Everything after the commit (the displaced rider the
+            //    caller must settle, the van cargo, the company_bike resync) now reads
+            //    `$displaced`, which the closure fills from the LOCKED row.
+            // ⚠ Null means "nobody was displaced": either the vehicle was free, or a
+            //   concurrent assign had already put this very rider on it.
+            $displaced = null;
+            // ⭐ The machine the INCOMING rider vacated via step 3 (Sep-01 review):
+            //   its assignment history changed too, so its derived caches (service
+            //   clock, keeper, transfer days) must be bumped exactly like the
+            //   assigned machine's — Rajab's evening give-back closes his VAN row
+            //   through this step, and the van's card must not serve stale answers.
+            $vacatedVehicleId = null;
             $hasHandoverCol = $this->hasHandoverMeter();
             DB::transaction(function () use ($vehicleId, $userId, $date, $actorId, $note, $v,
-                                             $handoverMeter, $hasHandoverCol, &$newId) {
+                                             $handoverMeter, $hasHandoverCol, &$newId, &$displaced,
+                                             &$vacatedVehicleId) {
                 // ⚠ RE-READ INSIDE THE TRANSACTION, and lock the rows. The check
                 //   above ran outside it, so two managers pressing Assign on the
                 //   same bike within the same second would each see "no change
@@ -1843,6 +1905,7 @@ class VehicleService
 
                 // 2. release the current keeper of THIS vehicle
                 if ($current) {
+                    $displaced = $current;      // ⭐ the man who ACTUALLY lost it (locked read)
                     $this->closeAssignment((int) $current->id, $date, $actorId);
                     $this->clearMirrorIfPointsAt((int) $current->user_id, $vehicleId);
                 }
@@ -1853,6 +1916,7 @@ class VehicleService
                     ->whereNull('released_on')->orderByDesc('id')->lockForUpdate()->first();
                 if ($his && (int) $his->vehicle_id !== $vehicleId) {
                     $this->closeAssignment((int) $his->id, $date, $actorId);
+                    $vacatedVehicleId = (int) $his->vehicle_id;   // its caches bump post-commit
                 }
 
                 // 4. the new assignment
@@ -1883,7 +1947,7 @@ class VehicleService
 
             Log::info('Vehicle assigned', [
                 'vehicle_id' => $vehicleId, 'to_user' => $userId,
-                'from_user'  => $current->user_id ?? null,
+                'from_user'  => $displaced->user_id ?? null,
                 'on'         => $date, 'by' => $actorId,
             ]);
 
@@ -1899,9 +1963,9 @@ class VehicleService
             //    recorded and the boxes can be re-pointed — the reverse (an
             //    assignment rolled back by a cargo error) would be worse.
             $moved = 0;
-            if ($current && (string) $v->vtype === 'van') {
+            if ($displaced && (string) $v->vtype === 'van') {
                 $moved = app(VanService::class)
-                    ->moveCargo($vehicleId, (int) $current->user_id, $userId, $actorId);
+                    ->moveCargo($vehicleId, (int) $displaced->user_id, $userId, $actorId);
             }
 
             // ⚠ A handover re-attributes claims and readings, so the machine's whole
@@ -1909,15 +1973,47 @@ class VehicleService
             //   this class's memos + the shared cache, and VehicleResolver keeps its
             //   OWN static day-cache that bumpServiceEvidence does not touch.
             self::bumpServiceEvidence($vehicleId);
+            if ($vacatedVehicleId) {
+                self::bumpServiceEvidence($vacatedVehicleId);
+            }
             VehicleResolver::flush();
+            // ⚠ AND the leg engine's memos — `ownMachineIdsFor` is keyed on assignment
+            //   rows, which this method just rewrote. `settleDisplacedRider` calls
+            //   `ownVehicleFor()` (→ that memo) microseconds later IN THIS SAME REQUEST,
+            //   so a stale entry would decide the fallback bike from the pre-handover
+            //   world. Same reasoning as the VehicleResolver flush above.
+            RiderDayLegs::flush();
 
             // ⭐ THE CHECKBOX FOLLOWS THE KEYS (owner ruling, Aug-16). Both people:
             //   the man who just received the machine, and the one who lost it —
             //   whose flag is recomputed from what he ACTUALLY holds afterwards, so
             //   handing him another company bike in the same breath leaves him ticked.
             $this->syncCompanyBikeFlag($userId);
-            if ($current && (int) $current->user_id !== $userId) {
-                $this->syncCompanyBikeFlag((int) $current->user_id);
+            if ($displaced && (int) $displaced->user_id !== $userId) {
+                $this->syncCompanyBikeFlag((int) $displaced->user_id);
+            }
+
+            // ⭐ THE RIDE-HOME TIMER FOLLOWS THE KEYS TOO (Sep-2026). BOTH men are
+            //   offered: the one who lost the machine, and the INCOMING rider — who
+            //   can also end up without a company machine here, because step 3 closes
+            //   his old row and this new machine may be his own bike (exactly the
+            //   'own' fallback the displaced flow uses). The method itself is a no-op
+            //   for anyone still holding company iron, so offering both is free.
+            // ⚠ MUST run after the flushes above, or it reads the pre-handover world.
+            //
+            // ⚠⚠ THE DISPLACED MAN'S DISARM WAITS FOR HIS SETTLEMENT (Sep-01 review
+            //    finding). Between this assign and `settleDisplacedRider` he holds
+            //    nothing for a few milliseconds — but if the settle then puts him on
+            //    ANOTHER COMPANY machine, a timer erased here could never come back
+            //    (arming happens only at checkout), and his machine's closing meter
+            //    would silently never be demanded that evening. So a caller that is
+            //    about to settle him says so, and judges him AFTER placement via
+            //    `disarmIdleHomeJourney()` — when "holds nothing" is a fact, not a
+            //    moment mid-handover. Callers that settle nobody keep the old
+            //    behaviour: the displaced man is judged (and disarmed) right here.
+            $this->disarmHomeJourney($userId);
+            if ($displaced && (int) $displaced->user_id !== $userId && !$displacedSettleFollows) {
+                $this->disarmHomeJourney((int) $displaced->user_id);
             }
 
             // ⭐ PHASE D — WHO WAS LEFT WITHOUT A MACHINE BY THIS. The caller asks the
@@ -1926,7 +2022,7 @@ class VehicleService
             //   up with no machine while the system still judges him as if he had one.
             return ['ok' => true, 'message' => $this->displayName($v) . ' assigned.', 'id' => $newId,
                     'changed' => true, 'cargo_moved' => $moved,
-                    'displaced_user_id' => $current ? (int) $current->user_id : null];
+                    'displaced_user_id' => $displaced ? (int) $displaced->user_id : null];
         } catch (\Throwable $e) {
             Log::error('VehicleService::assign failed', [
                 'vehicle_id' => $vehicleId, 'user_id' => $userId, 'error' => $e->getMessage(),
@@ -1974,7 +2070,7 @@ class VehicleService
         if (!$userId) return;
         try {
             if (!$this->rulesEnabled()) return;
-            if (!Schema::hasColumn('t_ops_rider_profile', 'company_bike')) return;
+            if (!self::hasCol('t_ops_rider_profile', 'company_bike')) return;
 
             $profile = DB::table('t_ops_rider_profile')->where('user_id', $userId)
                 ->first(['company_bike']);
@@ -2006,8 +2102,37 @@ class VehicleService
         }
     }
 
+    /**
+     * ⭐ The displaced rider's disarm, run AFTER his settlement — the public half of
+     *   the `$displacedSettleFollows` contract in assign()/release(). Judges "holds
+     *   nothing" against his FINAL state for this operation, so a man settled onto
+     *   another company machine keeps his live ride-home timer, and one settled onto
+     *   his own bike (or nothing) loses the timer for the machine that left him.
+     *   Safe to call unconditionally: it is a no-op for anyone on company iron.
+     */
+    public function disarmIdleHomeJourney(int $userId): void
+    {
+        $this->disarmHomeJourney($userId);
+    }
+
+    /**
+     * Clear a ride-home timer armed for a machine the rider no longer has.
+     * Thin, try-wrapped delegate — see `HomeJourneyService::disarmIfNoCompanyMachine`
+     * for the full reasoning and the narrow scope. A handover must never fail
+     * because a timer would not clear.
+     */
+    private function disarmHomeJourney(int $userId): void
+    {
+        try {
+            (new HomeJourneyService())->disarmIfNoCompanyMachine($userId);
+        } catch (\Throwable $e) {
+            Log::warning('disarmHomeJourney skipped', ['user_id' => $userId, 'error' => $e->getMessage()]);
+        }
+    }
+
     /** Take a vehicle back without giving it to anyone else. */
-    public function release(int $vehicleId, ?string $onDate = null, ?int $actorId = null): array
+    public function release(int $vehicleId, ?string $onDate = null, ?int $actorId = null,
+                            bool $displacedSettleFollows = false): array
     {
         if (!$this->available()) return $this->fail('Vehicles are not set up yet (SQL batch 13).');
 
@@ -2024,10 +2149,17 @@ class VehicleService
             // Same reason as assign(): attribution just changed for this machine.
             self::bumpServiceEvidence($vehicleId);
             VehicleResolver::flush();
+            RiderDayLegs::flush();
 
             // He just gave a machine back — recompute from whatever he holds now
             // (usually nothing, but a rider can hold his own bike as well).
             $this->syncCompanyBikeFlag((int) $current->user_id);
+            // ⚠ Same settle-follows contract as assign() — see the comment there. A
+            //   caller about to place this man on a replacement machine judges his
+            //   ride-home timer AFTER placement, not in the gap between the two.
+            if (!$displacedSettleFollows) {
+                $this->disarmHomeJourney((int) $current->user_id);
+            }
 
             Log::info('Vehicle released', ['vehicle_id' => $vehicleId, 'from_user' => $current->user_id, 'on' => $date]);
             return ['ok' => true, 'message' => 'Released.', 'changed' => true,
@@ -2182,7 +2314,7 @@ class VehicleService
                     //    already counted by $byFill on THAT machine — counting it here too puts
                     //    the same money's odometer on two bikes. meterWindowFor's legacy-claims
                     //    query has always had this filter; this one predates stamping and never did.
-                    ->when(Schema::hasColumn('t_req_master', 'vehicle_id'),
+                    ->when(self::hasCol('t_req_master', 'vehicle_id'),
                         fn ($q) => $q->whereNull('vehicle_id'))
                     ->whereNotNull('meter_at_fill')
                     ->where('meter_at_fill', '>', $floor)
@@ -3034,7 +3166,7 @@ class VehicleService
     {
         $date = substr($date, 0, 10);
         try {
-            if (!Schema::hasTable(self::T_METER_LOG)) {
+            if (!self::hasTbl(self::T_METER_LOG)) {
                 return ['ok' => false, 'action' => null, 'id' => null,
                         'message' => 'Meter logging is not set up on this server yet (SQL pending).'];
             }
@@ -3107,7 +3239,7 @@ class VehicleService
         static $ok = null;
         if ($ok !== null) return $ok;
         try {
-            $ok = Schema::hasColumn('t_ops_attendance', 'meter_start_vehicle_id');
+            $ok = self::hasCol('t_ops_attendance', 'meter_start_vehicle_id');
         } catch (\Throwable $e) {
             $ok = false;
         }
@@ -3164,6 +3296,20 @@ class VehicleService
     public function meterWindowFor(int $vehicleId, string $date): ?array
     {
         if (!$this->available()) return null;
+
+        // ⚠⚠ MEMOISED, AND IT MUST BE — same reasoning as `machineKeyedReadings()`
+        //    below, which documents the rule this method was missing. Every call
+        //    walks EVERY assignment window of the machine and fires 4-6 queries per
+        //    window, so the month engine asking for the same (machine, date) twice
+        //    costs ~30 queries for an identical answer. Measured on the replica
+        //    (rider 95 / August): 10 calls, only 6 distinct.
+        // ⚠ Flushed by `flushServiceMemo()` — unlike the schema memo, this IS
+        //   evidence-derived, so a reading saved mid-request must invalidate it.
+        $memoKey = $vehicleId . '|' . substr($date, 0, 10);
+        if (array_key_exists($memoKey, self::$windowMemo)) {
+            return self::$windowMemo[$memoKey];
+        }
+
         try {
             $readingLevel = $this->readingLevelOn();
 
@@ -3244,7 +3390,7 @@ class VehicleService
                 if ((int) $after > self::MIN_METER) $riskCeilC[] = (int) $after;
 
                 // Unstamped legacy claims by this keeper inside his window.
-                if (Schema::hasColumn('t_req_master', 'vehicle_id')) {
+                if (self::hasCol('t_req_master', 'vehicle_id')) {
                     $legacyQ = fn () => DB::table('t_req_master')
                         ->where('requester_user_id', $w['user_id'])
                         ->whereNull('vehicle_id')
@@ -3285,7 +3431,7 @@ class VehicleService
             }
 
             // Claims stamped to THIS machine — whoever filed them.
-            if (Schema::hasColumn('t_req_master', 'vehicle_id')) {
+            if (self::hasCol('t_req_master', 'vehicle_id')) {
                 $stampedQ = fn () => DB::table('t_req_master')
                     ->where('vehicle_id', $vehicleId)
                     ->whereNotNull('meter_at_fill')
@@ -3346,13 +3492,16 @@ class VehicleService
             }
 
             $floor = $readingLevel ? $this->guardedFloor($floorC, $vehicleId, $date) : max($floorC);
-            return [
+            return self::$windowMemo[$memoKey] = [
                 'floor' => $floor > self::MIN_METER ? $floor : null,
                 'ceil'  => $ceilC ? min($ceilC) : null,
             ];
         } catch (\Throwable $e) {
             Log::warning('meterWindowFor failed', ['vehicle' => $vehicleId, 'error' => $e->getMessage()]);
-            return null;   // caller falls back to the rider-keyed window
+            // ⚠ A failure is NOT memoised: it is usually transient (a lock, a timeout),
+            //   and caching it would keep the caller on the rider-keyed fallback for
+            //   the rest of the request.
+            return null;
         }
     }
 
@@ -3379,7 +3528,7 @@ class VehicleService
 
         $out = [];
         try {
-            if (Schema::hasTable(self::T_METER_LOG)) {
+            if (self::hasTbl(self::T_METER_LOG)) {
                 foreach (DB::table(self::T_METER_LOG)->where('vehicle_id', $vehicleId)
                             ->get(['meter_start', 'meter_end', 'log_date']) as $r) {
                     $d = $r->log_date ? substr((string) $r->log_date, 0, 10) : null;
@@ -3509,7 +3658,7 @@ class VehicleService
         static $ok = null;
         if ($ok !== null) return $ok;
         try {
-            $ok = Schema::hasColumn(self::T_ASSIGN, 'handover_meter');
+            $ok = self::hasCol(self::T_ASSIGN, 'handover_meter');
         } catch (\Throwable $e) {
             $ok = false;
         }
@@ -3521,7 +3670,7 @@ class VehicleService
         static $ok = null;
         if ($ok !== null) return $ok;
         try {
-            $ok = Schema::hasColumn('t_ops_attendance', 'vehicle_id');
+            $ok = self::hasCol('t_ops_attendance', 'vehicle_id');
         } catch (\Throwable $e) {
             $ok = false;
         }
@@ -3839,13 +3988,46 @@ class VehicleService
     {
         if (!$this->available()) return null;
         try {
-            $vid = DB::table(self::T_ASSIGN . ' as a')
+            // ⭐⭐ "HIS OWN BIKE" MEANS HE IS ITS FIRST KEEPER, NOT "he rode it once"
+            //    (Sep-2026 fix). This used to be "the newest non-company machine EVER
+            //    assigned to him", which silently includes a colleague's personal bike
+            //    he BORROWED. Live proof on the replica: Waseem held vehicle 5,
+            //    *"Danish - own bike"*, for exactly one day (7 Aug). The old rule
+            //    therefore answered "Waseem's own bike = Danish's bike" — and because
+            //    'own' is the SILENT DEFAULT when the client sends no action, a
+            //    displaced Waseem would have been handed Danish's personal bike with
+            //    nobody deciding it. That is the same slip the pickers already guard
+            //    against in the UI (a colleague's bike is never a quick pick).
+            //
+            // ⚠⚠ DELIBERATELY LOOSER THAN THE MONEY ENGINE — do not "unify" these.
+            //    `RiderDayLegs::ownMachineIdsFor` demands EXCLUSIVITY (only ever him)
+            //    because it decides whose kilometres and fuel get credited, and there
+            //    ambiguity must mean nobody. Applying that here would punish the
+            //    OWNER: one day's loan to Waseem would strip Danish of his own-bike
+            //    fallback for good. The question here is different and gentler —
+            //    "whose bike is this to hand back?" — so the test is FIRST KEEPER:
+            //    the earliest assignment row on a non-company machine. Danish keeps
+            //    his bike; Waseem is refused it. Every machine `ownMachineIdsFor`
+            //    returns also passes this (only-ever-him ⇒ first-keeper), so this is
+            //    a strict superset of the strict rule, never a contradiction of it.
+            //
+            // ⚠ A machine genuinely handed on for good keeps naming its FIRST keeper,
+            //   so the new man gets no automatic fallback — a manager assigns it by
+            //   hand. Conservative on purpose: failing to offer a bike is a nuisance,
+            //   offering someone else's is the bug being fixed.
+            $vid = null;
+            $mine = DB::table(self::T_ASSIGN . ' as a')
                 ->join(self::T_VEHICLE . ' as v', 'v.id', '=', 'a.vehicle_id')
                 ->where('a.user_id', $userId)
                 ->where('v.is_company', 0)
                 ->where('v.is_active', 1)
                 ->orderByDesc('a.assigned_on')->orderByDesc('a.id')
-                ->value('a.vehicle_id');
+                ->pluck('a.vehicle_id')->map(fn ($x) => (int) $x)->unique()->values()->all();
+            foreach ($mine as $candidate) {
+                $first = DB::table(self::T_ASSIGN)->where('vehicle_id', $candidate)
+                    ->orderBy('assigned_on')->orderBy('id')->first(['user_id']);
+                if ($first && (int) $first->user_id === $userId) { $vid = $candidate; break; }
+            }
             if (!$vid) return null;
 
             if ($this->keeperOf((int) $vid)) return null;      // somebody has it

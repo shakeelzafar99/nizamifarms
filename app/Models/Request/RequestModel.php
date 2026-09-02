@@ -25,7 +25,11 @@ class RequestModel extends BaseModel
         'description',
         'amount',
         'expense_category',
-        'expense_date', // ⭐ Backdated expense date
+        'expense_date', // ⭐ Backdated expense date — the day the money actually moved
+        // Salary advances only: the 'YYYY-MM' payroll month this is recovered from and
+        // costed to. Differs from expense_date when an advance is given forward (money
+        // moves now, recovered next month). NULL on every other request type.
+        'payroll_month',
         'meter_distance',
         'petrol_rate',
         // Fuel capture (Jul-2026): the odometer at the moment of filling, litres

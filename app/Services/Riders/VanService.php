@@ -86,13 +86,18 @@ class VanService
         return 'stale';
     }
 
-    /** "GPS live" · "GPS 4 min ago" — the same words on every surface. */
+    /** "GPS live" · "GPS 4 min ago" · "GPS 3h ago" — the same words everywhere. */
     public static function gpsLabel(?array $fix): string
     {
         $state = self::gpsState($fix);
         if ($state === 'live') return 'GPS live';
         if (!$fix || !isset($fix['age_minutes'])) return 'No GPS';
-        return 'GPS ' . (int) $fix['age_minutes'] . ' min ago';
+        $age = (int) $fix['age_minutes'];
+        // Hours read as hours — "GPS 154 min ago" makes the reader do the
+        // arithmetic the label exists to save. Only the store panel's
+        // last-known fallback ever produces ages this old.
+        if ($age >= 120) return 'GPS ' . (int) round($age / 60) . 'h ago';
+        return 'GPS ' . $age . ' min ago';
     }
 
     /** Metres between two points. Plain haversine — no API call, no cache. */
@@ -436,14 +441,67 @@ class VanService
      * deliberately absent.
      */
     public function loadScan(OrderModel $order, string $scanCode, int $vanUserId, int $actorId,
-                             bool $manual = false): array
+                             bool $manual = false, bool $confirmPullback = false): array
     {
         if (!$this->available()) {
             return $this->fail('Van features are not set up on this server yet (SQL batch 14).');
         }
 
-        // Loadable states: still in the building, or already on the van (re-scan).
-        if (!in_array($order->order_status, ['processing', self::STATUS_ON_VAN], true)) {
+        // ⭐⭐ LOADING ALWAYS WINS (owner ruling, Aug-31). Scanning a box onto the
+        //    van is a statement of physical fact; a delivery time is only a plan.
+        //    So a packet arriving AFTER the driver dispatched must not be refused
+        //    — "this one is out for delivery" was a dead end that left the store
+        //    with nowhere to go but the `on_hold` two-hop, and the packet unrecorded.
+        //
+        //    Instead the order comes BACK to the van, its time is cleared
+        //    (changeStatus does that for `on_van`), and the driver re-dispatches
+        //    when loading is finished. Nothing already scanned is lost — packets
+        //    accumulate — so the store never has to re-scan the whole order.
+        //
+        // ⚠ Asked, never silent: cancelling a delivery time the customer may
+        //   already have been told is exactly the kind of thing that must be a
+        //   deliberate yes. `$confirmPullback` is the yes.
+        $pullingBack = false;
+        if ($order->order_status === self::STATUS_OFD) {
+            if ((int) ($order->van_user_id ?? 0) !== $vanUserId || empty($order->van_loaded_at)) {
+                return $this->fail('That order is already out for delivery and is not on this van.');
+            }
+            // ⚠⚠ DRIVER'S OWN ONLY. Another rider's box also carries this van's
+            //   stamps after a handover — but ITS dispatch means the rider
+            //   collected it and rode away. Pulling that back would flip a
+            //   status about a box that is physically kilometres from the
+            //   scanner, while its `handover_at` still swears it was collected.
+            //   The store-still-loading story is only ever true of the boxes
+            //   the DRIVER delivers himself.
+            if ((int) ($order->assigned_rider_user_id ?? 0) !== $vanUserId) {
+                return $this->fail('Order ' . $order->order_number
+                    . ' was collected from the van and is out for delivery — it cannot be scanned back.');
+            }
+            // ⭐ A REPEAT READ OF A BOX ALREADY ABOARD IS NOISE, NOT A DECISION.
+            //   The camera re-reads labels constantly; without this, sweeping the
+            //   scanner across a stack that includes a dispatched order popped
+            //   the "cancel its delivery time?" question about a packet that is
+            //   already recorded. Only a genuinely NEW packet is worth that
+            //   question. A MANUAL tap is deliberate, so it still asks.
+            $probe = $this->parseScan($scanCode, $order);
+            if (!$probe['ok']) return $probe;
+            if (!$manual && $probe['already']) {
+                return $this->fail('Packet ' . $probe['idx'] . ' of ' . $order->order_number
+                    . ' is already aboard — the order is out for delivery. Nothing changed.');
+            }
+            if (!$confirmPullback) {
+                return [
+                    'ok'            => false,
+                    'needs_confirm' => 'pullback',
+                    'order_number'  => $order->order_number,
+                    'message'       => 'Order ' . $order->order_number . ' has already been sent out '
+                        . 'with a delivery time. Scanning another packet puts it back on the van and '
+                        . 'cancels that time — the driver can send it out again when loading is '
+                        . 'finished. Nothing already scanned is lost. Continue?',
+                ];
+            }
+            $pullingBack = true;
+        } elseif (!in_array($order->order_status, ['processing', self::STATUS_ON_VAN], true)) {
             return $this->fail('Only orders being prepared can be loaded on the van. This one is '
                 . str_replace('_', ' ', (string) $order->order_status) . '.');
         }
@@ -502,9 +560,26 @@ class VanService
             }
             $order->save();
 
+            // ⭐ A PULL-BACK RETURNS IT AT ONCE, complete or not — it is out for
+            //    delivery with a packet that is not aboard yet, which is the one
+            //    state that must never persist. The ETA is cleared by the
+            //    transition itself (see OrderModel::changeStatus).
+            if ($pullingBack) {
+                $order->changeStatus(
+                    self::STATUS_ON_VAN,
+                    'Back on the van — another packet was scanned aboard after dispatch',
+                    $actorId
+                );
+                Log::info('Van load scan pulled an order back from out-for-delivery', [
+                    'order' => $order->id, 'number' => $order->order_number,
+                    'van'   => $vanUserId, 'by' => $actorId,
+                    'packets' => count($scanned) . '/' . $target,
+                ]);
+            }
+
             // The status flip is the LAST thing, and only once every packet is on
             // board — a half-loaded order must never look like it left the store.
-            if ($complete && $order->order_status !== self::STATUS_ON_VAN) {
+            if (!$pullingBack && $complete && $order->order_status !== self::STATUS_ON_VAN) {
                 // ⭐ A hand-entered packet is recorded as such. Loading by hand is
                 //    allowed (a smudged label must not stop the van), but the
                 //    history has to say which it was — that distinction is the
@@ -516,6 +591,24 @@ class VanService
                 );
             }
 
+            // ⭐⭐ SAY WHEN A BOX ACTUALLY WENT ABOARD (Aug-31). A load scan on an
+            //    order the store had already TAGGED "On Van" changes no status, so
+            //    it wrote nothing at all: on 31 Aug the entire day's loading was
+            //    invisible in the log, and "was it aboard when he pressed?" could
+            //    only be answered by a hand-run SQL query against `van_loaded_at`.
+            //    This is that answer, recorded as it happens.
+            if ($complete && !$parsed['already']) {
+                Log::info('Van load scan completed — order is aboard', [
+                    'order'   => $order->id,
+                    'number'  => $order->order_number,
+                    'van'     => $vanUserId,
+                    'by'      => $actorId,
+                    'packets' => $target,
+                    'manual'  => $manual,
+                    'driver_own' => (int) $order->assigned_rider_user_id === $vanUserId,
+                ]);
+            }
+
             return [
                 'ok' => true,
                 'already_scanned' => $parsed['already'],
@@ -523,6 +616,7 @@ class VanService
                 'scanned_count'   => count($scanned),
                 'target'          => $target,
                 'complete'        => $complete,
+                'pulled_back'     => $pullingBack,
                 // ⭐ A repeat read says so. It used to report every re-read of the
                 //    same label as a fresh success, which is what made waving the
                 //    scanner look like it was accepting boxes it had never seen.
@@ -714,6 +808,93 @@ class VanService
      * What the van is carrying, split the way the driver actually thinks about it:
      * his OWN stops (which he delivers) and everyone else's (which he hands over).
      */
+    /**
+     * ⭐⭐ THE DRIVER'S OWN STOPS THAT ARE REALLY ABOARD, STRAIGHT FROM THE DB.
+     *
+     * The truth the phone cannot be trusted for. On 31 Aug all five of Rajab's
+     * boxes were stamped aboard by 12:45:29 and he dispatched at 12:49:33 — four
+     * minutes later — yet only the FIRST THREE went. His picker had been built
+     * from a manifest fetched in the 96-second window when exactly three were
+     * loaded, and his phone had been logging "failed to connect" since 12:37, so
+     * no later poll ever corrected it. The refresh we added is deliberately
+     * silent on failure (a van lives in patchy coverage; one bad request must not
+     * blank his screen) — which is exactly what let a stale list look confident.
+     *
+     * So the wave is checked against THIS, at the last gate, by the one party
+     * that stamped `van_loaded_at` in the first place. No client state involved,
+     * so it holds however old the phone's picture is.
+     *
+     * Priority-ordered, because that is the plan the store (or his own reorder —
+     * both write `delivery_priority`) already agreed on.
+     */
+    public function loadedOwnStops(int $vanUserId): array
+    {
+        if (!$this->available()) return [];
+        try {
+            return DB::table('t_crm_prod_order as o')
+                ->leftJoin('t_crm_prod_customer as c', 'c.id', '=', 'o.customer_id')
+                ->where('o.van_user_id', $vanUserId)
+                // HIS OWN only. Another rider's cargo leaves by the handover
+                // scan and is never his to dispatch.
+                ->where('o.assigned_rider_user_id', $vanUserId)
+                ->where('o.order_status', self::STATUS_ON_VAN)
+                ->whereNotNull('o.van_loaded_at')
+                // Same 20h bound every other live van read uses — a box stranded
+                // from a previous run must not join today's wave.
+                ->where('o.van_loaded_at', '>=', now()->subHours(self::STALE_TAG_HOURS))
+                ->orderByRaw('COALESCE(o.delivery_priority, 999) ASC, o.id ASC')
+                ->get([
+                    'o.id', 'o.order_number', 'o.delivery_priority', 'o.address_city',
+                    DB::raw('CONCAT(COALESCE(c.first_name,""), " ", COALESCE(c.last_name,"")) as customer_name'),
+                ])
+                ->map(fn ($r) => [
+                    'id'           => (int) $r->id,
+                    'order_number' => $r->order_number,
+                    'customer'     => trim((string) $r->customer_name) ?: null,
+                    'area'         => $r->address_city ?: null,
+                    'priority'     => $r->delivery_priority !== null ? (int) $r->delivery_priority : null,
+                ])
+                ->all();
+        } catch (\Throwable $e) {
+            // ⚠ FAIL OPEN. This powers a confirmation, not a permission: if the
+            //   read breaks, the driver's own pick must still go out.
+            Log::error('VanService::loadedOwnStops failed', ['user' => $vanUserId, 'error' => $e->getMessage()]);
+            return [];
+        }
+    }
+
+    /**
+     * When a refused status change COULD be done properly instead, say by whom.
+     *
+     * ⭐ Farooq read the refusal on 31 Aug at 12:52:00 and did the `on_hold`
+     *    two-hop six seconds later — not because he ignored it, but because the
+     *    message named the DRIVER's panel and offered him nothing he could press.
+     *    The web button existed by then and went unused all day: the store works
+     *    in mobile store mode, not on the web panel. So the refusal now carries
+     *    the release itself.
+     *
+     * Returns null unless this is a loaded driver's-own stop being sent out —
+     * the one case the store can legitimately release.
+     */
+    public static function releaseHint($order, string $targetStatus): ?array
+    {
+        try {
+            if ($targetStatus !== self::STATUS_OFD) return null;
+            if ((string) ($order->order_status ?? '') !== self::STATUS_ON_VAN) return null;
+            if (empty($order->van_loaded_at) || empty($order->van_user_id)) return null;
+            if ((int) ($order->assigned_rider_user_id ?? 0) !== (int) $order->van_user_id) return null;
+
+            $name = DB::table('t_sys_user')->where('id', $order->van_user_id)->value('fullname');
+            return [
+                'driver_id'   => (int) $order->van_user_id,
+                'driver_name' => $name ?: 'the van driver',
+                'order_id'    => (int) $order->id,
+            ];
+        } catch (\Throwable $e) {
+            return null;   // a hint is a nicety, never a dependency
+        }
+    }
+
     public function manifest(int $vanUserId): array
     {
         if (!$this->available()) {

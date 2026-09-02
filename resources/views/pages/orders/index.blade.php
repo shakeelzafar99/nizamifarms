@@ -1334,6 +1334,11 @@ button[onclick*="switchToShopifyApprovals"] { display: none !important; }
     
     <div id="nfPinUnlockBanners" class="px-4 lg:px-6 pt-2 min-w-0" style="display:none;"></div>
 
+    {{-- 🔁 Sep-2026 — riders waiting for a vehicle handover to be approved. Same
+         contract as the strip above it: never our own state, repainted from the
+         server every 30s, so a request approved on a phone vanishes from here. --}}
+    @include("partials.vehicle-request-banner")
+
     @if(!empty($automationBanners))
     <div id="nfAutomationBanners" class="px-4 lg:px-6 pt-2 min-w-0"
          style="display: {{ ($source === 'other' && ($tab ?? 'all') === 'open') ? 'block' : 'none' }};">
@@ -2101,6 +2106,11 @@ button[onclick*="switchToShopifyApprovals"] { display: none !important; }
   document.addEventListener('visibilitychange', function(){ if(!document.hidden) poll(); });
 })();
 </script>
+
+{{-- 🔁 The vehicle-handover approval strip now lives in ONE partial, included
+     below near the top of the page (it renders the #nfVehicleReqBanners div
+     itself). Moved out of this file so the Bikes screen can show the very
+     same banner — see partials/vehicle-request-banner.blade.php. --}}
 
 <script>
 // NF (Jul-2026, S4e): rebuild the orders top bar into a shape that can never run

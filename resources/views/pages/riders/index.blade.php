@@ -25,6 +25,28 @@
     @if(session('success'))
         <div class="mb-4 p-4 bg-green-50 border border-green-200 rounded-md">
             <p class="text-green-700">{{ session('success') }}</p>
+            {{-- Show the pin that was actually stored, with a map link. A home pin is invisible
+                 once the modal closes; on 31 Aug an OFFICE link was pasted as a rider's home and
+                 nothing on screen would have revealed it. --}}
+            @if(session('pin_moved'))
+                @php $pm = session('pin_moved'); @endphp
+                <p class="text-green-700" style="margin-top:6px;font-size:13px;">
+                    <a href="https://www.google.com/maps/search/?api=1&query={{ $pm['lat'] }},{{ $pm['lng'] }}"
+                       target="_blank" rel="noopener"
+                       style="color:#15803d;font-weight:700;text-decoration:underline;">
+                        Check it on the map ↗
+                    </a>
+                    — make sure this is the rider's home, not the office.
+                </p>
+            @endif
+        </div>
+    @endif
+
+    {{-- A link we could not read. The rest of the profile WAS saved; only the pin was left
+         alone. Amber, not red, because nothing was lost. --}}
+    @if(session('warning'))
+        <div class="mb-4 p-4 bg-amber-50 border border-amber-300 rounded-md">
+            <p class="text-amber-800">⚠ {{ session('warning') }}</p>
         </div>
     @endif
 
@@ -239,7 +261,8 @@
                             <input type="number" name="home_radius_m" id="rider_home_radius" min="30" step="10" placeholder="radius 150 m" style="width: 110px; padding: 8px 10px; border: 1px solid #d1d5db; border-radius: 6px;">
                         </div>
                         <p id="rider_home_status" style="font-size: 12px; color: #047857; margin: 6px 0 0 0;"></p>
-                        <p style="font-size: 11px; color: #6b7280; margin: 4px 0 0 0;">A pasted link overrides the typed coordinates. Clear all fields to remove the home pin.</p>
+                        <p style="font-size: 11px; color: #6b7280; margin: 4px 0 0 0;">A pasted link overrides the typed coordinates. Clear all fields to remove the home pin. A Plus Code (like <code>P35Q+5FF</code>) works too — paste it in the link box.</p>
+                        <p style="font-size: 11px; color: #92400e; margin: 4px 0 0 0;">If the link can't be read, the pin is left unchanged and the rest of the profile still saves — you'll see an amber note at the top of the page.</p>
                     </div>
                 </div>
             </div>
@@ -318,10 +341,22 @@ async function editRiderProfile(userId) {
             document.getElementById('rider_home_lat').value = (p.home_latitude != null ? p.home_latitude : '');
             document.getElementById('rider_home_lng').value = (p.home_longitude != null ? p.home_longitude : '');
             document.getElementById('rider_home_radius').value = (p.home_radius_m != null ? p.home_radius_m : '');
-            document.getElementById('rider_home_status').textContent =
-                (p.home_latitude != null && p.home_longitude != null)
-                    ? ('✓ Home pin saved' + (p.home_set_at ? ' (' + String(p.home_set_at).slice(0, 10) + ')' : ''))
-                    : (Number(p.company_bike) === 1 ? '⚠ No home pin yet — the going-home check stays off for this rider.' : '');
+            // Status line: the date is the date the pin last MOVED (the server only stamps
+            // home_set_at on a real change), and the map link lets the manager confirm WHERE
+            // it is before he changes it — the check that was missing on 31 Aug.
+            var homeStatus = document.getElementById('rider_home_status');
+            if (p.home_latitude != null && p.home_longitude != null) {
+                var q = encodeURIComponent(p.home_latitude + ',' + p.home_longitude);
+                homeStatus.innerHTML =
+                    '✓ Home pin set' + (p.home_set_at ? ' ' + String(p.home_set_at).slice(0, 10) : '') +
+                    ' · <a href="https://www.google.com/maps/search/?api=1&query=' + q + '"' +
+                    ' target="_blank" rel="noopener" style="color:#047857;font-weight:700;text-decoration:underline;">' +
+                    'view on map ↗</a>';
+            } else {
+                homeStatus.textContent = (Number(p.company_bike) === 1)
+                    ? '⚠ No home pin yet — the going-home check stays off for this rider.'
+                    : '';
+            }
             document.getElementById('rider_any_office').checked = (Number(p.checkin_any_office) === 1);
             // Meter compulsory — default ON when the profile predates the column (null).
             document.getElementById('rider_meter_required').checked = (p.meter_required == null) ? true : (Number(p.meter_required) === 1);

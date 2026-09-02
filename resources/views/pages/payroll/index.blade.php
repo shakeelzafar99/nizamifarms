@@ -367,6 +367,16 @@
       <div style="font-size:13px;color:#374151;margin-bottom:10px;" id="prAdvWho"></div>
       <div style="font-size:12px;color:#6b7280;margin-bottom:4px;">Amount</div>
       <input type="number" id="prAdvAmount" class="pr-bank-sel" style="height:38px;" placeholder="0" min="1">
+      {{-- Which month recovers this advance, and (for a past month) when the money really
+           moved. Hidden entirely when giving for the current month, which is the common case. --}}
+      <div id="prAdvMonthBox" style="display:none;margin-top:12px;padding:10px 12px;border:1px solid #e5e7eb;border-radius:8px;background:#f9fafb;">
+        <div style="font-size:12px;font-weight:600;color:#374151;" id="prAdvMonthNote"></div>
+        <div id="prAdvDateWrap" style="display:none;margin-top:8px;">
+          <div style="font-size:12px;color:#6b7280;margin-bottom:4px;">When did the money actually leave?</div>
+          <input type="date" id="prAdvDate" class="pr-bank-sel" style="height:36px;">
+          <div style="font-size:11px;color:#9ca3af;margin-top:4px;" id="prAdvDateHint"></div>
+        </div>
+      </div>
       <div style="font-size:12px;color:#6b7280;margin:12px 0 4px;">Pay from</div>
       <label class="pr-fund active" data-advfund="cash">
         <input type="radio" name="prAdvFund" value="cash" checked style="margin-right:8px;">
@@ -881,9 +891,19 @@
         pendReq + ' requested · ' + fmt(r.pending_request_total) + '</span>' +
         '<div style="font-size:9.5px;color:#a16207;line-height:1.2;">not given yet</div></div>'
       : '';
+    // Advances tagged to OTHER months. They are not in this month's deductions or net pay
+    // (an advance is recovered only from the month it was given for), but the money HAS
+    // left, so it is shown here — month-scoping must never make cash invisible.
+    const otherOpen = Number(r.other_open_advance_total || 0);
+    const otherChip = otherOpen > 0
+      ? '<div style="font-size:9.5px;color:#6b7280;line-height:1.25;margin-top:2px;"'
+        + ' title="Given for a different month — recovered from that month’s pay, not this one.">'
+        + fmt(otherOpen) + ' open in other months</div>'
+      : '';
     const adv = (r.advance_total > 0
         ? '<span class="pr-adv" data-adv="' + i + '">' + fmt(r.advance_total) + '</span>'
         : '<span class="pr-adv zero">—</span>') +
+      otherChip +
       reqChip +
       '<div><span class="pr-give" data-give="' + i + '">＋ advance</span></div>';
 
@@ -1674,6 +1694,48 @@
     el('prAdvConfirm').disabled = false;
   }
 
+  // The month an advance is being given FOR = the month the grid is showing. Everything
+  // else (which pay recovers it, which month is charged, where Expenses lists it) follows
+  // from this one value, so it is always sent explicitly rather than assumed to be today.
+  function advMonth() { return CURMONTH || el('prMonth').value; }
+  function thisMonthStr() {
+    const n = new Date();
+    return n.getFullYear() + '-' + String(n.getMonth() + 1).padStart(2, '0');
+  }
+  function monthNameOf(ym) {
+    const [y, m] = ym.split('-').map(Number);
+    return new Date(y, m - 1, 1).toLocaleDateString('en-GB', { month: 'long', year: 'numeric' });
+  }
+  // Show the month/date controls only when the viewed month is NOT the current one:
+  //  · past month  → ask which day the money really left (constrained to that month)
+  //  · next month  → given forward; money moves today, so no date is asked
+  function syncAdvMonthUi() {
+    const m = advMonth(), cur = thisMonthStr();
+    const box = el('prAdvMonthBox'), dateWrap = el('prAdvDateWrap');
+    if (!m || m === cur) { box.style.display = 'none'; dateWrap.style.display = 'none'; return; }
+    box.style.display = '';
+    if (m < cur) {
+      const last = new Date(Number(m.split('-')[0]), Number(m.split('-')[1]), 0);
+      const lastStr = m + '-' + String(last.getDate()).padStart(2, '0');
+      const today = new Date();
+      const todayStr = today.getFullYear() + '-' + String(today.getMonth() + 1).padStart(2, '0')
+        + '-' + String(today.getDate()).padStart(2, '0');
+      el('prAdvMonthNote').textContent = 'This advance is for ' + monthNameOf(m)
+        + ' — it will be deducted from ' + monthNameOf(m) + ' pay.';
+      dateWrap.style.display = '';
+      el('prAdvDate').min = m + '-01';
+      el('prAdvDate').max = (lastStr > todayStr ? todayStr : lastStr);
+      el('prAdvDate').value = (lastStr > todayStr ? todayStr : lastStr);
+      el('prAdvDateHint').textContent = 'Must be a date in ' + monthNameOf(m)
+        + '. The ledger uses this so it matches the bank statement.';
+    } else {
+      // Future month — the server allows the NEXT month only and re-checks it.
+      el('prAdvMonthNote').textContent = 'This advance is for ' + monthNameOf(m)
+        + ' — the money goes out today and is deducted from ' + monthNameOf(m) + ' pay.';
+      dateWrap.style.display = 'none';
+    }
+  }
+
   function openAdvance(r) {
     ADV_MODE = 'give';
     ADV_REQ = null;
@@ -1687,6 +1749,7 @@
     el('prAdvNote').style.display = '';
     el('prAdvConfirm').textContent = 'Give advance';
     resetAdvFunding();
+    syncAdvMonthUi();
     el('prAdvModal').classList.add('show');
     setTimeout(() => el('prAdvAmount').focus(), 50);
   }
@@ -1717,7 +1780,16 @@
       const url = isApprove ? '/hr/payroll/approve-request' : '/hr/payroll/give-advance';
       const body = isApprove
         ? { request_id: ADV_REQ.request_id, funding: fundType, bank_id: fundType === 'online' ? Number(bankId) : null }
-        : { user_id: ADV_ROW.user_id, amount, funding: fundType, bank_id: fundType === 'online' ? Number(bankId) : null, note: el('prAdvNote').value || null };
+        : {
+            user_id: ADV_ROW.user_id, amount, funding: fundType,
+            bank_id: fundType === 'online' ? Number(bankId) : null,
+            note: el('prAdvNote').value || null,
+            // The month the grid is showing decides which pay recovers this and which
+            // month is charged; money_date only differs when that month is in the past.
+            payroll_month: advMonth(),
+            money_date: (el('prAdvDateWrap').style.display !== 'none' && el('prAdvDate').value)
+              ? el('prAdvDate').value : null
+          };
       const res = await fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': csrf },

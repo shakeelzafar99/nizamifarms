@@ -558,6 +558,217 @@ class WhatsAppService
         }
     }
 
+    /**
+     * Aug-2026 — answer a "Get bank details" quick-reply tap on a delivery
+     * confirmation, instantly and automatically.
+     *
+     * The delivery-confirmation template no longer prints our account numbers in
+     * its body; it offers a button instead. Tapping it opens a 24-hour customer
+     * service window, so the answer goes out as a FREE-FORM text — no Meta
+     * template, no approval needed. (Same reasoning the out-of-office auto-reply
+     * relies on: the inbound that triggers us is what opens the window, so there
+     * is no isSessionActive() check to make.)
+     *
+     * Works for automated AND manual sends of the confirmation: the order is
+     * resolved from the automation log first, then from the outbound chat row's
+     * related_order_number, which the Daily Closing send stamps.
+     *
+     * RETURNS TRUE ONLY WHEN WE ACTUALLY ANSWERED. The caller uses that to keep
+     * the tap out of the unread badge and the push notification. If anything
+     * fails we return FALSE on purpose, so the tap behaves like a normal
+     * customer message and a human sees that someone asked and got nothing.
+     *
+     * Every tap is answered — a customer who taps twice wants the details twice.
+     * Meta webhook re-deliveries can't double-send: handleIncomingMessage drops
+     * a wa_message_id it has already stored before ever reaching us.
+     */
+    protected function maybeAnswerBankDetailsRequest($conversation, string $from, array $msg, string $type, string $content, $savedMessage): bool
+    {
+        if (!in_array($type, ['button', 'interactive'], true) || !$conversation) {
+            return false;
+        }
+
+        // A quick reply on an APPROVED TEMPLATE arrives as type=button with
+        // button.text + button.payload (the payload equals the button's own
+        // label when the template was sent without button components, which is
+        // how ours is sent). An interactive message's button arrives instead as
+        // interactive.button_reply.title / .id. Check every shape.
+        $label   = (string) ($msg['button']['text'] ?? ($msg['interactive']['button_reply']['title'] ?? $content));
+        $payload = (string) ($msg['button']['payload'] ?? ($msg['interactive']['button_reply']['id'] ?? ''));
+
+        if (!self::looksLikeBankDetailsRequest($label) && !self::looksLikeBankDetailsRequest($payload)) {
+            return false;
+        }
+
+        $orderNumber = $this->resolveOrderNumberForTap($msg);
+        $text = \App\Services\WhatsApp\BankDetailsProvider::replyMessage($orderNumber);
+
+        try {
+            $resp = $this->sendTextMessage($from, $text);
+        } catch (\Throwable $e) {
+            Log::warning('WhatsApp: bank-details reply send failed', [
+                'conversation_id' => $conversation->id,
+                'error'           => $e->getMessage(),
+            ]);
+            return false;
+        }
+
+        $replyWaId = $resp['messages'][0]['id'] ?? null;
+        if (empty($replyWaId)) {
+            Log::warning('WhatsApp: bank-details reply returned no message id', [
+                'conversation_id' => $conversation->id,
+                'response'        => $resp,
+            ]);
+            return false;
+        }
+
+        // Persist our answer so it shows in the chat history. Direct create
+        // (like the auto-reply path) rather than saveOutboundMessage(), which
+        // would drag in campaign adoption and template bookkeeping this send is
+        // not part of.
+        //
+        // ⚠⚠ sent_by MUST stay NULL. The unread queries treat an outbound with a
+        // non-null sent_by as "a human replied" and suppress every OLDER inbound
+        // in the conversation — a real unanswered customer question would vanish
+        // from the unread list. See UnreadQuery.
+        try {
+            $payloadRow = [
+                'conversation_id' => $conversation->id,
+                'wa_message_id'   => $replyWaId,
+                'direction'       => 'outbound',
+                'type'            => 'text',
+                'content'         => $text,
+                'status'          => 'sent',
+                'sent_by'         => null,
+                'created_at'      => now(),
+            ];
+            if ($orderNumber && \Illuminate\Support\Facades\Schema::hasColumn('t_wa_messages', 'related_order_number')) {
+                $payloadRow['related_order_number'] = $orderNumber;
+            }
+            MessageModel::create($payloadRow);
+            ConversationModel::where('id', $conversation->id)->update(['last_message_at' => now()]);
+        } catch (\Throwable $e) {
+            // The customer HAS the details; only our copy of the record failed.
+            Log::warning('WhatsApp: bank-details reply not persisted', [
+                'conversation_id' => $conversation->id,
+                'error'           => $e->getMessage(),
+            ]);
+        }
+
+        // Flag the TAP so it never raises an unread badge for any user, while
+        // staying fully visible in the chat. No-op until the column exists.
+        try {
+            if ($savedMessage && \App\Services\WhatsApp\UnreadQuery::supported()) {
+                \Illuminate\Support\Facades\DB::table('t_wa_messages')
+                    ->where('id', $savedMessage->id)
+                    ->update([\App\Services\WhatsApp\UnreadQuery::COLUMN => 1]);
+            }
+        } catch (\Throwable $e) {
+            Log::debug('WhatsApp: could not flag tap as unread-exempt', ['error' => $e->getMessage()]);
+        }
+
+        // Audit row so the owner can see these in the automations Activity log.
+        // ⭐ status is deliberately NEITHER 'sent' NOR 'failed': alreadyHandled()
+        // counts only those two, so this row can never block a future automation
+        // send for the same order.
+        try {
+            app(\App\Services\WhatsApp\Automation\WhatsAppAutomationService::class)->recordLog([
+                'rule_key'        => 'order_delivered_payment_confirmation',
+                'trigger_event'   => 'order.bank_details_requested',
+                'dedup_key'       => 'bankdetails_reply:' . ($orderNumber ?: $from),
+                'order_id'        => $this->prodOrderIdForNumber($orderNumber),
+                'conversation_id' => $conversation->id,
+                'status'          => 'details_reply',
+                'wa_message_id'   => $replyWaId,
+            ]);
+        } catch (\Throwable $e) {
+            // audit only — never affects the reply
+        }
+
+        Log::info('WhatsApp: bank details sent on customer request', [
+            'conversation_id' => $conversation->id,
+            'order_number'    => $orderNumber,
+        ]);
+
+        return true;
+    }
+
+    /**
+     * Is this tapped button label / payload asking for our bank details?
+     *
+     * Punctuation-insensitive so "Get bank details!" still matches. Kept tight
+     * on the phrase itself: no other approved template in the account carries a
+     * button mentioning bank details (the others are Confirm/Cancel/Split and
+     * the shift confirm), so a phrase match cannot collide.
+     */
+    public static function looksLikeBankDetailsRequest(?string $s): bool
+    {
+        $s = strtolower(trim((string) $s));
+        if ($s === '') {
+            return false;
+        }
+        $s = preg_replace('/[^a-z0-9]+/', ' ', $s);
+        $s = trim(preg_replace('/\s+/', ' ', (string) $s));
+        return $s !== '' && str_contains($s, 'bank detail');
+    }
+
+    /**
+     * Which order does a button tap answer? WhatsApp sends context.id = the
+     * wa_message_id of the template that was tapped.
+     *   1. the automation log (an automated send), then
+     *   2. the outbound chat row's related_order_number (a MANUAL Daily Closing
+     *      send, which has no automation-log row).
+     * Null when neither resolves — the reply is still sent, just without naming
+     * the order rather than naming a guessed one.
+     */
+    protected function resolveOrderNumberForTap(array $msg): ?string
+    {
+        $ctxId = $msg['context']['id'] ?? null;
+        if (empty($ctxId)) {
+            return null;
+        }
+
+        try {
+            $viaLog = \App\Services\WhatsApp\OrderReplyService::resolveOrderForReplyContext($ctxId);
+            if (!empty($viaLog)) {
+                return (string) $viaLog;
+            }
+        } catch (\Throwable $e) {
+            // fall through to the chat-row lookup
+        }
+
+        try {
+            if (\Illuminate\Support\Facades\Schema::hasColumn('t_wa_messages', 'related_order_number')) {
+                $num = \Illuminate\Support\Facades\DB::table('t_wa_messages')
+                    ->where('wa_message_id', $ctxId)
+                    ->value('related_order_number');
+                if (!empty($num)) {
+                    return (string) $num;
+                }
+            }
+        } catch (\Throwable $e) {
+            // give up quietly
+        }
+
+        return null;
+    }
+
+    /** Best-effort prod order id for the audit log (display only). */
+    protected function prodOrderIdForNumber(?string $orderNumber): ?int
+    {
+        if (empty($orderNumber)) {
+            return null;
+        }
+        try {
+            $id = \Illuminate\Support\Facades\DB::table('t_crm_prod_order')
+                ->where('order_number', $orderNumber)
+                ->value('id');
+            return $id ? (int) $id : null;
+        } catch (\Throwable $e) {
+            return null;
+        }
+    }
+
     protected function handleIncomingMessage(array $msg, array $contacts): void
     {
         try {
@@ -691,7 +902,13 @@ class WhatsAppService
                 try {
                     $ctxId = $msg['context']['id'] ?? null;
                     if ($ctxId && \Illuminate\Support\Facades\Schema::hasColumn('t_wa_messages', 'related_order_number')) {
-                        $orderNo = \App\Services\WhatsApp\OrderReplyService::resolveOrderForReplyContext($ctxId);
+                        // Aug-2026: resolveOrderNumberForTap() = the automation
+                        // log first (unchanged), then the outbound chat row's
+                        // related_order_number. The fallback matters because a
+                        // template sent BY HAND (Daily Closing, Send Template)
+                        // has no automation-log row, so taps on those used to
+                        // land unlinked and fall back to per-customer matching.
+                        $orderNo = $this->resolveOrderNumberForTap($msg);
                         if ($orderNo) {
                             \Illuminate\Support\Facades\DB::table('t_wa_messages')
                                 ->where('id', $savedMessage->id)
@@ -717,6 +934,27 @@ class WhatsAppService
                 }
             }
 
+            // Aug-2026 — "Get bank details" tap on a delivery confirmation. The
+            // system answers it immediately, so it is NOT staff work: when we
+            // answered, the tap raises no unread badge, no push notification and
+            // no out-of-office auto-reply (the customer already has their
+            // answer; a "we're closed" on top would be nonsense). It stays fully
+            // visible in the chat history either way.
+            //
+            // Deliberately FAILS LOUD: if the answer could not be sent this
+            // stays false and the tap behaves like any other customer message,
+            // so a human notices that someone asked and got nothing.
+            $systemAnswered = false;
+            if ($savedMessage && in_array($type, ['button', 'interactive'], true)) {
+                try {
+                    $systemAnswered = $this->maybeAnswerBankDetailsRequest(
+                        $conversation, $from, $msg, $type, (string) $content, $savedMessage
+                    );
+                } catch (\Throwable $bankErr) {
+                    Log::warning('WhatsApp: bank-details reply skipped (non-fatal)', ['error' => $bankErr->getMessage()]);
+                }
+            }
+
             // Jun-2026 — Online payment auto-matching. If this inbound is an
             // image (a likely bank-transfer screenshot) from a customer who has
             // a pending online order, drop a cheap "payment signal" row. The
@@ -733,11 +971,20 @@ class WhatsAppService
                 Log::debug('WhatsApp: payment-signal queue skipped (non-fatal)', ['error' => $paySigErr->getMessage()]);
             }
 
-            // Update conversation
+            // Update conversation.
+            //
+            // last_customer_message_at is stamped even for a system-answered tap
+            // — it genuinely IS a customer message and it genuinely DID open the
+            // 24-hour reply window, which the rest of the app reads from here.
+            // Only the unread counter is held back (and it is the legacy
+            // fallback; the real per-user badge is handled by the unread_exempt
+            // flag set in maybeAnswerBankDetailsRequest — see UnreadQuery).
             $conversation->update([
                 'last_message_at' => now(),
                 'last_customer_message_at' => now(),
-                'unread_count' => $conversation->unread_count + 1,
+                'unread_count' => $systemAnswered
+                    ? $conversation->unread_count
+                    : $conversation->unread_count + 1,
                 'status' => 'active',
             ]);
 
@@ -852,13 +1099,16 @@ class WhatsAppService
             // seeing the blue double-tick the instant their message hits our
             // server. The send is triggered from markConversationReadForUser().
 
-            // Send push notification to staff
-            try {
-                $senderName = $contactName ?? $conversation->display_name ?? $from;
-                $preview = mb_substr($content ?? '[Media]', 0, 200);
-                app(FirebaseService::class)->notifyNewWhatsAppMessage($senderName, $preview, $conversation->id);
-            } catch (\Exception $pushErr) {
-                Log::debug('WhatsApp: Push notification failed (non-fatal)', ['error' => $pushErr->getMessage()]);
+            // Send push notification to staff — unless the system already
+            // answered this tap (nothing for a human to do).
+            if (!$systemAnswered) {
+                try {
+                    $senderName = $contactName ?? $conversation->display_name ?? $from;
+                    $preview = mb_substr($content ?? '[Media]', 0, 200);
+                    app(FirebaseService::class)->notifyNewWhatsAppMessage($senderName, $preview, $conversation->id);
+                } catch (\Exception $pushErr) {
+                    Log::debug('WhatsApp: Push notification failed (non-fatal)', ['error' => $pushErr->getMessage()]);
+                }
             }
 
             // Auto-reply (Apr-2026). Fires inside the 24h customer-care window
@@ -868,10 +1118,15 @@ class WhatsAppService
             // cooldown — live inside maybeSendAutoReply. Non-fatal on any
             // error because a failed auto-reply must NEVER prevent the
             // inbound from being saved or notifying staff.
-            try {
-                $this->maybeSendAutoReply($conversation, $from, $type);
-            } catch (\Exception $autoErr) {
-                Log::debug('WhatsApp: Auto-reply skipped (non-fatal)', ['error' => $autoErr->getMessage()]);
+            // Skipped when the system already answered the tap: the customer has
+            // what they asked for, and following it with "we're currently
+            // closed" would read as a non-sequitur.
+            if (!$systemAnswered) {
+                try {
+                    $this->maybeSendAutoReply($conversation, $from, $type);
+                } catch (\Exception $autoErr) {
+                    Log::debug('WhatsApp: Auto-reply skipped (non-fatal)', ['error' => $autoErr->getMessage()]);
+                }
             }
 
             Log::info('WhatsApp: Incoming message saved', [

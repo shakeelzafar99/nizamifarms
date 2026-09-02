@@ -1270,10 +1270,19 @@ class RiderController extends Controller
             $origin = $this->selectDispatchOrigin($riderId);
 
             if (!$origin['location']) {
-                \Log::warning('Dispatch failed: rider GPS not active and no shop location configured', ['rider_id' => $riderId]);
+                // The ONLY remaining hard stop on this endpoint, and it is a
+                // configuration fault rather than anything the rider did: there is
+                // no usable GPS AND no office to fall back to, so there is no point
+                // on earth to measure from. Says so plainly instead of blaming GPS.
+                \Log::warning('Dispatch failed: no usable rider GPS and no office location configured', [
+                    'rider_id' => $riderId,
+                    'source'   => $origin['source'],
+                    'phantom'  => !empty($origin['phantom']),
+                ]);
                 return response()->json([
                     'success' => false,
-                    'message' => "⚠️ Rider GPS not active — please ask {$rider->fullname} to turn on GPS. Shop location also not configured.",
+                    'message' => "⚠️ {$rider->fullname} ki location nahi mil rahi, aur office ki location bhi set nahi hai — "
+                               . "is liye time nahi lagaya ja sakta. Admin se kahein ke office location set kare.",
                 ], 400);
             }
 
@@ -1404,6 +1413,18 @@ class RiderController extends Controller
             $noLocationOrders = [];   // no usable pin — timed from the estimated leg
             $locationNotes = [];      // per-stop explanation for the app
 
+            // ⭐ The same phantom ceiling as the rider's origin, applied to the
+            //    CUSTOMER pins — because the same fault produces both, and one
+            //    impossible pin is enough to make Google answer ZERO_RESULTS for
+            //    the ENTIRE route, so all six stops lose their real times over one
+            //    bad row. Judged against the primary office only; if none is
+            //    configured there is nothing to measure against and the check is
+            //    skipped, which leaves behaviour exactly as it was.
+            $phantomPinM  = $this->phantomOriginMetres();
+            $pinBase      = \App\Services\LocationService::getPrimaryBaseLocation();
+            $pinBaseOk    = $pinBase && $pinBase->latitude && $pinBase->longitude;
+            $badPinOrders = [];
+
             // Start with rider's current location
             $waypoints[] = [
                 'lat' => (float)$riderLocation->latitude,
@@ -1412,6 +1433,44 @@ class RiderController extends Controller
 
             foreach ($orders as $order) {
                 $loc = \App\Services\Location\CustomerLocationResolver::resolve($order);
+
+                // A pin further from the office than any delivery could possibly
+                // be is a data fault, not a destination. Demote it to "no pin":
+                // the stop KEEPS its place in the sequence and is charged the flat
+                // estimated leg, exactly like a customer nobody has pinned yet.
+                // That path is already built, already honest, and already tells
+                // the rider to navigate by the written address.
+                if ($loc['routable'] && $pinBaseOk) {
+                    $pinDistance = \App\Services\LocationService::calculateDistance(
+                        $loc['latitude'], $loc['longitude'], $pinBase->latitude, $pinBase->longitude
+                    );
+                    if ($pinDistance > $phantomPinM) {
+                        $pinKm = (int) round($pinDistance / 1000);
+                        \Log::warning('Dispatch: customer pin implausibly far — treated as unpinned', [
+                            'rider_id'     => $riderId,
+                            'order_number' => $order->order_number,
+                            'tier'         => $loc['tier'],
+                            'pin'          => ['lat' => (float) $loc['latitude'], 'lng' => (float) $loc['longitude']],
+                            'km_from_office' => $pinKm,
+                        ]);
+                        $badPinOrders[] = $order->order_number;
+                        $loc = [
+                            'tier'        => \App\Services\Location\CustomerLocationResolver::TIER_NONE,
+                            'latitude'    => null,
+                            'longitude'   => null,
+                            'routable'    => false,
+                            'approximate' => true,
+                            'label'       => "Saved location looks wrong (~{$pinKm} km from the office) — treated as no pin",
+                            'short'       => 'Pin looks wrong',
+                            // Marker so the note below can say WHY this stop lost
+                            // its pin. The tier stays TIER_NONE on purpose: every
+                            // client already knows how to render that.
+                            'bad_pin'     => true,
+                            'bad_pin_km'  => $pinKm,
+                        ];
+                    }
+                }
+
                 $plan[] = ['order' => $order, 'loc' => $loc];
 
                 if ($loc['routable']) {
@@ -1441,9 +1500,21 @@ class RiderController extends Controller
                         // English sentence AND a stable key. The app renders Roman Urdu
                         // from the key and falls back to `note` for anything it doesn't
                         // recognise, so a missing translation can never blank a warning.
-                        'note'         => \App\Services\Location\CustomerLocationResolver::dispatchNote($loc['tier'], $noPinLegMinutes),
-                        'key'          => \App\Services\Location\CustomerLocationResolver::noteKey($loc['tier']),
-                        'params'       => ['order' => $order->order_number, 'mins' => $noPinLegMinutes],
+                        // A rejected pin gets its own key/sentence: "no pin" and "the
+                        // pin we have is wrong" call for different action from the team.
+                        'note'         => !empty($loc['bad_pin'])
+                            ? "{$order->order_number}: the saved location is about {$loc['bad_pin_km']} km from the office, "
+                              . "which cannot be right — it was ignored and about {$noPinLegMinutes} minutes allowed for this stop. "
+                              . 'Please correct the pin.'
+                            : \App\Services\Location\CustomerLocationResolver::dispatchNote($loc['tier'], $noPinLegMinutes),
+                        'key'          => !empty($loc['bad_pin'])
+                            ? 'note_bad_pin'
+                            : \App\Services\Location\CustomerLocationResolver::noteKey($loc['tier']),
+                        'params'       => [
+                            'order' => $order->order_number,
+                            'mins'  => $noPinLegMinutes,
+                            'km'    => $loc['bad_pin_km'] ?? null,
+                        ],
                     ];
                 }
             }
@@ -1475,15 +1546,44 @@ class RiderController extends Controller
             // where NOTHING can be routed still gets timed (every leg estimated)
             // rather than being refused — same principle as above.
             $etaResult = ['legs' => []];
+            // Set when the times below are straight-line guesses rather than
+            // Google's road times. Read again further down, where it seeds the
+            // "≈" honesty flag so a guess can never render as a firm promise.
+            $routeIsEstimated = false;
+            $googleFailure    = null;
+            // Where the leg times came from. Tracked explicitly rather than
+            // inferred: when NO stop is routable, Google is never called at all,
+            // and reporting "google_maps" for times it never produced would make
+            // this field lie in exactly the situation someone is reading it.
+            $etaSource        = 'no_routable_stops';
+
             if (count($waypoints) > 1) {
-                $etaResult = $this->getMultiStopEtaFromGoogle($waypoints);
+                $etaResult = $this->getMultiStopEtaFromGoogle($waypoints, $googleFailure);
+                $etaSource = 'google_maps';
 
                 if (!$etaResult) {
-                    \Log::warning('Dispatch failed: multi-stop ETA returned null (Google Maps API error or monthly cap)', ['rider_id' => $riderId, 'stops' => count($waypoints) - 1]);
-                    return response()->json([
-                        'success' => false,
-                        'message' => 'Failed to calculate ETA (API error or limit reached)'
-                    ], 500);
+                    // ⭐ NEVER REFUSE THE DISPATCH OVER THIS (Sep-2026). Aug-31 a
+                    //    mislocated WiFi router put a rider's phone in Beijing;
+                    //    Google correctly answered ZERO_RESULTS for "drive from
+                    //    Beijing to Islamabad" and this branch returned a 500, so
+                    //    the rider tapped Dispatch ten times, got "API error or
+                    //    limit reached" each time, and left with six stops carrying
+                    //    NO times at all — while the route-preview path handled the
+                    //    very same failure gracefully in the same minute.
+                    //
+                    //    The origin and pin guards above should now prevent the
+                    //    impossible-coordinate case from ever reaching Google, so
+                    //    this is the backstop for everything else: an outage, a
+                    //    timeout, a genuinely unroutable pin. Same principle as the
+                    //    no-pin rule — one rough time beats none at all.
+                    $etaResult        = $this->estimateLegsByStraightLine($waypoints);
+                    $routeIsEstimated = true;
+                    $etaSource        = 'straight_line_estimate';
+                    \Log::warning('Dispatch: Google multi-stop ETA unavailable — using straight-line estimates', [
+                        'rider_id' => $riderId,
+                        'stops'    => count($waypoints) - 1,
+                        'reason'   => $googleFailure,   // the REAL cause, not a guess
+                    ]);
                 }
             } else {
                 \Log::warning('Dispatch: no stop has a usable location — timing every leg from the estimate', [
@@ -1562,7 +1662,12 @@ class RiderController extends Controller
             //    stop is missing the detour too. So the "≈" honesty flag propagates
             //    downstream instead of marking only the pinless stop itself: the
             //    times behind it are exactly as approximate as its own.
-            $estimatedLegSeen = false;
+            //
+            //    Seeded from $routeIsEstimated: when Google could not answer at all,
+            //    EVERY leg is a straight-line guess, so every stop must carry the
+            //    "≈" from the very first one — not just the stops behind a pinless
+            //    neighbour.
+            $estimatedLegSeen = $routeIsEstimated;
 
             foreach ($plan as $index => $entry) {
                 $order = $entry['order'];
@@ -1744,15 +1849,37 @@ class RiderController extends Controller
                 //    already written in plain English for display.
                 'location_notes' => $locationNotes,
                 'no_pin_leg_minutes' => $noPinLegMinutes,
+                // Where these times came from: Google's road times, the
+                // straight-line stand-in used when Google could not answer, or
+                // no Google call at all because nothing was routable.
+                // Diagnostic — nothing renders it yet, and it costs one string.
+                'eta_source' => $etaSource,
+                // Stops whose saved pin was rejected as impossible (see above).
+                'bad_pin_orders' => $badPinOrders,
             ];
 
+            // Everything the team needs to know about HOW these times were worked
+            // out, in one place. Both parts go out under `gps_warning` because
+            // that is the key every APK already in riders' hands displays — a
+            // new key would show nothing until the whole fleet had updated.
+            $dispatchWarnings = [];
+
             if ($usedShopLocation) {
-                if ($origin['source'] === 'store_far_gps' && $origin['distance_from_store_m']) {
-                    $km = number_format($origin['distance_from_store_m'] / 1000, 1);
-                    $response['gps_warning'] = "⚠️ {$rider->fullname}'s GPS reading was ~{$km} km from the office, so ETAs were calculated from the office location. Ask them to open the app so GPS refreshes.";
-                } else {
-                    $response['gps_warning'] = "⚠️ Rider GPS not active — ETAs calculated from shop location. Ask {$rider->fullname} to turn on GPS for accurate times.";
-                }
+                $dispatchWarnings[] = $this->dispatchOriginWarning($origin, $rider->fullname, 'Delivery times');
+            }
+
+            if ($routeIsEstimated) {
+                $dispatchWarnings[] = "⚠️ Google se route nahi ban saka, is liye times seedhi doori se lagaye gaye hain "
+                                    . "— ye sirf andaza hain. Thori der baad dobara Dispatch karein to theek time lag jayenge.";
+            }
+
+            if (!empty($badPinOrders)) {
+                $dispatchWarnings[] = "⚠️ In orders ki saved location bilkul galat thi, is liye unhein bina pin ke ginna para: "
+                                    . implode(', ', $badPinOrders) . ". Inki pin theek karwayein.";
+            }
+
+            if (!empty($dispatchWarnings)) {
+                $response['gps_warning'] = implode("\n\n", $dispatchWarnings);
             }
 
             return response()->json($response);
@@ -1988,6 +2115,10 @@ class RiderController extends Controller
         $accuracyMaxM   = 150.0;    // fixes worse than this are "low confidence"
         $clusterRadiusM = 1500.0;   // a fix within this of the consensus is trusted
         $farBackstopM   = 5000.0;   // even anchored, beyond this ⇒ persistent phantom
+        // ⭐ PHANTOM CEILING (Sep-2026). Beyond this a fix is not "far", it is
+        //    IMPOSSIBLE, and it may not be used as an origin on ANY branch.
+        //    See phantomOriginMetres() for why the number is what it is.
+        $phantomM       = $this->phantomOriginMetres();
 
         // ⭐ Aug-2026 — a rider dispatching AT A VAN MEET POINT is out on the road,
         //   even on his first dispatch of the day. Without this, the first-dispatch
@@ -2042,20 +2173,59 @@ class RiderController extends Controller
                 : null;
         };
 
+        // A fix we are willing to stand on. A NULL distance means no office is
+        // configured, so there is nothing to judge against — allow it, which
+        // keeps behaviour identical on a server without a primary location.
+        $plausible = function ($fix) use ($distFromStore, $phantomM) {
+            $d = $distFromStore($fix);
+            return $d === null || $d <= $phantomM;
+        };
+
         // --- MID-RUN: trust the rider's live GPS, prefer the confident fix. ---
         if ($isMidRun) {
-            $fix = $credible->first() ?: $fixes->first();
+            // ⭐ PLAUSIBILITY IS APPLIED BEFORE THE ACCURACY PREFERENCE, and the
+            //    order matters more than it looks. A WiFi-mislocated fix reports
+            //    EXCELLENT accuracy — Aug-31 the phone claimed 6.7 m while sitting
+            //    3,878 km away — so choosing by accuracy first actively selects
+            //    the most confident lie. Neither existing filter could catch it:
+            //    60 of 225 phantom fixes passed the 150 m accuracy test, and the
+            //    consensus check passed too because EVERY fix in the window was
+            //    the same wrong place, so they agreed with each other.
+            $sane    = $credible->filter($plausible)->values();
+            $saneRaw = $fixes->filter($plausible)->values();
+            $fix     = $sane->first() ?: $saneRaw->first();
+
             if ($fix) {
                 return [
                     'location'              => $fix,
                     'used_store'            => false,
-                    'source'                => $credible->isNotEmpty() ? 'rider_gps_midrun' : 'rider_gps_midrun_lowacc',
+                    'source'                => $sane->isNotEmpty() ? 'rider_gps_midrun' : 'rider_gps_midrun_lowacc',
                     'note'                  => 'Mid-run re-dispatch — used live rider GPS.',
                     'fix'                   => $fix,
                     'distance_from_store_m' => $distFromStore($fix),
                     'is_mid_run'            => true,
+                    'phantom'               => false,
                 ];
             }
+
+            // Nothing usable. "The phone gave us nothing" and "everything the
+            // phone gave us is impossible" are DIFFERENT faults needing different
+            // advice from the rider, so they are reported apart rather than both
+            // becoming a generic "GPS not active".
+            $phantomFix = $credible->first() ?: $fixes->first();
+            if ($phantomFix) {
+                return [
+                    'location'              => $storeLocation(),
+                    'used_store'            => $storeOk,
+                    'source'                => 'store_phantom_gps_midrun',
+                    'note'                  => 'Mid-run but every recent fix was implausibly far — used office location.',
+                    'fix'                   => $phantomFix,
+                    'distance_from_store_m' => $distFromStore($phantomFix),
+                    'is_mid_run'            => true,
+                    'phantom'               => true,
+                ];
+            }
+
             return [
                 'location'              => $storeLocation(),
                 'used_store'            => $storeOk,
@@ -2064,6 +2234,7 @@ class RiderController extends Controller
                 'fix'                   => null,
                 'distance_from_store_m' => null,
                 'is_mid_run'            => true,
+                'phantom'               => false,
             ];
         }
 
@@ -2103,6 +2274,10 @@ class RiderController extends Controller
                 'fix'                   => $fix,
                 'distance_from_store_m' => $dist,
                 'is_mid_run'            => false,
+                // Same rejection, but "16 km away" and "3,878 km away" need
+                // different advice: one is a drifting fix, the other is a phone
+                // being told the wrong country by a mislocated WiFi router.
+                'phantom'               => $dist > $phantomM,
             ];
         }
 
@@ -2115,6 +2290,7 @@ class RiderController extends Controller
                 'fix'                   => $fix,
                 'distance_from_store_m' => $dist,
                 'is_mid_run'            => false,
+                'phantom'               => false,
             ];
         }
 
@@ -2127,6 +2303,141 @@ class RiderController extends Controller
             'fix'                   => null,
             'distance_from_store_m' => null,
             'is_mid_run'            => false,
+            'phantom'               => false,
+        ];
+    }
+
+    /**
+     * How far from the office a coordinate may be before we call it impossible
+     * rather than merely far. Used for BOTH the rider's origin and the customer
+     * pins, because the same fault produces both.
+     *
+     * WHY 80 km. Measured against 51,056 real fixes (12 Aug – 1 Sep 2026):
+     *   • furthest a rider has ever legitimately been:  35.6 km  (a genuine far
+     *     run on 15 Aug, three riders, and the van meet points sit inside this)
+     *   • closest a phantom fix has ever been:         172.2 km
+     *   • fixes recorded between 60 km and 172 km:            0
+     * 80 km sits in that empty band — 2.2× the furthest real position, and less
+     * than half the nearest phantom. It exists to catch "the phone thinks it is
+     * in Beijing", NOT to second-guess a long delivery.
+     *
+     * DELIBERATELY NOT the first-dispatch 5 km backstop: a rider mid-run — or one
+     * standing at a van meet point — is legitimately tens of kilometres out, so
+     * reusing 5 km here would reject real positions all day.
+     */
+    private function phantomOriginMetres(): float
+    {
+        $m = (float) $this->attnConfig('DISPATCH_PHANTOM_ORIGIN_M', 80000);
+        // A zero / negative / unparseable override must not silently disable the
+        // guard — that would restore exactly the bug this exists to prevent.
+        return $m > 0 ? $m : 80000.0;
+    }
+
+    /**
+     * The dispatch origin explained to the team, in Roman Urdu, in the ONE case
+     * they can act on: we did not use the rider's own position.
+     *
+     * Three different faults, three different messages — this distinction is the
+     * whole point. Telling a rider "GPS not active" when his GPS is on and
+     * reporting 6.7 m accuracy sends him to check a setting that is already
+     * correct, while the thing that actually fixes it (turn the WiFi off) is
+     * something he would never guess.
+     */
+    private function dispatchOriginWarning(array $origin, string $riderName, string $what = 'Delivery times'): string
+    {
+        // 1. PHANTOM — GPS is on and confident, and somewhere impossible.
+        if (!empty($origin['phantom'])) {
+            $km  = number_format(((int) $origin['distance_from_store_m']) / 1000);
+            $fix = $origin['fix'] ?? null;
+
+            // "Pakistan se bahar" lands where a bare number does not. A distance
+            // reads like an app error the rider can't act on; being told his
+            // phone thinks he is out of the country tells him instantly that the
+            // PHONE is wrong, which is the whole point of the message.
+            $outside = $fix && $this->isOutsidePakistan(
+                isset($fix->latitude)  ? (float) $fix->latitude  : null,
+                isset($fix->longitude) ? (float) $fix->longitude : null
+            );
+            $where = $outside
+                ? "phone keh raha hai ke aap Pakistan se BAHAR hain (takreeban {$km} km door)"
+                : "phone aap ko office se takreeban {$km} km door dikha raha hai";
+
+            return "⚠️ {$riderName} ke phone ki location galat aa rahi hai — {$where}. "
+                 . "{$what} office se lagaye gaye hain — ye sirf andaza hain.\n"
+                 . "Theek karne ka tareeqa: WiFi band karein, mobile data aur Location on rakhein, "
+                 . "phir app dobara kholein aur dobara Dispatch karein.";
+        }
+
+        // 2. DRIFTING — plausible place, just too far from the office to be the
+        //    start of a first dispatch. Opening the app usually refreshes it.
+        //    lcfirst: $what starts a sentence in case 1 but sits mid-sentence here.
+        if ($origin['source'] === 'store_far_gps' && $origin['distance_from_store_m']) {
+            $km = number_format($origin['distance_from_store_m'] / 1000, 1);
+            return "⚠️ {$riderName} ki GPS reading office se takreeban {$km} km door thi, "
+                 . "is liye " . lcfirst($what) . " office se lagaye gaye hain. "
+                 . "Unse kahein ke app khol kar GPS refresh karein.";
+        }
+
+        // 3. GENUINELY ABSENT — no fix at all in the window.
+        return "⚠️ {$riderName} ka GPS on nahi hai — " . lcfirst($what) . " office se lagaye gaye hain "
+             . "(sirf andaza). Location on kar ke app kholein, phir dobara Dispatch karein.";
+    }
+
+    /**
+     * Is this coordinate outside Pakistan?
+     *
+     * Used ONLY to word a warning more vividly — never to make a routing or
+     * money decision — so the box is deliberately GENEROUS. Telling a rider he
+     * is "outside Pakistan" when he is not would destroy the credibility of the
+     * whole message, and a false negative costs nothing: the warning simply
+     * falls back to reporting the distance, which is still true.
+     *
+     * Pakistan spans roughly lat 23.6–37.1, lng 60.9–77.8. The margin below puts
+     * Gwadar (25.1, 62.3), Karachi (24.9, 67.1) and Gilgit (35.9, 74.3) safely
+     * inside, while Beijing (39.9, 116.4) and Ottawa (45.4, -75.7) — the two
+     * places phones have actually claimed — are far outside.
+     */
+    private function isOutsidePakistan(?float $lat, ?float $lng): bool
+    {
+        if ($lat === null || $lng === null) {
+            return false;
+        }
+        return $lat < 23.0 || $lat > 37.5 || $lng < 60.5 || $lng > 78.5;
+    }
+
+    /**
+     * Straight-line stand-in for Google's leg times.
+     *
+     * Used ONLY when Google cannot answer. It is a poor estimate and it is
+     * labelled as one everywhere it surfaces — but a rough time beats the old
+     * behaviour, which was to refuse the dispatch outright and leave every stop
+     * with no time at all while the rider left anyway (Aug-31).
+     *
+     * The per-leg cap is load-bearing: without it one bad coordinate that slipped
+     * through would text a customer an ETA measured in days.
+     */
+    private function estimateLegsByStraightLine(array $waypoints): array
+    {
+        $kmh = max(5, min(80, (int) $this->attnConfig('DISPATCH_FALLBACK_SPEED_KMH', 25)));
+        $legs = [];
+        $total = 0;
+
+        for ($i = 0, $n = count($waypoints) - 1; $i < $n; $i++) {
+            $metres = $this->haversineDistance(
+                (float) $waypoints[$i]['lat'],     (float) $waypoints[$i]['lng'],
+                (float) $waypoints[$i + 1]['lat'], (float) $waypoints[$i + 1]['lng']
+            );
+            // ×1.3: roads are never straight. Errs toward allowing more time,
+            // which is the safe direction for a promise to a customer.
+            $minutes = (int) max(1, min(180, round((($metres / 1000) * 1.3) / $kmh * 60)));
+            $legs[]  = $minutes;
+            $total  += $minutes;
+        }
+
+        return [
+            'total_duration' => $total,
+            'legs'           => $legs,
+            'source'         => 'straight_line_estimate',
         ];
     }
 
@@ -2225,33 +2536,45 @@ class RiderController extends Controller
      * Returns leg durations for waypoints route
      * 
      * @param array $waypoints - Array of ['lat' => x, 'lng' => y]
+     * @param string|null $failure OUT — why this returned null, in the caller's
+     *        words rather than a guess. Every null return sets it. Aug-31 cost
+     *        an evening to a log line that blamed "API error or monthly cap"
+     *        for a ZERO_RESULTS, sending the owner to check Google billing that
+     *        was never the problem: the cap was at 3,720 of 10,000.
      * @return array|null - ['total_duration' => minutes, 'legs' => [min, min, ...]]
      */
-    private function getMultiStopEtaFromGoogle(array $waypoints): ?array
+    private function getMultiStopEtaFromGoogle(array $waypoints, ?string &$failure = null): ?array
     {
+        $failure = null;
+
         if (count($waypoints) < 2) {
+            $failure = 'fewer_than_two_waypoints';
             return null;
         }
-        
+
         // Check monthly usage limit
         $monthKey = date('Y-m');
         $usage = \DB::table('t_sys_api_usage')
             ->where('api_name', 'google_directions')
             ->where('month_key', $monthKey)
             ->first();
-        
+
         $currentCount = $usage->call_count ?? 0;
         if ($currentCount >= 10000) {
-            \Log::warning('Google Maps API monthly limit reached for multi-stop ETA');
+            \Log::warning('Google Maps API monthly limit reached for multi-stop ETA', [
+                'call_count' => $currentCount, 'month_key' => $monthKey,
+            ]);
+            $failure = 'monthly_cap_reached';
             return null;
         }
-        
+
         $apiKey = config('services.google_maps.directions_key');
         if (empty($apiKey)) {
             \Log::warning('Google Maps API key not configured');
+            $failure = 'no_api_key';
             return null;
         }
-        
+
         try {
             // Build origin (first point)
             $origin = $waypoints[0]['lat'] . ',' . $waypoints[0]['lng'];
@@ -2289,8 +2612,15 @@ class RiderController extends Controller
             // Increment usage counter
             $this->incrementApiUsage('google_directions');
             
-            if ($data['status'] !== 'OK' || empty($data['routes'])) {
-                \Log::warning('Google Maps multi-stop API error', ['status' => $data['status']]);
+            if (($data['status'] ?? null) !== 'OK' || empty($data['routes'])) {
+                $status = $data['status'] ?? 'unknown';
+                \Log::warning('Google Maps multi-stop API error', [
+                    'status'  => $status,
+                    // Google explains ZERO_RESULTS / NOT_FOUND here when it can.
+                    'message' => $data['error_message'] ?? null,
+                    'stops'   => count($waypoints) - 1,
+                ]);
+                $failure = $status;
                 return null;
             }
             
@@ -2322,6 +2652,7 @@ class RiderController extends Controller
             \Log::error('Google Maps multi-stop API call failed', [
                 'error' => $e->getMessage(),
             ]);
+            $failure = 'request_failed';
             return null;
         }
     }
@@ -2352,7 +2683,8 @@ class RiderController extends Controller
             if (!$origin['location']) {
                 return response()->json([
                     'success' => false,
-                    'message' => "⚠️ Rider GPS not active — please ask {$rider->fullname} to turn on GPS. Shop location also not configured.",
+                    'message' => "⚠️ {$rider->fullname} ki location nahi mil rahi, aur office ki location bhi set nahi hai — "
+                               . "is liye route nahi banaya ja sakta. Admin se kahein ke office location set kare.",
                 ], 400);
             }
             $riderLocation    = $origin['location'];
@@ -2485,12 +2817,10 @@ class RiderController extends Controller
             ];
 
             if ($usedShopLocation) {
-                if ($origin['source'] === 'store_far_gps' && $origin['distance_from_store_m']) {
-                    $km = number_format($origin['distance_from_store_m'] / 1000, 1);
-                    $response['gps_warning'] = "⚠️ {$rider->fullname}'s GPS reading was ~{$km} km from the office, so the route was optimised from the office location. Ask them to open the app so GPS refreshes.";
-                } else {
-                    $response['gps_warning'] = "⚠️ Rider GPS not active — route optimized from shop location. Ask {$rider->fullname} to turn on GPS for accurate results.";
-                }
+                // Same three-way explanation as dispatch, so the preview and the
+                // real thing can never tell the team two different stories about
+                // the same phone.
+                $response['gps_warning'] = $this->dispatchOriginWarning($origin, $rider->fullname, 'Route aur times');
             }
 
             if (!empty($farOrders)) {
@@ -5000,16 +5330,12 @@ class RiderController extends Controller
             //    moment (tapping IN would orphan yesterday's open shift AND block the server's
             //    midnight checkout fallback). Before 06:00, yesterday's OPEN shift IS his day:
             //    serve that row, so the app shows checked-in state + the OUT button. Same bound
-            //    and same open-row condition as checkOut's fallback — the two must stay in step.
+            //    The bound and the open-row condition now live in AttendanceDay, so this can no
+            //    longer drift away from the other doors (it did — see uploadMeterPicture, 1 Sep).
             //    After he checks out (or past 06:00) this no-ops and the new day starts clean.
             $crossMidnight = false;
-            if ((!$attendance || !$attendance->login_time) && now()->format('H:i:s') < '06:00:00') {
-                $openYesterday = \DB::table('t_ops_attendance')
-                    ->where('user_id', $user->id)
-                    ->whereDate('attendance_date', now()->subDay()->format('Y-m-d'))
-                    ->whereNotNull('login_time')
-                    ->whereNull('logout_time')
-                    ->first();
+            if (!$attendance || !$attendance->login_time) {
+                $openYesterday = (new \App\Services\Riders\AttendanceDay())->openPastMidnightRow($user->id);
                 if ($openYesterday) {
                     $attendance = $openYesterday;
                     $crossMidnight = true;
@@ -5652,19 +5978,11 @@ class RiderController extends Controller
             //    that blocks the midnight checkout fallback. Same 06:00 bound as checkOut
             //    and getTodayAttendance; a genuine new day always starts after 06:00.
             //    The manager's web "Mark Attendance" is a separate path and unaffected.
-            if (now()->format('H:i:s') < '06:00:00') {
-                $openYesterday = \DB::table('t_ops_attendance')
-                    ->where('user_id', $user->id)
-                    ->whereDate('attendance_date', now()->subDay()->format('Y-m-d'))
-                    ->whereNotNull('login_time')
-                    ->whereNull('logout_time')
-                    ->first();
-                if ($openYesterday) {
-                    return response()->json([
-                        'success' => false,
-                        'message' => "You're still checked in from yesterday — check out first, or ask your manager to close that shift.",
-                    ], 400);
-                }
+            if ((new \App\Services\Riders\AttendanceDay())->openPastMidnightRow($user->id)) {
+                return response()->json([
+                    'success' => false,
+                    'message' => "You're still checked in from yesterday — check out first, or ask your manager to close that shift.",
+                ], 400);
             }
 
             // Process location data for check-in
@@ -6707,24 +7025,25 @@ class RiderController extends Controller
             $type = $request->input('type');
             $meterReading = $request->input('meter_reading'); // ⭐ Get OCR reading
 
-            // ⭐ U5 "Meter & Check In": the START meter is recorded BEFORE check-in (the IN
-            // button chains meter → check-in). No row yet → create today's row without
-            // login_time; checkIn() updates such a row in place (verified behaviour). The old
-            // "check in first" gates only remain for the END side (no row = never worked today).
-            if (!$existing) {
-                if ($type !== 'start') {
-                    return response()->json([
-                        'success' => false,
-                        'message' => 'No attendance record found for today. Please check in first.'
-                    ], 400);
+            // ⭐⭐ PAST-MIDNIGHT END METER (1 Sep 2026 incident). This endpoint was the FIFTH
+            //    attendance door and the only one never taught the midnight rule, so at 00:23
+            //    Farooq — a company-bike rider, therefore meter-gated — was told "No attendance
+            //    record found for today. Please check in first." The app records the closing
+            //    meter BEFORE it calls checkOut(), so dying here meant checkOut()'s own working
+            //    fallback was never reached and his day never closed. Not even the manager's
+            //    checkout unlock could rescue him: that valve is only read inside checkOut().
+            //
+            //    The rule now lives in ONE place — see AttendanceDay.
+            //
+            // ⚠ END ONLY. A START meter at 00:30 opens a NEW day and must keep creating today's
+            //   row; attaching it to yesterday's open shift would overwrite that shift's opening
+            //   reading. The `!login_time` test mirrors checkOut(): a today row with no check-in
+            //   is a meter-only shell, not the day he is working.
+            if ($type === 'end' && (!$existing || !$existing->login_time)) {
+                $openYesterday = (new \App\Services\Riders\AttendanceDay())->openPastMidnightRow($user->id);
+                if ($openYesterday) {
+                    $existing = $openYesterday;
                 }
-                $newId = \DB::table('t_ops_attendance')->insertGetId([
-                    'user_id' => $user->id,
-                    'attendance_date' => $today,
-                    'created_at' => now(),
-                    'updated_at' => now(),
-                ]);
-                $existing = \DB::table('t_ops_attendance')->where('id', $newId)->first();
             }
 
             // ⭐ U4 UNIFIED METER-OUT: a company-bike rider on the home flow has exactly ONE
@@ -6734,6 +7053,16 @@ class RiderController extends Controller
             // Delegate to the same flow as /attendance/home-meter so both doors are the same door.
             // Denials are returned as 200 {success:false} because old tile UIs only surface
             // response.data.message on 2xx.
+            //
+            // ⚠⚠ HOISTED ABOVE THE "no row for today" GUARD (1 Sep 2026). A home-flow rider
+            //    records his meter AFTER checkout, so past midnight his row is yesterday's AND
+            //    already has a logout_time — which the open-shift fallback deliberately will not
+            //    match. He therefore hit the 400 below and this delegation, three lines further
+            //    down, never ran. `processHomeMeterSubmission` takes $user and finds its own row
+            //    (openJourneyRow spans today+yesterday), so it never needed $existing at all —
+            //    the guard was simply standing in front of the wrong door.
+            //    The main /attendance/home-meter endpoint was always fine; this is the legacy
+            //    End-tile path that is supposed to behave identically to it.
             if ($type === 'end') {
                 $hjHome = (new \App\Services\Riders\HomeJourneyService())->riderHomePin($user->id);
                 if ($hjHome !== null) {
@@ -6760,6 +7089,27 @@ class RiderController extends Controller
                     }
                     return $resp;
                 }
+            }
+
+            // ⭐ U5 "Meter & Check In": the START meter is recorded BEFORE check-in (the IN
+            // button chains meter → check-in). No row yet → create today's row without
+            // login_time; checkIn() updates such a row in place (verified behaviour). The old
+            // "check in first" gates only remain for the END side (no row = never worked today,
+            // and no open past-midnight shift to attach the closing reading to either).
+            if (!$existing) {
+                if ($type !== 'start') {
+                    return response()->json([
+                        'success' => false,
+                        'message' => 'No attendance record found for today. Please check in first.'
+                    ], 400);
+                }
+                $newId = \DB::table('t_ops_attendance')->insertGetId([
+                    'user_id' => $user->id,
+                    'attendance_date' => $today,
+                    'created_at' => now(),
+                    'updated_at' => now(),
+                ]);
+                $existing = \DB::table('t_ops_attendance')->where('id', $newId)->first();
             }
 
             // Store meter picture (absent on the broken-camera typed-reading path — never
@@ -7006,13 +7356,8 @@ class RiderController extends Controller
             //    still goes through the manager, not a silent morning self-checkout;
             //    within the window the location rule below still applies unchanged.
             //    (The bike-rider home-meter flow already does this via openJourneyRow.)
-            if ((!$existing || !$existing->login_time) && now()->format('H:i:s') < '06:00:00') {
-                $openYesterday = \DB::table('t_ops_attendance')
-                    ->where('user_id', $user->id)
-                    ->whereDate('attendance_date', now()->subDay()->format('Y-m-d'))
-                    ->whereNotNull('login_time')
-                    ->whereNull('logout_time')
-                    ->first();
+            if (!$existing || !$existing->login_time) {
+                $openYesterday = (new \App\Services\Riders\AttendanceDay())->openPastMidnightRow($user->id);
                 if ($openYesterday) {
                     $existing = $openYesterday;
                 }
@@ -7239,7 +7584,14 @@ class RiderController extends Controller
 
             return response()->json([
                 'success' => true,
-                'message' => 'Checked out successfully at ' . date('h:i A', strtotime($currentTime)),
+                // ⭐ NAME THE DAY HE JUST CLOSED. At 00:27 "Checked out successfully at 12:27 AM"
+                //   is ambiguous in the one situation where it matters — the rider cannot tell
+                //   whether he closed the shift he was working or somehow started a new one.
+                //   The app prints this string verbatim, so this works on the CURRENT APK with
+                //   no build. Silent on a normal same-day checkout.
+                'message' => 'Checked out successfully at ' . date('h:i A', strtotime($currentTime))
+                    . (($closedDayLabel = (new \App\Services\Riders\AttendanceDay())->crossedMidnightLabel($existing))
+                        ? ' — closed your ' . $closedDayLabel . ' shift.' : ''),
                 'logout_time' => $currentTime,
                 'picture_url' => $picturePath ? $this->getMeterPictureUrl($picturePath) : null,
                 'location_captured' => $locationData ? true : false,
@@ -8078,10 +8430,12 @@ class RiderController extends Controller
             ]);
             $status = $validated['status'] ?? 'confirmed';
 
-            $attendance = \DB::table('t_ops_attendance')
-                ->where('user_id', $user->id)
-                ->whereDate('attendance_date', $today)
-                ->first();
+            // ⭐ Past-midnight sibling (1 Sep 2026). This popup is shown by the app IMMEDIATELY
+            //   after a successful checkout, so on a shift that rolled past 00:00 the money it
+            //   is confirming belongs to YESTERDAY's row — the one just closed. Asking the
+            //   today-only question 404'd it every time. `currentOrJustClosedRow` is used rather
+            //   than the open-row finder precisely because the row now HAS a logout_time.
+            $attendance = (new \App\Services\Riders\AttendanceDay())->currentOrJustClosedRow($user->id);
 
             if (!$attendance) {
                 return response()->json(['success' => false, 'message' => 'No attendance record for today'], 404);
@@ -8352,16 +8706,11 @@ class RiderController extends Controller
             //    lives on YESTERDAY's row, so heartbeats died at midnight ("not_on_duty") and
             //    the app self-stopped GPS mid-shift — exactly when the checkout-retry card and
             //    the delivery trail need it. Before 06:00, an open yesterday shift counts as
-            //    on duty. Same bound and open-row condition as checkOut / getTodayAttendance.
+            //    on duty. Bound + open-row condition come from AttendanceDay, like every door.
             //    (Distinct from the U4 home phase above, which requires logout SET.)
-            if (!$attendance && now()->format('H:i:s') < '06:00:00') {
+            if (!$attendance) {
                 try {
-                    $midShift = \DB::table('t_ops_attendance')
-                        ->where('user_id', $user->id)
-                        ->whereDate('attendance_date', now()->subDay()->format('Y-m-d'))
-                        ->whereNotNull('login_time')
-                        ->whereNull('logout_time')
-                        ->first();
+                    $midShift = (new \App\Services\Riders\AttendanceDay())->openPastMidnightRow($user->id);
                     if ($midShift) {
                         $attendance = $midShift;
                     }
@@ -14127,6 +14476,13 @@ class RiderController extends Controller
                     // servers without batch 14 — the button just never appears.
                     'van_loaded_count' => $order->van_loaded_packets ? count((array) json_decode($order->van_loaded_packets, true)) : 0,
                     'van_loaded_at' => $order->van_loaded_at,
+                    // ⭐ WHOSE van (Aug-31). Without this the store's load-scan list
+                    //    could only be filtered on "tagged and not yet loaded", so an
+                    //    order already aboard — or already sent out — was absent from
+                    //    the scanner and answered "not in this load" instead of
+                    //    reaching the server. That made the after-dispatch pull-back
+                    //    unreachable from the one screen the store actually scans in.
+                    'van_user_id' => $order->van_user_id,
                     'payment_method' => $order->payment_method,     // ⭐ Payment method (cash/online)
                     'payment_proof' => $paymentProofMap[$order->id] ?? null, // Jun-2026: WhatsApp/email proof status
                     'customer_id' => $order->customer_id, // Added for verified location functionality
@@ -14344,6 +14700,27 @@ class RiderController extends Controller
             //    phone call is needed. Clears itself the moment it is answered
             //    (unlock / save / relock / dismiss) — see PinUnlockRequestService.
             $response['pin_unlock_requests'] = \App\Services\Location\PinUnlockRequestService::live();
+
+            // ⭐ 🔁 Sep-2026 — riders waiting for a VEHICLE HANDOVER to be approved
+            //    (Rajab asking for the van in the morning, handing it back at night).
+            //    Rides THIS poll rather than opening a second one, exactly as the
+            //    unlock banner does: the store screen already asks every 30s, and a
+            //    separate timer would just be more traffic for the same answer.
+            // ⚠ The service returns an EMPTY LIST for anyone without `assign_vehicles`,
+            //   so this is safe to attach for every store user — the payload itself
+            //   carries the permission decision and the phone renders what it is given.
+            // ⚠ Try-wrapped: a broken banner must never break the orders board.
+            try {
+                $vhrSvc = new \App\Services\Riders\VehicleHandoverRequestService();
+                $vhrUser = $request->user() ?: auth()->user();
+                $vhrCan = $vhrUser && method_exists($vhrUser, 'hasPermission')
+                    && (!method_exists($vhrUser, 'isReadOnly') || !$vhrUser->isReadOnly())
+                    && $vhrUser->hasPermission('assign_vehicles');
+                $response['vehicle_requests'] = $vhrCan ? $vhrSvc->live() : [];
+            } catch (\Throwable $e) {
+                $response['vehicle_requests'] = [];
+                \Log::warning('vehicle handover banner failed (non-fatal)', ['error' => $e->getMessage()]);
+            }
 
             // ⭐ Aug-2026 — customers on THIS board who sent us a location pin we
             //    did not save. Same self-clearing contract as the unlock banner:
@@ -15602,7 +15979,19 @@ class RiderController extends Controller
             // to the van doors.
             $vanBlock = \App\Services\Riders\VanService::manualChangeBlock($order, $validated['status']);
             if ($vanBlock !== null) {
-                return response()->json(['success' => false, 'message' => $vanBlock], 422);
+                // ⭐⭐ OFFER THE DOOR, DON'T JUST SHUT ONE (Aug-31). Farooq read
+                //    this refusal at 12:52:00 and did the `on_hold` two-hop six
+                //    seconds later — the message named the DRIVER's panel and gave
+                //    the store nothing it could press, and the web button that
+                //    could have done it went unused all day because the store
+                //    works here, in mobile store mode. `van_release` lets the app
+                //    put "Send it out with a delivery time" on this very alert.
+                //    Null for every other refusal, so nothing else changes.
+                return response()->json([
+                    'success'     => false,
+                    'message'     => $vanBlock,
+                    'van_release' => \App\Services\Riders\VanService::releaseHint($order, $validated['status']),
+                ], 422);
             }
 
             // Use the same method as webapp (OrderModel::changeStatus)
@@ -19223,7 +19612,13 @@ class RiderController extends Controller
                         ? $otSvc->countedCheckout((int) $employee['user_id'], $selectedDate,
                             $employee['login_time'], $employee['logout_time'], $cuRow['until_raw'] ?? null)
                         : null;
+                    // ⚠⚠ `user_id` is load-bearing — see the twin comment on the web page's
+                    //   build() call. Without it the registry's date-scoped meter excusal
+                    //   (`meterExcusedOn`) evaluates user 0 and can never fire. `transfer_day`
+                    //   is derived inside the service from this id, so the phone and the web
+                    //   reach the same verdict without the mobile payload having to compute it.
                     $employee['day_checks'] = $dcSvc->build([
+                        'user_id' => (int) $employee['user_id'],
                         'login_time' => $employee['login_time'], 'logout_time' => $employee['logout_time'],
                         'role_name' => $employee['role_name'] ?? null, 'company_bike' => !empty($employee['is_company_bike']),
                         'meter_required' => isset($meterExemptSet[$employee['user_id']]) ? 0 : 1,
@@ -19865,6 +20260,17 @@ class RiderController extends Controller
     {
         if ($deny = $this->storeAttendanceGate()) { return $deny; }
         return (new \App\Http\Controllers\CRM\AttendanceController())->checkoutUnlock($request);
+    }
+
+    /**
+     * Put a rider who already checked out back ON DUTY (an extra order came in). Same audited
+     * logic as the web — see CRM\AttendanceController::undoCheckout for the bundle it clears
+     * and why "just clear logout_time" is not enough.
+     */
+    public function storeAttendanceUndoCheckout(Request $request)
+    {
+        if ($deny = $this->storeAttendanceGate()) { return $deny; }
+        return (new \App\Http\Controllers\CRM\AttendanceController())->undoCheckout($request);
     }
 
     public function storeAttendanceHomeUnlock(Request $request)
@@ -21798,7 +22204,12 @@ class RiderController extends Controller
                 'invoices_by_date' => $invoicesByDate, // ⭐ New: date-grouped data for settled view
                 'online_summary' => $onlineData, // ⭐ New: online summary
                 'online_message_tracking' => $onlineMessageTracking, // legacy shape — the installed APK reads this
-                'payment_follow_up' => $paymentFollowUp, // Aug-2026 tiers — for the next mobile build
+                'payment_follow_up' => $paymentFollowUp, // Aug-2026 tiers — read by the rebuilt Daily Closing screen
+                // Sep-2026: the accounts the app should show if a template send
+                // fails and it has to fall back to native WhatsApp. Served from
+                // BankDetailsProvider so the phone can never print a stale set —
+                // DailyClosingScreen used to hardcode the retired HBL pair.
+                'bank_details_text' => \App\Services\WhatsApp\BankDetailsProvider::accountsBlock(),
                 'petrol_requests' => $petrolRequestsData,
                 'maintenance_requests' => $maintenanceRequestsData,
                 'petrol_payment_accounts' => $petrolPaymentAccounts,

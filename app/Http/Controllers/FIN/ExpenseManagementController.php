@@ -149,10 +149,32 @@ class ExpenseManagementController extends Controller
         }
         
         // Apply filters
-        // ⭐ Use expense_date for filtering (falls back to created_at for old records)
+        // ⭐ Use expense_date for filtering (falls back to created_at for old records).
+        //
+        // Sep-2026 — salary advances are the one exception: they belong to a PAYROLL MONTH,
+        // which is not always the month the money moved (an advance given forward is paid now
+        // but recovered from next month's salary). They are listed under that payroll month,
+        // using the SAME month expression HQ and the Reports page cost them by, so a manager
+        // filtering August sees exactly the advances August's wage bill was charged for.
+        // Every other request type is unchanged.
         if ($dateFrom && $dateTo) {
-            $expensesQuery->whereRaw('DATE(COALESCE(expense_date, created_at)) >= ?', [$dateFrom])
-                          ->whereRaw('DATE(COALESCE(expense_date, created_at)) <= ?', [$dateTo]);
+            $monthExpr = \App\Services\HR\SalaryCostService::monthExpr('t_req_master');
+            $fromMonth = date('Y-m', strtotime($dateFrom));
+            $toMonth   = date('Y-m', strtotime($dateTo));
+            $expensesQuery->where(function ($q) use ($dateFrom, $dateTo, $monthExpr, $fromMonth, $toMonth) {
+                // Salary advances → by payroll month.
+                $q->where(function ($adv) use ($monthExpr, $fromMonth, $toMonth) {
+                    $adv->whereHas('category', fn ($c) => $c->where('category_code', 'salary_advance'))
+                        ->whereRaw("$monthExpr >= ?", [$fromMonth])
+                        ->whereRaw("$monthExpr <= ?", [$toMonth]);
+                })
+                // Everything else → by the date the money moved, exactly as before.
+                ->orWhere(function ($oth) use ($dateFrom, $dateTo) {
+                    $oth->whereHas('category', fn ($c) => $c->where('category_code', '!=', 'salary_advance'))
+                        ->whereRaw('DATE(COALESCE(expense_date, created_at)) >= ?', [$dateFrom])
+                        ->whereRaw('DATE(COALESCE(expense_date, created_at)) <= ?', [$dateTo]);
+                });
+            });
         }
         
         if ($category) {

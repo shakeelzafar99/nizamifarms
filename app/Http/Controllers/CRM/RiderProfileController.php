@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\CRM;
 
 use App\Http\Controllers\Controller;
+use App\Services\Location\PlusCode;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
@@ -30,6 +31,28 @@ class RiderProfileController extends Controller
             catch (\Throwable $e) { self::$hasOvernightGrace = false; }
         }
         return self::$hasOvernightGrace;
+    }
+
+    /**
+     * The reference point a SHORT Plus Code is recovered against — the primary company
+     * location. Every rider lives well inside the ~55 km radius within which recovery is
+     * unambiguous (the furthest legitimate rider fix ever recorded is 35.6 km).
+     * Falls back to the office's known coordinates if the table cannot be read, because a
+     * missing row must not turn a readable link into an unreadable one.
+     */
+    private function pinReference(): array
+    {
+        try {
+            $loc = DB::table('t_ops_company_locations')
+                ->where('is_primary', 1)->where('is_active', 1)
+                ->first(['latitude', 'longitude']);
+            if ($loc && $loc->latitude !== null && $loc->longitude !== null) {
+                return ['lat' => (float) $loc->latitude, 'lng' => (float) $loc->longitude];
+            }
+        } catch (\Throwable $e) {
+            // fall through to the constant
+        }
+        return ['lat' => 33.70811597, 'lng' => 73.08868750];   // Nizami Farms Office
     }
 
     public function index()
@@ -120,6 +143,11 @@ class RiderProfileController extends Controller
             'active' => 'boolean'
         ]);
 
+        // Home-pin outcome, reported back to the manager. $pinWarning = a link we could not read
+        // (the pin was left alone); $pinMoved = the coordinates actually written this save.
+        $pinWarning = null;
+        $pinMoved = null;
+
         try {
             $data = [
                 'phone' => $request->phone,
@@ -150,33 +178,91 @@ class RiderProfileController extends Controller
             // (short share links are resolved) OR type coordinates. Only meaningful for a
             // company-bike rider; clearing both fields (or unticking the bike) clears the pin.
             if (Schema::hasColumn('t_ops_rider_profile', 'home_latitude')) {
+                $prior = DB::table('t_ops_rider_profile')->where('user_id', $request->user_id)
+                    ->first(['home_latitude', 'home_longitude']);
                 $homeLat = $request->input('home_latitude');
                 $homeLng = $request->input('home_longitude');
                 $mapsUrl = trim((string) $request->input('home_maps_url', ''));
+                $skipPin = false;               // leave the stored pin exactly as it is
+
                 if ($mapsUrl !== '') {
-                    // Reuse the app-wide verified-pin parser (5 URL patterns + short links).
+                    $coords = null;
+                    $resolved = $mapsUrl;
+                    // Reuse the app-wide verified-pin parser (7 URL patterns + short links).
                     try {
                         $api = app(\App\Http\Controllers\API\RiderController::class);
                         $resolved = $api->resolveGoogleMapsUrl($mapsUrl);
                         $coords = $api->parseCoordinatesFromGoogleMapsUrl($resolved);
-                        if ($coords) {
-                            $homeLat = $coords['latitude'];
-                            $homeLng = $coords['longitude'];
-                        } else {
-                            return redirect()->back()->with('error', 'Could not read coordinates from that Maps link — paste the full share link or type the coordinates.');
-                        }
                     } catch (\Throwable $e) {
-                        return redirect()->back()->with('error', 'Could not read that Maps link — paste the full share link or type the coordinates.');
+                        $coords = null;
+                    }
+
+                    // ⭐⭐ PLUS CODE FALLBACK (31 Aug 2026 incident). Google's share sheet hands
+                    //    out PLACE-ID urls — `/maps/place/Nizami+Farms,+P35Q%2B5FF,…/data=!4m2!3m1!1s0x…`
+                    //    — which carry no `@lat,lng` and no `!3d`/`!4d`, so every pattern above
+                    //    returns null. Five saves in a row were refused this way. The coordinates
+                    //    are still in the URL, as the Plus Code, and that decodes offline.
+                    //    Reference = the company office; see PlusCode's ±55 km caveat.
+                    if (!$coords) {
+                        try {
+                            $ref = $this->pinReference();
+                            $pc = new PlusCode();
+                            $hit = $pc->fromText($resolved, $ref['lat'], $ref['lng'])
+                                ?? $pc->fromText($mapsUrl, $ref['lat'], $ref['lng']);
+                            if ($hit) {
+                                $coords = ['latitude' => $hit['latitude'], 'longitude' => $hit['longitude']];
+                                \Log::info('Home pin read from a Plus Code', [
+                                    'user_id' => $request->user_id, 'plus_code' => $hit['plus_code'],
+                                    'lat' => $hit['latitude'], 'lng' => $hit['longitude'],
+                                ]);
+                            }
+                        } catch (\Throwable $e) {
+                            \Log::warning('Plus Code fallback failed (non-fatal)', ['error' => $e->getMessage()]);
+                        }
+                    }
+
+                    if ($coords) {
+                        $homeLat = $coords['latitude'];
+                        $homeLng = $coords['longitude'];
+                    } else {
+                        // ⚠⚠ TWO THINGS THAT USED TO GO WRONG HERE, BOTH FIXED.
+                        //  1. This returned `redirect()->back()->with('error', …)`, which threw
+                        //     away the WHOLE profile save — phone, vehicle, meter rule, everything
+                        //     the manager had typed — over one unreadable link.
+                        //  2. Falling through to the typed boxes would re-save the PREFILLED
+                        //     (existing) coordinates and stamp a fresh home_set_at, so the page
+                        //     then reported "✓ Home pin saved (today)" for a pin that never moved.
+                        //     That is precisely how the 31 Aug attempts looked like they worked.
+                        // So: save everything else, touch nothing about the pin, and say so.
+                        $skipPin = true;
+                        $pinWarning = 'That Maps link has no coordinates in it, so the home pin was NOT changed. '
+                            . 'Everything else was saved. Open the pin in Google Maps, tap Share → Copy link '
+                            . '(or long-press the exact spot to drop a pin first), or type the coordinates.';
                     }
                 }
-                $hasPin = $isBike && $homeLat !== null && $homeLat !== '' && $homeLng !== null && $homeLng !== '';
-                $data['home_latitude'] = $hasPin ? (float) $homeLat : null;
-                $data['home_longitude'] = $hasPin ? (float) $homeLng : null;
-                $radius = $request->input('home_radius_m');
-                $data['home_radius_m'] = ($hasPin && $radius !== null && $radius !== '') ? (int) $radius : null;
-                if ($hasPin) {
-                    $data['home_set_by'] = auth()->id();
-                    $data['home_set_at'] = now();
+
+                if (!$skipPin) {
+                    $hasPin = $isBike && $homeLat !== null && $homeLat !== '' && $homeLng !== null && $homeLng !== '';
+                    $data['home_latitude'] = $hasPin ? (float) $homeLat : null;
+                    $data['home_longitude'] = $hasPin ? (float) $homeLng : null;
+                    $radius = $request->input('home_radius_m');
+                    $data['home_radius_m'] = ($hasPin && $radius !== null && $radius !== '') ? (int) $radius : null;
+
+                    // ⭐ Only stamp WHO/WHEN when the pin actually MOVED. Re-saving the profile
+                    //   for an unrelated reason used to refresh home_set_at, which made the
+                    //   modal announce "✓ Home pin saved (today)" for an untouched location —
+                    //   the manager's only feedback, and it was lying to him.
+                    $moved = $hasPin && (
+                        $prior === null
+                        || $prior->home_latitude === null
+                        || abs((float) $prior->home_latitude - (float) $homeLat) > 0.0000005
+                        || abs((float) $prior->home_longitude - (float) $homeLng) > 0.0000005
+                    );
+                    if ($moved) {
+                        $data['home_set_by'] = auth()->id();
+                        $data['home_set_at'] = now();
+                        $pinMoved = ['lat' => (float) $homeLat, 'lng' => (float) $homeLng];
+                    }
                 }
             }
             // R1 — per-rider "may check in at any office" allowance (guarded).
@@ -192,7 +278,18 @@ class RiderProfileController extends Controller
                 $data
             );
 
-            return redirect()->route('riders.index')->with('success', 'Rider profile updated successfully!');
+            // ⭐ Say what was STORED, not just "saved". A home pin is invisible once the modal
+            //   closes, and the 31 Aug mix-up (an office link pasted as a rider's home) would
+            //   have been obvious the moment the coordinates were shown back with a map link.
+            $message = 'Rider profile updated successfully!';
+            if ($pinMoved) {
+                $message .= sprintf(' Home pin set to %.7f, %.7f', $pinMoved['lat'], $pinMoved['lng']);
+            }
+
+            return redirect()->route('riders.index')
+                ->with('success', $message)
+                ->with('pin_moved', $pinMoved)
+                ->with('warning', $pinWarning);
         } catch (\Exception $e) {
             return redirect()->back()->with('error', 'Error updating rider profile: ' . $e->getMessage());
         }

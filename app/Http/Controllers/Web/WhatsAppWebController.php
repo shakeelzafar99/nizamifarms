@@ -90,6 +90,10 @@ class WhatsAppWebController extends Controller
                   AND m2.created_at > m.created_at
             )');
 
+        // Inbound taps the system already answered (e.g. "Get bank details")
+        // stay in the chat history but never raise a badge. See UnreadQuery.
+        \App\Services\WhatsApp\UnreadQuery::exclude($q);
+
         if (Schema::hasColumn('t_wa_conversations', 'global_read_at')) {
             $q->leftJoin('t_wa_conversations as c', 'c.id', '=', 'm.conversation_id')
               ->where(function ($w) {
@@ -435,6 +439,9 @@ class WhatsAppWebController extends Controller
                           AND m2.direction = \'outbound\' AND m2.sent_by IS NOT NULL
                           AND m2.created_at > m.created_at
                     )');
+
+                // System-answered taps don't count as unread. See UnreadQuery.
+                \App\Services\WhatsApp\UnreadQuery::exclude($msgQuery);
 
                 // Super-reader's global_read_at — inbound messages older
                 // than this are read for everyone.
@@ -1769,6 +1776,9 @@ class WhatsAppWebController extends Controller
                   AND m2.direction = \'outbound\' AND m2.sent_by IS NOT NULL
                   AND m2.created_at > m.created_at
             )');
+
+        // System-answered taps don't count as unread. See UnreadQuery.
+        \App\Services\WhatsApp\UnreadQuery::exclude($query);
 
         // Super-reader global read marker — honoured so Taimur's reads zero
         // the badge for all users. Only active once the migration has run.

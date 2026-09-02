@@ -56,7 +56,8 @@ class AssistantDraftService
         // Mirror the server's hard block early so the user gets a clear answer
         // from the assistant instead of a rejection after confirming.
         if (in_array(mb_strtolower($category), ['staff salaries', 'staff salary'], true)) {
-            return ['error' => 'Staff salaries must be paid from the Payroll screen — I cannot record them as an expense.'];
+            return ['error' => 'Staff salaries must be paid from the Payroll screen — I cannot record them as an expense. '
+                . 'If this was money given to ONE employee early, that is a salary advance: use find_employee then draft_salary_advance.'];
         }
 
         $prefs = $this->prefs($user->id);
@@ -409,6 +410,154 @@ class AssistantDraftService
 
         return $this->store($user, 'account_transfer',
             'Transfer Rs ' . number_format($amount, 0) . ': ' . $from->account_name . ' -> ' . $to->account_name,
+            $payload, $display, $this->replacesId($args));
+    }
+
+    /**
+     * A SALARY ADVANCE — money handed to an employee now and recovered from a specific
+     * month's pay. Drafts only; the money moves when a human taps Confirm.
+     *
+     * ⭐⭐ The month is the whole point of this card. An advance belongs to ONE payroll
+     * month: that month's pay recovers it and that month's wage bill is charged for it.
+     * It DEFAULTS to the current month (owner ruling) and is always shown on the card, so
+     * a manager never has to guess which month he is spending. If he then says "no, make
+     * it August", the model re-drafts with `payroll_month` + `replaces_draft_id` and the
+     * old card is cancelled — he corrects in place instead of starting over.
+     *
+     * ⚠ Confirm replays through the PayrollController, NOT PayrollService: the permission
+     * (`manage_payroll`) lives on the controller, so calling the service directly would
+     * hand every assistant user the ability to pay staff. See replaySalaryAdvance.
+     */
+    public function draftSalaryAdvance(array $args, $user): array
+    {
+        $amount = (float) ($args['amount'] ?? 0);
+        if ($amount <= 0) {
+            return ['error' => 'I need an amount greater than zero.'];
+        }
+
+        $userId = (int) ($args['user_id'] ?? 0);
+        if (!$userId) {
+            return ['error' => 'Which employee is this for? Call find_employee first — never guess a user_id.'];
+        }
+
+        // Resolve against the SAME population the Payroll screen shows (monthly + custom),
+        // so the card can never offer someone the grid would not.
+        $payroll = new \App\Services\HR\PayrollService();
+        $month = trim((string) ($args['payroll_month'] ?? '')) ?: now()->format('Y-m');
+        if (!preg_match('/^\d{4}-(0[1-9]|1[0-2])$/', $month)) {
+            return ['error' => 'That payroll month is not valid — use YYYY-MM.'];
+        }
+
+        // Mirror the server ceiling: an advance can run one month ahead (given forward when
+        // this month is already paid) but no further — beyond that it is a loan, not early
+        // salary. Checked HERE so the card never offers a month the confirm would refuse.
+        $maxMonth = now()->startOfMonth()->addMonth()->format('Y-m');
+        if ($month > $maxMonth) {
+            return ['error' => 'An advance can only be given up to ' . date('F Y', strtotime($maxMonth . '-01'))
+                . ' — one month ahead at most. Ask him which nearer month he means.'];
+        }
+
+        $match = null;
+        foreach ($payroll->advanceEligibleEmployees(null, $month) as $e) {
+            if ($e['user_id'] === $userId) { $match = $e; break; }
+        }
+        if (!$match) {
+            return ['error' => 'That employee is not on the Payroll screen, so I cannot give them an advance. '
+                . 'Call find_employee to see who is, or add them to Payroll first.'];
+        }
+
+        // Mirror every server refusal HERE, so the card never promises money the confirm
+        // would reject. A running-balance (khata) employee genuinely has no such thing as
+        // an advance — money handed to them is a PAYMENT against their balance.
+        if ($match['balance_tracked']) {
+            return ['error' => $match['name'] . ' is on a running balance (khata), so this is not an advance — '
+                . 'record a payment on their card in Payroll instead. I cannot draft that here.'];
+        }
+        if ($match['month_paid']) {
+            return ['error' => $match['name'] . "'s salary for " . date('F Y', strtotime($month . '-01'))
+                . ' is already paid, so an advance could never be recovered from it. '
+                . 'Ask whether he wants it against the next month instead.'];
+        }
+
+        // Funding: NF Cash, or an online transfer from one of our banks. Same two choices
+        // the Payroll screen offers — the accounts themselves are fixed by config, so the
+        // only question is cash-vs-online and, for online, WHICH bank.
+        $funding = mb_strtolower(trim((string) ($args['funding'] ?? 'cash')));
+        if (!in_array($funding, ['cash', 'online'], true)) {
+            return ['error' => "Funding must be 'cash' or 'online'."];
+        }
+
+        $bankId = (int) ($args['bank_id'] ?? 0);
+        $needsBankChoice = $funding === 'online' && !$bankId;
+        $choice = $needsBankChoice ? $this->bankChoice('Which bank did the advance go from?') : null;
+        if ($needsBankChoice && !$choice) {
+            return ['error' => 'No banks are configured, so this cannot be paid online. Suggest cash instead.'];
+        }
+        if ($bankId && $funding === 'online' && !$this->bankExists($bankId)) {
+            return ['error' => 'That bank does not exist. Use get_context for valid ids.'];
+        }
+
+        // The day the money actually left. It only differs from today when the advance is
+        // for a PAST month (entered late — the transfer really happened back then), and it
+        // must fall inside that month, which is exactly what the server re-checks.
+        $curMonth = now()->format('Y-m');
+        $moneyDate = $this->cleanDate($args['money_date'] ?? null);
+        if ($month < $curMonth) {
+            $moneyDate = $moneyDate ?: date('Y-m-t', strtotime($month . '-01'));
+            if (substr($moneyDate, 0, 7) !== $month) {
+                return ['error' => 'The payment date for a ' . date('F Y', strtotime($month . '-01'))
+                    . ' advance has to be a day in that month.'];
+            }
+            if ($moneyDate > now()->toDateString()) {
+                return ['error' => 'The payment date cannot be in the future.'];
+            }
+        } else {
+            // Current or next month — the money is moving today whichever month recovers it.
+            $moneyDate = now()->toDateString();
+        }
+
+        $monthLabel = date('F Y', strtotime($month . '-01'));
+        $isFuture = $month > $curMonth;
+
+        $payload = array_filter([
+            'user_id'       => $userId,
+            'amount'        => round($amount, 2),
+            'funding'       => $funding,
+            'bank_id'       => $funding === 'online' ? ($bankId ?: null) : null,
+            'note'          => trim((string) ($args['note'] ?? '')) ?: null,
+            'payroll_month' => $month,
+            'money_date'    => $moneyDate,
+            '_pending_choice' => $choice,
+            '_from_sms'     => !empty($args['_from_sms']) ?: null,
+        ], fn($v) => $v !== null);
+
+        $display = array_values(array_filter([
+            ['label' => 'Employee', 'value' => $match['name']
+                . ($match['schedule'] === 'custom' ? ' (custom schedule)' : '')],
+            ['label' => 'Amount', 'value' => 'Rs ' . number_format($amount, 0)],
+            ['label' => 'Paid from', 'value' => $funding === 'cash' ? 'NF Cash' : 'Online / bank transfer'],
+            $funding === 'online' && $bankId ? ['label' => 'Bank', 'value' => $this->bankName($bankId)] : null,
+            $needsBankChoice ? ['label' => 'Bank', 'value' => 'Choose below'] : null,
+            // The two date rows are the point of the card — never collapse them into one.
+            ['label' => 'Deducted from', 'value' => $monthLabel . ' pay'
+                . ($isFuture ? ' (next month)' : ($month === $curMonth ? ' (this month)' : ' (back-dated)'))],
+            ['label' => 'Money left on', 'value' => $moneyDate],
+            $match['open_advance_total'] > 0
+                ? ['label' => 'Already open', 'value' => 'Rs ' . number_format($match['open_advance_total'], 0)]
+                : null,
+            $match['schedule'] === 'custom'
+                ? ['label' => 'Note', 'value' => 'Custom schedule — recovered by pay period, not by month']
+                : null,
+        ]));
+
+        // A screenshot of the transfer the user just shared belongs on this card, the same
+        // way it does on an expense. Never for SMS-raised cards (that image is another turn).
+        if (empty($args['_from_sms'])) {
+            [$payload, $display] = $this->attachChatImage($payload, $display, $user, $this->replacesId($args));
+        }
+
+        return $this->store($user, 'salary_advance',
+            'Salary advance: Rs ' . number_format($amount, 0) . ' to ' . $match['name'] . ' (' . $monthLabel . ')',
             $payload, $display, $this->replacesId($args));
     }
 
@@ -1402,6 +1551,7 @@ class AssistantDraftService
                 'payment_proof'   => $this->replayPaymentProof($payload, $user),
                 'shop_payment'    => $this->replayShopPayment($payload, $user),
                 'account_transfer' => $this->replayAccountTransfer($payload, $user),
+                'salary_advance'  => $this->replaySalaryAdvance($payload, $user),
                 default           => ['ok' => false, 'message' => 'Unsupported draft type.'],
             };
         } catch (\Throwable $e) {
@@ -2340,6 +2490,65 @@ class AssistantDraftService
      * ValidationException on a bad request. So success is detected by the NEW
      * transfer ledger row it commits, not by a response body.
      */
+    /**
+     * Give the salary advance for real.
+     *
+     * ⚠⚠ Deliberately replays into `HR\PayrollController::giveAdvance`, NOT
+     * `PayrollService::giveAdvance`. The `manage_payroll` permission lives on the
+     * CONTROLLER — the service has no check of its own — so calling the service here would
+     * let anyone with assistant access pay staff. Going through the controller means only
+     * the people who can give an advance on the Payroll screen can confirm one here, and
+     * it is the confirming user's own permission that is tested (actAs), never "the system".
+     *
+     * It also re-validates the month at confirm: a card raised this morning for a month that
+     * has since been PAID is refused rather than creating an unrecoverable advance.
+     */
+    private function replaySalaryAdvance(array $payload, $user): array
+    {
+        // ⚠ giveAdvance's free-text field is `note`, not `description` — stamping the default
+        // key would have left assistant-given advances unmarked, the one row type you could
+        // not tell the AI had created. The endpoint caps note at 255, so trim to fit rather
+        // than have the validator reject the confirm.
+        $payload = $this->stampAssistant($payload, 'note');
+        if (isset($payload['note']) && mb_strlen($payload['note']) > 255) {
+            $payload['note'] = mb_substr($payload['note'], 0, 255);
+        }
+
+        $request = Request::create('/hr/payroll/give-advance', 'POST',
+            array_filter($payload, fn($v) => $v !== null));
+        $request->setUserResolver(fn() => $user);
+        $this->actAs($user); // denyIfNotAllowed() + the actor id both read auth()
+
+        $controller = app(\App\Http\Controllers\HR\PayrollController::class);
+        try {
+            $response = $controller->giveAdvance($request);
+        } catch (\Illuminate\Validation\ValidationException $e) {
+            return ['ok' => false, 'message' => collect($e->errors())->flatten()->first() ?: 'The advance was rejected.'];
+        } catch (\Throwable $e) {
+            return ['ok' => false, 'message' => 'The advance could not be recorded: ' . $e->getMessage()];
+        }
+
+        $data = json_decode($response->getContent(), true) ?: [];
+        if (empty($data['success'])) {
+            // 403 from the permission gate, or one of the month guards.
+            return ['ok' => false, 'message' => $data['message'] ?? 'The advance was rejected.'];
+        }
+
+        // The advance is a request row; hand back its id so the card can link to it.
+        $req = DB::table('t_req_master')
+            ->where('requester_user_id', (int) ($payload['user_id'] ?? 0))
+            ->whereNotNull('ledger_transaction_id')
+            ->orderByDesc('id')->first(['id', 'request_number']);
+
+        return [
+            'ok' => true,
+            'message' => $data['message'] ?? 'Advance given.',
+            'result_type' => 'request',
+            'result_id' => $req->id ?? null,
+            'reference' => $req->request_number ?? null,
+        ];
+    }
+
     private function replayAccountTransfer(array $payload, $user): array
     {
         $payload = $this->stampAssistant($payload); // description gets "· via NF Assistant"
@@ -2857,6 +3066,13 @@ class AssistantDraftService
     private function bankName(int $id): string
     {
         return (string) (DB::table('t_fin_online_receiving_accounts')->where('id', $id)->value('name') ?? ('#' . $id));
+    }
+
+    /** Is this a real, active bank? Checked before a card names one it cannot pay from. */
+    private function bankExists(int $id): bool
+    {
+        return DB::table('t_fin_online_receiving_accounts')
+            ->where('id', $id)->where('is_active', 1)->exists();
     }
 
     private function buName(int $id): string

@@ -42,6 +42,12 @@
                             @if($row['reminded_label'])
                             <span class="text-xs text-gray-500 italic">{{ $row['reminded_label'] }}</span>
                             @endif
+                            {{-- Sent by the delivered → payment-confirmation automation rather
+                                 than by a person, so the reminder history reads honestly. --}}
+                            @if(!empty($row['auto_messaged']))
+                            <span class="text-xs px-1.5 py-0.5 rounded" style="background:#dcfce7;color:#166534;"
+                                  title="Sent automatically when the order was marked delivered">🤖 auto</span>
+                            @endif
                             @if($row['is_last_day'])
                             <span class="text-xs font-semibold" style="color:#b91c1c;" title="Last day in this list — after today it moves to Online Approvals">last day</span>
                             @endif

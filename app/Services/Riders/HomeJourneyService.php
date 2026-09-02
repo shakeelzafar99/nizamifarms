@@ -101,6 +101,84 @@ class HomeJourneyService
     }
 
     /**
+     * ⭐⭐ THE MACHINE LEFT, SO THE RIDE-HOME DEMAND LEAVES WITH IT (Sep-2026).
+     *
+     * A journey is armed AT CHECKOUT, from what the rider held THEN. If the machine
+     * is handed over afterwards, three live guards already stop the demand reaching
+     * him — `armHomeJourney`, `buildHomeJourneyPayload` and `openEscalations` all
+     * refuse on `holdsCompanyMachineNow() === false`. What none of them can do is
+     * remove the row that is already armed, and two things still read it raw:
+     *
+     *   1. `homeIssues()` (Daily Issues / Day Review / attendance chips) judges the
+     *      row itself, so the man collects a red **"home late — locked"** mark for a
+     *      bike that was taken off him — a false accusation in a report he never sees.
+     *   2. If he is handed ANOTHER company machine the same evening, holds-now flips
+     *      back to true, the card returns showing the OLD timer's state, and the
+     *      submit gate can 423 him for a deadline that belonged to a different bike.
+     *
+     * So: when a handover leaves him without a company machine, the timer that was
+     * armed for the machine he no longer has is cleared.
+     *
+     * ⚠ SCOPE IS DELIBERATELY NARROW — this is the one place in the codebase that
+     *   UNWRITES attendance data:
+     *   - `=== false` ONLY. Null (registry silent / not a rider) means "no opinion"
+     *     and must fall through to today's behaviour, exactly like its three sibling
+     *     guards. One quiet registry must never start erasing timers.
+     *   - `meter_home IS NULL` — a journey he COMPLETED is history and is never
+     *     touched, on time or late.
+     *   - Only the timer fields. `home_arrived_at` is a recorded fact and stays; the
+     *     rider genuinely did arrive, and the attendance timeline still shows it.
+     *   - Today + yesterday only, matching `openJourneyRow`'s midnight window.
+     *
+     * Never throws: a handover must not fail because a timer would not clear.
+     *
+     * @return int rows disarmed (0 = nothing to do, the normal case)
+     */
+    public function disarmIfNoCompanyMachine(int $userId): int
+    {
+        try {
+            if (!Schema::hasColumn('t_ops_attendance', 'home_expected_by')) {
+                return 0;
+            }
+            if ((new VehicleResolver())->holdsCompanyMachineNow($userId) !== false) {
+                return 0;   // still on a company machine, or the registry has no opinion
+            }
+
+            $rows = DB::table('t_ops_attendance')
+                ->where('user_id', $userId)
+                ->whereIn('attendance_date', [now()->format('Y-m-d'), now()->subDay()->format('Y-m-d')])
+                ->whereNotNull('home_expected_by')
+                ->whereNull('meter_home')
+                ->get(['id', 'attendance_date', 'home_expected_by']);
+            if ($rows->isEmpty()) {
+                return 0;
+            }
+
+            DB::table('t_ops_attendance')->whereIn('id', $rows->pluck('id')->all())->update([
+                'home_expected_by' => null,
+                'home_eta_min'     => null,
+                'home_distance_km' => null,
+                'updated_at'       => now(),
+            ]);
+
+            Log::info('Home journey disarmed — rider no longer holds a company machine', [
+                'user_id' => $userId,
+                'rows'    => $rows->map(fn ($r) => [
+                    'attendance_id' => (int) $r->id,
+                    'date'          => substr((string) $r->attendance_date, 0, 10),
+                    'was_expected_by' => $r->home_expected_by,
+                ])->all(),
+            ]);
+            return $rows->count();
+        } catch (\Throwable $e) {
+            Log::warning('disarmIfNoCompanyMachine skipped (non-fatal)', [
+                'user_id' => $userId, 'error' => $e->getMessage(),
+            ]);
+            return 0;
+        }
+    }
+
+    /**
      * Derive the journey state from a t_ops_attendance row (stdClass or array). Pure — timestamps only.
      * Returns one of: none | armed | arrived_pending_meter | completed_on_time | completed_late |
      * late_locked | unlocked.

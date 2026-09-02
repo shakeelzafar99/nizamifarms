@@ -111,9 +111,42 @@ class VanController extends Controller
             'order_ids'   => 'nullable|array',
             'order_ids.*' => 'integer',
             'note'        => 'nullable|string|max:255',
+            // Sent by the new app on its FIRST attempt only (see below).
+            'check_loaded'        => 'nullable|boolean',
+            // Every stop his picker listed — ticked AND unticked. Lets the check
+            // below tell "he chose to leave it" from "his phone never saw it".
+            'known_order_ids'     => 'nullable|array',
+            'known_order_ids.*'   => 'integer',
         ]);
 
         $uid  = (int) $user->id;
+
+        // ⭐⭐ IS HIS PICTURE OF THE VAN CURRENT? (Aug-31, from the prod run.)
+        //
+        //    Rajab dispatched 3 of 5 four minutes after all five were stamped
+        //    aboard. Nothing was unticked and nothing was mid-scan: his phone had
+        //    simply not managed a successful poll since the third box, and a
+        //    silent-on-failure refresh cannot fix a network that is down.
+        //
+        //    So the SERVER — which stamped every `van_loaded_at` itself — checks
+        //    the wave against what is really aboard and asks before doing
+        //    anything. This is the only check in the chain that no amount of
+        //    stale client state can defeat.
+        //
+        // ⚠ Asked BEFORE `ensureTrip`, exactly like the finish-trip confirm
+        //   below it: a question must never be able to open a trip, stamp
+        //   `departed_at` or fire the departure ping as a side effect.
+        //
+        // ⚠ OPT-IN via `check_loaded`, so an old APK behaves byte-identically —
+        //   it never sends the flag, so this block cannot fire for it.
+        if ($data['leg'] === VanService::LEG_DELIVERIES
+            && !empty($data['order_ids'])
+            && $request->boolean('check_loaded')) {
+
+            $confirm = $this->loadedStopsConfirm($van, $uid, $data['order_ids'],
+                                                 $data['known_order_ids'] ?? []);
+            if ($confirm !== null) return response()->json($confirm, 422);
+        }
 
         // ⭐ FINISHING WITH BOXES STILL ABOARD NEEDS A DELIBERATE YES. "Finish the
         //    trip" was a single unguarded tap: it closed the trip while riders'
@@ -244,7 +277,10 @@ class VanController extends Controller
             'order_ids.*' => 'integer',
             // Absent on every existing client — the driver's own app never sends
             // it, so the old behaviour is byte-identical without it.
-            'driver_id'   => 'nullable|integer',
+            'driver_id'         => 'nullable|integer',
+            'check_loaded'      => 'nullable|boolean',
+            'known_order_ids'   => 'nullable|array',
+            'known_order_ids.*' => 'integer',
         ]);
 
         $driverId = (int) $user->id;
@@ -262,11 +298,85 @@ class VanController extends Controller
             $actorId  = (int) $user->id;
         }
 
+        // Same last-gate check as the wave picker — "Dispatch remaining" can be
+        // pressed off just as stale a list. Opt-in, so old clients are untouched.
+        if ($request->boolean('check_loaded')) {
+            $confirm = $this->loadedStopsConfirm($van, $driverId, $data['order_ids'],
+                                                 $data['known_order_ids'] ?? []);
+            if ($confirm !== null) return response()->json($confirm, 422);
+        }
+
         $res = $this->dispatchSelectedInternal($request, $driverId, $data['order_ids'], $van, $actorId);
         if (!($res['ok'] ?? false)) {
             return response()->json(['success' => false, 'message' => $res['message']], 422);
         }
         return response()->json(['success' => true] + $res);
+    }
+
+    /**
+     * "2 more boxes are on the van — send all 5?" — or null when his pick is
+     * already the whole load.
+     *
+     * ⭐ Hands back `all_order_ids` PRIORITY-ORDERED and ready to re-post, so the
+     *    client never has to merge a route it may not fully know. That order is
+     *    the right one whoever planned it: the store's sequencing and the
+     *    driver's own reorder both write `delivery_priority`, and the app flushes
+     *    a pending reorder before it dispatches.
+     *
+     * ⚠ Anything he picked that is NOT aboard (already out for delivery, or
+     *   unloaded since) is appended rather than dropped — `dispatchSelectedInternal`
+     *   is the one place allowed to rule on eligibility, and silently editing his
+     *   pick here would hide a real problem behind a confirmation dialog.
+     */
+    private function loadedStopsConfirm(VanService $van, int $driverId, array $pickedIds,
+                                        array $knownIds = []): ?array
+    {
+        $picked  = array_values(array_unique(array_map('intval', $pickedIds)));
+        $aboard  = $van->loadedOwnStops($driverId);
+        if (empty($aboard)) return null;          // nothing to compare against → proceed
+
+        // ⭐⭐ ONLY ASK ABOUT BOXES HIS PHONE NEVER KNEW ABOUT.
+        //
+        //    `known_order_ids` is every stop his picker listed — ticked AND
+        //    unticked. A stop he deliberately unticked is therefore KNOWN, and
+        //    asking again about a choice he just made is how a prompt becomes
+        //    something people tap through without reading. What is genuinely
+        //    dangerous is the opposite: a box aboard that his list never showed
+        //    at all, which is exactly the 31-Aug failure.
+        //
+        // ⚠ An empty `known` (older new-build clients, or a client that sends
+        //   only `check_loaded`) falls back to comparing against his PICK — more
+        //   prompts, never fewer, which is the safe direction to be wrong in.
+        $seen = empty($knownIds)
+            ? $picked
+            : array_values(array_unique(array_map('intval', $knownIds)));
+
+        $aboardIds = array_map(fn ($s) => $s['id'], $aboard);
+        $missing   = array_values(array_filter($aboard, fn ($s) => !in_array($s['id'], $seen, true)));
+        if (empty($missing)) return null;         // he has seen the whole load
+
+        // ⭐ "Send all" must keep what he DID pick and add what he had not seen —
+        //   never silently re-tick something he deliberately unticked. So the
+        //   full list is his pick + the unseen boxes, back in route order.
+        $sendAll = array_values(array_filter(
+            $aboardIds,
+            fn ($id) => in_array($id, $picked, true)
+                     || in_array($id, array_map(fn ($s) => $s['id'], $missing), true)
+        ));
+        $extras = array_values(array_diff($picked, $aboardIds));
+        $n      = count($missing);
+        $names  = implode(', ', array_map(fn ($s) => $s['order_number'], array_slice($missing, 0, 6)))
+                . ($n > 6 ? ', …' : '');
+
+        return [
+            'success'       => false,
+            'needs_confirm' => 'loaded_stops',
+            'missing'       => $missing,
+            'all_order_ids' => array_merge($sendAll, $extras),
+            'message'       => $n === 1
+                ? "1 more box is on the van and is not in this batch:\n" . $names
+                : "{$n} more boxes are on the van and are not in this batch:\n" . $names,
+        ];
     }
 
     /**
@@ -1128,7 +1238,19 @@ class VanController extends Controller
                     // ⚠ `van_position` was a bare {lat,lng} with no age — a dot
                     //   nobody could tell was ten minutes old. Now the same
                     //   freshness-carrying shape every other marker uses.
-                    'van_position'   => $this->positionPayload($pos,
+                    //
+                    // ⭐ LAST KNOWN, NOT LAST 30 MINUTES (Aug-31, Farooq's report:
+                    //    "no map button on the van view"). A van coming home
+                    //    with a driver whose phone has stopped reporting used to
+                    //    lose its position entirely — lat null — and both boards
+                    //    hide the map when there is nothing to draw. The day it
+                    //    happened was the day his phone was failing to connect,
+                    //    i.e. exactly when the store most wants the map. An old
+                    //    fix renders as a GREY marker with its age said out loud;
+                    //    ETAs and progress still use the strict `$pos` and refuse
+                    //    anything stale, so nothing time-critical reads this.
+                    'van_position'   => $this->positionPayload(
+                        $pos ?: $this->lastFix($did, 60 * 20),
                         $stop['latitude'] ?? null, $stop['longitude'] ?? null),
                     'van_progress'   => $this->journeyProgress('van', $stop, $pos),
                     'inbound'        => $inbound,
@@ -1378,13 +1500,20 @@ class VanController extends Controller
         return $out;
     }
 
-    private function lastFix(int $userId): ?array
+    /**
+     * @param int $maxMinutes how far back a fix may be and still count. The
+     *        default 30 is the LIVE bound every ETA/progress caller relies on.
+     *        The store panel alone passes the 20h van window for its map
+     *        POSITION — an old fix draws a grey marker at the last known spot,
+     *        which is honest; every calculation still refuses anything stale.
+     */
+    private function lastFix(int $userId, int $maxMinutes = 30): ?array
     {
         try {
             $f = DB::table('t_ops_rider_location')
                 ->where('user_id', $userId)
                 ->whereNotNull('latitude')->whereNotNull('longitude')
-                ->where('captured_at', '>=', now()->subMinutes(30))
+                ->where('captured_at', '>=', now()->subMinutes($maxMinutes))
                 ->orderByDesc('captured_at')
                 ->first(['latitude', 'longitude', 'captured_at']);
             if (!$f) return null;
@@ -1698,8 +1827,12 @@ class VanController extends Controller
         $order = OrderModel::find($id);
         if (!$order) return response()->json(['success' => false, 'message' => 'Order not found'], 404);
 
+        // `confirm_pullback` = the store said yes to "this cancels its delivery
+        // time". Absent on an old APK, which is why the service asks first
+        // rather than acting — the worst an old client can do is see the question
+        // as a refusal message, exactly as it sees every other refusal today.
         $res = $van->loadScan($order, $data['scan_code'], (int) $data['van_user_id'], (int) $user->id,
-                              $request->boolean('manual'));
+                              $request->boolean('manual'), $request->boolean('confirm_pullback'));
 
         // ⭐ If the meet-up point was set BEFORE this rider's cargo was aboard,
         //    he was never told where to go: `announceStop` can only reach riders
